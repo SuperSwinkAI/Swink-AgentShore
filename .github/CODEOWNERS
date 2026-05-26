@@ -1,0 +1,5 @@
+# Default: both maintainers review everything
+* @jwesleye @unseriousAI
+
+# CI and project config
+/.github/    @jwesleye @unseriousAI
