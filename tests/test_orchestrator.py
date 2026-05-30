@@ -19,6 +19,7 @@ from agentshore.core import (
 )
 from agentshore.data.models import PlayRecord
 from agentshore.plays.base import PlayParams
+from agentshore.plays.override import OverrideKind
 from agentshore.plays.selector import FixedPlanSelector
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.state import (
@@ -1558,9 +1559,7 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     seed_file = tmp_path / "seed.md"
     seed_file.write_text("# Seed", encoding="utf-8")
     # High issue count would otherwise route to cleanup; seed_path overrides.
-    _phase_queue_agent_instantiation(
-        orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500
-    )
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500)
 
     entries = []
     while not orch._override_queue.empty():
@@ -1575,28 +1574,44 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     assert entries[1].params.bypass_preconditions is True
 
 
-def test_bootstrap_open_start_queues_nothing_without_seed() -> None:
-    """Item 2: without a seed, open-start queues no forced overrides.
+def test_bootstrap_open_start_queues_single_instantiate_without_seed() -> None:
+    """#11: without a seed, open-start queues exactly one large-tier
+    INSTANTIATE_AGENT cold-start backstop.
 
-    The forced large+medium fleet was hard-coded direction. Now the PPO opens
-    the fleet itself — the empty-fleet mask keeps INSTANTIATE_AGENT selectable
-    so the policy spawns the first agent and decides the fleet's composition.
+    The mask zeroes INSTANTIATE_AGENT for a zero-agent / no-remaining-work /
+    non-terminal fleet, so the prior no-op design deadlocked at 0 agents. One
+    forced spawn breaks the catch-22; PPO still owns all subsequent fleet
+    growth (no medium spawn, no SEED_PROJECT, no forced first play).
     """
     cfg = _bootstrap_cfg()
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(
-        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120
-    )
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=120)
 
-    assert orch._override_queue.empty()
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert len(entries) == 1
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+    assert entries[0].params == PlayParams(
+        target_agent_type=AgentType.CLAUDE_CODE.value,
+        target_model_tier="large",
+        bypass_preconditions=True,
+    )
+    assert entries[0].kind is OverrideKind.BOOTSTRAP
 
 
 def test_bootstrap_open_start_ignores_backlog_size() -> None:
-    """Open-start is a no-op regardless of backlog size — no forced fleet either way."""
+    """Open-start queues the same single cold-start agent regardless of backlog
+    size — no backlog-driven forced fleet either way."""
     cfg = _bootstrap_cfg(cleanup_threshold=50)
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(
-        orch=orch, cfg=cfg, seed_path=None, open_issues_count=10
-    )
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=10)
 
-    assert orch._override_queue.empty()
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert len(entries) == 1
+    assert entries[0].play_type == PlayType.INSTANTIATE_AGENT
+    assert entries[0].params.target_model_tier == "large"

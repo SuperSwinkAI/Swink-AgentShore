@@ -898,12 +898,14 @@ def _phase_queue_agent_instantiation(
       3. INSTANTIATE_AGENT — first configured enabled medium-tier agent of a
          different type, giving the initial fleet cross-backend coverage.
 
-    Without a seed input, this is a no-op: the session boots into an open
-    state and PPO picks everything (including the first ``instantiate_agent``)
-    from cold. The cleanup-threshold heuristic that previously forced a first
-    play in the no-seed path is removed.
+    Without a seed input, the bootstrap is a minimal cold-start backstop: a
+    single large-tier ``INSTANTIATE_AGENT`` override (#11). The PPO still owns
+    fleet growth and composition from there — this only guarantees the loop
+    spawns one agent from cold so it can ever act. The cleanup-threshold
+    heuristic that previously forced a first *play* in the no-seed path is
+    removed; only the lone agent spawn remains.
 
-    All three entries are queued with ``bypass_preconditions=True`` so the
+    All entries are queued with ``bypass_preconditions=True`` so the
     deterministic recipe is not stalled by the cooldown or
     first-play-completion gates that PPO selections still see.
     """
@@ -930,17 +932,37 @@ def _phase_queue_agent_instantiation(
         return None
 
     if seed_path is None:
-        # Open-start is a genuine no-op (Item 2): the PPO opens the fleet itself.
-        # With zero agents the action mask leaves INSTANTIATE_AGENT as the only
-        # valid play — a true invalidity backstop, since nothing else can run
-        # without an agent — so the policy spawns the first agent from cold and
-        # decides the fleet's size and composition rather than a hard-coded
-        # large+medium recipe. No forced bootstrap overrides are queued.
+        # Open-start cold-start backstop (#11): queue exactly one large-tier
+        # INSTANTIATE_AGENT override so the loop always spawns the first agent
+        # from cold. The previous no-op design assumed the action mask left
+        # INSTANTIATE_AGENT valid for a zero-agent fleet, but mask.py masks it
+        # precisely in the "no agents + no remaining work + not terminal" state
+        # (see ``_stage_instantiate_config``) — against a quiet repo that yields
+        # an empty action set and a permanent idle deadlock. One forced spawn
+        # (bypass_preconditions, mirroring the seeded branch) breaks the
+        # catch-22; the PPO still owns all subsequent fleet growth and
+        # composition. This is a single-agent backstop, not the full
+        # large+medium recipe the seeded path uses.
+        large_agent_type = _first_enabled_for_tier("large")
         _logger.info(
             "bootstrap_open_start",
             reason="no_seed_input",
             open_issues_count=open_issues_count,
+            large_agent_type=large_agent_type.value if large_agent_type is not None else None,
         )
+        if large_agent_type is not None:
+            orch._override_queue.put_nowait(
+                OverrideEntry(
+                    play_type=PlayType.INSTANTIATE_AGENT,
+                    params=PlayParams(
+                        target_agent_type=large_agent_type.value,
+                        target_model_tier="large",
+                        bypass_preconditions=True,
+                    ),
+                    kind=OverrideKind.BOOTSTRAP,
+                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+                )
+            )
         return
 
     first_play_type = PlayType.SEED_PROJECT
