@@ -259,6 +259,13 @@ class Orchestrator(
         )
         self._health.start()
 
+        # Loop-liveness watchdog (#9): an independent task that force-drains the
+        # session if the core loop heartbeat goes stale (a hard freeze the
+        # idle/unanswered-pause backstops cannot catch). No-op when disabled via
+        # feedback.loop_liveness_timeout_seconds = null. Started here, before the
+        # loop runs, and cancelled during _stop_inner.
+        self.start_loop_liveness_watchdog()
+
         # desktop-gkku: keep the OS from idling our process while a session
         # is active. macOS holds an IOPMAssertion (PreventUserIdleSystemSleep,
         # which keeps I/O priority normal and prevents the screen-lock

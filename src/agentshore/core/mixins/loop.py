@@ -53,6 +53,13 @@ _WAITING_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 30.0, 60.0)
 # a trunk it cannot heal. At the 21s backoff ceiling this is ~3-4 minutes grace.
 _WEDGED_IDLE_STOP_TICKS = 12
 
+# Loop-liveness watchdog (#9): how often the independent watchdog task wakes to
+# compare the loop heartbeat against the configured timeout. Kept well below the
+# default 600s timeout so the watchdog reacts promptly once the deadline passes
+# without busy-polling. The watchdog never runs on the loop's critical path, so
+# a blocked loop still gets reaped within ~one interval of the deadline.
+_LOOP_LIVENESS_CHECK_INTERVAL_SECONDS = 15.0
+
 
 class _LoopMixin(_OrchestratorBase):
     """The main orchestration loop plus loop-detection and stagnation laddering."""
@@ -81,6 +88,8 @@ class _LoopMixin(_OrchestratorBase):
     _main_repo_dispatch_paused: bool
     _wedged_idle_ticks: int
     _last_refresh_time: float
+    _last_loop_iteration_at: float
+    _loop_liveness_task: asyncio.Task[None] | None
     _loop_started_at: float
     _natural_exit_reason: str | None
     _natural_exit_callback: NaturalExitCallback | None
@@ -642,6 +651,88 @@ class _LoopMixin(_OrchestratorBase):
         # Unblock the gate so the loop proceeds to begin_drain on the next steps.
         self._pause_event.set()
 
+    def _loop_liveness_timeout_seconds(self) -> float | None:
+        """Resolve the configured loop-liveness watchdog timeout (None disables)."""
+        return self._cfg.feedback.loop_liveness_timeout_seconds
+
+    def start_loop_liveness_watchdog(self) -> None:
+        """Launch the independent loop-liveness watchdog task (#9).
+
+        Idempotent. No-op when the timeout is unset (watchdog disabled) or a
+        live task already exists. The task runs OFF the core loop so a
+        hard-frozen loop — one that stopped iterating entirely, e.g. a deadlock
+        in the play-mutation promotion path — still gets reaped. This is the
+        backstop the idle/unanswered-pause auto-stops cannot provide: those
+        require the loop to keep ticking, which a true freeze does not.
+        """
+        if self._loop_liveness_timeout_seconds() is None:
+            return
+        existing = self._loop_liveness_task
+        if existing is not None and not existing.done():
+            return
+        self._loop_liveness_task = asyncio.get_event_loop().create_task(
+            self._loop_liveness_watchdog(),
+            name="agentshore.loop_liveness_watchdog",
+        )
+
+    def stop_loop_liveness_watchdog(self) -> None:
+        """Cancel the loop-liveness watchdog task if running."""
+        task = self._loop_liveness_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _loop_liveness_watchdog(self) -> None:
+        """Force-drain the session if the loop heartbeat goes stale (#9).
+
+        Sleeps on a fixed check interval and compares ``now`` against
+        ``_last_loop_iteration_at`` (stamped at the top of every
+        ``run_until_idle`` iteration). When the gap exceeds the configured
+        timeout the loop is presumed hard-frozen, so this task drives the
+        teardown itself rather than only setting flags the dead loop would
+        never service: it emits ``loop_liveness_timeout`` then drains and
+        stops directly. Exits once a stop is in progress so it never double-runs
+        the shutdown body (``stop`` is re-entrancy safe regardless).
+        """
+        interval = _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS
+        while not self._stop_requested and not self._stopped:
+            await asyncio.sleep(interval)
+            timeout = self._loop_liveness_timeout_seconds()
+            if timeout is None:
+                continue
+            if self._stop_requested or self._stopped:
+                return
+            last = self._last_loop_iteration_at
+            # 0.0 = loop has not begun iterating yet (not armed); inf = a
+            # __new__-constructed instance with no real loop. Neither is stale.
+            if last <= 0.0 or last == float("inf"):
+                continue
+            stalled_for = time.monotonic() - last
+            if stalled_for < timeout:
+                continue
+            _logger.error(
+                "loop_liveness_timeout",
+                session_id=self._session_id,
+                stalled_for_seconds=round(stalled_for, 1),
+                timeout_seconds=timeout,
+                in_flight=len(self._in_flight),
+                note=(
+                    "core loop heartbeat did not advance within "
+                    "feedback.loop_liveness_timeout_seconds; loop presumed "
+                    "hard-frozen — force-draining and stopping the session"
+                ),
+            )
+            # Drive teardown off the (dead) loop. begin_drain is idempotent and
+            # records the drain reason / fires the ESR; stop() then performs the
+            # full graceful shutdown (end agents, checkpoint, beads clear, store
+            # close) and is re-entrancy safe.
+            self._drain_reason = "loop_liveness_timeout"
+            await self._safe_call(
+                self.begin_drain("loop_liveness_timeout"),
+                "loop_liveness_begin_drain",
+            )
+            await self.stop()
+            return
+
     async def run_until_idle(self) -> None:
         """Drive the RL loop until selector returns None or a stop is requested.
 
@@ -651,8 +742,16 @@ class _LoopMixin(_OrchestratorBase):
         task to make progress.
         """
         self._loop_started_at = time.monotonic()
+        # Arm the loop-liveness heartbeat before the first iteration so the
+        # watchdog (#9) has a fresh baseline and never sees a stale 0.0.
+        self._last_loop_iteration_at = time.monotonic()
 
         while not self._stop_requested:
+            # Loop-liveness heartbeat (#9): stamp every iteration so the
+            # independent watchdog can detect a hard-frozen loop. Must be the
+            # first statement in the body so it advances even on ticks that
+            # `continue` early (pause-gate, idle wait, drain init).
+            self._last_loop_iteration_at = time.monotonic()
             # Pause blocks new selection/dispatch, but completed in-flight plays
             # still need to be harvested so agent completions, costs, and rewards
             # do not get stranded behind the pause gate.
