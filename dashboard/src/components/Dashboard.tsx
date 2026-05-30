@@ -96,6 +96,16 @@ export interface DashboardProps {
    * user no longer needs the modal.
    */
   onFirstAgentInstantiated?: () => void;
+  /**
+   * Fires once on the first ``state_update`` frame received from the
+   * bridge. This is the "engine is confirmed live" signal: the bridge
+   * is up and streaming state, even in a genuinely no-work session that
+   * never spawns an agent. The desktop uses this to dismiss the
+   * "Starting your session..." overlay so an idle session doesn't trap
+   * the UI behind a permanent spinner (issue #10). ``onFirstAgentInstantiated``
+   * remains a valid earlier fast-path; this is the always-arrives backstop.
+   */
+  onFirstStateUpdate?: () => void;
 }
 
 export function Dashboard({
@@ -104,6 +114,7 @@ export function Dashboard({
   theme = "light",
   showThemeToggle = true,
   onFirstAgentInstantiated,
+  onFirstStateUpdate,
 }: DashboardProps): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>("office");
   const stateManagerRef = useRef<AgentShoreStateManager | null>(null);
@@ -137,8 +148,15 @@ export function Dashboard({
   // The ref resets when wsUrl changes (different session), so a
   // subsequent session also gets one shot at firing the callback.
   const firstAgentFiredRef = useRef(false);
+  // Fire onFirstStateUpdate exactly once per Dashboard mount, on the
+  // first state_update frame. Unlike the first-agent fast-path, a
+  // state_update always arrives once the bridge is live — including in
+  // no-work sessions that never spawn an agent (issue #10). Reset on
+  // wsUrl change so a subsequent session also gets one shot.
+  const firstStateUpdateFiredRef = useRef(false);
   useEffect(() => {
     firstAgentFiredRef.current = false;
+    firstStateUpdateFiredRef.current = false;
   }, [wsUrl]);
 
   useEffect(() => {
@@ -188,6 +206,14 @@ export function Dashboard({
           notifyStatsStageUpdate(msg);
           notifyKanbanStateUpdate(msg);
           notifyDashboardCanvasStickies(msg);
+          // The engine is confirmed live the moment any state_update
+          // arrives. Dismiss the desktop's session-starting overlay
+          // here so a no-work session (which never instantiates an
+          // agent) doesn't hang the spinner forever (issue #10).
+          if (!firstStateUpdateFiredRef.current) {
+            firstStateUpdateFiredRef.current = true;
+            onFirstStateUpdate?.();
+          }
           break;
         case "play_event":
           notifyPlayBarEvent(msg);

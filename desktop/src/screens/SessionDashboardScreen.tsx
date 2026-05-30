@@ -71,7 +71,13 @@ export function SessionDashboardScreen() {
   return (
     <Dashboard
       wsUrl={wsUrl}
+      // Dismiss the "Starting your session..." overlay on whichever
+      // signal arrives first: the first instantiate_agent dispatch
+      // (fast-path when there's work) or the first state_update (the
+      // engine is confirmed live even for a no-work session that never
+      // spawns an agent — issue #10).
       onFirstAgentInstantiated={() => setSessionStarting(false)}
+      onFirstStateUpdate={() => setSessionStarting(false)}
     />
   );
 }
