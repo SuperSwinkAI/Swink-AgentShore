@@ -12,6 +12,17 @@ export async function listIdentities(): Promise<IdentityRow[]> {
   return result ?? [];
 }
 
+export interface KeychainStatus {
+  login: string;
+  service: string;
+  has_token: boolean;
+}
+
+export async function checkKeychainToken(login: string): Promise<KeychainStatus> {
+  const result = await callJsonRpc<KeychainStatus | null>("identities.check_keychain", { login });
+  return result ?? { login, service: "", has_token: false };
+}
+
 export async function addIdentity(login: string, tokenSource: string, pat?: string): Promise<void> {
   const params: Record<string, string> = { login, token_source: tokenSource };
   if (pat) {

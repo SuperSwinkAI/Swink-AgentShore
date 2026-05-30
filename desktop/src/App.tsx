@@ -14,6 +14,7 @@ import { Route, Routes, useLocation, useNavigate, useParams } from "react-router
 import { DashboardCanvas, IdentitiesScreen, type IdentitiesSidecar } from "agentshore-dashboard";
 import {
   addIdentity,
+  checkKeychainToken,
   listIdentities,
   removeIdentity,
   updateIdentity,
@@ -527,6 +528,7 @@ function SetupLayout({
       add: addIdentity,
       update: updateIdentity,
       remove: removeIdentity,
+      checkKeychain: checkKeychainToken,
     }),
     [],
   );

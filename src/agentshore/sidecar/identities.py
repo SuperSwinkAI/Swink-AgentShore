@@ -34,6 +34,8 @@ _TOKEN_SOURCE_FIELDS = frozenset({"gh_token_login", "gh_token_env", "gh_token_ke
 _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
+
+
 def _validate_token_matches_login(entry: dict[str, object], expected_login: str) -> None:
     """Resolve the token from *entry* and verify it belongs to *expected_login*.
 
@@ -83,6 +85,41 @@ def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
                 os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _keychain_has_token(service: str) -> bool:
+    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+    try:
+        import keyring  # local import: keyring's macOS backend runs setup at import time
+        from keyring.errors import KeyringError
+    except Exception:
+        return False
+    try:
+        token = keyring.get_password(service, service)
+    except KeyringError:
+        return False
+    except Exception:
+        return False
+    return bool(token and token.strip())
+
+
+def keychain_status(login: str) -> dict[str, object]:
+    """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
+
+    Mirrors the CLI wizard's pre-flight check (``cli_identity._keychain_has_token``)
+    so the desktop "Add identity" form can offer to reuse a stored PAT instead of
+    forcing the user to paste it again. Returns the canonical login, the managed
+    keychain service name, and whether a non-empty token is present there.
+    """
+    if not is_valid_github_login(login):
+        raise ValueError(f"invalid GitHub login: {login!r}")
+    canonical = canonical_identity_name(login)
+    service = keychain_service_for_login(canonical)
+    return {
+        "login": canonical,
+        "service": service,
+        "has_token": _keychain_has_token(service),
+    }
 
 
 def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:

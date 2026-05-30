@@ -51,6 +51,7 @@ from agentshore.sidecar.esr import build_esr_payload
 from agentshore.sidecar.handshake import build_response, validate_params
 from agentshore.sidecar.identities import (
     add_identity,
+    keychain_status,
     list_identities,
     remove_identity,
     update_identity,
@@ -861,6 +862,22 @@ def handle_request(
             return _result(req_id, list_identities(_active_project_path(state)))
         except OSError as exc:
             return _error(req_id, INTERNAL_ERROR, f"identities.list: {exc}")
+
+    if method == "identities.check_keychain":
+        if is_notification:
+            return None
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            return _error(
+                req_id, INVALID_PARAMS, "identities.check_keychain requires object params"
+            )
+        login = params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
+        try:
+            return _result(req_id, keychain_status(login))
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
 
     if method == "identities.add":
         if is_notification:

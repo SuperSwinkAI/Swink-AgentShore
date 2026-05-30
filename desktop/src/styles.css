@@ -645,6 +645,12 @@ select:focus-visible {
   color: var(--muted);
 }
 
+.id-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .id-error,
 .id-field-error {
   margin-top: 14px;
