@@ -208,3 +208,48 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
 
     assert h._break_recovery_failures == {"a1": 1, "a2": 1}
     assert h._override_queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit-recovery enqueue gating (#7): an externally-SIGKILLed agent
+# (-9 → crash_signal, OS OOM → crash_oom) must NOT enqueue take_break
+# rate-limit recovery. Only genuine rate-limit-eligible classes do.
+# ---------------------------------------------------------------------------
+
+
+def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harness:
+    h = _Harness()
+    handle = MagicMock()
+    handle.last_error_class = error_class
+    h._manager = MagicMock()
+    h._manager.handles = {agent_id: handle}
+    return h
+
+
+@pytest.mark.parametrize("error_class", ["crash_signal", "crash_oom"])
+def test_crash_exit_does_not_enqueue_rate_limit_recovery(error_class: str) -> None:
+    """A crash/OOM/external-SIGKILL exit must not be treated as a rate limit (#7).
+
+    The mass -9 burst landed in ``unknown`` and got ``take_break`` backoff. The
+    crash classes are now carved out of ``_RATE_LIMIT_RECOVERY_ERROR_CLASSES`` so
+    no override is enqueued.
+    """
+    h = _enqueue_harness(error_class)
+
+    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+
+    assert h._override_queue.empty()
+    assert "err1" not in h._rate_limit_recovery_enqueued
+
+
+@pytest.mark.parametrize("error_class", ["rate_limit", "unknown", "codex_rollout"])
+def test_rate_limit_eligible_classes_still_enqueue_recovery(error_class: str) -> None:
+    """The legitimate rate-limit-recovery path must be preserved (#7 regression guard)."""
+    h = _enqueue_harness(error_class)
+
+    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+
+    assert not h._override_queue.empty()
+    assert "err1" in h._rate_limit_recovery_enqueued
+    entry = h._override_queue.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
