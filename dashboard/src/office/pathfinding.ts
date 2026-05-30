@@ -2,6 +2,7 @@ import {
   MAP_COLS,
   MAP_ROWS,
   TileType,
+  isDoorEdgeBuffer,
   isFurnitureBlocked,
   isFurnitureSideBuffer,
   isWallBarrier,
@@ -23,6 +24,7 @@ export function buildWalkableGrid(): boolean[][] {
       grid[y][x] =
         tileMap[y][x] === TileType.FLOOR &&
         !isWallBarrier(x, y) &&
+        !isDoorEdgeBuffer(x, y) &&
         !isFurnitureBlocked(x, y) &&
         !isFurnitureSideBuffer(x, y);
     }
@@ -50,6 +52,7 @@ function isBaseWalkable(
   return (
     tileMap[y][x] === TileType.FLOOR &&
     !isWallBarrier(x, y) &&
+    !isDoorEdgeBuffer(x, y) &&
     (options.ignoreFurniture === true ||
       (!isFurnitureBlocked(x, y) && !isFurnitureSideBuffer(x, y)))
   );

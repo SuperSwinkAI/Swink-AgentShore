@@ -194,7 +194,7 @@ export const ZONES: Zone[] = [
       { x: 38, y: 30, facing: "north" },
       { x: 27, y: 31, facing: "south" },
       { x: 46, y: 31, facing: "south" },
-      { x: 52, y: 30, facing: "south" },
+      { x: 48, y: 31, facing: "south" },
     ],
   },
   {
@@ -332,6 +332,31 @@ export const DOORS: Door[] = [
     kind: "exit",
   },
 ];
+
+export function doorCenterTiles(door: Door): Tile[] {
+  const span = door.orientation === "vertical" ? door.h : door.w;
+  const laneWidth = span % 2 === 0 ? 2 : 1;
+  const laneStart =
+    (door.orientation === "vertical" ? door.y : door.x) +
+    Math.floor((span - laneWidth) / 2);
+  const tiles: Tile[] = [];
+
+  for (let offset = 0; offset < laneWidth; offset += 1) {
+    tiles.push(
+      door.orientation === "vertical"
+        ? { x: door.x, y: laneStart + offset }
+        : { x: laneStart + offset, y: door.y },
+    );
+  }
+
+  return tiles;
+}
+
+export function isDoorEdgeBuffer(x: number, y: number): boolean {
+  const door = DOORS.find((candidate) => rectContains(candidate, x, y));
+  if (!door) return false;
+  return !doorCenterTiles(door).some((tile) => tile.x === x && tile.y === y);
+}
 
 export const WALL_BARRIERS: Rect[] = [
   // Left rooms to Workshop/Zen. Door rows are intentionally omitted.

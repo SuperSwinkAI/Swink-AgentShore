@@ -1988,6 +1988,7 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
     const reachabilityFailures: string[] = [];
     const workshopRouteFailures: string[] = [];
     const routeClearanceFailures: string[] = [];
+    const doorEdgeRouteFailures: string[] = [];
     for (const source of sources) {
       for (const zoneId of workZoneIds) {
         const zone = layout.getZone(zoneId);
@@ -2013,6 +2014,14 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
             `${source.name}->${zone.name}:${sideBufferStep.x},${sideBufferStep.y}`,
           );
         }
+        const doorEdgeStep = path.find((tile) =>
+          layout.isDoorEdgeBuffer(tile.x, tile.y),
+        );
+        if (doorEdgeStep) {
+          doorEdgeRouteFailures.push(
+            `${source.name}->${zone.name}:${doorEdgeStep.x},${doorEdgeStep.y}`,
+          );
+        }
       }
     }
 
@@ -2025,6 +2034,7 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
       reachabilityFailures,
       workshopRouteFailures,
       routeClearanceFailures,
+      doorEdgeRouteFailures,
     };
   });
 
@@ -2044,6 +2054,7 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
   expect(result.reachabilityFailures).toEqual([]);
   expect(result.workshopRouteFailures).toEqual([]);
   expect(result.routeClearanceFailures).toEqual([]);
+  expect(result.doorEdgeRouteFailures).toEqual([]);
 });
 
 test("idle wander bounces inside the current room instead of crossing edges", async ({
