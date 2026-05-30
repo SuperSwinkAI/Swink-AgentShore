@@ -24,10 +24,15 @@ import {
 } from "../src/components/SidePanel";
 import type {
   AgentSnapshot,
+  AgentShoreMessage,
   PlayEventCompleted,
   PlayEventStarted,
   StateUpdate,
 } from "../src/types";
+import type {
+  ConnectionState,
+  DashboardTransport,
+} from "../src/ws";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -105,6 +110,40 @@ describe("Dashboard", () => {
     expect(container.querySelector("#side-panel")).not.toBeNull();
     expect(container.querySelector("#plays-panel")).not.toBeNull();
     expect(container.querySelector("#theme-toggle")).not.toBeNull();
+  });
+
+  it("fires onFirstStateUpdate on the first state_update even with no instantiate_agent (issue #10)", async () => {
+    const transport = new FakeTransport();
+    const onFirstStateUpdate = vi.fn();
+    const onFirstAgentInstantiated = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <Dashboard
+          transport={transport}
+          showThemeToggle={false}
+          onFirstStateUpdate={onFirstStateUpdate}
+          onFirstAgentInstantiated={onFirstAgentInstantiated}
+        />,
+      );
+    });
+
+    // No-work session: bridge goes live and streams a state_update, but
+    // no agent is ever instantiated. The overlay-dismiss callback must
+    // still fire from the state_update alone.
+    await act(async () => {
+      transport.emit(stateUpdate({ agents: [] }));
+    });
+
+    expect(onFirstStateUpdate).toHaveBeenCalledOnce();
+    expect(onFirstAgentInstantiated).not.toHaveBeenCalled();
+
+    // Subsequent state_updates must not re-fire the once-per-mount callback.
+    await act(async () => {
+      transport.emit(stateUpdate({ agents: [], total_plays: 1 }));
+    });
+
+    expect(onFirstStateUpdate).toHaveBeenCalledOnce();
   });
 });
 
@@ -281,6 +320,25 @@ function stateUpdate(overrides: Partial<StateUpdate> = {}): StateUpdate {
     mask_reasons: {},
     ...overrides,
   };
+}
+
+/** Minimal in-memory transport for driving Dashboard message handling. */
+class FakeTransport implements DashboardTransport {
+  onMessage: ((msg: AgentShoreMessage) => void) | null = null;
+  onStateChange: ((state: ConnectionState) => void) | null = null;
+
+  connect(): void {
+    this.onStateChange?.("open");
+  }
+  send(): void {
+    // no-op for tests
+  }
+  disconnect(): void {
+    this.onStateChange?.("closed");
+  }
+  emit(msg: AgentShoreMessage): void {
+    this.onMessage?.(msg);
+  }
 }
 
 function hhmm(value: string): string {
