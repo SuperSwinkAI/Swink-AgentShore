@@ -383,8 +383,24 @@ def _parent_id_from_raw(raw: RawBead) -> str | None:
     return None
 
 
+# Dependency-relationship types (bd CLI: blocks | tracks | related |
+# parent-child | discovered-from) that represent a true *blocking* edge — the
+# bead is not ready until the referenced bead closes. bd emits ``blocks`` for
+# `bd dep add` / `bd link` (its default); ``depends-on`` is kept for forward/
+# back compatibility with other bd revisions. ``parent-child`` is containment
+# (a rollup, handled by ``_parent_id_from_raw``) and must NOT block; ``tracks``,
+# ``related`` and ``discovered-from`` are informational and also non-blocking.
+#
+# Recognising ``blocks`` here keeps this parser's readiness view consistent
+# with bd's own ``bd ready`` (which treats ``blocks`` as blocking). Before this,
+# the parser only matched ``depends-on`` — a string bd never emits — so every
+# blocking edge was silently dropped and genuinely-blocked tasks parsed as
+# ready, disagreeing with bd and the dispatch path.
+_BLOCKING_DEPENDENCY_TYPES: frozenset[str] = frozenset({"depends-on", "blocks"})
+
+
 def _depends_on_ids_from_raw(raw: RawBead) -> frozenset[str]:
-    """Extract ``depends-on`` dependency IDs from a raw bead dict."""
+    """Extract blocking-dependency IDs (``blocks`` / ``depends-on``) from a bead."""
     dependencies = raw.get("dependencies")
     if not isinstance(dependencies, list):
         return frozenset()
@@ -393,10 +409,8 @@ def _depends_on_ids_from_raw(raw: RawBead) -> frozenset[str]:
     for dependency in dependencies:
         if not isinstance(dependency, dict):
             continue
-        dep_type = (
-            dependency.get("type") or dependency.get("dependency_type") or ""
-        ).strip()
-        if dep_type != "depends-on":
+        dep_type = (dependency.get("type") or dependency.get("dependency_type") or "").strip()
+        if dep_type not in _BLOCKING_DEPENDENCY_TYPES:
             continue
         for dep_value in (
             dependency.get("depends_on_id"),

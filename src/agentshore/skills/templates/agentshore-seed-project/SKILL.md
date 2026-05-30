@@ -46,7 +46,9 @@ Only `scope_gap` produces a new issue. Lean toward `verified_done` when a closed
 
 Then classify graph gaps: **A** missing/unlinked epics/stories; **B** beads tasks with no `external_ref`; **C** open GH issues with no matching bead; **D** scope gaps (no bead, no issue).
 
-**Repair epics and stories (A).** Create missing or relink unlinked: `bd create epic "<title>" --description "<one-sentence summary>"`, `bd create story "<title>" --description "<summary>"`, `bd link <story-id> <epic-id>`. Cap 5 epics, 10 stories per epic. Reuse existing where they already cover the intended scope.
+**Repair epics and stories (A).** Create missing or relink unlinked: `bd create epic "<title>" --description "<one-sentence summary>"`, `bd create story "<title>" --description "<summary>"`, `bd link <story-id> <epic-id> --type parent-child`. Cap 5 epics, 10 stories per epic. Reuse existing where they already cover the intended scope.
+
+> **`bd link` must use `--type parent-child` for every containment link, child first, parent second** (`bd link <child-id> <parent-id> --type parent-child`). bd's default link type is `blocks`, which would make the parent *block* the child — every story/task would then be blocked behind its epic, leaving only epics ready and hiding all leaf tasks from `issue_pickup` (no implementation, no PRs). Containment is a rollup, not a blocker; reserve `blocks` for genuine ordering dependencies expressed elsewhere as `depends on #N`.
 
 **Hard cap: ≤ 25 new GH issues per run.** Past 25, stop creating, set `success: false`, `error: "too_many_scope_gaps_detected: <count> requirements look unmet — human review required before backlog explosion"`. A healthy run on a reconciled project creates 0–5 issues; > 25 indicates a classification mistake.
 
@@ -58,14 +60,14 @@ For **gap D (true scope gap)**, create the bead first; GitHub mirrors it. If GH 
 bd create task "<concise title>" --description "<what + why>"
 gh issue create --title "<concise title>" --body "<what + why>\n\nTracked in beads as <bead-id>." --label "enhancement"
 bd set-external-ref <bead-id> "gh-<issue_number>"
-bd link <bead-id> <story-id>
+bd link <bead-id> <story-id> --type parent-child
 ```
 
 For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<bead description>\n\nTracked in beads as <bead-id>." --label "enhancement"`, then `bd set-external-ref <bead-id> "gh-<issue_number>"`. Record every new number in `issues_created`.
 
 **Size routing at creation.** You don't size or decompose (that's `refine_tasks`); you route. After creating each issue, apply `agentshore/needs-refinement` if the source design section spans **≥ 3** deliverables — measured by ≥ 3 `### ` sub-headings OR ≥ 3 top-level `- ` bullets each starting with an action verb (Add/Build/Create/Implement/Render/Support/Wire/etc.). `gh issue edit <N> --add-label "agentshore/needs-refinement"`. Catches story-shaped requirements before `issue_pickup` grabs them.
 
-**Beads tasks for orphan GH issues (C).** For each open GH issue with no matching bead: `bd create task "<issue title>" --description "Closes gh-<issue_number>" --external-ref "gh-<issue_number>"`, then `bd link <task-id> <story-id>` (create a story via Step 3 if none fits). Don't duplicate tasks already in the graph.
+**Beads tasks for orphan GH issues (C).** For each open GH issue with no matching bead: `bd create task "<issue title>" --description "Closes gh-<issue_number>" --external-ref "gh-<issue_number>"`, then `bd link <task-id> <story-id> --type parent-child` (create a story via Step 3 if none fits). Don't duplicate tasks already in the graph.
 
 **Performance constraints (in-skill, non-negotiable):**
 - **Snapshot once.** Call `bd list --all --json --limit 0` exactly once in Pre-flight; reuse the result across the audit, repair, and verify phases.

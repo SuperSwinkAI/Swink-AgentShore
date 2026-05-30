@@ -252,6 +252,53 @@ async def test_load_graph_resolves_parent_child_dependencies(tmp_path: object) -
 
 
 @pytest.mark.asyncio
+async def test_load_graph_treats_bd_blocks_edge_as_blocking(tmp_path: object) -> None:
+    """A bd ``blocks`` dependency (bd's default link type) blocks the task.
+
+    Regression guard for the parser hardening: bd emits ``blocks`` (not the
+    ``depends-on`` string the parser used to look for), so a leaf task with an
+    open ``blocks`` edge must parse as NOT ready and surface its blocker, while
+    a ``parent-child`` containment edge stays non-blocking (ready).
+    """
+    from pathlib import Path
+
+    from agentshore.beads import load_graph
+
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+    all_beads = [
+        {"id": "epic-1", "title": "Epic", "type": "epic", "status": "open"},
+        {
+            "id": "task-blocked",
+            "title": "Blocked by a real dependency",
+            "type": "task",
+            "status": "open",
+            "dependencies": [{"type": "blocks", "depends_on_id": "task-dep"}],
+        },
+        {"id": "task-dep", "title": "Open blocker", "type": "task", "status": "open"},
+        {
+            "id": "task-contained",
+            "title": "Only a containment edge",
+            "type": "task",
+            "status": "open",
+            "dependencies": [{"type": "parent-child", "depends_on_id": "epic-1"}],
+        },
+    ]
+
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(all_beads)):
+        result = await load_graph(p)
+
+    assert result is not None
+    by_id = {t.bead_id: t for t in result.tasks}
+    # `blocks` edge -> blocked, not ready, blocker surfaced
+    assert by_id["task-blocked"].ready is False
+    assert "task-dep" in by_id["task-blocked"].blocked_by_ids
+    # `parent-child` containment -> still ready (non-blocking rollup)
+    assert by_id["task-contained"].ready is True
+    assert by_id["task-contained"].blocked_by_ids == frozenset()
+
+
+@pytest.mark.asyncio
 async def test_load_graph_falls_back_to_epic_id_when_title_blank(tmp_path: object) -> None:
     from pathlib import Path
 
@@ -467,9 +514,12 @@ def test_resolve_bd_binary_returns_none_when_nothing_resolves(
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_bd_installed_passes_when_on_path() -> None:
+def test_ensure_bd_installed_passes_when_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.beads.setup import ensure_bd_installed
 
+    # Presence-only assertion: disable the version pin (empty override) so the
+    # fake path doesn't need to be an executable that reports a version.
+    monkeypatch.setenv("AGENTSHORE_BD_VERSION", "")
     with patch("shutil.which", return_value="/usr/local/bin/bd"):
         ensure_bd_installed()  # must not raise
 
@@ -490,12 +540,54 @@ def test_ensure_bd_installed_accepts_env_var(
 ) -> None:
     from pathlib import Path
 
+    from agentshore.beads.setup import REQUIRED_BD_VERSION, ensure_bd_installed
+
+    bd_path = Path(str(tmp_path)) / "bd"
+    # Stub reports the pinned version so the version check passes too.
+    bd_path.write_text(f'#!/bin/sh\necho "bd version {REQUIRED_BD_VERSION}"\n', encoding="utf-8")
+    bd_path.chmod(0o755)
+    monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
+    monkeypatch.delenv("AGENTSHORE_BD_VERSION", raising=False)
+
+    with patch("shutil.which", return_value=None):
+        ensure_bd_installed()
+
+
+def test_ensure_bd_installed_rejects_version_mismatch(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
     from agentshore.beads.setup import ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
-    bd_path.write_text("#!/bin/sh\necho bd\n", encoding="utf-8")
+    bd_path.write_text('#!/bin/sh\necho "bd version 0.9.0"\n', encoding="utf-8")
     bd_path.chmod(0o755)
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
+    monkeypatch.delenv("AGENTSHORE_BD_VERSION", raising=False)
+
+    with (
+        patch("shutil.which", return_value=None),
+        pytest.raises(RuntimeError, match="does not match"),
+    ):
+        ensure_bd_installed()
+
+
+def test_ensure_bd_installed_version_override(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    from agentshore.beads.setup import ensure_bd_installed
+
+    bd_path = Path(str(tmp_path)) / "bd"
+    bd_path.write_text('#!/bin/sh\necho "bd version 0.9.0"\n', encoding="utf-8")
+    bd_path.chmod(0o755)
+    monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
+    # Explicit override to the stub's version makes the check pass.
+    monkeypatch.setenv("AGENTSHORE_BD_VERSION", "0.9.0")
 
     with patch("shutil.which", return_value=None):
         ensure_bd_installed()
