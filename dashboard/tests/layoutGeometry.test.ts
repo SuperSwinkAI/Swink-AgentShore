@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DOORS,
   FURNITURE,
   VISUAL_WALL_BARRIERS,
   WALL_BARRIERS,
   WALL_THICKNESS_UNITS,
   ZONES,
   ZoneId,
+  doorCenterTiles,
+  isDoorEdgeBuffer,
   isFurnitureSideBuffer,
 } from "../src/office/layout";
 import { buildWalkableGrid, isWalkable } from "../src/office/pathfinding";
@@ -27,6 +30,29 @@ describe("office wall geometry", () => {
       } else {
         expect(visual.w).toBe(logical.w);
         expect(visual.y + visual.h).toBeCloseTo(logical.y + logical.h);
+      }
+    }
+  });
+
+  it("keeps door walk lanes centered away from wall edges", () => {
+    buildWalkableGrid();
+
+    for (const door of DOORS) {
+      const centerKeys = new Set(
+        doorCenterTiles(door).map((tile) => `${tile.x},${tile.y}`),
+      );
+
+      for (let y = door.y; y < door.y + door.h; y += 1) {
+        for (let x = door.x; x < door.x + door.w; x += 1) {
+          const key = `${x},${y}`;
+          if (centerKeys.has(key)) {
+            expect(isDoorEdgeBuffer(x, y)).toBe(false);
+            expect(isWalkable(x, y)).toBe(true);
+          } else {
+            expect(isDoorEdgeBuffer(x, y)).toBe(true);
+            expect(isWalkable(x, y)).toBe(false);
+          }
+        }
       }
     }
   });
