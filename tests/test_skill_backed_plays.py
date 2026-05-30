@@ -1140,15 +1140,15 @@ def test_run_qa_blocks_in_flight() -> None:
 
 def test_run_qa_blocks_during_cooldown() -> None:
     errors = RunQAPlay().preconditions(
-        _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 24})
+        _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 19})
     )
-    assert errors == ["run_qa cooldown (24/25 plays since last)"]
+    assert errors == ["run_qa cooldown (19/20 plays since last)"]
 
 
 def test_run_qa_allows_after_cooldown() -> None:
     assert (
         RunQAPlay().preconditions(
-            _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 25})
+            _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 20})
         )
         == []
     )

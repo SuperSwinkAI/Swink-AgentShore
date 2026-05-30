@@ -274,7 +274,7 @@ class RewardConfig:
     # merge_pr) on success — biases PPO toward moving issues forward
     # rather than collapsing onto cheap planning loops.
     progress_play_bonus: float = 0.5
-    # Larger bonus for a successful QA pass (gated by a 25-play cooldown so
+    # Larger bonus for a successful QA pass (gated by a 20-play cooldown so
     # PPO can't farm it).
     qa_success_bonus: float = 2.0
     # Dedicated bonus for a successful merge_pr — the terminal-win signal.

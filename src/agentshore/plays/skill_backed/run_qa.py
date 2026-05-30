@@ -8,7 +8,6 @@ from agentshore.plays.skill_backed.gates import (
     CooldownGate,
     FirstRunWarmupGate,
     InFlightGate,
-    OpenIssueCeilingGate,
 )
 from agentshore.state import PlayType
 
@@ -24,8 +23,7 @@ class RunQAPlay(SkillBackedPlay):
         CapabilityGate("can_test"),
         InFlightGate(PlayType.RUN_QA),
         FirstRunWarmupGate(PlayType.RUN_QA, threshold=20),
-        CooldownGate(PlayType.RUN_QA, plays=25),
-        OpenIssueCeilingGate(ceiling=10),
+        CooldownGate(PlayType.RUN_QA, plays=20),
     )
 
     @property
