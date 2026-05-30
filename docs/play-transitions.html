@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentShore - Play Transition Map</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-soft: #1b2230;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+    --orange: #f0883e;
+    --cyan: #39d2c0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .container {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+  h1 {
+    font-size: 1.8rem;
+    margin-bottom: 0.5rem;
+  }
+  h1 span { color: var(--blue); }
+  .subtitle {
+    color: var(--muted);
+    margin-bottom: 1.25rem;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    max-width: 980px;
+  }
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+  }
+  .legend {
+    display: flex;
+    gap: 1.35rem;
+    flex-wrap: wrap;
+    margin-top: 1.25rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+  .note {
+    margin-top: 1.25rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    max-width: 1180px;
+  }
+  .note strong { color: var(--text); }
+  @media print {
+    body { background: #fff; color: #1a1a1a; }
+    .diagram { background: #fafafa; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1><span>AgentShore</span> Play Transition Map</h1>
+<p class="subtitle">
+  Current action-space map for the PPO scheduler. Arrows show the high-probability workflow and recovery paths; the runtime still selects from all currently unmasked plays on each tick.
+</p>
+
+<div class="diagram">
+<svg viewBox="0 0 1380 980" width="1380" height="980" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+<defs>
+  <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#8b949e"/>
+  </marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#3fb950"/>
+  </marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#58a6ff"/>
+  </marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#bc8cff"/>
+  </marker>
+  <marker id="ar-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#f0883e"/>
+  </marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#f85149"/>
+  </marker>
+  <marker id="ar-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#39d2c0"/>
+  </marker>
+
+  <style>
+    .phase { fill: #8b949e; font-size: 11px; font-weight: 700; letter-spacing: 0; }
+    .box-title { font-size: 12px; font-weight: 700; }
+    .box-sub { fill: #8b949e; font-size: 9px; }
+    .badge { font-size: 8px; font-weight: 700; }
+    .small { font-size: 8px; fill: #8b949e; }
+  </style>
+</defs>
+
+<!-- Phase labels -->
+<text x="30" y="34" class="phase">BOOTSTRAP QUEUE</text>
+<text x="30" y="178" class="phase">BEADS GRAPH &amp; BACKLOG</text>
+<text x="30" y="410" class="phase">PR DELIVERY LOOP</text>
+<text x="835" y="410" class="phase">QUALITY, RECOVERY &amp; HOUSEKEEPING</text>
+<text x="30" y="725" class="phase">AGENT LIFECYCLE</text>
+<text x="835" y="725" class="phase">SESSION CONTROL &amp; RESERVED SLOTS</text>
+
+<!-- Bootstrap row -->
+<rect x="35" y="54" width="210" height="58" rx="8" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+<text x="140" y="78" text-anchor="middle" fill="#3fb950" class="box-title">INSTANTIATE_AGENT</text>
+<text x="140" y="96" text-anchor="middle" class="box-sub">first configured large tier</text>
+
+<rect x="290" y="54" width="170" height="58" rx="8" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+<text x="375" y="78" text-anchor="middle" fill="#3fb950" class="box-title">SEED_PROJECT</text>
+<text x="375" y="96" text-anchor="middle" class="box-sub">create beads graph</text>
+
+<rect x="505" y="54" width="210" height="58" rx="8" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+<text x="610" y="78" text-anchor="middle" fill="#3fb950" class="box-title">INSTANTIATE_AGENT</text>
+<text x="610" y="96" text-anchor="middle" class="box-sub">different configured medium</text>
+
+<rect x="760" y="59" width="145" height="48" rx="8" fill="rgba(188,140,255,0.12)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="832" y="78" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">PPO SELECTS</text>
+<text x="832" y="94" text-anchor="middle" class="box-sub">from unmasked plays</text>
+
+<line x1="245" y1="83" x2="287" y2="83" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar-green)"/>
+<line x1="460" y1="83" x2="502" y2="83" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar-green)"/>
+<line x1="715" y1="83" x2="757" y2="83" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ar-purple)"/>
+
+<!-- Beads graph and backlog -->
+<rect x="35" y="205" width="185" height="60" rx="8" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+<text x="128" y="230" text-anchor="middle" fill="#3fb950" class="box-title">SEED_PROJECT</text>
+<text x="128" y="249" text-anchor="middle" class="box-sub">first graph creation only</text>
+
+<rect x="285" y="205" width="205" height="60" rx="8" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1.5"/>
+<text x="388" y="230" text-anchor="middle" fill="#bc8cff" class="box-title">GROOM_BACKLOG</text>
+<text x="388" y="249" text-anchor="middle" class="box-sub">sync beads and GH issues</text>
+
+<rect x="555" y="205" width="235" height="60" rx="8" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1.5"/>
+<text x="673" y="230" text-anchor="middle" fill="#bc8cff" class="box-title">REFINE_TASK_BREAKDOWN</text>
+<text x="673" y="249" text-anchor="middle" class="box-sub">right-size marked issues</text>
+
+<rect x="855" y="205" width="220" height="60" rx="8" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1.5"/>
+<text x="965" y="230" text-anchor="middle" fill="#bc8cff" class="box-title">CALIBRATE_ALIGNMENT</text>
+<text x="965" y="249" text-anchor="middle" class="box-sub">update closure scores</text>
+
+<rect x="1135" y="205" width="175" height="60" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.2"/>
+<text x="1222" y="230" text-anchor="middle" fill="#58a6ff" class="box-title">ISSUE_PICKUP</text>
+<text x="1222" y="249" text-anchor="middle" class="box-sub">ready task enters loop</text>
+
+<line x1="220" y1="235" x2="282" y2="235" stroke="#bc8cff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-purple)"/>
+<line x1="490" y1="235" x2="552" y2="235" stroke="#bc8cff" stroke-width="1.2" marker-end="url(#ar-purple)"/>
+<line x1="790" y1="235" x2="852" y2="235" stroke="#bc8cff" stroke-width="1.2" marker-end="url(#ar-purple)"/>
+<line x1="1075" y1="235" x2="1132" y2="235" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-blue)"/>
+
+<rect x="286" y="286" width="280" height="34" rx="6" fill="rgba(188,140,255,0.07)" stroke="#bc8cff" stroke-width="0.8" stroke-dasharray="4,3"/>
+<text x="426" y="307" text-anchor="middle" fill="#bc8cff" font-size="10">urgent groom can unblock missing GH/beads links</text>
+
+<!-- PR delivery loop -->
+<rect x="35" y="445" width="245" height="62" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+<text x="158" y="470" text-anchor="middle" fill="#58a6ff" class="box-title">WRITE_IMPLEMENTATION_PLAN</text>
+<text x="158" y="489" text-anchor="middle" class="box-sub">large tier plan for issue</text>
+
+<rect x="335" y="445" width="175" height="62" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+<text x="422" y="470" text-anchor="middle" fill="#58a6ff" class="box-title">ISSUE_PICKUP</text>
+<text x="422" y="489" text-anchor="middle" class="box-sub">implement and open PR</text>
+
+<rect x="565" y="445" width="175" height="62" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+<text x="652" y="470" text-anchor="middle" fill="#58a6ff" class="box-title">CODE_REVIEW</text>
+<text x="652" y="489" text-anchor="middle" class="box-sub">non-author reviewer</text>
+
+<rect x="565" y="560" width="175" height="62" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+<text x="652" y="585" text-anchor="middle" fill="#58a6ff" class="box-title">UNBLOCK_PR</text>
+<text x="652" y="604" text-anchor="middle" class="box-sub">apply requested fixes</text>
+
+<rect x="795" y="445" width="165" height="62" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+<text x="878" y="470" text-anchor="middle" fill="#58a6ff" class="box-title">MERGE_PR</text>
+<text x="878" y="489" text-anchor="middle" class="box-sub">approved + mergeable</text>
+
+<line x1="280" y1="476" x2="332" y2="476" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ar-blue)"/>
+<line x1="510" y1="476" x2="562" y2="476" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar-blue)"/>
+<text x="536" y="466" text-anchor="middle" class="small">PR</text>
+<line x1="740" y1="476" x2="792" y2="476" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar-blue)"/>
+<text x="766" y="466" text-anchor="middle" class="small">approved</text>
+<path d="M 652 507 L 652 557" fill="none" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-blue)"/>
+<text x="705" y="535" text-anchor="middle" class="small">changes</text>
+<path d="M 565 591 Q 505 591 505 525 Q 505 491 562 491" fill="none" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-blue)"/>
+
+<rect x="588" y="516" width="128" height="20" rx="5" fill="rgba(248,81,73,0.14)" stroke="#f85149" stroke-width="0.8"/>
+<text x="652" y="530" text-anchor="middle" fill="#f85149" class="badge">reviewer != author</text>
+
+<path d="M 878 507 Q 878 665 422 665 Q 335 665 335 507" fill="none" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#ar-green)"/>
+<text x="618" y="684" text-anchor="middle" fill="#3fb950" font-size="9">merged issue closes; next ready task can be picked</text>
+
+<!-- Quality, recovery, housekeeping -->
+<rect x="835" y="560" width="170" height="62" rx="8" fill="rgba(210,153,34,0.1)" stroke="#d29922" stroke-width="1.5"/>
+<text x="920" y="585" text-anchor="middle" fill="#d29922" class="box-title">RUN_QA</text>
+<text x="920" y="604" text-anchor="middle" class="box-sub">test/lint/typecheck cadence</text>
+
+<rect x="1060" y="560" width="205" height="62" rx="8" fill="rgba(210,153,34,0.1)" stroke="#d29922" stroke-width="1.5"/>
+<text x="1162" y="585" text-anchor="middle" fill="#d29922" class="box-title">BROWSER_VERIFICATION</text>
+<text x="1162" y="604" text-anchor="middle" class="box-sub">visual acceptance check</text>
+
+<rect x="1015" y="445" width="250" height="62" rx="8" fill="rgba(248,81,73,0.1)" stroke="#f85149" stroke-width="1.5"/>
+<text x="1140" y="470" text-anchor="middle" fill="#f85149" class="box-title">SYSTEMATIC_DEBUGGING</text>
+<text x="1140" y="489" text-anchor="middle" class="box-sub">QA/debug-labeled issue</text>
+
+<rect x="1060" y="650" width="205" height="62" rx="8" fill="rgba(210,153,34,0.08)" stroke="#d29922" stroke-width="1.5"/>
+<text x="1162" y="675" text-anchor="middle" fill="#d29922" class="box-title">CLEANUP</text>
+<text x="1162" y="694" text-anchor="middle" class="box-sub">periodic quality sweep</text>
+
+<path d="M 795 492 Q 775 545 832 574" fill="none" stroke="#d29922" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-orange)"/>
+<line x1="1005" y1="591" x2="1057" y2="591" stroke="#d29922" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-orange)"/>
+<path d="M 920 560 Q 940 520 1012 492" fill="none" stroke="#f85149" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-red)"/>
+<path d="M 1015 476 Q 815 390 652 445" fill="none" stroke="#f85149" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#ar-red)"/>
+<path d="M 1060 681 Q 965 665 878 665 Q 795 665 795 507" fill="none" stroke="#d29922" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#ar-orange)"/>
+
+<!-- Lifecycle -->
+<rect x="35" y="755" width="205" height="58" rx="8" fill="rgba(57,210,192,0.1)" stroke="#39d2c0" stroke-width="1.5"/>
+<text x="138" y="779" text-anchor="middle" fill="#39d2c0" class="box-title">INSTANTIATE_AGENT</text>
+<text x="138" y="797" text-anchor="middle" class="box-sub">expand fleet after seed</text>
+
+<rect x="300" y="755" width="155" height="58" rx="8" fill="rgba(57,210,192,0.1)" stroke="#39d2c0" stroke-width="1.5"/>
+<text x="378" y="779" text-anchor="middle" fill="#39d2c0" class="box-title">END_AGENT</text>
+<text x="378" y="797" text-anchor="middle" class="box-sub">retire idle agent</text>
+
+<rect x="520" y="755" width="180" height="58" rx="8" fill="rgba(57,210,192,0.1)" stroke="#39d2c0" stroke-width="1.5"/>
+<text x="610" y="779" text-anchor="middle" fill="#39d2c0" class="box-title">TAKE_BREAK</text>
+<text x="610" y="797" text-anchor="middle" class="box-sub">rate limit or unknown error</text>
+
+<line x1="240" y1="784" x2="297" y2="784" stroke="#39d2c0" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-cyan)"/>
+<path d="M 378 813 Q 378 865 138 865 Q 35 865 35 813" fill="none" stroke="#39d2c0" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#ar-cyan)"/>
+<text x="260" y="884" text-anchor="middle" fill="#8b949e" font-size="8">PPO may replace weak or excess agents with another type/tier</text>
+
+<path d="M 610 755 Q 610 700 920 622" fill="none" stroke="#f0883e" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#ar-orange)"/>
+<text x="750" y="708" text-anchor="middle" fill="#f0883e" font-size="8">recover and re-evaluate</text>
+
+<!-- Session control, design audit, and reserved slots -->
+<rect x="835" y="755" width="170" height="58" rx="8" fill="rgba(248,81,73,0.1)" stroke="#f85149" stroke-width="1.5"/>
+<text x="920" y="779" text-anchor="middle" fill="#f85149" class="box-title">END_SESSION</text>
+<text x="920" y="797" text-anchor="middle" class="box-sub">terminal shutdown</text>
+
+<rect x="1060" y="755" width="115" height="58" rx="8" fill="rgba(240,136,62,0.06)" stroke="#f0883e" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="1118" y="779" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700" opacity="0.75">DESIGN_AUDIT</text>
+<text x="1118" y="797" text-anchor="middle" class="box-sub">spec gap audit</text>
+
+<rect x="1200" y="755" width="115" height="58" rx="8" fill="rgba(240,136,62,0.06)" stroke="#f0883e" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="1258" y="779" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700" opacity="0.65">FUTURE_5</text>
+<text x="1258" y="797" text-anchor="middle" class="box-sub">reserved</text>
+
+<rect x="1060" y="845" width="115" height="58" rx="8" fill="rgba(240,136,62,0.06)" stroke="#f0883e" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="1118" y="869" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700" opacity="0.65">FUTURE_6</text>
+<text x="1118" y="887" text-anchor="middle" class="box-sub">reserved</text>
+
+<rect x="1200" y="845" width="115" height="58" rx="8" fill="rgba(188,140,255,0.07)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="1258" y="869" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">MASKED</text>
+<text x="1258" y="887" text-anchor="middle" class="box-sub">tensor compatibility</text>
+
+<path d="M 965 265 Q 990 355 1012 445" fill="none" stroke="#bc8cff" stroke-width="1.1" stroke-dasharray="4,3" marker-end="url(#ar-purple)"/>
+<text x="1002" y="360" text-anchor="middle" fill="#8b949e" font-size="8">scores inform policy</text>
+
+<rect x="835" y="845" width="170" height="58" rx="8" fill="rgba(188,140,255,0.07)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="920" y="869" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">ALL PLAYS</text>
+<text x="920" y="887" text-anchor="middle" class="box-sub">selected by mask + policy</text>
+
+</svg>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(63,185,80,0.3);border:1px solid #3fb950;"></div> Bootstrap / graph seed</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(88,166,255,0.3);border:1px solid #58a6ff;"></div> PR delivery</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(188,140,255,0.3);border:1px solid #bc8cff;"></div> Backlog / alignment</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(210,153,34,0.3);border:1px solid #d29922;"></div> QA / verification / cleanup</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(57,210,192,0.3);border:1px solid #39d2c0;"></div> Agent lifecycle</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:rgba(248,81,73,0.3);border:1px solid #f85149;"></div> Recovery / terminal</div>
+  <div class="legend-item">solid = primary path</div>
+  <div class="legend-item">dashed = conditional or learned path</div>
+</div>
+
+<div class="note">
+  <strong>Current play set:</strong> 18 active plays plus 2 reserved action slots. Reserved slots stay in the action space for checkpoint compatibility and are masked at runtime.
+  <br><br>
+  <strong>Precondition highlights:</strong> <code>SEED_PROJECT</code> runs before graph expansion; <code>INSTANTIATE_AGENT</code> is blocked until seeding completes and then obeys budget, cooldown, total slot caps, per-type/tier caps, and idle same type/tier availability. Busy agents do not mask another same-config spawn. <code>CODE_REVIEW</code> excludes the PR author's GitHub identity. <code>RUN_QA</code> and <code>CLEANUP</code> have first-run floors and cooldowns. <code>GROOM_BACKLOG</code> and <code>CALIBRATE_ALIGNMENT</code> require an initialized beads graph. <code>TAKE_BREAK</code> is forced when a rate-limit or unknown agent error is present.
+</div>
+
+</div>
+</body>
+</html>

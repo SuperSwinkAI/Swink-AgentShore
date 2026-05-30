@@ -1,0 +1,228 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+develop-eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+MANIFEST
+.installed.cfg
+.Python
+
+# Installers / logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.pixi/
+__pypackages__/
+.pdm-python
+.pdm-build/
+
+# Jupyter
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Misc Python tools
+.ropeproject
+.spyderproject
+.spyproject
+.abstra/
+tempCodeRunnerFile.py
+.pypirc
+marimo/_static/
+marimo/_lsp/
+__marimo__/
+.streamlit/secrets.toml
+
+# ── Node / JavaScript ─────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/
+.pnpm-store/
+.node_repl_history
+
+# ── Dashboard (Vite + Playwright) ─────────────────────────────────────────────
+dashboard/dist/
+dashboard/.vite/
+dashboard/.cache/
+dashboard/test-results/
+dashboard/playwright-report/
+dashboard/blob-report/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Icon
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.Trash-*
+
+# ── Windows ───────────────────────────────────────────────────────────────────
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ── Linux ─────────────────────────────────────────────────────────────────────
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+# JetBrains
+.idea/
+*.iml
+*.iws
+out/
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+
+# Vim / Neovim
+*.swp
+*.swo
+*.swn
+Session.vim
+.netrwhist
+tags
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Zed
+.zed/
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+.env
+.env.*
+!.env.example
+secrets.json
+secrets.yaml
+secrets.yml
+credentials.json
+service-account*.json
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── AI coding assistants ──────────────────────────────────────────────────────
+.claude/*
+!.claude/skills/
+.claude_memory/
+CLAUDE.local.md
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
+.copilot/
+.aider*
+.codeium/
+.continue/
+.tabnine/
+.sourcegraph/
+.cody/
+.windsurf/
+.codex/
+
+# ── Playwright MCP ────────────────────────────────────────────────────────────
+.playwright-mcp/
+monitor-*.png
+monitor-*.jpeg
+
+# ── Graphify output ───────────────────────────────────────────────────────────
+graphify-out/
+
+# ── AgentShore runtime artifacts ──────────────────────────────────────────────
+.agentshore/
+.beads/
+agentshore.yaml
+*.db
+*.db-wal
+*.db-shm
+*.pt
+*.onnx
+learnings.json
+timelapse-runs/
+
+# ── Desktop sidecar packaging (PyInstaller artifacts) ────────────────────────
+packaging/desktop/build_id.json
+packaging/desktop/.build/
+packaging/desktop/dist/
+packaging/desktop/src-tauri/binaries/
+
+# ── Ad-hoc screenshots ────────────────────────────────────────────────────────
+/dashboard-*.png
+
+# ── Docs build ────────────────────────────────────────────────────────────────
+docs/_build/
+/site

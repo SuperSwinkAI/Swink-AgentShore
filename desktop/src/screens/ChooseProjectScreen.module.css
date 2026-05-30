@@ -1,0 +1,234 @@
+.screen {
+  padding: 24px;
+  width: min(1040px, calc(100vw - 48px));
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.headerText h1 {
+  margin: 0 0 4px 0;
+  font-size: 22px;
+}
+
+.headerText p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border, #d1d5db);
+  background: transparent;
+  color: inherit;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  color: var(--color-fm-bg, #ffffff);
+  border-color: var(--accent, #2563eb);
+  font-weight: 700;
+}
+
+.panel {
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, rgba(242, 248, 255, 0.94));
+  box-shadow: var(--fm-shadow, none);
+  padding: 16px;
+}
+
+.panelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.panelHead h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.panelHead .small {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-card, transparent);
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.row:hover {
+  background: var(--row-hover, rgba(0, 0, 0, 0.04));
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rowLabel {
+  font-weight: 600;
+}
+
+.rowPath {
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.relative {
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+}
+
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badgeReady {
+  background: var(--success-bg, rgba(34, 197, 94, 0.15));
+  color: var(--success, #15803d);
+}
+
+.badgeKnown {
+  background: var(--bg-selected, rgba(59, 130, 246, 0.15));
+  color: var(--color-fm-idle, #1d4ed8);
+}
+
+.badgeReason {
+  background: var(--warning-bg, rgba(234, 179, 8, 0.15));
+  color: var(--warning, #a16207);
+  text-transform: none;
+}
+
+.quickStartButton {
+  /* Tighter than the page-level primary button so it fits inline with
+     the row's badge cluster. Inherits the colors from .buttonPrimary. */
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.quickStartButton:hover {
+  filter: brightness(1.05);
+}
+
+.quickStartButton:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+}
+
+.removeButton {
+  background: transparent;
+  border: none;
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.removeButton:hover {
+  color: var(--error, #dc2626);
+}
+
+.empty {
+  text-align: center;
+  padding: 32px 16px;
+}
+
+.empty p {
+  color: var(--muted, #6b7280);
+  margin: 0 0 16px 0;
+}
+
+.error {
+  border: 1px solid var(--error-border, #fecaca);
+  background: var(--error-bg, rgba(220, 38, 38, 0.08));
+  color: var(--error, #991b1b);
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 760px) {
+  .screen {
+    width: min(100% - 28px, 100%);
+    padding: 16px 0 28px;
+  }
+
+  .header {
+    flex-direction: column;
+  }
+
+  .actions,
+  .row,
+  .rowMeta {
+    width: 100%;
+  }
+
+  .row,
+  .rowMeta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .button {
+    width: 100%;
+  }
+}

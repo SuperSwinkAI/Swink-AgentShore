@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Play lifecycle — AgentShore v0.15.0</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1116;
+    --panel: #161922;
+    --ink: #e6e9ef;
+    --mute: #9aa3b2;
+    --line: #2a2f3a;
+    --accent: #7dd3fc;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --ok: #86efac;
+  }
+  html, body { background: var(--bg); color: var(--ink); margin: 0; }
+  body { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, sans-serif; }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 28px 32px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 26px 0 10px; color: var(--accent); letter-spacing: 0.02em; text-transform: uppercase; font-weight: 600; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--mute); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  p { margin: 6px 0; color: var(--ink); }
+  .sub { color: var(--mute); margin-bottom: 18px; }
+  code { background: var(--panel); padding: 1px 6px; border-radius: 3px; font: 12px/1.4 "SF Mono", Menlo, monospace; color: var(--ink); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 12px 0 18px; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; color: var(--mute); font-size: 12px; }
+  .legend i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+  .panel.warn { border-color: rgba(251, 191, 36, 0.4); }
+  .panel.bad { border-color: rgba(248, 113, 113, 0.4); }
+  .panel.ok { border-color: rgba(134, 239, 172, 0.4); }
+  .mermaid-host { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow-x: auto; }
+  .mermaid svg { background: transparent !important; }
+  ul { margin: 6px 0 6px 22px; padding: 0; }
+  li { margin: 4px 0; color: var(--ink); }
+  li code { color: var(--accent); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+  .pill.fixed { background: rgba(134, 239, 172, 0.12); color: var(--ok); border: 1px solid rgba(134, 239, 172, 0.35); }
+  .pill.hotspot { background: rgba(248, 113, 113, 0.12); color: var(--bad); border: 1px solid rgba(248, 113, 113, 0.35); }
+  .pill.watch { background: rgba(251, 191, 36, 0.12); color: var(--warn); border: 1px solid rgba(251, 191, 36, 0.35); }
+  .pill.new { background: rgba(125, 211, 252, 0.12); color: var(--accent); border: 1px solid rgba(125, 211, 252, 0.35); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .two-col .panel { margin: 0; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .annot { color: var(--mute); font-size: 12px; margin-top: 8px; }
+  .anchor { color: var(--accent); text-decoration: none; }
+  .anchor:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Play lifecycle — selection &amp; execution flow</h1>
+<p class="sub">Functional-component view of one orchestrator tick after the v0.15.0 architecture refactor. All six phases of <code>~/.claude/plans/joyful-pondering-hennessy.md</code> are shipped: typed <code>MaskReason</code>, typed <code>OverrideEntry</code>, 10-stage mask pipeline, reverse-failsafe as overlay, one-state-per-tick, and the 22-action head (action space v12) with <code>IDLE_TICK</code>, <code>RECOVER</code>, and the new <code>executor_skip_rate_recent_50</code> observation feature. Observation contract: <code>OBSERVATION_DIM=245</code>, <code>OBSERVATION_VERSION=10</code>.</p>
+
+<div class="legend">
+  <span><i style="background:#3b82f6"></i> State build</span>
+  <span><i style="background:#8b5cf6"></i> Selection</span>
+  <span><i style="background:#10b981"></i> Dispatch</span>
+  <span><i style="background:#f59e0b"></i> Execution</span>
+  <span><i style="background:#ef4444"></i> Completion / PPO update</span>
+  <span><i style="background:rgba(125,211,252,0.4); border:1px dashed #7dd3fc"></i> v0.15 addition</span>
+  <span><i style="background:rgba(248,113,113,0.4); border:1px dashed #f87171"></i> Fragility hotspot</span>
+</div>
+
+<div class="mermaid-host">
+<div class="mermaid">
+%%{init: {'theme':'dark','themeVariables':{'fontSize':'13px','fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#1f2330','primaryTextColor':'#e6e9ef','primaryBorderColor':'#2a2f3a','lineColor':'#5a6479','clusterBkg':'#13161e','clusterBorder':'#2a2f3a'}, 'flowchart':{'curve':'basis','htmlLabels':true,'nodeSpacing':45,'rankSpacing':40}}}%%
+flowchart TD
+
+  classDef stateBuild fill:#1e3a8a,stroke:#3b82f6,color:#dbeafe
+  classDef selection fill:#4c1d95,stroke:#8b5cf6,color:#ede9fe
+  classDef dispatch fill:#064e3b,stroke:#10b981,color:#d1fae5
+  classDef execute fill:#78350f,stroke:#f59e0b,color:#fef3c7
+  classDef complete fill:#7f1d1d,stroke:#ef4444,color:#fee2e2
+  classDef hotspot fill:#1a1a1a,stroke:#f87171,stroke-width:2px,stroke-dasharray:5 3,color:#fecaca
+  classDef new fill:#0c2a3a,stroke:#7dd3fc,stroke-width:2px,stroke-dasharray:4 3,color:#bae6fd
+  classDef external fill:#1f2937,stroke:#6b7280,color:#9ca3af,stroke-dasharray:2 2
+
+  %% ============ TICK ENTRY ============
+  TICK([Loop tick]):::external
+
+  %% ============ STATE BUILD ============
+  subgraph SB[Phase 1 · State build · once per tick]
+    direction TB
+    REFRESH[refresh_issues<br/>every ~ISSUE_REFRESH_INTERVAL_SECONDS]:::stateBuild
+    BUILD[_build_state · threaded through<br/>selection → dispatch → executor]:::stateBuild
+    SKIP_FLAG[state.recent_executor_skip<br/>← _recent_executor_skip]:::new
+    BUILD --> SB_OUT[AgentShoreState snapshot]:::stateBuild
+    BUILD --> SKIP_FLAG
+  end
+
+  DB[(DataStore<br/>SQLite + WAL)]:::external
+  AM[AgentManager.handles]:::external
+  EX_STATE[Executor.inflight_issues<br/>Executor.planned_issues]:::external
+  BEADS[(Beads graph<br/>.beads/issues.jsonl)]:::external
+  GHC[GitHub cache<br/>issues + PRs]:::external
+
+  DB --> BUILD
+  AM --> BUILD
+  EX_STATE --> BUILD
+  BEADS --> BUILD
+  GHC --> REFRESH
+  REFRESH --> BUILD
+
+  TICK --> SB
+
+  %% ============ SELECTION ============
+  subgraph SEL[Phase 2 · Selection]
+    direction TB
+    OVQ{Override queue<br/>OverrideEntry · non-empty?}:::selection
+    OVR[_consume_override]:::selection
+    OV_KIND{entry.kind<br/>· entry.enqueue_classification}:::new
+    OV_BOOTSTRAP[BOOTSTRAP<br/>never drop · re-queue as MASK_REQUEUE]:::new
+    OV_WAIT[INDEFINITE_WAIT classification<br/>re-queue · no attempt bump]:::selection
+    OV_TRANS[TRANSIENT classification<br/>re-queue + with_bumped_attempts<br/>cap 3]:::selection
+    OV_USER[USER_REQUEST<br/>no retry budget · surface error]:::selection
+    OV_DROP[drop · release claim<br/>override_dropped_masked]:::selection
+
+    FORCE{No agents AND<br/>no in-flight?}:::selection
+    FORCE_IA[force INSTANTIATE_AGENT<br/>bypass_preconditions=True]:::selection
+
+    PPO_SEL[PPOSelector.select]:::selection
+    OBS[encode_observation<br/>245-dim vector · obs v10<br/>slot 177 = executor_skip_rate_recent_50]:::new
+    MASK[compute_action_mask<br/>22-action head · action-space v12]:::selection
+
+    subgraph MASK_DETAIL[Mask composition · 10-stage pipeline]
+      direction TB
+      S1[1 · _stage_preconditions<br/>seeds True bits from registry]:::selection
+      S2[2 · _stage_agent_eligibility<br/>tier + identity + capability]:::selection
+      S3[3 · _stage_forced_zeros<br/>loop-detection streak]:::selection
+      S4[4 · _stage_candidate_required<br/>WIP · PICKUP · REVIEW · MERGE ·<br/>UNBLOCK · DEBUG · REFINE · GROOM]:::selection
+      S5[5 · _stage_instantiate_config<br/>config head viable?]:::selection
+      S6[6 · _stage_end_session<br/>goals/streak gate]:::selection
+      S7[7 · _stage_take_break<br/>rate-limit gate]:::selection
+      S8[8 · _stage_reserved_slots<br/>zero FUTURE_7 · FUTURE_8]:::selection
+      S9{9 · _stage_drain_mode<br/>short-circuit?}:::selection
+      S10{10 · _stage_terminal_no_work<br/>short-circuit?}:::selection
+      DRAIN_OUT[mask = end_agent only]:::selection
+      TERM_OUT[mask = terminal decision]:::selection
+      ZERO_OUT[zero-only mask]:::selection
+      S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9
+      S9 -- yes --> DRAIN_OUT
+      S9 -- no --> S10
+      S10 -- yes --> TERM_OUT
+      S10 -- no --> ZERO_OUT
+    end
+
+    RF_CHECK{reverse_failsafe_should_unmask<br/>all-masked AND open work AND<br/>idle agent?}:::selection
+    RF_MASK[compute_reverse_failsafe_mask<br/>base_mask=mask · overlay only]:::new
+    RF_OVERLAY[lifted ∪ base_mask<br/>strict superset · adds, never removes]:::new
+    RF_PREP[_prepare_reverse_failsafe_params<br/>bypass_preconditions=True<br/>for allow-list plays]:::selection
+
+    SAMPLE[policy.act<br/>masked softmax sample]:::selection
+    CFG_HEAD[config_head.act<br/>for INSTANTIATE_AGENT]:::selection
+    RESOLVE[resolver.resolve<br/>per-play _resolve_*]:::selection
+    CLAIM[_claim_candidate<br/>_claim_params]:::selection
+    RES_RETRY{resolver = None?<br/>retry up to 4}:::selection
+
+    OVQ -- yes --> OVR
+    OVR --> OV_KIND
+    OV_KIND -- BOOTSTRAP --> OV_BOOTSTRAP
+    OV_KIND -- INDEFINITE_WAIT classification --> OV_WAIT
+    OV_KIND -- TRANSIENT classification --> OV_TRANS
+    OV_KIND -- USER_REQUEST no retry --> OV_USER
+    OV_KIND -- else --> OV_DROP
+    OV_BOOTSTRAP -.requeue.-> OVQ
+    OV_WAIT -.requeue.-> OVQ
+    OV_TRANS -.requeue.-> OVQ
+    OV_USER --> OV_DROP
+    OVR --> SEL_OUT
+    OVQ -- no --> FORCE
+    FORCE -- yes --> FORCE_IA --> SEL_OUT
+    FORCE -- no --> PPO_SEL
+    PPO_SEL --> OBS --> MASK --> MASK_DETAIL --> RF_CHECK
+    RF_CHECK -- yes --> RF_MASK --> RF_OVERLAY --> RF_PREP --> SAMPLE
+    RF_CHECK -- no --> SAMPLE
+    SAMPLE --> CFG_HEAD --> RESOLVE
+    SAMPLE --> RESOLVE
+    RESOLVE --> CLAIM
+    CLAIM --> RES_RETRY
+    RES_RETRY -- yes, remask &amp; retry --> SAMPLE
+    RES_RETRY -- no --> SEL_OUT[(play_type, params)]:::selection
+  end
+
+  SB_OUT --> SEL
+
+  %% ============ DISPATCH ============
+  subgraph DISP[Phase 3 · Dispatch · same state object]
+    direction TB
+    END_GATE{END_SESSION<br/>already in-flight?}:::dispatch
+    SHUT_GATE{Shutdown allows<br/>only end_agent?}:::dispatch
+    REVAL[_dispatch_revalidation_reason]:::dispatch
+    REVAL_DETAIL{bypass_preconditions?<br/>action still in mask?<br/>candidate still valid?}:::dispatch
+    DROP[_drop_selected_play_before_dispatch]:::hotspot
+    SPAWN[create asyncio.Task<br/>executor.execute<br/>state passed through]:::new
+    ACTIVE[ActivePlay snapshot<br/>state_provider.on_state_update]:::dispatch
+  end
+
+  SEL_OUT --> END_GATE
+  END_GATE -- yes --> DROP
+  END_GATE -- no --> SHUT_GATE
+  SHUT_GATE -- yes --> DROP
+  SHUT_GATE -- no --> REVAL
+  REVAL --> REVAL_DETAIL
+  REVAL_DETAIL -- blocked --> DROP
+  REVAL_DETAIL -- ok --> ACTIVE
+  ACTIVE --> SPAWN
+
+  %% ============ EXECUTION ============
+  subgraph EXEC[Phase 4 · Execution · executor.execute · same state]
+    direction TB
+    GET_PLAY[registry.get play_type]:::execute
+    RESOLVE2[resolver.resolve again<br/>with override=params]:::execute
+    NULL_PARAMS{params is None?}:::execute
+    SKIP_NOTARGET[skipped_outcome no_target]:::execute
+    PRE_CHECK{bypass_preconditions?}:::execute
+    PRE_CALL[play.preconditions state<br/>returns MaskReason list<br/>· divergence-detection backstop]:::execute
+    PRE_FAIL{errors non-empty?}:::execute
+    SKIP_MASKED[skipped_outcome masked<br/>· sets _recent_executor_skip<br/>· appends True to skip_window]:::new
+    AGENT_SEL[select_agent_for<br/>+ anti-confirmation guard]:::execute
+    RECORD[store.record_play<br/>placeholder row → play_id]:::execute
+    CLAIM_OPEN[start_claim_group]:::execute
+    MARK_BUSY[manager.mark_agent_busy<br/>add to inflight/planned]:::execute
+    PSTART[play_started log<br/>state_provider.on_play_started]:::execute
+    DISPATCH_AGENT[play.execute<br/>SkillBackedPlay.execute<br/>IdleTickPlay · RecoverPlay = no-op]:::execute
+    RENDER[render_skill_prompt]:::execute
+    CLI[manager.dispatch agent_id<br/>subprocess or HTTP]:::execute
+    PARSE[parse_skill_result<br/>raw_output]:::execute
+    SCOPE[_check_scope · inflation guard]:::execute
+    DEFER[_wire_deferrals]:::execute
+    PERSIST[_persist_play<br/>final row update]:::execute
+    OUTCOME[PlayOutcome]:::execute
+
+    GET_PLAY --> RESOLVE2 --> NULL_PARAMS
+    NULL_PARAMS -- yes --> SKIP_NOTARGET
+    NULL_PARAMS -- no --> PRE_CHECK
+    PRE_CHECK -- bypass=true --> AGENT_SEL
+    PRE_CHECK -- bypass=false --> PRE_CALL --> PRE_FAIL
+    PRE_FAIL -- yes --> SKIP_MASKED
+    PRE_FAIL -- no --> AGENT_SEL
+    AGENT_SEL --> RECORD --> CLAIM_OPEN --> MARK_BUSY --> PSTART --> DISPATCH_AGENT
+    DISPATCH_AGENT --> RENDER --> CLI --> PARSE --> SCOPE --> DEFER --> PERSIST --> OUTCOME
+  end
+
+  SPAWN --> GET_PLAY
+
+  %% ============ COMPLETION ============
+  subgraph COMP[Phase 5 · Completion]
+    direction TB
+    OUTCOME_BRANCH{outcome.skipped?}:::complete
+    SKIP_LOG[play_skipped log<br/>NO reward, NO trajectory]:::complete
+    SET_SKIP_FLAG[is_masked_skip = outcome.skip_category=='masked'<br/>_recent_executor_skip = is_masked_skip<br/>skip_window.append is_masked_skip]:::new
+    CLEAR_SKIP_FLAG[_recent_executor_skip = False<br/>skip_window.append False<br/>on completed non-skip]:::new
+    PLAY_DONE[play_completed log]:::complete
+    PR_UNBLOCK[record_unblock_pr_failure<br/>UNBLOCK_PR only]:::complete
+    NEXT_STATE[_build_state → next_state]:::complete
+    TRAJ[_record_trajectory_snapshot]:::complete
+    TERM_CHECK[_should_terminate]:::complete
+    LOOP_CHECK[_check_loop_detection]:::complete
+    STAG_CHECK[_check_stagnation_escalation<br/>v0.14.3 minutes-idle]:::complete
+    FEEDBACK[_pause_for_feedback_cadence_if_due]:::complete
+    REWARD[compute_reward<br/>shaping + signals]:::complete
+    PPO_LEARN[selector.on_play_completed<br/>buffer.add]:::complete
+    PPO_UPDATE[selector.update_policy<br/>every 64 plays]:::complete
+    CKPT[selector.save_checkpoint<br/>every 16 plays + shutdown]:::complete
+    IPC[state_provider.on_play_completed<br/>+ on_state_update]:::complete
+  end
+
+  OUTCOME --> OUTCOME_BRANCH
+  OUTCOME_BRANCH -- yes --> SET_SKIP_FLAG --> SKIP_LOG --> IPC
+  OUTCOME_BRANCH -- no --> CLEAR_SKIP_FLAG --> PLAY_DONE --> PR_UNBLOCK --> NEXT_STATE --> TRAJ
+  TRAJ --> TERM_CHECK --> LOOP_CHECK --> STAG_CHECK --> FEEDBACK --> REWARD --> PPO_LEARN --> PPO_UPDATE --> CKPT --> IPC
+
+  IPC --> TICK
+  SKIP_NOTARGET --> OUTCOME_BRANCH
+  SKIP_MASKED --> OUTCOME_BRANCH
+
+  %% ============ HOTSPOT / NEW ANNOTATIONS ============
+  SPAWN -.->|same state object · no rebuild| H1[/<b>HOTSPOT 1 → addressed</b><br/>cross-tick state divergence<br/>state built once per tick · threaded<br/>through selection → dispatch → executor/]:::hotspot
+  RF_OVERLAY -.->|production callers always pass base_mask| H2[/<b>HOTSPOT 2 → fixed</b><br/>reverse-failsafe candidate-required<br/>gate · plus structural-superset overlay<br/>contract enforced at call site/]:::hotspot
+  OV_KIND -.->|typed entries · no substring match| H3[/<b>HOTSPOT 3 → fixed</b><br/>bootstrap override drop on cooldown<br/>· entry.kind = BOOTSTRAP never drops<br/>regardless of mask reason text/]:::hotspot
+  SET_SKIP_FLAG -.->|publishes signal → RECOVER preconditions| H4[/<b>HOTSPOT 4 → addressed</b><br/>masked-skip at executor · now feeds<br/>state.recent_executor_skip · learnable<br/>via RECOVER and skip-rate slot 177/]:::hotspot
+</div>
+</div>
+
+<h2>v0.15.0 phases — what shipped</h2>
+
+<div class="two-col">
+
+<div class="panel ok">
+<h3>Phase 1 · Typed mask reasons <span class="pill fixed">shipped</span></h3>
+<p><code>src/agentshore/rl/mask_reason.py</code> defines <code>MaskReason</code> (frozen dataclass: <code>text</code>, <code>classification</code>, <code>source</code>), <code>MaskClassification</code> (<code>TRANSIENT</code> / <code>INDEFINITE_WAIT</code> / <code>HARD</code>), and <code>MaskSource</code> (9 gate identifiers). String-compatible so existing log paths and substring tests keep working. <code>Orchestrator._mask_reason_is_transient</code> and <code>_is_indefinite_wait</code> now read <code>.classification</code> directly — a one-line attribute check rather than substring matching.</p>
+</div>
+
+<div class="panel ok">
+<h3>Phase 2 · Typed override entries <span class="pill fixed">shipped</span></h3>
+<p><code>src/agentshore/plays/override.py</code> defines <code>OverrideEntry</code> with five producer kinds: <code>BOOTSTRAP</code> (never drops on mask), <code>USER_REQUEST</code> (no retry budget, surfaces drops to the requester), <code>EXECUTOR_REQUEUE</code> (bounded transient retries), <code>RETRY</code> (auto-failure retry, budget already enforced), and <code>MASK_REQUEUE</code> (preserves the original producer's classification through any number of mask cycles). All seven producer sites in <code>core/</code> wrap their enqueues in typed entries; <code>_handle_masked_override</code> dispatches on <code>entry.kind</code> instead of substring-matching the reason text.</p>
+</div>
+
+<div class="panel ok">
+<h3>Phase 3 · Reverse failsafe as overlay <span class="pill fixed">shipped</span></h3>
+<p><code>compute_reverse_failsafe_mask</code> takes an optional <code>base_mask</code> keyword and returns <code>lifted | base_mask</code> — a structural superset of the base mask. Reverse failsafe can ADD opportunities to the selection space, never REMOVE them. Both production call sites (<code>compute_action_mask</code> for auto-failsafe, <code>PPOSelector.select</code> for manual) pass <code>base_mask</code>. The Phase 6 test suite pins the contract: <code>test_reverse_failsafe_overlay_is_structural_superset_of_base_mask</code>.</p>
+</div>
+
+<div class="panel ok">
+<h3>Phase 4 · One state per tick <span class="pill fixed">shipped</span></h3>
+<p>State is built once at the top of each tick and threaded through selection → dispatch → executor as a single object. <code>_dispatch_play</code> takes <code>state: AgentShoreState</code> as a parameter and no longer calls <code>_build_state</code>. The executor's precondition recheck is intentionally retained as a safety net AND as the signal source for <code>_recent_executor_skip</code> — when the same state object reaches the executor, the only way preconditions can disagree with the mask is a contract bug elsewhere, which the skip-rate metric now surfaces.</p>
+</div>
+
+<div class="panel ok">
+<h3>Phase 5 · Action space v12 + skip metric <span class="pill fixed">shipped</span></h3>
+<p>Two new active actions, two new reserved slots; <code>NUM_ACTIONS=22</code>, <code>ACTION_SPACE_VERSION=12</code>.</p>
+<ul>
+  <li><code>IDLE_TICK</code> — productive wait when ≥1 agent is BUSY. Zero cost; <code>skipped_outcome("waiting")</code>. Lets PPO learn to wait one tick instead of forcing reverse failsafe.</li>
+  <li><code>RECOVER</code> — eligible only when <code>state.recent_executor_skip</code> is set. Zero cost; no-op execute. Gives PPO an explicit recovery action after an executor-time masked skip.</li>
+  <li><code>FUTURE_7</code>, <code>FUTURE_8</code> — reserved headroom (always hard-masked).</li>
+</ul>
+<p>New observation feature: <code>executor_skip_rate_recent_50</code> at slot 177 (Orchestrator tracks a 50-outcome deque; rate exposed to <code>MetricsEngine</code> via the <code>executor_skip_rate_provider</code> callback). <code>OBSERVATION_DIM</code> grew 238 → 245 (action-space growth + skip-rate slot); <code>OBSERVATION_VERSION</code> bumped 9 → 10. <code>policy.py:load_checkpoint</code> rejects mismatched <code>action_space_version</code> / <code>policy_version</code> / <code>observation_version</code> with a <code>CheckpointVersionMismatch</code>; <code>_archive_old_canonicals</code> renames legacy checkpoints to <code>policy_legacy_v{N}.pt</code> so the next run starts cleanly.</p>
+</div>
+
+<div class="panel ok">
+<h3>Phase 6 · Mask composition pipeline + tests <span class="pill fixed">shipped</span></h3>
+<p><code>compute_action_mask</code> is a documented 10-stage pipeline of pure <code>_stage_*</code> functions: 8 zero-only mutations (preconditions, agent-eligibility, forced-zeros, candidate-required, instantiate-config, end-session, take-break, reserved-slots) plus 2 short-circuits (drain-mode, terminal-no-work). The reverse-failsafe overlay (Phase 3) is the final step. Per-stage unit tests live in <code>tests/test_rl_mask.py</code> — <code>test_stage_preconditions_seeds_from_registry</code>, <code>test_stage_forced_zeros_is_zero_only</code>, <code>test_stage_reserved_slots_zeros_future_slots</code>, <code>test_stage_drain_mode_short_circuits_to_end_agent</code>, and the composite invariant test <code>test_pipeline_order_invariant_short_circuit_after_zero_only</code>.</p>
+</div>
+
+</div>
+
+<h2>Hotspots — status after v0.15.0</h2>
+
+<div class="two-col">
+
+<div class="panel">
+<h3>HOTSPOT 1 · Cross-tick state divergence <span class="pill fixed">addressed</span></h3>
+<p>The structural cause is removed. <code>_build_state</code> is called once per tick; the same state object is threaded through selection, dispatch, and the executor. The dispatch-time rebuild that previously produced <code>play_skipped_masked_at_executor</code> events is gone.</p>
+<p class="annot"><b>Executor preconditions backstop:</b> the recheck at <code>executor.py:240</code> stays — it's the only defence if a future bug introduces disagreement between <code>compute_action_mask</code> and <code>play.preconditions(state)</code> on the same state object. The recheck now serves a second purpose too: it emits the <code>_recent_executor_skip</code> signal that drives the RECOVER action and the new <code>executor_skip_rate_recent_50</code> observation feature.</p>
+</div>
+
+<div class="panel">
+<h3>HOTSPOT 2 · Reverse-failsafe candidate-required gate <span class="pill fixed">fixed v0.14.4 · strengthened v0.15.0</span></h3>
+<p>v0.14.4 added the <code>_CANDIDATE_REQUIRED_PLAY_TYPES</code> zero-out so reverse failsafe can't conjure a target out of nothing. v0.15.0 added the overlay contract: <code>compute_reverse_failsafe_mask(base_mask=mask)</code> returns <code>lifted | base_mask</code>, a guaranteed structural superset of the base mask. Both production callers pass <code>base_mask</code>; the contract is pinned by a Phase 6 test.</p>
+</div>
+
+<div class="panel">
+<h3>HOTSPOT 3 · Override drop on cooldown <span class="pill fixed">fixed v0.14.4 · typed v0.15.0</span></h3>
+<p>The substring-matching predicate is gone. <code>_handle_masked_override</code> reads <code>entry.kind</code> first — <code>BOOTSTRAP</code> entries never drop, regardless of what the mask says — then <code>entry.enqueue_classification</code>. The bootstrap medium-of-different-type spawn cannot be dropped by predicate drift because there is no predicate.</p>
+</div>
+
+<div class="panel">
+<h3>HOTSPOT 4 · Precondition fail at executor time <span class="pill fixed">addressed</span></h3>
+<p>The structural cause is removed by Phase 4 (one state per tick). The remaining occurrences are now observable and learnable:</p>
+<ul>
+  <li>The orchestrator tracks a rolling 50-outcome window and exposes the rate via <code>_executor_skip_rate_recent_50()</code>.</li>
+  <li><code>MetricsEngine</code> reads it via <code>executor_skip_rate_provider</code>.</li>
+  <li><code>ObservationContext.executor_skip_rate_recent_50</code> is written to observation slot 177 — PPO can learn the gating signal directly.</li>
+  <li><code>state.recent_executor_skip</code> drives <code>RECOVER</code>'s preconditions — PPO can pick an explicit recovery action instead of relying on reverse failsafe.</li>
+</ul>
+</div>
+
+</div>
+
+<h2>Open questions / things to watch</h2>
+
+<div class="panel warn">
+<ul>
+  <li><b>IDLE_TICK starvation risk.</b> Reward shaping should ensure <code>IDLE_TICK</code> is only attractive when truly no other play is viable. The current cold-start weight is 0.0114 (low), but PPO can learn arbitrarily high preference — watch the play history in early sessions.</li>
+  <li><b>RECOVER cycling.</b> If executor-time divergence persists across multiple ticks (unlikely now that state is threaded), <code>RECOVER</code> would re-fire on each tick. The signal clears on the next non-skipped completion, so this should be self-limiting; verify in a live session.</li>
+  <li><b>Skip-rate observation usefulness.</b> Slot 177 is informational for PPO. If divergence is effectively zero after Phase 4 (as expected), the slot stays at 0 and provides no learning signal. That's the desired outcome — but it also means the slot is "dead weight" most of the time. Consider whether to reclaim the slot in v0.16 if divergence stays at zero for a month.</li>
+  <li><b>Phase 1 string-MaskReason fallback.</b> <code>_mask_reason_is_transient</code> and <code>_is_indefinite_wait</code> still accept <code>MaskReason | str</code>. The string branch is a fallback for any unmigrated gates. Plan to delete it once a session log shows zero bare strings hitting either method.</li>
+  <li><b>Bootstrap diversity post-cooldown.</b> Phase 5 routes bootstrap entries through <code>OverrideKind.BOOTSTRAP</code> which never drops on mask. Verify the medium-of-different-type spawn fires after seed + cooldown in the next live session.</li>
+  <li><b>Checkpoint reset blast radius.</b> <code>OBSERVATION_VERSION</code> 9 → 10 and <code>ACTION_SPACE_VERSION</code> 11 → 12 both reject prior checkpoints. <code>_archive_old_canonicals</code> renames them to <code>policy_legacy_v{N}.pt</code>; the next session starts with fresh cold-start weights. Current policy has minimal training so the cost is bounded — but document this in release notes.</li>
+</ul>
+</div>
+
+<h2>File map</h2>
+<div class="panel">
+<ul>
+  <li>State build → <code>src/agentshore/core/mixins/state.py:_build_state</code> · <code>refresh_issues</code></li>
+  <li>Recent-skip flag → <code>src/agentshore/core/base.py:_recent_executor_skip</code> · <code>_executor_skip_window</code> · <code>_executor_skip_rate_recent_50</code></li>
+  <li>Override queue → <code>src/agentshore/core/mixins/dispatch.py:_consume_override</code> · <code>_handle_masked_override</code></li>
+  <li>Override types → <code>src/agentshore/plays/override.py:OverrideEntry</code> · <code>OverrideKind</code></li>
+  <li>Mask reasons → <code>src/agentshore/rl/mask_reason.py:MaskReason</code> · <code>MaskClassification</code> · <code>MaskSource</code></li>
+  <li>Selection → <code>src/agentshore/rl/selector.py:PPOSelector.select</code></li>
+  <li>Mask pipeline → <code>src/agentshore/rl/mask.py:compute_action_mask</code> · <code>_stage_preconditions</code> … <code>_stage_terminal_no_work</code></li>
+  <li>Reverse-failsafe overlay → <code>src/agentshore/rl/mask.py:compute_reverse_failsafe_mask</code> · <code>reverse_failsafe_should_unmask</code></li>
+  <li>Resolver → <code>src/agentshore/plays/resolver.py:PlayResolver.resolve</code> · <code>PlayCandidateService</code></li>
+  <li>Candidates → <code>src/agentshore/plays/candidates.py:build_candidate_plan</code></li>
+  <li>Dispatch → <code>src/agentshore/core/mixins/dispatch.py:_dispatch_play</code> · <code>_dispatch_revalidation_reason</code></li>
+  <li>Execution → <code>src/agentshore/plays/executor.py:PlayExecutor.execute</code></li>
+  <li>Skill backend → <code>src/agentshore/plays/skill_backed/base.py:SkillBackedPlay.execute</code></li>
+  <li>Idle-tick play → <code>src/agentshore/plays/internal/idle_tick.py:IdleTickPlay</code></li>
+  <li>Recover play → <code>src/agentshore/plays/internal/recover.py:RecoverPlay</code></li>
+  <li>Action space → <code>src/agentshore/rl/action_space.py</code> (<code>NUM_ACTIONS=22</code>, <code>ACTION_SPACE_VERSION=12</code>, <code>POLICY_VERSION=5</code>)</li>
+  <li>Observation → <code>src/agentshore/rl/observation.py</code> (<code>OBSERVATION_DIM=245</code>, <code>OBSERVATION_VERSION=10</code>, <code>_S_EXECUTOR_SKIP_RATE=177</code>)</li>
+  <li>Metrics → <code>src/agentshore/rl/metrics.py:MetricsEngine</code> (<code>executor_skip_rate_provider</code>)</li>
+  <li>Checkpoint guard → <code>src/agentshore/rl/policy.py:load_checkpoint</code> · <code>CheckpointVersionMismatch</code> · <code>src/agentshore/rl/selector.py:_archive_old_canonicals</code></li>
+  <li>Completion → <code>src/agentshore/core/mixins/completion.py</code> (the long block after <code>play_completed</code>)</li>
+</ul>
+</div>
+
+<h2>Test map</h2>
+<div class="panel">
+<ul>
+  <li>Per-stage isolation → <code>tests/test_rl_mask.py</code> — <code>test_stage_preconditions_seeds_from_registry</code>, <code>test_stage_forced_zeros_is_zero_only</code>, <code>test_stage_reserved_slots_zeros_future_slots</code>, <code>test_stage_drain_mode_short_circuits_to_end_agent</code>, <code>test_pipeline_order_invariant_short_circuit_after_zero_only</code></li>
+  <li>Reverse-failsafe overlay contract → <code>tests/test_rl_mask.py:test_reverse_failsafe_overlay_is_structural_superset_of_base_mask</code></li>
+  <li>Observation slot 177 → <code>tests/test_rl_observation.py</code> — <code>test_executor_skip_rate_default_is_zero</code>, <code>test_executor_skip_rate_writes_to_slot_177</code>, <code>test_executor_skip_rate_clamps_above_one</code></li>
+  <li>Action-space shape → <code>tests/test_rl_action_space.py</code> (<code>NUM_ACTIONS == 22</code>, <code>ACTION_SPACE_VERSION == 12</code>)</li>
+  <li>Override entry routing → <code>tests/test_safe_call_phase4g.py:test_override_masked_falls_back_to_selector</code></li>
+  <li>State-divergence threading → <code>tests/test_orchestrator_phase4.py</code> (single-state-per-tick invariants)</li>
+</ul>
+</div>
+
+<p class="annot" style="margin-top:24px">Regenerated 2026-05-18 for v0.15.0 (all six phases of <code>~/.claude/plans/joyful-pondering-hennessy.md</code> shipped). Regenerate after any change to the mask pipeline, override-queue typing, reverse-failsafe overlay, executor precondition handling, observation slot layout, or the active-action set.</p>
+
+</div>
+<script>
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'loose', theme: 'dark' });
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "agentshore-monorepo",
+  "private": true,
+  "workspaces": ["dashboard", "desktop"],
+  "engines": {
+    "node": ">=20"
+  }
+}

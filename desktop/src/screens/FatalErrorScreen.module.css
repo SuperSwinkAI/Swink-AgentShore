@@ -1,0 +1,82 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+  min-height: 100vh;
+  padding: 2rem max(24px, calc((100vw - 900px) / 2));
+  box-sizing: border-box;
+  background: var(--fm-fatal-bg, #1f1410);
+  color: var(--fm-fatal-fg, #f5e9d8);
+}
+
+.header h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.8rem;
+}
+
+.subtitle {
+  color: var(--fm-fatal-fg-muted, #d1bfa3);
+  margin: 0;
+  max-width: 64ch;
+}
+
+.detail {
+  font-family: var(--fm-mono, ui-monospace, "SF Mono", monospace);
+  font-size: 0.85rem;
+  background: var(--fm-fatal-detail-bg, #2a1c16);
+  border: 1px solid var(--fm-fatal-detail-border, #50382b);
+  padding: 0.75rem 1rem;
+}
+
+.detail dt {
+  font-weight: 600;
+  color: var(--fm-fatal-fg-muted, #d1bfa3);
+  margin: 0;
+}
+
+.detail dd {
+  margin: 0 0 0.5rem 0;
+  word-break: break-all;
+}
+
+.detail dd:last-child {
+  margin-bottom: 0;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.button {
+  padding: 0.55rem 1.1rem;
+  border-radius: 4px;
+  border: 1px solid var(--fm-fatal-button-border, #7a5a44);
+  background: var(--fm-fatal-button-bg, #2a1c16);
+  color: var(--fm-fatal-fg, #f5e9d8);
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.buttonDanger {
+  background: var(--fm-fatal-button-danger-bg, #802213);
+  border-color: var(--fm-fatal-button-danger-bg, #802213);
+}
+
+@media (max-width: 760px) {
+  .screen {
+    padding-inline: 14px;
+  }
+
+  .button {
+    width: 100%;
+  }
+}

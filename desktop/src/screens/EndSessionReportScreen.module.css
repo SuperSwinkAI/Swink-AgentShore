@@ -1,0 +1,156 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  width: calc(100vw - 48px);
+  margin: 0 auto;
+  padding: 2rem 0;
+  gap: 1rem;
+}
+
+/*
+ * Sticky chrome bar — issue #561. Sits above the report header so the user
+ * always has a one-click escape back to the chooser and a one-click way to
+ * fire the next session with the same setup. Width matches the surrounding
+ * page column so the alignment stays predictable when the viewport
+ * narrows below the report's natural width.
+ */
+.chrome {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--fm-border, rgba(127, 127, 127, 0.3));
+  background: var(--fm-bar, var(--fm-panel, rgba(242, 248, 255, 0.94)));
+  backdrop-filter: blur(8px);
+}
+
+.chromeLeft,
+.chromeRight {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chromeButton {
+  border: 1px solid var(--fm-button-border, currentColor);
+  background: var(--fm-button-bg, transparent);
+  color: inherit;
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chromeButton[disabled] {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.chromeError {
+  font-size: 0.85rem;
+  color: var(--fm-text-danger, #b3261e);
+  margin-left: 0.5rem;
+}
+
+.fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+}
+
+.tablist {
+  display: flex;
+  gap: 0.25rem;
+  border: 1px solid var(--fm-border, rgba(127, 127, 127, 0.3));
+  background: var(--fm-bar, transparent);
+  padding: 0.25rem;
+}
+
+.tab,
+.tabActive {
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  cursor: pointer;
+  color: var(--fm-text-label, inherit);
+}
+
+.tabActive {
+  border-color: var(--fm-selected-border, currentColor);
+  background: var(--fm-selected, transparent);
+  font-weight: 600;
+}
+
+.panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.reportPane {
+  min-height: 0;
+}
+
+.statusText {
+  margin: 0;
+  color: var(--fm-text-muted, inherit);
+}
+
+.errorBlock {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+  padding: 1rem;
+  border: 1px solid var(--fm-border, rgba(127, 127, 127, 0.3));
+  background: var(--fm-panel, rgba(242, 248, 255, 0.94));
+}
+
+.reportFrame {
+  width: 100%;
+  min-height: 160vh;
+  border: 1px solid var(--fm-border, rgba(127, 127, 127, 0.3));
+  display: block;
+  background: white;
+}
+
+.logs {
+  max-height: 60vh;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 0.75rem;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--fm-border-subtle, rgba(127, 127, 127, 0.18));
+  white-space: pre;
+}
+
+.panel button {
+  border: 1px solid var(--fm-button-border, currentColor);
+  background: var(--fm-button-bg, transparent);
+  color: inherit;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .page {
+    width: min(100% - 28px, 100%);
+  }
+
+  .tablist {
+    flex-wrap: wrap;
+  }
+
+  .tab,
+  .tabActive {
+    flex: 1;
+  }
+
+}

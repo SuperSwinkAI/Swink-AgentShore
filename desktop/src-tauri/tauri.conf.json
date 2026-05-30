@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgentShore",
+  "version": "0.1.0",
+  "identifier": "ai.agentshore.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:tauri-frontend && npm run build:tauri-sidecars"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "AgentShore",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:*; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$RESOURCE/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/agentshore-bd/agentshore-bd"
+    ],
+    "resources": {
+      "../../src/agentshore/dashboard/static": "dashboard-static"
+    },
+    "macOS": {
+      "signingIdentity": null,
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "providerShortName": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "tsp": false
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "TAURI_SIGNING_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

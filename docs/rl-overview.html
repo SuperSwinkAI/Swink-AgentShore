@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentShore — RL Architecture Overview</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --orange: #f0883e;
+    --cyan: #39d2c0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 3rem 2rem 6rem; }
+
+  /* Header */
+  .hero { text-align: center; margin-bottom: 4rem; padding: 2rem 0; }
+  .hero h1 { font-size: 2.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+  .hero h1 span { color: var(--accent); }
+  .hero p { color: var(--text-muted); font-size: 1.1rem; max-width: 600px; margin: 0 auto; }
+  .hero .badge { display: inline-block; margin-top: 1rem; padding: 0.25rem 0.75rem; border: 1px solid var(--border); border-radius: 2rem; color: var(--text-muted); font-size: 0.8rem; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+
+  /* Architecture diagram */
+  .diagram-section { margin: 3rem 0; }
+  .diagram-section h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 1.5rem; }
+  .diagram-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; overflow-x: auto; }
+  .diagram-wrap svg { display: block; margin: 0 auto; }
+
+  /* Section grid */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin: 3rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card.full { grid-column: 1 / -1; }
+  .card h3 { font-size: 1.1rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+  .card h3 .icon { width: 20px; height: 20px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0; }
+  .card p, .card li { color: var(--text-muted); font-size: 0.9rem; line-height: 1.65; }
+  .card ul { list-style: none; padding: 0; }
+  .card li { padding: 0.15rem 0; }
+  .card li::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 0.6rem; vertical-align: middle; }
+
+  /* Color-coded bullets */
+  .c-green li::before { background: var(--green); }
+  .c-blue li::before { background: var(--accent); }
+  .c-yellow li::before { background: var(--yellow); }
+  .c-red li::before { background: var(--red); }
+  .c-purple li::before { background: var(--purple); }
+  .c-orange li::before { background: var(--orange); }
+  .c-cyan li::before { background: var(--cyan); }
+
+  /* Spec table */
+  .spec-table { width: 100%; border-collapse: collapse; margin: 0.75rem 0 0; font-size: 0.85rem; }
+  .spec-table td { padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+  .spec-table td:first-child { color: var(--text-muted); width: 45%; }
+  .spec-table td:last-child { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 0.8rem; color: var(--text); }
+  .spec-table tr:last-child td { border-bottom: none; }
+
+  /* Reward bar chart */
+  .reward-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; font-size: 0.8rem; }
+  .reward-bar .label { width: 140px; text-align: right; color: var(--text-muted); flex-shrink: 0; }
+  .reward-bar .bar { height: 18px; border-radius: 3px; min-width: 2px; }
+  .reward-bar .val { color: var(--text-muted); font-family: 'SF Mono', monospace; font-size: 0.75rem; width: 40px; }
+
+  /* Action grid */
+  .action-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.4rem; margin-top: 0.75rem; }
+  .action-chip {
+    font-size: 0.78rem; padding: 0.3rem 0.6rem; border-radius: 6px;
+    background: rgba(88, 166, 255, 0.08); border: 1px solid rgba(88, 166, 255, 0.15);
+    color: var(--text-muted); font-family: 'SF Mono', monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .action-chip.cat-lifecycle { border-color: rgba(63, 185, 80, 0.3); background: rgba(63, 185, 80, 0.06); }
+  .action-chip.cat-dev { border-color: rgba(88, 166, 255, 0.3); background: rgba(88, 166, 255, 0.06); }
+  .action-chip.cat-strategy { border-color: rgba(188, 140, 255, 0.3); background: rgba(188, 140, 255, 0.06); }
+  .action-chip.cat-ops { border-color: rgba(210, 153, 34, 0.3); background: rgba(210, 153, 34, 0.06); }
+
+  /* Network diagram */
+  .net-layer { display: flex; align-items: center; gap: 1rem; margin: 0.5rem 0; }
+  .net-layer .layer-label { width: 80px; text-align: right; font-size: 0.8rem; color: var(--text-muted); flex-shrink: 0; }
+  .net-nodes { display: flex; gap: 2px; }
+  .net-node { width: 6px; height: 18px; border-radius: 2px; background: var(--accent); opacity: 0.5; }
+  .net-node.active { opacity: 1; }
+  .net-arrow { color: var(--text-muted); font-size: 0.7rem; margin-left: 90px; }
+
+  /* Footer */
+  .footer { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 0.85rem; }
+  .footer a { color: var(--accent); text-decoration: none; }
+
+  @media print {
+    body { background: #fff; color: #1a1a1a; }
+    .card { border-color: #ddd; background: #fafafa; }
+    .card p, .card li, .spec-table td:first-child { color: #555; }
+    .hero h1 span { color: #0366d6; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Hero -->
+<header class="hero">
+  <h1><span>AgentShore</span> RL Architecture</h1>
+  <p>An RL-based orchestrator that coordinates multiple LLM coding agents using Proximal Policy Optimization to select high-level development actions.</p>
+  <span class="badge">PPO &middot; 20 actions &middot; 238-dim state &middot; policy version 4</span>
+</header>
+
+<!-- Architecture Diagram -->
+<section class="diagram-section">
+  <h2>Core Loop</h2>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 860 200" width="860" height="200" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, sans-serif">
+      <!-- Boxes -->
+      <rect x="20" y="60" width="130" height="80" rx="10" fill="none" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="85" y="95" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="600">Environment</text>
+      <text x="85" y="115" text-anchor="middle" fill="#8b949e" font-size="10">GitHub + Agents</text>
+
+      <rect x="200" y="60" width="130" height="80" rx="10" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="265" y="95" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">State Encoder</text>
+      <text x="265" y="115" text-anchor="middle" fill="#8b949e" font-size="10">238 features</text>
+
+      <rect x="380" y="60" width="130" height="80" rx="10" fill="none" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="445" y="95" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="600">Policy Network</text>
+      <text x="445" y="115" text-anchor="middle" fill="#8b949e" font-size="10">ActorCritic MLP</text>
+
+      <rect x="560" y="60" width="130" height="80" rx="10" fill="none" stroke="#d29922" stroke-width="1.5"/>
+      <text x="625" y="95" text-anchor="middle" fill="#d29922" font-size="13" font-weight="600">Action</text>
+      <text x="625" y="115" text-anchor="middle" fill="#8b949e" font-size="10">1 of 20 plays</text>
+
+      <rect x="730" y="60" width="110" height="80" rx="10" fill="none" stroke="#f0883e" stroke-width="1.5"/>
+      <text x="785" y="95" text-anchor="middle" fill="#f0883e" font-size="13" font-weight="600">Reward</text>
+      <text x="785" y="115" text-anchor="middle" fill="#8b949e" font-size="10">components</text>
+
+      <!-- Forward arrows -->
+      <line x1="150" y1="100" x2="195" y2="100" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="330" y1="100" x2="375" y2="100" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="510" y1="100" x2="555" y2="100" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="690" y1="100" x2="725" y2="100" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Feedback loop -->
+      <path d="M 785 145 L 785 175 Q 785 185 775 185 L 95 185 Q 85 185 85 175 L 85 145" fill="none" stroke="#30363d" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+      <text x="430" y="180" text-anchor="middle" fill="#8b949e" font-size="10">next state + reward &rarr; PPO update</text>
+
+      <!-- Labels above -->
+      <text x="175" y="50" text-anchor="middle" fill="#8b949e" font-size="9">observe</text>
+      <text x="355" y="50" text-anchor="middle" fill="#8b949e" font-size="9">encode</text>
+      <text x="535" y="50" text-anchor="middle" fill="#8b949e" font-size="9">select</text>
+      <text x="710" y="50" text-anchor="middle" fill="#8b949e" font-size="9">execute</text>
+
+      <!-- Mask annotation -->
+      <rect x="440" y="15" width="60" height="22" rx="4" fill="rgba(248,81,73,0.15)" stroke="#f85149" stroke-width="0.8"/>
+      <text x="470" y="30" text-anchor="middle" fill="#f85149" font-size="9">mask</text>
+      <line x1="470" y1="37" x2="470" y2="60" stroke="#f85149" stroke-width="0.8" stroke-dasharray="3,3"/>
+
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#30363d"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+</section>
+
+<!-- Cards -->
+<div class="grid">
+
+  <!-- Agent -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(63,185,80,0.15);color:var(--green);">A</span> Agent</h3>
+    <p>AgentShore manages multiple LLM coding agents as async subprocesses (CLI) or HTTP clients (API). Each agent has a lifecycle, circuit breaker, and context budget.</p>
+    <table class="spec-table">
+      <tr><td>Agent types</td><td>claude-code, codex, gemini, gpt, other</td></tr>
+      <tr><td>Lifecycle</td><td>idle &rarr; busy &rarr; terminated</td></tr>
+      <tr><td>Circuit breaker</td><td>3 failures / 300s, 60s cooldown</td></tr>
+      <tr><td>Max context</td><td>200k (CC), 192k (Codex), 1M (Gemini)</td></tr>
+      <tr><td>Anti-confirmation</td><td>reviewer &ne; author (hard constraint)</td></tr>
+    </table>
+  </div>
+
+  <!-- Environment -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">E</span> Environment</h3>
+    <p>The environment is a GitHub repository with open issues, pull requests, a running codebase, and a beads epic/story/task graph. AgentShore observes repository state, dispatches agent actions, and measures alignment against beads task closure.</p>
+    <ul class="c-blue">
+      <li>GitHub issues synced via <code>gh</code> CLI</li>
+      <li>Beads graph synced from GitHub issue state</li>
+      <li>Alignment measured by global and per-epic closure ratios</li>
+      <li>Budget tracked in real dollar cost</li>
+      <li>Session persisted in SQLite (20 tables, WAL mode)</li>
+    </ul>
+  </div>
+
+  <!-- State -->
+  <div class="card full">
+    <h3><span class="icon" style="background:rgba(57,210,192,0.15);color:var(--cyan);">S</span> State &mdash; Observation Vector</h3>
+    <p>A 238-dimensional float32 vector (<code>OBSERVATION_VERSION = 9</code>) encoding the full session state, normalized to [0, 1] via saturation clipping. Fed to the policy network at each decision step. Slots 0&ndash;71 are the base feature block; slots 72&ndash;167 are the per-config block; slots 168&ndash;176 are PR-author and execution-pressure features; slots 177&ndash;236 are the per-tier / per-play specialization block.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-top:0.75rem;">
+      <div>
+        <ul class="c-cyan">
+          <li>8 legacy zero-filled slots plus 4 beads epic/global closure slots</li>
+          <li>5 issue metrics (open, closed, created, net velocity, scope completion)</li>
+          <li>16 fleet metrics (3 tiers &times; idle/busy/success/context/total + active count)</li>
+          <li>4 budget features (remaining, spent, avg cost, sufficiency flag)</li>
+        </ul>
+      </div>
+      <div>
+        <ul class="c-cyan">
+          <li>16 history features (last-5 play types, last-5 success flags, rolling stats, drift)</li>
+          <li>3 time features (session duration, since calibration, since seed)</li>
+          <li>3 PR state, 4 health, 2 handoff, 3 trajectory, 3 learnings, 1 churn</li>
+        </ul>
+      </div>
+      <div>
+        <ul class="c-cyan">
+          <li>96 per-config slots (32 agent configs &times; idle/busy/success-rate)</li>
+          <li>4 PR-author features (open + awaiting-review by Claude / Codex)</li>
+          <li>5 execution-pressure features (rolling velocity, busy fraction, unreviewed-PR ratio, mergeable-PR ratio, in-flight pickups)</li>
+          <li>1 version marker = OBSERVATION_VERSION / 10</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Action -->
+  <div class="card full">
+    <h3><span class="icon" style="background:rgba(210,153,34,0.15);color:var(--yellow);">A</span> Action Space &mdash; 20 Plays</h3>
+    <p>Discrete action space of 20 high-level development operations. Actions are masked at each step based on preconditions (e.g., can't merge if no approved PR exists). The policy outputs logits over all 20; masked actions receive &minus;&infin; before softmax. <code>instantiate_agent</code> is evaluated per type/tier: busy agents can justify another spawn, while an idle same-config agent blocks that config.</p>
+    <div class="action-grid">
+      <span class="action-chip cat-lifecycle">instantiate_agent</span>
+      <span class="action-chip cat-dev">unblock_pr</span>
+      <span class="action-chip cat-dev">write_implementation_plan</span>
+      <span class="action-chip cat-lifecycle">end_agent</span>
+      <span class="action-chip cat-dev">issue_pickup</span>
+      <span class="action-chip cat-dev">code_review</span>
+      <span class="action-chip cat-dev">merge_pr</span>
+      <span class="action-chip cat-dev">run_qa</span>
+      <span class="action-chip cat-dev">systematic_debugging</span>
+      <span class="action-chip cat-strategy">design_audit</span>
+      <span class="action-chip cat-ops">end_session</span>
+      <span class="action-chip cat-ops">future_5</span>
+      <span class="action-chip cat-strategy">refine_task_breakdown</span>
+      <span class="action-chip cat-ops">cleanup</span>
+      <span class="action-chip cat-dev">browser_verification</span>
+      <span class="action-chip cat-ops">take_break</span>
+      <span class="action-chip cat-strategy">groom_backlog</span>
+      <span class="action-chip cat-strategy">seed_project</span>
+      <span class="action-chip cat-strategy">calibrate_alignment</span>
+      <span class="action-chip cat-ops">future_6</span>
+    </div>
+    <div style="display:flex;gap:1.5rem;margin-top:0.75rem;font-size:0.78rem;color:var(--text-muted);">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(63,185,80,0.3);margin-right:4px;vertical-align:middle;"></span>Lifecycle</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(88,166,255,0.3);margin-right:4px;vertical-align:middle;"></span>Development</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(188,140,255,0.3);margin-right:4px;vertical-align:middle;"></span>Strategy</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(210,153,34,0.3);margin-right:4px;vertical-align:middle;"></span>Operational</span>
+    </div>
+  </div>
+
+  <!-- Reward -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(240,136,62,0.15);color:var(--orange);">R</span> Reward Function</h3>
+    <p>Weighted sum of 14 signal components, clipped to [&minus;10, +10]. Balances code progress against cost, with guardrails against stagnation, loops, and single-agent monoculture.</p>
+    <div style="margin-top:0.75rem;">
+      <div class="reward-bar"><span class="label">completion</span><div class="bar" style="width:200px;background:var(--green);opacity:0.6;"></div><span class="val">+5.0</span></div>
+      <div class="reward-bar"><span class="label">issue throughput</span><div class="bar" style="width:160px;background:var(--green);"></div><span class="val">+2.0</span></div>
+      <div class="reward-bar"><span class="label">progress play</span><div class="bar" style="width:80px;background:var(--green);"></div><span class="val">+0.5 / +2.0</span></div>
+      <div class="reward-bar"><span class="label">alignment &Delta;</span><div class="bar" style="width:80px;background:var(--green);"></div><span class="val">+1.0</span></div>
+      <div class="reward-bar"><span class="label">velocity</span><div class="bar" style="width:40px;background:var(--green);opacity:0.7;"></div><span class="val">+0.5</span></div>
+      <div class="reward-bar"><span class="label">type diversity</span><div class="bar" style="width:24px;background:var(--green);opacity:0.6;"></div><span class="val">+0.3</span></div>
+      <div class="reward-bar"><span class="label">anti-confirm</span><div class="bar" style="width:24px;background:var(--cyan);"></div><span class="val">&plusmn;0.3</span></div>
+      <div class="reward-bar"><span class="label">concurrent agents</span><div class="bar" style="width:8px;background:var(--cyan);opacity:0.6;"></div><span class="val">+0.1</span></div>
+      <div class="reward-bar"><span class="label">cost penalty</span><div class="bar" style="width:8px;background:var(--red);"></div><span class="val">&minus;0.1</span></div>
+      <div class="reward-bar"><span class="label">time penalty</span><div class="bar" style="width:4px;background:var(--red);"></div><span class="val">&minus;0.05</span></div>
+      <div class="reward-bar"><span class="label">stagnation</span><div class="bar" style="width:40px;background:var(--red);"></div><span class="val">&minus;0.5</span></div>
+      <div class="reward-bar"><span class="label">failure</span><div class="bar" style="width:80px;background:var(--red);"></div><span class="val">&minus;1.0</span></div>
+      <div class="reward-bar"><span class="label">loop</span><div class="bar" style="width:120px;background:var(--red);opacity:0.7;"></div><span class="val">&minus;1.5&times;</span></div>
+      <div class="reward-bar"><span class="label">inflation</span><div class="bar" style="width:160px;background:var(--red);opacity:0.5;"></div><span class="val">&minus;2.0</span></div>
+    </div>
+  </div>
+
+  <!-- Policy -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(188,140,255,0.15);color:var(--purple);">&#960;</span> Policy Network</h3>
+    <p>Shared-trunk ActorCritic MLP with separate heads for action logits and state value. Action masking sets forbidden logits to &minus;&infin; before softmax.</p>
+    <div style="margin-top:0.75rem;">
+      <svg viewBox="0 0 340 180" width="340" height="180" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', monospace">
+        <!-- Input -->
+        <rect x="10" y="75" width="55" height="30" rx="5" fill="rgba(57,210,192,0.15)" stroke="#39d2c0" stroke-width="0.8"/>
+        <text x="37" y="94" text-anchor="middle" fill="#39d2c0" font-size="10">238</text>
+        <text x="37" y="118" text-anchor="middle" fill="#8b949e" font-size="8">input</text>
+        <!-- Hidden 1 -->
+        <rect x="85" y="65" width="45" height="50" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="0.8"/>
+        <text x="107" y="94" text-anchor="middle" fill="#58a6ff" font-size="10">128</text>
+        <text x="107" y="128" text-anchor="middle" fill="#8b949e" font-size="8">ReLU</text>
+        <!-- Hidden 2 -->
+        <rect x="150" y="65" width="45" height="50" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="0.8"/>
+        <text x="172" y="94" text-anchor="middle" fill="#58a6ff" font-size="10">128</text>
+        <text x="172" y="128" text-anchor="middle" fill="#8b949e" font-size="8">ReLU</text>
+        <!-- Actor head -->
+        <rect x="225" y="25" width="55" height="30" rx="5" fill="rgba(210,153,34,0.15)" stroke="#d29922" stroke-width="0.8"/>
+        <text x="252" y="44" text-anchor="middle" fill="#d29922" font-size="10">20</text>
+        <text x="252" y="18" text-anchor="middle" fill="#8b949e" font-size="8">actor (play)</text>
+        <!-- Value head -->
+        <rect x="225" y="75" width="55" height="30" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="0.8"/>
+        <text x="252" y="94" text-anchor="middle" fill="#3fb950" font-size="10">1</text>
+        <text x="252" y="68" text-anchor="middle" fill="#8b949e" font-size="8">value V(s)</text>
+        <!-- Config head -->
+        <rect x="225" y="125" width="55" height="30" rx="5" fill="rgba(188,140,255,0.15)" stroke="#bc8cff" stroke-width="0.8"/>
+        <text x="252" y="144" text-anchor="middle" fill="#bc8cff" font-size="10">N</text>
+        <text x="252" y="168" text-anchor="middle" fill="#8b949e" font-size="8">config</text>
+        <!-- Connections -->
+        <line x1="65" y1="90" x2="85" y2="90" stroke="#30363d" stroke-width="1"/>
+        <line x1="130" y1="90" x2="150" y2="90" stroke="#30363d" stroke-width="1"/>
+        <line x1="195" y1="80" x2="225" y2="40" stroke="#30363d" stroke-width="1"/>
+        <line x1="195" y1="90" x2="225" y2="90" stroke="#30363d" stroke-width="1"/>
+        <line x1="195" y1="100" x2="225" y2="140" stroke="#30363d" stroke-width="1"/>
+        <!-- Mask arrow -->
+        <text x="295" y="44" text-anchor="start" fill="#f85149" font-size="8">&larr; mask</text>
+      </svg>
+    </div>
+    <table class="spec-table" style="margin-top:0.5rem;">
+      <tr><td>Parameters</td><td>~42K (shared trunk + 3 heads)</td></tr>
+      <tr><td>Heads</td><td>actor (20 plays), value V(s), config (N agent configs)</td></tr>
+      <tr><td>Activation</td><td>ReLU (hidden), linear (heads)</td></tr>
+      <tr><td>Inference</td><td>CPU-only, &lt;50ms</td></tr>
+    </table>
+  </div>
+
+  <!-- Value Function -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(63,185,80,0.15);color:var(--green);">V</span> Value Function</h3>
+    <p>The value head estimates V(s) &mdash; the expected discounted return from the current state. Used in Generalized Advantage Estimation (GAE) to compute advantage targets for the policy update.</p>
+    <table class="spec-table">
+      <tr><td>Architecture</td><td>shared trunk &rarr; linear(128, 1)</td></tr>
+      <tr><td>Output</td><td>scalar V(s) estimate</td></tr>
+      <tr><td>Loss</td><td>MSE(V(s), returns)</td></tr>
+      <tr><td>Coefficient</td><td>0.5 (in combined loss)</td></tr>
+      <tr><td>Bootstrap</td><td>V(s') for non-terminal, 0 for done</td></tr>
+      <tr><td>GAE &lambda;</td><td>0.95</td></tr>
+      <tr><td>Discount &gamma;</td><td>0.99</td></tr>
+    </table>
+  </div>
+
+  <!-- Model -->
+  <div class="card">
+    <h3><span class="icon" style="background:rgba(248,81,73,0.15);color:var(--red);">M</span> Model &mdash; PPO Training</h3>
+    <p>Proximal Policy Optimization with clipped surrogate objective, entropy bonus for exploration, and automatic rollback on non-finite loss. Trains online during sessions and offline via <code>agentshore train</code>.</p>
+    <table class="spec-table">
+      <tr><td>Algorithm</td><td>PPO-Clip (Schulman et al.)</td></tr>
+      <tr><td>Optimizer</td><td>Adam, lr = 3 &times; 10<sup>-4</sup></td></tr>
+      <tr><td>Clip &epsilon;</td><td>0.2</td></tr>
+      <tr><td>Entropy coefficient</td><td>0.05</td></tr>
+      <tr><td>Value loss coefficient</td><td>0.5</td></tr>
+      <tr><td>PPO epochs</td><td>4</td></tr>
+      <tr><td>Mini-batch size</td><td>4</td></tr>
+      <tr><td>Max grad norm</td><td>0.5</td></tr>
+      <tr><td>Update frequency</td><td>every 16 plays</td></tr>
+      <tr><td>Checkpoint frequency</td><td>every 16 plays</td></tr>
+      <tr><td>NaN guard</td><td>snapshot rollback on non-finite loss</td></tr>
+    </table>
+  </div>
+
+</div>
+
+<!-- Footer -->
+<footer class="footer">
+  <p>AgentShore &mdash; RL-based multi-agent coding orchestrator</p>
+  <p style="margin-top:0.5rem;">
+    <a href="https://github.com/SuperSwinkAI/Swink-AgentShore">GitHub</a> &middot;
+    20 actions &middot; 238-dim state &middot; PPO-Clip &middot; policy version 4
+  </p>
+</footer>
+
+</div>
+</body>
+</html>

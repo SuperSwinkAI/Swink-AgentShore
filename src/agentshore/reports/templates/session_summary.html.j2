@@ -1,0 +1,375 @@
+{% extends "base.html.j2" %}
+{% from "components/tables.html.j2" import play_table, cost_table, agent_table, specialization_table, failure_table, overview_metrics %}
+{% from "components/charts.html.j2" import line_chart %}
+
+{% block title %}Session Summary — {{ data.overview.session_id[:8] }}{% endblock %}
+
+{% block content %}
+<h1>Session Summary</h1>
+
+{# 1. Overview #}
+<div class="section">
+    <h2>Overview</h2>
+    {{ overview_metrics(data.overview) }}
+    <p style="margin-top:1rem;color:var(--fg-dim);">
+        Started: {{ data.overview.started_at[:19] }}
+        {% if data.overview.ended_at %}
+        &mdash; Ended: {{ data.overview.ended_at[:19] }}
+        {% endif %}
+    </p>
+</div>
+
+{# 2. Play Timeline #}
+<div class="section">
+    <h2>Play Timeline</h2>
+    {{ play_table(data.play_timeline) }}
+</div>
+
+{# 3. Cost Breakdown #}
+<div class="section">
+    <h2>Cost Breakdown</h2>
+    {{ cost_table(data.cost_breakdown.by_play_type, data.cost_breakdown.by_agent) }}
+
+    {% if data.cost_breakdown.cumulative %}
+    <h3 style="margin-top:1rem;">Cumulative Cost</h3>
+    {{ line_chart(
+        "cumulative-cost-chart",
+        data.cost_breakdown.cumulative | map(attribute=0) | list,
+        data.cost_breakdown.cumulative | map(attribute=1) | list,
+        "Cumulative Cost ($)"
+    ) }}
+    {% endif %}
+</div>
+
+{# 4. Agent Performance #}
+<div class="section">
+    <h2>Agent Performance</h2>
+    {{ agent_table(data.agent_performance) }}
+    <h3 style="margin-top:1rem;">Agent Specialization</h3>
+    {{ specialization_table(data.agent_specialization) }}
+</div>
+
+{# 5. Epic Closure #}
+<div class="section">
+    <h2>Epic Closure</h2>
+    {% if data.epic_summaries %}
+    <table>
+    <thead><tr><th>Epic</th><th>Closure</th><th>Tasks</th></tr></thead>
+    <tbody>
+    {% for epic in data.epic_summaries %}
+    <tr>
+        <td>{{ epic.title }}</td>
+        <td>{{ '%.0f%%' | format(epic.closure_ratio * 100) }}</td>
+        <td>{{ epic.closed_tasks }}/{{ epic.total_tasks }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No epic closure data.</p>
+    {% endif %}
+
+    {% if data.epic_closure_timeline.global_ratio_end > 0 %}
+    <h3 style="margin-top:1rem;">Epic Closure Timeline</h3>
+    <div>
+        <div class="metric">
+            <div class="label">Global Start</div>
+            <div class="value">{{ '%.0f%%' | format(data.epic_closure_timeline.global_ratio_start * 100) }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Global Midpoint</div>
+            <div class="value">{{ '%.0f%%' | format(data.epic_closure_timeline.global_ratio_midpoint * 100) }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Global End</div>
+            <div class="value">{{ '%.0f%%' | format(data.epic_closure_timeline.global_ratio_end * 100) }}</div>
+        </div>
+    </div>
+    {% if data.epic_closure_timeline.tasks_closed_by_play_type %}
+    <table style="margin-top:0.75rem;">
+    <thead><tr><th>Play Type</th><th>Executions</th><th>Estimated Tasks Closed</th></tr></thead>
+    <tbody>
+    {% for row in data.epic_closure_timeline.tasks_closed_by_play_type %}
+    <tr>
+        <td>{{ row.play_type }}</td>
+        <td>{{ row.plays_executed }}</td>
+        <td>{{ row.estimated_tasks_closed }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+</div>
+
+{# 6. Failure Analysis #}
+<div class="section">
+    <h2>Failure Analysis</h2>
+    {{ failure_table(data.failure_analysis) }}
+</div>
+
+{# 7. Scope Drift #}
+<div class="section">
+    <h2>Scope Drift</h2>
+    <div class="metric">
+        <div class="label">Drift Events</div>
+        <div class="value {% if data.scope_drift_count > 0 %}warning{% endif %}">
+            {{ data.scope_drift_count }}
+        </div>
+    </div>
+</div>
+
+{# 8. Anti-Confirmation Bias Audit #}
+<div class="section">
+    <h2>Anti-Confirmation Bias Audit</h2>
+    <div class="metric">
+        <div class="label">Violations</div>
+        <div class="value {% if data.anti_confirmation_violations > 0 %}failure{% else %}success{% endif %}">
+            {{ data.anti_confirmation_violations }}
+        </div>
+    </div>
+    {% if data.anti_confirmation_violations == 0 %}
+    <p class="success" style="margin-top:0.5rem;">No same-agent review violations detected.</p>
+    {% else %}
+    <p class="failure" style="margin-top:0.5rem;">
+        {{ data.anti_confirmation_violations }} case(s) where the reviewing agent was the same as the implementing agent.
+    </p>
+    {% endif %}
+</div>
+
+{# 9. Issue Inflation #}
+<div class="section">
+    <h2>Issue Inflation</h2>
+    <div>
+        <div class="metric">
+            <div class="label">Opened</div>
+            <div class="value">{{ data.issue_inflation.total_opened }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Closed</div>
+            <div class="value">{{ data.issue_inflation.total_closed }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Ratio</div>
+            <div class="value {% if data.issue_inflation.ratio > 2.0 %}warning{% endif %}">
+                {{ '%.2f' | format(data.issue_inflation.ratio) }}
+            </div>
+        </div>
+        <div class="metric">
+            <div class="label">Warnings Triggered</div>
+            <div class="value {% if data.issue_inflation.warnings_triggered > 0 %}warning{% endif %}">
+                {{ data.issue_inflation.warnings_triggered }}
+            </div>
+        </div>
+    </div>
+    {% if data.issue_inflation.per_play %}
+    <h3 style="margin-top:1rem;">Net Open Trend</h3>
+    {{ line_chart(
+        "issue-inflation-net-open-chart",
+        data.issue_inflation.per_play | map(attribute=0) | list,
+        data.issue_inflation.per_play | map(attribute=3) | list,
+        "Net Open (Opened - Closed)"
+    ) }}
+    {% endif %}
+
+    <h3 style="margin-top:1rem;">Source Breakdown</h3>
+    <table>
+    <thead><tr><th>Source</th><th>Issues</th></tr></thead>
+    <tbody>
+    {% for source, count in data.issue_inflation.by_source.items() %}
+    <tr>
+        <td>{{ source }}</td>
+        <td>{{ count }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+
+    <h3 style="margin-top:1rem;">Recovery</h3>
+    {% if data.issue_inflation.recovery.reversed %}
+    <p class="success">
+        Trend reversed before session end. Contributing plays:
+        {{ data.issue_inflation.recovery.contributing_plays | join(', ') }}
+    </p>
+    {% else %}
+    <p class="warning">Trend did not reverse before session end.</p>
+    {% endif %}
+</div>
+
+{# 10. Trajectory Snapshots #}
+<div class="section">
+    <h2>Trajectory Snapshots</h2>
+    {% if data.trajectory_snapshots %}
+    <h3>Projected Closure Over Time</h3>
+    {{ line_chart(
+        "trajectory-projected-closure-chart",
+        data.trajectory_snapshots | map(attribute="play_id") | list,
+        data.trajectory_snapshots | map(attribute="projected_alignment") | list,
+        "Projected Closure Ratio"
+    ) }}
+
+    <h3 style="margin-top:1rem;">Trajectory Analysis</h3>
+    <table>
+    <thead>
+    <tr>
+        <th>Trend</th>
+        <th>Estimated Total Cost (Early)</th>
+        <th>Actual Total Cost</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td>{{ data.trajectory_analysis.trend }}</td>
+        <td>${{ '%.2f' | format(data.trajectory_analysis.estimated_total_cost_early) }}</td>
+        <td>${{ '%.2f' | format(data.trajectory_analysis.actual_total_cost) }}</td>
+    </tr>
+    </tbody>
+    </table>
+
+    <h3 style="margin-top:1rem;">Budget Sufficiency Checkpoints</h3>
+    <table>
+    <thead>
+    <tr>
+        <th>Budget Consumed</th>
+        <th>Projected Sufficient?</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for checkpoint in data.trajectory_analysis.budget_sufficiency %}
+    <tr>
+        <td>{{ '%.0f%%' | format(checkpoint.budget_consumed_pct) }}</td>
+        <td class="{{ 'success' if checkpoint.projected_sufficient else 'warning' }}">
+            {{ 'Yes' if checkpoint.projected_sufficient else 'No' }}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+
+    <h3 style="margin-top:1rem;">Snapshot Details</h3>
+    <table>
+    <thead>
+    <tr>
+        <th>Play</th>
+        <th>Projected Alignment</th>
+        <th>Remaining Plays</th>
+        <th>Remaining Cost</th>
+        <th>Time</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for s in data.trajectory_snapshots %}
+    <tr>
+        <td>{{ s.play_id }}</td>
+        <td>{{ '%.3f' | format(s.projected_alignment) }}</td>
+        <td>{{ s.remaining_plays }}</td>
+        <td>${{ '%.2f' | format(s.remaining_cost) }}</td>
+        <td>{{ s.created_at[:19] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No trajectory snapshots recorded.</p>
+    {% endif %}
+</div>
+
+{# 11. Knowledge & Learnings #}
+<div class="section">
+    <h2>Knowledge &amp; Learnings</h2>
+    <div class="metric">
+        <div class="label">Learnings Captured</div>
+        <div class="value">{{ data.learnings_count }}</div>
+    </div>
+</div>
+
+{# 12. Revert History #}
+<div class="section">
+    <h2>Cleanup History</h2>
+    <div class="metric">
+        <div class="label">Cleanups</div>
+        <div class="value">
+            {{ data.revert_count }}
+        </div>
+    </div>
+</div>
+
+{# 13. Loop Incidents #}
+<div class="section">
+    <h2>Loop Incidents</h2>
+    {% if data.loop_incidents %}
+    <div class="metric">
+        <div class="label">Incidents</div>
+        <div class="value failure">{{ data.loop_incidents|length }}</div>
+    </div>
+    <p class="warning" style="margin-top:0.5rem;">
+        {{ data.loop_incidents|length }} incident(s) where the same play type failed 3+ times consecutively.
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Play Type</th>
+                <th>Peak Streak</th>
+                <th>Tier</th>
+                <th>Plays</th>
+                <th>Resolution</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for inc in data.loop_incidents %}
+            <tr>
+                <td>{{ inc.play_type }}</td>
+                <td>{{ inc.peak_streak }}</td>
+                <td>{{ inc.tier }}</td>
+                <td>#{{ inc.start_play_index + 1 }}–#{{ inc.end_play_index + 1 }}</td>
+                <td>{{ inc.resolution }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="metric">
+        <div class="label">Incidents</div>
+        <div class="value">0</div>
+    </div>
+    <p class="empty-state">No loop incidents detected.</p>
+    {% endif %}
+</div>
+
+{# 14. Review Patterns #}
+<div class="section">
+    <h2>Review Patterns</h2>
+    {% if data.review_patterns %}
+    <table>
+    <thead><tr><th>Pattern</th><th>Category</th><th>Frequency</th><th>Injected</th></tr></thead>
+    <tbody>
+    {% for rp in data.review_patterns %}
+    <tr>
+        <td>{{ rp.pattern }}</td>
+        <td>{{ rp.category }}</td>
+        <td>{{ rp.frequency }}</td>
+        <td>{{ 'Yes' if rp.injected else 'No' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No review patterns detected.</p>
+    {% endif %}
+</div>
+
+{# 15. Recommendations #}
+<div class="section">
+    <h2>Recommendations</h2>
+    {% if data.recommendations %}
+    <ul>
+    {% for rec in data.recommendations %}
+        <li>{{ rec }}</li>
+    {% endfor %}
+    </ul>
+    {% else %}
+    <p class="success">No issues detected &mdash; session performed well.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

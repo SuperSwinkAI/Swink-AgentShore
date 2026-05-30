@@ -1,0 +1,629 @@
+"""Tests for AgentManager — lifecycle, dispatch, circuit breaker, authorship cache."""
+
+from __future__ import annotations
+
+import sys
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
+
+import pytest
+
+from agentshore.agents.manager import AgentManager
+from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
+from agentshore.data.store import DataStore, SessionRecord
+from agentshore.errors import AgentAuthError, AgentTimeout, PlayTimeoutError, PreconditionFailed
+from agentshore.result_parser import parse_skill_result
+from agentshore.state import AgentStatus, AgentType
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+SESSION_ID = "test-session-1"
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def store(tmp_path: Path) -> DataStore:
+    s = DataStore(tmp_path / "agentshore.db")
+    await s.initialize()
+    await s.create_session(
+        SessionRecord(
+            session_id=SESSION_ID,
+            project_path=str(tmp_path),
+            started_at="2026-04-27T00:00:00+00:00",
+        )
+    )
+    yield s
+    await s.close()
+
+
+def _make_manager(
+    store: DataStore,
+    tmp_path: Path,
+    *,
+    mock_binary: str | None = None,
+) -> AgentManager:
+    agents: dict[str, AgentConfig] = {}
+    if mock_binary:
+        for key in ("codex", "claude_code"):
+            agents[key] = AgentConfig(enabled=True, binary=mock_binary, timeout=10)  # type: ignore[assignment]
+    return AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(agents=agents),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+
+
+# ---------------------------------------------------------------------------
+# instantiate
+# ---------------------------------------------------------------------------
+
+
+async def test_instantiate_registers_agent_record(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    assert handle.agent_id in mgr.handles
+    assert handle.status == AgentStatus.IDLE
+    assert handle.agent_type == AgentType.CODEX
+
+    # Check persisted record
+    agent_id = handle.agent_id
+    async with store._conn.execute(
+        "SELECT agent_id, session_id, agent_type FROM agents WHERE agent_id = ?",
+        (agent_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] == agent_id
+    assert row[1] == SESSION_ID
+    assert row[2] == AgentType.CODEX.value
+
+
+async def test_instantiate_creates_circuit_breaker(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    assert handle.agent_id in mgr._circuit_breakers
+
+
+async def test_instantiate_records_model_tier_metadata(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX, model_tier="small")
+
+    assert handle.model_tier == "small"
+    assert handle.model == "gpt-5.4-mini"
+    assert handle.reasoning_effort == "low"
+    assert handle.display_name.startswith("Codex/gpt-5.4-mini:")
+
+
+async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(
+    store: DataStore,
+    tmp_path: Path,
+    mock_agent_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agents = {
+        "codex": AgentConfig(
+            enabled=True,
+            binary=str(mock_agent_path),
+            timeout=5,
+            identity="bot",
+        )
+    }
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(agents=agents),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.resolved_github_login_for_agent",
+        lambda *_args, **_kwargs: "bot",
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.resolve_identity_env",
+        lambda *_args, **_kwargs: {"GH_TOKEN": "ghp_test", "GITHUB_TOKEN": "ghp_test"},
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.verify_identity_repo_access",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AgentAuthError("repo denied")),
+    )
+
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    assert handle.status == AgentStatus.ERROR
+    assert handle.last_error_class == "auth"
+
+
+# ---------------------------------------------------------------------------
+# dispatch — end-to-end via mock agent
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_success_updates_handle_and_store(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full e2e: instantiate → dispatch → parse → verify counters.
+
+    Uses stream_json format (Claude Code) so that token/cost metadata is present.
+    """
+    monkeypatch.setenv("MOCK_AGENT_FORMAT", "stream_json")
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
+    agent_id = handle.agent_id
+
+    result = await mgr.dispatch(agent_id, "do the work")
+
+    assert result.exit_code == 0
+    assert result.tokens_in == 500
+    assert result.tokens_out == 200
+
+    # Parse the raw output using the shared result parser
+    sr = parse_skill_result(result.raw_output)
+    assert sr.success is True
+    assert len(sr.artifacts) == 1
+    assert sr.artifacts[0]["number"] == 42  # type: ignore[index]
+
+    # Handle counters updated
+    assert handle.total_tokens == 700  # 500 in + 200 out
+    assert handle.total_cost > 0.0
+    assert handle.status == AgentStatus.IDLE
+
+    # DataStore stats updated
+    cursor = await store._conn.execute(
+        "SELECT tasks_completed, tasks_failed FROM agents WHERE agent_id = ?",
+        (agent_id,),
+    )
+    row = await cursor.fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+
+
+async def test_dispatch_failure_increments_failed_tasks(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOCK_AGENT_MODE", "failure")
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    result = await mgr.dispatch(agent_id, "do the work")
+    # failure mode exits 0 — result is returned, not raised
+    sr = parse_skill_result(result.raw_output)
+    assert sr.success is False
+
+    cursor = await store._conn.execute(
+        "SELECT tasks_completed, tasks_failed FROM agents WHERE agent_id = ?",
+        (agent_id,),
+    )
+    row = await cursor.fetchone()
+    assert row[0] == 1  # dispatch returned normally (exit 0)
+    assert row[1] == 0
+
+
+async def test_dispatch_nonzero_exit_increments_failed_and_sets_error_status(
+    store: DataStore, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A script that exits 1 → AgentProcessError; handle becomes ERROR."""
+    script = tmp_path_factory.mktemp("scripts") / "exit1.py"
+    script.write_text("import sys; sys.exit(1)\n", encoding="utf-8")
+
+    agents = {"codex": AgentConfig(enabled=True, binary=str(script), timeout=5)}
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(agents=agents),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    from agentshore.errors import AgentProcessError
+
+    with pytest.raises(AgentProcessError):
+        await mgr.dispatch(agent_id, "prompt")
+
+    assert handle.status == AgentStatus.ERROR
+    cursor = await store._conn.execute(
+        "SELECT tasks_failed FROM agents WHERE agent_id = ?", (agent_id,)
+    )
+    row = await cursor.fetchone()
+    assert row[0] == 1
+
+
+async def test_dispatch_emits_subprocess_callbacks(
+    store: DataStore,
+    tmp_path: Path,
+    mock_agent_path: Path,
+) -> None:
+    spawned: list[tuple[str, AgentType, int]] = []
+    exited: list[tuple[str, AgentType, int, int | None]] = []
+
+    async def on_spawned(agent_id: str, agent_type: AgentType, pid: int) -> None:
+        spawned.append((agent_id, agent_type, pid))
+
+    async def on_exited(
+        agent_id: str, agent_type: AgentType, pid: int, exit_code: int | None
+    ) -> None:
+        exited.append((agent_id, agent_type, pid, exit_code))
+
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={"codex": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)}
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+        on_subprocess_spawned=on_spawned,
+        on_subprocess_exited=on_exited,
+    )
+    handle = await mgr.instantiate(AgentType.CODEX)
+    await mgr.dispatch(handle.agent_id, "do the work")
+
+    assert len(spawned) == 1
+    assert len(exited) == 1
+    assert spawned[0][0] == handle.agent_id
+    assert spawned[0][1] == AgentType.CODEX
+    assert exited[0][0] == handle.agent_id
+    assert exited[0][1] == AgentType.CODEX
+
+
+async def test_dispatch_missing_configured_identity_token_marks_auth_error(
+    store: DataStore,
+    tmp_path: Path,
+    mock_agent_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentshore.agents.identity import IdentityResolutionError
+
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    agents = {
+        "codex": AgentConfig(
+            enabled=True,
+            binary=str(mock_agent_path),
+            timeout=5,
+            identity="bot",
+        )
+    }
+    cfg = RuntimeConfig(
+        agents=agents,
+        identities={
+            "bot": GitHubIdentity(
+                git_user_name="Bot",
+                git_user_email="bot@example.com",
+                gh_token_env="BOT_TOKEN",
+            )
+        },
+    )
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=cfg,
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    with pytest.raises(IdentityResolutionError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.status == AgentStatus.ERROR
+    assert handle.last_error_class == "auth"
+
+
+async def test_dispatch_repo_preflight_failure_blocks_cli_launch(
+    store: DataStore,
+    tmp_path: Path,
+    mock_agent_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agents = {
+        "codex": AgentConfig(
+            enabled=True,
+            binary=str(mock_agent_path),
+            timeout=5,
+            identity="bot",
+        )
+    }
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(agents=agents),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.resolved_github_login_for_agent",
+        lambda *_args, **_kwargs: "bot",
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.resolve_identity_env",
+        lambda *_args, **_kwargs: {"GH_TOKEN": "ghp_test", "GITHUB_TOKEN": "ghp_test"},
+    )
+    calls = 0
+
+    def repo_preflight(*_args: object, **_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AgentAuthError("repo denied")
+
+    monkeypatch.setattr("agentshore.agents.manager.verify_identity_repo_access", repo_preflight)
+    dispatch_cli = AsyncMock()
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    with pytest.raises(AgentAuthError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert dispatch_cli.await_count == 0
+    assert handle.status == AgentStatus.ERROR
+    assert handle.last_error_class == "auth"
+
+
+@pytest.mark.parametrize(
+    ("error_class", "message"),
+    [
+        ("timeout_stream_idle", "idle"),
+        ("timeout_wallclock", "wallclock"),
+    ],
+)
+async def test_dispatch_preserves_play_timeout_error_class(
+    store: DataStore,
+    tmp_path: Path,
+    mock_agent_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_class: str,
+    message: str,
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    monkeypatch.setattr(
+        "agentshore.agents.manager.resolve_identity_env", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.manager.verify_identity_repo_access", lambda *_args: None
+    )
+    dispatch_cli = AsyncMock(side_effect=PlayTimeoutError(message, error_class=error_class))
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class == error_class
+    assert handle.timeout_count == 1
+
+
+async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    async def _raise_timeout(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AgentTimeout("timed out")
+
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", _raise_timeout)
+    with pytest.raises(AgentTimeout):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class == "timeout_transient"
+    assert handle.timeout_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker integration
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_blocked_when_circuit_breaker_open(
+    store: DataStore, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Three consecutive failures should open the breaker; next dispatch raises."""
+    script = tmp_path_factory.mktemp("scripts") / "exit1.py"
+    script.write_text("import sys; sys.exit(1)\n", encoding="utf-8")
+
+    agents = {"codex": AgentConfig(enabled=True, binary=str(script), timeout=5)}
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(agents=agents),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    from agentshore.errors import AgentProcessError
+
+    # Three failures to open the breaker (default threshold = 3)
+    for _ in range(3):
+        with pytest.raises(AgentProcessError):
+            await mgr.dispatch(agent_id, "prompt")
+        handle.transition_to(AgentStatus.IDLE)  # reset so dispatch doesn't short-circuit
+
+    # Circuit is now open — next call blocked immediately
+    with pytest.raises(PreconditionFailed, match="Circuit breaker OPEN"):
+        await mgr.dispatch(agent_id, "prompt")
+
+
+# ---------------------------------------------------------------------------
+# clear
+# ---------------------------------------------------------------------------
+
+
+async def test_clear_removes_handle_and_sets_terminated_at(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    await mgr.clear(agent_id)
+
+    assert agent_id not in mgr.handles
+
+    cursor = await store._conn.execute(
+        "SELECT terminated_at FROM agents WHERE agent_id = ?", (agent_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] is not None  # terminated_at set
+
+
+async def test_clear_unknown_agent_raises(store: DataStore, tmp_path: Path) -> None:
+    mgr = _make_manager(store, tmp_path)
+    with pytest.raises(PreconditionFailed, match="Unknown agent_id"):
+        await mgr.clear("does-not-exist")
+
+
+async def test_clear_handles_concurrent_process_null(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """Regression — a concurrent dispatch_cli finally-block can null
+    handle.process between the first guard and the second .returncode read.
+    The clear() path must not raise `'NoneType' object has no attribute
+    'returncode'`. Symptom from a prior session
+    (`agent_clear_failed × 2`)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    # Simulate a process whose handle.process gets nulled while we're awaiting
+    # its .wait() — i.e. mid-clear, a concurrent dispatch finished and reset
+    # the handle. The local-binding fix in manager.py must ride through
+    # without dereferencing handle.process again.
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    fake_proc.terminate = MagicMock()
+    fake_proc.kill = MagicMock()
+
+    async def _wait_then_null() -> int:
+        # Pretend the racing dispatch finishes and clears the handle.
+        handle.process = None
+        # Pretend the process exited cleanly during the wait.
+        fake_proc.returncode = 0
+        return 0
+
+    fake_proc.wait = AsyncMock(side_effect=_wait_then_null)
+    handle.process = fake_proc
+
+    # Must not raise.
+    await mgr.clear(handle.agent_id)
+
+    assert handle.agent_id not in mgr.handles
+
+
+# ---------------------------------------------------------------------------
+# Authorship cache
+# ---------------------------------------------------------------------------
+
+
+async def test_record_branch_exposure_records_branch_exposure(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    mgr.record_branch_exposure(branch="feature/foo", agent_id="agent-a")
+
+    assert mgr.branch_exposure["feature/foo"] == "agent-a"
+
+
+async def test_record_branch_commit_updates_branch_exposure(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    mgr.record_branch_commit(branch="feature/bar", agent_id="agent-b", sha="abc123")
+
+    assert mgr.branch_exposure["feature/bar"] == "agent-b"
+
+
+async def test_record_branch_exposure_last_writer_wins(store: DataStore, tmp_path: Path) -> None:
+    mgr = _make_manager(store, tmp_path)
+    mgr.record_branch_exposure("branch-a", "agent-1")
+    mgr.record_branch_exposure("branch-a", "agent-2")
+
+    assert mgr.branch_exposure["branch-a"] == "agent-2"
+
+
+# ---------------------------------------------------------------------------
+# Error recovery
+# ---------------------------------------------------------------------------
+
+
+async def test_attempt_recovery_transitions_error_to_idle(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """An ERROR agent whose breaker is HALF_OPEN should recover to IDLE."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    # Put agent into ERROR state
+    handle.transition_to(AgentStatus.ERROR)
+
+    # Trip the breaker and let the cooldown elapse so it becomes HALF_OPEN.
+    cb = mgr.circuit_breakers[agent_id]
+    cb.record_failure()
+    # Force HALF_OPEN by recording success (resets to CLOSED, which allows dispatch)
+    cb.record_success()
+
+    result = await mgr.attempt_recovery(agent_id)
+
+    assert result is True
+    assert handle.status == AgentStatus.IDLE
+
+
+async def test_attempt_recovery_fails_when_breaker_open(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """An ERROR agent whose breaker is OPEN should not recover."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    handle.transition_to(AgentStatus.ERROR)
+
+    # Trip the breaker so it's OPEN (default threshold = 3)
+    cb = mgr.circuit_breakers[agent_id]
+    for _ in range(3):
+        cb.record_failure()
+    assert cb.is_open
+
+    result = await mgr.attempt_recovery(agent_id)
+
+    assert result is False
+    assert handle.status == AgentStatus.ERROR
+
+
+async def test_attempt_recovery_does_not_clear_auth_quarantine(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    handle.transition_to(AgentStatus.ERROR)
+    handle.last_error_class = "auth"
+
+    result = await mgr.attempt_recovery(handle.agent_id)
+
+    assert result is False
+    assert handle.status == AgentStatus.ERROR
+    assert handle.last_error_class == "auth"

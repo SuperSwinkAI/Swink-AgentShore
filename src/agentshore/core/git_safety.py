@@ -1,0 +1,374 @@
+"""Git safety helpers for main-repo branch invariant guard (desktop-kqo5).
+
+The main project repository's HEAD must always be on the default branch
+(typically ``refs/heads/main``) at the boundary of every play. The commit
+SHA under that ref may advance during a play — ``merge_pr`` legitimately
+moves it via ``git merge --no-ff origin/<branch>`` followed by ``git push``.
+What must not change is the ref pointer itself.
+
+This module exposes pure-Python helpers (no asyncio, no agentshore state) that
+the orchestrator wires into ``_dispatch_play`` / ``_process_completion``
+boundaries and the session-start sweeper.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import subprocess
+from typing import TYPE_CHECKING
+
+from agentshore.logging import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_logger = get_logger(__name__)
+
+# Substring that flags a path which leaked through bash quoting and ended up
+# with a literal backslash-space. The canonical example is a project dir whose
+# name contains a space (e.g. ``~/Dev/Some Project``) becoming a mangled sibling
+# ``Some\ Project`` when a skill template's quoting dropped a level. The check is
+# intentionally a substring scan rather than a regex — there is no
+# legitimate filesystem path that should contain ``\ `` on macOS or Linux.
+PATH_ESCAPE_MARKER = "\\ "
+
+# Fallback default branch name if ``origin/HEAD`` cannot be resolved at
+# session start. ``main`` matches GitHub's default for new repos and is the
+# most common configuration in the AgentShore fleet.
+DEFAULT_BRANCH_FALLBACK = "main"
+
+
+def _run_git(
+    args: list[str],
+    cwd: Path,
+    *,
+    timeout: float = 10.0,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``git`` synchronously in *cwd* and capture text output.
+
+    Returned ``returncode`` is non-zero on failure; callers branch on it
+    instead of letting subprocess raise so the guard never crashes the
+    orchestrator's main loop. Timeout protects against hung git processes
+    (e.g. an interactive credential prompt sneaking in).
+    """
+    return subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def resolve_default_branch(repo_root: Path) -> tuple[str, bool]:
+    """Resolve the project's default branch name (e.g. ``"main"``).
+
+    Returns ``(branch, assumed)``. ``assumed`` is True when ``origin/HEAD``
+    could not be read and the caller should emit a
+    ``default_branch_assumed`` warning so operators can configure
+    ``project.target_branch`` explicitly.
+
+    The resolution order matches ``cli/commands/init._detect_default_target_branch``:
+    1. ``git symbolic-ref refs/remotes/origin/HEAD`` (the GitHub default).
+    2. Fallback to :data:`DEFAULT_BRANCH_FALLBACK` with ``assumed=True``.
+    """
+    try:
+        result = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo_root)
+    except (OSError, subprocess.SubprocessError):
+        return DEFAULT_BRANCH_FALLBACK, True
+    if result.returncode == 0:
+        ref = result.stdout.strip()
+        prefix = "refs/remotes/origin/"
+        if ref.startswith(prefix):
+            branch = ref[len(prefix) :].strip()
+            if branch:
+                return branch, False
+    return DEFAULT_BRANCH_FALLBACK, True
+
+
+def current_head_ref(repo_root: Path) -> str | None:
+    """Return the symbolic ref currently checked out, e.g. ``"refs/heads/main"``.
+
+    Returns ``None`` when HEAD is detached (``git symbolic-ref HEAD`` exits
+    non-zero in that case) or when the git invocation itself fails. The
+    boundary guard treats both cases identically — any normal play should
+    leave HEAD on a branch.
+    """
+    try:
+        result = _run_git(["symbolic-ref", "HEAD"], repo_root)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    ref = result.stdout.strip()
+    return ref or None
+
+
+def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
+    """Best-effort restore of *repo_root* to a clean ``default_branch`` checkout.
+
+    Returns True once the working tree is back on ``default_branch`` with no
+    in-progress merge, False only when git still refuses after recovery. The
+    caller emits ``main_repo_auto_restore_failed`` and pauses dispatch on a
+    False return.
+
+    Recovery path (desktop-kqo5 wedge fix): a bare ``git checkout`` cannot
+    proceed when an errant/killed ``merge_pr`` left the main checkout with an
+    in-progress merge (``.git/MERGE_HEAD`` present, ``UU`` conflicts in the
+    index). AgentShore owns this main checkout and the conflicting work lives
+    on the PR branch, so we abort the in-progress merge and hard-reset before
+    retrying the checkout. Without this the orchestrator latches a permanent
+    trunk-dispatch pause on a fully recoverable state.
+
+    Uses a slightly longer timeout than the symbolic-ref reads because
+    checkout/reset may have to walk the index.
+    """
+
+    def _checkout() -> bool:
+        try:
+            result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    if _checkout():
+        return True
+
+    # Checkout was refused — recover from an in-progress merge / dirty index.
+    # ``--quit`` clears MERGE_HEAD without touching the worktree; ``--abort``
+    # is the merge-specific unwind. Both are best-effort. ``reset --hard``
+    # then drops the conflicted worktree/index so the checkout can land.
+    merge_in_progress = (repo_root / ".git" / "MERGE_HEAD").exists()
+    for recovery in (["merge", "--abort"], ["reset", "--hard"]):
+        if recovery == ["merge", "--abort"] and not merge_in_progress:
+            continue
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _run_git(recovery, repo_root, timeout=30.0)
+        if _checkout():
+            return True
+    return _checkout()
+
+
+def path_contains_backslash_space(path: str | Path) -> bool:
+    """True if *path* contains a literal backslash-space sequence.
+
+    Catches the desktop-4ugk failure mode where a quoting bug in a skill
+    template generated a path like ``/Users/example/Dev/Some\\ Project``
+    on disk. There is no legitimate POSIX path that should match.
+    """
+    return PATH_ESCAPE_MARKER in str(path)
+
+
+_REQUIRED_GITIGNORE_ENTRIES: tuple[str, ...] = (
+    ".agentshore/",
+    ".agents/",
+    ".beads/",
+    "agentshore.yaml",
+)
+
+
+def ensure_gitignore_entries(repo_root: Path) -> list[str]:
+    """Ensure artifact directories are listed in the project ``.gitignore``.
+
+    Returns the list of entries that were appended (empty if all already
+    present).  The function is idempotent and creates ``.gitignore`` if it
+    does not exist.
+    """
+    from agentshore.cli_helpers import _ensure_gitignore_entry
+
+    added: list[str] = []
+    for entry in _REQUIRED_GITIGNORE_ENTRIES:
+        if _ensure_gitignore_entry(repo_root, entry):
+            added.append(entry)
+    return added
+
+
+def untrack_ignored_entries(repo_root: Path) -> list[str]:
+    """Untrack required entries that are gitignored but still tracked by git.
+
+    Adding a path to ``.gitignore`` has *no effect* if that path was committed
+    before the ignore line existed — git keeps tracking it, so the ignore is a
+    silent no-op (observed for ``.beads/`` on a repo that committed it early).
+    For each entry in :data:`_REQUIRED_GITIGNORE_ENTRIES` that is currently
+    tracked, run ``git rm -r --cached`` to stage its removal from version
+    control while leaving the working-tree copy in place (``--cached``).
+
+    Returns the list of entries that were untracked (empty if none were
+    tracked). Idempotent — a path already untracked is skipped. The staged
+    removals are committed by :func:`commit_gitignore_if_dirty`.
+    """
+    untracked: list[str] = []
+    for entry in _REQUIRED_GITIGNORE_ENTRIES:
+        ls = _run_git(["ls-files", "--", entry], repo_root)
+        if ls.returncode != 0 or not ls.stdout.strip():
+            continue  # entry is not tracked — nothing to untrack
+        rm = _run_git(
+            ["rm", "-r", "--cached", "--ignore-unmatch", "--", entry],
+            repo_root,
+        )
+        if rm.returncode == 0:
+            untracked.append(entry)
+    return untracked
+
+
+def commit_gitignore_if_dirty(repo_root: Path) -> bool:
+    """Commit staged ``.gitignore`` edits and untrack removals in one commit.
+
+    Called after :func:`ensure_gitignore_entries` and
+    :func:`untrack_ignored_entries` to keep trunk clean so downstream plays
+    (especially ``merge_pr``) don't block on a dirty working tree. Stages
+    ``.gitignore`` (the ``git rm --cached`` removals are already staged) and
+    commits if anything is staged. Returns True if a commit was created.
+
+    Bootstrap runs on a clean working tree (the main-repo branch invariant
+    guard ensures HEAD is on the default branch with no in-flight edits), so
+    "anything staged" is exactly the gitignore/untrack changes this sweep
+    produced.
+    """
+    add = _run_git(["add", "--", ".gitignore"], repo_root)
+    if add.returncode != 0:
+        return False
+    # returncode 0 == no staged changes; 1 == staged changes present.
+    staged = _run_git(["diff", "--cached", "--quiet"], repo_root)
+    if staged.returncode == 0:
+        return False
+    commit = _run_git(
+        ["commit", "-m", "chore: ignore and untrack AgentShore artifact paths"],
+        repo_root,
+        timeout=30.0,
+    )
+    return commit.returncode == 0
+
+
+def find_path_escape_siblings(project_root: Path) -> list[Path]:
+    """Return sibling directories of *project_root* whose name has backslash-space.
+
+    Scans only the immediate parent (no recursion) — the canonical bug is a
+    sibling-of-project escape, not nested. Returns an empty list when the
+    parent is unreadable; never raises.
+    """
+    parent = project_root.parent
+    if not parent.exists() or not parent.is_dir():
+        return []
+    try:
+        candidates = list(parent.iterdir())
+    except OSError:
+        return []
+    return [p for p in candidates if path_contains_backslash_space(p.name)]
+
+
+def check_main_repo_branch_mutated(
+    repo_root: Path,
+    *,
+    pre_ref: str | None,
+    default_branch: str,
+) -> tuple[bool, str | None, bool]:
+    """Compare ``pre_ref`` to the live HEAD; return mutation flag and detail.
+
+    Returns ``(mutated, post_ref, restored)``. ``mutated`` is True when the
+    ref changed (or HEAD is now detached when pre was a ref). ``post_ref``
+    is the current symbolic ref or ``None`` for detached. ``restored`` is
+    True if an auto-restore checkout succeeded after detecting a mutation.
+
+    The caller logs structured events around this — this function stays
+    pure so it can be unit-tested without an orchestrator.
+    """
+    post_ref = current_head_ref(repo_root)
+    mutated = pre_ref != post_ref
+    if not mutated:
+        return False, post_ref, False
+    restored = restore_default_branch(repo_root, default_branch)
+    return True, post_ref, restored
+
+
+def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
+    """Attempt to load the SSH signing key from the macOS Keychain.
+
+    Runs ``ssh-add -l`` to check if any identity is loaded. If not,
+    attempts ``ssh-add --apple-use-keychain ~/.ssh/id_ed25519`` (macOS)
+    or ``ssh-add ~/.ssh/id_ed25519`` (Linux/other) to load it
+    non-interactively.
+
+    Returns ``(loaded, detail)`` where *loaded* is True when at least
+    one identity is available after the attempt, and *detail* is a
+    human-readable status string for logging.
+
+    On Windows, checks for the ssh-agent service and attempts to add
+    the default key via ``ssh-add``. Falls back gracefully when the
+    agent is unavailable.
+
+    This is idempotent — safe to call every session start.
+    """
+    import platform
+    import shutil
+
+    ssh_add = shutil.which("ssh-add")
+    if ssh_add is None:
+        return False, "ssh-add not found on PATH"
+
+    def _keys_loaded() -> tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                [ssh_add, "-l"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"ssh-add probe failed: {exc}"
+        if result.returncode == 0:
+            first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+            return True, first
+        return False, result.stderr.strip() or "no identities loaded"
+
+    loaded, detail = _keys_loaded()
+    if loaded:
+        return True, detail
+
+    # Attempt non-interactive load from the platform keychain / default key.
+    import pathlib
+
+    default_key = pathlib.Path.home() / ".ssh" / "id_ed25519"
+    if not default_key.exists():
+        return False, f"no identities loaded and {default_key} does not exist"
+
+    system = platform.system()
+    if system == "Darwin":
+        add_cmd = [ssh_add, "--apple-use-keychain", str(default_key)]
+    elif system == "Windows":
+        add_cmd = [ssh_add, str(default_key)]
+    else:
+        add_cmd = [ssh_add, str(default_key)]
+
+    try:
+        add_result = subprocess.run(
+            add_cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"ssh-add load attempt failed: {exc}"
+
+    if add_result.returncode != 0:
+        stderr = add_result.stderr.strip()
+        return False, f"ssh-add load failed: {stderr}"
+
+    # Re-check after loading
+    return _keys_loaded()
+
+
+__all__ = [
+    "DEFAULT_BRANCH_FALLBACK",
+    "PATH_ESCAPE_MARKER",
+    "check_main_repo_branch_mutated",
+    "current_head_ref",
+    "commit_gitignore_if_dirty",
+    "ensure_gitignore_entries",
+    "ensure_ssh_signing_key_loaded",
+    "find_path_escape_siblings",
+    "path_contains_backslash_space",
+    "resolve_default_branch",
+    "restore_default_branch",
+    "untrack_ignored_entries",
+]

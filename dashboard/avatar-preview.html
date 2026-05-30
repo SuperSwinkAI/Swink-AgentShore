@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Agent Avatar Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111419;
+        --panel: #1a1f27;
+        --panel-2: #232936;
+        --line: #3a4352;
+        --text: #eef2f7;
+        --muted: #a7b0bd;
+        --gold: #d6aa55;
+        --ink: #0b0d11;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(135deg, rgba(214, 170, 85, 0.08), transparent 32rem),
+          radial-gradient(
+            circle at top right,
+            rgba(93, 175, 224, 0.12),
+            transparent 34rem
+          ),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        width: min(1400px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 44px;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: flex-end;
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(28px, 4vw, 46px);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .lede {
+        max-width: 720px;
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .spec {
+        flex: 0 0 auto;
+        border: 1px solid var(--line);
+        background: rgba(26, 31, 39, 0.78);
+        padding: 10px 12px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 18px;
+      }
+
+      .card {
+        position: relative;
+        min-height: 470px;
+        border: 2px solid #0b0d11;
+        outline: 1px solid var(--gold);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 42%),
+          var(--panel);
+        box-shadow: 0 18px 38px rgba(0, 0, 0, 0.34);
+        padding: 12px;
+      }
+
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 6px;
+        border: 1px solid rgba(214, 170, 85, 0.28);
+        pointer-events: none;
+      }
+
+      .card-top {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+        margin-bottom: 10px;
+      }
+
+      .number {
+        color: var(--gold);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .family {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+
+      .portrait {
+        display: grid;
+        place-items: center;
+        height: 218px;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.05) 25%,
+            transparent 25%
+          ),
+          linear-gradient(
+            -45deg,
+            rgba(255, 255, 255, 0.05) 25%,
+            transparent 25%
+          ),
+          linear-gradient(
+            45deg,
+            transparent 75%,
+            rgba(255, 255, 255, 0.05) 75%
+          ),
+          linear-gradient(
+            -45deg,
+            transparent 75%,
+            rgba(255, 255, 255, 0.05) 75%
+          ),
+          var(--panel-2);
+        background-size: 16px 16px;
+        background-position:
+          0 0,
+          0 8px,
+          8px -8px,
+          -8px 0;
+      }
+
+      .idle-frame {
+        width: 96px;
+        height: 192px;
+        background-image: var(--sprite);
+        background-repeat: no-repeat;
+        background-size: 672px 576px;
+        background-position: -384px 0;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        filter: drop-shadow(0 10px 0 rgba(0, 0, 0, 0.26));
+      }
+
+      .name {
+        position: relative;
+        margin: 12px 0 6px;
+        font-size: 20px;
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      .vibe {
+        position: relative;
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      dl {
+        position: relative;
+        display: grid;
+        grid-template-columns: 74px 1fr;
+        gap: 7px 10px;
+        margin: 0 0 12px;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      dt {
+        color: var(--gold);
+        font-weight: 700;
+      }
+
+      dd {
+        margin: 0;
+        color: var(--text);
+      }
+
+      .sheet-wrap {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--ink);
+        padding: 8px;
+      }
+
+      .sheet {
+        display: block;
+        width: 224px;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+
+      @media (max-width: 760px) {
+        header {
+          display: block;
+        }
+
+        .spec {
+          margin-top: 16px;
+          width: fit-content;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Agent Avatar Cards</h1>
+          <p class="lede">
+            Twenty androgynous, model-backed AgentShore agent avatars. Each card
+            shows the down-facing idle frame as the portrait, with the complete
+            sprite sheet below it.
+          </p>
+        </div>
+        <div class="spec">
+          sheet: 112x96 PNG<br />
+          frame: 16x32 px<br />
+          layout: 7 cols x 3 rows
+        </div>
+      </header>
+
+      <section class="grid" aria-label="Agent avatar preview cards">
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#01</span><span class="family">Claude</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/claude_1.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">claude_1</h2>
+          <p class="vibe">
+            Confident lead energy with a short coat and warm, readable
+            silhouette.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Upright stance, swept hair, compact coat shape.</dd>
+            <dt>Palette</dt>
+            <dd>Amber, rust, cream, dark outline.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="claude_1 full sprite sheet"
+              src="src/assets/agents/claude_1.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#02</span><span class="family">Claude</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/claude_2.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">claude_2</h2>
+          <p class="vibe">
+            Slim strategist variant with a high collar and a softer field-ready
+            read.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>High collar, narrower frame, side-tool accent.</dd>
+            <dt>Palette</dt>
+            <dd>Burnt orange, slate, warm ivory.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="claude_2 full sprite sheet"
+              src="src/assets/agents/claude_2.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#03</span><span class="family">Codex</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/codex_1.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">codex_1</h2>
+          <p class="vibe">
+            Sturdy systems-builder silhouette with a practical utility-vest
+            feel.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Broad shoulders, strong boots, vest blocks.</dd>
+            <dt>Palette</dt>
+            <dd>Deep green, graphite, mint highlights.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="codex_1 full sprite sheet"
+              src="src/assets/agents/codex_1.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#04</span><span class="family">Codex</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/codex_2.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">codex_2</h2>
+          <p class="vibe">
+            Compact mechanic variant with a kit-bag profile and grounded
+            palette.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Square backpack, tool-belt cue, compact stance.</dd>
+            <dt>Palette</dt>
+            <dd>Moss, charcoal, brass accents.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="codex_2 full sprite sheet"
+              src="src/assets/agents/codex_2.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#05</span><span class="family">Gemini</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gemini_1.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gemini_1</h2>
+          <p class="vibe">
+            Sleek scout with a covered face and a clean, high-tech read.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Narrow frame, visor hood, precise vertical lines.</dd>
+            <dt>Palette</dt>
+            <dd>Blue-white, steel, cyan accents.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gemini_1 full sprite sheet"
+              src="src/assets/agents/gemini_1.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#06</span><span class="family">Gemini</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gemini_2.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gemini_2</h2>
+          <p class="vibe">
+            Balanced twin-panel jacket variant, light and fast without becoming
+            fragile.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Split jacket panels, small side accent, sleek head shape.</dd>
+            <dt>Palette</dt>
+            <dd>Azure, pale gray, small violet accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gemini_2 full sprite sheet"
+              src="src/assets/agents/gemini_2.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#07</span><span class="family">GPT</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gpt_1.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gpt_1</h2>
+          <p class="vibe">
+            Calm architect look with a centered jacket and quiet design
+            language.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Structured jacket, clean symmetry, medium build.</dd>
+            <dt>Palette</dt>
+            <dd>Teal, navy, off-white.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gpt_1 full sprite sheet"
+              src="src/assets/agents/gpt_1.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#08</span><span class="family">GPT</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gpt_2.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gpt_2</h2>
+          <p class="vibe">
+            Analyst variant with visor/glasses cues and a tidy, composed stance.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Glasses line, neat sleeves, squared jacket front.</dd>
+            <dt>Palette</dt>
+            <dd>Sea green, ink, light aqua.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gpt_2 full sprite sheet"
+              src="src/assets/agents/gpt_2.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#09</span><span class="family">Other</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/other_1.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">other_1</h2>
+          <p class="vibe">
+            Experimental wildcard with a cloak-like silhouette and sharp
+            contrast accents.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Asymmetric cloak, unusual shoulder shape, bright tool cue.</dd>
+            <dt>Palette</dt>
+            <dd>Violet, charcoal, electric lime.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="other_1 full sprite sheet"
+              src="src/assets/agents/other_1.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#10</span><span class="family">Other</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/other_2.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">other_2</h2>
+          <p class="vibe">
+            More synthetic wildcard with antenna details and a punchy tech
+            palette.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Antenna tabs, compact frame, bright side channels.</dd>
+            <dt>Palette</dt>
+            <dd>Magenta, deep charcoal, yellow and cyan accents.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="other_2 full sprite sheet"
+              src="src/assets/agents/other_2.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#11</span><span class="family">Claude</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/claude_3.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">claude_3</h2>
+          <p class="vibe">
+            Quiet operator variant with a darker read, side braid cue, and
+            bright sash.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Side braid, vertical sash, compact upright stance.</dd>
+            <dt>Palette</dt>
+            <dd>Dark umber, ember orange, teal accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="claude_3 full sprite sheet"
+              src="src/assets/agents/claude_3.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#12</span><span class="family">Claude</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/claude_4.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">claude_4</h2>
+          <p class="vibe">
+            Traveling field-strategist silhouette with a wide hat and
+            poncho-like coat.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Wide brim, tapered coat, small blue gear cue.</dd>
+            <dt>Palette</dt>
+            <dd>Clay, navy, sand, soft blue accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="claude_4 full sprite sheet"
+              src="src/assets/agents/claude_4.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#13</span><span class="family">Codex</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/codex_3.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">codex_3</h2>
+          <p class="vibe">
+            Heavy build variant with exosuit shoulders and high-visibility work
+            accents.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Square exosuit torso, side modules, broad footprint.</dd>
+            <dt>Palette</dt>
+            <dd>Forest, black-green, orange signal marks.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="codex_3 full sprite sheet"
+              src="src/assets/agents/codex_3.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#14</span><span class="family">Codex</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/codex_4.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">codex_4</h2>
+          <p class="vibe">
+            Workshop specialist with goggles and an apron-like front panel.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Goggles, apron block, compact tooling stance.</dd>
+            <dt>Palette</dt>
+            <dd>Olive, pale green, dark workwear, yellow accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="codex_4 full sprite sheet"
+              src="src/assets/agents/codex_4.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#15</span><span class="family">Gemini</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gemini_3.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gemini_3</h2>
+          <p class="vibe">
+            Space-suit scout with a bubble helmet and bright internal display
+            colors.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Bubble helmet, compact suit, pink side module.</dd>
+            <dt>Palette</dt>
+            <dd>Indigo, ice blue, magenta accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gemini_3 full sprite sheet"
+              src="src/assets/agents/gemini_3.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#16</span><span class="family">Gemini</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gemini_4.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gemini_4</h2>
+          <p class="vibe">
+            Fast messenger variant with a crest, scarf line, and brighter motion
+            read.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Top crest, side scarf, long narrow jacket.</dd>
+            <dt>Palette</dt>
+            <dd>Bright azure, deep blue, yellow accent.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gemini_4 full sprite sheet"
+              src="src/assets/agents/gemini_4.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#17</span><span class="family">GPT</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gpt_3.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gpt_3</h2>
+          <p class="vibe">
+            Wrapped-coat thinker with a diagonal front panel and warm utility
+            accent.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Diagonal wrap coat, darker face read, offset pocket.</dd>
+            <dt>Palette</dt>
+            <dd>Deep teal, cream, burnt copper.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gpt_3 full sprite sheet"
+              src="src/assets/agents/gpt_3.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#18</span><span class="family">GPT</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/gpt_4.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">gpt_4</h2>
+          <p class="vibe">
+            Synthetic architect variant with a square head and glowing central
+            panel.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Square head, screen face, robotic torso panel.</dd>
+            <dt>Palette</dt>
+            <dd>Dark teal, aqua glow, lime top mark.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="gpt_4 full sprite sheet"
+              src="src/assets/agents/gpt_4.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#19</span><span class="family">Other</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/other_3.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">other_3</h2>
+          <p class="vibe">
+            Crystal-cloak wildcard with angular head facets and an offset glow.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Crystal head shape, angular cloak, neon side shard.</dd>
+            <dt>Palette</dt>
+            <dd>Indigo, lavender, cyan glow.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="other_3 full sprite sheet"
+              src="src/assets/agents/other_3.png"
+            />
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-top">
+            <span class="number">#20</span><span class="family">Other</span>
+          </div>
+          <div class="portrait">
+            <div
+              class="idle-frame"
+              style="--sprite: url(&quot;src/assets/agents/other_4.png&quot;)"
+            ></div>
+          </div>
+          <h2 class="name">other_4</h2>
+          <p class="vibe">
+            Round synthetic wildcard with antenna bars and bright modular side
+            panels.
+          </p>
+          <dl>
+            <dt>Hook</dt>
+            <dd>Rounded head, twin antennae, blocky side panels.</dd>
+            <dt>Palette</dt>
+            <dd>Hot magenta, black, green signal glow.</dd>
+          </dl>
+          <div class="sheet-wrap">
+            <img
+              class="sheet"
+              alt="other_4 full sprite sheet"
+              src="src/assets/agents/other_4.png"
+            />
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

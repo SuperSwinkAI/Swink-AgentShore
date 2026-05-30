@@ -1,0 +1,44 @@
+{
+  "name": "agentshore-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test:unit": "vitest run --environment jsdom",
+    "test:e2e": "echo 'Playwright tests are opt-in. Run: npm run ui-integrity-check' && exit 0",
+    "ui-integrity-check": "UI_INTEGRITY_CHECK=1 playwright test",
+    "ui-integrity-check:ci": "UI_INTEGRITY_CHECK=1 playwright test --reporter=line",
+    "build:lib": "vite build --mode lib && tsc -p tsconfig.lib.json"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^27.0.1",
+    "typescript": "^5.4",
+    "vite": "^8.0.12",
+    "vitest": "^4.0.7",
+    "ws": "^8.20.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./dist/index.css": "./dist/index.css"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

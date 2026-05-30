@@ -1,0 +1,66 @@
+.frame {
+  width: 100%;
+  height: 100vh;
+  border: 0;
+  display: block;
+}
+
+.fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  text-align: center;
+  min-height: 100vh;
+  color: var(--color-fm-text, inherit);
+}
+
+.fallback h1 {
+  margin: 0;
+}
+
+.shell {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-fm-background, #0a1118);
+}
+
+.demoChrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 1rem;
+  background: var(--color-fm-panel, rgba(20, 28, 36, 0.92));
+  border-bottom: 1px solid var(--color-fm-panel-stroke, rgba(72, 184, 255, 0.25));
+  color: var(--color-fm-text, #d1e7ff);
+  font-size: 0.85rem;
+}
+
+.demoExit {
+  color: var(--color-fm-accent, #59d3ff);
+  text-decoration: none;
+}
+
+.demoExit:hover {
+  text-decoration: underline;
+}
+
+.demoScenarioLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.demoScenarioLabel select {
+  background: rgba(0, 0, 0, 0.45);
+  color: inherit;
+  border: 1px solid var(--color-fm-panel-stroke, rgba(72, 184, 255, 0.25));
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.4rem;
+  font-size: inherit;
+}

@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Dashboard Decisions</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #061114;
+        --panel: #071a20;
+        --panel-2: #0b222b;
+        --panel-3: #0e2b34;
+        --line: #1a6f83;
+        --line-soft: rgba(70, 202, 240, 0.28);
+        --text: #eaf8fb;
+        --muted: #94bac3;
+        --accent: #37d9ff;
+        --codex: #f4d44d;
+        --gemini: #45a9ff;
+        --claude: #ff9146;
+        --green: #2be0b1;
+        --purple: #c650d4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at 78% 10%, rgba(36, 134, 174, 0.28), transparent 28%),
+          linear-gradient(135deg, #07120f 0%, #06131a 55%, #071d25 100%);
+        color: var(--text);
+        font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      code {
+        color: #d9fbff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.94em;
+      }
+
+      .page {
+        width: min(1220px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 48px 0 72px;
+      }
+
+      .hero {
+        padding: 32px 0 30px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 920px;
+        margin-top: 10px;
+        font-size: clamp(44px, 6vw, 76px);
+        line-height: 0.95;
+      }
+
+      .dek {
+        max-width: 900px;
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .doc-nav,
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .doc-nav {
+        margin-top: 28px;
+      }
+
+      .doc-nav a,
+      .pill,
+      .links a {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 11px;
+        background: rgba(7, 34, 44, 0.72);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .links {
+        margin-top: 12px;
+      }
+
+      .links a {
+        border-color: var(--line-soft);
+        background: rgba(55, 217, 255, 0.08);
+        font-size: 12px;
+      }
+
+      .section {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(5, 22, 29, 0.86);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+      }
+
+      .section-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: end;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 20px;
+      }
+
+      .section-head p {
+        max-width: 820px;
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+        padding: 20px;
+      }
+
+      .grid.three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card.feature {
+        grid-column: 1 / -1;
+      }
+
+      .card-body {
+        padding: 14px 16px 16px;
+      }
+
+      .card-body h3 {
+        font-size: 16px;
+      }
+
+      .card-body p {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .thumb {
+        display: block;
+        width: 100%;
+        aspect-ratio: 3 / 2;
+        object-fit: cover;
+        background: #031016;
+      }
+
+      .thumb.contain {
+        object-fit: contain;
+        padding: 18px;
+        background:
+          linear-gradient(rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          #031016;
+        background-size: 22px 22px;
+      }
+
+      .thumb.sheet {
+        aspect-ratio: 1.16 / 1;
+      }
+
+      .thumb.preview {
+        aspect-ratio: 1.5 / 1;
+      }
+
+      .decision-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        padding: 20px;
+      }
+
+      .decision {
+        border: 1px solid var(--line-soft);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 14px;
+        background: var(--panel-2);
+      }
+
+      .decision strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .decision span {
+        color: var(--muted);
+      }
+
+      .matrix {
+        width: calc(100% - 40px);
+        margin: 20px;
+        border-collapse: collapse;
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+      }
+
+      .matrix th,
+      .matrix td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .matrix th {
+        background: rgba(55, 217, 255, 0.08);
+        color: #dff8fc;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .matrix tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .swatch {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 8px;
+        border-radius: 50%;
+        box-shadow: 0 0 16px currentColor;
+        vertical-align: -1px;
+      }
+
+      .codex {
+        color: var(--codex);
+      }
+
+      .gemini {
+        color: var(--gemini);
+      }
+
+      .claude {
+        color: var(--claude);
+      }
+
+      .green {
+        color: var(--green);
+      }
+
+      .purple {
+        color: var(--purple);
+      }
+
+      .asset-list {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        padding: 20px;
+      }
+
+      .asset-list a {
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+        padding: 10px;
+        background: var(--panel-3);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      @media (max-width: 840px) {
+        .page {
+          width: min(100% - 28px, 1220px);
+          padding-top: 28px;
+        }
+
+        h1 {
+          font-size: 42px;
+        }
+
+        .grid,
+        .grid.three,
+        .decision-list,
+        .asset-list {
+          grid-template-columns: 1fr;
+        }
+
+        .matrix {
+          display: block;
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="eyebrow">AgentShore dashboard design decisions</div>
+        <h1>Grid Office And V2 Agent Direction</h1>
+        <p class="dek">
+          Final reference page for the Grid dashboard direction after the May 15, 2026 mockup
+          pass. The office mockups remain as visual references, while the agent section points at
+          the real v2 sprite sheets currently wired into the dashboard renderer.
+        </p>
+        <div class="doc-nav" aria-label="Related design docs">
+          <a href="../DESIGN.md">Dashboard design</a>
+          <a href="../../desktop/DESIGN.md">Desktop decisions</a>
+          <a href="../../desktop/LAYER_CAKE.html">Layer cake</a>
+          <a href="../../desktop/ONBOARDING_STARTUP_MOCKUPS.html">Startup mockups</a>
+          <a href="GRID_TOP_DOWN_FLOOR_PLAN.html">Grid floor plan</a>
+          <a href="GRID_LIGHT_TILE_PALETTE.html">Grid light tile palette</a>
+          <a href="GRID_DARK_TILE_PALETTE.html">Grid dark tile palette</a>
+          <a href="unused%20drafts/GRID_WALL_MOCKUPS.html">Grid wall</a>
+          <a href="GRID_FURNITURE_MOCKUPS.html">Grid furniture</a>
+          <a href="../../../../dashboard/src/assets/agents/v2/provider-tier-scale-preview.png">V2 sprite preview</a>
+        </div>
+      </div>
+
+      <div class="section" id="decisions">
+        <div class="section-head">
+          <div>
+            <h2>Final Decisions</h2>
+            <p>
+              These are the implementation decisions the dashboard should preserve when Grid
+              themes or new provider art are added.
+            </p>
+          </div>
+          <span class="pill">Current contract</span>
+        </div>
+        <div class="decision-list">
+          <div class="decision">
+            <strong>Grid is an office-canvas mode</strong>
+            <span>
+              The existing dashboard chrome, Office/Kanban/Stats tabs, side panels, play tray, and
+              bottom controls stay structurally unchanged. Grid Light and Grid Dark restyle the
+              Office canvas rather than replacing the application shell.
+            </span>
+          </div>
+          <div class="decision">
+            <strong>Back-wall Kanban mirror is part of the Grid read</strong>
+            <span>
+              Grid office projection should favor a flatter, more front-facing wall so the
+              workshop Kanban mirror remains readable at normal dashboard scale.
+            </span>
+          </div>
+          <div class="decision">
+            <strong>Provider identity comes from <code>agent_type</code></strong>
+            <span>
+              <code>claude_code</code> uses orange Claude art, <code>codex</code> uses yellow
+              Codex art, <code>gemini</code> uses blue Gemini art, <code>api_gpt</code> uses green
+              API GPT art, and <code>api_other</code> uses purple API Other art.
+            </span>
+          </div>
+          <div class="decision">
+            <strong>Form factor comes from <code>model_tier</code></strong>
+            <span>
+              <code>small</code> maps to the ball form, <code>medium</code> maps to the baseline
+              humanoid, and <code>large</code> maps to the larger humanoid. Missing or unknown
+              tiers normalize to <code>medium</code>.
+            </span>
+          </div>
+          <div class="decision">
+            <strong>Tier scale is baked into sprite frames</strong>
+            <span>
+              Dashboard click bounds and floor footprint stay stable. The renderer should not use
+              <code>char.scale</code> to make tier size differences; the v2 sheets carry the
+              visible small/medium/large differences.
+            </span>
+          </div>
+          <div class="decision">
+            <strong>Sprite sheet layout is fixed</strong>
+            <span>
+              V2 sheets are <code>2912x2496</code> with <code>416x832</code> frames, seven columns,
+              and three direction rows. Left-facing motion is drawn by flipping the right-facing
+              row.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="v2-assets">
+        <div class="section-head">
+          <div>
+            <h2>Real V2 Agent Assets Now In Use</h2>
+            <p>
+              Source of truth:
+              <code>dashboard/src/assets/agents/v2/</code>. Renderer wiring lives in
+              <code>dashboard/src/characters/sprites.ts</code>, with tier normalization in
+              <code>dashboard/src/characters/types.ts</code>.
+            </p>
+          </div>
+          <span class="pill">Shipped assets</span>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <img
+              class="thumb contain"
+              src="../../../../dashboard/src/assets/agents/v2/provider-tier-scale-preview.png"
+              alt="Accepted v2 provider and tier scale preview for Codex, Gemini, and Claude"
+            />
+            <div class="card-body">
+              <h3>Accepted Provider/Tier Scale Preview</h3>
+              <p>
+                Current reference for the three implemented providers and all tier forms. Small is
+                ball-form, medium is baseline humanoid, and large is the larger humanoid treatment.
+              </p>
+              <div class="links">
+                <a href="../../../../dashboard/src/assets/agents/v2/provider-tier-scale-preview.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb preview contain"
+              src="../../../../dashboard/src/assets/agents/v2/codex-tier-scale-preview.png"
+              alt="Codex yellow small, medium, and large v2 tier preview"
+            />
+            <div class="card-body">
+              <h3><span class="swatch codex"></span>Codex</h3>
+              <p><code>agent_type: codex</code>. Yellow provider identity.</p>
+              <div class="links">
+                <a href="../../../../dashboard/src/assets/agents/v2/codex-small-ball.png">Small</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/codex-medium-humanoid.png">Medium</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/codex-large-humanoid.png">Large</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb preview contain"
+              src="../../../../dashboard/src/assets/agents/v2/gemini-tier-scale-preview.png"
+              alt="Gemini blue small, medium, and large v2 tier preview"
+            />
+            <div class="card-body">
+              <h3><span class="swatch gemini"></span>Gemini</h3>
+              <p><code>agent_type: gemini</code>. Blue provider identity.</p>
+              <div class="links">
+                <a href="../../../../dashboard/src/assets/agents/v2/gemini-small-ball.png">Small</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/gemini-medium-humanoid.png">Medium</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/gemini-large-humanoid.png">Large</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb preview contain"
+              src="../../../../dashboard/src/assets/agents/v2/claude-tier-scale-preview.png"
+              alt="Claude orange small, medium, and large v2 tier preview"
+            />
+            <div class="card-body">
+              <h3><span class="swatch claude"></span>Claude</h3>
+              <p><code>agent_type: claude_code</code>. Orange provider identity.</p>
+              <div class="links">
+                <a href="../../../../dashboard/src/assets/agents/v2/claude-small-ball.png">Small</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/claude-medium-humanoid.png">Medium</a>
+                <a href="../../../../dashboard/src/assets/agents/v2/claude-large-humanoid.png">Large</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Small tier</th>
+              <th>Medium tier</th>
+              <th>Large tier</th>
+              <th>Renderer behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="swatch claude"></span><code>claude_code</code></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/claude-small-ball.png">claude-small-ball.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/claude-medium-humanoid.png">claude-medium-humanoid.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/claude-large-humanoid.png">claude-large-humanoid.png</a></td>
+              <td>Deterministic v2 sheet selected by normalized tier.</td>
+            </tr>
+            <tr>
+              <td><span class="swatch codex"></span><code>codex</code></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/codex-small-ball.png">codex-small-ball.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/codex-medium-humanoid.png">codex-medium-humanoid.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/codex-large-humanoid.png">codex-large-humanoid.png</a></td>
+              <td>Deterministic v2 sheet selected by normalized tier.</td>
+            </tr>
+            <tr>
+              <td><span class="swatch gemini"></span><code>gemini</code></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/gemini-small-ball.png">gemini-small-ball.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/gemini-medium-humanoid.png">gemini-medium-humanoid.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/gemini-large-humanoid.png">gemini-large-humanoid.png</a></td>
+              <td>Deterministic v2 sheet selected by normalized tier.</td>
+            </tr>
+            <tr>
+              <td><span class="swatch green"></span><code>api_gpt</code></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-gpt-small-ball.png">api-gpt-small-ball.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-gpt-medium-humanoid.png">api-gpt-medium-humanoid.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-gpt-large-humanoid.png">api-gpt-large-humanoid.png</a></td>
+              <td>Deterministic v2 sheet selected by normalized tier.</td>
+            </tr>
+            <tr>
+              <td><span class="swatch purple"></span><code>api_other</code></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-other-small-ball.png">api-other-small-ball.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-other-medium-humanoid.png">api-other-medium-humanoid.png</a></td>
+              <td><a href="../../../../dashboard/src/assets/agents/v2/api-other-large-humanoid.png">api-other-large-humanoid.png</a></td>
+              <td>Deterministic v2 sheet selected by normalized tier.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="grid-office">
+        <div class="section-head">
+          <div>
+            <h2>Grid Office Reference</h2>
+            <p>
+              These mockups are no longer the source for agent art, but they remain the visual
+              reference for Grid office projection, wall readability, and keeping the treatment
+              inside the existing dashboard shell.
+            </p>
+          </div>
+          <span class="pill">Visual reference</span>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <img
+              class="thumb"
+              src="grid-top-down-floor-plan.png"
+              alt="Updated top-down Grid office floor plan"
+            />
+            <div class="card-body">
+              <h3>Updated Top-Down Floor Plan</h3>
+              <p>
+                Current room-level reference for the taller full-width Kanban wall, southwest
+                recovery bay, healthy-idle Zen Garden, selected D entry turnstiles, and selected D
+                reactor lab.
+              </p>
+              <div class="links">
+                <a href="GRID_TOP_DOWN_FLOOR_PLAN.html">HTML</a>
+                <a href="grid-top-down-floor-plan.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card feature">
+            <img
+              class="thumb"
+              src="unused%20drafts/full-width-kanban-wall.png"
+              alt="Full-width Grid Kanban wall concept with southwest recovery zone"
+            />
+            <div class="card-body">
+              <h3>Full-Width Kanban Wall Concept</h3>
+              <p>
+                Taller east-to-west mirror wall with TODO pressure in the War Room, flow state in
+                the center, northeast Launch Control for merges, and a southwest recovery zone for
+                failed, timeout, and blocked states.
+              </p>
+              <div class="links">
+                <a href="unused%20drafts/GRID_WALL_MOCKUPS.html">HTML</a>
+                <a href="unused%20drafts/full-width-kanban-wall.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb"
+              src="grid-furniture-mockups/entry-turnstiles-preview.png"
+              alt="Grid entry turnstile furniture concepts"
+            />
+            <div class="card-body">
+              <h3>Entry Turnstile Concepts</h3>
+              <p>
+                Four Grid-themed front-desk turnstile options that preserve the current three
+                separate blocker footprints and open pass-through lanes.
+              </p>
+              <div class="links">
+                <a href="GRID_FURNITURE_MOCKUPS.html">HTML</a>
+                <a href="grid-furniture-mockups/entry-turnstiles-preview.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb"
+              src="grid-furniture-mockups/science-lab-preview.png"
+              alt="Clean-sheet Grid Science Lab furniture concepts"
+            />
+            <div class="card-body">
+              <h3>Science Lab Concepts</h3>
+              <p>
+                Four clean-sheet Grid Science Lab directions for replacing the current lab
+                furniture with stronger verification-room silhouettes.
+              </p>
+              <div class="links">
+                <a href="GRID_FURNITURE_MOCKUPS.html#lab-concepts">HTML</a>
+                <a href="grid-furniture-mockups/science-lab-preview.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card feature">
+            <img
+              class="thumb"
+              src="office-chrome-rotated-wall.png"
+              alt="Grid office mockup inside dashboard chrome"
+            />
+            <div class="card-body">
+              <h3>Chrome-Preserving Office Mockup</h3>
+              <p>
+                Main Grid office reference: the dashboard frame stays familiar and only the Office
+                canvas becomes the stylized Grid view.
+              </p>
+              <div class="links">
+                <a href="unused%20drafts/office-chrome.html">HTML</a>
+                <a href="office-chrome-rotated-wall.png">PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb"
+              src="unused%20drafts/office-chrome-kanban.png"
+              alt="Kanban tab shown outside the Grid office canvas treatment"
+            />
+            <div class="card-body">
+              <h3>Tab Isolation Check</h3>
+              <p>
+                Confirms Kanban and Stats remain normal dashboard tabs; the Grid treatment is
+                scoped to the Office canvas.
+              </p>
+              <div class="links">
+                <a href="unused%20drafts/office-chrome-kanban.png">Kanban PNG</a>
+                <a href="unused%20drafts/office-chrome-stats.png">Stats PNG</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <img
+              class="thumb"
+              src="unused%20drafts/grid-office-prototype.png"
+              alt="Standalone full Grid office prototype"
+            />
+            <div class="card-body">
+              <h3>Standalone Exploration</h3>
+              <p>
+                Earlier, more atmospheric pass. Useful for mood, but not the final shell boundary.
+              </p>
+              <div class="links">
+                <a href="unused%20drafts/grid-office-prototype.html">HTML</a>
+                <a href="unused%20drafts/grid-office-prototype.png">PNG</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="drafts">
+        <div class="section-head">
+          <div>
+            <h2>Archived Drafts</h2>
+            <p>
+              Draft sprite explorations are kept under <code>unused drafts/</code>
+              for provenance only. New implementation should use the v2 assets above.
+            </p>
+          </div>
+        </div>
+        <div class="asset-list">
+          <a href="grid-agent-concept-dark.png">grid-agent-concept-dark.png</a>
+          <a href="grid-agent-concept-light.png">grid-agent-concept-light.png</a>
+          <a href="unused%20drafts/grid-agent-concept.html">unused drafts/grid-agent-concept.html</a>
+          <a href="unused%20drafts/grid-agent-sprites.html">unused drafts/grid-agent-sprites.html</a>
+          <a href="unused%20drafts/grid-agent-sprites-preview.png">unused drafts/grid-agent-sprites-preview.png</a>
+          <a href="unused%20drafts/small-tier-sheet.png">unused drafts/small-tier-sheet.png</a>
+          <a href="unused%20drafts/medium-tier-sheet.png">unused drafts/medium-tier-sheet.png</a>
+          <a href="unused%20drafts/large-tier-sheet.png">unused drafts/large-tier-sheet.png</a>
+          <a href="unused%20drafts/movement-stage.png">unused drafts/movement-stage.png</a>
+          <a href="unused%20drafts/office-chrome-kanban.png">unused drafts/office-chrome-kanban.png</a>
+          <a href="unused%20drafts/office-chrome-stats.png">unused drafts/office-chrome-stats.png</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

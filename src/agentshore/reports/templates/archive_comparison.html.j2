@@ -1,0 +1,238 @@
+{% extends "base.html.j2" %}
+{% from "components/tables.html.j2" import overview_metrics %}
+{% from "components/charts.html.j2" import donut_chart, line_chart %}
+
+{% block title %}Comparison — {{ data.session_a.session_id[:8] }} vs {{ data.session_b.session_id[:8] }}{% endblock %}
+
+{% block content %}
+<h1>Archive Comparison</h1>
+
+{# ── Side-by-side overview ───────────────────────────────────────────────── #}
+<div class="grid-2">
+  <div class="section">
+    <h2>Session A — <code>{{ data.session_a.session_id[:8] }}</code></h2>
+    {{ overview_metrics(data.session_a) }}
+  </div>
+  <div class="section">
+    <h2>Session B — <code>{{ data.session_b.session_id[:8] }}</code></h2>
+    {{ overview_metrics(data.session_b) }}
+  </div>
+</div>
+
+{# ── Scalar diffs ────────────────────────────────────────────────────────── #}
+<div class="section">
+  <h2>Differences</h2>
+  <table>
+    <thead><tr><th>Metric</th><th>Session A</th><th>Session B</th><th>Diff</th></tr></thead>
+    <tbody>
+    <tr>
+      <td>Total Cost</td>
+      <td>${{ '%.4f' | format(data.session_a.total_cost) }}</td>
+      <td>${{ '%.4f' | format(data.session_b.total_cost) }}</td>
+      <td class="{% if data.cost_diff > 0 %}warning{% elif data.cost_diff < 0 %}success{% endif %}">
+        {{ '%+.4f' | format(data.cost_diff) }}
+      </td>
+    </tr>
+    <tr>
+      <td>Final Alignment</td>
+      <td>{% if data.session_a.final_alignment is not none %}{{ '%.3f' | format(data.session_a.final_alignment) }}{% else %}&mdash;{% endif %}</td>
+      <td>{% if data.session_b.final_alignment is not none %}{{ '%.3f' | format(data.session_b.final_alignment) }}{% else %}&mdash;{% endif %}</td>
+      <td class="{% if data.alignment_diff > 0 %}success{% elif data.alignment_diff < 0 %}failure{% endif %}">
+        {{ '%+.3f' | format(data.alignment_diff) }}
+      </td>
+    </tr>
+    <tr>
+      <td>Total Plays</td>
+      <td>{{ data.session_a.total_plays }}</td>
+      <td>{{ data.session_b.total_plays }}</td>
+      <td>{{ '%+d' | format(data.play_count_diff) }}</td>
+    </tr>
+    <tr>
+      <td>Duration</td>
+      <td>{{ '%.0f' | format(data.session_a.duration_seconds) }}s</td>
+      <td>{{ '%.0f' | format(data.session_b.duration_seconds) }}s</td>
+      <td>{{ '%+.0f' | format(data.session_b.duration_seconds - data.session_a.duration_seconds) }}s</td>
+    </tr>
+    <tr>
+      <td>Successful Plays</td>
+      <td class="success">{{ data.session_a.successful_plays }}</td>
+      <td class="success">{{ data.session_b.successful_plays }}</td>
+      <td>{{ '%+d' | format(data.session_b.successful_plays - data.session_a.successful_plays) }}</td>
+    </tr>
+    <tr>
+      <td>Failed Plays</td>
+      <td class="failure">{{ data.session_a.failed_plays }}</td>
+      <td class="failure">{{ data.session_b.failed_plays }}</td>
+      <td>{{ '%+d' | format(data.session_b.failed_plays - data.session_a.failed_plays) }}</td>
+    </tr>
+    <tr>
+      <td>Issues Opened</td>
+      <td>{{ data.issue_throughput_a.opened }}</td>
+      <td>{{ data.issue_throughput_b.opened }}</td>
+      <td>{{ '%+d' | format(data.issue_throughput_b.opened - data.issue_throughput_a.opened) }}</td>
+    </tr>
+    <tr>
+      <td>Issues Closed</td>
+      <td class="success">{{ data.issue_throughput_a.closed }}</td>
+      <td class="success">{{ data.issue_throughput_b.closed }}</td>
+      <td>{{ '%+d' | format(data.issue_throughput_b.closed - data.issue_throughput_a.closed) }}</td>
+    </tr>
+    <tr>
+      <td>Net Velocity (closed − opened)</td>
+      <td class="{% if data.issue_throughput_a.net_velocity >= 0 %}success{% else %}warning{% endif %}">{{ data.issue_throughput_a.net_velocity }}</td>
+      <td class="{% if data.issue_throughput_b.net_velocity >= 0 %}success{% else %}warning{% endif %}">{{ data.issue_throughput_b.net_velocity }}</td>
+      <td>{{ '%+d' | format(data.issue_throughput_b.net_velocity - data.issue_throughput_a.net_velocity) }}</td>
+    </tr>
+    </tbody>
+  </table>
+</div>
+
+{# ── Cost breakdown by play type ─────────────────────────────────────────── #}
+<div class="section">
+  <h2>Cost — By Play Type</h2>
+  <div class="grid-2">
+    <div>
+      <h3>Session A</h3>
+      <table>
+        <thead><tr><th>Play Type</th><th>Cost ($)</th></tr></thead>
+        <tbody>
+        {% for pt, cost in data.cost_breakdown_a.by_play_type.items() | sort(attribute='1', reverse=True) %}
+        <tr><td>{{ pt }}</td><td>{{ '%.4f' | format(cost) }}</td></tr>
+        {% else %}
+        <tr><td colspan="2"><em>No plays</em></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3>Session B</h3>
+      <table>
+        <thead><tr><th>Play Type</th><th>Cost ($)</th></tr></thead>
+        <tbody>
+        {% for pt, cost in data.cost_breakdown_b.by_play_type.items() | sort(attribute='1', reverse=True) %}
+        <tr><td>{{ pt }}</td><td>{{ '%.4f' | format(cost) }}</td></tr>
+        {% else %}
+        <tr><td colspan="2"><em>No plays</em></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Cost breakdown by agent ─────────────────────────────────────────────── #}
+<div class="section">
+  <h2>Cost — By Agent</h2>
+  <div class="grid-2">
+    <div>
+      <h3>Session A</h3>
+      <table>
+        <thead><tr><th>Agent</th><th>Cost ($)</th></tr></thead>
+        <tbody>
+        {% for agent, cost in data.cost_breakdown_a.by_agent.items() | sort(attribute='1', reverse=True) %}
+        <tr><td>{{ agent }}</td><td>{{ '%.4f' | format(cost) }}</td></tr>
+        {% else %}
+        <tr><td colspan="2"><em>No agents</em></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3>Session B</h3>
+      <table>
+        <thead><tr><th>Agent</th><th>Cost ($)</th></tr></thead>
+        <tbody>
+        {% for agent, cost in data.cost_breakdown_b.by_agent.items() | sort(attribute='1', reverse=True) %}
+        <tr><td>{{ agent }}</td><td>{{ '%.4f' | format(cost) }}</td></tr>
+        {% else %}
+        <tr><td colspan="2"><em>No agents</em></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Play distribution donuts ────────────────────────────────────────────── #}
+{% if data.play_distribution_a or data.play_distribution_b %}
+<div class="section">
+  <h2>Play Distribution</h2>
+  <div class="grid-2">
+    <div>
+      <h3>Session A</h3>
+      {% if data.play_distribution_a %}
+        {% set dist_a_labels = data.play_distribution_a.keys() | list %}
+        {% set dist_a_values = data.play_distribution_a.values() | list %}
+        {{ donut_chart("dist-a", dist_a_labels, dist_a_values) }}
+      {% else %}
+        <p><em>No plays</em></p>
+      {% endif %}
+    </div>
+    <div>
+      <h3>Session B</h3>
+      {% if data.play_distribution_b %}
+        {% set dist_b_labels = data.play_distribution_b.keys() | list %}
+        {% set dist_b_values = data.play_distribution_b.values() | list %}
+        {{ donut_chart("dist-b", dist_b_labels, dist_b_values) }}
+      {% else %}
+        <p><em>No plays</em></p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Alignment trajectory (closure-ratio proxy over plays) ───────────────── #}
+{% if data.alignment_trajectory_a or data.alignment_trajectory_b %}
+<div class="section">
+  <h2>Alignment Trajectory</h2>
+  <div class="grid-2">
+    <div>
+      <h3>Session A</h3>
+      {% if data.alignment_trajectory_a %}
+        {% set traj_a_labels = data.alignment_trajectory_a | map(attribute='play_index') | list %}
+        {% set traj_a_values = data.alignment_trajectory_a | map(attribute='alignment') | list %}
+        {{ line_chart("traj-a", traj_a_labels, traj_a_values, "Alignment delta cumulative") }}
+      {% else %}
+        <p><em>No trajectory data</em></p>
+      {% endif %}
+    </div>
+    <div>
+      <h3>Session B</h3>
+      {% if data.alignment_trajectory_b %}
+        {% set traj_b_labels = data.alignment_trajectory_b | map(attribute='play_index') | list %}
+        {% set traj_b_values = data.alignment_trajectory_b | map(attribute='alignment') | list %}
+        {{ line_chart("traj-b", traj_b_labels, traj_b_values, "Alignment delta cumulative") }}
+      {% else %}
+        <p><em>No trajectory data</em></p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Learnings diff ──────────────────────────────────────────────────────── #}
+<div class="section">
+  <h2>Learnings Diff</h2>
+  {% set diff = data.learnings_diff %}
+  {% if diff.added or diff.removed or diff.shared %}
+  <table>
+    <thead><tr><th>Status</th><th>Pattern</th></tr></thead>
+    <tbody>
+    {% for p in diff.added %}
+    <tr><td class="success">+ added</td><td>{{ p }}</td></tr>
+    {% endfor %}
+    {% for p in diff.removed %}
+    <tr><td class="failure">− removed</td><td>{{ p }}</td></tr>
+    {% endfor %}
+    {% for p in diff.shared %}
+    <tr><td style="color:var(--fg-dim)">= shared</td><td>{{ p }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p><em>No learnings recorded in either session.</em></p>
+  {% endif %}
+</div>
+
+{% endblock %}

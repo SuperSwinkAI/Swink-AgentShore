@@ -1,0 +1,40 @@
+{
+  "name": "agentshore-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "prepare:tauri-assets": "node scripts/prepare-tauri-assets.mjs",
+    "prebuild:tauri-frontend": "npm --prefix ../dashboard run build:lib",
+    "build:tauri-frontend": "npm run build && npm run prepare:tauri-assets",
+    "build:tauri-sidecars": "uv run python ../packaging/desktop/build_bd_sidecar.py --out src-tauri/binaries",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "agentshore-dashboard": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.5",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^27.0.1",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.12",
+    "vitest": "^4.0.7"
+  }
+}

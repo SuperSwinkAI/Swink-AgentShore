@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentShore End Session Report</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --color-fm-bg: #f8f9fb;
+            --color-fm-text: rgba(0,0,0,0.87);
+            --color-fm-text-dim: rgba(0,0,0,0.35);
+            --color-fm-panel: rgba(255,255,255,0.94);
+            --color-fm-idle: #2563eb;
+            --color-fm-busy: #d97706;
+            --color-fm-hot: #dc2626;
+            --color-fm-off: #94a3b8;
+            --color-fm-ok: #168e49;
+            --color-fm-neutral: rgba(0,0,0,0.7);
+            --color-fm-mute: #6b7280;
+            --color-fm-bubble: #ffffff;
+            --color-fm-gray: #c4c8d0;
+            --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+            --fm-backdrop:
+                radial-gradient(circle at 50% 48%, rgba(217,119,6,0.04), transparent 20%),
+                radial-gradient(circle at 22% 35%, rgba(37,99,235,0.03), transparent 18%),
+                radial-gradient(circle at 67% 62%, rgba(220,38,38,0.035), transparent 15%),
+                linear-gradient(180deg, #f8f9fb, #f0f1f4);
+            --fm-card: rgba(255,255,255,0.72);
+            --fm-border: rgba(0,0,0,0.08);
+            --fm-border-subtle: rgba(0,0,0,0.06);
+            --fm-hover: rgba(0,0,0,0.045);
+            --fm-selected: rgba(22,142,73,0.1);
+            --fm-selected-border: rgba(22,142,73,0.34);
+            --fm-track: rgba(0,0,0,0.08);
+            --fm-text-strong: rgba(0,0,0,0.87);
+            --fm-text-label: rgba(0,0,0,0.76);
+            --fm-text-body: rgba(0,0,0,0.6);
+            --fm-text-muted: rgba(0,0,0,0.45);
+            --fm-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        }
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--fm-backdrop);
+            color: var(--fm-text-body);
+            font: 14px/1.6 var(--font-sans);
+        }
+        main {
+            width: 100%;
+            margin: 0;
+            padding: 48px 24px 56px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            align-items: flex-start;
+            padding-bottom: 22px;
+            border-bottom: 1px solid var(--fm-border-subtle);
+        }
+        h1 {
+            margin: 0 0 8px;
+            color: var(--fm-text-strong);
+            font-family: var(--font-mono);
+            font-size: 1.4rem;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            line-height: 1.25;
+            text-transform: uppercase;
+        }
+        h1 span {
+            color: rgba(0,0,0,0.28);
+            font-weight: 400;
+        }
+        h2 {
+            margin: 0 0 20px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--fm-border-subtle);
+            color: var(--color-fm-text-dim);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+        section { margin-top: 34px; }
+        a { color: var(--color-fm-idle); }
+        .muted {
+            color: var(--fm-text-muted);
+            font-size: 0.82rem;
+        }
+        .repo {
+            min-width: 180px;
+            text-align: right;
+        }
+        .repo a {
+            display: inline-block;
+            overflow-wrap: anywhere;
+            font-size: 0.82rem;
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+        .metric {
+            background: var(--fm-card);
+            border: 1px solid var(--fm-border);
+            border-radius: 8px;
+            box-shadow: var(--fm-shadow);
+            padding: 14px 16px;
+        }
+        .label {
+            color: var(--color-fm-text-dim);
+            font-family: var(--font-mono);
+            font-size: 0.58rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        .value {
+            margin-top: 5px;
+            color: var(--fm-text-strong);
+            font-size: 1.2rem;
+            font-weight: 600;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--color-fm-panel);
+            border: 1px solid var(--fm-border);
+            border-radius: 8px;
+            box-shadow: var(--fm-shadow);
+            overflow: hidden;
+            font-size: 0.78rem;
+        }
+        th, td {
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--fm-border-subtle);
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background: rgba(0,0,0,0.025);
+            color: var(--color-fm-text-dim);
+            font-family: var(--font-mono);
+            font-size: 0.58rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        tr:last-child td { border-bottom: 0; }
+        .num { text-align: right; white-space: nowrap; }
+        .ok { color: var(--color-fm-ok); }
+        .fail { color: var(--color-fm-hot); }
+        .empty {
+            background: var(--color-fm-panel);
+            border: 1px solid var(--fm-border);
+            border-radius: 8px;
+            box-shadow: var(--fm-shadow);
+            padding: 18px;
+            color: var(--fm-text-muted);
+        }
+        .labels {
+            color: var(--fm-text-muted);
+            font-size: 0.75rem;
+        }
+        .play-log {
+            --log-surface: #f3f4f7;
+            --log-panel: rgba(255,255,255,0.7);
+            --log-panel-strong: rgba(255,255,255,0.94);
+            --log-ink: rgba(0,0,0,0.78);
+            --log-muted: rgba(0,0,0,0.45);
+            --log-dim: rgba(0,0,0,0.28);
+            --log-grid: rgba(0,0,0,0.06);
+            --log-rule: rgba(0,0,0,0.08);
+            --log-ok-bg: rgba(22,142,73,0.1);
+            --log-ok-border: rgba(22,142,73,0.34);
+            --log-fail-bg: rgba(220,38,38,0.08);
+            --log-fail-border: rgba(220,38,38,0.42);
+            --log-future-bg: rgba(148,163,184,0.18);
+            background: var(--log-surface);
+            border: 1px solid var(--log-rule);
+            border-radius: 8px;
+            box-shadow: var(--fm-shadow);
+            overflow: hidden;
+        }
+        .play-log-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 16px 18px 12px;
+            border-bottom: 1px solid var(--log-rule);
+            background: var(--log-panel-strong);
+        }
+        .play-log-title {
+            margin: 0 0 4px;
+            color: var(--fm-text-strong);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            line-height: 1.25;
+            text-transform: uppercase;
+        }
+        .play-log-meta,
+        .play-log-stat-label,
+        .play-log-row-num,
+        .play-log-agent,
+        .play-log-col-label,
+        .play-log-col-index,
+        .play-log-chip {
+            font-family: var(--font-mono);
+        }
+        .play-log-meta {
+            color: var(--log-muted);
+            font-size: 11px;
+        }
+        .play-log-stats {
+            display: flex;
+            gap: 18px;
+            align-items: flex-end;
+        }
+        .play-log-stat {
+            padding-right: 18px;
+            border-right: 1px solid var(--log-rule);
+        }
+        .play-log-stat:last-child {
+            padding-right: 0;
+            border-right: 0;
+        }
+        .play-log-stat-value {
+            color: var(--fm-text-label);
+            font-family: var(--font-mono);
+            font-size: 16px;
+            line-height: 1;
+        }
+        .play-log-stat-label {
+            margin-top: 3px;
+            color: var(--log-muted);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .play-log-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 18px;
+            border-bottom: 1px solid var(--log-rule);
+            background: var(--log-panel);
+            color: var(--log-muted);
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+        .play-log-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 9px;
+            border: 1px solid var(--log-rule);
+            border-radius: 999px;
+            background: rgba(255,255,255,0.55);
+            color: var(--log-ink);
+        }
+        .play-log-pill.active {
+            background: var(--fm-selected);
+            color: var(--color-fm-ok);
+            border-color: var(--fm-selected-border);
+        }
+        .play-log-legend {
+            margin-left: auto;
+            display: flex;
+            gap: 14px;
+            align-items: center;
+        }
+        .play-log-legend-item {
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .play-log-legend-swatch {
+            width: 18px;
+            height: 12px;
+            border: 1px solid var(--log-ink);
+            border-radius: 3px;
+        }
+        .play-log-legend-swatch.ok {
+            background: var(--log-ok-bg);
+            border-color: var(--log-ok-border);
+        }
+        .play-log-legend-swatch.fail {
+            background: repeating-linear-gradient(
+                45deg,
+                var(--log-fail-bg) 0 3px,
+                var(--log-fail-border) 3px 4px
+            );
+            border-color: var(--log-fail-border);
+        }
+        .play-log-legend-swatch.future {
+            border-style: dashed;
+            background: repeating-linear-gradient(
+                135deg,
+                transparent 0 4px,
+                var(--log-future-bg) 4px 8px
+            );
+        }
+        .play-log-window {
+            height: clamp(640px, 72vh, 1120px);
+            overflow: auto;
+            background: var(--log-surface);
+        }
+        .play-log-grid {
+            min-width: 1120px;
+        }
+        .play-log-header,
+        .play-log-row {
+            display: grid;
+            grid-template-columns: 44px 188px 1fr;
+        }
+        .play-log-header {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            min-height: 156px;
+            background: var(--log-panel-strong);
+            border-bottom: 2px solid var(--fm-text-label);
+        }
+        .play-log-corner {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 0 12px 10px;
+            border-right: 1px solid var(--log-rule);
+            color: var(--log-muted);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .play-log-corner small {
+            margin-top: 2px;
+            color: var(--log-dim);
+            font-size: 10px;
+            text-transform: none;
+        }
+        .play-log-columns,
+        .play-log-cells {
+            display: grid;
+            grid-template-columns: repeat(22, minmax(40px, 1fr));
+        }
+        .play-log-column {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 5px;
+            min-width: 0;
+            padding: 0 2px 8px;
+            border-left: 1px dotted var(--log-rule);
+        }
+        .play-log-column:first-child {
+            border-left: 0;
+        }
+        .play-log-column.phase-start,
+        .play-log-cell.phase-start {
+            border-left: 1px solid var(--log-muted);
+        }
+        .play-log-column.future,
+        .play-log-cell.future {
+            background: repeating-linear-gradient(
+                135deg,
+                transparent 0 5px,
+                var(--log-grid) 5px 10px
+            );
+        }
+        .play-log-col-label {
+            writing-mode: vertical-rl;
+            transform: rotate(180deg);
+            color: var(--fm-text-label);
+            font-size: 10px;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .play-log-column.future .play-log-col-label {
+            color: var(--log-dim);
+            font-style: italic;
+        }
+        .play-log-col-index {
+            color: var(--log-dim);
+            font-size: 9px;
+        }
+        .play-log-row {
+            height: 24px;
+            border-bottom: 1px solid var(--log-rule);
+        }
+        .play-log-row:nth-child(10n) {
+            border-bottom-color: rgba(0,0,0,0.16);
+        }
+        .play-log-row:hover {
+            background: var(--fm-hover);
+        }
+        .play-log-row-num {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 0 8px;
+            color: var(--log-dim);
+            font-size: 10px;
+        }
+        .play-log-agent {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            padding: 0 12px;
+            border-right: 1px solid var(--log-rule);
+            color: var(--fm-text-label);
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .play-log-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+            border-left: 1px dotted transparent;
+        }
+        .play-log-cell.unused::before {
+            content: "";
+            width: 2px;
+            height: 7px;
+            border-radius: 1px;
+            background: var(--log-dim);
+            opacity: 0.45;
+        }
+        .play-log-cell.future::before {
+            content: "";
+            width: 8px;
+            height: 7px;
+            border-radius: 2px;
+            background: var(--color-fm-off);
+            opacity: 0.65;
+        }
+        .play-log-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: calc(100% - 4px);
+            height: 20px;
+            border: 1px solid var(--log-ok-border);
+            border-radius: 3px;
+            color: var(--color-fm-ok);
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        .play-log-chip.ok {
+            background: var(--log-ok-bg);
+        }
+        .play-log-chip.fail {
+            border-color: var(--log-fail-border);
+            color: var(--color-fm-hot);
+            background: repeating-linear-gradient(
+                45deg,
+                var(--log-fail-bg) 0 3px,
+                rgba(220,38,38,0.2) 3px 4px
+            );
+        }
+        .play-log-chip.fail span {
+            background: var(--log-panel-strong);
+            border-radius: 2px;
+            padding: 0 3px;
+        }
+        footer {
+            margin-top: 32px;
+            padding-top: 16px;
+            border-top: 1px solid var(--fm-border-subtle);
+            color: var(--fm-text-muted);
+            font-size: 12px;
+        }
+        @media (max-width: 760px) {
+            main { padding: 32px 20px 44px; }
+            header { display: block; }
+            .repo { text-align: left; margin-top: 12px; }
+            .metrics { grid-template-columns: 1fr; }
+            table { font-size: 12px; }
+            th, td { padding: 7px; }
+            .play-log-top { display: block; }
+            .play-log-stats { margin-top: 14px; flex-wrap: wrap; }
+            .play-log-toolbar { display: block; }
+            .play-log-legend { margin: 8px 0 0; flex-wrap: wrap; }
+            .play-log-window { height: 640px; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <div>
+            <h1>AgentShore <span>// End Session Report</span></h1>
+            <div class="muted">Session {{ data.overview.session_id }}</div>
+        </div>
+        <div class="repo">
+            {% if data.repo_url %}
+            <div class="label">Repository</div>
+            <a href="{{ data.repo_url }}">{{ data.repo_url }}</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <section class="metrics">
+        <div class="metric">
+            <div class="label">Started</div>
+            <div class="value">{{ data.overview.started_at }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Ended</div>
+            <div class="value">{{ data.overview.ended_at or "not recorded" }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Duration</div>
+            <div class="value">{{ data.overview.duration_seconds | duration }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Total Cost</div>
+            <div class="value">${{ "%.4f" | format(data.overview.total_cost) }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Plays</div>
+            <div class="value">{{ data.overview.total_plays }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Success Rate</div>
+            <div class="value">{{ data.overview.successful_plays }}/{{ data.overview.total_plays }}</div>
+        </div>
+    </section>
+
+    <section>
+        <h2>Play Statistics</h2>
+        {% if data.play_stats %}
+        <table>
+            <thead>
+            <tr>
+                <th>Play</th>
+                <th class="num">Total</th>
+                <th class="num">OK</th>
+                <th class="num">Failed</th>
+                <th class="num">Success</th>
+                <th class="num">Cost</th>
+                <th class="num">Avg Duration</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in data.play_stats %}
+            <tr>
+                <td>{{ row.play_type }}</td>
+                <td class="num">{{ row.total }}</td>
+                <td class="num ok">{{ row.successful }}</td>
+                <td class="num fail">{{ row.failed }}</td>
+                <td class="num">{{ "%.1f%%" | format(row.success_rate * 100) }}</td>
+                <td class="num">${{ "%.4f" | format(row.total_cost) }}</td>
+                <td class="num">{{ row.avg_duration_seconds | duration }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">No plays recorded.</div>
+        {% endif %}
+    </section>
+
+    {% if data.control_rejections %}
+    <section>
+        <h2>Control Rejections</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>Type</th>
+                <th>Play</th>
+                <th>Reason</th>
+                <th class="num">Count</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in data.control_rejections %}
+            <tr>
+                <td>{{ row.kind }}</td>
+                <td>{{ row.play_type }}</td>
+                <td>{{ row.reason }}</td>
+                <td class="num">{{ row.count }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    <section>
+        <h2>Issues Closed During Session</h2>
+        {% if data.closed_issues %}
+        <table>
+            <thead>
+            <tr>
+                <th class="num">Issue</th>
+                <th>Title</th>
+                <th>Closed</th>
+                <th>Labels</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for issue in data.closed_issues %}
+            <tr>
+                <td class="num">#{{ issue.issue_number }}</td>
+                <td>{{ issue.title }}</td>
+                <td>{{ issue.closed_at or "" }}</td>
+                <td class="labels">{{ issue.labels | join(", ") }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">No issues closed during this session.</div>
+        {% endif %}
+    </section>
+
+    <section>
+        <h2>Play Log</h2>
+        <div class="play-log">
+            <div class="play-log-top">
+                <div>
+                    <h3 class="play-log-title">play log</h3>
+                    <div class="play-log-meta">
+                        <span>{{ data.overview.session_id }}</span>
+                        <span>/</span>
+                        <span>{{ data.play_log_unique_agents }} agents</span>
+                        <span>/</span>
+                        <span>{{ data.play_log_rows | length }} plays</span>
+                    </div>
+                </div>
+                <div class="play-log-stats">
+                    <div class="play-log-stat">
+                        <div class="play-log-stat-value">{{ data.play_log_rows | selectattr('success') | list | length }}</div>
+                        <div class="play-log-stat-label">success</div>
+                    </div>
+                    <div class="play-log-stat">
+                        <div class="play-log-stat-value">{{ data.play_log_rows | rejectattr('success') | list | length }}</div>
+                        <div class="play-log-stat-label">failure</div>
+                    </div>
+                    <div class="play-log-stat">
+                        <div class="play-log-stat-value">{{ data.play_log_plays_in_use }} / {{ data.play_log_total_slots }}</div>
+                        <div class="play-log-stat-label">plays in use</div>
+                    </div>
+                    <div class="play-log-stat">
+                        <div class="play-log-stat-value">{{ data.overview.duration_seconds | duration }}</div>
+                        <div class="play-log-stat-label">elapsed</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="play-log-toolbar">
+                <span class="play-log-pill active">all plays</span>
+                <span class="play-log-pill">success</span>
+                <span class="play-log-pill">failure</span>
+                <span class="play-log-pill">future - masked</span>
+                <span class="play-log-legend">
+                    <span class="play-log-legend-item">
+                        <span class="play-log-legend-swatch ok"></span>OK
+                    </span>
+                    <span class="play-log-legend-item">
+                        <span class="play-log-legend-swatch fail"></span>FAIL
+                    </span>
+                    <span class="play-log-legend-item">
+                        <span class="play-log-legend-swatch future"></span>future
+                    </span>
+                </span>
+            </div>
+
+            {% if data.play_log_rows %}
+            <div class="play-log-window">
+                <div class="play-log-grid">
+                    <div class="play-log-header">
+                        <div class="play-log-corner">#<small>row</small></div>
+                        <div class="play-log-corner">
+                            agent
+                            <small>{{ data.play_log_unique_agents }} unique</small>
+                        </div>
+                        <div class="play-log-columns">
+                            {% for col in data.play_log_columns %}
+                            <div class="play-log-column{% if col.phase_start %} phase-start{% endif %}{% if col.future %} future{% endif %}">
+                                <span class="play-log-col-label">{{ col.label }}</span>
+                                <span class="play-log-col-index">{{ "%02d" | format(loop.index) }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% for row in data.play_log_rows %}
+                    <div class="play-log-row">
+                        <div class="play-log-row-num">{{ "%03d" | format(row.row_number) }}</div>
+                        <div class="play-log-agent" title="{{ row.agent_name }}">{{ row.agent_name }}</div>
+                        <div class="play-log-cells">
+                            {% for col in data.play_log_columns %}
+                            <div class="play-log-cell{% if col.phase_start %} phase-start{% endif %}{% if col.future %} future{% endif %}{% if row.play_type != col.play_type and not col.future %} unused{% endif %}">
+                                {% if row.play_type == col.play_type %}
+                                <div
+                                    class="play-log-chip {% if row.success %}ok{% else %}fail{% endif %}"
+                                    title="play #{{ row.play_id }} | {{ row.play_type }} | {{ row.started_at }} | {{ row.duration_seconds | duration }} | ${{ '%.4f' | format(row.dollar_cost) }}{% if row.error %} | {{ row.error }}{% endif %}"
+                                >
+                                    {% if row.success %}OK{% else %}<span>FAIL</span>{% endif %}
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <div class="empty">No plays recorded.</div>
+            {% endif %}
+        </div>
+    </section>
+
+    <footer>Generated by AgentShore.</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,173 @@
+[project]
+name = "agentshore"
+version = "0.1.0"
+description = "Swink AgentShore — RL-based multi-agent orchestrator"
+readme = "README.md"
+license = { text = "MIT" }
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [
+    { name = "SuperSwink" },
+]
+keywords = ["ai", "agents", "reinforcement-learning", "orchestrator", "coding"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    "torch>=2.2,<3",
+    "textual>=3.0,<5",
+    "structlog>=24.0,<27",
+    "aiosqlite>=0.20,<1",
+    "httpx>=0.27,<1",
+    "pyyaml>=6.0,<7",
+    "jinja2>=3.1,<4",
+    "click>=8.1,<9",
+    "numpy>=1.26,<3",
+    "starlette>=0.37,<2",
+    "uvicorn>=0.29,<1",
+    "websockets>=12,<17",
+    "playwright>=1.40,<3",
+    "keyring>=24,<26",
+    "ruamel-yaml>=0.19.1",
+    "beaupy>=3.0,<4",
+    "platformdirs>=4.0,<6",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.7,<2",
+    "mypy>=1.8",
+    "pip-audit>=2.7,<3",
+    "pre-commit>=3.6",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "pytest-timeout>=2.3,<3",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.8",
+    "types-pyyaml>=6.0.12.20260408",
+]
+
+[project.urls]
+Repository = "https://github.com/SuperSwinkAI/Swink-AgentShore"
+Documentation = "https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/docs/design/HLD.md"
+
+[project.scripts]
+agentshore = "agentshore.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentshore"]
+
+[tool.hatch.build.targets.sdist]
+# Exclude build artifacts and developer-only directories from the source
+# distribution. Without these excludes hatchling walks the entire working
+# tree, including desktop/src-tauri/target/ (Rust build cache, can hit
+# 30+ GB) and dashboard/node_modules/, making `uv build` hang for 15+
+# minutes (desktop-otwc). The wheel target above is unaffected — it
+# enumerates only src/agentshore.
+exclude = [
+    "/desktop/src-tauri/target",
+    "/desktop/src-tauri/binaries",  # PyInstaller-frozen sidecar (~170 MB platform-specific)
+    "/desktop/node_modules",
+    "/desktop/dist",
+    "/dashboard/node_modules",
+    "/dashboard/dist",
+    "/.agentshore",
+    "/dist",
+    "/.git",
+    "/.venv",
+    "/.beads",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+
+[tool.ruff.lint.per-file-ignores]
+# Play/PlayType/OrchestratorState/PlayOutcome needed at runtime for structural subtyping checks
+"src/agentshore/plays/base.py" = ["TC001"]
+# Serializer accesses dataclass fields and enum .value at runtime — not annotation-only
+"src/agentshore/ipc/serializer.py" = ["TC001"]
+# Provider passes domain objects to serializer and accesses enum .value at runtime
+"src/agentshore/ipc/provider.py" = ["TC001"]
+# Error class names match the design-doc taxonomy, not Ruff's preferred suffix convention
+"src/agentshore/errors.py" = ["N818"]
+# Worktree exception names follow the same design-doc taxonomy
+# (WorktreeBranchGone, WorktreeAllocationConflict)
+"src/agentshore/agents/worktree/*.py" = ["N818"]
+# Tests use Path/Play only as annotations but pytest fixtures need them at function-def time
+# E501: pre-existing long docstring/BudgetSnapshot lines in test helpers
+# TC002: pytest is a runtime dep in tests, not annotation-only
+"tests/*" = ["TC001", "TC002", "TC003", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agentshore"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = "beaupy"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -n auto + --dist=worksteal cuts wall-time ~4-5x on an 8-core box; combined
+# with branch coverage the full suite finishes in ~90s instead of ~20 min.
+# Use `pytest -p no:xdist` to fall back to serial when debugging a single test.
+addopts = [
+    "--cov=agentshore",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--timeout=180",
+    "-n",
+    "auto",
+    "--dist=worksteal",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+cache_dir = ".cache/pytest"
+timeout_method = "thread"
+
+[tool.coverage.run]
+source = ["src/agentshore"]
+branch = true
+# pytest-xdist spawns worker processes; parallel=true writes per-worker
+# .coverage.<host>.<pid>.<rand> files that pytest-cov combines at the end.
+# Without it the workers race on a single SQLite file and one report
+# occasionally lands as "database disk image is malformed".
+parallel = true
+concurrency = ["multiprocessing", "thread"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

@@ -1,0 +1,195 @@
+{# Table macros — reusable table patterns #}
+
+{% macro play_table(plays) %}
+{% if plays %}
+<table>
+<thead>
+<tr>
+    <th>#</th>
+    <th>Play</th>
+    <th>Agent</th>
+    <th>Result</th>
+    <th>Cost</th>
+    <th>Duration</th>
+    <th>Align &Delta;</th>
+    <th>Started</th>
+</tr>
+</thead>
+<tbody>
+{% for p in plays %}
+<tr>
+    <td>{{ p.play_id }}</td>
+    <td>{{ p.play_type }}</td>
+    <td>{{ p.agent_id or '&mdash;' }}</td>
+    <td class="{{ 'success' if p.success else 'failure' }}">{{ '&#10003;' if p.success else '&#10007;' }}</td>
+    <td>${{ '%.3f' | format(p.dollar_cost) }}</td>
+    <td>{{ '%.1f' | format(p.duration_seconds) }}s</td>
+    <td>{{ '%+.3f' | format(p.alignment_delta) }}</td>
+    <td>{{ p.started_at[:19] }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-state">No plays recorded.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro cost_table(by_play_type, by_agent) %}
+<div class="grid-2">
+<div>
+    <h3>By Play Type</h3>
+    {% if by_play_type %}
+    <table>
+    <thead><tr><th>Play Type</th><th>Cost</th></tr></thead>
+    <tbody>
+    {% for ptype, cost in by_play_type.items() %}
+    <tr><td>{{ ptype }}</td><td>${{ '%.3f' | format(cost) }}</td></tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No cost data.</p>
+    {% endif %}
+</div>
+<div>
+    <h3>By Agent</h3>
+    {% if by_agent %}
+    <table>
+    <thead><tr><th>Agent</th><th>Cost</th></tr></thead>
+    <tbody>
+    {% for agent, cost in by_agent.items() %}
+    <tr><td>{{ agent }}</td><td>${{ '%.3f' | format(cost) }}</td></tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No agent cost data.</p>
+    {% endif %}
+</div>
+</div>
+{% endmacro %}
+
+{% macro agent_table(agents) %}
+{% if agents %}
+<table>
+<thead>
+<tr>
+    <th>Agent</th>
+    <th>Type</th>
+    <th>Completed</th>
+    <th>Failed</th>
+    <th>Success Rate</th>
+    <th>Cost</th>
+    <th>Avg Duration</th>
+</tr>
+</thead>
+<tbody>
+{% for a in agents %}
+<tr>
+    <td>{{ a.agent_id }}</td>
+    <td>{{ a.agent_type }}</td>
+    <td class="success">{{ a.tasks_completed }}</td>
+    <td class="failure">{{ a.tasks_failed }}</td>
+    <td>{{ '%.0f' | format(a.success_rate * 100) }}%</td>
+    <td>${{ '%.3f' | format(a.total_cost) }}</td>
+    <td>{{ '%.1f' | format(a.avg_duration) }}s</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-state">No agent data.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro specialization_table(cells) %}
+{% if cells %}
+<table>
+<thead>
+<tr>
+    <th>Agent</th>
+    <th>Play</th>
+    <th>Total</th>
+    <th>Pass</th>
+    <th>Fail</th>
+    <th>Success Rate</th>
+    <th>Rolling (last 10)</th>
+</tr>
+</thead>
+<tbody>
+{% for c in cells %}
+<tr>
+    <td>{{ c.agent_id }}</td>
+    <td>{{ c.play_type }}</td>
+    <td>{{ c.total }}</td>
+    <td class="success">{{ c.successful }}</td>
+    <td class="failure">{{ c.failed }}</td>
+    <td>{{ '%.0f' | format(c.success_rate * 100) }}%</td>
+    <td>{{ '%.0f' | format(c.rolling_success_rate * 100) }}%</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-state">No specialization data.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro failure_table(failures) %}
+{% if failures %}
+<table>
+<thead><tr><th>Category</th><th>Count</th><th>Play Types</th></tr></thead>
+<tbody>
+{% for f in failures %}
+<tr>
+    <td class="failure">{{ f.category }}</td>
+    <td>{{ f.count }}</td>
+    <td>{{ f.plays | map(attribute='play_type') | unique | join(', ') }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="empty-state">No failures recorded.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro overview_metrics(overview) %}
+<div>
+    <div class="metric">
+        <div class="label">Session</div>
+        <div class="value"><code>{{ overview.session_id[:8] }}</code></div>
+    </div>
+    <div class="metric">
+        <div class="label">Duration</div>
+        <div class="value">{{ '%.0f' | format(overview.duration_seconds) }}s</div>
+    </div>
+    <div class="metric">
+        <div class="label">Total Plays</div>
+        <div class="value">{{ overview.total_plays }}</div>
+    </div>
+    <div class="metric">
+        <div class="label">Total Cost</div>
+        <div class="value">${{ '%.2f' | format(overview.total_cost) }}</div>
+    </div>
+    <div class="metric">
+        <div class="label">Alignment</div>
+        <div class="value">
+            {% if overview.final_alignment is not none %}
+            {{ '%.2f' | format(overview.final_alignment) }}
+            {% else %}
+            &mdash;
+            {% endif %}
+        </div>
+    </div>
+    <div class="metric">
+        <div class="label">Success / Fail</div>
+        <div class="value">
+            <span class="success">{{ overview.successful_plays }}</span>
+            /
+            <span class="failure">{{ overview.failed_plays }}</span>
+        </div>
+    </div>
+</div>
+{% endmacro %}

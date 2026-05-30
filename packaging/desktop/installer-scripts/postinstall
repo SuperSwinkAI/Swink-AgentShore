@@ -1,0 +1,176 @@
+#!/bin/bash
+# postinstall — runs after the .pkg payload has been written to /Applications.
+#
+# Three responsibilities:
+#
+#   1. If Python 3.12 isn't present, download + install python.org's signed
+#      pkg before anything else. Postinstall already runs as root so we can
+#      drive macOS `installer` directly (desktop-w618).
+#
+#   2. Provision the AgentShore managed Python venv at
+#      ~/Library/Application Support/AgentShore/venv from the agentshore wheel
+#      bundled into this .pkg. Without this, the .pkg only ships the
+#      Tauri shell and Python sidecar fixes never reach desktop users
+#      (desktop-vlx1 follow-up — was: a fresh .pkg installed the .app but
+#      left the user running whatever agentshore wheel they had installed
+#      weeks ago).
+#
+#   3. Launch the app in the original user's GUI session, then auto-close
+#      the Installer once it's up.
+#
+# Postinstall runs as root; resolve the console user so the venv lives in
+# their home dir and the app launches under their session, not root's.
+# pkgbuild places this script and the bundled wheel + helper into a tmp
+# scripts dir at install time; resolve them via $0's dirname.
+
+set -u
+
+APP_PATH="/Applications/AgentShore.app"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_HELPER="$SCRIPT_DIR/install-agentshore-venv.sh"
+BUNDLED_WHEEL="$(ls -t "$SCRIPT_DIR"/agentshore-*-py3-none-any.whl 2>/dev/null | head -1 || true)"
+VENV_LOG="/tmp/agentshore-venv-install.log"
+
+# Python auto-install pin. The pkgutil signature check below is the security
+# anchor; the version string is the contract — bump deliberately, not blindly.
+PYTHON_AUTO_VERSION="3.12.8"
+PYTHON_AUTO_URL="https://www.python.org/ftp/python/${PYTHON_AUTO_VERSION}/python-${PYTHON_AUTO_VERSION}-macos11.pkg"
+PYTHON_AUTO_LOG="/tmp/agentshore-python-install.log"
+PYTHON_ORG_BIN="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
+PSF_DEVELOPER_ID_SUBSTRING="Python Software Foundation"
+
+CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
+  # Headless install (MDM push, ssh, etc) — nothing to provision or launch.
+  exit 0
+fi
+CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
+if [[ -z "${CONSOLE_UID}" ]]; then
+  exit 0
+fi
+
+# ── 0. Ensure Python 3.12 is installed (desktop-w618) ────────────────────────
+
+has_python312() {
+  if command -v python3.12 >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -x "$PYTHON_ORG_BIN" ]]; then
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    local version
+    version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    [[ "$version" == "3.12" ]] && return 0
+  fi
+  return 1
+}
+
+if ! has_python312; then
+  : > "$PYTHON_AUTO_LOG"
+  {
+    echo "AgentShore postinstall: Python 3.12 not found, attempting auto-install"
+    echo "URL: $PYTHON_AUTO_URL"
+  } >> "$PYTHON_AUTO_LOG" 2>&1
+
+  WORKDIR="$(mktemp -d -t agentshore-python-install)"
+  PKG_PATH="$WORKDIR/python-${PYTHON_AUTO_VERSION}-macos11.pkg"
+
+  if ! /usr/bin/curl --fail --location --silent --show-error \
+       --connect-timeout 30 --max-time 600 \
+       -o "$PKG_PATH" "$PYTHON_AUTO_URL" >>"$PYTHON_AUTO_LOG" 2>&1; then
+    echo "Download failed — aborting auto-install" >>"$PYTHON_AUTO_LOG"
+    rm -rf "$WORKDIR"
+  else
+    SIG_OUT="$(/usr/sbin/pkgutil --check-signature "$PKG_PATH" 2>&1 || true)"
+    echo "$SIG_OUT" >>"$PYTHON_AUTO_LOG"
+    if printf '%s' "$SIG_OUT" | grep -q "$PSF_DEVELOPER_ID_SUBSTRING"; then
+      echo "Signature OK; running installer" >>"$PYTHON_AUTO_LOG"
+      if /usr/sbin/installer -pkg "$PKG_PATH" -target / >>"$PYTHON_AUTO_LOG" 2>&1; then
+        echo "Python ${PYTHON_AUTO_VERSION} installed" >>"$PYTHON_AUTO_LOG"
+      else
+        echo "installer exited non-zero" >>"$PYTHON_AUTO_LOG"
+      fi
+    else
+      echo "Signer didn't match '$PSF_DEVELOPER_ID_SUBSTRING'; refusing" >>"$PYTHON_AUTO_LOG"
+    fi
+    rm -rf "$WORKDIR"
+  fi
+fi
+
+# ── 1. Provision managed venv from the bundled wheel ────────────────────────
+
+VENV_OK=0
+if [[ -x "$INSTALL_HELPER" && -n "$BUNDLED_WHEEL" && -f "$BUNDLED_WHEEL" ]]; then
+  if launchctl asuser "${CONSOLE_UID}" \
+       /bin/bash "$INSTALL_HELPER" --wheel "$BUNDLED_WHEEL" \
+       >"$VENV_LOG" 2>&1; then
+    VENV_OK=1
+  fi
+fi
+
+if [[ "$VENV_OK" -eq 0 ]]; then
+  # The desktop app can't function without the Python sidecar. Surface a
+  # clear dialog instead of silently launching a broken app.
+  if has_python312; then
+    DIALOG_BODY="The installer could not provision AgentShore's managed Python sidecar.\\n\\nDetails: $VENV_LOG"
+  else
+    DIALOG_BODY="AgentShore needs Python 3.12 but the automatic install from python.org did not succeed. Install Python 3.12 manually from https://www.python.org/downloads/macos/ and re-run this installer.\\n\\nDetails: $PYTHON_AUTO_LOG"
+  fi
+  launchctl asuser "${CONSOLE_UID}" \
+    /usr/bin/osascript -e "display alert \"AgentShore Desktop needs Python 3.12\" message \"$DIALOG_BODY\" buttons {\"OK\"}" \
+    >/dev/null 2>&1 || true
+  exit 0
+fi
+
+# ── 2. Launch the app under the console user's session ──────────────────────
+
+if [[ ! -d "${APP_PATH}" ]]; then
+  exit 0
+fi
+
+# launchctl asuser + /usr/bin/open is unreliable on macOS 15 (Sequoia) — the
+# open request arrives at Launch Services but the app never comes to front.
+# A one-shot LaunchAgent loaded into the user's bootstrap namespace fires
+# immediately (RunAtLoad) and unloads itself after launching the app.
+FIRST_LAUNCH_LABEL="ai.agentshore.firstlaunch"
+USER_HOME="$(eval echo "~${CONSOLE_USER}")"
+USER_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
+FIRST_LAUNCH_PLIST="${USER_AGENTS_DIR}/${FIRST_LAUNCH_LABEL}.plist"
+
+mkdir -p "${USER_AGENTS_DIR}" 2>/dev/null || true
+chown "${CONSOLE_USER}" "${USER_AGENTS_DIR}" 2>/dev/null || true
+
+cat >"${FIRST_LAUNCH_PLIST}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${FIRST_LAUNCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/usr/bin/open -a AgentShore; /bin/launchctl bootout gui/${CONSOLE_UID}/${FIRST_LAUNCH_LABEL} 2>/dev/null; /bin/rm -f '${FIRST_LAUNCH_PLIST}'</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+chown "${CONSOLE_USER}" "${FIRST_LAUNCH_PLIST}" 2>/dev/null || true
+launchctl asuser "${CONSOLE_UID}" /bin/launchctl load -w "${FIRST_LAUNCH_PLIST}" 2>/dev/null || \
+  launchctl asuser "${CONSOLE_UID}" /usr/bin/open "${APP_PATH}" 2>/dev/null || true
+
+# Auto-close logic intentionally lives in the CLI component's postinstall
+# (cli-postinstall), not here. The CLI component runs after this desktop
+# postinstall returns and can take 30s+ pulling extras (torch + friends);
+# firing `tell Installer to quit` here from a sleep-2 background subshell
+# races the CLI install and produces an "Installer is busy" alert. Letting
+# the LAST postinstall handle the close removes the race. If a user
+# unchecks the CLI box in Customize, Installer just shows Summary normally
+# and the user closes it manually.
+
+exit 0

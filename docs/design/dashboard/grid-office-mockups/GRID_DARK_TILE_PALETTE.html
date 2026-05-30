@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Dark Tile Palette</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #d8f3ff;
+        background: #05070d;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        padding: 32px;
+        background: linear-gradient(135deg, #05070d, #081828 62%, #06131a);
+      }
+
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      p {
+        margin: 0 0 24px;
+        color: #93b7c6;
+      }
+
+      a { color: #65dfff; }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: rgba(8, 18, 30, 0.84);
+        border: 1px solid rgba(102, 214, 255, 0.38);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+      }
+
+      th,
+      td {
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(102, 214, 255, 0.22);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #9bdfff;
+        background: rgba(15, 33, 52, 0.96);
+      }
+
+      tr:last-child td { border-bottom: 0; }
+
+      code {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+      }
+
+      .swatch {
+        display: inline-block;
+        width: 76px;
+        height: 28px;
+        border: 1px solid rgba(132, 229, 255, 0.42);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+
+      .mockup-section { margin-top: 28px; }
+      .mockup-section h2 { margin: 0 0 12px; font-size: 18px; }
+
+      .room-map {
+        display: grid;
+        grid-template-columns: 1fr 1.6fr 1fr;
+        grid-template-rows: 132px 164px 164px;
+        grid-template-areas:
+          "war workshop launch"
+          "editors workshop front"
+          "recovery zen science";
+        gap: 8px;
+        padding: 10px;
+        background: rgba(12, 28, 44, 0.98);
+        border: 1px solid rgba(102, 214, 255, 0.34);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+      }
+
+      .room-tile {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(72, 184, 255, 0.36);
+        background:
+          linear-gradient(rgba(72, 184, 255, 0.36) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(72, 184, 255, 0.36) 1px, transparent 1px),
+          var(--tile);
+        background-size: 20px 20px, 20px 20px, auto;
+      }
+
+      .room-tile span {
+        position: absolute;
+        left: 10px;
+        top: 8px;
+        padding: 4px 6px;
+        background: rgba(4, 16, 22, 0.72);
+        border: 1px solid rgba(102, 214, 255, 0.28);
+        color: #d8f3ff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .war { grid-area: war; --tile: rgba(17, 52, 84, 0.92); }
+      .workshop { grid-area: workshop; --tile: rgba(16, 69, 95, 0.90); }
+      .science { grid-area: science; --tile: rgba(20, 58, 99, 0.90); }
+      .launch { grid-area: launch; --tile: rgba(18, 47, 98, 0.90); }
+      .editors { grid-area: editors; --tile: rgba(18, 83, 111, 0.90); }
+      .recovery { grid-area: recovery; --tile: rgba(46, 68, 80, 0.90); }
+      .zen { grid-area: zen; --tile: rgba(18, 97, 115, 0.88); }
+      .front { grid-area: front; --tile: rgba(18, 75, 101, 0.90); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentShore Grid Dark Tile Palette</h1>
+      <p>
+        Dark-mode companion to the Grid Light room palette. The floor colors keep the same room
+        relationships while shifting to navy, steel, cyan, and teal values.
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Room</th>
+            <th>Color Name</th>
+            <th>Swatch</th>
+            <th>Tile Fill</th>
+            <th>Hex</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>War Room</td>
+            <td>Deep Slate Blue</td>
+            <td><span class="swatch" style="background: rgba(17, 52, 84, 0.92)"></span></td>
+            <td><code>rgba(17, 52, 84, 0.92)</code></td>
+            <td><code>#113454</code></td>
+          </tr>
+          <tr>
+            <td>Workshop</td>
+            <td>Workshop Cyan Navy</td>
+            <td><span class="swatch" style="background: rgba(16, 69, 95, 0.90)"></span></td>
+            <td><code>rgba(16, 69, 95, 0.90)</code></td>
+            <td><code>#10455F</code></td>
+          </tr>
+          <tr>
+            <td>Science Lab</td>
+            <td>Lab Indigo Blue</td>
+            <td><span class="swatch" style="background: rgba(20, 58, 99, 0.90)"></span></td>
+            <td><code>rgba(20, 58, 99, 0.90)</code></td>
+            <td><code>#143A63</code></td>
+          </tr>
+          <tr>
+            <td>Launch Control</td>
+            <td>Command Navy</td>
+            <td><span class="swatch" style="background: rgba(18, 47, 98, 0.90)"></span></td>
+            <td><code>rgba(18, 47, 98, 0.90)</code></td>
+            <td><code>#122F62</code></td>
+          </tr>
+          <tr>
+            <td>Editor's Desk</td>
+            <td>Editor Deep Teal</td>
+            <td><span class="swatch" style="background: rgba(18, 83, 111, 0.90)"></span></td>
+            <td><code>rgba(18, 83, 111, 0.90)</code></td>
+            <td><code>#12536F</code></td>
+          </tr>
+          <tr>
+            <td>Recovery Bay</td>
+            <td>Recovery Steel</td>
+            <td><span class="swatch" style="background: rgba(46, 68, 80, 0.90)"></span></td>
+            <td><code>rgba(46, 68, 80, 0.90)</code></td>
+            <td><code>#2E4450</code></td>
+          </tr>
+          <tr>
+            <td>Zen Garden</td>
+            <td>Zen Deep Cyan</td>
+            <td><span class="swatch" style="background: rgba(18, 97, 115, 0.88)"></span></td>
+            <td><code>rgba(18, 97, 115, 0.88)</code></td>
+            <td><code>#126173</code></td>
+          </tr>
+          <tr>
+            <td>Front Desk</td>
+            <td>Front Desk Teal Navy</td>
+            <td><span class="swatch" style="background: rgba(18, 75, 101, 0.90)"></span></td>
+            <td><code>rgba(18, 75, 101, 0.90)</code></td>
+            <td><code>#124B65</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <section class="mockup-section" aria-labelledby="tile-only-mockup-heading">
+        <h2 id="tile-only-mockup-heading">Tile Only Room Mockup</h2>
+        <div class="room-map">
+          <div class="room-tile war"><span>War Room</span></div>
+          <div class="room-tile workshop"><span>Workshop</span></div>
+          <div class="room-tile launch"><span>Launch Control</span></div>
+          <div class="room-tile editors"><span>Editor's Desk</span></div>
+          <div class="room-tile front"><span>Front Desk</span></div>
+          <div class="room-tile recovery"><span>Recovery Bay</span></div>
+          <div class="room-tile zen"><span>Zen Garden</span></div>
+          <div class="room-tile science"><span>Science Lab</span></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

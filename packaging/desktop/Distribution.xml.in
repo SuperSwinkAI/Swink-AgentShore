@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  productbuild Distribution definition for AgentShore.
+
+  Two components are declared so the wizard's Customize panel shows
+  "Install CLI" as a deliberate user-visible checkbox. The desktop app
+  is required (start_selected + enabled="false"); the CLI is opt-out.
+
+  build-macos.sh substitutes:
+    @VERSION@             — pyproject + tauri.conf.json version string
+    @APP_COMPONENT_PKG@   — filename of the desktop component pkg
+    @CLI_COMPONENT_PKG@   — filename of the CLI component pkg
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>AgentShore</title>
+    <license file="EULA.rtf" mime-type="application/rtf"/>
+    <options
+        customize="always"
+        require-scripts="false"
+        hostArchitectures="arm64,x86_64"
+        rootVolumeOnly="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="11.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="ai.agentshore.desktop"/>
+        <line choice="ai.agentshore.cli"/>
+    </choices-outline>
+    <choice id="ai.agentshore.desktop"
+            title="AgentShore Desktop"
+            description="The AgentShore desktop application with bundled Python sidecar. Required."
+            enabled="false"
+            start_selected="true">
+        <pkg-ref id="ai.agentshore.desktop"/>
+    </choice>
+    <choice id="ai.agentshore.cli"
+            title="AgentShore CLI"
+            description="Installs the 'agentshore' command in ~/.local/bin for headless and TUI sessions. Bootstraps uv via the official installer if it isn't already on this Mac."
+            start_selected="true">
+        <pkg-ref id="ai.agentshore.cli"/>
+    </choice>
+    <pkg-ref id="ai.agentshore.desktop"
+             version="@VERSION@"
+             onConclusion="none"
+             auth="Root">@APP_COMPONENT_PKG@</pkg-ref>
+    <pkg-ref id="ai.agentshore.cli"
+             version="@VERSION@"
+             onConclusion="none"
+             auth="Root">@CLI_COMPONENT_PKG@</pkg-ref>
+</installer-gui-script>

@@ -1,0 +1,901 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #dffcff;
+        --muted: #7ea6b1;
+        --cyan: #00eaff;
+        --blue: #1a7dff;
+        --gold: #ffb84a;
+        --red: #ff4d6d;
+        --panel: rgba(4, 12, 22, 0.74);
+        --panel-border: rgba(71, 226, 255, 0.26);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 72%, rgba(0, 234, 255, 0.14), transparent 42%),
+          linear-gradient(180deg, #02050b 0%, #040a14 48%, #020309 100%);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+
+      .hud {
+        position: fixed;
+        inset: 18px;
+        pointer-events: none;
+        display: grid;
+        grid-template-columns: minmax(230px, 280px) 1fr minmax(230px, 300px);
+        grid-template-rows: auto 1fr auto;
+        gap: 14px;
+      }
+
+      .brand,
+      .panel,
+      .controls {
+        backdrop-filter: blur(14px);
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        box-shadow:
+          0 0 0 1px rgba(0, 234, 255, 0.05) inset,
+          0 0 22px rgba(0, 234, 255, 0.1);
+      }
+
+      .brand {
+        grid-column: 1;
+        align-self: start;
+        padding: 14px 16px 13px;
+        border-radius: 6px;
+      }
+
+      .kicker {
+        color: var(--cyan);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 3px 0 0;
+        font-size: clamp(22px, 3vw, 40px);
+        line-height: 0.95;
+        letter-spacing: 0;
+        text-shadow:
+          0 0 16px rgba(0, 234, 255, 0.6),
+          0 0 28px rgba(26, 125, 255, 0.35);
+      }
+
+      .subline {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .panel {
+        border-radius: 6px;
+        padding: 12px;
+      }
+
+      .left-stack {
+        grid-column: 1;
+        grid-row: 2 / 4;
+        align-self: end;
+        display: grid;
+        gap: 10px;
+      }
+
+      .right-stack {
+        grid-column: 3;
+        grid-row: 1 / 4;
+        align-self: center;
+        display: grid;
+        gap: 10px;
+      }
+
+      .panel-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #c9fbff;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .chip {
+        color: #061018;
+        background: var(--cyan);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 10px;
+        font-weight: 900;
+        box-shadow: 0 0 14px rgba(0, 234, 255, 0.64);
+      }
+
+      .metric {
+        display: grid;
+        grid-template-columns: 42px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        margin-top: 11px;
+      }
+
+      .metric .icon {
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(0, 234, 255, 0.32);
+        border-radius: 6px;
+        color: var(--cyan);
+        font-size: 20px;
+        font-weight: 900;
+        box-shadow: 0 0 16px rgba(0, 234, 255, 0.12) inset;
+      }
+
+      .metric b {
+        display: block;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .metric strong {
+        color: var(--ink);
+        font-size: 18px;
+        text-shadow: 0 0 12px rgba(0, 234, 255, 0.58);
+      }
+
+      .lanes {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .lane {
+        min-width: 0;
+      }
+
+      .lane-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .bar {
+        height: 7px;
+        margin-top: 5px;
+        border: 1px solid rgba(0, 234, 255, 0.18);
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .bar i {
+        display: block;
+        height: 100%;
+        width: var(--v);
+        background: linear-gradient(90deg, var(--cyan), var(--blue));
+        box-shadow: 0 0 14px rgba(0, 234, 255, 0.8);
+      }
+
+      .bar.gold i {
+        background: linear-gradient(90deg, var(--gold), #fff089);
+        box-shadow: 0 0 14px rgba(255, 184, 74, 0.8);
+      }
+
+      .bar.red i {
+        background: linear-gradient(90deg, var(--red), #ff95a7);
+        box-shadow: 0 0 14px rgba(255, 77, 109, 0.8);
+      }
+
+      .queue {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .queue-row {
+        display: grid;
+        grid-template-columns: 9px 1fr auto;
+        gap: 9px;
+        align-items: center;
+        color: #cfeff4;
+        font-size: 11px;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 10px currentColor;
+      }
+
+      .dot.gold {
+        color: var(--gold);
+        background: currentColor;
+      }
+
+      .dot.red {
+        color: var(--red);
+        background: currentColor;
+      }
+
+      .queue-row code {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+      }
+
+      .controls {
+        grid-column: 3;
+        grid-row: 1;
+        align-self: start;
+        justify-self: end;
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 6px;
+        pointer-events: auto;
+      }
+
+      button {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(0, 234, 255, 0.3);
+        border-radius: 6px;
+        background: rgba(0, 234, 255, 0.06);
+        color: var(--ink);
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 900;
+      }
+
+      button:hover {
+        background: rgba(0, 234, 255, 0.18);
+        box-shadow: 0 0 18px rgba(0, 234, 255, 0.22);
+      }
+
+      .caption {
+        grid-column: 2;
+        grid-row: 3;
+        align-self: end;
+        justify-self: center;
+        max-width: 680px;
+        padding: 9px 13px;
+        border: 1px solid rgba(255, 184, 74, 0.26);
+        border-radius: 6px;
+        color: #ffe3a6;
+        background: rgba(18, 12, 4, 0.58);
+        font-size: 12px;
+        line-height: 1.35;
+        text-align: center;
+        box-shadow: 0 0 20px rgba(255, 184, 74, 0.12);
+      }
+
+      @media (max-width: 900px) {
+        .hud {
+          inset: 12px;
+          grid-template-columns: 1fr auto;
+          grid-template-rows: auto 1fr auto;
+        }
+
+        .brand {
+          grid-column: 1;
+          max-width: 280px;
+        }
+
+        .controls {
+          grid-column: 2;
+        }
+
+        .left-stack {
+          grid-column: 1 / 3;
+          grid-row: 3;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          align-self: end;
+        }
+
+        .right-stack,
+        .caption {
+          display: none;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .hud {
+          display: block;
+        }
+
+        .brand {
+          max-width: 220px;
+        }
+
+        .left-stack {
+          position: fixed;
+          left: 12px;
+          right: 12px;
+          bottom: 12px;
+          grid-template-columns: 1fr;
+        }
+
+        .left-stack .panel:nth-child(2) {
+          display: none;
+        }
+
+        .controls {
+          position: fixed;
+          top: 12px;
+          right: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="grid"></canvas>
+
+    <div class="hud" aria-hidden="true">
+      <header class="brand">
+        <div class="kicker">AgentShore Simulation Layer</div>
+        <h1>THE GRID</h1>
+        <div class="subline">PPO routing visible as luminous programs, claims, gates, and active work lanes.</div>
+      </header>
+
+      <div class="controls">
+        <button id="toggle" type="button" title="Pause or resume animation">II</button>
+        <button id="pulse" type="button" title="Pulse policy routes">O</button>
+        <button id="focus" type="button" title="Cycle focus room">[]</button>
+      </div>
+
+      <section class="left-stack">
+        <div class="panel">
+          <div class="panel-title">Policy Head <span class="chip">v11</span></div>
+          <div class="metric">
+            <div class="icon">P</div>
+            <div><b>Selected play</b><span>Issue Pickup, guarded by scope evidence</span></div>
+            <strong>0.82</strong>
+          </div>
+          <div class="metric">
+            <div class="icon">A</div>
+            <div><b>Active agents</b><span>Codex, Claude, GPT, Gemini</span></div>
+            <strong>12</strong>
+          </div>
+          <div class="metric">
+            <div class="icon">R</div>
+            <div><b>Reward trend</b><span>Closure velocity plus QA confidence</span></div>
+            <strong>+7.4</strong>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Control Lanes <span class="chip">live</span></div>
+          <div class="lanes">
+            <div class="lane">
+              <div class="lane-top"><span>Alignment</span><span>91%</span></div>
+              <div class="bar"><i style="--v: 91%"></i></div>
+            </div>
+            <div class="lane">
+              <div class="lane-top"><span>Review queue</span><span>46%</span></div>
+              <div class="bar gold"><i style="--v: 46%"></i></div>
+            </div>
+            <div class="lane">
+              <div class="lane-top"><span>Blocked scope</span><span>14%</span></div>
+              <div class="bar red"><i style="--v: 14%"></i></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="right-stack">
+        <div class="panel">
+          <div class="panel-title">Work Queue <span class="chip">beads</span></div>
+          <div class="queue">
+            <div class="queue-row"><span class="dot"></span><span>Epic sync</span><code>gh-184</code></div>
+            <div class="queue-row"><span class="dot gold"></span><span>QA pass</span><code>run-42</code></div>
+            <div class="queue-row"><span class="dot"></span><span>Review handoff</span><code>pr-217</code></div>
+            <div class="queue-row"><span class="dot red"></span><span>Scope evidence</span><code>claim-9</code></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Identity Guard <span class="chip">armed</span></div>
+          <div class="metric">
+            <div class="icon">G</div>
+            <div><b>Reviewer split</b><span>PR author cannot review own patch</span></div>
+            <strong>ok</strong>
+          </div>
+          <div class="metric">
+            <div class="icon">Q</div>
+            <div><b>Trunk QA</b><span>Runs on default-branch state</span></div>
+            <strong>hot</strong>
+          </div>
+        </div>
+      </section>
+
+      <div class="caption">
+        Rooms keep the current AgentShore footprint, but the surface language changes to dark glass,
+        neon blockers, holographic consoles, route trails, and pulsing agent programs.
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("grid");
+      const ctx = canvas.getContext("2d");
+
+      const MAP_COLS = 75;
+      const MAP_ROWS = 56;
+
+      const zoneIds = {
+        WAR_ROOM: 0,
+        WORKSHOP: 1,
+        SCIENCE_LAB: 2,
+        LAUNCH_CONTROL: 3,
+        EDITORS_DESK: 4,
+        BOARDROOM: 5,
+        ZEN_GARDEN: 6,
+        FRONT_DESK: 7,
+      };
+
+      const zones = [
+        { id: zoneIds.WAR_ROOM, name: "WAR ROOM", x: 5, y: 6, w: 15, h: 15, tone: "#00eaff" },
+        { id: zoneIds.WORKSHOP, name: "WORKSHOP", x: 20, y: 6, w: 34, h: 35, tone: "#1a7dff" },
+        { id: zoneIds.BOARDROOM, name: "BOARDROOM", x: 54, y: 6, w: 15, h: 15, tone: "#ffb84a" },
+        { id: zoneIds.EDITORS_DESK, name: "EDITOR", x: 5, y: 21, w: 15, h: 15, tone: "#c271ff" },
+        { id: zoneIds.FRONT_DESK, name: "GATE", x: 54, y: 21, w: 15, h: 15, tone: "#00ffb3" },
+        { id: zoneIds.LAUNCH_CONTROL, name: "LAUNCH", x: 5, y: 37, w: 15, h: 15, tone: "#ff4d6d" },
+        { id: zoneIds.ZEN_GARDEN, name: "QUIET ZONE", x: 20, y: 41, w: 34, h: 11, tone: "#91ff70" },
+        { id: zoneIds.SCIENCE_LAB, name: "SCIENCE", x: 54, y: 37, w: 15, h: 15, tone: "#72d7ff" },
+      ];
+
+      const furniture = [
+        { name: "War Table", x: 10, y: 10, w: 7, h: 4, z: 2.4, color: "#00eaff" },
+        { name: "War Console", x: 5, y: 10, w: 3, h: 3, z: 3.0, color: "#4dfcff" },
+        { name: "Bench NW", x: 23, y: 16, w: 8, h: 5, z: 2.5, color: "#1a7dff" },
+        { name: "Printer Pod NE", x: 45, y: 12, w: 5, h: 9, z: 4.6, color: "#00eaff" },
+        { name: "Bench SW", x: 23, y: 33, w: 8, h: 5, z: 2.5, color: "#1a7dff" },
+        { name: "Bench SE", x: 42, y: 33, w: 9, h: 5, z: 2.5, color: "#1a7dff" },
+        { name: "Monitor Desk W", x: 23, y: 22, w: 3, h: 6, z: 3.0, color: "#00eaff" },
+        { name: "Bins E", x: 46, y: 24, w: 5, h: 3, z: 2.2, color: "#ffb84a" },
+        { name: "Tools", x: 51, y: 22, w: 2, h: 5, z: 4.8, color: "#72d7ff" },
+        { name: "Boardroom Table", x: 58, y: 10, w: 8, h: 4, z: 2.3, color: "#ffb84a" },
+        { name: "Editor Bookcases", x: 5, y: 21, w: 15, h: 2, z: 5.7, color: "#c271ff" },
+        { name: "Drafting Table", x: 10, y: 27, w: 6, h: 4, z: 2.3, color: "#c271ff" },
+        { name: "Gate N", x: 58, y: 24, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { name: "Gate C", x: 58, y: 27, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { name: "Gate S", x: 58, y: 30, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { name: "Command Center", x: 5, y: 37, w: 4, h: 15, z: 3.2, color: "#ff4d6d" },
+        { name: "Sand", x: 25, y: 47, w: 8, h: 3, z: 0.45, color: "#91ff70" },
+        { name: "Garden Bench", x: 41, y: 49, w: 8, h: 2, z: 1.2, color: "#91ff70" },
+        { name: "Stones", x: 40, y: 44, w: 4, h: 3, z: 1.5, color: "#dffcff" },
+        { name: "Portal", x: 21, y: 41, w: 3, h: 3, z: 4.3, color: "#91ff70" },
+        { name: "Vending Machine", x: 49, y: 41, w: 4, h: 2, z: 5.0, color: "#ffb84a" },
+        { name: "Lab Bench", x: 57, y: 48, w: 8, h: 2, z: 2.4, color: "#72d7ff" },
+        { name: "Test Rig", x: 58, y: 43, w: 6, h: 3, z: 4.2, color: "#72d7ff" },
+        { name: "Lab Shelf", x: 66, y: 42, w: 2, h: 7, z: 5.4, color: "#72d7ff" },
+      ];
+
+      const seats = [
+        [8, 15], [12, 18], [17, 15], [43, 16], [27, 21], [43, 19], [22, 18],
+        [43, 22], [32, 22], [27, 25], [44, 28], [28, 28], [26, 31], [48, 32],
+        [45, 32], [29, 32], [25, 32], [40, 37], [59, 9], [62, 9], [65, 9],
+        [57, 12], [66, 12], [9, 28], [13, 25], [13, 32], [67, 23], [67, 27],
+        [67, 32], [9, 40], [9, 44], [9, 48], [22, 46], [50, 44], [34, 51],
+        [49, 51], [56, 45], [61, 42], [65, 45],
+      ];
+
+      const paths = [
+        { color: "#00eaff", speed: 0.105, points: [[67, 27], [55, 28], [44, 28], [32, 22], [23, 18], [12, 15]] },
+        { color: "#ffb84a", speed: 0.083, points: [[62, 9], [52, 15], [44, 19], [34, 22], [27, 25], [13, 32]] },
+        { color: "#ff4d6d", speed: 0.074, points: [[9, 48], [18, 41], [28, 37], [40, 37], [53, 38], [61, 44]] },
+        { color: "#91ff70", speed: 0.064, points: [[22, 46], [32, 48], [43, 49], [50, 44], [45, 37], [43, 22]] },
+        { color: "#c271ff", speed: 0.092, points: [[9, 28], [21, 28], [32, 28], [45, 32], [58, 30], [67, 32]] },
+        { color: "#72d7ff", speed: 0.068, points: [[56, 45], [53, 38], [48, 32], [45, 24], [51, 18], [65, 9]] },
+      ];
+
+      let running = true;
+      let pulseBoost = 0;
+      let focusIndex = 1;
+      let time = 0;
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      let scale = 1;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      function resize() {
+        dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const bounds = rawBounds();
+        const fitW = Math.max(420, width - 90);
+        const fitH = Math.max(320, height - 100);
+        scale = Math.min(fitW / bounds.w, fitH / bounds.h) * (width < 700 ? 0.82 : 0.96);
+        offsetX = width * 0.5 - (bounds.x + bounds.w / 2) * scale;
+        offsetY = height * 0.54 - (bounds.y + bounds.h / 2) * scale;
+      }
+
+      function rawProject(x, y, z = 0) {
+        return {
+          x: (x - y) * 15.5,
+          y: (x + y) * 7.6 - z * 9.6,
+        };
+      }
+
+      function project(x, y, z = 0) {
+        const p = rawProject(x, y, z);
+        return { x: p.x * scale + offsetX, y: p.y * scale + offsetY };
+      }
+
+      function rawBounds() {
+        const pts = [
+          rawProject(0, 0, 8),
+          rawProject(MAP_COLS, 0, 8),
+          rawProject(0, MAP_ROWS, 0),
+          rawProject(MAP_COLS, MAP_ROWS, 0),
+        ];
+        const xs = pts.map((p) => p.x);
+        const ys = pts.map((p) => p.y);
+        const x = Math.min(...xs);
+        const y = Math.min(...ys);
+        return {
+          x,
+          y,
+          w: Math.max(...xs) - x,
+          h: Math.max(...ys) - y,
+        };
+      }
+
+      function polygon(points, fill, stroke, lineWidth = 1, glow = 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        if (fill) {
+          ctx.fillStyle = fill;
+          ctx.fill();
+        }
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = lineWidth;
+          ctx.shadowColor = stroke;
+          ctx.shadowBlur = glow;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function strokeLine(a, b, color, widthValue = 1, glow = 0, alpha = 1) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = widthValue;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = glow;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function rectTop(rect, z = 0) {
+        return [
+          project(rect.x, rect.y, z),
+          project(rect.x + rect.w, rect.y, z),
+          project(rect.x + rect.w, rect.y + rect.h, z),
+          project(rect.x, rect.y + rect.h, z),
+        ];
+      }
+
+      function rgba(hex, alpha) {
+        const n = Number.parseInt(hex.slice(1), 16);
+        const r = (n >> 16) & 255;
+        const g = (n >> 8) & 255;
+        const b = n & 255;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
+
+      function renderBackground() {
+        const grd = ctx.createLinearGradient(0, 0, 0, height);
+        grd.addColorStop(0, "#020713");
+        grd.addColorStop(0.58, "#040b17");
+        grd.addColorStop(1, "#010207");
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.save();
+        ctx.globalAlpha = 0.42;
+        for (let i = -width; i < width * 2; i += 48) {
+          strokeLine({ x: i, y: height }, { x: i + width * 0.52, y: 0 }, "#0a2f5c", 0.6, 0, 0.35);
+        }
+        for (let y = height * 0.48; y < height; y += 34) {
+          strokeLine({ x: 0, y }, { x: width, y }, "#073b5c", 0.8, 0, 0.32);
+        }
+        ctx.restore();
+      }
+
+      function renderGrid() {
+        const floor = rectTop({ x: 0, y: 0, w: MAP_COLS, h: MAP_ROWS });
+        polygon(floor, "rgba(0, 12, 22, 0.72)", "rgba(0, 234, 255, 0.34)", 1.4, 22);
+
+        for (let x = 0; x <= MAP_COLS; x += 2) {
+          const major = x % 10 === 0;
+          strokeLine(
+            project(x, 0),
+            project(x, MAP_ROWS),
+            major ? "#00eaff" : "#0b78a9",
+            major ? 1.05 : 0.55,
+            major ? 9 : 0,
+            major ? 0.42 : 0.16,
+          );
+        }
+
+        for (let y = 0; y <= MAP_ROWS; y += 2) {
+          const major = y % 10 === 0;
+          strokeLine(
+            project(0, y),
+            project(MAP_COLS, y),
+            major ? "#1a7dff" : "#075b91",
+            major ? 1.05 : 0.55,
+            major ? 9 : 0,
+            major ? 0.42 : 0.16,
+          );
+        }
+      }
+
+      function renderZones() {
+        for (let i = 0; i < zones.length; i++) {
+          const z = zones[i];
+          const active = i === focusIndex;
+          const alpha = active ? 0.18 : 0.08;
+          const glow = active ? 28 + Math.sin(time * 0.005) * 7 : 11;
+          polygon(rectTop(z), rgba(z.tone, alpha), rgba(z.tone, active ? 0.95 : 0.52), active ? 2.2 : 1.2, glow);
+          renderRoomWall(z, active);
+          renderZoneLabel(z, active);
+        }
+      }
+
+      function renderRoomWall(z, active) {
+        const tone = z.tone;
+        const base = 0;
+        const top = active ? 6.4 : 4.2;
+        const back = [
+          project(z.x, z.y, base),
+          project(z.x + z.w, z.y, base),
+          project(z.x + z.w, z.y, top),
+          project(z.x, z.y, top),
+        ];
+        const left = [
+          project(z.x, z.y, base),
+          project(z.x, z.y + z.h, base),
+          project(z.x, z.y + z.h, top * 0.55),
+          project(z.x, z.y, top),
+        ];
+        const right = [
+          project(z.x + z.w, z.y, base),
+          project(z.x + z.w, z.y + z.h, base),
+          project(z.x + z.w, z.y + z.h, top * 0.55),
+          project(z.x + z.w, z.y, top),
+        ];
+        polygon(back, rgba(tone, active ? 0.09 : 0.045), rgba(tone, active ? 0.78 : 0.28), 1.1, active ? 18 : 6);
+        polygon(left, rgba(tone, 0.035), rgba(tone, active ? 0.46 : 0.18), 0.8, 6);
+        polygon(right, rgba(tone, 0.025), rgba(tone, active ? 0.42 : 0.16), 0.8, 6);
+      }
+
+      function renderZoneLabel(z, active) {
+        const p = project(z.x + z.w / 2, z.y + 0.7, active ? 5.0 : 3.5);
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = `${Math.max(8, 9 * scale)}px ui-monospace, Menlo, monospace`;
+        ctx.shadowColor = z.tone;
+        ctx.shadowBlur = active ? 16 : 8;
+        ctx.fillStyle = active ? "#f0feff" : rgba(z.tone, 0.82);
+        ctx.fillText(z.name, p.x, p.y);
+        ctx.restore();
+      }
+
+      function renderSeats() {
+        for (const [x, y] of seats) {
+          const p = rectTop({ x: x + 0.28, y: y + 0.28, w: 0.44, h: 0.44 });
+          polygon(p, "rgba(223, 252, 255, 0.03)", "rgba(223, 252, 255, 0.28)", 0.8, 7);
+        }
+      }
+
+      function renderFurniture() {
+        const sorted = [...furniture].sort((a, b) => a.x + a.y + a.h - (b.x + b.y + b.h));
+        for (const f of sorted) {
+          drawBox(f, f.z, f.color);
+          drawHologramDetail(f);
+        }
+      }
+
+      function drawBox(rect, z, color) {
+        const top = rectTop(rect, z);
+        const bottom = rectTop(rect, 0);
+        const front = [bottom[3], bottom[2], top[2], top[3]];
+        const right = [bottom[1], bottom[2], top[2], top[1]];
+        const left = [bottom[0], bottom[3], top[3], top[0]];
+
+        polygon(left, rgba(color, 0.035), rgba(color, 0.28), 0.7, 6);
+        polygon(right, rgba(color, 0.045), rgba(color, 0.32), 0.7, 6);
+        polygon(front, rgba(color, 0.06), rgba(color, 0.38), 0.9, 8);
+        polygon(top, rgba(color, 0.15), rgba(color, 0.9), 1.35, 14);
+
+        const inset = {
+          x: rect.x + Math.min(0.35, rect.w * 0.18),
+          y: rect.y + Math.min(0.35, rect.h * 0.18),
+          w: Math.max(0.1, rect.w - Math.min(0.7, rect.w * 0.36)),
+          h: Math.max(0.1, rect.h - Math.min(0.7, rect.h * 0.36)),
+        };
+        polygon(rectTop(inset, z + 0.08), "rgba(2, 8, 18, 0.56)", rgba(color, 0.55), 0.9, 8);
+      }
+
+      function drawHologramDetail(rect) {
+        const z = rect.z + 0.16;
+        const phase = Math.sin(time * 0.004 + rect.x * 0.2 + rect.y * 0.17);
+        const color = phase > 0.45 ? "#ffb84a" : rect.color;
+        const count = Math.max(2, Math.floor(rect.w / 2));
+        for (let i = 0; i < count; i++) {
+          const x = rect.x + 0.65 + i * Math.max(0.95, (rect.w - 1.3) / count);
+          const a = project(x, rect.y + rect.h * 0.35, z);
+          const b = project(x + 0.58, rect.y + rect.h * 0.35, z);
+          strokeLine(a, b, color, 1.1, 8, 0.72);
+        }
+      }
+
+      function renderRoutes() {
+        for (const route of paths) {
+          const points = route.points.map(([x, y]) => project(x + 0.5, y + 0.5, 0.16));
+          ctx.save();
+          ctx.lineJoin = "round";
+          ctx.lineCap = "round";
+          ctx.setLineDash([10, 13]);
+          ctx.lineDashOffset = -time * route.speed * 4 - pulseBoost;
+          ctx.strokeStyle = route.color;
+          ctx.lineWidth = 1.8;
+          ctx.shadowColor = route.color;
+          ctx.shadowBlur = 16 + pulseBoost * 0.2;
+          ctx.globalAlpha = 0.62;
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      function renderAgents() {
+        paths.forEach((route, idx) => {
+          const cycle = route.points.length - 1;
+          const progress = (time * route.speed * 0.008 + idx * 0.19) % cycle;
+          const segment = Math.floor(progress);
+          const local = progress - segment;
+          const a = route.points[segment];
+          const b = route.points[segment + 1];
+          const ease = local * local * (3 - 2 * local);
+          const x = a[0] + (b[0] - a[0]) * ease + 0.5;
+          const y = a[1] + (b[1] - a[1]) * ease + 0.5;
+          const bob = Math.sin(time * 0.008 + idx) * 0.22;
+          const p = project(x, y, 2.2 + bob);
+          const floor = project(x, y, 0.08);
+
+          strokeLine(floor, p, route.color, 1.2, 11, 0.52);
+          drawAgentGlyph(p, route.color, idx);
+        });
+      }
+
+      function drawAgentGlyph(p, color, idx) {
+        const r = Math.max(7, 10 * scale);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(time * 0.002 + idx);
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 22;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.4;
+        ctx.fillStyle = rgba(color, 0.14);
+        ctx.beginPath();
+        ctx.moveTo(0, -r);
+        ctx.lineTo(r * 0.78, r * 0.58);
+        ctx.lineTo(-r * 0.78, r * 0.58);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.38, 0, Math.PI * 2);
+        ctx.fillStyle = "#dffcff";
+        ctx.globalAlpha = 0.82;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function renderScanlines() {
+        ctx.save();
+        ctx.globalAlpha = 0.13;
+        ctx.fillStyle = "#00eaff";
+        for (let y = Math.floor((time * 0.04) % 6); y < height; y += 6) {
+          ctx.fillRect(0, y, width, 1);
+        }
+        ctx.restore();
+      }
+
+      function render() {
+        if (running) {
+          time += 16.7;
+          pulseBoost = Math.max(0, pulseBoost - 0.8);
+        }
+        renderBackground();
+        renderGrid();
+        renderZones();
+        renderSeats();
+        renderRoutes();
+        renderFurniture();
+        renderAgents();
+        renderScanlines();
+        requestAnimationFrame(render);
+      }
+
+      document.getElementById("toggle").addEventListener("click", () => {
+        running = !running;
+        document.getElementById("toggle").textContent = running ? "II" : ">";
+      });
+
+      document.getElementById("pulse").addEventListener("click", () => {
+        pulseBoost = 80;
+      });
+
+      document.getElementById("focus").addEventListener("click", () => {
+        focusIndex = (focusIndex + 1) % zones.length;
+        pulseBoost = 50;
+      });
+
+      window.addEventListener("resize", resize);
+      resize();
+      render();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,146 @@
+.screen {
+  padding: 24px;
+  width: min(960px, 100%);
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.headerText h1 {
+  margin: 0 0 4px 0;
+  font-size: 22px;
+}
+
+.headerText p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  max-width: 60ch;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.button {
+  font: inherit;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--bg-elevated, #ffffff);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  color: var(--color-fm-bg, white);
+  border-color: var(--accent, #2563eb);
+  font-weight: 700;
+}
+
+.banner {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+}
+
+.bannerOk {
+  background: var(--success-bg, #ecfdf5);
+  color: var(--success, #047857);
+  border: 1px solid var(--success-border, #a7f3d0);
+}
+
+.bannerError {
+  background: var(--error-bg, #fef2f2);
+  color: var(--error, #b91c1c);
+  border: 1px solid var(--error-border, #fecaca);
+}
+
+.panel {
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, rgba(242, 248, 255, 0.94));
+  box-shadow: var(--fm-shadow, none);
+  overflow: hidden;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.table th {
+  background: var(--bg-subtle, #f9fafb);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #6b7280);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover {
+  background: var(--bg-hover, #f3f4f6);
+}
+
+.rowSelected {
+  background: var(--bg-selected, #eff6ff) !important;
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.yes {
+  color: var(--success, #047857);
+  font-weight: 500;
+}
+
+.empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--muted, #6b7280);
+}
+
+@media (max-width: 820px) {
+  .screen {
+    padding: 14px 0;
+  }
+
+  .header {
+    flex-direction: column;
+  }
+
+  .actions {
+    width: 100%;
+  }
+
+  .button {
+    flex: 1;
+  }
+
+  .panel {
+    overflow-x: auto;
+  }
+}
