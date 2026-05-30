@@ -14,6 +14,9 @@ async graph-loading machinery.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import subprocess
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,6 +29,50 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
+# Supply-chain + change-control pin for the `bd` (beads) binary. bd's CLI
+# semantics directly shape the beads graph — e.g. `bd link`'s default
+# dependency type changed across releases and silently inverted epic/task
+# linkage (blocking every leaf task → zero implementation work). Pinning the
+# binary means such a change can't slip in unannounced. Override with the
+# AGENTSHORE_BD_VERSION env var (set it empty to disable the check) only after
+# re-verifying the skill-template `bd` calls against the new release.
+REQUIRED_BD_VERSION = "1.0.4"
+
+
+def _check_bd_version(bd_binary: str) -> None:
+    """Assert the resolved bd binary matches the pinned version.
+
+    Raises RuntimeError on mismatch. Honours AGENTSHORE_BD_VERSION as an
+    override (empty value disables the check entirely).
+    """
+    expected = os.environ.get("AGENTSHORE_BD_VERSION", REQUIRED_BD_VERSION).strip()
+    if not expected:
+        return
+    try:
+        completed = subprocess.run(
+            [bd_binary, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"could not determine bd version via `{bd_binary} --version`: {exc}"
+        ) from exc
+    match = re.search(r"\d+\.\d+\.\d+", completed.stdout or completed.stderr or "")
+    found = match.group(0) if match else (completed.stdout or "").strip()
+    if found != expected:
+        raise RuntimeError(
+            f"bd version {found!r} does not match AgentShore's pinned version {expected!r}. "
+            "bd is pinned because its CLI semantics affect the beads graph (e.g. `bd link`'s "
+            "default dependency type changed between releases and silently broke epic/task "
+            "linkage). Install bd "
+            f"{expected} from https://github.com/gastownhall/beads, or set AGENTSHORE_BD_VERSION "
+            "to override after re-verifying the skill-template `bd` calls."
+        )
+
+
 # Map AgentType enum values to the bd hooks actor name.  API-only agents
 # have no bd setup target and are omitted.
 _BD_ACTOR_NAMES: dict[AgentType, str] = {
@@ -35,11 +82,12 @@ _BD_ACTOR_NAMES: dict[AgentType, str] = {
 
 
 def ensure_bd_installed() -> None:
-    """Verify that `bd` is on PATH.
+    """Verify that `bd` is on PATH and matches the pinned version.
 
-    Raises RuntimeError with install instructions if bd is not found.
-    This check is intentionally synchronous so it can be called from the
-    Click-based `agentshore init` command without spinning up an event loop.
+    Raises RuntimeError with install instructions if bd is not found, or if
+    its version does not match REQUIRED_BD_VERSION (see AGENTSHORE_BD_VERSION
+    override). This check is intentionally synchronous so it can be called
+    from the Click-based `agentshore init` command without an event loop.
     """
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
@@ -47,7 +95,8 @@ def ensure_bd_installed() -> None:
             "The bd binary was not found. Set AGENTSHORE_BD_BIN to a bundled binary or install "
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."
         )
-    _logger.info("bd_available", path=bd_binary)
+    _check_bd_version(bd_binary)
+    _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 
 async def bd_init_project(project_path: Path) -> None:

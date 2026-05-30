@@ -40,9 +40,9 @@ A bead is **Shipped** only when at least one holds:
 
 Partial evidence → **keep**, not Shipped. Record per-item verdicts in `grooming_plan.verification` as `{id, verdict: "stale_close" | "keep", evidence: "<one line>"}`.
 
-**Apply changes.** Stale/duplicate: `bd close <id>`. Orphaned: `bd link <id> --parent <epic>` if a parent exists, else close. Mislabeled: `bd update <id> --type <correct>`.
+**Apply changes.** Stale/duplicate: `bd close <id>`. Orphaned: `bd link <id> <epic> --type parent-child` (child first, parent second; `--parent` is not a valid flag, and the default `blocks` type would wrongly block the child) if a parent exists, else close. Mislabeled: `bd update <id> --type <correct>`.
 
-**Reconcile both directions.** Open bead with no `external_ref`: `gh issue list --search "<title>" --state open --limit 5`; on exact case-insensitive single match (no other bead holds that ref) `bd update <id> --external-ref "gh-<N>"`, else `gh issue create … --label enhancement` and link the new number. Open GH issue with no bead: `bd create task "<title>" --description "Closes gh-<N>" --external-ref "gh-<N>"` and `bd link` to the most appropriate story (create one via Step 3 if none fits).
+**Reconcile both directions.** Open bead with no `external_ref`: `gh issue list --search "<title>" --state open --limit 5`; on exact case-insensitive single match (no other bead holds that ref) `bd update <id> --external-ref "gh-<N>"`, else `gh issue create … --label enhancement` and link the new number. Open GH issue with no bead: `bd create task "<title>" --description "Closes gh-<N>" --external-ref "gh-<N>"` and `bd link <task-id> <story-id> --type parent-child` to the most appropriate story (create one via Step 3 if none fits).
 
 **Close shipped work.** For every verdict `stale_close`, close child tasks → stories → epics in that order. `bd close <ids…> --reason="shipped: <sha or PR #>"` and `gh issue close <N> --comment "Closed by groom-backlog: shipped in <sha or PR #>."`. Record in `beads_closed_stale` / `issues_closed_stale`. Shipped takes precedence over Stale/Duplicate/Orphaned so the evidence is the reason persisted.
 
