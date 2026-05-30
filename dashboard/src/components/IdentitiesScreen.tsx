@@ -10,12 +10,24 @@ export interface IdentityRow {
   repo_access: string;
 }
 
+/** Result of the identities.check_keychain RPC. */
+export interface KeychainStatus {
+  login: string;
+  service: string;
+  has_token: boolean;
+}
+
 /** Subset of the sidecar identities.* RPC surface needed by this screen. */
 export interface IdentitiesSidecar {
   list(): Promise<IdentityRow[]>;
   add(login: string, tokenSource: string, pat?: string): Promise<void>;
   update(login: string, patch: { token_source: string }): Promise<void>;
   remove(login: string): Promise<void>;
+  /**
+   * Report whether an AgentShore-managed Keychain PAT already exists for a
+   * login. Optional so older/mock sidecars degrade to always requiring a PAT.
+   */
+  checkKeychain?(login: string): Promise<KeychainStatus>;
 }
 
 // ---- state machine --------------------------------------------------------
@@ -31,6 +43,9 @@ interface ScreenState {
   addLoginError: string | null;
   addTokenSource: string;
   addPat: string;
+  /** null = not yet checked; true/false = keychain PAT present for addLogin. */
+  addKeychainHasToken: boolean | null;
+  addKeychainChecking: boolean;
   busy: Record<string, boolean>;
 }
 
@@ -42,6 +57,8 @@ type ScreenAction =
   | { type: "set_add_login"; value: string }
   | { type: "set_add_token_source"; value: string }
   | { type: "set_add_pat"; value: string }
+  | { type: "keychain_check_start" }
+  | { type: "keychain_checked"; hasToken: boolean }
   | { type: "add_login_error"; message: string }
   | { type: "submit_add" }
   | { type: "add_done"; rows: IdentityRow[] }
@@ -67,6 +84,8 @@ const INITIAL: ScreenState = {
   addLoginError: null,
   addTokenSource: "gh_token_login",
   addPat: "",
+  addKeychainHasToken: null,
+  addKeychainChecking: false,
   busy: {},
 };
 
@@ -84,16 +103,46 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
         addLoginError: null,
         addTokenSource: "gh_token_login",
         addPat: "",
+        addKeychainHasToken: null,
+        addKeychainChecking: false,
         error: null,
       };
     case "cancel_add":
-      return { ...state, adding: false, addLogin: "", addLoginError: null, addPat: "" };
+      return {
+        ...state,
+        adding: false,
+        addLogin: "",
+        addLoginError: null,
+        addPat: "",
+        addKeychainHasToken: null,
+        addKeychainChecking: false,
+      };
     case "set_add_login":
-      return { ...state, addLogin: action.value, addLoginError: null };
+      // Editing the login invalidates any prior keychain probe result.
+      return {
+        ...state,
+        addLogin: action.value,
+        addLoginError: null,
+        addKeychainHasToken: null,
+      };
     case "set_add_token_source":
-      return { ...state, addTokenSource: action.value, addPat: "" };
+      return {
+        ...state,
+        addTokenSource: action.value,
+        addPat: "",
+        addKeychainHasToken: null,
+        addKeychainChecking: false,
+      };
     case "set_add_pat":
       return { ...state, addPat: action.value };
+    case "keychain_check_start":
+      return { ...state, addKeychainChecking: true };
+    case "keychain_checked":
+      return {
+        ...state,
+        addKeychainChecking: false,
+        addKeychainHasToken: action.hasToken,
+      };
     case "add_login_error":
       return { ...state, addLoginError: action.message };
     case "submit_add":
@@ -110,6 +159,8 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
         adding: false,
         addLogin: "",
         addPat: "",
+        addKeychainHasToken: null,
+        addKeychainChecking: false,
         rows: action.rows,
       };
     case "add_error":
@@ -373,6 +424,28 @@ export function IdentitiesScreen({
     void reload();
   }, [reload]);
 
+  // Probe the Keychain for an already-stored PAT so we can offer to reuse it
+  // instead of forcing a re-paste (mirrors the CLI wizard's pre-flight check).
+  const probeKeychain = useCallback(
+    async (login: string): Promise<void> => {
+      if (!sidecar.checkKeychain) return;
+      const trimmed = login.trim();
+      if (!trimmed) {
+        dispatch({ type: "keychain_checked", hasToken: false });
+        return;
+      }
+      dispatch({ type: "keychain_check_start" });
+      try {
+        const status = await sidecar.checkKeychain(trimmed);
+        dispatch({ type: "keychain_checked", hasToken: Boolean(status?.has_token) });
+      } catch {
+        // A failed probe just falls back to requiring a PAT — never blocks add.
+        dispatch({ type: "keychain_checked", hasToken: false });
+      }
+    },
+    [sidecar],
+  );
+
   async function handleAdd(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     const login = state.addLogin.trim();
@@ -380,13 +453,20 @@ export function IdentitiesScreen({
       dispatch({ type: "add_login_error", message: "GitHub login is required" });
       return;
     }
-    if (state.addTokenSource === "gh_token_keychain" && !state.addPat.trim()) {
+    // A PAT is required for Keychain storage unless one is already stored there
+    // (in which case a blank field reuses the existing token).
+    const keychainPatNeeded =
+      state.addTokenSource === "gh_token_keychain" &&
+      state.addKeychainHasToken !== true &&
+      !state.addPat.trim();
+    if (keychainPatNeeded) {
       dispatch({ type: "add_login_error", message: "PAT is required for Keychain storage" });
       return;
     }
     dispatch({ type: "submit_add" });
     try {
-      const pat = state.addTokenSource === "gh_token_keychain" ? state.addPat : undefined;
+      const pat =
+        state.addTokenSource === "gh_token_keychain" ? state.addPat.trim() || undefined : undefined;
       await sidecar.add(login, state.addTokenSource, pat);
       const rows = await sidecar.list();
       dispatch({ type: "add_done", rows });
@@ -504,6 +584,11 @@ export function IdentitiesScreen({
               onChange={(e) =>
                 dispatch({ type: "set_add_login", value: e.target.value })
               }
+              onBlur={(e) => {
+                if (state.addTokenSource === "gh_token_keychain") {
+                  void probeKeychain(e.target.value);
+                }
+              }}
               placeholder="octocat"
               autoFocus
               data-testid="add-login-input"
@@ -516,9 +601,12 @@ export function IdentitiesScreen({
             <TokenSourceSelect
               id="add-token-source"
               value={state.addTokenSource}
-              onChange={(v) =>
-                dispatch({ type: "set_add_token_source", value: v })
-              }
+              onChange={(v) => {
+                dispatch({ type: "set_add_token_source", value: v });
+                if (v === "gh_token_keychain" && state.addLogin.trim()) {
+                  void probeKeychain(state.addLogin);
+                }
+              }}
             />
           </div>
           {state.addTokenSource === "gh_token_keychain" && (
@@ -526,6 +614,12 @@ export function IdentitiesScreen({
               <label htmlFor="add-pat" className="id-label">
                 Personal Access Token
               </label>
+              {state.addKeychainHasToken === true && (
+                <p className="id-hint" data-testid="keychain-existing-pat">
+                  A PAT for this login is already stored in your Keychain. Leave
+                  this blank to reuse it, or enter a new one to replace it.
+                </p>
+              )}
               <input
                 id="add-pat"
                 type="password"
@@ -534,7 +628,11 @@ export function IdentitiesScreen({
                 onChange={(e) =>
                   dispatch({ type: "set_add_pat", value: e.target.value })
                 }
-                placeholder="ghp_…"
+                placeholder={
+                  state.addKeychainHasToken === true
+                    ? "Using stored PAT — enter a new one to replace"
+                    : "ghp_…"
+                }
                 autoComplete="off"
                 data-testid="add-pat-input"
               />

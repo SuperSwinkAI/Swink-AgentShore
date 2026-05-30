@@ -381,6 +381,111 @@ describe("IdentitiesScreen", () => {
     );
   });
 
+  it("reuses an existing Keychain PAT without forcing re-entry", async () => {
+    const sidecar = makeSidecar([]);
+    const checkKeychain = vi.fn(async (login: string) => ({
+      login,
+      service: `agentshore/${login}`,
+      has_token: true,
+    }));
+    (sidecar as IdentitiesSidecar).checkKeychain = checkKeychain;
+    await render(sidecar);
+
+    await act(async () => {
+      requireTestId(container, "show-add-form-btn").click();
+    });
+
+    // Switch to the Keychain source and enter a login.
+    const sourceSelect = container.querySelector(
+      "#add-token-source",
+    ) as HTMLSelectElement;
+    const loginInput = requireTestId(
+      container,
+      "add-login-input",
+    ) as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      nativeSetter.call(loginInput, "octocat");
+      loginInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      sourceSelect.value = "gh_token_keychain";
+      sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    // Source change with a populated login probes the Keychain.
+    expect(checkKeychain).toHaveBeenCalledWith("octocat");
+    expect(getTestId(container, "keychain-existing-pat")).not.toBeNull();
+
+    // Submit with a blank PAT — allowed because one is already stored.
+    const form = requireTestId(
+      container,
+      "add-identity-form",
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(getTestId(container, "add-login-error")).toBeNull();
+    expect(sidecar.addCalls).toHaveLength(1);
+    expect(sidecar.addCalls[0].tokenSource).toBe("gh_token_keychain");
+  });
+
+  it("still requires a PAT when none is stored in the Keychain", async () => {
+    const sidecar = makeSidecar([]);
+    (sidecar as IdentitiesSidecar).checkKeychain = vi.fn(async (login: string) => ({
+      login,
+      service: `agentshore/${login}`,
+      has_token: false,
+    }));
+    await render(sidecar);
+
+    await act(async () => {
+      requireTestId(container, "show-add-form-btn").click();
+    });
+
+    const loginInput = requireTestId(
+      container,
+      "add-login-input",
+    ) as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      nativeSetter.call(loginInput, "octocat");
+      loginInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const sourceSelect = container.querySelector(
+      "#add-token-source",
+    ) as HTMLSelectElement;
+    await act(async () => {
+      sourceSelect.value = "gh_token_keychain";
+      sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(getTestId(container, "keychain-existing-pat")).toBeNull();
+
+    const form = requireTestId(
+      container,
+      "add-identity-form",
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+
+    // Blank PAT with no stored token is rejected.
+    expect(getTestId(container, "add-login-error")).not.toBeNull();
+    expect(sidecar.addCalls).toHaveLength(0);
+  });
+
   it("shows an error banner on load failure", async () => {
     const sidecar: IdentitiesSidecar = {
       list: vi.fn(async () => {

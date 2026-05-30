@@ -15,6 +15,7 @@ export type {
   IdentitiesScreenProps,
   IdentitiesSidecar,
   IdentityRow,
+  KeychainStatus,
 } from "./components/IdentitiesScreen";
 export {
   BootstrapModal,

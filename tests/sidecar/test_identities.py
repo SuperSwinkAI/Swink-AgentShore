@@ -8,8 +8,10 @@ import yaml
 
 from agentshore.agents.identity import IdentityResolutionError
 from agentshore.errors import AgentAuthError
+from agentshore.identity_names import keychain_service_for_login
 from agentshore.sidecar.identities import (
     add_identity,
+    keychain_status,
     list_identities,
     remove_identity,
     update_identity,
@@ -77,6 +79,75 @@ def test_identities_list_reports_env_missing(tmp_path: Path, monkeypatch) -> Non
             "repo_access": "unknown",
         }
     ]
+
+
+def test_keychain_status_reports_existing_token(monkeypatch) -> None:
+    import keyring as _keyring
+
+    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: "stored-pat-value")
+    status = keychain_status("OctoCat")
+    assert status == {
+        "login": "octocat",
+        "service": keychain_service_for_login("octocat"),
+        "has_token": True,
+    }
+
+
+def test_keychain_status_reports_absent_token(monkeypatch) -> None:
+    import keyring as _keyring
+
+    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: None)
+    status = keychain_status("octocat")
+    assert status["has_token"] is False
+    assert status["login"] == "octocat"
+
+
+def test_keychain_status_rejects_invalid_login() -> None:
+    with pytest.raises(ValueError, match="invalid.*login|login.*invalid"):
+        keychain_status("has space")
+
+
+def test_rpc_check_keychain_returns_status(monkeypatch) -> None:
+    import keyring as _keyring
+
+    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: "stored-pat-value")
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "identities.check_keychain",
+            "params": {"login": "octocat"},
+        }
+    )
+    assert response is not None
+    assert response["result"]["has_token"] is True
+    assert response["result"]["login"] == "octocat"
+
+
+def test_rpc_check_keychain_invalid_login_returns_invalid_params() -> None:
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "identities.check_keychain",
+            "params": {"login": "has space"},
+        }
+    )
+    assert response is not None
+    assert response["error"]["code"] == INVALID_PARAMS
+
+
+def test_rpc_check_keychain_missing_login_returns_invalid_params() -> None:
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "identities.check_keychain",
+            "params": {},
+        }
+    )
+    assert response is not None
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 def test_rpc_rejects_invalid_params() -> None:
@@ -479,9 +550,7 @@ def test_add_identity_succeeds_when_token_matches(tmp_path: Path, monkeypatch) -
     assert "correctuser" in data["identities"]
 
 
-def test_add_identity_skips_validation_when_token_unresolvable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_add_identity_skips_validation_when_token_unresolvable(tmp_path: Path, monkeypatch) -> None:
     """When the token can't be resolved (gh missing, env unset), skip
     validation and persist anyway — failure surfaces at session start."""
     cfg = tmp_path / "agentshore.yaml"
