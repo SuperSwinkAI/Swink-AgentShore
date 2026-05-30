@@ -213,7 +213,7 @@ class OpenIssueCeilingGate:
     """Mask when the count of OPEN issues reaches or exceeds ``ceiling``.
 
     Prevents plays from firing when the issue queue is already saturated.
-    Used by run_qa (10), cleanup (15), and seed_project (10).
+    Used by cleanup (15).
     """
 
     __slots__ = ("ceiling",)

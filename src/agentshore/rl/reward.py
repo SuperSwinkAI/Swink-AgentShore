@@ -271,7 +271,7 @@ def compute_reward(
 
     # ---- progress play bonus ----
     # Small reward for issue_pickup / code_review on success;
-    # larger reward for QA (gated by a 25-play cooldown);
+    # larger reward for QA (gated by a 20-play cooldown);
     # largest reward for merge_pr (the terminal-win signal).
     if signals.success and is_progress_play:
         if signals.play_type == PlayType.RUN_QA:
