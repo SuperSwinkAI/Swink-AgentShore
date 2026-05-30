@@ -7,11 +7,13 @@ SQLITE_BUSY and hard-failing session.start.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from agentshore.data.store import DataStore
+from agentshore.data.store.helpers import _load_schema_sql
 
 
 @pytest.mark.asyncio
@@ -50,5 +52,76 @@ async def test_second_writer_waits_instead_of_erroring(tmp_path: Path) -> None:
             await other.commit()
         finally:
             await other.close()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_retries_transient_db_locked_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The schema write phase retries a transient 'database is locked' (held
+    past busy_timeout by a slow-releasing outgoing sidecar) and succeeds (#4)."""
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
+    store = DataStore(tmp_path / "retry.db")
+    await store.initialize()
+    try:
+        calls = {"n": 0}
+        real = store._db.executescript  # type: ignore[union-attr]
+
+        async def flaky(script: str) -> object:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise sqlite3.OperationalError("database is locked")
+            return await real(script)
+
+        monkeypatch.setattr(store._db, "executescript", flaky)
+        await store._apply_schema_with_lock_retry(_load_schema_sql())
+        assert calls["n"] == 3  # failed twice, succeeded on the third attempt
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_raises_after_persistent_db_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock that never clears propagates after the bounded attempts (#4)."""
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
+    store = DataStore(tmp_path / "locked.db")
+    await store.initialize()
+    try:
+
+        async def always_locked(script: str) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store._db, "executescript", always_locked)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await store._apply_schema_with_lock_retry(_load_schema_sql())
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_does_not_retry_non_lock_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only 'database is locked' is retried; other OperationalErrors fail fast (#4)."""
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
+    store = DataStore(tmp_path / "other.db")
+    await store.initialize()
+    try:
+        calls = {"n": 0}
+
+        async def boom(script: str) -> object:
+            calls["n"] += 1
+            raise sqlite3.OperationalError("no such table: bogus")
+
+        monkeypatch.setattr(store._db, "executescript", boom)
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            await store._apply_schema_with_lock_retry(_load_schema_sql())
+        assert calls["n"] == 1  # no retry on a non-lock error
     finally:
         await store.close()

@@ -8,7 +8,9 @@ because they're tightly coupled to ``initialize``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import sqlite3
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -100,10 +102,59 @@ class DataStore(
         await self._db.execute("PRAGMA synchronous=FULL")
         await self._db.execute("PRAGMA wal_autocheckpoint=100")
         schema_sql = _load_schema_sql()
-        await self._db.executescript(schema_sql)
-        await self._validate_schema_namespace()
-        await self._apply_migrations()
-        await self._db.commit()
+        await self._apply_schema_with_lock_retry(schema_sql)
+
+    # Bounded retry for the writer-lock race on a quick stop->start (#4).
+    _INIT_LOCK_RETRY_ATTEMPTS = 5
+    _INIT_LOCK_RETRY_BASE_DELAY = 0.5
+    _INIT_LOCK_RETRY_MAX_DELAY = 4.0
+
+    async def _apply_schema_with_lock_retry(self, schema_sql: str) -> None:
+        """Apply schema + migrations, retrying a transient writer-lock (#4).
+
+        ``busy_timeout`` (set above) already waits up to 5s per statement for
+        the WAL writer-lock held by an outgoing session's sidecar on a quick
+        stop->start. But when that sidecar releases slowly (its process is
+        still being reaped and has not yet closed its DB FDs), the lock can
+        persist past 5s and the first write raises "database is locked",
+        hard-failing ``session.start`` at the first-snapshot step (#4).
+
+        This bounded application-level retry re-attempts the whole write
+        phase with exponential backoff, gating startup on lock availability
+        instead of failing. The schema script (``CREATE ... IF NOT EXISTS``)
+        and the migrations are individually idempotent, so re-running is
+        safe. Because ``initialize()`` runs before the first state snapshot,
+        succeeding here also frees the later snapshot write. Only the
+        "database is locked" OperationalError is retried; every other error
+        propagates immediately.
+        """
+        assert self._db is not None
+        delay = self._INIT_LOCK_RETRY_BASE_DELAY
+        for attempt in range(1, self._INIT_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                await self._db.executescript(schema_sql)
+                await self._validate_schema_namespace()
+                await self._apply_migrations()
+                await self._db.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if (
+                    "database is locked" not in str(exc).lower()
+                    or attempt == self._INIT_LOCK_RETRY_ATTEMPTS
+                ):
+                    raise
+                import structlog
+
+                structlog.get_logger(__name__).warning(
+                    "store_init_db_locked_retry",
+                    attempt=attempt,
+                    max_attempts=self._INIT_LOCK_RETRY_ATTEMPTS,
+                    delay_seconds=delay,
+                    db_path=str(self._db_path),
+                    error=str(exc),
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._INIT_LOCK_RETRY_MAX_DELAY)
 
     async def _apply_migrations(self) -> None:
         """Apply forward-only schema migrations to an existing database.
