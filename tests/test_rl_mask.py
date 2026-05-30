@@ -262,6 +262,49 @@ def test_real_mask_blocks_seed_project_when_in_flight():
     assert not mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
 
 
+def _instantiate_scaling_state(in_flight_plays):
+    """State where INSTANTIATE_AGENT is otherwise valid for fleet scaling.
+
+    One active idle agent + first-play evidence (so the bootstrap-first-play
+    gate is satisfied), remaining work present (so the empty-fleet mask does not
+    fire), and the completed-history cooldown already satisfied — leaving the
+    in-flight gate as the only thing that can block the next instantiate.
+    """
+    from agentshore.state import AgentType
+
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.global_closure_ratio = 0.0
+    return _state(
+        agents=[_agent_snapshot("codex-1", AgentType.CODEX)],
+        open_issues=[_issue_snapshot(101)],
+        graph=graph,
+        in_flight_plays=list(in_flight_plays),
+        plays_since_last_play_type={PlayType.ISSUE_PICKUP: 0},
+        last_play_success_by_type={PlayType.ISSUE_PICKUP: True},
+        plays_since_last_instantiate=5,
+    )
+
+
+def test_real_mask_blocks_instantiate_when_instantiate_in_flight():
+    """#3: an in-flight (dispatched-but-not-completed) instantiate must hold the
+    cooldown so a second instantiate cannot dispatch back-to-back before the
+    first lands in completion history."""
+    state = _instantiate_scaling_state([PlayType.INSTANTIATE_AGENT])
+    mask = compute_action_mask(state, build_default_registry())
+
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+
+
+def test_real_mask_allows_instantiate_when_no_instantiate_in_flight():
+    """Control: with nothing in flight and the completed-history cooldown
+    satisfied, the same scaling state leaves INSTANTIATE_AGENT selectable."""
+    state = _instantiate_scaling_state([])
+    mask = compute_action_mask(state, build_default_registry())
+
+    assert mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+
+
 def test_real_mask_allows_seed_project_for_existing_graph_before_audit():
     """seed_project can audit an existing beads graph before any prior run."""
     graph = MagicMock()
@@ -1312,7 +1355,9 @@ def test_systematic_debugging_masked_for_review_bug_root_cause_labels_during_pr_
     state = _state(
         agents=[_agent_snapshot("impl", AgentType.CLAUDE_CODE, "medium")],
         open_issues=[
-            _issue_snapshot(222, ["agentshore/review", "agentshore/planned", "agentshore/root-cause-found"]),
+            _issue_snapshot(
+                222, ["agentshore/review", "agentshore/planned", "agentshore/root-cause-found"]
+            ),
             _issue_snapshot(243, ["bug", "agentshore/root-cause-found"]),
         ],
         pull_requests=[_pr_snapshot(229, review_decision="APPROVED", mergeable="MERGEABLE")],
