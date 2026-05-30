@@ -107,11 +107,22 @@ class _OrchestratorBase:
     # bind a fresh dict in __init__.
     _pre_play_branches: dict[str, str | None] = {}
     _main_repo_dispatch_paused: bool = False
+    # Loop-liveness heartbeat (#9): monotonic timestamp stamped at the top of
+    # every run_until_idle iteration. An independent watchdog task reads it to
+    # detect a hard-frozen loop and force-drain. Class-level default is
+    # float('inf') so tests that bypass __init__ (Orchestrator.__new__) never
+    # look stale to a watchdog they didn't arm; __init__ resets it to 0.0 and
+    # the loop stamps it to time.monotonic() on entry.
+    _last_loop_iteration_at: float = float("inf")
     # desktop-12g9: AgentShore-managed worktree lifecycle owner. Assigned by
     # ``_phase_init_worktree_manager`` during bootstrap. Stays None for
     # tests that bypass bootstrap (Orchestrator.__new__); reaper hooks
     # short-circuit on None so those callers remain no-ops.
     _worktrees: WorktreeManager | None = None
+    # Loop-liveness watchdog task handle (#9). Class-level default so tests that
+    # bypass __init__ (Orchestrator.__new__) can call stop_loop_liveness_watchdog
+    # during a partial-stop without first wiring the attribute.
+    _loop_liveness_task: asyncio.Task[None] | None = None
 
     # Type annotations for instance attributes set in __init__ — mixins access
     # these via self.* and rely on these annotations for mypy resolution.
@@ -236,6 +247,11 @@ class _OrchestratorBase:
         self._last_stagnation_stage = 0
         self._stop_reason = "unknown"
         self._health = None
+        self._loop_liveness_task = None
+        # Loop-liveness heartbeat (#9). 0.0 until run_until_idle stamps the
+        # first iteration; the watchdog treats "loop never started" (0.0) as
+        # not-yet-armed so it cannot fire before the loop has begun.
+        self._last_loop_iteration_at = 0.0
         self._integrity: IntegrityMonitor | None = None
         self._power_assertion: PowerAssertion | None = None
         self._in_flight = {}
@@ -413,6 +429,12 @@ class _OrchestratorBase:
         raise NotImplementedError
 
     async def begin_drain(self, reason: str) -> None:
+        raise NotImplementedError
+
+    def start_loop_liveness_watchdog(self) -> None:
+        raise NotImplementedError
+
+    def stop_loop_liveness_watchdog(self) -> None:
         raise NotImplementedError
 
     async def stop(self, grace_period_s: float = 5.0) -> None:

@@ -224,6 +224,13 @@ class _DrainMixin(_OrchestratorBase):
             self._health.stop()
         _logger.info("shutdown_step", step="health_stop", elapsed_ms=_ms(t))
 
+        # Loop-liveness watchdog (#9): cancel before the rest of teardown so it
+        # cannot re-trigger a drain mid-shutdown. Safe even when this stop() was
+        # initiated by the watchdog itself — cancelling a task from within its
+        # own awaited call is a no-op until it next suspends, and the watchdog
+        # returns immediately after awaiting stop().
+        self.stop_loop_liveness_watchdog()
+
         t = time.perf_counter()
         if self._integrity is not None:
             self._integrity.stop()

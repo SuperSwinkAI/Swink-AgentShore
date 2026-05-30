@@ -379,6 +379,16 @@ class FeedbackConfig:
     # of wedging indefinitely (#9: an unanswered popup blocked the loop ~8h, and
     # the drain RPC can't be serviced while wedged). None disables the backstop.
     unanswered_timeout_seconds: float | None = 120.0
+    # Loop-liveness watchdog (#9): the core loop stamps a monotonic heartbeat at
+    # the top of every iteration. An independent watchdog task — NOT on the
+    # loop's critical path — force-drains the session if that heartbeat has not
+    # advanced within this many seconds, catching a hard-frozen loop that the
+    # idle/unanswered-pause backstops above can never reach (they require the
+    # loop to keep ticking). Distinct from ``unanswered_timeout_seconds``: that
+    # covers a loop that is alive but waiting on a human; this covers a loop that
+    # has stopped iterating entirely (e.g. a deadlock in the play-mutation
+    # promotion path). None disables the watchdog.
+    loop_liveness_timeout_seconds: float | None = 600.0
 
 
 @dataclass(frozen=True)
