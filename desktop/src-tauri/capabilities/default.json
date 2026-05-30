@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Minimum v1 desktop capability set: sidecar IPC, dialog, fs read, shell open, event listen.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "agentshore-desktop-sidecar" }, { "name": "agentshore-bd" }]
+    },
+    "dialog:allow-open",
+    "dialog:allow-save",
+    {
+      "identifier": "fs:allow-read",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "path": "$HOME/.config/swink/agentshore/**" }]
+    }
+  ]
+}

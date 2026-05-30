@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Wall Mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --panel: #071a20;
+        --panel-2: #0b222b;
+        --line: #1a6f83;
+        --line-soft: rgba(70, 202, 240, 0.28);
+        --text: #eaf8fb;
+        --muted: #94bac3;
+        --accent: #37d9ff;
+        --hot: #ff4040;
+        --warn: #f4d44d;
+        --ok: #2be0b1;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at 78% 10%, rgba(36, 134, 174, 0.28), transparent 28%),
+          linear-gradient(135deg, #07120f 0%, #06131a 56%, #071d25 100%);
+        color: var(--text);
+        font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      code {
+        color: #d9fbff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.94em;
+      }
+
+      .page {
+        width: min(1240px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 48px 0 72px;
+      }
+
+      .hero {
+        padding: 32px 0 30px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 980px;
+        margin-top: 10px;
+        font-size: clamp(44px, 6vw, 76px);
+        line-height: 0.95;
+      }
+
+      .dek {
+        max-width: 940px;
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .doc-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 28px;
+      }
+
+      .doc-nav a,
+      .pill {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 11px;
+        background: rgba(7, 34, 44, 0.72);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .section {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(5, 22, 29, 0.86);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+      }
+
+      .section-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: end;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 20px;
+      }
+
+      .section-head p {
+        max-width: 860px;
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .canvas-wrap {
+        border-bottom: 1px solid var(--line-soft);
+        background:
+          linear-gradient(rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          #031016;
+        background-size: 22px 22px;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        padding: 20px;
+      }
+
+      .note {
+        border: 1px solid var(--line-soft);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 14px;
+        background: var(--panel-2);
+      }
+
+      .note.hot {
+        border-left-color: var(--hot);
+      }
+
+      .note.warn {
+        border-left-color: var(--warn);
+      }
+
+      .note.ok {
+        border-left-color: var(--ok);
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .note span {
+        color: var(--muted);
+      }
+
+      .matrix {
+        width: calc(100% - 40px);
+        margin: 20px;
+        border-collapse: collapse;
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+      }
+
+      .matrix th,
+      .matrix td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .matrix th {
+        background: rgba(55, 217, 255, 0.08);
+        color: #dff8fc;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .matrix tr:last-child td {
+        border-bottom: 0;
+      }
+
+      @media (max-width: 840px) {
+        .page {
+          width: min(100% - 28px, 1240px);
+          padding-top: 28px;
+        }
+
+        h1 {
+          font-size: 42px;
+        }
+
+        .notes {
+          grid-template-columns: 1fr;
+        }
+
+        .matrix {
+          display: block;
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="eyebrow">AgentShore dashboard wall concept</div>
+        <h1>Full-Width Grid Kanban Wall</h1>
+        <p class="dek">
+          A clean-sheet wall zoning concept for the Grid office: make the back wall taller, run the
+          Kanban mirror east-to-west, anchor TODO visibility in the War Room, reserve the northeast
+          corner for Launch Control merges, and turn the southwest corner into a failure and
+          timeout recovery area.
+        </p>
+        <div class="doc-nav" aria-label="Related design docs">
+          <a href="../GRID_OFFICE_MOCKUPS.html">Grid office decisions</a>
+          <a href="../GRID_FURNITURE_MOCKUPS.html">Grid furniture</a>
+          <a href="../../DESIGN.md">Dashboard design</a>
+          <a href="#wall-concept">Wall concept</a>
+          <a href="#zoning">Zoning decisions</a>
+        </div>
+      </div>
+
+      <div class="section" id="wall-concept">
+        <div class="section-head">
+          <div>
+            <h2>Selected Wall Direction</h2>
+            <p>
+              The mirror becomes an architectural wall, not a small board. It spans from the War
+              Room side through northeast Launch Control and becomes the office's primary
+              information plane.
+            </p>
+          </div>
+          <span class="pill">Wall-first layout</span>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="wall-canvas" width="1440" height="760"></canvas>
+        </div>
+      </div>
+
+      <div class="section" id="zoning">
+        <div class="section-head">
+          <div>
+            <h2>Zoning Decisions</h2>
+            <p>
+              These are the design calls implied by the sketch. They are intentionally about room
+              semantics first; exact blocker geometry can come later.
+            </p>
+          </div>
+        </div>
+        <div class="notes">
+          <div class="note warn">
+            <strong>TODO anchors the War Room</strong>
+            <span>
+              TODO should be visible over the War Room so unstarted work feels like planning
+              pressure, not just a small lane on a board.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Center wall shows flow state</strong>
+            <span>
+              In progress, review, and done can stretch across the workshop center and east side.
+              The lanes should read as one continuous mirror, split by room geography.
+            </span>
+          </div>
+          <div class="note hot">
+            <strong>Southwest becomes recovery</strong>
+            <span>
+              Failed plays, timeouts, blocked agents, and hard error states should route to a
+              red recovery corner instead of disappearing into the quiet Zen idle area.
+            </span>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>New meaning</th>
+              <th>Visual treatment</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Back wall west / War Room</td>
+              <td>Planning TODO, priority queue, unstarted work pressure.</td>
+              <td>Tall yellow TODO lane, dense cards, visible from the left side of the office.</td>
+            </tr>
+            <tr>
+              <td>Back wall center</td>
+              <td>Active work and review flow over the workshop.</td>
+              <td>Cyan and violet lanes with dotted agent routes feeding workstations.</td>
+            </tr>
+            <tr>
+              <td>Back wall east / NE corner</td>
+              <td>Launch Control for merge and ship decisions.</td>
+              <td>Orange merge rail tied into the full-width mirror and NE room.</td>
+            </tr>
+            <tr>
+              <td>Southwest corner</td>
+              <td>Error, timeout, blocked, and failed-play recovery area.</td>
+              <td>Red diagnostic bay, warning cards, and parked failed agents distinct from Zen idle.</td>
+            </tr>
+            <tr>
+              <td>Zen Garden</td>
+              <td>Only healthy idle/rest state.</td>
+              <td>Keep green/calm and visually separate from failure recovery.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("wall-canvas");
+      const ctx = canvas.getContext("2d");
+      const palette = {
+        cyan: "#37d9ff",
+        cyanSoft: "rgba(55, 217, 255, 0.24)",
+        yellow: "#f4d44d",
+        violet: "#b46cff",
+        green: "#2be0b1",
+        red: "#ff4040",
+        orange: "#ff9146",
+        floor: "rgba(7, 33, 43, 0.58)",
+        grid: "rgba(69, 208, 244, 0.17)",
+        gridStrong: "rgba(69, 208, 244, 0.36)",
+      };
+
+      function setup() {
+        const ratio = window.devicePixelRatio || 1;
+        const width = canvas.width;
+        const height = canvas.height;
+        canvas.style.aspectRatio = `${width} / ${height}`;
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+        ctx.scale(ratio, ratio);
+        render(width, height);
+      }
+
+      function iso(x, y, z = 0) {
+        const originX = 720;
+        const originY = 254;
+        const tileW = 52;
+        const tileH = 24;
+        return {
+          x: originX + (x - y) * tileW * 0.5,
+          y: originY + (x + y) * tileH * 0.5 - z,
+        };
+      }
+
+      function poly(points, fill, stroke, lineWidth = 1.5) {
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = lineWidth;
+          ctx.stroke();
+        }
+      }
+
+      function line(points, color, width = 2, dash = []) {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.setLineDash(dash);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function glow(x, y, radius, color) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        g.addColorStop(0, color);
+        g.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function tile(x, y, fill = palette.floor, stroke = palette.grid) {
+        poly([iso(x, y), iso(x + 1, y), iso(x + 1, y + 1), iso(x, y + 1)], fill, stroke);
+      }
+
+      function drawFloor() {
+        for (let x = -9; x < 14; x++) {
+          for (let y = -1; y < 15; y++) {
+            tile(x, y);
+          }
+        }
+        const boundary = [iso(-8, 0), iso(13, 0), iso(13, 13), iso(-8, 13)];
+        poly(boundary, "rgba(2, 18, 25, 0.12)", "rgba(55, 217, 255, 0.65)", 2);
+      }
+
+      function wallPanel(x1, x2, color, label, cards, subtitle) {
+        const y = 0;
+        const baseZ = 28;
+        const height = 174;
+        const a = iso(x1, y, baseZ);
+        const b = iso(x2, y, baseZ);
+        const c = iso(x2, y, baseZ + height);
+        const d = iso(x1, y, baseZ + height);
+        poly([a, b, c, d], "rgba(7, 32, 43, 0.78)", color, 2);
+        const topA = iso(x1, y, baseZ + height);
+        const topB = iso(x2, y, baseZ + height);
+        line([topA, topB], color, 5);
+
+        ctx.save();
+        ctx.font = "800 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = color;
+        const titleX = (a.x + b.x) / 2 - 42;
+        const titleY = Math.max(38, (a.y + b.y) / 2 - height + 34);
+        ctx.fillText(label, titleX, titleY);
+        ctx.font = "700 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.72)";
+        ctx.fillText(subtitle, titleX, titleY + 15);
+        ctx.restore();
+
+        for (let i = 0; i < cards; i++) {
+          const t = (i + 1) / (cards + 1);
+          const px = a.x + (b.x - a.x) * t;
+          const py = Math.max(58, a.y + (b.y - a.y) * t - 50 - (i % 3) * 15);
+          glow(px, py, 18, color.replace(")", ", 0.22)").replace("rgb", "rgba"));
+          ctx.fillStyle = color.replace(")", ", 0.38)").replace("rgb", "rgba");
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.roundRect(px - 18, py - 7, 36, 14, 4);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      function drawFullWall() {
+        glow(720, 238, 420, "rgba(55, 217, 255, 0.12)");
+        wallPanel(-8, -2.5, "rgb(244, 212, 77)", "TODO", "WAR ROOM", 8, "planning queue");
+        wallPanel(-2.5, 3.5, "rgb(55, 217, 255)", "ACTIVE", "WORKSHOP", 6, "in progress");
+        wallPanel(3.5, 8.5, "rgb(180, 108, 255)", "REVIEW", "CENTER", 5, "review lane");
+        wallPanel(8.5, 10.4, "rgb(43, 224, 177)", "DONE", "EAST", 4, "closed flow");
+        wallPanel(10.4, 13, "rgb(255, 145, 70)", "MERGE", "LAUNCH CTRL", 5, "ready to ship");
+      }
+
+      function roomRect(x, y, w, h, color, label) {
+        const p = [iso(x, y), iso(x + w, y), iso(x + w, y + h), iso(x, y + h)];
+        poly(p, "rgba(3, 24, 32, 0.24)", color, 1.6);
+        const center = iso(x + w / 2, y + h / 2, 8);
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = "800 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, center.x, center.y);
+        ctx.restore();
+      }
+
+      function drawRooms() {
+        roomRect(-8, 1, 5.5, 4, "rgba(244, 212, 77, 0.72)", "WAR ROOM");
+        roomRect(-2.5, 1, 11, 7, "rgba(55, 217, 255, 0.58)", "WORKSHOP");
+        roomRect(8.5, 1, 4.5, 4, "rgba(255, 145, 70, 0.62)", "LAUNCH CTRL");
+        roomRect(-8, 7.8, 5.5, 4.4, "rgba(255, 64, 64, 0.72)", "RECOVERY");
+        roomRect(-2.2, 8.2, 6, 3.7, "rgba(92, 224, 151, 0.52)", "ZEN IDLE");
+        roomRect(4.2, 8, 4.4, 3.6, "rgba(55, 217, 255, 0.42)", "SCIENCE");
+      }
+
+      function drawRecoveryBay() {
+        const bay = iso(-5.2, 10.1, 24);
+        glow(bay.x, bay.y, 112, "rgba(255, 64, 64, 0.22)");
+        line([iso(-7.8, 7.9, 16), iso(-2.8, 7.9, 16), iso(-2.8, 12, 16), iso(-7.8, 12, 16), iso(-7.8, 7.9, 16)], palette.red, 4, [10, 8]);
+        ["FAILED", "TIMEOUT", "BLOCKED"].forEach((label, index) => {
+          const p = iso(-7 + index * 1.55, 10.8, 40);
+          ctx.fillStyle = "rgba(255, 64, 64, 0.28)";
+          ctx.strokeStyle = palette.red;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.roundRect(p.x - 28, p.y - 10, 56, 20, 5);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#ffd6d6";
+          ctx.font = "800 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(label, p.x, p.y + 3);
+        });
+      }
+
+      function drawRoutes() {
+        line([iso(-6, 4.2, 14), iso(-1.5, 5.5, 14), iso(5, 5.3, 14), iso(10.6, 3.6, 14)], "rgba(244, 212, 77, 0.72)", 2, [12, 10]);
+        line([iso(-5.7, 10.5, 16), iso(-1.4, 8.7, 16), iso(2.8, 7.4, 16)], "rgba(255, 64, 64, 0.72)", 2, [9, 9]);
+        line([iso(0, 9.6, 12), iso(1.8, 9.8, 12), iso(2.9, 8.9, 12)], "rgba(43, 224, 177, 0.7)", 2, [8, 8]);
+      }
+
+      function drawLabels() {
+        ctx.save();
+        ctx.textAlign = "left";
+        ctx.font = "900 16px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "#eaf8fb";
+        ctx.fillText("FULL EAST-TO-WEST KANBAN MIRROR", 456, 122);
+        ctx.font = "700 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.72)";
+        ctx.fillText("taller wall plane, continuous lanes, room-aware status geography", 456, 142);
+        ctx.fillStyle = palette.red;
+        ctx.fillText("SW corner is recovery: failed, timeout, blocked", 316, 722);
+        ctx.fillStyle = palette.green;
+        ctx.fillText("Zen remains healthy idle only", 565, 708);
+        ctx.restore();
+      }
+
+      function render(width, height) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#020a10");
+        bg.addColorStop(0.52, "#04131c");
+        bg.addColorStop(1, "#061f28");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+        drawFloor();
+        drawFullWall();
+        drawRooms();
+        drawRecoveryBay();
+        drawRoutes();
+        drawLabels();
+      }
+
+      setup();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1602 @@
+"""Tests for Orchestrator — sub-phase 2O."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
+from agentshore.config.models import ModelTierConfig
+from agentshore.core import (
+    Orchestrator,
+    _author_labels_for_config,
+    _phase_queue_agent_instantiation,
+)
+from agentshore.data.models import PlayRecord
+from agentshore.plays.base import PlayParams
+from agentshore.plays.selector import FixedPlanSelector
+from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
+from agentshore.state import (
+    AgentSnapshot,
+    AgentStatus,
+    AgentType,
+    BudgetSnapshot,
+    IssueSnapshot,
+    OrchestratorState,
+    PlayOutcome,
+    PlayType,
+    SessionState,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _cfg() -> RuntimeConfig:
+    return RuntimeConfig()
+
+
+def _idle_outcome(play_type: PlayType) -> PlayOutcome:
+    return PlayOutcome(
+        play_type=play_type,
+        agent_id=None,
+        success=True,
+        partial=False,
+        duration_seconds=0.1,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+    )
+
+
+def _idle_agent(agent_id: str = "agent-1") -> AgentSnapshot:
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CODEX,
+        status=AgentStatus.IDLE,
+        context_size=10_000,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        model_tier="medium",
+    )
+
+
+def _open_issue(issue_number: int = 42) -> IssueSnapshot:
+    return IssueSnapshot(
+        issue_number=issue_number,
+        title=f"Issue {issue_number}",
+        state="open",
+        priority=None,
+        labels=[],
+        source=None,
+    )
+
+
+def _idle_state_with_issue() -> OrchestratorState:
+    return OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_idle_agent()],
+        open_issues=[_open_issue()],
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+    )
+
+
+def _idle_state_no_work() -> OrchestratorState:
+    return OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+    )
+
+
+def _terminal_state_no_work_with_agent() -> OrchestratorState:
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.has_ready_tasks = False
+    graph.tasks = ()
+    graph.tasks_ready = 0
+    graph.global_closure_ratio = 1.0
+    return OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=60,
+        total_cost=0.0,
+        agents=[_idle_agent()],
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+        graph=graph,
+        plays_since_last_play_type={
+            PlayType.SEED_PROJECT: 0,
+            PlayType.DESIGN_AUDIT: 0,
+            PlayType.RUN_QA: 0,
+        },
+        last_play_success_by_type={
+            PlayType.SEED_PROJECT: True,
+            PlayType.DESIGN_AUDIT: True,
+            PlayType.RUN_QA: True,
+        },
+    )
+
+
+def test_compute_play_streaks_ignores_unfinished_rows() -> None:
+    history = [
+        PlayRecord(
+            session_id="s1",
+            play_type="code_review",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:01:00+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_type="unblock_pr",
+            started_at="2026-01-01T00:02:00+00:00",
+            success=False,
+        ),
+    ]
+
+    fail_streak, any_streak = Orchestrator._compute_play_streaks(history)
+
+    assert fail_streak == 0
+    assert any_streak == 1
+
+
+def test_compute_play_streaks_ignores_override_dispatched_plays() -> None:
+    """Bootstrap-recipe overrides queue several instantiate_agent in sequence;
+    counting them as a same-type streak would fire spurious loop_detected.
+
+    Regression for desktop-yrr: observed 2026-05-18 on session 3862999e
+    (v0.15.2), 4 instantiate_agent overrides triggered streak=6 any_outcome.
+    """
+    history = [
+        PlayRecord(
+            session_id="s1",
+            play_id=10,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:00:05+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=11,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:10+00:00",
+            ended_at="2026-01-01T00:00:15+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=12,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:20+00:00",
+            ended_at="2026-01-01T00:00:25+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=13,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:30+00:00",
+            ended_at="2026-01-01T00:00:35+00:00",
+            success=True,
+        ),
+    ]
+    override_ids = {10, 11, 12, 13}
+
+    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+        history, override_play_ids=override_ids
+    )
+
+    assert fail_streak == 0
+    assert any_streak == 0
+
+
+def test_compute_play_streaks_real_streak_after_override_burst() -> None:
+    """An override burst followed by a real PPO-driven same-type streak
+    must still register the real streak."""
+    history = [
+        PlayRecord(
+            session_id="s1",
+            play_id=10,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:00+00:00",
+            ended_at="2026-01-01T00:00:05+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=11,
+            play_type="instantiate_agent",
+            started_at="2026-01-01T00:00:10+00:00",
+            ended_at="2026-01-01T00:00:15+00:00",
+            success=True,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=20,
+            play_type="code_review",
+            started_at="2026-01-01T00:01:00+00:00",
+            ended_at="2026-01-01T00:01:10+00:00",
+            success=False,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=21,
+            play_type="code_review",
+            started_at="2026-01-01T00:01:20+00:00",
+            ended_at="2026-01-01T00:01:30+00:00",
+            success=False,
+        ),
+        PlayRecord(
+            session_id="s1",
+            play_id=22,
+            play_type="code_review",
+            started_at="2026-01-01T00:01:40+00:00",
+            ended_at="2026-01-01T00:01:50+00:00",
+            success=False,
+        ),
+    ]
+
+    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+        history, override_play_ids={10, 11}
+    )
+
+    assert fail_streak == 3
+    assert any_streak == 3
+
+
+def test_author_labels_include_every_enabled_agent_type() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            AgentType.GEMINI.value: AgentConfig(enabled=True),
+            AgentType.CODEX.value: AgentConfig(enabled=True),
+            "custom_agent": AgentConfig(enabled=True),
+        }
+    )
+
+    labels = _author_labels_for_config(cfg, "agentshore/")
+
+    assert ("agentshore/author:gemini", "cccccc") in labels
+    assert ("agentshore/author:codex", "0052cc") in labels
+    assert all(name != "agentshore/author:custom_agent" for name, _ in labels)
+
+
+# ---------------------------------------------------------------------------
+# bootstrap + __aenter__ creates session row
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aenter_creates_session_row(tmp_path: Path) -> None:
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        # Query the DB directly to confirm a session row exists
+        import aiosqlite
+
+        db_path = tmp_path / ".agentshore" / "agentshore.db"
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT status FROM sessions WHERE session_id = ?",
+                (orch._session_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None
+        assert row["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# __aexit__ marks session completed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aexit_marks_session_completed(tmp_path: Path) -> None:
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    sid = orch._session_id
+    async with orch:
+        pass  # immediate exit
+
+    import aiosqlite
+
+    db_path = tmp_path / ".agentshore" / "agentshore.db"
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT status FROM sessions WHERE session_id = ?", (sid,)) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_clears_in_progress_beads_before_github_fetch(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    async def _fake_clear(*, repo_root: Path, sid: str, phase: str) -> int:
+        events.append(f"clear:{phase}")
+        return 2
+
+    async def _fake_fetch_github(**kwargs: object) -> frozenset[int]:
+        events.append("fetch_github")
+        return frozenset()
+
+    with (
+        patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear),
+        patch("agentshore.core._phase_fetch_github", new=_fake_fetch_github),
+    ):
+        await Orchestrator.bootstrap(
+            cfg=_cfg(),
+            repo_root=tmp_path,
+            selector=FixedPlanSelector([]),
+        )
+
+    assert events == ["clear:session_start", "fetch_github"]
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_in_progress_beads_during_shutdown(tmp_path: Path) -> None:
+    phases: list[str] = []
+    orch = await Orchestrator.bootstrap(
+        cfg=_cfg(),
+        repo_root=tmp_path,
+        selector=FixedPlanSelector([]),
+    )
+
+    async def _fake_clear(*, repo_root: Path, sid: str, phase: str) -> int:
+        phases.append(phase)
+        return 1
+
+    with patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear):
+        async with orch:
+            pass
+
+    assert phases == ["session_shutdown"]
+
+
+# ---------------------------------------------------------------------------
+# run_until_idle terminates when selector returns None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_terminates_on_none_selector(tmp_path: Path) -> None:
+    selector = FixedPlanSelector([])  # immediately returns None
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    async with orch:
+        with patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())):
+            await orch.run_until_idle()  # should return without hanging
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_retries_selector_none_when_work_remains(tmp_path: Path) -> None:
+    selector = FixedPlanSelector([])
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    state = _idle_state_with_issue()
+    sleep_calls: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        orch.request_stop("test_complete")
+
+    async with orch:
+        with (
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
+            patch("agentshore.core.asyncio.sleep", new=_sleep),
+            patch("agentshore.core._logger.warning") as warning,
+        ):
+            await orch.run_until_idle()
+
+    assert sleep_calls == [2.0]
+    assert any(call.args == ("selector_idle_with_work",) for call in warning.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_path: Path) -> None:
+    selector = FixedPlanSelector([])
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    state = _idle_state_with_issue()
+    orch._last_selection_digest = orch._selection_state_digest(state, list(state.agents))
+    sleep_calls: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        orch.request_stop("test_complete")
+
+    async with orch:
+        select = AsyncMock(return_value=None)
+        with (
+            patch.object(selector, "select", new=select),
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
+            patch("agentshore.core.asyncio.sleep", new=_sleep),
+            patch("agentshore.core._logger.warning") as warning,
+        ):
+            await orch.run_until_idle()
+
+    assert sleep_calls == [2.0]
+    assert any(call.args == ("selector_idle_with_work",) for call in warning.call_args_list)
+    select.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_agent_active_claims_release_after_threshold() -> None:
+    orch = Orchestrator.__new__(Orchestrator)
+    orch._cfg = _cfg()
+    orch._session_id = "s1"
+    orch._idle_agent_claim_ticks = {}
+    claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g1", resource_key="issue:42")
+    store = MagicMock()
+    store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
+    store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+    orch._store = store
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_idle_agent("agent-1")],
+    )
+
+    await orch._release_claims_for_prolonged_idle_agents(state)
+    await orch._release_claims_for_prolonged_idle_agents(state)
+
+    store.release_active_work_claims_for_agents.assert_not_awaited()
+
+    await orch._release_claims_for_prolonged_idle_agents(state)
+
+    store.release_active_work_claims_for_agents.assert_awaited_once_with("s1", ["agent-1"])
+    assert orch._idle_agent_claim_ticks == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("play_type", [PlayType.RUN_QA, PlayType.DESIGN_AUDIT])
+async def test_audit_play_completion_forces_issue_refresh(
+    tmp_path: Path, play_type: PlayType
+) -> None:
+    selector = FixedPlanSelector([(play_type, PlayParams(bypass_preconditions=True))])
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    outcome = _idle_outcome(play_type)
+    refresh_issues = AsyncMock()
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(orch, "_refresh_issues", new=refresh_issues),
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._executor, "execute", new=AsyncMock(return_value=outcome)),
+        ):
+            await orch.run_until_idle()
+
+    refresh_issues.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_end_session_revalidation_blocks_when_refresh_finds_work(
+    tmp_path: Path,
+) -> None:
+    selector = FixedPlanSelector([])
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    async with orch:
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()) as refresh_issues,
+            patch.object(
+                orch, "_build_state", new=AsyncMock(return_value=_idle_state_with_issue())
+            ),
+            patch("agentshore.core._logger.warning") as warning,
+        ):
+            allowed = await orch._revalidate_end_session_before_dispatch()
+
+    assert allowed is False
+    refresh_issues.assert_awaited_once()
+    assert any(
+        call.args == ("end_session_revalidation_blocked",) for call in warning.call_args_list
+    )
+    assert orch._last_selection_digest is None
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path) -> None:
+    selector = MagicMock()
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    calls = 0
+
+    async def _select(_state: OrchestratorState) -> tuple[PlayType, PlayParams] | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return (PlayType.END_SESSION, PlayParams())
+        orch.request_stop("test_complete")
+        return None
+
+    selector.select = AsyncMock(side_effect=_select)
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(
+                orch, "_revalidate_end_session_before_dispatch", new=AsyncMock(return_value=False)
+            ) as revalidate,
+            patch.object(orch, "_dispatch_play", new=AsyncMock()) as dispatch,
+        ):
+            await orch.run_until_idle()
+
+    revalidate.assert_awaited_once()
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_revalidation_blocks_fresh_cooldown_without_play_row(
+    tmp_path: Path,
+) -> None:
+    selector = MagicMock()
+    selector.consume_pending = MagicMock(return_value=object())
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    fresh_state = OrchestratorState(
+        session_id=orch._session_id,
+        session_state=SessionState.RUNNING,
+        total_plays=30,
+        total_cost=0.0,
+        agents=[_idle_agent()],
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+        plays_since_last_play_type={PlayType.RUN_QA: 1},
+        last_play_success_by_type={PlayType.RUN_QA: True},
+    )
+    params = PlayParams(extras={"claim_group_id": "claim-qa"})
+
+    async with orch:
+        with (
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=fresh_state)),
+            patch.object(orch._executor, "execute", new=AsyncMock()) as execute,
+            patch("agentshore.core._logger.warning") as warning,
+        ):
+            dispatched = await orch._dispatch_play(
+                PlayType.RUN_QA, params, fresh_state, revalidate=True
+            )
+
+        history = await orch._store.get_play_history(orch._session_id)
+        mutations = await orch._store.list_external_mutations(
+            orch._session_id,
+            mutation_types=("dispatch_revalidation_block",),
+        )
+
+    assert dispatched is False
+    execute.assert_not_awaited()
+    assert history == []
+    assert len(mutations) == 1
+    assert mutations[0].target == "run_qa"
+    assert any(call.args == ("dispatch_revalidation_blocked",) for call in warning.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> None:
+    selector = FixedPlanSelector(
+        [
+            (PlayType.END_SESSION, PlayParams()),
+            (PlayType.END_SESSION, PlayParams()),
+        ]
+    )
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    end_outcome = _idle_outcome(PlayType.END_SESSION)
+
+    async def _execute(
+        _play_type: PlayType, _state: OrchestratorState, *, override: PlayParams
+    ) -> PlayOutcome:
+        await asyncio.sleep(0.05)
+        return end_outcome
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(
+                orch,
+                "_build_state",
+                new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
+            ),
+            patch.object(orch._executor, "execute", new=AsyncMock(side_effect=_execute)) as execute,
+            patch("agentshore.core.AGENT_PING_TIMEOUT_SECONDS", 0.001),
+        ):
+            await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
+
+    assert execute.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# run_until_idle terminates on END_SESSION play
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
+    plan = [(PlayType.END_SESSION, PlayParams())]
+    selector = FixedPlanSelector(plan)
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    end_outcome = _idle_outcome(PlayType.END_SESSION)
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(
+                orch,
+                "_build_state",
+                new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
+            ),
+            patch.object(orch._executor, "execute", new=AsyncMock(return_value=end_outcome)),
+        ):
+            await orch.run_until_idle()
+
+    # Just verifying it terminates and session is completed
+
+
+@pytest.mark.asyncio
+async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -> None:
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.has_ready_tasks = False
+    graph.tasks = ()
+    graph.tasks_ready = 0
+    graph.global_closure_ratio = 1.0
+
+    selector = MagicMock()
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    async def _select_once(_state: OrchestratorState) -> None:
+        orch._stop_requested = True
+        return None
+
+    selector.select = AsyncMock(side_effect=_select_once)
+
+    async def _fake_state() -> OrchestratorState:
+        return OrchestratorState(
+            session_id=orch._session_id,
+            session_state=SessionState.RUNNING,
+            total_plays=0,
+            total_cost=0.0,
+            agents=[_idle_agent("agent-1")],
+            budget=BudgetSnapshot(
+                total_budget=200.0,
+                spent=0.0,
+                remaining=200.0,
+                estimated_cost_per_play=0.1,
+            ),
+            graph=graph,
+            last_play_success_by_type={PlayType.SEED_PROJECT: True},
+            plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
+        )
+
+    orch._build_state = AsyncMock(side_effect=_fake_state)
+    orch._refresh_issues = AsyncMock()
+    orch._generate_end_session_report = AsyncMock(return_value=tmp_path / "esr.html")
+    orch._idle_backoff = MagicMock(return_value=0.0)
+
+    await orch.__aenter__()
+    try:
+        await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
+
+        history = await orch._store.get_play_history(orch._session_id)
+        end_session_rows = [p for p in history if p.play_type == PlayType.END_SESSION.value]
+        assert end_session_rows == []
+        assert orch._end_session_report_requested is False
+        assert orch._drain_reason is None
+        selector.select.assert_awaited()
+    finally:
+        orch._end_session_report_open_browser = False
+        await orch.__aexit__(None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# run_until_idle starts budget reserve drain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> None:
+    selector = MagicMock()
+    selector.select = AsyncMock(return_value=(PlayType.ISSUE_PICKUP, PlayParams()))
+
+    cfg = _cfg()
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, selector=selector)
+
+    # Override _build_state to return a state inside the final $5 budget reserve.
+    from agentshore.state import BudgetSnapshot
+
+    reserve_budget = BudgetSnapshot(
+        total_budget=20.0, spent=15.0, remaining=5.0, estimated_cost_per_play=0.05
+    )
+
+    async def _fake_state() -> OrchestratorState:
+        return OrchestratorState(
+            session_id=orch._session_id,
+            session_state=SessionState.DRAINING if orch._draining else SessionState.RUNNING,
+            total_plays=10,
+            total_cost=15.0,
+            budget=reserve_budget,
+        )
+
+    async with orch:
+        with patch.object(orch, "_build_state", new=_fake_state):
+            await orch.run_until_idle()
+
+    assert orch._draining is True
+    assert orch._drain_reason == "budget_reserve_reached"
+    selector.select.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_instantiate_under_pressure_log_skips_override_queue(
+    tmp_path: Path,
+) -> None:
+    selector = MagicMock()
+    selector.select = AsyncMock(return_value=None)
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    busy_state = OrchestratorState(
+        session_id=orch._session_id,
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[
+            AgentSnapshot(
+                agent_id="busy-1",
+                agent_type=AgentType.CODEX,
+                status=AgentStatus.BUSY,
+                context_size=10_000,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=0,
+                model_tier="medium",
+            )
+        ],
+        open_issues=[_open_issue()],
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+    )
+
+    async with orch:
+        orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
+        from agentshore.plays.override import OverrideEntry, OverrideKind
+
+        orch._override_queue.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.INSTANTIATE_AGENT,
+                params=PlayParams(bypass_preconditions=True),
+                kind=OverrideKind.USER_REQUEST,
+            )
+        )
+
+        async def _wait_once(*_args: object, **_kwargs: object) -> None:
+            for task in orch._in_flight.values():
+                task.cancel()
+            orch._in_flight.clear()
+
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
+            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(
+                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+            ),
+            patch("agentshore.core._logger.info") as info_log,
+        ):
+            await orch.run_until_idle()
+
+    names = [call.args[0] for call in info_log.call_args_list if call.args]
+    assert "override_queue_dequeued" in names
+    assert "ppo_instantiate_under_pressure" not in names
+
+
+@pytest.mark.asyncio
+async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
+    tmp_path: Path,
+) -> None:
+    selector = MagicMock()
+    selector.select = AsyncMock(return_value=(PlayType.INSTANTIATE_AGENT, PlayParams()))
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    busy_state = OrchestratorState(
+        session_id=orch._session_id,
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[
+            AgentSnapshot(
+                agent_id="busy-1",
+                agent_type=AgentType.CODEX,
+                status=AgentStatus.BUSY,
+                context_size=10_000,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=0,
+                model_tier="medium",
+            )
+        ],
+        open_issues=[_open_issue()],
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
+    )
+
+    async with orch:
+        orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
+
+        async def _wait_once(*_args: object, **_kwargs: object) -> None:
+            for task in orch._in_flight.values():
+                task.cancel()
+            orch._in_flight.clear()
+
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
+            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(
+                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+            ),
+            patch("agentshore.core._logger.info") as info_log,
+        ):
+            await orch.run_until_idle()
+
+    names = [call.args[0] for call in info_log.call_args_list if call.args]
+    assert names.count("ppo_instantiate_under_pressure") == 1
+
+
+# ---------------------------------------------------------------------------
+# _on_crash logs without recovering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        # Should not raise; should just log
+        await orch._on_crash("agent-123", 1)
+        # No handles were created so there's nothing to verify beyond no exception
+
+
+# ---------------------------------------------------------------------------
+# _on_context_pressure annotates context_pressure_hints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_context_pressure_annotates_hints(tmp_path: Path) -> None:
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        await orch._on_context_pressure("agent-42", 0.87)
+        assert orch.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
+
+
+# ---------------------------------------------------------------------------
+# stop() is idempotent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent(tmp_path: Path) -> None:
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        await orch.stop()
+        await orch.stop()  # second call should be a no-op, not raise
+
+
+# ---------------------------------------------------------------------------
+# KeyboardInterrupt during run_until_idle exits cleanly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_keyboard_interrupt_exits_cleanly(tmp_path: Path) -> None:
+    selector = MagicMock()
+    selector.select = AsyncMock(side_effect=KeyboardInterrupt)
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    with pytest.raises(KeyboardInterrupt):
+        async with orch:
+            await orch.run_until_idle()
+
+
+# ---------------------------------------------------------------------------
+# stop() wakes a paused loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
+    """stop() should wake a paused orchestrator so it can exit."""
+    import asyncio
+
+    selector = FixedPlanSelector(
+        [(PlayType.ISSUE_PICKUP, PlayParams(bypass_preconditions=True))] * 10
+    )
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    # Mock executor so plays don't actually run
+    end_outcome = _idle_outcome(PlayType.ISSUE_PICKUP)
+
+    async def mock_execute(
+        pt: PlayType,
+        state: OrchestratorState,
+        override: PlayParams | None = None,
+    ) -> PlayOutcome:
+        # Pause after first play
+        await orch.pause("test")
+        return end_outcome
+
+    async with orch:
+        with patch.object(orch._executor, "execute", new=mock_execute):
+            task = asyncio.create_task(orch.run_until_idle())
+            await asyncio.sleep(0.1)
+            # Loop should be paused now
+            assert not orch._pause_event.is_set()
+            # stop() should wake it
+            await orch.stop()
+            await asyncio.wait_for(task, timeout=2.0)
+            # Should have exited cleanly
+            assert task.done()
+
+
+# ---------------------------------------------------------------------------
+# Error-recovery: executor raises — loop continues, doesn't crash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_executor_exception_does_not_crash_loop(tmp_path: Path) -> None:
+    """When execute() raises, _process_completion logs and loop continues."""
+    import asyncio
+
+    plan = [
+        (PlayType.ISSUE_PICKUP, PlayParams(bypass_preconditions=True)),
+        (PlayType.END_SESSION, PlayParams(bypass_preconditions=True)),
+    ]
+    selector = FixedPlanSelector(plan)
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    call_count = 0
+    end_outcome = _idle_outcome(PlayType.END_SESSION)
+
+    async def mock_execute(
+        pt: PlayType,
+        state: OrchestratorState,
+        override: PlayParams | None = None,
+    ) -> PlayOutcome:
+        nonlocal call_count
+        call_count += 1
+        if pt == PlayType.ISSUE_PICKUP:
+            msg = "simulated agent failure"
+            raise RuntimeError(msg)
+        return end_outcome
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._executor, "execute", new=mock_execute),
+        ):
+            await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
+
+    # Both plays were attempted (failure didn't crash the loop)
+    assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _process_completion handles cancelled task without crash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None:
+    """_process_completion called with a cancelled task should not raise."""
+    import asyncio
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+
+    async with orch:
+        # Create a cancelled task
+        async def _noop() -> PlayOutcome:
+            return _idle_outcome(PlayType.ISSUE_PICKUP)
+
+        import contextlib
+
+        task: asyncio.Task[PlayOutcome] = asyncio.create_task(_noop())
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # Should not raise even with cancelled task and missing dispatch context
+        await orch._process_completion("nonexistent-dispatch-id", task)
+
+
+# ---------------------------------------------------------------------------
+# _promote_request_play_mutations wires request_play to override queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_promote_request_play_mutations_enqueues_eligible_play(tmp_path: Path) -> None:
+    """A pending request_play mutation is promoted to _override_queue and marked queued."""
+    import json
+
+    from agentshore.data.store import ExternalMutationRecord
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        # Inject a pending request_play mutation directly into the DB
+        await orch._store.record_external_mutation(
+            ExternalMutationRecord(
+                session_id=orch._session_id,
+                idempotency_key="test-promote-key",
+                mutation_type="request_play",
+                target="plays",
+                status="pending",
+                created_at="T0",
+                request_json=json.dumps({"play": "code_review", "pr": 52}),
+            )
+        )
+
+        # Drain bootstrap overrides (calibration + seed) before testing
+        while not orch._override_queue.empty():
+            orch._override_queue.get_nowait()
+
+        await orch._promote_request_play_mutations()
+
+        # Override queue now contains exactly the promoted play
+        assert not orch._override_queue.empty()
+        entry = orch._override_queue.get_nowait()
+        assert entry.play_type == PlayType.CODE_REVIEW
+        assert entry.params.pr_number == 52
+        assert orch._override_queue.empty()
+
+        # Row status is now "queued" — won't be promoted again
+        pending = await orch._store.list_pending_request_play_mutations(orch._session_id)
+        assert pending == []
+
+
+@pytest.mark.asyncio
+async def test_promote_request_play_mutations_dedupes_same_pr_across_plays(
+    tmp_path: Path,
+) -> None:
+    """merge_pr(PR N) and unblock_pr(PR N) cannot both enter the override queue."""
+    import json
+
+    from agentshore.data.store import ExternalMutationRecord, PullRequestRecord
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        await orch._store.record_pull_request(
+            PullRequestRecord(
+                pr_number=210,
+                session_id=orch._session_id,
+                issue_number=195,
+                state="open",
+                created_at="T0",
+                mergeable="MERGEABLE",
+                review_decision="APPROVED",
+            )
+        )
+        for key, request in [
+            ("merge-210", {"play": "merge_pr", "pr": 210}),
+            ("unblock-210", {"play": "unblock_pr", "pr": 210}),
+        ]:
+            await orch._store.record_external_mutation(
+                ExternalMutationRecord(
+                    session_id=orch._session_id,
+                    idempotency_key=key,
+                    mutation_type="request_play",
+                    target="plays",
+                    status="pending",
+                    created_at=key,
+                    request_json=json.dumps(request),
+                )
+            )
+
+        while not orch._override_queue.empty():
+            orch._override_queue.get_nowait()
+
+        await orch._promote_request_play_mutations()
+
+        assert not orch._override_queue.empty()
+        entry = orch._override_queue.get_nowait()
+        assert entry.play_type == PlayType.MERGE_PR
+        assert entry.params.pr_number == 210
+        assert orch._override_queue.empty()
+
+        first = await orch._store.get_external_mutation(orch._session_id, "merge-210")
+        second = await orch._store.get_external_mutation(orch._session_id, "unblock-210")
+        assert first is not None and first.status == "queued"
+        assert second is not None and second.status == "duplicate"
+
+
+@pytest.mark.asyncio
+async def test_promote_request_play_mutations_ignores_non_safelisted_play(tmp_path: Path) -> None:
+    """A request_play mutation for a non-promotable play (e.g. end_session) is skipped."""
+    import json
+
+    from agentshore.data.store import ExternalMutationRecord
+
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+    async with orch:
+        await orch._store.record_external_mutation(
+            ExternalMutationRecord(
+                session_id=orch._session_id,
+                idempotency_key="test-skip-key",
+                mutation_type="request_play",
+                target="plays",
+                status="pending",
+                created_at="T0",
+                request_json=json.dumps({"play": "end_session"}),
+            )
+        )
+
+        # Drain bootstrap overrides before testing
+        while not orch._override_queue.empty():
+            orch._override_queue.get_nowait()
+
+        await orch._promote_request_play_mutations()
+
+        # Non-safelisted play must not touch the override queue
+        assert orch._override_queue.empty()
+        # Row is marked ignored so it does not get retried forever.
+        pending = await orch._store.list_pending_request_play_mutations(orch._session_id)
+        assert pending == []
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap recipe: small-Claude included when tier is enabled
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_orch() -> MagicMock:
+    """Minimal mock Orchestrator with an _override_queue."""
+    orch = MagicMock()
+    orch._override_queue = asyncio.Queue()
+    return orch
+
+
+def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            AgentType.CODEX.value: AgentConfig(enabled=True),
+            AgentType.CLAUDE_CODE.value: AgentConfig(enabled=True),
+        }
+    )
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
+
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert [(e.play_type, e.params) for e in entries] == [
+        (
+            PlayType.INSTANTIATE_AGENT,
+            PlayParams(
+                target_agent_type=AgentType.CODEX.value,
+                target_model_tier="large",
+                bypass_preconditions=True,
+            ),
+        ),
+        (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+        (
+            PlayType.INSTANTIATE_AGENT,
+            PlayParams(
+                target_agent_type=AgentType.CLAUDE_CODE.value,
+                target_model_tier="medium",
+                bypass_preconditions=True,
+            ),
+        ),
+    ]
+
+
+def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            AgentType.CLAUDE_CODE.value: AgentConfig(
+                enabled=True,
+                model_tiers={
+                    "medium": ModelTierConfig(enabled=True),
+                    "large": ModelTierConfig(enabled=False),
+                },
+            ),
+            AgentType.CODEX.value: AgentConfig(enabled=True),
+        }
+    )
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
+
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert (entries[0].play_type, entries[0].params) == (
+        PlayType.INSTANTIATE_AGENT,
+        PlayParams(
+            target_agent_type=AgentType.CODEX.value,
+            target_model_tier="large",
+            bypass_preconditions=True,
+        ),
+    )
+    assert entries[1].play_type == PlayType.SEED_PROJECT
+    assert (entries[2].play_type, entries[2].params) == (
+        PlayType.INSTANTIATE_AGENT,
+        PlayParams(
+            target_agent_type=AgentType.CLAUDE_CODE.value,
+            target_model_tier="medium",
+            bypass_preconditions=True,
+        ),
+    )
+
+
+def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            AgentType.CLAUDE_CODE.value: AgentConfig(
+                enabled=True,
+                model_tiers={
+                    "medium": ModelTierConfig(enabled=True),
+                    "large": ModelTierConfig(enabled=True),
+                },
+            ),
+        }
+    )
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
+
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert [(e.play_type, e.params) for e in entries] == [
+        (
+            PlayType.INSTANTIATE_AGENT,
+            PlayParams(
+                target_agent_type=AgentType.CLAUDE_CODE.value,
+                target_model_tier="large",
+                bypass_preconditions=True,
+            ),
+        ),
+        (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Loop detection — regression: fires only after play completion, not per tick
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_loop_detection_not_called_on_selector_idle_ticks(tmp_path: Path) -> None:
+    """_check_loop_detection must not be invoked when the selector returns None."""
+    selector = FixedPlanSelector([])  # immediately returns None → no plays dispatched
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    call_count = 0
+    original = orch._check_loop_detection
+
+    def counting_check(state: OrchestratorState) -> bool:
+        nonlocal call_count
+        call_count += 1
+        return original(state)
+
+    async with orch:
+        with (
+            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch, "_check_loop_detection", side_effect=counting_check),
+        ):
+            await orch.run_until_idle()
+
+    assert call_count == 0, f"_check_loop_detection called {call_count} times on idle ticks"
+
+
+@pytest.mark.asyncio
+async def test_check_loop_detection_warns_once_per_ascending_streak(tmp_path: Path) -> None:
+    """Warning memo + bucket gate suppress duplicates; each geometric milestone fires once."""
+    cfg = _cfg()
+    # Default warn_after = 3; geometric buckets at (1, 2, 5, ...) × warn_after → {3, 6, 15, ...}
+    warn_after = cfg.rl.loop_detection.warn_after  # typically 3
+
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path)
+    async with orch:
+
+        def _state(fail: int) -> OrchestratorState:
+            return OrchestratorState(
+                session_id=orch._session_id,
+                session_state=SessionState.RUNNING,
+                total_plays=0,
+                total_cost=0.0,
+                same_type_failure_streak=fail,
+                same_type_streak=0,
+                last_play_type=PlayType.ISSUE_PICKUP,
+            )
+
+        # First call at the 1× bucket — should set memo
+        orch._check_loop_detection(_state(warn_after))
+        assert orch._last_warned_failure_streak == warn_after
+
+        # Second call at same value — memo prevents re-emit, memo unchanged
+        orch._check_loop_detection(_state(warn_after))
+        assert orch._last_warned_failure_streak == warn_after
+
+        # Streak rises to the 2× bucket — should update memo
+        orch._check_loop_detection(_state(2 * warn_after))
+        assert orch._last_warned_failure_streak == 2 * warn_after
+
+        # Streak drops below threshold — memo clears
+        orch._check_loop_detection(_state(0))
+        assert orch._last_warned_failure_streak is None
+
+
+@pytest.mark.asyncio
+async def test_check_loop_detection_gate_does_not_reset_on_equal_streak(tmp_path: Path) -> None:
+    """Warn-gate only resets when streak *decreases* below last warned, not on equal reads."""
+    cfg = _cfg()
+    warn_after = cfg.rl.loop_detection.warn_after
+
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path)
+    async with orch:
+
+        def _state(fail: int) -> OrchestratorState:
+            return OrchestratorState(
+                session_id=orch._session_id,
+                session_state=SessionState.RUNNING,
+                total_plays=0,
+                total_cost=0.0,
+                same_type_failure_streak=fail,
+                same_type_streak=0,
+            )
+
+        orch._check_loop_detection(_state(warn_after))
+        assert orch._last_warned_failure_streak == warn_after
+
+        # Equal streak read: memo must NOT reset (old code would have reset here)
+        orch._check_loop_detection(_state(warn_after))
+        assert orch._last_warned_failure_streak == warn_after, (
+            "warn gate reset on equal streak — would re-emit on next tick"
+        )
+
+
+@pytest.mark.asyncio
+async def test_loop_detection_no_longer_force_masks(tmp_path: Path) -> None:
+    """Item 9: loop detection no longer force-masks the repeated play type.
+
+    The hard force-mask overrode the policy's revealed preference. It is gone:
+    collapse is handled from within the policy via the stagnation entropy boost.
+    Even well above the old force-switch threshold, ``forced_mask_zeros`` stays
+    empty, so the PPO keeps full directional control.
+    """
+    cfg = _cfg()
+    force_after = cfg.rl.loop_detection.force_switch_after
+
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path)
+    async with orch:
+        state = OrchestratorState(
+            session_id=orch._session_id,
+            session_state=SessionState.RUNNING,
+            total_plays=0,
+            total_cost=0.0,
+            same_type_failure_streak=force_after * 3,
+            same_type_streak=force_after * 3,
+            last_play_type=PlayType.ISSUE_PICKUP,
+        )
+        orch._check_loop_detection(state)
+        assert orch._forced_mask_play_types == ()
+
+        fresh = await orch._build_state()
+        assert fresh.forced_mask_zeros == ()
+
+
+@pytest.mark.asyncio
+async def test_stagnation_escalation_ladder_and_reset(tmp_path: Path) -> None:
+    cfg = _cfg()
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path)
+    async with orch:
+        state = OrchestratorState(
+            session_id=orch._session_id,
+            session_state=SessionState.RUNNING,
+            total_plays=0,
+            total_cost=0.0,
+        )
+        orch._metrics = SimpleNamespace(
+            snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
+        )
+        assert await orch._check_stagnation_escalation(state) is False
+        assert orch._last_stagnation_stage == 1
+
+        orch._metrics = SimpleNamespace(
+            snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=3))
+        )
+        assert await orch._check_stagnation_escalation(state) is True
+        assert orch._last_stagnation_stage == 2
+
+        orch._metrics = SimpleNamespace(
+            snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=5))
+        )
+        assert await orch._check_stagnation_escalation(state) is True
+        assert orch._last_stagnation_stage == 3
+
+        orch._metrics = SimpleNamespace(
+            snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
+        )
+        assert await orch._check_stagnation_escalation(state) is False
+        assert orch._last_stagnation_stage == 0
+
+
+@pytest.mark.asyncio
+async def test_stagnation_stage_one_boosts_entropy_coef(tmp_path: Path) -> None:
+    cfg = _cfg()
+    orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path)
+    async with orch:
+        state = OrchestratorState(
+            session_id=orch._session_id,
+            session_state=SessionState.RUNNING,
+            total_plays=0,
+            total_cost=0.0,
+        )
+        orch._metrics = SimpleNamespace(
+            snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
+        )
+
+        class _DummySelector:
+            def __init__(self) -> None:
+                self.values: list[float] = []
+
+            def set_entropy_coef(self, value: float) -> None:
+                self.values.append(value)
+
+        dummy = _DummySelector()
+        orch._selector = dummy  # type: ignore[assignment]
+        with patch("agentshore.core._ppo_selector_cls", return_value=_DummySelector):
+            await orch._check_stagnation_escalation(state)
+            orch._metrics = SimpleNamespace(
+                snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
+            )
+            await orch._check_stagnation_escalation(state)
+
+        assert dummy.values[0] == pytest.approx(
+            cfg.rl.entropy_coef * STAGNATION_ENTROPY_MULTIPLIER, abs=1e-6
+        )
+        assert dummy.values[-1] == pytest.approx(cfg.rl.entropy_coef, abs=1e-6)
+
+
+def test_bootstrap_recipe_order() -> None:
+    """Bootstrap queues a large seed agent, seed_project, then a different medium agent."""
+    cfg = RuntimeConfig(
+        agents={
+            AgentType.CLAUDE_CODE.value: AgentConfig(enabled=True),
+            AgentType.CODEX.value: AgentConfig(enabled=True),
+        }
+    )
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
+
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    play_types = [e.play_type for e in entries]
+    assert play_types[0] == PlayType.INSTANTIATE_AGENT
+    assert entries[0].params.target_agent_type == AgentType.CLAUDE_CODE.value
+    assert entries[0].params.target_model_tier == "large"
+    assert play_types[1] == PlayType.SEED_PROJECT
+    assert play_types[2] == PlayType.INSTANTIATE_AGENT
+    assert entries[2].params.target_agent_type == AgentType.CODEX.value
+    assert entries[2].params.target_model_tier == "medium"
+    assert entries[2].params.bypass_preconditions is True
+    assert len(entries) == 3
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap recipe: seed vs cleanup decision (desktop-65mq + desktop-arph)
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_cfg(*, cleanup_threshold: int = 50) -> RuntimeConfig:
+    return RuntimeConfig(
+        agents={
+            AgentType.CLAUDE_CODE.value: AgentConfig(enabled=True),
+            AgentType.CODEX.value: AgentConfig(enabled=True),
+        },
+        bootstrap=BootstrapConfig(cleanup_threshold=cleanup_threshold),
+    )
+
+
+def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) -> None:
+    """An explicit --seed input always wins, regardless of backlog size."""
+    cfg = _bootstrap_cfg()
+    orch = _make_mock_orch()
+    seed_file = tmp_path / "seed.md"
+    seed_file.write_text("# Seed", encoding="utf-8")
+    # High issue count would otherwise route to cleanup; seed_path overrides.
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500
+    )
+
+    entries = []
+    while not orch._override_queue.empty():
+        entries.append(orch._override_queue.get_nowait())
+
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.SEED_PROJECT,
+        PlayType.INSTANTIATE_AGENT,
+    ]
+    assert entries[1].params.seed_path == str(seed_file)
+    assert entries[1].params.bypass_preconditions is True
+
+
+def test_bootstrap_open_start_queues_nothing_without_seed() -> None:
+    """Item 2: without a seed, open-start queues no forced overrides.
+
+    The forced large+medium fleet was hard-coded direction. Now the PPO opens
+    the fleet itself — the empty-fleet mask keeps INSTANTIATE_AGENT selectable
+    so the policy spawns the first agent and decides the fleet's composition.
+    """
+    cfg = _bootstrap_cfg()
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120
+    )
+
+    assert orch._override_queue.empty()
+
+
+def test_bootstrap_open_start_ignores_backlog_size() -> None:
+    """Open-start is a no-op regardless of backlog size — no forced fleet either way."""
+    cfg = _bootstrap_cfg(cleanup_threshold=50)
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=10
+    )
+
+    assert orch._override_queue.empty()

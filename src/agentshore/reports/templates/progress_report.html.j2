@@ -1,0 +1,79 @@
+{% extends "base.html.j2" %}
+{% from "components/tables.html.j2" import play_table, overview_metrics %}
+
+{% block title %}Progress Report — {{ data.overview.session_id[:8] }}{% endblock %}
+
+{% block content %}
+<h1>Progress Report</h1>
+
+{# 1. Overview #}
+<div class="section">
+    <h2>Overview</h2>
+    {{ overview_metrics(data.overview) }}
+</div>
+
+{# 2. Epic Closure #}
+<div class="section">
+    <h2>Epic Closure</h2>
+    <div class="metric">
+        <div class="label">Global Closure Ratio</div>
+        <div class="value">
+            {% if data.overview.final_alignment is not none %}
+            {{ '%.0f%%' | format(data.overview.final_alignment * 100) }}
+            {% else %}
+            &mdash;
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{# 3. Recent Plays #}
+<div class="section">
+    <h2>Recent Plays</h2>
+    {{ play_table(data.recent_plays) }}
+</div>
+
+{# 4. Budget Status #}
+<div class="section">
+    <h2>Budget Status</h2>
+    <div>
+        <div class="metric">
+            <div class="label">Spent</div>
+            <div class="value">${{ '%.2f' | format(data.overview.total_cost) }}</div>
+        </div>
+        <div class="metric">
+            <div class="label">Remaining</div>
+            <div class="value">
+                {% if data.budget_remaining is not none %}
+                ${{ '%.2f' | format(data.budget_remaining) }}
+                {% else %}
+                &mdash;
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{# 5. Active Agents #}
+<div class="section">
+    <h2>Active Agents</h2>
+    {% if data.active_agents %}
+    <table>
+    <thead><tr><th>Agent</th><th>Type</th><th>Tasks</th><th>Cost</th></tr></thead>
+    <tbody>
+    {% for a in data.active_agents %}
+    <tr>
+        <td>{{ a.agent_id }}</td>
+        <td>{{ a.agent_type }}</td>
+        <td>{{ a.tasks_completed }}</td>
+        <td>${{ '%.3f' | format(a.total_cost) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No active agents.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

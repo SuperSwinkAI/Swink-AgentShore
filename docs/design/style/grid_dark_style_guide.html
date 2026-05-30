@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Dark Style Guide</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #05070d;
+        --panel: rgba(8, 12, 20, 0.92);
+        --panel-strong: #0d1725;
+        --text: #d8f3ff;
+        --muted: #8fa8b5;
+        --line: rgba(101, 223, 255, 0.28);
+        --accent: #29e3a9;
+        --grid: #48b8ff;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        padding: 32px;
+        background: linear-gradient(135deg, var(--bg), #081828 64%, #06131a);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+      }
+
+      h1,
+      h2,
+      p { margin: 0; }
+
+      h1 { font-size: 30px; }
+
+      .lede {
+        max-width: 760px;
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      .section {
+        margin-top: 28px;
+        padding: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .token {
+        padding: 14px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }
+
+      .swatch {
+        height: 42px;
+        margin-bottom: 10px;
+        border: 1px solid rgba(101, 223, 255, 0.28);
+      }
+
+      code {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        color: #9fe8ff;
+      }
+
+      .room-strip {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .room {
+        min-height: 70px;
+        border: 1px solid rgba(72, 184, 255, 0.36);
+        background:
+          linear-gradient(rgba(72, 184, 255, 0.36) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(72, 184, 255, 0.36) 1px, transparent 1px),
+          var(--fill);
+        background-size: 16px 16px, 16px 16px, auto;
+        padding: 8px;
+        color: #d8f3ff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentShore Grid Dark Style Guide</h1>
+      <p class="lede">
+        Grid Dark is the dashboard dark variant. Auto mode resolves OS dark to Grid Dark, while the
+        dashboard keeps the same room geometry and procedural furniture across Grid themes.
+      </p>
+
+      <section class="section">
+        <h2>HUD Tokens</h2>
+        <div class="grid">
+          <div class="token"><div class="swatch" style="background:#05070d"></div><code>--color-fm-bg #05070d</code></div>
+          <div class="token"><div class="swatch" style="background:#d8f3ff"></div><code>--color-fm-text #d8f3ff</code></div>
+          <div class="token"><div class="swatch" style="background:rgba(8,12,20,0.92)"></div><code>--color-fm-panel rgba(8,12,20,0.92)</code></div>
+          <div class="token"><div class="swatch" style="background:#29e3a9"></div><code>--color-fm-ok #29e3a9</code></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Room Tiles</h2>
+        <div class="room-strip">
+          <div class="room" style="--fill:rgba(17,52,84,0.92)">War</div>
+          <div class="room" style="--fill:rgba(16,69,95,0.90)">Workshop</div>
+          <div class="room" style="--fill:rgba(20,58,99,0.90)">Science</div>
+          <div class="room" style="--fill:rgba(18,47,98,0.90)">Launch</div>
+          <div class="room" style="--fill:rgba(18,83,111,0.90)">Editor</div>
+          <div class="room" style="--fill:rgba(46,68,80,0.90)">Recovery</div>
+          <div class="room" style="--fill:rgba(18,97,115,0.88)">Zen</div>
+          <div class="room" style="--fill:rgba(18,75,101,0.90)">Front</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

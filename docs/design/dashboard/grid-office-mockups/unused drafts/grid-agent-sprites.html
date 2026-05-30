@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Agent Sprite Angles</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #03080d;
+        --panel: rgba(7, 18, 24, 0.9);
+        --panel-strong: rgba(10, 29, 38, 0.95);
+        --line: rgba(85, 221, 255, 0.34);
+        --line-strong: rgba(95, 230, 255, 0.72);
+        --text: #eaffff;
+        --muted: #8db3bd;
+        --codex: #ffd84f;
+        --gemini: #37a7ff;
+        --claude: #ff8f3c;
+        --shadow: rgba(0, 0, 0, 0.45);
+        --radius: 8px;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 18% 10%, rgba(255, 216, 79, 0.15), transparent 24rem),
+          radial-gradient(circle at 82% 12%, rgba(55, 167, 255, 0.16), transparent 26rem),
+          linear-gradient(180deg, #06141b, var(--bg) 62%);
+      }
+
+      body::before {
+        position: fixed;
+        inset: 0;
+        content: "";
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, transparent 0 47px, rgba(89, 226, 255, 0.16) 48px, transparent 49px),
+          linear-gradient(0deg, transparent 0 47px, rgba(89, 226, 255, 0.16) 48px, transparent 49px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(180deg, transparent, black 16%, black 78%, transparent);
+        transform: perspective(760px) rotateX(61deg) translateY(23vh) scale(1.65);
+        transform-origin: center bottom;
+      }
+
+      main {
+        position: relative;
+        z-index: 1;
+        width: min(1280px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 30px 0 44px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px;
+        align-items: end;
+        margin-bottom: 24px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      .eyebrow {
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 850;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 820px;
+        margin-bottom: 12px;
+        font-size: clamp(2.25rem, 4.4vw, 4.65rem);
+        line-height: 0.95;
+        letter-spacing: 0;
+      }
+
+      header p {
+        max-width: 740px;
+        margin-bottom: 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .provider-toggle {
+        display: grid;
+        gap: 8px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: 0 18px 48px var(--shadow);
+      }
+
+      button {
+        min-height: 38px;
+        padding: 0 14px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        color: var(--text);
+        background: transparent;
+        font: 850 0.78rem/1 Inter, ui-sans-serif, system-ui, sans-serif;
+        cursor: pointer;
+      }
+
+      button[aria-pressed="true"] {
+        border-color: color-mix(in srgb, var(--provider-color), white 20%);
+        background: color-mix(in srgb, var(--provider-color), transparent 86%);
+        box-shadow: 0 0 20px color-mix(in srgb, var(--provider-color), transparent 42%);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 18px;
+      }
+
+      .sheets {
+        display: grid;
+        gap: 18px;
+      }
+
+      .sprite-section,
+      .preview-panel,
+      .notes {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+        box-shadow: 0 18px 52px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .sprite-section {
+        padding: 16px;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: start;
+        margin-bottom: 12px;
+      }
+
+      h2 {
+        margin-bottom: 6px;
+        font-size: 1.02rem;
+        letter-spacing: 0;
+      }
+
+      .section-head p,
+      .notes p,
+      .notes li {
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.45;
+      }
+
+      .section-head p {
+        margin-bottom: 0;
+      }
+
+      .tier-chip {
+        flex: 0 0 auto;
+        padding: 8px 10px;
+        border: 1px solid color-mix(in srgb, var(--provider-color), transparent 45%);
+        border-radius: 999px;
+        color: var(--text);
+        background: color-mix(in srgb, var(--provider-color), transparent 90%);
+        font-size: 0.72rem;
+        font-weight: 900;
+        box-shadow: inset 0 0 18px color-mix(in srgb, var(--provider-color), transparent 85%);
+      }
+
+      .sheet-wrap {
+        overflow: auto;
+        border: 1px solid rgba(90, 224, 255, 0.2);
+        border-radius: var(--radius);
+        background:
+          linear-gradient(90deg, transparent 0 31px, rgba(92, 226, 255, 0.08) 32px, transparent 33px),
+          linear-gradient(0deg, transparent 0 31px, rgba(92, 226, 255, 0.08) 32px, transparent 33px),
+          rgba(0, 8, 12, 0.34);
+        background-size: 32px 32px;
+      }
+
+      canvas.sheet {
+        display: block;
+        width: 100%;
+        min-width: 920px;
+        height: auto;
+      }
+
+      .preview-panel {
+        position: sticky;
+        top: 18px;
+        padding: 16px;
+      }
+
+      .preview-panel h2 {
+        margin-bottom: 12px;
+      }
+
+      .stage {
+        position: relative;
+        height: 620px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background:
+          linear-gradient(180deg, rgba(84, 226, 255, 0.1), transparent 42%),
+          linear-gradient(90deg, transparent 0 31px, rgba(89, 226, 255, 0.15) 32px, transparent 33px),
+          linear-gradient(0deg, transparent 0 31px, rgba(89, 226, 255, 0.15) 32px, transparent 33px),
+          rgba(0, 8, 12, 0.58);
+        background-size: auto, 32px 32px, 32px 32px, auto;
+      }
+
+      .stage canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      .notes {
+        margin-top: 18px;
+        padding: 16px;
+      }
+
+      .notes ul {
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }
+
+      @media (max-width: 1120px) {
+        .layout,
+        header {
+          grid-template-columns: 1fr;
+        }
+
+        .preview-panel {
+          position: relative;
+          top: auto;
+        }
+
+        .provider-toggle {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 640px) {
+        main {
+          width: min(100% - 20px, 1280px);
+          padding-top: 20px;
+        }
+
+        .provider-toggle {
+          grid-template-columns: 1fr;
+        }
+
+        .section-head {
+          display: grid;
+        }
+
+        .stage {
+          height: 520px;
+        }
+      }
+    </style>
+  </head>
+  <body style="--provider-color: var(--codex)">
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Grid Agent Sprite Exploration</p>
+          <h1>Tier sprites with facing angles and movement frames</h1>
+          <p>
+            Each sheet shows eight directions across four walk frames. The right-side stage cycles the same
+            sprites at office scale so the silhouette and bob are easier to judge.
+          </p>
+        </div>
+        <div class="provider-toggle" role="group" aria-label="Preview provider color">
+          <button type="button" data-provider="codex" aria-pressed="true">Codex Yellow</button>
+          <button type="button" data-provider="gemini" aria-pressed="false">Gemini Blue</button>
+          <button type="button" data-provider="claude" aria-pressed="false">Claude Orange</button>
+        </div>
+      </header>
+
+      <div class="layout">
+        <div class="sheets">
+          <section class="sprite-section" data-tier="small">
+            <div class="section-head">
+              <div>
+                <h2>Small Tier: Ball Scout</h2>
+                <p>Bouncy, compact, readable as a low-cost or lightweight agent. Movement is a roll-hop with a tiny hover shadow.</p>
+              </div>
+              <span class="tier-chip">48px target sprite</span>
+            </div>
+            <div class="sheet-wrap"><canvas class="sheet" id="smallSheet" width="1024" height="560"></canvas></div>
+          </section>
+
+          <section class="sprite-section" data-tier="medium">
+            <div class="section-head">
+              <div>
+                <h2>Medium Tier: Operator Robot</h2>
+                <p>Standard humanoid silhouette with a visible head, torso, arms, and stride. This is the default office agent read.</p>
+              </div>
+              <span class="tier-chip">64px target sprite</span>
+            </div>
+            <div class="sheet-wrap"><canvas class="sheet" id="mediumSheet" width="1024" height="640"></canvas></div>
+          </section>
+
+          <section class="sprite-section" data-tier="large">
+            <div class="section-head">
+              <div>
+                <h2>Large Tier: Heavy Robot</h2>
+                <p>Taller and thicker, with a slower power-step. Useful for senior models, high-budget agents, or heavyweight plays.</p>
+              </div>
+              <span class="tier-chip">80px target sprite</span>
+            </div>
+            <div class="sheet-wrap"><canvas class="sheet" id="largeSheet" width="1024" height="704"></canvas></div>
+          </section>
+        </div>
+
+        <aside>
+          <section class="preview-panel">
+            <h2>Movement Preview</h2>
+            <div class="stage"><canvas id="stage" width="680" height="1240"></canvas></div>
+          </section>
+          <section class="notes">
+            <h2>Sprite Read</h2>
+            <ul>
+              <li>Provider identity is color-only so shape stays tied to tier.</li>
+              <li>Direction can be reduced to four angles later if eight is too much for canvas cost.</li>
+              <li>Status can sit above this as glow, pulse, icon, or ring treatment.</li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </main>
+
+    <script>
+      const providers = {
+        codex: "#ffd84f",
+        gemini: "#37a7ff",
+        claude: "#ff8f3c"
+      };
+
+      const providerVars = {
+        codex: "var(--codex)",
+        gemini: "var(--gemini)",
+        claude: "var(--claude)"
+      };
+
+      let currentProvider = "codex";
+      const directions = [
+        { key: "S", label: "Front", yaw: 0, face: "front" },
+        { key: "SE", label: "Front R", yaw: 0.42, face: "front" },
+        { key: "E", label: "Right", yaw: 0.78, face: "side" },
+        { key: "NE", label: "Back R", yaw: 0.44, face: "back" },
+        { key: "N", label: "Back", yaw: 0, face: "back" },
+        { key: "NW", label: "Back L", yaw: -0.44, face: "back" },
+        { key: "W", label: "Left", yaw: -0.78, face: "side" },
+        { key: "SW", label: "Front L", yaw: -0.42, face: "front" }
+      ];
+
+      function hexToRgb(hex) {
+        const value = hex.replace("#", "");
+        return {
+          r: parseInt(value.slice(0, 2), 16),
+          g: parseInt(value.slice(2, 4), 16),
+          b: parseInt(value.slice(4, 6), 16)
+        };
+      }
+
+      function rgba(hex, alpha) {
+        const { r, g, b } = hexToRgb(hex);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
+
+      function roundedRect(ctx, x, y, w, h, r) {
+        const radius = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + w, y, x + w, y + h, radius);
+        ctx.arcTo(x + w, y + h, x, y + h, radius);
+        ctx.arcTo(x, y + h, x, y, radius);
+        ctx.arcTo(x, y, x + w, y, radius);
+        ctx.closePath();
+      }
+
+      function ellipse(ctx, x, y, rx, ry) {
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+      }
+
+      function glowStroke(ctx, color, width = 2, blur = 12) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = blur;
+      }
+
+      function glowFill(ctx, color, blur = 16) {
+        ctx.fillStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = blur;
+      }
+
+      function resetGlow(ctx) {
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = "transparent";
+      }
+
+      function makeGradient(ctx, color, x, y, w, h, back = false) {
+        const gradient = ctx.createLinearGradient(x, y, x, y + h);
+        gradient.addColorStop(0, back ? rgba(color, 0.5) : rgba("#ffffff", 0.62));
+        gradient.addColorStop(0.18, rgba(color, back ? 0.7 : 0.92));
+        gradient.addColorStop(0.62, rgba(color, 0.58));
+        gradient.addColorStop(1, rgba("#001018", 0.78));
+        return gradient;
+      }
+
+      function drawGridCell(ctx, x, y, w, h, color) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(92, 226, 255, 0.08)";
+        ctx.lineWidth = 1;
+        for (let gx = x; gx <= x + w; gx += 16) {
+          ctx.beginPath();
+          ctx.moveTo(gx, y);
+          ctx.lineTo(gx, y + h);
+          ctx.stroke();
+        }
+        for (let gy = y; gy <= y + h; gy += 16) {
+          ctx.beginPath();
+          ctx.moveTo(x, gy);
+          ctx.lineTo(x + w, gy);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = rgba(color, 0.25);
+        ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+        ctx.restore();
+      }
+
+      function drawShadow(ctx, y, width, color) {
+        ctx.save();
+        ellipse(ctx, 0, y, width, width * 0.16);
+        const gradient = ctx.createRadialGradient(0, y, 4, 0, y, width);
+        gradient.addColorStop(0, rgba(color, 0.44));
+        gradient.addColorStop(1, rgba(color, 0));
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawVisor(ctx, face, color, yaw, x, y, w, h) {
+        ctx.save();
+        if (face === "back") {
+          roundedRect(ctx, x + w * 0.22, y + h * 0.34, w * 0.56, h * 0.16, h * 0.06);
+          ctx.fillStyle = "rgba(0, 15, 20, 0.46)";
+          ctx.fill();
+          glowStroke(ctx, rgba(color, 0.8), 1.2, 8);
+          ctx.stroke();
+          resetGlow(ctx);
+          ctx.restore();
+          return;
+        }
+
+        const shift = yaw * w * 0.18;
+        roundedRect(ctx, x + w * 0.2 + shift, y + h * 0.32, w * 0.6, h * 0.22, h * 0.08);
+        ctx.fillStyle = "rgba(0, 12, 18, 0.72)";
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.92), 1.4, 8);
+        ctx.stroke();
+        resetGlow(ctx);
+
+        const eyeY = y + h * 0.43;
+        const eyeSep = face === "side" ? w * 0.12 : w * 0.18;
+        const eyeBase = x + w * 0.5 + shift;
+        glowFill(ctx, "#ffffff", 6);
+        ellipse(ctx, eyeBase - eyeSep, eyeY, 2.2, 2.2);
+        ctx.fill();
+        if (face !== "side") {
+          ellipse(ctx, eyeBase + eyeSep, eyeY, 2.2, 2.2);
+          ctx.fill();
+        }
+        resetGlow(ctx);
+        ctx.restore();
+      }
+
+      function drawSmall(ctx, dir, frame, color, scale = 1) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        const bob = [0, -4, 0, -2][frame];
+        const lean = dir.yaw * 3 + [-2, 1, 2, -1][frame] * 0.3;
+        const roll = [-0.09, 0.05, 0.09, -0.04][frame] + dir.yaw * 0.08;
+        drawShadow(ctx, 29, 27, color);
+        ctx.translate(lean, bob);
+        ctx.rotate(roll);
+
+        glowFill(ctx, rgba(color, 0.96), 20);
+        ellipse(ctx, 0, 0, 22, 22);
+        ctx.fillStyle = makeGradient(ctx, color, -22, -22, 44, 44, dir.face === "back");
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.95), 2.2, 14);
+        ctx.stroke();
+        resetGlow(ctx);
+
+        ctx.save();
+        ctx.rotate(-roll);
+        drawVisor(ctx, dir.face, color, dir.yaw, -16, -11, 32, 19);
+        ctx.restore();
+
+        ctx.save();
+        ctx.rotate(-roll);
+        glowStroke(ctx, rgba(color, 0.86), 1.5, 9);
+        ctx.beginPath();
+        ctx.moveTo(-3, -22);
+        ctx.lineTo(-3, -33);
+        ctx.stroke();
+        ellipse(ctx, -3, -36, 4, 4);
+        ctx.fillStyle = rgba(color, 0.96);
+        ctx.fill();
+        resetGlow(ctx);
+        ctx.restore();
+        ctx.restore();
+      }
+
+      function limbX(yaw, side, amount) {
+        return side * amount + yaw * 9;
+      }
+
+      function drawArm(ctx, x, y, w, h, swing, color, heavy = false) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(swing);
+        roundedRect(ctx, -w / 2, 0, w, h, heavy ? 7 : 9);
+        ctx.fillStyle = makeGradient(ctx, color, -w / 2, 0, w, h, true);
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.8), 1.3, 9);
+        ctx.stroke();
+        resetGlow(ctx);
+        ctx.restore();
+      }
+
+      function drawLeg(ctx, x, y, w, h, swing, color, heavy = false) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(swing * 0.5);
+        roundedRect(ctx, -w / 2, 0, w, h, heavy ? 5 : 7);
+        ctx.fillStyle = makeGradient(ctx, color, -w / 2, 0, w, h, true);
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.76), 1.2, 8);
+        ctx.stroke();
+        resetGlow(ctx);
+        ctx.restore();
+      }
+
+      function drawMedium(ctx, dir, frame, color, scale = 1) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        const step = [-1, 1, 1, -1][frame];
+        const bob = [0, -3, 0, -2][frame];
+        const yaw = dir.yaw;
+        const sideScale = 1 - Math.abs(yaw) * 0.32;
+        drawShadow(ctx, 56, 33, color);
+        ctx.translate(yaw * 4, bob);
+
+        const armSwing = step * 0.2;
+        drawArm(ctx, limbX(yaw, -1, 28), -3, 10, 38, armSwing, color);
+        drawArm(ctx, limbX(yaw, 1, 28), -3, 10, 38, -armSwing, color);
+        drawLeg(ctx, -10 + yaw * 3, 36, 12, 27, -armSwing, color);
+        drawLeg(ctx, 10 + yaw * 3, 36, 12, 27, armSwing, color);
+
+        ctx.save();
+        ctx.scale(sideScale, 1);
+        roundedRect(ctx, -20, -10, 40, 45, 12);
+        ctx.fillStyle = makeGradient(ctx, color, -20, -10, 40, 45, dir.face === "back");
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.92), 2, 13);
+        ctx.stroke();
+        resetGlow(ctx);
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(yaw * 8, -22);
+        ctx.scale(0.94 - Math.abs(yaw) * 0.16, 1);
+        roundedRect(ctx, -19, -17, 38, 34, 10);
+        ctx.fillStyle = makeGradient(ctx, color, -19, -17, 38, 34, dir.face === "back");
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.94), 2, 13);
+        ctx.stroke();
+        resetGlow(ctx);
+        drawVisor(ctx, dir.face, color, yaw, -16, -14, 32, 25);
+        ctx.restore();
+
+        ctx.save();
+        ctx.scale(sideScale * 0.54, 1);
+        roundedRect(ctx, -11, -10, 22, 11, 4);
+        ctx.fillStyle = rgba(color, 0.8);
+        ctx.fill();
+        resetGlow(ctx);
+        ctx.restore();
+        ctx.restore();
+      }
+
+      function drawLarge(ctx, dir, frame, color, scale = 1) {
+        ctx.save();
+        ctx.scale(scale, scale);
+        const step = [-1, 1, 1, -1][frame];
+        const bob = [0, -2, 0, -1][frame];
+        const yaw = dir.yaw;
+        const sideScale = 1 - Math.abs(yaw) * 0.26;
+        drawShadow(ctx, 72, 43, color);
+        ctx.translate(yaw * 5, bob);
+
+        const armSwing = step * 0.11;
+        drawArm(ctx, limbX(yaw, -1, 34), -7, 15, 56, armSwing, color, true);
+        drawArm(ctx, limbX(yaw, 1, 34), -7, 15, 56, -armSwing, color, true);
+        drawLeg(ctx, -14 + yaw * 3, 44, 18, 36, -armSwing, color, true);
+        drawLeg(ctx, 14 + yaw * 3, 44, 18, 36, armSwing, color, true);
+
+        ctx.save();
+        ctx.scale(sideScale, 1);
+        roundedRect(ctx, -28, -20, 56, 69, 11);
+        ctx.fillStyle = makeGradient(ctx, color, -28, -20, 56, 69, dir.face === "back");
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.9), 2.2, 15);
+        ctx.stroke();
+        resetGlow(ctx);
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.24)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-10, -12);
+        ctx.lineTo(-10, 43);
+        ctx.moveTo(10, -12);
+        ctx.lineTo(10, 43);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(yaw * 8, -31);
+        ctx.scale(0.9 - Math.abs(yaw) * 0.12, 1);
+        roundedRect(ctx, -22, -18, 44, 36, 9);
+        ctx.fillStyle = makeGradient(ctx, color, -22, -18, 44, 36, dir.face === "back");
+        ctx.fill();
+        glowStroke(ctx, rgba(color, 0.94), 2, 14);
+        ctx.stroke();
+        resetGlow(ctx);
+        drawVisor(ctx, dir.face, color, yaw, -17, -14, 34, 26);
+        ctx.restore();
+
+        ctx.save();
+        ctx.scale(sideScale * 0.58, 1);
+        roundedRect(ctx, -13, -20, 26, 14, 4);
+        ctx.fillStyle = rgba(color, 0.82);
+        ctx.fill();
+        resetGlow(ctx);
+        ctx.restore();
+        ctx.restore();
+      }
+
+      function drawAgent(ctx, tier, direction, frame, color, scale = 1) {
+        if (tier === "small") drawSmall(ctx, direction, frame, color, scale);
+        if (tier === "medium") drawMedium(ctx, direction, frame, color, scale);
+        if (tier === "large") drawLarge(ctx, direction, frame, color, scale);
+      }
+
+      function renderSheet(canvas, tier, color) {
+        const ctx = canvas.getContext("2d");
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "rgba(0, 8, 12, 0.42)";
+        ctx.fillRect(0, 0, w, h);
+        const cellW = 112;
+        const cellH = tier === "small" ? 116 : tier === "medium" ? 136 : 152;
+        const left = 104;
+        const top = 72;
+
+        ctx.font = "800 18px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "#eaffff";
+        ctx.fillText("Direction", 20, 36);
+        ctx.font = "800 13px Inter, system-ui, sans-serif";
+        directions.forEach((dir, col) => {
+          ctx.fillStyle = dir.face === "back" ? "rgba(141, 179, 189, 0.78)" : "#eaffff";
+          ctx.textAlign = "center";
+          ctx.fillText(dir.key, left + col * cellW + cellW / 2, 31);
+          ctx.font = "700 11px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(141, 179, 189, 0.88)";
+          ctx.fillText(dir.label, left + col * cellW + cellW / 2, 50);
+          ctx.font = "800 13px Inter, system-ui, sans-serif";
+        });
+
+        for (let frame = 0; frame < 4; frame += 1) {
+          ctx.textAlign = "left";
+          ctx.fillStyle = "rgba(141, 179, 189, 0.9)";
+          ctx.font = "800 13px Inter, system-ui, sans-serif";
+          ctx.fillText(`Frame ${frame + 1}`, 20, top + frame * cellH + cellH / 2 + 5);
+          for (let col = 0; col < directions.length; col += 1) {
+            const x = left + col * cellW;
+            const y = top + frame * cellH;
+            drawGridCell(ctx, x + 6, y + 6, cellW - 12, cellH - 12, color);
+            ctx.save();
+            ctx.translate(x + cellW / 2, y + cellH * 0.62);
+            const scale = tier === "small" ? 1.18 : tier === "medium" ? 1.04 : 0.98;
+            drawAgent(ctx, tier, directions[col], frame, color, scale);
+            ctx.restore();
+          }
+        }
+      }
+
+      function renderStage(time) {
+        const canvas = document.getElementById("stage");
+        const ctx = canvas.getContext("2d");
+        const color = providers[currentProvider];
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "rgba(0, 8, 12, 0.1)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.strokeStyle = "rgba(91, 226, 255, 0.18)";
+        for (let x = 0; x < canvas.width; x += 64) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+        }
+        for (let y = 0; y < canvas.height; y += 64) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(canvas.width, y);
+          ctx.stroke();
+        }
+
+        const frame = Math.floor(time / 160) % 4;
+        const dirIndex = Math.floor(time / 900) % directions.length;
+        const dir = directions[dirIndex];
+        const offset = Math.sin(time / 420) * 20;
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(91, 226, 255, 0.24)";
+        ctx.setLineDash([8, 10]);
+        [410, 790].forEach((y) => {
+          ctx.beginPath();
+          ctx.moveTo(34, y);
+          ctx.lineTo(canvas.width - 34, y);
+          ctx.stroke();
+        });
+        ctx.restore();
+
+        const actors = [
+          { tier: "small", x: 340 + offset * 1.4, y: 240, scale: 2.2, label: "Small Ball Scout", labelGap: 92 },
+          { tier: "medium", x: 340, y: 575 + Math.sin(time / 360) * 8, scale: 1.62, label: "Medium Operator", labelGap: 120 },
+          { tier: "large", x: 340 - offset * 1.1, y: 950, scale: 1.32, label: "Large Heavy", labelGap: 142 }
+        ];
+
+        actors.forEach((actor) => {
+          ctx.save();
+          ctx.translate(actor.x, actor.y);
+          drawAgent(ctx, actor.tier, dir, frame, color, actor.scale);
+          ctx.restore();
+
+          ctx.save();
+          ctx.textAlign = "center";
+          ctx.font = "800 24px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "#eaffff";
+          ctx.fillText(actor.label, actor.x, actor.y + actor.labelGap);
+          ctx.font = "800 18px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(141, 179, 189, 0.9)";
+          ctx.fillText(`${dir.key} / ${dir.label} / Frame ${frame + 1}`, actor.x, actor.y + actor.labelGap + 28);
+          ctx.restore();
+        });
+
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = "900 24px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "#eaffff";
+        ctx.fillText("Shared direction cycle", canvas.width / 2, 74);
+        ctx.font = "800 18px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(141, 179, 189, 0.9)";
+        ctx.fillText("All tiers rotate through the same 8-direction walk frames", canvas.width / 2, 104);
+        ctx.restore();
+      }
+
+      function renderAllSheets() {
+        const color = providers[currentProvider];
+        renderSheet(document.getElementById("smallSheet"), "small", color);
+        renderSheet(document.getElementById("mediumSheet"), "medium", color);
+        renderSheet(document.getElementById("largeSheet"), "large", color);
+      }
+
+      document.querySelectorAll("[data-provider]").forEach((button) => {
+        button.addEventListener("click", () => {
+          currentProvider = button.dataset.provider;
+          document.body.style.setProperty("--provider-color", providerVars[currentProvider]);
+          document.querySelectorAll("[data-provider]").forEach((item) => {
+            item.setAttribute("aria-pressed", String(item === button));
+          });
+          renderAllSheets();
+        });
+      });
+
+      function loop(time) {
+        renderStage(time);
+        requestAnimationFrame(loop);
+      }
+
+      renderAllSheets();
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

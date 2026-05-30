@@ -1,0 +1,1270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentShore Desktop Onboarding And Startup Mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #080d12;
+        --surface: #111922;
+        --surface-2: #172230;
+        --surface-3: #1f2c3a;
+        --ink: #eef5fb;
+        --muted: #aebccc;
+        --faint: #75889b;
+        --line: #2b3a4a;
+        --blue: #64a6ff;
+        --cyan: #42d2d6;
+        --green: #83d86f;
+        --amber: #f3c45b;
+        --red: #f47575;
+        --violet: #a993ff;
+        --shadow: 0 28px 70px rgba(0, 0, 0, 0.38);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(180deg, rgba(100, 166, 255, 0.12), transparent 340px),
+          radial-gradient(circle at 78% 0%, rgba(66, 210, 214, 0.1), transparent 320px),
+          var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .mono,
+      .eyebrow {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .page {
+        width: min(1280px, calc(100vw - 36px));
+        margin: 0 auto;
+        padding: 52px 0 80px;
+      }
+
+      .hero {
+        margin-bottom: 28px;
+      }
+
+      .eyebrow {
+        color: var(--cyan);
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 880px;
+        margin-top: 10px;
+        font-size: clamp(2.05rem, 4.6vw, 4.6rem);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .dek {
+        max-width: 880px;
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 1.03rem;
+      }
+
+      .doc-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 24px;
+      }
+
+      .doc-nav a {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(17, 25, 34, 0.82);
+        color: #d9e8f5;
+        font-size: 0.86rem;
+        text-decoration: none;
+      }
+
+      .section {
+        margin-top: 42px;
+      }
+
+      .section h2,
+      .mock-title h2 {
+        margin-bottom: 16px;
+        font-size: 1.25rem;
+      }
+
+      h3 {
+        margin-bottom: 8px;
+        font-size: 1rem;
+      }
+
+      .principles,
+      .screen-map,
+      .cols-even,
+      .metrics {
+        display: grid;
+        gap: 12px;
+      }
+
+      .principles {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .screen-map {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .cols-even {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .principle,
+      .map-card,
+      .panel,
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(17, 25, 34, 0.82);
+      }
+
+      .principle {
+        border-left: 3px solid var(--blue);
+        padding: 14px 16px;
+      }
+
+      .principle:nth-child(2) {
+        border-left-color: var(--green);
+      }
+
+      .principle:nth-child(3) {
+        border-left-color: var(--amber);
+      }
+
+      .principle span,
+      .map-card span,
+      .small {
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .map-card {
+        min-height: 112px;
+        padding: 16px;
+      }
+
+      .map-card strong,
+      .principle strong {
+        display: block;
+        color: #f6fbff;
+      }
+
+      .map-card span,
+      .principle span {
+        display: block;
+        margin-top: 8px;
+      }
+
+      .branch-note {
+        border: 1px solid rgba(243, 196, 91, 0.42);
+        border-left: 4px solid var(--amber);
+        border-radius: 8px;
+        margin-top: 14px;
+        padding: 14px 15px;
+        background: rgba(243, 196, 91, 0.1);
+        color: #ffe8af;
+      }
+
+      .mock {
+        margin-top: 34px;
+      }
+
+      .mock-title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 10px;
+      }
+
+      .mock-title h2 {
+        margin-bottom: 0;
+      }
+
+      .mock-title span {
+        color: var(--faint);
+        font-size: 0.86rem;
+      }
+
+      .frame {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0d131b;
+        box-shadow: var(--shadow);
+      }
+
+      .window-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 42px;
+        border-bottom: 1px solid var(--line);
+        padding: 0 14px;
+        background: #0f1720;
+      }
+
+      .traffic {
+        display: flex;
+        gap: 7px;
+      }
+
+      .traffic span {
+        width: 11px;
+        height: 11px;
+        border-radius: 999px;
+        background: var(--red);
+      }
+
+      .traffic span:nth-child(2) {
+        background: var(--amber);
+      }
+
+      .traffic span:nth-child(3) {
+        background: var(--green);
+      }
+
+      .window-title {
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 228px 1fr;
+        min-height: 700px;
+      }
+
+      .rail {
+        border-right: 1px solid var(--line);
+        padding: 20px 16px;
+        background: #0f1620;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 28px;
+      }
+
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--blue), var(--cyan));
+        color: #061016;
+        font-weight: 900;
+      }
+
+      .brand strong,
+      .brand span {
+        display: block;
+      }
+
+      .brand span {
+        color: var(--faint);
+        font-size: 0.78rem;
+      }
+
+      .nav {
+        display: grid;
+        gap: 6px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 36px;
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .nav-item.active {
+        background: var(--surface-2);
+        color: #f7fbff;
+      }
+
+      .content {
+        min-width: 0;
+        padding: 28px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 240px),
+          #0d131b;
+      }
+
+      .topline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 22px;
+      }
+
+      .title-group h2 {
+        margin-bottom: 4px;
+        font-size: 1.55rem;
+      }
+
+      .title-group p {
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 13px;
+        background: var(--surface-2);
+        color: #eef5fb;
+        font-size: 0.88rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .button.primary {
+        border-color: rgba(100, 166, 255, 0.5);
+        background: var(--blue);
+        color: #061016;
+      }
+
+      .button.danger {
+        border-color: rgba(244, 117, 117, 0.5);
+        background: rgba(244, 117, 117, 0.16);
+        color: #ffdada;
+      }
+
+      .button.ghost {
+        background: transparent;
+      }
+
+      .button.disabled {
+        border-color: rgba(124, 144, 163, 0.38);
+        background: rgba(124, 144, 163, 0.12);
+        color: #8ea4b8;
+      }
+
+      .cols {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        gap: 18px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        background: var(--surface);
+      }
+
+      .panel-pad {
+        padding: 18px;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      .panel-head h3 {
+        margin-bottom: 0;
+      }
+
+      .path,
+      .field {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0b1118;
+      }
+
+      .path {
+        overflow: hidden;
+        max-width: 420px;
+        padding: 12px 14px;
+        color: #d9e7f4;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .project-list,
+      .timeline,
+      .log-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .project-row,
+      .check-row,
+      .agent-row,
+      .event-row,
+      .effect-row {
+        display: grid;
+        align-items: center;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 13px;
+        background: rgba(23, 34, 48, 0.64);
+      }
+
+      .project-row {
+        grid-template-columns: 1fr auto;
+      }
+
+      .check-row {
+        grid-template-columns: 30px 1fr auto;
+        min-height: 76px;
+      }
+
+      .agent-row {
+        grid-template-columns: 44px 1fr auto;
+      }
+
+      .event-row {
+        grid-template-columns: 82px 1fr;
+      }
+
+      .effect-row {
+        grid-template-columns: 34px 1fr auto;
+      }
+
+      .project-row strong,
+      .check-main strong,
+      .agent-main strong,
+      .event-main strong,
+      .effect-row strong {
+        display: block;
+        color: #f6fbff;
+        font-size: 0.92rem;
+      }
+
+      .project-row span,
+      .check-main span,
+      .agent-main span,
+      .event-main span,
+      .effect-row span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .model-choice {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 7px;
+        padding: 9px 10px;
+        border: 1px solid rgba(136, 168, 187, 0.3);
+        border-radius: 7px;
+        background: rgba(8, 14, 22, 0.38);
+        color: #f6fbff;
+        font-size: 0.86rem;
+      }
+
+      .model-choice span {
+        margin-top: 0;
+        color: #f6fbff;
+        font-size: 0.86rem;
+      }
+
+      .model-choice em {
+        color: var(--faint);
+        font-size: 0.7rem;
+        font-style: normal;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #dce9f6;
+        font-size: 0.75rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .badge.good {
+        border-color: rgba(131, 216, 111, 0.38);
+        background: rgba(131, 216, 111, 0.12);
+        color: #cbf6c0;
+      }
+
+      .badge.warn {
+        border-color: rgba(243, 196, 91, 0.42);
+        background: rgba(243, 196, 91, 0.12);
+        color: #ffe5a6;
+      }
+
+      .badge.bad {
+        border-color: rgba(244, 117, 117, 0.44);
+        background: rgba(244, 117, 117, 0.12);
+        color: #ffd6d6;
+      }
+
+      .badge.info {
+        border-color: rgba(100, 166, 255, 0.42);
+        background: rgba(100, 166, 255, 0.12);
+        color: #d6e9ff;
+      }
+
+      .check-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .status-dot,
+      .step-line,
+      .agent-icon,
+      .square {
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        font-weight: 900;
+      }
+
+      .status-dot,
+      .step-line {
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        background: rgba(131, 216, 111, 0.16);
+        color: #d5f8ca;
+        font-size: 0.76rem;
+      }
+
+      .status-dot.warn,
+      .step.wait .step-line {
+        background: rgba(243, 196, 91, 0.16);
+        color: #ffe5a6;
+      }
+
+      .agent-icon,
+      .square {
+        width: 38px;
+        height: 38px;
+        background: var(--surface-3);
+        color: var(--cyan);
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 30px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .step strong {
+        display: block;
+        color: #f6fbff;
+        font-size: 0.92rem;
+      }
+
+      .step span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .field-row,
+      .segmented {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .field {
+        min-width: 150px;
+        padding: 11px 12px;
+      }
+
+      .field label {
+        display: block;
+        color: var(--faint);
+        font-size: 0.74rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .field strong {
+        display: block;
+        margin-top: 4px;
+        color: #f6fbff;
+        font-size: 0.96rem;
+      }
+
+      .segment {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #0b1118;
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 800;
+      }
+
+      .segment.active {
+        border-color: rgba(100, 166, 255, 0.58);
+        background: rgba(100, 166, 255, 0.18);
+        color: #e9f4ff;
+      }
+
+      .range {
+        height: 10px;
+        border-radius: 999px;
+        background:
+          linear-gradient(90deg, var(--blue) 0 68%, #304052 68% 100%);
+      }
+
+      .metrics {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        padding: 12px;
+      }
+
+      .metric span {
+        display: block;
+        color: var(--faint);
+        font-size: 0.76rem;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 1.14rem;
+      }
+
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: 1fr 280px;
+        gap: 16px;
+        min-height: 420px;
+      }
+
+      .surface-placeholder {
+        display: grid;
+        place-items: center;
+        width: min(760px, 100%);
+        aspect-ratio: 1;
+        margin: 0 auto;
+        border: 1px dashed rgba(174, 188, 204, 0.38);
+        border-radius: 8px;
+        background: rgba(11, 17, 24, 0.42);
+        color: #f6fbff;
+        font-size: clamp(1.6rem, 3.6vw, 3.6rem);
+        font-weight: 900;
+        text-align: center;
+      }
+
+      .office {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          #16202b;
+        background-size: 32px 32px;
+      }
+
+      .room,
+      .avatar {
+        position: absolute;
+      }
+
+      .room {
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 8px;
+        background: rgba(100, 166, 255, 0.08);
+        padding: 10px;
+        color: #dce9f5;
+        font-size: 0.76rem;
+        font-weight: 800;
+      }
+
+      .room.a {
+        left: 28px;
+        top: 30px;
+        width: 190px;
+        height: 118px;
+      }
+
+      .room.b {
+        left: 246px;
+        top: 30px;
+        width: 210px;
+        height: 118px;
+      }
+
+      .room.c {
+        left: 28px;
+        top: 180px;
+        width: 428px;
+        height: 180px;
+      }
+
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: var(--cyan);
+        color: #061016;
+        font-size: 0.76rem;
+        font-weight: 900;
+      }
+
+      .avatar.one {
+        left: 92px;
+        top: 88px;
+      }
+
+      .avatar.two {
+        left: 338px;
+        top: 94px;
+        background: var(--violet);
+      }
+
+      .avatar.three {
+        left: 198px;
+        top: 268px;
+        background: var(--green);
+      }
+
+      .warning,
+      .danger-panel {
+        border-radius: 8px;
+        padding: 14px 15px;
+      }
+
+      .warning {
+        border: 1px solid rgba(243, 196, 91, 0.42);
+        border-left: 4px solid var(--amber);
+        background: rgba(243, 196, 91, 0.1);
+        color: #ffe8af;
+      }
+
+      .danger-panel {
+        border: 1px solid rgba(244, 117, 117, 0.42);
+        border-left: 4px solid var(--red);
+        background: rgba(244, 117, 117, 0.1);
+        color: #ffd9d9;
+      }
+
+      @media (max-width: 980px) {
+        .page {
+          width: min(100vw - 24px, 760px);
+          padding-top: 32px;
+        }
+
+        .screen-map,
+        .principles,
+        .cols,
+        .cols-even,
+        .dashboard-grid,
+        .metrics {
+          grid-template-columns: 1fr;
+        }
+
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .rail {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .topline,
+        .mock-title {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .actions {
+          justify-content: flex-start;
+        }
+
+        .check-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="eyebrow">Desktop onboarding and session startup</div>
+        <h1>Mockups For A No-Shell AgentShore Desktop</h1>
+        <p class="dek">
+          These screens move project selection, readiness, target branch selection, GitHub
+          identities, agent setup, runtime startup, dashboard monitoring, and the End Session
+          Report into the desktop app. The user never needs to invoke the AgentShore CLI directly.
+        </p>
+        <div class="doc-nav">
+          <a href="#map">Screen map</a>
+          <a href="#welcome">Choose Project</a>
+          <a href="#readiness">Readiness</a>
+          <a href="#target-branch">Target Branch</a>
+          <a href="#identities">Identities</a>
+          <a href="#agents">Agents</a>
+          <a href="#agent-config">Agent Config</a>
+          <a href="#start">Start</a>
+          <a href="#progress">Progress</a>
+          <a href="#dashboard">Dashboard</a>
+          <a href="#esr">ESR</a>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="principles">
+          <div class="principle">
+            <strong>Readiness discovers facts</strong>
+            <span>Inspection gathers project state and blocks unsafe targets without presenting setup internals as a step.</span>
+          </div>
+          <div class="principle">
+            <strong>Preparation is an apply phase</strong>
+            <span>After target branch, GitHub logins, and agent runners are known, the app prepares config, skills, and beads state.</span>
+          </div>
+          <div class="principle">
+            <strong>End sessions with ESR</strong>
+            <span>Drain, stop, or natural completion lands on the End Session Report, not a dead-end screen.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="map">
+        <h2>Screen Map</h2>
+        <div class="screen-map">
+          <div class="map-card"><strong>1. Choose Project</strong><span>Select a repository or return to a recent project.</span></div>
+          <div class="map-card"><strong>2. Readiness</strong><span>Inspect target safety, Git, GitHub, existing config, beads, and capabilities.</span></div>
+          <div class="map-card"><strong>3. Target Branch</strong><span>Select the branch AgentShore treats as trunk for QA, cleanup, merges, and new work.</span></div>
+          <div class="map-card"><strong>4. GitHub Identities</strong><span>Choose token-backed GitHub logins and trusted external PR authors.</span></div>
+          <div class="map-card"><strong>5. Agent Runners</strong><span>Enable runners and assign each one a GitHub login from the pool.</span></div>
+          <div class="map-card"><strong>6. Agent Configuration</strong><span>Drill into each runner to choose models for small, medium, and large tiers.</span></div>
+          <div class="map-card"><strong>7. Start Session</strong><span>Choose runtime-only settings: budget, policy mode, scope, seeds, and dashboard behavior.</span></div>
+          <div class="map-card"><strong>8. Starting Progress</strong><span>Show structured startup events while the app prepares and launches AgentShore.</span></div>
+          <div class="map-card"><strong>9. Dashboard</strong><span>Open the live dashboard as the primary running session surface.</span></div>
+          <div class="map-card"><strong>10. End Session Report</strong><span>Drain, stop, or completion opens ESR with report, archive, logs, and restart actions.</span></div>
+        </div>
+        <div class="branch-note">
+          Repair screens are side paths from Readiness, Target Branch, Identities, Agents, Start,
+          or Progress. They return to the originating screen after the missing prerequisite is resolved.
+        </div>
+      </div>
+
+      <div class="mock" id="welcome">
+        <div class="mock-title"><h2>1. Choose Project</h2><span>First launch, no session selected</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">AgentShore Desktop</div><div class="small mono">v0 desktop</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item active">Projects <span>3</span></div><div class="nav-item">Setup <span></span></div><div class="nav-item">Sessions <span></span></div><div class="nav-item">Settings <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>Choose a project</h2><p>AgentShore manages one repository at a time. Recent projects stay one click away.</p></div>
+                <div class="actions"><div class="button ghost">Create sandbox</div><div class="button primary">Open repository</div></div>
+              </div>
+              <div class="cols">
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <div class="panel-head"><h3>Recent projects</h3><span class="small">Sorted by last session</span></div>
+                    <div class="project-list">
+                      <div class="project-row"><div><strong>example-repo</strong><span>/Users/user/example-repo</span></div><span class="badge good">Ready</span></div>
+                      <div class="project-row"><div><strong>sample-project</strong><span>/Users/example/Development/sample-project</span></div><span class="badge info">Known</span></div>
+                      <div class="project-row"><div><strong>web-service</strong><span>/Users/example/Development/web-service</span></div><span class="badge info">Stopped</span></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <h3>What happens next</h3>
+                    <div class="timeline">
+                      <div class="step"><div class="step-line">1</div><div><strong>Inspect repository</strong><span>Read-only project checks run immediately after selection.</span></div></div>
+                      <div class="step wait"><div class="step-line">2</div><div><strong>Configure app-managed setup</strong><span>Target branch, GitHub login, and agent choices drive project preparation later.</span></div></div>
+                      <div class="step wait"><div class="step-line">3</div><div><strong>Start when ready</strong><span>No terminal commands are needed.</span></div></div>
+                    </div>
+                  </div>
+                  <div class="warning">AgentShore source repositories are protected targets. The app blocks real sessions there unless the user chooses an explicit sandbox.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="readiness">
+        <div class="mock-title"><h2>2. Readiness</h2><span>Read-only inspection before setup choices</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - readiness</div><div class="small mono">project.inspect</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item active">Readiness <span>OK</span></div><div class="nav-item">Target <span></span></div><div class="nav-item">Identities <span></span></div><div class="nav-item">Agents <span></span></div><div class="nav-item">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>example-repo readiness</h2><p class="path">/Users/user/example-repo</p></div>
+                <div class="actions"><div class="button ghost">Change project</div><div class="button primary">Continue</div></div>
+              </div>
+              <div class="cols">
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <div class="panel-head"><h3>Project facts</h3><span class="badge info">read-only</span></div>
+                    <div class="check-grid">
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>Git repository</strong><span>Branch main, clean working tree.</span></div><span class="badge good">OK</span></div>
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>GitHub remote</strong><span>example-user/example-repo.</span></div><span class="badge good">OK</span></div>
+                      <div class="check-row"><div class="status-dot warn">i</div><div class="check-main"><strong>Target branch</strong><span>Default branch detected; confirm target next.</span></div><span class="badge info">next</span></div>
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>Protected target</strong><span>Not the AgentShore source repository.</span></div><span class="badge good">OK</span></div>
+                      <div class="check-row"><div class="status-dot warn">i</div><div class="check-main"><strong>Project state</strong><span>Config and beads state will be prepared after setup choices.</span></div><span class="badge info">later</span></div>
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>Local capabilities</strong><span>Git, gh, Codex, Claude, and API key sources detected.</span></div><span class="badge good">OK</span></div>
+                      <div class="check-row"><div class="status-dot warn">i</div><div class="check-main"><strong>Login pool</strong><span>GitHub logins are configured after target branch selection.</span></div><span class="badge info">later</span></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="panel panel-pad"><h3>Next action</h3><p class="small">Continue to target branch. The app will prepare config, skills, and beads state only after branch, login, and agent choices are known.</p></div>
+                  <div class="warning">Readiness is not a setup screen. It only establishes whether this repo can be managed safely.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="target-branch">
+        <div class="mock-title"><h2>3. Target Branch</h2><span>Branch AgentShore treats as trunk</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - target branch</div><div class="small mono">project.branches</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item active">Target <span>main</span></div><div class="nav-item">Identities <span></span></div><div class="nav-item">Agents <span></span></div><div class="nav-item">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>Target branch</h2><p>Choose the branch AgentShore treats as trunk for QA, cleanup, merge, and new work bases.</p></div>
+                <div class="actions"><div class="button ghost">Refresh branches</div><div class="button primary">Continue to logins</div></div>
+              </div>
+              <div class="cols-even">
+                <div class="panel panel-pad">
+                  <div class="panel-head"><h3>Remote branches</h3><span class="badge good">origin synced</span></div>
+                  <div class="stack">
+                    <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>main</strong><span>origin/HEAD and GitHub default branch.</span></div><span class="badge good">selected</span></div>
+                    <div class="check-row"><div class="status-dot warn">i</div><div class="check-main"><strong>release/1.7</strong><span>Available remote branch; not selected for this session.</span></div><span class="badge info">choose</span></div>
+                    <div class="check-row"><div class="status-dot warn">+</div><div class="check-main"><strong>Use another branch</strong><span>Enter a remote branch name and verify it exists before continuing.</span></div><span class="badge info">optional</span></div>
+                  </div>
+                </div>
+                <div class="panel panel-pad">
+                  <div class="panel-head"><h3>Branch policy</h3><span class="badge info">setup input</span></div>
+                  <div class="stack">
+                    <div class="field"><label>Target branch</label><strong>main</strong></div>
+                    <div class="field"><label>New work base</label><strong>origin/main</strong></div>
+                    <div class="field"><label>QA and cleanup</label><strong>target branch</strong></div>
+                    <div class="field"><label>Merge destination</label><strong>GitHub PR base: main</strong></div>
+                  </div>
+                  <div class="warning" style="margin-top: 14px">The desktop app records the target branch during setup. It does not advance or rewrite the branch while preparing the project.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="identities">
+        <div class="mock-title"><h2>4. GitHub Identities</h2><span>GitHub login pool before agent assignment</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - identities</div><div class="small mono">project.identities</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item">Target <span></span></div><div class="nav-item active">Identities <span>2</span></div><div class="nav-item">Agents <span></span></div><div class="nav-item">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>GitHub logins</h2><p>Choose GitHub accounts before assigning logins to agent runners. These are accounts, not roles.</p></div>
+                <div class="actions"><div class="button ghost">Add GitHub login</div><div class="button primary">Continue to agents</div></div>
+              </div>
+              <div class="cols-even">
+                <div class="panel panel-pad">
+                  <div class="panel-head"><h3>Token-backed GitHub logins</h3><span class="badge good">repo verified</span></div>
+                  <div class="stack">
+                    <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>@example-user-bot</strong><span>Token source: macOS Keychain. Scope: repo, issues, pull requests.</span></div><span class="badge good">OK</span></div>
+                    <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>@claude-worker-bot</strong><span>Token source: environment variable. Scope: repo, issues, pull requests.</span></div><span class="badge good">OK</span></div>
+                    <div class="check-row"><div class="status-dot warn">+</div><div class="check-main"><strong>Add GitHub login</strong><span>Bind another account before agent assignment if needed.</span></div><span class="badge info">optional</span></div>
+                  </div>
+                </div>
+                <div class="panel panel-pad">
+                  <div class="panel-head"><h3>Trusted PR author logins</h3><span class="badge info">PR ownership</span></div>
+                  <div class="stack">
+                    <div class="project-row"><div><strong>@wes</strong><span>Human maintainer; PRs can be tracked and reviewed.</span></div><span class="badge good">trusted</span></div>
+                    <div class="project-row"><div><strong>@release-bot</strong><span>Automation account allowed as external PR author.</span></div><span class="badge good">trusted</span></div>
+                  </div>
+                  <div class="warning" style="margin-top: 14px">Runner assignment happens on the next screen. This screen only defines usable GitHub logins and token sources.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="agents">
+        <div class="mock-title"><h2>5. Agent Runners</h2><span>Assign GitHub logins, then drill into runner configuration</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - agents</div><div class="small mono">project.agents</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item">Target <span></span></div><div class="nav-item">Identities <span></span></div><div class="nav-item active">Agents <span>3</span></div><div class="nav-item">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>Agent runners</h2><p>Enable runners, assign GitHub logins, and configure tiers and models.</p></div>
+                <div class="actions"><div class="button ghost">Detect again</div><div class="button primary">Continue</div></div>
+              </div>
+              <div class="stack">
+                <div class="agent-row"><div class="agent-icon">C</div><div class="agent-main"><strong>Codex CLI</strong><span>Enabled. GitHub: @example-user-bot. Small, medium, and large tiers use recommended defaults.</span></div><div class="button">Configure</div></div>
+                <div class="agent-row"><div class="agent-icon">A</div><div class="agent-main"><strong>Claude Code</strong><span>Enabled. GitHub: @claude-worker-bot. Small, medium, and large tiers use recommended defaults.</span></div><div class="button">Configure</div></div>
+                <div class="agent-row"><div class="agent-icon">G</div><div class="agent-main"><strong>GPT API agent</strong><span>Enabled. GitHub: @example-user-bot. Used for planning and review fallback.</span></div><div class="button">Configure</div></div>
+                <div class="agent-row"><div class="agent-icon">M</div><div class="agent-main"><strong>Gemini CLI</strong><span>Disabled. Binary not found on this machine.</span></div><div class="button ghost">Enable</div></div>
+              </div>
+              <div class="warning" style="margin-top: 16px">Saving agent choices triggers the app-managed preparation phase: config merge, skill install/update, login binding, beads setup, and readiness refresh.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="agent-config">
+        <div class="mock-title"><h2>6. Agent Configuration Detail</h2><span>Small, medium, and large model choices</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - configure Codex CLI</div><div class="small mono">agent.configure</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item">Target <span></span></div><div class="nav-item">Identities <span></span></div><div class="nav-item active">Agents <span>Codex CLI</span></div><div class="nav-item">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>Configure Codex CLI</h2><p>Select one available model for each tier. Recommended defaults are preselected but not enforced.</p></div>
+                <div class="actions"><div class="button ghost">Back to agents</div><div class="button primary">Save runner</div></div>
+              </div>
+              <div class="cols">
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <div class="panel-head"><h3>Tier model map</h3><span class="badge good">defaults selected</span></div>
+                    <div class="stack">
+                      <div class="effect-row"><div class="square">S</div><div><strong>Small tier</strong><div class="model-choice"><span>gpt-5.4-mini</span><em>default</em></div></div><span class="badge info">change</span></div>
+                      <div class="effect-row"><div class="square">M</div><div><strong>Medium tier</strong><div class="model-choice"><span>gpt-5.3-codex</span><em>default</em></div></div><span class="badge info">change</span></div>
+                      <div class="effect-row"><div class="square">L</div><div><strong>Large tier</strong><div class="model-choice"><span>gpt-5.5</span><em>default</em></div></div><span class="badge info">change</span></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <h3>Available model selection</h3>
+                    <div class="stack">
+                      <div class="field"><label>GitHub login</label><strong>@example-user-bot</strong></div>
+                      <div class="field"><label>Model source</label><strong>Codex available models</strong></div>
+                      <div class="field"><label>Selectable models</label><strong>Any available model</strong></div>
+                      <div class="field"><label>Defaults</label><strong>Recommendations only</strong></div>
+                    </div>
+                  </div>
+                  <div class="warning">This detail screen is opened from Agent Runners. Saving returns to the runner list; it does not start a session.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="start">
+        <div class="mock-title"><h2>7. Start Session</h2><span>Runtime choices only</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - start</div><div class="small mono">session.start</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item">Target <span></span></div><div class="nav-item">Identities <span></span></div><div class="nav-item">Agents <span></span></div><div class="nav-item active">Start <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline">
+                <div class="title-group"><h2>Start a supervised session</h2><p class="path">/Users/user/example-repo</p></div>
+                <div class="actions"><div class="button ghost">Save preset</div><div class="button primary disabled">Start session</div></div>
+              </div>
+              <div class="cols">
+                <div class="stack">
+                  <div class="panel panel-pad"><h3>Policy mode</h3><div class="segmented"><div class="segment active">Learning</div><div class="segment">Audit replay</div></div></div>
+                  <div class="panel panel-pad"><div class="panel-head"><h3>Budget</h3><strong>$40.00</strong></div><div class="range"></div><div class="field-row" style="margin-top: 14px"><div class="field"><label>Minimum</label><strong>$20</strong></div><div class="field"><label>Current</label><strong>$40</strong></div><div class="field"><label>Stop rule</label><strong>Drain to ESR</strong></div></div></div>
+                  <div class="panel panel-pad"><h3>Enabled agents</h3><div class="field-row"><span class="badge good">Codex small</span><span class="badge good">Codex medium</span><span class="badge good">Claude medium</span><span class="badge info">GPT fallback</span></div></div>
+                </div>
+                <div class="stack">
+                  <div class="panel panel-pad">
+                    <h3>Session options</h3>
+                    <div class="stack">
+                      <div class="field"><label>Startup action</label><strong>Seed project, then pick ready work</strong></div>
+                      <div class="field"><label>Seed file</label><strong>/Users/user/example-repo/.agentshore/seed.md</strong></div>
+                      <div class="field"><label>Target branch</label><strong>main</strong></div>
+                      <div class="field"><label>Scope mode</label><strong>Standard logging</strong></div>
+                      <div class="field"><label>Dashboard</label><strong>Open after first state</strong></div>
+                      <div class="field"><label>Preparation</label><strong>Apply setup before launch</strong></div>
+                    </div>
+                  </div>
+                  <div class="panel panel-pad">
+                    <div class="panel-head"><h3>Start gate</h3><span class="badge warn">1 required</span></div>
+                    <div class="stack">
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>Target branch selected</strong><span><code>main</code> is selected for this session.</span></div><span class="badge good">ready</span></div>
+                      <div class="check-row"><div class="status-dot">OK</div><div class="check-main"><strong>Enabled agent runners</strong><span>3 runners enabled (minimum 2).</span></div><span class="badge good">ready</span></div>
+                      <div class="check-row"><div class="status-dot warn">i</div><div class="check-main"><strong>Distinct GitHub identities</strong><span>1 assigned; assign at least 2 distinct logins across enabled runners.</span></div><span class="badge warn">blocked</span></div>
+                    </div>
+                  </div>
+                  <div class="warning">The Start button first applies the setup choices behind the scenes, then launches the AgentShore session.</div>
+                  <div class="warning">Seed file appears only when startup action is set to <strong>Seed project</strong>.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="progress">
+        <div class="mock-title"><h2>8. Starting Progress</h2><span>Structured events instead of process text</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - starting</div><div class="small mono">session.events</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Readiness <span></span></div><div class="nav-item">Setup <span>OK</span></div><div class="nav-item active">Starting <span>6/8</span></div><div class="nav-item">Dashboard <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="topline"><div class="title-group"><h2>Starting AgentShore</h2><p>Applying setup choices, launching the session, and preparing the dashboard.</p></div><div class="actions"><div class="button danger">Cancel startup</div></div></div>
+              <div class="cols">
+                <div class="panel panel-pad">
+                  <h3>Startup checklist</h3>
+                  <div class="timeline">
+                    <div class="step"><div class="step-line">OK</div><div><strong>Config merged</strong><span>agentshore.yaml updated from target branch, GitHub login, and agent choices.</span></div></div>
+                    <div class="step"><div class="step-line">OK</div><div><strong>Skills installed</strong><span>Project skill templates are current.</span></div></div>
+                    <div class="step"><div class="step-line">OK</div><div><strong>Beads ready</strong><span>Project graph is available and healthy.</span></div></div>
+                    <div class="step"><div class="step-line">OK</div><div><strong>IPC endpoint bound</strong><span>TCP loopback endpoint reserved.</span></div></div>
+                    <div class="step"><div class="step-line">5</div><div><strong>Dashboard bridge starting</strong><span>Waiting for WebSocket readiness.</span></div></div>
+                    <div class="step wait"><div class="step-line">6</div><div><strong>First state snapshot</strong><span>Dashboard opens next.</span></div></div>
+                  </div>
+                </div>
+                <div class="panel panel-pad">
+                  <h3>Event stream</h3>
+                  <div class="log-list">
+                    <div class="event-row"><span class="badge good">07:42:11</span><div class="event-main"><strong>setup.applied</strong><span>Config, target branch, skills, GitHub logins, and beads prepared.</span></div></div>
+                    <div class="event-row"><span class="badge good">07:42:12</span><div class="event-main"><strong>session.launching</strong><span>AgentShore started in agent IPC mode.</span></div></div>
+                    <div class="event-row"><span class="badge info">07:42:13</span><div class="event-main"><strong>ipc.bound</strong><span>TCP loopback endpoint reserved.</span></div></div>
+                    <div class="event-row"><span class="badge warn">07:42:14</span><div class="event-main"><strong>dashboard.waiting</strong><span>Dashboard bridge is warming up.</span></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="dashboard">
+        <div class="mock-title"><h2>9. Dashboard</h2><span>Destination after startup readiness</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - dashboard</div><div class="small mono">session.ready</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item active">Dashboard <span>live</span></div><div class="nav-item">Issues <span>37</span></div><div class="nav-item">Agents <span>4</span></div><div class="nav-item">Logs <span></span></div><div class="nav-item">ESR <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="surface-placeholder">current dashboard</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock" id="esr">
+        <div class="mock-title"><h2>10. End Session Report</h2><span>Drain, stop, or completion destination</span></div>
+        <div class="frame">
+          <div class="window-bar"><div class="traffic"><span></span><span></span><span></span></div><div class="window-title">example-repo - End Session Report</div><div class="small mono">session.esr</div></div>
+          <div class="app">
+            <div class="rail">
+              <div class="brand"><div class="brand-mark">F</div><div><strong>AgentShore</strong><span>Desktop</span></div></div>
+              <div class="nav"><div class="nav-item">Dashboard <span></span></div><div class="nav-item active">ESR <span>ready</span></div><div class="nav-item">Archive <span></span></div><div class="nav-item">Projects <span></span></div></div>
+            </div>
+            <div class="content">
+              <div class="surface-placeholder">current ESR</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

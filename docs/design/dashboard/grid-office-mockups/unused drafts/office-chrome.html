@@ -1,0 +1,1185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Office Chrome Mockup</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        color-scheme: dark;
+        --color-fm-bg: #0a0c10;
+        --color-fm-text: #e0e4ec;
+        --color-fm-text-dim: rgba(255, 255, 255, 0.35);
+        --color-fm-panel: rgba(15, 18, 24, 0.92);
+        --color-fm-idle: #3d8bff;
+        --color-fm-busy: #f0a030;
+        --color-fm-hot: #ff4040;
+        --color-fm-off: #596171;
+        --color-fm-ok: #3dc878;
+        --color-fm-mute: #9aa0a6;
+        --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        --fm-backdrop:
+          radial-gradient(circle at 50% 48%, rgba(240, 160, 48, 0.08), transparent 20%),
+          radial-gradient(circle at 22% 35%, rgba(61, 139, 255, 0.06), transparent 18%),
+          radial-gradient(circle at 67% 62%, rgba(255, 64, 64, 0.07), transparent 15%),
+          linear-gradient(180deg, rgba(7, 9, 13, 0.95), #0a0c10);
+        --fm-shell: rgba(7, 9, 13, 0.95);
+        --fm-bar: rgba(255, 255, 255, 0.04);
+        --fm-panel: var(--color-fm-panel);
+        --fm-card: rgba(255, 255, 255, 0.045);
+        --fm-border: rgba(255, 255, 255, 0.08);
+        --fm-border-subtle: rgba(255, 255, 255, 0.06);
+        --fm-hover: rgba(255, 255, 255, 0.05);
+        --fm-selected: rgba(61, 200, 120, 0.13);
+        --fm-selected-border: rgba(61, 200, 120, 0.36);
+        --fm-track: rgba(255, 255, 255, 0.12);
+        --fm-text-strong: rgba(255, 255, 255, 0.94);
+        --fm-text-label: rgba(255, 255, 255, 0.76);
+        --fm-text-body: rgba(255, 255, 255, 0.56);
+        --fm-text-muted: rgba(255, 255, 255, 0.42);
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--fm-backdrop);
+        color: var(--color-fm-text);
+        font-family: var(--font-sans);
+      }
+
+      canvas {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #hud {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        pointer-events: none;
+      }
+
+      #hud > * {
+        pointer-events: auto;
+      }
+
+      #top-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        padding: 6px 8px;
+        flex-shrink: 0;
+        overflow: hidden;
+        background: var(--fm-shell);
+        border-bottom: 1px solid var(--fm-border);
+        color: var(--fm-text-label);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+      }
+
+      .top-bar-left,
+      .top-controls {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .top-bar-left {
+        flex: 1 1 0;
+      }
+
+      .top-controls {
+        flex: 1 1 0;
+        justify-content: flex-end;
+        overflow: hidden;
+      }
+
+      .hud-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        min-height: 24px;
+        padding: 3px 8px;
+        border: 1px solid var(--fm-border-subtle);
+        background: var(--fm-bar);
+        color: var(--fm-text-body);
+        white-space: nowrap;
+      }
+
+      .session-state {
+        color: var(--fm-text-strong);
+      }
+
+      .state-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--color-fm-ok);
+        box-shadow: 0 0 12px var(--color-fm-ok);
+      }
+
+      #stage-tabs {
+        display: flex;
+        flex: 0 0 auto;
+      }
+
+      .stage-tab {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1px;
+        padding: 4px 16px;
+        border: 0;
+        border-left: 1px solid var(--fm-border-subtle);
+        background: transparent;
+        color: var(--fm-text-muted);
+        cursor: pointer;
+        font-family: var(--font-mono);
+        line-height: 1.05;
+      }
+
+      .stage-tab:last-child {
+        border-right: 1px solid var(--fm-border-subtle);
+      }
+
+      .stage-tab:hover {
+        background: var(--fm-hover);
+        color: var(--fm-text-label);
+      }
+
+      .stage-tab-label {
+        color: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .stage-tab-sub {
+        color: var(--fm-text-muted);
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        text-transform: lowercase;
+      }
+
+      .stage-tab.active {
+        background: var(--fm-selected);
+        color: var(--fm-text-strong);
+        box-shadow: inset 0 -2px 0 var(--color-fm-busy);
+      }
+
+      .theme-toggle {
+        display: inline-flex;
+        border: 1px solid var(--fm-border);
+        background: var(--fm-bar);
+      }
+
+      .theme-toggle-btn {
+        height: 22px;
+        padding: 0 7px;
+        border: 0;
+        border-right: 1px solid var(--fm-border-subtle);
+        background: transparent;
+        color: var(--fm-text-muted);
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: 10px;
+      }
+
+      .theme-toggle-btn:last-child {
+        border-right: 0;
+      }
+
+      .theme-toggle-btn[aria-pressed="true"] {
+        background: var(--fm-selected);
+        color: var(--fm-text-strong);
+      }
+
+      #main-area {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        pointer-events: none;
+      }
+
+      #main-area > * {
+        pointer-events: auto;
+      }
+
+      #kanban-stage,
+      #stats-stage {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        display: none;
+        overflow: hidden;
+        background: var(--color-fm-bg);
+        padding: 52px 264px 132px 360px;
+      }
+
+      body.kanban-active #kanban-stage,
+      body.stats-active #stats-stage {
+        display: block;
+      }
+
+      body.kanban-active canvas,
+      body.stats-active canvas {
+        display: none;
+      }
+
+      .tab-surface {
+        height: 100%;
+        overflow: auto;
+        border-top: 1px solid var(--fm-border-subtle);
+        color: var(--fm-text-body);
+        font-family: var(--font-mono);
+      }
+
+      .tab-heading {
+        margin-bottom: 14px;
+        color: var(--color-fm-text-dim);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .kanban-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(170px, 1fr));
+        gap: 10px;
+      }
+
+      .kanban-col,
+      .stats-card,
+      .event-card,
+      .agent-item {
+        border: 1px solid var(--fm-border-subtle);
+        background: var(--fm-card);
+      }
+
+      .kanban-col {
+        min-height: 280px;
+        padding: 10px;
+      }
+
+      .kanban-col h3,
+      .stats-card h3 {
+        margin-bottom: 10px;
+        color: var(--fm-text-label);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .issue-item {
+        margin-top: 8px;
+        padding: 8px;
+        border: 1px solid var(--fm-border-subtle);
+        color: var(--fm-text-body);
+        font-size: 11px;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(160px, 1fr));
+        gap: 10px;
+      }
+
+      .stats-card {
+        padding: 12px;
+      }
+
+      .stats-value {
+        color: var(--fm-text-strong);
+        font-size: 26px;
+        line-height: 1;
+      }
+
+      #left-rail {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        display: flex;
+        align-items: flex-start;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        pointer-events: none;
+      }
+
+      #left-panel {
+        width: min(340px, calc(100vw - 48px));
+        max-height: min(70vh, 560px);
+        overflow-y: auto;
+        border-right: 1px solid var(--fm-border);
+        border-bottom: 1px solid var(--fm-border);
+        background: var(--fm-panel);
+        pointer-events: auto;
+      }
+
+      .drawer-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 8px;
+      }
+
+      .drawer-filters button {
+        padding: 3px 6px;
+        border: 1px solid var(--fm-border-subtle);
+        background: var(--fm-bar);
+        color: var(--fm-text-body);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 10px;
+      }
+
+      .drawer-filters button.selected {
+        border-color: var(--color-fm-ok);
+        color: var(--fm-text-strong);
+      }
+
+      .event-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(90px, 0.72fr);
+        gap: 5px 8px;
+        margin-bottom: 6px;
+        padding: 7px;
+        color: var(--fm-text-body);
+      }
+
+      .event-card.failed {
+        border-color: var(--color-fm-hot);
+      }
+
+      .event-card.completed {
+        border-color: var(--color-fm-ok);
+      }
+
+      .event-field-label {
+        display: block;
+        color: var(--color-fm-text-dim);
+        font-size: 9px;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+      }
+
+      .event-field-value {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .event-result.running {
+        color: var(--color-fm-busy);
+      }
+
+      .event-result.completed {
+        color: var(--color-fm-ok);
+      }
+
+      .event-result.failed {
+        color: var(--color-fm-hot);
+      }
+
+      #side-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 240px;
+        border-left: 1px solid var(--fm-border);
+        background: var(--fm-panel);
+        color: var(--fm-text-body);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+
+      .side-panel-content {
+        height: 100%;
+        overflow-y: auto;
+        padding: 8px;
+      }
+
+      .side-section-title {
+        margin-bottom: 7px;
+        color: var(--color-fm-text-dim);
+        font-size: 10px;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+
+      .side-section {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid var(--fm-border-subtle);
+      }
+
+      .agent-item {
+        display: block;
+        width: 100%;
+        padding: 7px 6px;
+        border-color: transparent;
+        border-bottom-color: var(--fm-border-subtle);
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: inherit;
+        text-align: left;
+      }
+
+      .agent-item.selected {
+        border-color: var(--fm-selected-border);
+        background: var(--fm-selected);
+      }
+
+      .agent-heading {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .agent-status {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+      }
+
+      .agent-status.idle {
+        background: var(--color-fm-idle);
+      }
+
+      .agent-status.busy {
+        background: var(--color-fm-busy);
+      }
+
+      .agent-status.error {
+        background: var(--color-fm-hot);
+      }
+
+      .agent-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .agent-type,
+      .agent-cost,
+      .agent-detail-row span {
+        color: var(--color-fm-text-dim);
+      }
+
+      .agent-type {
+        justify-self: end;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .agent-cost {
+        margin-top: 1px;
+        font-size: 10px;
+      }
+
+      .agent-detail-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 5px 0;
+      }
+
+      .agent-detail-row strong {
+        color: var(--color-fm-text);
+        font-weight: normal;
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+
+      #bottom-bar {
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        border-top: 1px solid var(--fm-border);
+        background: var(--fm-shell);
+        color: var(--fm-text-body);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+
+      #plays-panel {
+        border-bottom: 1px solid var(--fm-border-subtle);
+      }
+
+      .pp-titlebar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 32px;
+        padding: 5px 10px;
+      }
+
+      .pp-title-main {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--fm-text-label);
+        font-weight: 700;
+        letter-spacing: 0.1em;
+      }
+
+      .pp-collapse-btn {
+        width: 20px;
+        height: 20px;
+        border: 1px solid var(--fm-border-subtle);
+        background: var(--fm-bar);
+        color: var(--fm-text-body);
+      }
+
+      .budget-bar {
+        flex: 0 1 220px;
+        width: clamp(168px, 18vw, 240px);
+        text-transform: none;
+      }
+
+      .budget-track {
+        width: 72px;
+        height: 6px;
+        overflow: hidden;
+        background: var(--fm-track);
+      }
+
+      .budget-fill {
+        height: 100%;
+        background: var(--color-fm-ok);
+      }
+
+      .pp-totals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-left: auto;
+      }
+
+      .pp-totals-chip {
+        padding: 2px 6px;
+        border: 1px solid var(--fm-border-subtle);
+        color: var(--fm-text-muted);
+      }
+
+      .pp-flat {
+        display: grid;
+        grid-template-columns: repeat(10, minmax(70px, 1fr));
+        gap: 4px;
+        padding: 0 10px 8px;
+      }
+
+      .pp-card {
+        min-height: 30px;
+        padding: 5px 6px;
+        border: 1px solid var(--fm-border-subtle);
+        background: var(--fm-card);
+        color: var(--fm-text-body);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .pp-card.active {
+        border-color: rgba(240, 160, 48, 0.45);
+        color: var(--fm-text-strong);
+      }
+
+      #play-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 28px;
+        overflow: hidden;
+        padding: 5px 10px;
+        white-space: nowrap;
+      }
+
+      #play-bar .play-label {
+        color: var(--color-fm-ok);
+        font-weight: bold;
+      }
+
+      #play-bar .play-agent,
+      #play-bar .play-elapsed {
+        color: var(--fm-text-body);
+      }
+
+      @media (max-width: 900px) {
+        #stage-tabs,
+        #left-panel,
+        #side-panel {
+          display: none;
+        }
+
+        #kanban-stage,
+        #stats-stage {
+          padding: 46px 12px 126px;
+        }
+
+        .pp-flat {
+          grid-template-columns: repeat(4, minmax(70px, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="office"></canvas>
+
+    <div id="kanban-stage">
+      <div class="tab-surface">
+        <div class="tab-heading">Kanban / issues</div>
+        <div class="kanban-grid">
+          <section class="kanban-col">
+            <h3>Ready</h3>
+            <div class="issue-item">#184 Preserve dashboard chrome during Grid skin</div>
+            <div class="issue-item">#185 Add renderer palette toggle</div>
+          </section>
+          <section class="kanban-col">
+            <h3>In progress</h3>
+            <div class="issue-item">#172 Improve office route visibility</div>
+          </section>
+          <section class="kanban-col">
+            <h3>Reviewing</h3>
+            <div class="issue-item">#169 Tighten dashboard stage insets</div>
+          </section>
+          <section class="kanban-col">
+            <h3>Done</h3>
+            <div class="issue-item">#161 Agent trail handoff markers</div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="stats-stage">
+      <div class="tab-surface">
+        <div class="tab-heading">Stats / metrics</div>
+        <div class="stats-grid">
+          <section class="stats-card"><h3>Alignment</h3><div class="stats-value">91%</div></section>
+          <section class="stats-card"><h3>Plays</h3><div class="stats-value">428</div></section>
+          <section class="stats-card"><h3>QA</h3><div class="stats-value">9 ok / 3 failed</div></section>
+        </div>
+      </div>
+    </div>
+
+    <div id="hud">
+      <div id="top-bar">
+        <div class="top-bar-left">
+          <div class="hud-chip session-state">
+            <span class="state-dot"></span>
+            <span>RUNNING</span>
+          </div>
+          <span class="hud-chip">Plays: 428 · Policy: learning · Issues: 47/18</span>
+        </div>
+        <div id="stage-tabs" role="tablist" aria-label="Stage view">
+          <button class="stage-tab active" data-mode="office" type="button">
+            <span class="stage-tab-label">Office</span>
+            <span class="stage-tab-sub">floorplan</span>
+          </button>
+          <button class="stage-tab" data-mode="kanban" type="button">
+            <span class="stage-tab-label">Kanban</span>
+            <span class="stage-tab-sub">issues</span>
+          </button>
+          <button class="stage-tab" data-mode="stats" type="button">
+            <span class="stage-tab-label">Stats</span>
+            <span class="stage-tab-sub">metrics</span>
+          </button>
+        </div>
+        <div class="top-controls">
+          <div class="theme-toggle" role="group" aria-label="Theme">
+            <button type="button" class="theme-toggle-btn">Auto</button>
+            <button type="button" class="theme-toggle-btn">Light</button>
+            <button type="button" class="theme-toggle-btn" aria-pressed="true">Dark</button>
+          </div>
+          <span class="hud-chip">connected</span>
+        </div>
+      </div>
+
+      <div id="main-area">
+        <div id="left-rail">
+          <div id="left-panel">
+            <div style="padding: 8px">
+              <div class="drawer-filters">
+                <button class="selected" type="button">All</button>
+                <button type="button">Running</button>
+                <button type="button">Done</button>
+                <button type="button">Failed</button>
+              </div>
+              <div class="event-card">
+                <div><span class="event-field-label">Name</span><span class="event-field-value">Codex: Test Runner</span></div>
+                <div><span class="event-field-label">Type</span><span class="event-field-value">Large Codex</span></div>
+                <div><span class="event-field-label">Play</span><span class="event-field-value">Run QA 112</span></div>
+                <div><span class="event-field-label">Status/Result</span><span class="event-field-value event-result running">Running</span></div>
+              </div>
+              <div class="event-card completed">
+                <div><span class="event-field-label">Name</span><span class="event-field-value">Claude: Reviewer</span></div>
+                <div><span class="event-field-label">Type</span><span class="event-field-value">Review</span></div>
+                <div><span class="event-field-label">Play</span><span class="event-field-value">Code Review 108</span></div>
+                <div><span class="event-field-label">Status/Result</span><span class="event-field-value event-result completed">Completed</span></div>
+              </div>
+              <div class="event-card failed">
+                <div><span class="event-field-label">Name</span><span class="event-field-value">Gemini: Triage</span></div>
+                <div><span class="event-field-label">Type</span><span class="event-field-value">Small Gemini</span></div>
+                <div><span class="event-field-label">Play</span><span class="event-field-value">Issue Pickup 104</span></div>
+                <div><span class="event-field-label">Status/Result</span><span class="event-field-value event-result failed">Failed</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="side-panel">
+          <div class="side-panel-content">
+            <div class="side-section-title">Agents</div>
+            <button class="agent-item selected" type="button">
+              <div class="agent-heading">
+                <span class="agent-status busy"></span>
+                <span class="agent-name">Agent 1</span>
+                <span class="agent-type">Codex</span>
+              </div>
+              <div class="agent-cost">Issue Pickup 101 · 42 plays · 39✓ 3✗ | $8.24</div>
+            </button>
+            <button class="agent-item" type="button">
+              <div class="agent-heading">
+                <span class="agent-status idle"></span>
+                <span class="agent-name">Agent 8</span>
+                <span class="agent-type">Claude</span>
+              </div>
+              <div class="agent-cost">22 plays · 22✓ 0✗ | $5.11</div>
+            </button>
+            <button class="agent-item" type="button">
+              <div class="agent-heading">
+                <span class="agent-status error"></span>
+                <span class="agent-name">Agent 12</span>
+                <span class="agent-type">GPT</span>
+              </div>
+              <div class="agent-cost">Run QA 112 · 16 plays · 12✓ 4✗ | $2.76</div>
+            </button>
+
+            <div class="side-section">
+              <div class="agent-detail-row"><span>Status</span><strong>busy</strong></div>
+              <div class="agent-detail-row"><span>Current play</span><strong>Issue Pickup</strong></div>
+              <div class="agent-detail-row"><span>Target</span><strong>Issue #101</strong></div>
+              <div class="agent-detail-row"><span>Tokens</span><strong>184,221</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="bottom-bar">
+        <div id="plays-panel">
+          <div class="pp-titlebar">
+            <div class="pp-title-main">
+              <button class="pp-collapse-btn" type="button">v</button>
+              <span>PLAYS</span>
+            </div>
+            <div class="hud-chip budget-bar">
+              <span>$18.21 / $40.00</span>
+              <div class="budget-track"><div class="budget-fill" style="width: 45%"></div></div>
+            </div>
+            <span class="pp-totals">
+              <span class="pp-totals-chip">2 ACTIVE</span>
+              <span class="pp-totals-chip">11 READY</span>
+              <span class="pp-totals-chip">7 MASKED</span>
+              <span class="pp-totals-chip">20 TOTAL</span>
+            </span>
+          </div>
+          <div class="pp-flat">
+            <div class="pp-card active">Issue Pickup</div>
+            <div class="pp-card">Code Review</div>
+            <div class="pp-card">Run QA</div>
+            <div class="pp-card">Merge PR</div>
+            <div class="pp-card">Seed Project</div>
+            <div class="pp-card">Intake</div>
+            <div class="pp-card">Cleanup</div>
+            <div class="pp-card">Debug</div>
+            <div class="pp-card">Recluster</div>
+            <div class="pp-card">Reserved</div>
+          </div>
+        </div>
+        <div id="play-bar">
+          <span class="play-label">Issue Pickup</span>
+          <span class="play-agent">Agent 1 · gh-184 · branch codex/grid-office-skin</span>
+          <span class="play-elapsed">04:12</span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("office");
+      const ctx = canvas.getContext("2d");
+      const MAP_COLS = 75;
+      const MAP_ROWS = 56;
+      const zones = [
+        { name: "WAR ROOM", x: 5, y: 6, w: 15, h: 15, tone: "#00eaff" },
+        { name: "WORKSHOP", x: 20, y: 6, w: 34, h: 35, tone: "#1a7dff" },
+        { name: "BOARDROOM", x: 54, y: 6, w: 15, h: 15, tone: "#ffb84a" },
+        { name: "EDITOR", x: 5, y: 21, w: 15, h: 15, tone: "#c271ff" },
+        { name: "GATE", x: 54, y: 21, w: 15, h: 15, tone: "#00ffb3" },
+        { name: "LAUNCH", x: 5, y: 37, w: 15, h: 15, tone: "#ff4d6d" },
+        { name: "QUIET ZONE", x: 20, y: 41, w: 34, h: 11, tone: "#91ff70" },
+        { name: "SCIENCE", x: 54, y: 37, w: 15, h: 15, tone: "#72d7ff" },
+      ];
+      const furniture = [
+        { x: 10, y: 10, w: 7, h: 4, z: 2.4, color: "#00eaff" },
+        { x: 5, y: 10, w: 3, h: 3, z: 3, color: "#4dfcff" },
+        { x: 23, y: 16, w: 8, h: 5, z: 2.5, color: "#1a7dff" },
+        { x: 45, y: 12, w: 5, h: 9, z: 4.6, color: "#00eaff" },
+        { x: 23, y: 33, w: 8, h: 5, z: 2.5, color: "#1a7dff" },
+        { x: 42, y: 33, w: 9, h: 5, z: 2.5, color: "#1a7dff" },
+        { x: 23, y: 22, w: 3, h: 6, z: 3, color: "#00eaff" },
+        { x: 46, y: 24, w: 5, h: 3, z: 2.2, color: "#ffb84a" },
+        { x: 51, y: 22, w: 2, h: 5, z: 4.8, color: "#72d7ff" },
+        { x: 58, y: 10, w: 8, h: 4, z: 2.3, color: "#ffb84a" },
+        { x: 5, y: 21, w: 15, h: 2, z: 5.7, color: "#c271ff" },
+        { x: 10, y: 27, w: 6, h: 4, z: 2.3, color: "#c271ff" },
+        { x: 58, y: 24, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { x: 58, y: 27, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { x: 58, y: 30, w: 4, h: 1, z: 3.1, color: "#00ffb3" },
+        { x: 5, y: 37, w: 4, h: 15, z: 3.2, color: "#ff4d6d" },
+        { x: 25, y: 47, w: 8, h: 3, z: 0.45, color: "#91ff70" },
+        { x: 41, y: 49, w: 8, h: 2, z: 1.2, color: "#91ff70" },
+        { x: 40, y: 44, w: 4, h: 3, z: 1.5, color: "#dffcff" },
+        { x: 21, y: 41, w: 3, h: 3, z: 4.3, color: "#91ff70" },
+        { x: 49, y: 41, w: 4, h: 2, z: 5, color: "#ffb84a" },
+        { x: 57, y: 48, w: 8, h: 2, z: 2.4, color: "#72d7ff" },
+        { x: 58, y: 43, w: 6, h: 3, z: 4.2, color: "#72d7ff" },
+        { x: 66, y: 42, w: 2, h: 7, z: 5.4, color: "#72d7ff" },
+      ];
+      const paths = [
+        { color: "#00eaff", speed: 0.105, points: [[67, 27], [55, 28], [44, 28], [32, 22], [23, 18], [12, 15]] },
+        { color: "#ffb84a", speed: 0.083, points: [[62, 9], [52, 15], [44, 19], [34, 22], [27, 25], [13, 32]] },
+        { color: "#ff4d6d", speed: 0.074, points: [[9, 48], [18, 41], [28, 37], [40, 37], [53, 38], [61, 44]] },
+        { color: "#91ff70", speed: 0.064, points: [[22, 46], [32, 48], [43, 49], [50, 44], [45, 37], [43, 22]] },
+        { color: "#c271ff", speed: 0.092, points: [[9, 28], [21, 28], [32, 28], [45, 32], [58, 30], [67, 32]] },
+      ];
+
+      let width = 0;
+      let height = 0;
+      let scale = 1;
+      let offsetX = 0;
+      let offsetY = 0;
+      let time = 0;
+
+      function rawProject(x, y, z = 0) {
+        return { x: x * 13.2 + y * 3.25, y: y * 5.7 - z * 14.2 };
+      }
+
+      function rawBounds() {
+        const pts = [
+          rawProject(0, 0, 8),
+          rawProject(MAP_COLS, 0, 8),
+          rawProject(0, MAP_ROWS, 0),
+          rawProject(MAP_COLS, MAP_ROWS, 0),
+        ];
+        const xs = pts.map((p) => p.x);
+        const ys = pts.map((p) => p.y);
+        const x = Math.min(...xs);
+        const y = Math.min(...ys);
+        return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+      }
+
+      function resize() {
+        const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const bounds = rawBounds();
+        const fitW = Math.max(420, width - 610);
+        const fitH = Math.max(330, height - 176);
+        scale = Math.min(fitW / bounds.w, fitH / bounds.h) * 0.94;
+        offsetX = width * 0.5 - (bounds.x + bounds.w / 2) * scale - 18;
+        offsetY = height * 0.53 - (bounds.y + bounds.h / 2) * scale + 8;
+      }
+
+      function project(x, y, z = 0) {
+        const p = rawProject(x, y, z);
+        return { x: p.x * scale + offsetX, y: p.y * scale + offsetY };
+      }
+
+      function rgba(hex, alpha) {
+        const n = Number.parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+      }
+
+      function polygon(points, fill, stroke, lineWidth = 1, glow = 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        if (fill) {
+          ctx.fillStyle = fill;
+          ctx.fill();
+        }
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = lineWidth;
+          ctx.shadowColor = stroke;
+          ctx.shadowBlur = glow;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function strokeLine(a, b, color, widthValue = 1, glow = 0, alpha = 1) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = widthValue;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = glow;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function rectTop(rect, z = 0) {
+        return [
+          project(rect.x, rect.y, z),
+          project(rect.x + rect.w, rect.y, z),
+          project(rect.x + rect.w, rect.y + rect.h, z),
+          project(rect.x, rect.y + rect.h, z),
+        ];
+      }
+
+      function wallPanel(x, y, w, z, h, fill, stroke, lineWidth = 1, glow = 0) {
+        polygon(
+          [project(x, y, z), project(x + w, y, z), project(x + w, y, z + h), project(x, y, z + h)],
+          fill,
+          stroke,
+          lineWidth,
+          glow,
+        );
+      }
+
+      function renderBackground() {
+        const gradient = ctx.createLinearGradient(0, 0, 0, height);
+        gradient.addColorStop(0, "#020713");
+        gradient.addColorStop(0.58, "#040b17");
+        gradient.addColorStop(1, "#010207");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+        for (let y = height * 0.12; y < height; y += 18) {
+          strokeLine({ x: 0, y }, { x: width, y }, "#073b5c", 0.6, 0, 0.22);
+        }
+      }
+
+      function renderGrid() {
+        polygon(rectTop({ x: 0, y: 0, w: MAP_COLS, h: MAP_ROWS }), "rgba(0, 12, 22, 0.72)", "rgba(0, 234, 255, 0.34)", 1.4, 22);
+        for (let x = 0; x <= MAP_COLS; x += 2) {
+          const major = x % 10 === 0;
+          strokeLine(project(x, 0), project(x, MAP_ROWS), major ? "#00eaff" : "#0b78a9", major ? 1.05 : 0.55, major ? 9 : 0, major ? 0.42 : 0.16);
+        }
+        for (let y = 0; y <= MAP_ROWS; y += 2) {
+          const major = y % 10 === 0;
+          strokeLine(project(0, y), project(MAP_COLS, y), major ? "#1a7dff" : "#075b91", major ? 1.05 : 0.55, major ? 9 : 0, major ? 0.42 : 0.16);
+        }
+      }
+
+      function renderZones() {
+        zones.forEach((zone, index) => {
+          const active = index === 1;
+          polygon(rectTop(zone), rgba(zone.tone, active ? 0.16 : 0.07), rgba(zone.tone, active ? 0.95 : 0.52), active ? 2.2 : 1.2, active ? 28 : 11);
+          const wallTop = active ? 6.2 : 4.1;
+          polygon([project(zone.x, zone.y), project(zone.x + zone.w, zone.y), project(zone.x + zone.w, zone.y, wallTop), project(zone.x, zone.y, wallTop)], rgba(zone.tone, 0.08), rgba(zone.tone, active ? 0.75 : 0.3), 1, active ? 18 : 6);
+          const label = project(zone.x + zone.w / 2, zone.y + 0.7, active ? 5 : 3.5);
+          ctx.save();
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = `${Math.max(7, 8 * scale)}px ui-monospace, Menlo, monospace`;
+          ctx.fillStyle = active ? "#f0feff" : rgba(zone.tone, 0.82);
+          ctx.shadowColor = zone.tone;
+          ctx.shadowBlur = active ? 16 : 8;
+          ctx.fillText(zone.name, label.x, label.y);
+          ctx.restore();
+        });
+      }
+
+      function renderKanbanMirror() {
+        const faceY = 6.5;
+        const startX = 20.35;
+        const boardW = 33.3;
+        const boardZ = 1.42;
+        const boardH = 5.45;
+        const laneW = boardW / 4;
+        const columns = [
+          { label: "TODO", color: "#00eaff", count: 7 },
+          { label: "DOING", color: "#ffb84a", count: 5 },
+          { label: "REVIEW", color: "#c271ff", count: 4 },
+          { label: "DONE", color: "#91ff70", count: 9 },
+        ];
+
+        wallPanel(startX, faceY, boardW, boardZ, boardH, "rgba(2, 10, 22, 0.78)", "rgba(0, 234, 255, 0.76)", 1.4, 20);
+        wallPanel(startX + 0.28, faceY, boardW - 0.56, boardZ + boardH - 0.62, 0.38, "rgba(0, 234, 255, 0.13)", "rgba(0, 234, 255, 0.4)", 0.9, 10);
+
+        for (let lane = 1; lane < 4; lane++) {
+          wallPanel(startX + lane * laneW, faceY, 0.08, boardZ + 0.36, boardH - 1.1, "rgba(0, 234, 255, 0.32)", "rgba(0, 234, 255, 0.32)", 0.6, 7);
+        }
+
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = `${Math.max(7, 8 * scale)}px ui-monospace, Menlo, monospace`;
+        columns.forEach((column, lane) => {
+          const x = startX + lane * laneW + laneW / 2;
+          const label = project(x, faceY, boardZ + boardH - 0.42);
+          ctx.fillStyle = column.color;
+          ctx.shadowColor = column.color;
+          ctx.shadowBlur = 12;
+          ctx.fillText(`${column.label} ${column.count}`, label.x, label.y);
+        });
+        ctx.restore();
+
+        const stickies = [
+          [0.08, 0.12, 0, "#00eaff"], [0.38, 0.28, 0, "#00eaff"], [0.62, 0.48, 0, "#00eaff"],
+          [0.22, 0.68, 0, "#72d7ff"], [0.72, 0.18, 0, "#72d7ff"], [0.48, 0.82, 0, "#00eaff"],
+          [0.16, 0.16, 1, "#ffb84a"], [0.46, 0.34, 1, "#ffb84a"], [0.72, 0.58, 1, "#ffb84a"],
+          [0.28, 0.78, 1, "#ffdf7e"], [0.62, 0.18, 1, "#ffdf7e"],
+          [0.12, 0.24, 2, "#c271ff"], [0.5, 0.42, 2, "#c271ff"], [0.75, 0.7, 2, "#e3a1ff"],
+          [0.3, 0.82, 2, "#c271ff"],
+          [0.1, 0.15, 3, "#91ff70"], [0.32, 0.34, 3, "#91ff70"], [0.58, 0.52, 3, "#91ff70"],
+          [0.78, 0.28, 3, "#d9ff9e"], [0.18, 0.72, 3, "#91ff70"], [0.55, 0.82, 3, "#d9ff9e"],
+        ];
+
+        for (const [rx, rz, lane, color] of stickies) {
+          const stickyX = startX + lane * laneW + 0.58 + rx * (laneW - 1.48);
+          const stickyZ = boardZ + 0.72 + rz * (boardH - 1.94);
+          wallPanel(stickyX, faceY, 1.05, stickyZ, 0.52, rgba(color, 0.68), rgba(color, 0.98), 0.75, 10);
+          wallPanel(stickyX + 0.18, faceY, 0.62, stickyZ + 0.34, 0.035, "rgba(2, 10, 22, 0.58)", "rgba(2, 10, 22, 0.58)");
+        }
+
+        const title = project(startX + boardW / 2, faceY, boardZ + boardH + 0.36);
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = `bold ${Math.max(8, 10 * scale)}px ui-monospace, Menlo, monospace`;
+        ctx.fillStyle = "#dffcff";
+        ctx.shadowColor = "#00eaff";
+        ctx.shadowBlur = 16;
+        ctx.fillText("LIVE KANBAN MIRROR", title.x, title.y);
+        ctx.restore();
+      }
+
+      function drawBox(rect) {
+        const top = rectTop(rect, rect.z);
+        const bottom = rectTop(rect, 0);
+        polygon([bottom[3], bottom[2], top[2], top[3]], rgba(rect.color, 0.06), rgba(rect.color, 0.38), 0.9, 8);
+        polygon([bottom[1], bottom[2], top[2], top[1]], rgba(rect.color, 0.04), rgba(rect.color, 0.3), 0.7, 6);
+        polygon(top, rgba(rect.color, 0.15), rgba(rect.color, 0.9), 1.3, 14);
+      }
+
+      function renderFurniture() {
+        [...furniture].sort((a, b) => a.x + a.y + a.h - (b.x + b.y + b.h)).forEach(drawBox);
+      }
+
+      function renderRoutes() {
+        for (const route of paths) {
+          const points = route.points.map(([x, y]) => project(x + 0.5, y + 0.5, 0.14));
+          ctx.save();
+          ctx.lineJoin = "round";
+          ctx.lineCap = "round";
+          ctx.setLineDash([10, 13]);
+          ctx.lineDashOffset = -time * route.speed * 4;
+          ctx.strokeStyle = route.color;
+          ctx.lineWidth = 1.8;
+          ctx.shadowColor = route.color;
+          ctx.shadowBlur = 16;
+          ctx.globalAlpha = 0.62;
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      function renderAgents() {
+        paths.forEach((route, idx) => {
+          const cycle = route.points.length - 1;
+          const progress = (time * route.speed * 0.008 + idx * 0.19) % cycle;
+          const segment = Math.floor(progress);
+          const local = progress - segment;
+          const a = route.points[segment];
+          const b = route.points[segment + 1];
+          const ease = local * local * (3 - 2 * local);
+          const x = a[0] + (b[0] - a[0]) * ease + 0.5;
+          const y = a[1] + (b[1] - a[1]) * ease + 0.5;
+          const p = project(x, y, 2.2 + Math.sin(time * 0.008 + idx) * 0.22);
+          const r = Math.max(6, 8 * scale);
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(time * 0.002 + idx);
+          ctx.shadowColor = route.color;
+          ctx.shadowBlur = 20;
+          ctx.fillStyle = rgba(route.color, 0.14);
+          ctx.strokeStyle = route.color;
+          ctx.lineWidth = 1.3;
+          ctx.beginPath();
+          ctx.moveTo(0, -r);
+          ctx.lineTo(r * 0.78, r * 0.58);
+          ctx.lineTo(-r * 0.78, r * 0.58);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
+
+      function render() {
+        time += 16.7;
+        renderBackground();
+        renderGrid();
+        renderZones();
+        renderKanbanMirror();
+        renderRoutes();
+        renderFurniture();
+        renderAgents();
+        requestAnimationFrame(render);
+      }
+
+      document.querySelectorAll(".stage-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const mode = tab.dataset.mode;
+          document.body.classList.toggle("kanban-active", mode === "kanban");
+          document.body.classList.toggle("stats-active", mode === "stats");
+          document.querySelectorAll(".stage-tab").forEach((sibling) => sibling.classList.toggle("active", sibling === tab));
+        });
+      });
+
+      window.addEventListener("resize", resize);
+      resize();
+      render();
+    </script>
+  </body>
+</html>

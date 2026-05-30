@@ -1,0 +1,137 @@
+.screen {
+  padding: 24px;
+  width: min(960px, 100%);
+  margin: 0 auto;
+}
+
+.header {
+  margin-bottom: 24px;
+}
+
+.header h1 {
+  margin: 0 0 4px 0;
+  font-size: 22px;
+}
+
+.header p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  max-width: 60ch;
+}
+
+.panel {
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, rgba(242, 248, 255, 0.94));
+  box-shadow: var(--fm-shadow, none);
+  padding: 0;
+  overflow: hidden;
+}
+
+.finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.finding:last-child {
+  border-bottom: none;
+}
+
+.findingBlocker {
+  background: var(--error-bg, #fef2f2);
+}
+
+.findingInfo {
+  background: var(--fm-card, var(--bg-elevated, #ffffff));
+}
+
+.badge {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badgeBlocker {
+  background: var(--error, #b91c1c);
+  color: #ffffff;
+}
+
+.badgeInfo {
+  background: var(--bg-subtle, #f3f4f6);
+  color: var(--muted, #6b7280);
+  border: 1px solid var(--border, #d1d5db);
+}
+
+.message {
+  flex: 1;
+  margin: 0;
+}
+
+.empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--success, #047857);
+  font-weight: 500;
+}
+
+.banner {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: 6px;
+}
+
+.bannerError {
+  background: var(--error-bg, #fef2f2);
+  color: var(--error, #b91c1c);
+  border: 1px solid var(--error-border, #fecaca);
+}
+
+.actions {
+  margin-top: 20px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.button {
+  font: inherit;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--bg-elevated, #ffffff);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  color: var(--color-fm-bg, white);
+  border-color: var(--accent, #2563eb);
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .screen {
+    padding: 14px 0;
+  }
+
+  .finding,
+  .actions {
+    flex-direction: column;
+  }
+
+  .button {
+    width: 100%;
+  }
+}

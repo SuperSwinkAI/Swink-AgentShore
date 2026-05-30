@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Light Style Guide</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f6ff;
+        --panel: rgba(242, 248, 255, 0.94);
+        --panel-strong: #ffffff;
+        --text: #1f2940;
+        --muted: #6d768b;
+        --line: #d6deec;
+        --accent: #0f8a6c;
+        --grid: #009cd6;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        padding: 32px;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+      }
+
+      h1,
+      h2,
+      p { margin: 0; }
+
+      h1 { font-size: 30px; }
+
+      .lede {
+        max-width: 760px;
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
+      .section {
+        margin-top: 28px;
+        padding: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .token {
+        padding: 14px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }
+
+      .swatch {
+        height: 42px;
+        margin-bottom: 10px;
+        border: 1px solid rgba(31, 41, 64, 0.18);
+      }
+
+      code {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        color: #244d69;
+      }
+
+      .room-strip {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .room {
+        min-height: 70px;
+        border: 1px solid rgba(0, 124, 176, 0.36);
+        background:
+          linear-gradient(rgba(0, 156, 214, 0.42) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(0, 156, 214, 0.42) 1px, transparent 1px),
+          var(--fill);
+        background-size: 16px 16px, 16px 16px, auto;
+        padding: 8px;
+        color: #17334a;
+        font-size: 12px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentShore Grid Light Style Guide</h1>
+      <p class="lede">
+        Grid Light is the default dashboard theme. Auto mode resolves OS light to Grid Light, and
+        unsupported classic theme values fall back to this theme.
+      </p>
+
+      <section class="section">
+        <h2>HUD Tokens</h2>
+        <div class="grid">
+          <div class="token"><div class="swatch" style="background:#f3f6ff"></div><code>--color-fm-bg #f3f6ff</code></div>
+          <div class="token"><div class="swatch" style="background:#1f2940"></div><code>--color-fm-text #1f2940</code></div>
+          <div class="token"><div class="swatch" style="background:rgba(242,248,255,0.94)"></div><code>--color-fm-panel rgba(242,248,255,0.94)</code></div>
+          <div class="token"><div class="swatch" style="background:#0f8a6c"></div><code>--color-fm-ok #0f8a6c</code></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Room Tiles</h2>
+        <div class="room-strip">
+          <div class="room" style="--fill:rgba(198,220,238,0.96)">War</div>
+          <div class="room" style="--fill:rgba(180,244,250,0.96)">Workshop</div>
+          <div class="room" style="--fill:rgba(214,244,252,0.96)">Science</div>
+          <div class="room" style="--fill:rgba(196,216,226,0.96)">Launch</div>
+          <div class="room" style="--fill:rgba(186,236,229,0.96)">Editor</div>
+          <div class="room" style="--fill:rgba(187,202,210,0.96)">Recovery</div>
+          <div class="room" style="--fill:rgba(198,232,206,0.96)">Zen</div>
+          <div class="room" style="--fill:rgba(189,232,232,0.96)">Front</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

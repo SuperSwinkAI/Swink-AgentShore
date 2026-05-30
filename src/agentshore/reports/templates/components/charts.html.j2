@@ -1,0 +1,88 @@
+{# Chart macros — reusable Chart.js chart patterns #}
+
+{% macro bar_chart(id, labels, values, label, color="rgba(158, 206, 106, 0.7)") %}
+<div class="chart-container">
+    <canvas id="{{ id }}"></canvas>
+</div>
+<script>
+new Chart(document.getElementById('{{ id }}'), {
+    type: 'bar',
+    data: {
+        labels: {{ labels | tojson }},
+        datasets: [{
+            label: '{{ label }}',
+            data: {{ values | tojson }},
+            backgroundColor: '{{ color }}'
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#c0caf5' } } },
+        scales: {
+            x: { ticks: { color: '#c0caf5' }, grid: { color: '#414868' } },
+            y: { ticks: { color: '#c0caf5' }, grid: { color: '#414868' }, beginAtZero: true }
+        }
+    }
+});
+</script>
+{% endmacro %}
+
+{% macro line_chart(id, labels, values, label, color="rgba(122, 162, 247, 0.9)") %}
+<div class="chart-container">
+    <canvas id="{{ id }}"></canvas>
+</div>
+<script>
+new Chart(document.getElementById('{{ id }}'), {
+    type: 'line',
+    data: {
+        labels: {{ labels | tojson }},
+        datasets: [{
+            label: '{{ label }}',
+            data: {{ values | tojson }},
+            borderColor: '{{ color }}',
+            backgroundColor: '{{ color }}',
+            fill: false,
+            tension: 0.3
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#c0caf5' } } },
+        scales: {
+            x: { ticks: { color: '#c0caf5' }, grid: { color: '#414868' } },
+            y: { ticks: { color: '#c0caf5' }, grid: { color: '#414868' }, beginAtZero: true }
+        }
+    }
+});
+</script>
+{% endmacro %}
+
+{% macro donut_chart(id, labels, values, colors=None) %}
+{% set default_colors = [
+    'rgba(158, 206, 106, 0.7)',
+    'rgba(122, 162, 247, 0.7)',
+    'rgba(224, 175, 104, 0.7)',
+    'rgba(247, 118, 142, 0.7)',
+    'rgba(187, 154, 247, 0.7)',
+    'rgba(125, 207, 255, 0.7)'
+] %}
+<div class="chart-container">
+    <canvas id="{{ id }}"></canvas>
+</div>
+<script>
+new Chart(document.getElementById('{{ id }}'), {
+    type: 'doughnut',
+    data: {
+        labels: {{ labels | tojson }},
+        datasets: [{
+            data: {{ values | tojson }},
+            backgroundColor: {{ (colors or default_colors) | tojson }}
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#c0caf5' } } }
+    }
+});
+</script>
+{% endmacro %}

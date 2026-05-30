@@ -1,0 +1,114 @@
+/* AgentShore TUI — Dark Theme */
+
+App {
+    background: #11131f;
+    color: #c0caf5;
+}
+
+MainDashboard {
+    layout: vertical;
+    background: #11131f;
+}
+
+Header {
+    background: #161925;
+    color: #c0caf5;
+}
+
+Footer {
+    background: #161925;
+    color: #a9b1d6;
+}
+
+#bottom-row {
+    height: auto;
+    min-height: 8;
+}
+
+#agent-panel,
+#alignment,
+#budget,
+#work-queue,
+#rl-state,
+#play-history {
+    border: round #414868;
+    border-title-color: #7aa2f7;
+    border-subtitle-color: #565f89;
+    background: #161925;
+    padding: 0 1;
+    margin: 0 1 1 1;
+}
+
+#agent-panel {
+    height: 15;
+    min-height: 12;
+}
+
+#play-history {
+    height: 7;
+    min-height: 6;
+}
+
+#alignment,
+#budget,
+#work-queue {
+    width: 1fr;
+    min-height: 7;
+}
+
+/* Budget states */
+.budget--healthy { color: #9ece6a; }
+.budget--warning { color: #e0af68; }
+.budget--exhausted { color: #f7768e; }
+
+/* Alignment bar states */
+.bar--high { color: #9ece6a; }
+.bar--med { color: #e0af68; }
+.bar--low { color: #f7768e; }
+
+/* Alert bar */
+AlertBar { display: none; height: 3; }
+.alert--error { color: #f7768e; }
+.alert--warning { color: #e0af68; }
+.alert--info { color: #7aa2f7; }
+.alert--loop { background: #f7768e; color: #1a1b26; text-style: bold; }
+AlertBar.alert--loop { display: block; height: 1; width: 100%; }
+
+/* RL State bar */
+RLStateBar { height: 4; }
+.loop--warning { color: #e0af68; }
+.loop--force { color: #ff9e64; }
+
+BudgetWidget { min-height: 6; }
+
+.layout-narrow #bottom-row,
+.layout-minimal #bottom-row {
+    layout: vertical;
+}
+
+.layout-narrow #agent-panel,
+.layout-narrow #alignment,
+.layout-narrow #budget,
+.layout-narrow #work-queue,
+.layout-minimal #agent-panel,
+.layout-minimal #alignment,
+.layout-minimal #budget,
+.layout-minimal #work-queue {
+    width: 100%;
+}
+
+.layout-narrow #play-history {
+    height: 6;
+}
+
+.layout-narrow #agent-panel,
+.layout-minimal #agent-panel {
+    height: 13;
+}
+
+.layout-minimal #play-history {
+    display: none;
+}
+
+/* Utility */
+.hidden { display: none; }

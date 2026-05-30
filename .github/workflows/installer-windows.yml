@@ -1,0 +1,52 @@
+name: Installer — Windows
+
+# Tag-triggered Windows installer build.
+# No Authenticode signing yet (cert not acquired; see decision 0.10b).
+# TODO: add signing step here when cert + AZURE_KEY_VAULT_URI / WINDOWS_SIGNING_CERT
+#       secrets are configured. See MIGRATION_TODO.md §10.3.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - uses: astral-sh/setup-uv@f0ec1fc3b38f5e7cd731e31a2e5b4c1cae8e6f46 # v4
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python dependencies
+        run: uv sync --group dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri (Windows)
+        # NOTE: produces an unsigned .msi and .exe; SmartScreen warning expected until
+        # Authenticode signing is wired in (TODO above).
+        run: npm --prefix desktop run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload Windows installer artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe

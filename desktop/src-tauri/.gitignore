@@ -1,0 +1,13 @@
+target/
+gen/
+
+# Tauri sidecar binaries — built locally by `npm run build:tauri-sidecars`
+# (agentshore-bd is ~249 MB PyInstaller --onedir; rebuilds per target triple).
+binaries/
+
+# Code-signing secrets — never commit
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+entitlements.local.plist

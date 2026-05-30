@@ -1,0 +1,2483 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Furniture Mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #061114;
+        --panel: #071a20;
+        --panel-2: #0b222b;
+        --panel-3: #0e2b34;
+        --line: #1a6f83;
+        --line-soft: rgba(70, 202, 240, 0.28);
+        --text: #eaf8fb;
+        --muted: #94bac3;
+        --accent: #37d9ff;
+        --warm: #ff9146;
+        --ok: #2be0b1;
+        --warn: #f4d44d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at 78% 10%, rgba(36, 134, 174, 0.28), transparent 28%),
+          linear-gradient(135deg, #07120f 0%, #06131a 56%, #071d25 100%);
+        color: var(--text);
+        font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      code {
+        color: #d9fbff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.94em;
+      }
+
+      .page {
+        width: min(1240px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 48px 0 72px;
+      }
+
+      .hero {
+        padding: 32px 0 30px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 940px;
+        margin-top: 10px;
+        font-size: clamp(44px, 6vw, 76px);
+        line-height: 0.95;
+      }
+
+      .dek {
+        max-width: 880px;
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .doc-nav,
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .doc-nav {
+        margin-top: 28px;
+      }
+
+      .doc-nav a,
+      .pill,
+      .links a {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 11px;
+        background: rgba(7, 34, 44, 0.72);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .links {
+        margin-top: 12px;
+      }
+
+      .links a {
+        border-color: var(--line-soft);
+        background: rgba(55, 217, 255, 0.08);
+        font-size: 12px;
+      }
+
+      .section {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(5, 22, 29, 0.86);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+      }
+
+      .section-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: end;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 20px;
+      }
+
+      .section-head p {
+        max-width: 850px;
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+        padding: 20px;
+      }
+
+      .grid.three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card.feature {
+        grid-column: 1 / -1;
+      }
+
+      .canvas-wrap {
+        position: relative;
+        border-bottom: 1px solid var(--line-soft);
+        background:
+          linear-gradient(rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(67, 206, 239, 0.07) 1px, transparent 1px),
+          #031016;
+        background-size: 22px 22px;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .badge {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+        padding: 4px 8px;
+        background: rgba(1, 14, 18, 0.72);
+        color: #dff9ff;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      .card-body {
+        padding: 14px 16px 16px;
+      }
+
+      .card-body h3 {
+        font-size: 16px;
+      }
+
+      .card-body p {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        padding: 20px;
+      }
+
+      .note {
+        border: 1px solid var(--line-soft);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 14px;
+        background: var(--panel-2);
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .note span {
+        color: var(--muted);
+      }
+
+      .matrix {
+        width: calc(100% - 40px);
+        margin: 20px;
+        border-collapse: collapse;
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+      }
+
+      .matrix th,
+      .matrix td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .matrix th {
+        background: rgba(55, 217, 255, 0.08);
+        color: #dff8fc;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .matrix tr:last-child td {
+        border-bottom: 0;
+      }
+
+      @media (max-width: 840px) {
+        .page {
+          width: min(100% - 28px, 1240px);
+          padding-top: 28px;
+        }
+
+        h1 {
+          font-size: 42px;
+        }
+
+        .grid,
+        .grid.three,
+        .notes {
+          grid-template-columns: 1fr;
+        }
+
+        .matrix {
+          display: block;
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="eyebrow">AgentShore dashboard furniture concepts</div>
+        <h1>Grid Furniture Mockups</h1>
+        <p class="dek">
+          Grid-themed furniture decisions for the dashboard office. The entry turnstiles preserve
+          the current three independent <code>Badge Turnstile</code> blocker footprints and open
+          lanes. The lab direction is a clean-sheet replacement for the Science Lab, not a
+          restyle of the current <code>Lab Bench</code>, <code>Test Rig</code>, and
+          <code>Lab Shelf</code>. The War Room direction turns the northwest TODO corner into a
+          tactical issue-planning table. The Editor Room direction uses pair editing pods around a
+          shared repo cube. The Error / Timeouts room is a repair-bay junkyard for broken or
+          stalled agents. Zen Idle uses staggered recharge stations with mostly non-blocking floor
+          art. The central Workshop now explores build-room furniture options with varied object
+          shapes, colors, and densities. Launch Control now explores the merge room as a transparent
+          cube with one central decision control and four approach destinations.
+        </p>
+        <div class="doc-nav" aria-label="Related design docs">
+          <a href="GRID_OFFICE_MOCKUPS.html">Grid office decisions</a>
+          <a href="../DESIGN.md">Dashboard design</a>
+          <a href="GRID_TOP_DOWN_FLOOR_PLAN.html">Grid floor plan</a>
+          <a href="#concepts">Entry design</a>
+          <a href="#lab-concepts">Lab design</a>
+          <a href="#war-room">War Room</a>
+          <a href="#editor-room">Editor Room</a>
+          <a href="#repair-yard">Repair Yard</a>
+          <a href="#zen-idle">Zen Idle</a>
+          <a href="#workshop-room">Workshop</a>
+          <a href="#launch-control">Launch Control</a>
+          <a href="#implementation">Entry notes</a>
+          <a href="#lab-implementation">Lab notes</a>
+          <a href="#war-implementation">War notes</a>
+          <a href="#editor-implementation">Editor notes</a>
+          <a href="#repair-implementation">Repair notes</a>
+          <a href="#zen-implementation">Zen notes</a>
+          <a href="#workshop-implementation">Workshop notes</a>
+          <a href="#launch-implementation">Launch notes</a>
+        </div>
+      </div>
+
+      <div class="section" id="constraints">
+        <div class="section-head">
+          <div>
+            <h2>Turnstile Constraints</h2>
+            <p>
+              The furniture can change appearance, but the map semantics should not change unless
+              layout work is explicitly requested.
+            </p>
+          </div>
+          <span class="pill">Front desk</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Keep three blockers</strong>
+            <span>
+              Current layout uses <code>Badge Turnstile North</code>,
+              <code>Center</code>, and <code>South</code>, each with a <code>4x1</code> footprint.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Do not fill the lanes</strong>
+            <span>
+              The open gaps between blocker rows are the pass-through lanes. Visual rails or
+              curtains should read as lightweight, not as solid walls.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Use renderer primitives</strong>
+            <span>
+              Preferred implementation should map to <code>drawRaisedBox</code>,
+              <code>drawWorldRect</code>, and vertical glass faces before introducing raster props.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="concepts">
+        <div class="section-head">
+          <div>
+            <h2>Entry Turnstile Design</h2>
+            <p>
+              The selected Light Curtain Gate gives the entry a distinctive Grid identity while
+              still keeping the actual pass-through lanes open.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected entry design</span>
+              <canvas width="760" height="470" data-variant="curtain"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Light Curtain Gate</h3>
+              <p>
+                Emitters draw translucent access curtains across each blocker row. This is the
+                preferred direction; keep the planes visibly holographic so they read as a scanning
+                effect rather than as impassable walls.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="implementation">
+        <div class="section-head">
+          <div>
+            <h2>Implementation Notes</h2>
+            <p>
+              These notes are meant to keep a future renderer pass scoped and pathing-safe.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Light Curtain Gate</td>
+              <td>Selected Grid turnstile direction for the front-desk entry.</td>
+              <td>Emitter posts plus translucent animated plane drawn above the existing blocker.</td>
+              <td>Medium. Must keep the curtain transparent and bounded to the existing blocker rows.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="lab-constraints">
+        <div class="section-head">
+          <div>
+            <h2>Science Lab Direction</h2>
+            <p>
+              The lab is the verification room. Since the existing furniture is expected to be
+              removed, these concepts explore stronger room silhouettes and new furniture
+              groupings.
+            </p>
+          </div>
+          <span class="pill">Science Lab</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Clean-sheet layout</strong>
+            <span>
+              Do not preserve the current bench, rig, or shelf footprints. The room can have new
+              lab islands, diagnostic bays, wall hardware, and walk lanes.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Make verification visible</strong>
+            <span>
+              The room should imply QA, browser verification, instrumentation, and diagnostics
+              without adding busy labels or tiny unreadable props.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Keep the room readable</strong>
+            <span>
+              Larger set pieces are allowed, but they need a clear primary silhouette and enough
+              open floor for agents to read at office scale.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="lab-concepts">
+        <div class="section-head">
+          <div>
+            <h2>Science Lab Design</h2>
+            <p>
+              The selected Compiler Reactor Bay gives the lab the clearest identity as a
+              high-energy verification space while leaving a service loop around the main core.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected lab design</span>
+              <canvas width="760" height="470" data-lab="reactor"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Compiler Reactor Bay</h3>
+              <p>
+                Selected lab direction: a glowing reactor-like verification core with diagnostic
+                arms and a service loop around it.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="lab-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Lab Implementation Notes</h2>
+            <p>
+              These options assume the existing Science Lab furniture can be removed. A future
+              renderer pass should pick a room layout first, then model blockers around the chosen
+              visual direction.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Compiler Reactor Bay</td>
+              <td>Selected clean-sheet Grid Lab direction.</td>
+              <td>Central glowing core, diagnostic arms, side rails, and service loop.</td>
+              <td>Medium-high. Very strong identity, but easy to overdraw at office scale.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="war-room">
+        <div class="section-head">
+          <div>
+            <h2>War Room Design</h2>
+            <p>
+              The selected Tactical Map Table gives the northwest room a shared planning surface
+              for TODO and issue pickup, while keeping the same simple Grid furniture language as
+              the rest of the office mockups.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Anchor the TODO wall</strong>
+            <span>
+              The north wall can carry the mirrored TODO issue state, but the room furniture should
+              still have its own readable floor silhouette.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Support issue pickup</strong>
+            <span>
+              Walk targets should imply briefing, assignment, and handoff without requiring
+              furniture that blocks every approach lane.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Stay grid-simple</strong>
+            <span>
+              Prefer desks, rails, pads, and wall planes made from the same primitive geometry as
+              the existing office mockups.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected war room design</span>
+              <canvas width="760" height="470" data-war="strategy-table"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Tactical Map Table</h3>
+              <p>
+                A central glowing table projects active TODO routes. Best if agents should gather
+                around a single shared planning surface.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="war-implementation">
+        <div class="section-head">
+          <div>
+            <h2>War Room Implementation Notes</h2>
+            <p>
+              This direction should map to one central furniture island, a TODO wall plane, and
+              clear walk targets around the shared planning table.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Tactical Map Table</td>
+              <td>Selected War Room direction for issue pickup and planning.</td>
+              <td>Raised table, projected route lines, issue markers, and cardinal pads.</td>
+              <td>Medium. Projection detail must stay readable at office scale.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="editor-room">
+        <div class="section-head">
+          <div>
+            <h2>Editor Room Design</h2>
+            <p>
+              The selected Pair Pods direction makes the Editor Room feel like a focused parallel
+              coding space: four small editing stations around a shared repo cube.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Make diffs visible</strong>
+            <span>
+              The room should imply before/after code, patch shaping, or focused editing without
+              relying on tiny text that will disappear at dashboard scale.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Keep agents readable</strong>
+            <span>
+              Furniture can frame the work, but avoid enclosing agents so tightly that the v2
+              sprites lose silhouette clarity.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Use tool-like props</strong>
+            <span>
+              Favor benches, panes, rails, and small console islands over decorative office desks.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected editor design</span>
+              <canvas width="760" height="470" data-editor="pair-pods"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Pair Pods</h3>
+              <p>
+                Four small editing pods face a shared repo cube. Best if the room should support
+                multiple agents working in parallel without one central table.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="editor-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Editor Implementation Notes</h2>
+            <p>
+              This direction should remain renderer-native: four small pod blockers, a shared
+              central repo cube, visible walk pads, and enough spacing to keep agents readable.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Pair Pods</td>
+              <td>Selected Editor Room direction for parallel code editing.</td>
+              <td>Four small pod blockers around a shared repo cube and walk pads.</td>
+              <td>Medium. Pods need enough spacing to avoid hiding sprites.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="repair-yard">
+        <div class="section-head">
+          <div>
+            <h2>Error / Timeouts Floor Yard Design</h2>
+            <p>
+              The selected Dead Zone Mat keeps the southwest failure room loose and non-blocking:
+              two messy corner piles of broken agent parts frame a dark painted floor target for
+              hard errors and timeouts.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Floor art, not furniture</strong>
+            <span>
+              The central target, glyph, or warning symbol should be decoration painted onto the
+              floor. It should not add blockers or create a maze.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Messy corner piles</strong>
+            <span>
+              Put the physical junk in two corners: busted agent shells, parts cubes, loose panels,
+              and dead status blocks.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Clear open center</strong>
+            <span>
+              Agents should be able to stand on and around the mat. The visual signal comes from
+              paint, glow, and scattered edges, not from solid hardware.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected repair yard design</span>
+              <canvas width="760" height="470" data-repair="dead-zone-mat"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Dead Zone Mat</h3>
+              <p>
+                A darker central X target with heavier corner scrap. Best if errors should feel
+                rougher and more junkyard-like than ordinary timeouts.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="repair-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Repair Implementation Notes</h2>
+            <p>
+              This direction should stay mostly floor decoration. The only blocking geometry should
+              come from the two corner scrap piles, leaving the center mat open for agents.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Dead Zone Mat</td>
+              <td>Selected rough junkyard identity for hard errors.</td>
+              <td>Dark floor target, red X strokes, heavier corner debris.</td>
+              <td>Medium. Can get too ominous if the red dominates.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="zen-idle">
+        <div class="section-head">
+          <div>
+            <h2>Zen Idle Recharge Design</h2>
+            <p>
+              Zen Idle should stay calm and sparse: a few staggered green / blue-green recharge
+              stations with the actual destinations painted into the center of each floor pad.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Mostly floor art</strong>
+            <span>
+              The station centers should be non-blocking painted destinations. The visual identity
+              comes from rings, soft glow, and subtle grid marks.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Stagger the stations</strong>
+            <span>
+              Avoid a rigid row. Place the recharge pads at different depths so the room feels
+              quiet and usable without looking like a queue.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Low hardware only</strong>
+            <span>
+              Keep physical geometry to small edge pylons or low blocks around the pads so idle
+              agents remain the main silhouette.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected zen design</span>
+              <canvas width="760" height="470" data-zen="recharge-field"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Staggered Recharge Field</h3>
+              <p>
+                Three low recharge stations staggered across the room. Each station has a
+                non-blocking destination mark painted in its center, with small blue-green hardware
+                only on the pad edges.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="zen-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Zen Implementation Notes</h2>
+            <p>
+              This direction should be the visual counterweight to the repair yard: green,
+              blue-green, quiet, and mostly walkable.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Staggered Recharge Field</td>
+              <td>Selected calm idle-only destination room.</td>
+              <td>Flat floor rings, center destination marks, subtle station pylons, soft teal glow.</td>
+              <td>Low. Do not turn the stations into large blocker pods.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="workshop-room">
+        <div class="section-head">
+          <div>
+            <h2>Workshop Furniture Design</h2>
+            <p>
+              The selected Assembly Islands direction keeps the central Workshop active without
+              becoming a maze: several differently sized build islands, staggered part bins, and
+              tool posts surround an open center destination.
+            </p>
+          </div>
+          <span class="pill">Selected design</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Distributed work</strong>
+            <span>
+              Use multiple small work islands instead of one dominant table, so the room feels like
+              a practical build space for several active agents.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Open center</strong>
+            <span>
+              Preserve the center destination and primary movement lane. The islands should frame
+              the room, not block the office core.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Varied accents</strong>
+            <span>
+              Mix cyan, teal, violet, orange, and yellow props so the workshop feels more active
+              than the quiet rooms without becoming noisy.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Selected workshop design</span>
+              <canvas width="760" height="470" data-workshop="assembly-islands"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Assembly Islands</h3>
+              <p>
+                Several differently sized build islands with staggered part bins and tool posts.
+                Best if the workshop should support many agents without one dominant prop.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="workshop-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Workshop Implementation Notes</h2>
+            <p>
+              Any selected workshop direction should become renderer-native geometry: low
+              rectangular blockers for actual furniture, painted decals for destinations and
+              workflow signals, and small vertical accents where height helps the silhouette.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Design</th>
+              <th>Best use</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Assembly Islands</td>
+              <td>Selected central Workshop direction for distributed build activity.</td>
+              <td>Multiple low blocks with mixed footprints, bins, and staggered tool posts.</td>
+              <td>Medium. Too many islands can reduce the center-room read.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="launch-control">
+        <div class="section-head">
+          <div>
+            <h2>Launch Control Merge Room</h2>
+            <p>
+              Launch Control should read as the merge room itself: a transparent Grid cube with a
+              large red button in the center and clear walk destinations on all four sides.
+            </p>
+          </div>
+          <span class="pill">Launch Control</span>
+        </div>
+        <div class="notes">
+          <div class="note">
+            <strong>Cube as room identity</strong>
+            <span>
+              Use a glass cube silhouette, not another desk cluster. The walls should be visible
+              enough to mark the room while staying transparent around agents.
+            </span>
+          </div>
+          <div class="note">
+            <strong>One decisive control</strong>
+            <span>
+              The center red button is the primary object. Other props should support it instead of
+              competing for attention.
+            </span>
+          </div>
+          <div class="note">
+            <strong>Four approach pads</strong>
+            <span>
+              Reserve walk destinations at north, east, south, and west sides so agents can stage
+              around the button without overlapping its footprint.
+            </span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="card feature">
+            <div class="canvas-wrap">
+              <span class="badge">Merge room direction</span>
+              <canvas width="1120" height="620" data-launch="cube-button"></canvas>
+            </div>
+            <div class="card-body">
+              <h3>Merge Button Cube</h3>
+              <p>
+                A transparent cube room with a single central cube control and four cardinal walk
+                pads. The cube can own the blocker footprint while the pads remain the stable agent
+                destinations for approach, approval, and post-merge movement.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="launch-implementation">
+        <div class="section-head">
+          <div>
+            <h2>Launch Implementation Notes</h2>
+            <p>
+              This direction is intentionally simple: one room volume, one central control, and
+              explicit side destinations that can map cleanly to dashboard layout targets.
+            </p>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Element</th>
+              <th>Purpose</th>
+              <th>Renderer approach</th>
+              <th>Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Glass cube</td>
+              <td>Gives the NE merge room a unique architectural silhouette.</td>
+              <td>Transparent wall faces, cyan edge strokes, low-opacity top outline, and floor grid.</td>
+              <td>Low. Keep wall alpha below the agent body opacity.</td>
+            </tr>
+            <tr>
+              <td>Button cube</td>
+              <td>Primary merge affordance and visual anchor for Launch Control.</td>
+              <td>One central cube with a red circular button sitting on the top face.</td>
+              <td>Medium. Must stay visually strong without reading as an error state for the room.</td>
+            </tr>
+            <tr>
+              <td>Walk destinations</td>
+              <td>Four stable agent parking targets around the button.</td>
+              <td>Small floor pads at north, east, south, and west sides connected by dashed paths.</td>
+              <td>Low. Pads should not imply blockers; they are destinations, not furniture walls.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      const palette = {
+        bg: "#031016",
+        grid: "rgba(69, 208, 244, 0.16)",
+        gridStrong: "rgba(69, 208, 244, 0.34)",
+        cyan: "#39d9ff",
+        cyanSoft: "rgba(57, 217, 255, 0.34)",
+        cyanGlass: "rgba(125, 230, 255, 0.32)",
+        teal: "#2be0b1",
+        orange: "#ff9146",
+        yellow: "#f4d44d",
+        body: "#0f3140",
+        bodyTop: "#16495c",
+        dark: "#04151c",
+        agent: "#45a9ff",
+      };
+
+      function setupCanvas(canvas) {
+        const ratio = window.devicePixelRatio || 1;
+        const width = canvas.width;
+        const height = canvas.height;
+        canvas.style.aspectRatio = `${width} / ${height}`;
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+        const ctx = canvas.getContext("2d");
+        ctx.scale(ratio, ratio);
+        return { ctx, width, height };
+      }
+
+      function iso(x, y, z = 0) {
+        const originX = 380;
+        const originY = 86;
+        const tileW = 54;
+        const tileH = 27;
+        return {
+          x: originX + (x - y) * tileW * 0.5,
+          y: originY + (x + y) * tileH * 0.5 - z,
+        };
+      }
+
+      function poly(ctx, points, fill, stroke) {
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+      }
+
+      function tileDiamond(ctx, x, y, fill, stroke) {
+        const a = iso(x, y);
+        const b = iso(x + 1, y);
+        const c = iso(x + 1, y + 1);
+        const d = iso(x, y + 1);
+        poly(ctx, [a, b, c, d], fill, stroke);
+      }
+
+      function raisedBox(ctx, x, y, w, h, z, colors) {
+        const a = iso(x, y, z);
+        const b = iso(x + w, y, z);
+        const c = iso(x + w, y + h, z);
+        const d = iso(x, y + h, z);
+        const af = iso(x, y);
+        const bf = iso(x + w, y);
+        const cf = iso(x + w, y + h);
+        const df = iso(x, y + h);
+        poly(ctx, [a, b, c, d], colors.top, colors.stroke);
+        poly(ctx, [d, c, cf, df], colors.front, colors.stroke);
+        poly(ctx, [b, c, cf, bf], colors.side, colors.stroke);
+        poly(ctx, [a, d, df, af], colors.left || colors.side, colors.stroke);
+      }
+
+      function glow(ctx, x, y, radius, color) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        g.addColorStop(0, color);
+        g.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function verticalPane(ctx, x, y, w, h, z, height, color, stroke) {
+        const a = iso(x, y, z);
+        const b = iso(x + w, y + h, z);
+        const c = iso(x + w, y + h, z + height);
+        const d = iso(x, y, z + height);
+        poly(ctx, [a, b, c, d], color, stroke);
+      }
+
+      function drawBackground(ctx, width, height) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#041219");
+        bg.addColorStop(1, "#061f28");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        for (let x = -2; x < 14; x++) {
+          for (let y = -1; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(7, 33, 43, 0.58)", palette.grid);
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = palette.gridStrong;
+        ctx.lineWidth = 2;
+        const path = [iso(0.5, 4.5), iso(3, 4.5), iso(5.3, 4.5), iso(8, 4.5)];
+        ctx.beginPath();
+        path.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawLabels(ctx) {
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.78)";
+        ctx.fillText("ENTRY", 72, 402);
+        ctx.fillText("FRONT DESK", 565, 106);
+        ctx.fillStyle = "rgba(148, 186, 195, 0.86)";
+        ctx.fillText("open lanes preserved", 292, 410);
+        ctx.restore();
+      }
+
+      function drawAgentGhost(ctx) {
+        const p = iso(2.2, 4.5, 0);
+        glow(ctx, p.x, p.y - 26, 44, "rgba(69, 169, 255, 0.28)");
+        ctx.fillStyle = "rgba(69, 169, 255, 0.7)";
+        ctx.beginPath();
+        ctx.roundRect(p.x - 15, p.y - 58, 30, 32, 9);
+        ctx.fill();
+        ctx.fillStyle = "#eaf8fb";
+        ctx.beginPath();
+        ctx.arc(p.x - 5, p.y - 43, 2.3, 0, Math.PI * 2);
+        ctx.arc(p.x + 6, p.y - 43, 2.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(69, 169, 255, 0.7)";
+        ctx.lineWidth = 6;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 24);
+        ctx.lineTo(p.x, p.y - 2);
+        ctx.stroke();
+      }
+
+      function drawTurnstileBase(ctx, y, accent = palette.cyan) {
+        raisedBox(ctx, 5.4, y, 3.6, 0.72, 10, {
+          top: "#16495c",
+          front: "#0d2d3a",
+          side: "#092532",
+          left: "#123d4c",
+          stroke: "rgba(111, 229, 255, 0.72)",
+        });
+        const scan = iso(8.1, y + 0.18, 18);
+        glow(ctx, scan.x, scan.y, 24, accent.replace(")", ", 0.3)").replace("rgb", "rgba"));
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.roundRect(scan.x - 13, scan.y - 6, 26, 9, 4);
+        ctx.fill();
+      }
+
+      function drawCurtain(ctx) {
+        [1.7, 4.0, 6.3].forEach((row) => {
+          drawTurnstileBase(ctx, row, palette.orange);
+          verticalPane(ctx, 5.72, row + 0.26, 0.12, 0.34, 10, 66, "rgba(255, 145, 70, 0.24)", palette.orange);
+          verticalPane(ctx, 8.48, row + 0.26, 0.12, 0.34, 10, 66, "rgba(255, 145, 70, 0.24)", palette.orange);
+          verticalPane(ctx, 5.9, row + 0.48, 2.4, 0.02, 20, 58, "rgba(57, 217, 255, 0.16)", "rgba(57, 217, 255, 0.45)");
+          const top = iso(7.2, row + 0.5, 78);
+          glow(ctx, top.x, top.y, 34, "rgba(255, 145, 70, 0.2)");
+        });
+      }
+
+      function drawLabBackground(ctx, width, height) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#031117");
+        bg.addColorStop(1, "#06212b");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = { x: 118, y: 76 };
+        const wallB = { x: 648, y: 76 };
+        const wallC = { x: 648, y: 206 };
+        const wallD = { x: 118, y: 206 };
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(7, 35, 45, 0.74)", "rgba(69, 208, 244, 0.28)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(7, 33, 43, 0.58)", palette.grid);
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(69, 208, 244, 0.24)";
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 6; i++) {
+          ctx.beginPath();
+          ctx.moveTo(148 + i * 88, 82);
+          ctx.lineTo(148 + i * 88, 204);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.78)";
+        ctx.fillText("SCIENCE LAB", 126, 102);
+        ctx.fillStyle = "rgba(148, 186, 195, 0.86)";
+        ctx.fillText("verification room, clean-sheet furniture", 126, 122);
+        ctx.restore();
+      }
+
+      function drawLabAgent(ctx, x, y, color = palette.agent) {
+        const p = iso(x, y, 0);
+        glow(ctx, p.x, p.y - 24, 36, "rgba(69, 169, 255, 0.24)");
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 13, p.y - 53, 26, 29, 8);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 6;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 22);
+        ctx.lineTo(p.x, p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = "#eaf8fb";
+        ctx.beginPath();
+        ctx.arc(p.x - 5, p.y - 40, 2.1, 0, Math.PI * 2);
+        ctx.arc(p.x + 5, p.y - 40, 2.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawStatusTile(ctx, x, y, z, color) {
+        const p = iso(x, y, z);
+        glow(ctx, p.x, p.y, 16, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 12, p.y - 5, 24, 10, 4);
+        ctx.fill();
+      }
+
+      function drawCompilerReactor(ctx) {
+        raisedBox(ctx, 3.4, 3.8, 4.9, 2.8, 8, {
+          top: "#1a4858",
+          front: "#0c2d38",
+          side: "#082330",
+          left: "#143b49",
+          stroke: "rgba(255, 145, 70, 0.7)",
+        });
+        const core = iso(5.85, 4.9, 55);
+        glow(ctx, core.x, core.y, 118, "rgba(255, 145, 70, 0.24)");
+        glow(ctx, core.x, core.y, 74, "rgba(57, 217, 255, 0.18)");
+        ctx.save();
+        ctx.strokeStyle = palette.orange;
+        ctx.shadowColor = palette.orange;
+        ctx.shadowBlur = 20;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.ellipse(core.x, core.y, 64, 30, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(core.x, core.y - 22, 42, 20, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = "rgba(255, 246, 178, 0.92)";
+        ctx.beginPath();
+        ctx.arc(core.x, core.y - 10, 10, 0, Math.PI * 2);
+        ctx.fill();
+        [[2.9, 4.2], [8.35, 4.2], [3.6, 6.55], [8.0, 6.5]].forEach(([x, y]) => {
+          const a = iso(x, y, 46);
+          ctx.save();
+          ctx.strokeStyle = "rgba(57, 217, 255, 0.65)";
+          ctx.lineWidth = 4;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(core.x, core.y);
+          ctx.stroke();
+          ctx.restore();
+          drawStatusTile(ctx, x, y, 36, "rgba(57, 217, 255, 0.42)");
+        });
+        drawLabAgent(ctx, 2.6, 6.8, "rgba(255, 145, 70, 0.76)");
+        drawLabAgent(ctx, 8.7, 6.1);
+      }
+
+      function warIso(x, y, z = 0) {
+        const originX = 380;
+        const originY = 74;
+        const tileW = 56;
+        const tileH = 28;
+        return {
+          x: originX + (x - y) * tileW * 0.5,
+          y: originY + (x + y) * tileH * 0.5 - z,
+        };
+      }
+
+      function drawWarTile(ctx, x, y, fill, stroke) {
+        const a = warIso(x, y);
+        const b = warIso(x + 1, y);
+        const c = warIso(x + 1, y + 1);
+        const d = warIso(x, y + 1);
+        poly(ctx, [a, b, c, d], fill, stroke);
+      }
+
+      function warWallPanel(ctx, x, z, w, h, fill, stroke) {
+        const a = warIso(x, 0, z);
+        const b = warIso(x + w, 0, z);
+        const c = warIso(x + w, 0, z + h);
+        const d = warIso(x, 0, z + h);
+        poly(ctx, [a, b, c, d], fill, stroke);
+      }
+
+      function warRaisedBox(ctx, x, y, w, h, z, colors) {
+        const a = warIso(x, y, z);
+        const b = warIso(x + w, y, z);
+        const c = warIso(x + w, y + h, z);
+        const d = warIso(x, y + h, z);
+        const af = warIso(x, y);
+        const bf = warIso(x + w, y);
+        const cf = warIso(x + w, y + h);
+        const df = warIso(x, y + h);
+        poly(ctx, [d, c, cf, df], colors.front, colors.stroke);
+        poly(ctx, [b, c, cf, bf], colors.side, colors.stroke);
+        poly(ctx, [a, d, df, af], colors.left || colors.side, colors.stroke);
+        poly(ctx, [a, b, c, d], colors.top, colors.stroke);
+      }
+
+      function drawWarBackground(ctx, width, height, subtitle) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#031016");
+        bg.addColorStop(0.62, "#061d27");
+        bg.addColorStop(1, "#051114");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = warIso(0, 0, 0);
+        const wallB = warIso(10, 0, 0);
+        const wallC = warIso(10, 0, 104);
+        const wallD = warIso(0, 0, 104);
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(7, 35, 45, 0.68)", "rgba(69, 208, 244, 0.32)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            drawWarTile(ctx, x, y, "rgba(7, 33, 43, 0.56)", "rgba(69, 208, 244, 0.14)");
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(69, 208, 244, 0.28)";
+        ctx.lineWidth = 1;
+        for (let x = 1; x <= 9; x += 1) {
+          const floor = warIso(x, 0, 0);
+          const top = warIso(x, 0, 104);
+          ctx.beginPath();
+          ctx.moveTo(floor.x, floor.y);
+          ctx.lineTo(top.x, top.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.82)";
+        ctx.fillText("WAR ROOM", 92, 88);
+        ctx.fillStyle = "rgba(148, 186, 195, 0.86)";
+        ctx.fillText(subtitle, 92, 108);
+        ctx.restore();
+      }
+
+      function drawWarIssueTiles(ctx, x, z, count, color) {
+        ctx.save();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        for (let i = 0; i < count; i += 1) {
+          const column = i % 4;
+          const row = Math.floor(i / 4);
+          warWallPanel(
+            ctx,
+            x + column * 0.46,
+            z + row * 18,
+            0.28,
+            7,
+            color.replace("0.72", "0.42"),
+            color,
+          );
+        }
+        ctx.restore();
+      }
+
+      function drawWarPad(ctx, x, y, label, color) {
+        const p = warIso(x, y, 10);
+        glow(ctx, p.x, p.y, 34, color);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(5, 25, 33, 0.82)";
+        ctx.lineWidth = 2;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 33, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "rgba(234, 248, 251, 0.88)";
+        ctx.font = "800 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, p.x, p.y + 3);
+        ctx.restore();
+      }
+
+      function drawWarAgent(ctx, x, y, color = "rgba(69, 169, 255, 0.78)") {
+        const p = warIso(x, y, 8);
+        glow(ctx, p.x, p.y - 18, 30, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 11, p.y - 45, 22, 25, 7);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 18);
+        ctx.lineTo(p.x, p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = "#f5fbff";
+        ctx.beginPath();
+        ctx.arc(p.x - 4, p.y - 35, 1.8, 0, Math.PI * 2);
+        ctx.arc(p.x + 4, p.y - 35, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawWarScreenLabel(ctx, x, z, text) {
+        const p = warIso(x, 0, z);
+        ctx.save();
+        ctx.fillStyle = "rgba(218, 250, 255, 0.86)";
+        ctx.font = "900 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(text, p.x, p.y);
+        ctx.restore();
+      }
+
+      function drawTacticalMapTable(ctx, width, height) {
+        drawWarBackground(ctx, width, height, "central issue map with route projection");
+        warWallPanel(ctx, 2.1, 42, 5.8, 38, "rgba(57, 217, 255, 0.07)", "rgba(57, 217, 255, 0.42)");
+        drawWarScreenLabel(ctx, 5, 69, "ACTIVE TODO");
+        drawWarIssueTiles(ctx, 3.2, 48, 7, "rgba(57, 217, 255, 0.72)");
+        warRaisedBox(ctx, 2.55, 3.35, 4.9, 2.75, 18, {
+          top: "rgba(14, 65, 77, 0.95)",
+          front: "rgba(6, 30, 39, 0.96)",
+          side: "rgba(8, 40, 50, 0.95)",
+          left: "rgba(13, 53, 65, 0.92)",
+          stroke: "rgba(57, 217, 255, 0.72)",
+        });
+        const center = warIso(5.0, 4.72, 42);
+        glow(ctx, center.x, center.y, 80, "rgba(57, 217, 255, 0.18)");
+        ctx.save();
+        ctx.strokeStyle = "rgba(244, 212, 77, 0.74)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([7, 6]);
+        [[3.5, 4.2], [4.4, 5.6], [5.7, 4.0], [6.45, 5.25]].forEach(([x, y], index, points) => {
+          const p = warIso(x, y, 48);
+          if (index === 0) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+          } else {
+            ctx.lineTo(p.x, p.y);
+          }
+          if (index === points.length - 1) ctx.stroke();
+        });
+        ctx.setLineDash([]);
+        ["rgba(57, 217, 255, 0.86)", "rgba(244, 212, 77, 0.86)", "rgba(43, 224, 177, 0.82)"].forEach(
+          (color, index) => {
+            const p = warIso(3.7 + index * 1.25, 4.55 + (index % 2) * 0.68, 52);
+            glow(ctx, p.x, p.y, 18, color);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+          },
+        );
+        ctx.restore();
+        drawWarPad(ctx, 5.0, 2.35, "PLAN", "rgba(57, 217, 255, 0.7)");
+        drawWarPad(ctx, 7.65, 4.55, "OWNER", "rgba(244, 212, 77, 0.7)");
+        drawWarPad(ctx, 5.0, 7.2, "READY", "rgba(43, 224, 177, 0.68)");
+        drawWarPad(ctx, 2.35, 4.55, "SCOPE", "rgba(255, 145, 70, 0.72)");
+        drawWarAgent(ctx, 2.5, 5.9, "rgba(255, 145, 70, 0.76)");
+        drawWarAgent(ctx, 7.6, 5.8);
+      }
+
+      function editorWallPanel(ctx, x, z, w, h, fill, stroke) {
+        const a = iso(x, 0, z);
+        const b = iso(x + w, 0, z);
+        const c = iso(x + w, 0, z + h);
+        const d = iso(x, 0, z + h);
+        poly(ctx, [a, b, c, d], fill, stroke);
+      }
+
+      function drawEditorBackground(ctx, width, height, subtitle) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#041016");
+        bg.addColorStop(0.56, "#071b24");
+        bg.addColorStop(1, "#051114");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = iso(0, 0, 0);
+        const wallB = iso(10, 0, 0);
+        const wallC = iso(10, 0, 106);
+        const wallD = iso(0, 0, 106);
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(14, 31, 52, 0.64)", "rgba(178, 102, 255, 0.28)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(8, 30, 42, 0.55)", "rgba(69, 208, 244, 0.13)");
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(178, 102, 255, 0.24)";
+        ctx.lineWidth = 1;
+        for (let x = 1; x <= 9; x += 1) {
+          const floor = iso(x, 0, 0);
+          const top = iso(x, 0, 106);
+          ctx.beginPath();
+          ctx.moveTo(floor.x, floor.y);
+          ctx.lineTo(top.x, top.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.82)";
+        ctx.fillText("EDITOR ROOM", 92, 88);
+        ctx.fillStyle = "rgba(148, 186, 195, 0.86)";
+        ctx.fillText(subtitle, 92, 108);
+        ctx.restore();
+      }
+
+      function drawEditorCodeBars(ctx, x, z, rows, color) {
+        ctx.save();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 9;
+        for (let row = 0; row < rows; row += 1) {
+          const width = 0.72 + (row % 3) * 0.22;
+          editorWallPanel(
+            ctx,
+            x + (row % 2) * 0.16,
+            z + row * 8,
+            width,
+            2.7,
+            color.replace("0.72", "0.34"),
+            color,
+          );
+        }
+        ctx.restore();
+      }
+
+      function drawEditorPad(ctx, x, y, label, color) {
+        const p = iso(x, y, 9);
+        glow(ctx, p.x, p.y, 32, color);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(5, 25, 33, 0.84)";
+        ctx.lineWidth = 2;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 31, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "rgba(234, 248, 251, 0.88)";
+        ctx.font = "800 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, p.x, p.y + 3);
+        ctx.restore();
+      }
+
+      function drawEditorAgent(ctx, x, y, color = "rgba(69, 169, 255, 0.76)") {
+        const p = iso(x, y, 8);
+        glow(ctx, p.x, p.y - 18, 30, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 11, p.y - 45, 22, 25, 7);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 18);
+        ctx.lineTo(p.x, p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = "#f5fbff";
+        ctx.beginPath();
+        ctx.arc(p.x - 4, p.y - 35, 1.8, 0, Math.PI * 2);
+        ctx.arc(p.x + 4, p.y - 35, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawPairPods(ctx, width, height) {
+        drawEditorBackground(ctx, width, height, "parallel pods around shared repo cube");
+        editorWallPanel(ctx, 2.0, 44, 6.0, 34, "rgba(57, 217, 255, 0.055)", "rgba(57, 217, 255, 0.32)");
+        drawEditorCodeBars(ctx, 3.0, 50, 4, "rgba(43, 224, 177, 0.72)");
+        raisedBox(ctx, 4.0, 4.1, 2.0, 1.65, 24, {
+          top: "rgba(18, 72, 90, 0.94)",
+          front: "rgba(6, 29, 38, 0.96)",
+          side: "rgba(8, 38, 49, 0.94)",
+          left: "rgba(12, 51, 63, 0.92)",
+          stroke: "rgba(244, 212, 77, 0.7)",
+        });
+        [
+          [2.25, 3.05, "rgba(57, 217, 255, 0.72)"],
+          [6.75, 3.05, "rgba(178, 102, 255, 0.72)"],
+          [2.25, 6.05, "rgba(255, 145, 70, 0.72)"],
+          [6.75, 6.05, "rgba(43, 224, 177, 0.7)"],
+        ].forEach(([x, y, color]) => {
+          raisedBox(ctx, x, y, 1.35, 1.0, 14, {
+            top: color.replace("0.72", "0.26").replace("0.7", "0.26"),
+            front: "rgba(6, 28, 38, 0.93)",
+            side: "rgba(8, 38, 49, 0.92)",
+            left: "rgba(12, 49, 62, 0.9)",
+            stroke: color,
+          });
+        });
+        drawEditorPad(ctx, 3.0, 2.55, "PAIR", "rgba(57, 217, 255, 0.7)");
+        drawEditorPad(ctx, 7.45, 3.1, "PAIR", "rgba(178, 102, 255, 0.72)");
+        drawEditorPad(ctx, 2.55, 6.9, "PAIR", "rgba(255, 145, 70, 0.72)");
+        drawEditorPad(ctx, 7.0, 7.35, "PAIR", "rgba(43, 224, 177, 0.68)");
+        drawEditorAgent(ctx, 1.5, 5.2, "rgba(255, 145, 70, 0.76)");
+        drawEditorAgent(ctx, 8.4, 5.2);
+      }
+
+      function drawRepairBackground(ctx, width, height, subtitle) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#120d0a");
+        bg.addColorStop(0.58, "#071821");
+        bg.addColorStop(1, "#061015");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = iso(0, 0, 0);
+        const wallB = iso(10, 0, 0);
+        const wallC = iso(10, 0, 100);
+        const wallD = iso(0, 0, 100);
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(52, 28, 18, 0.6)", "rgba(255, 145, 70, 0.34)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(20, 30, 32, 0.56)", "rgba(255, 145, 70, 0.1)");
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(244, 212, 77, 0.18)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([8, 8]);
+        for (let x = 1; x <= 9; x += 2) {
+          const north = iso(x, 1.0);
+          const south = iso(x, 8.6);
+          ctx.beginPath();
+          ctx.moveTo(north.x, north.y);
+          ctx.lineTo(south.x, south.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(255, 238, 213, 0.86)";
+        ctx.fillText("ERROR / TIMEOUTS", 92, 88);
+        ctx.fillStyle = "rgba(195, 170, 145, 0.86)";
+        ctx.fillText(subtitle, 92, 108);
+        ctx.restore();
+      }
+
+      function drawScrapBlock(ctx, x, y, z, color, w = 0.62, h = 0.42) {
+        raisedBox(ctx, x, y, w, h, z, {
+          top: color,
+          front: "rgba(30, 19, 15, 0.94)",
+          side: "rgba(20, 27, 30, 0.92)",
+          left: "rgba(35, 24, 18, 0.9)",
+          stroke: color,
+        });
+      }
+
+      function drawRepairAgent(ctx, x, y, color = "rgba(255, 145, 70, 0.76)", broken = false) {
+        const p = iso(x, y, 8);
+        glow(ctx, p.x, p.y - 17, 30, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 11, p.y - 44, 22, 24, 7);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 17);
+        ctx.lineTo(p.x + (broken ? 8 : 0), p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = broken ? "#ff4d51" : "#f5fbff";
+        ctx.beginPath();
+        ctx.arc(p.x - 4, p.y - 34, 1.8, 0, Math.PI * 2);
+        ctx.arc(p.x + 4, p.y - 34, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        if (broken) {
+          ctx.save();
+          ctx.strokeStyle = "#ff4d51";
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(p.x - 9, p.y - 46);
+          ctx.lineTo(p.x - 3, p.y - 40);
+          ctx.moveTo(p.x - 3, p.y - 46);
+          ctx.lineTo(p.x - 9, p.y - 40);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      function drawFloorMat(ctx, centerX, centerY, radius, color, mode) {
+        const center = iso(centerX, centerY, 6);
+        glow(ctx, center.x, center.y, radius * 1.7, color.replace("0.78", "0.2"));
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(24, 16, 13, 0.5)";
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 12;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.ellipse(center.x, center.y, radius, radius * 0.42, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.lineWidth = 2;
+        if (mode === "dead") {
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(center.x - radius * 0.52, center.y - radius * 0.2);
+          ctx.lineTo(center.x + radius * 0.52, center.y + radius * 0.2);
+          ctx.moveTo(center.x - radius * 0.52, center.y + radius * 0.2);
+          ctx.lineTo(center.x + radius * 0.52, center.y - radius * 0.2);
+          ctx.stroke();
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.ellipse(center.x, center.y, radius * 0.7, radius * 0.3, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function drawFloorScratch(ctx, x1, y1, x2, y2, color) {
+        const a = iso(x1, y1, 7);
+        const b = iso(x2, y2, 7);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawCornerScrapPile(ctx, corner, intensity = 1) {
+        const piles =
+          corner === "nw"
+            ? [
+                [1.15, 2.0, 12, "rgba(255, 145, 70, 0.58)", 0.88, 0.52],
+                [1.88, 1.72, 18, "rgba(57, 217, 255, 0.36)", 0.62, 0.4],
+                [2.38, 2.45, 15, "rgba(244, 212, 77, 0.42)", 0.7, 0.34],
+                [1.55, 3.02, 10, "rgba(255, 76, 82, 0.44)", 0.52, 0.36],
+              ]
+            : [
+                [7.9, 6.95, 13, "rgba(57, 217, 255, 0.34)", 0.84, 0.48],
+                [8.55, 6.35, 19, "rgba(255, 145, 70, 0.54)", 0.6, 0.42],
+                [7.28, 7.55, 14, "rgba(255, 76, 82, 0.44)", 0.72, 0.36],
+                [8.65, 7.58, 10, "rgba(244, 212, 77, 0.4)", 0.52, 0.3],
+              ];
+        piles.slice(0, Math.round(3 + intensity)).forEach(([x, y, z, color, w, h]) => {
+          drawScrapBlock(ctx, x, y, z, color, w, h);
+        });
+        const marker = corner === "nw" ? iso(1.7, 2.65, 30) : iso(8.12, 7.0, 30);
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 76, 82, 0.6)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(marker.x - 9, marker.y - 5);
+        ctx.lineTo(marker.x + 7, marker.y + 4);
+        ctx.moveTo(marker.x - 4, marker.y + 6);
+        ctx.lineTo(marker.x + 8, marker.y - 6);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawLooseRepairDebris(ctx, heavy = false) {
+        const marks = [
+          [3.0, 6.2, 3.55, 6.38, "rgba(255, 145, 70, 0.42)"],
+          [6.25, 3.0, 6.9, 2.86, "rgba(244, 212, 77, 0.38)"],
+          [2.8, 4.2, 3.25, 4.0, "rgba(255, 76, 82, 0.38)"],
+          [6.75, 6.15, 7.2, 6.42, "rgba(57, 217, 255, 0.28)"],
+        ];
+        if (heavy) {
+          marks.push(
+            [4.1, 7.05, 4.55, 7.28, "rgba(255, 76, 82, 0.38)"],
+            [5.9, 2.55, 6.35, 2.76, "rgba(255, 145, 70, 0.36)"],
+          );
+        }
+        marks.forEach(([x1, y1, x2, y2, color]) => drawFloorScratch(ctx, x1, y1, x2, y2, color));
+      }
+
+      function drawRepairFloorYard(ctx, width, height, config) {
+        drawRepairBackground(ctx, width, height, config.subtitle);
+        drawFloorMat(ctx, 5.0, 4.82, config.radius, config.color, config.mode);
+        drawCornerScrapPile(ctx, "nw", config.heavy ? 2 : 1);
+        drawCornerScrapPile(ctx, "se", config.heavy ? 2 : 1);
+        drawLooseRepairDebris(ctx, config.heavy);
+        if (config.mode === "dead") {
+          drawRepairAgent(ctx, 4.55, 5.2, "rgba(255, 76, 82, 0.68)", true);
+        }
+      }
+
+      function drawDeadZoneMat(ctx, width, height) {
+        drawRepairFloorYard(ctx, width, height, {
+          subtitle: "dark floor target with heavier junk piles",
+          mode: "dead",
+          color: "rgba(255, 76, 82, 0.78)",
+          radius: 82,
+          heavy: true,
+        });
+      }
+
+      function drawZenBackground(ctx, width, height, subtitle) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#031412");
+        bg.addColorStop(0.58, "#052522");
+        bg.addColorStop(1, "#031015");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = iso(0, 0, 0);
+        const wallB = iso(10, 0, 0);
+        const wallC = iso(10, 0, 96);
+        const wallD = iso(0, 0, 96);
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(8, 45, 41, 0.58)", "rgba(43, 224, 177, 0.24)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(6, 32, 32, 0.55)", "rgba(43, 224, 177, 0.11)");
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(57, 217, 255, 0.14)";
+        ctx.lineWidth = 1;
+        for (let y = 1; y <= 8; y += 2) {
+          const west = iso(0.4, y);
+          const east = iso(9.5, y);
+          ctx.beginPath();
+          ctx.moveTo(west.x, west.y);
+          ctx.lineTo(east.x, east.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(222, 255, 246, 0.86)";
+        ctx.fillText("ZEN IDLE", 92, 88);
+        ctx.fillStyle = "rgba(151, 204, 195, 0.86)";
+        ctx.fillText(subtitle, 92, 108);
+        ctx.restore();
+      }
+
+      function drawZenDestinationMark(ctx, x, y, color) {
+        const p = iso(x, y, 9);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 22, 8.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - 11, p.y);
+        ctx.lineTo(p.x + 11, p.y);
+        ctx.moveTo(p.x, p.y - 5);
+        ctx.lineTo(p.x, p.y + 5);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawZenPylon(ctx, x, y, color) {
+        raisedBox(ctx, x, y, 0.22, 0.22, 18, {
+          top: color,
+          front: "rgba(5, 29, 28, 0.88)",
+          side: "rgba(6, 38, 36, 0.86)",
+          left: "rgba(8, 48, 43, 0.84)",
+          stroke: color,
+        });
+      }
+
+      function drawZenStation(ctx, x, y, label, color) {
+        const p = iso(x, y, 8);
+        glow(ctx, p.x, p.y, 60, color.replace("0.76", "0.22").replace("0.72", "0.2"));
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(5, 43, 39, 0.46)";
+        ctx.lineWidth = 2.4;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 54, 22, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(222, 255, 246, 0.46)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 37, 15, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(222, 255, 246, 0.84)";
+        ctx.font = "800 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, p.x, p.y + 3);
+        ctx.restore();
+
+        drawZenDestinationMark(ctx, x, y, "rgba(222, 255, 246, 0.72)");
+        drawZenPylon(ctx, x - 0.86, y + 0.1, color);
+        drawZenPylon(ctx, x + 0.64, y - 0.12, color);
+      }
+
+      function drawZenAgent(ctx, x, y, color = "rgba(43, 224, 177, 0.66)") {
+        const p = iso(x, y, 8);
+        glow(ctx, p.x, p.y - 16, 28, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 10, p.y - 42, 20, 23, 7);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4.5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 16);
+        ctx.lineTo(p.x, p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = "#f5fbff";
+        ctx.beginPath();
+        ctx.arc(p.x - 3.8, p.y - 32, 1.7, 0, Math.PI * 2);
+        ctx.arc(p.x + 3.8, p.y - 32, 1.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawStaggeredRechargeField(ctx, width, height) {
+        drawZenBackground(ctx, width, height, "staggered recharge stations with open floor marks");
+        drawZenStation(ctx, 3.0, 3.25, "REST", "rgba(43, 224, 177, 0.76)");
+        drawZenStation(ctx, 6.9, 4.25, "IDLE", "rgba(57, 217, 255, 0.72)");
+        drawZenStation(ctx, 4.8, 6.45, "READY", "rgba(96, 240, 198, 0.72)");
+        drawFloorScratch(ctx, 2.25, 5.2, 3.1, 5.02, "rgba(43, 224, 177, 0.22)");
+        drawFloorScratch(ctx, 6.1, 6.75, 6.75, 6.52, "rgba(57, 217, 255, 0.2)");
+        drawZenAgent(ctx, 3.0, 3.35, "rgba(43, 224, 177, 0.58)");
+        drawZenAgent(ctx, 6.8, 4.35, "rgba(57, 217, 255, 0.55)");
+      }
+
+      function drawWorkshopBackground(ctx, width, height, subtitle, accent = palette.yellow) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#051217");
+        bg.addColorStop(0.52, "#07222a");
+        bg.addColorStop(1, "#061116");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        const wallA = iso(0, 0, 0);
+        const wallB = iso(10, 0, 0);
+        const wallC = iso(10, 0, 102);
+        const wallD = iso(0, 0, 102);
+        poly(ctx, [wallA, wallB, wallC, wallD], "rgba(28, 35, 35, 0.62)", "rgba(244, 212, 77, 0.2)");
+
+        for (let x = -1; x < 12; x++) {
+          for (let y = 0; y < 10; y++) {
+            tileDiamond(ctx, x, y, "rgba(8, 32, 39, 0.56)", "rgba(69, 208, 244, 0.12)");
+          }
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(244, 212, 77, 0.18)";
+        ctx.lineWidth = 1.2;
+        for (let y = 1; y <= 8; y += 2) {
+          const west = iso(0.6, y, 2);
+          const east = iso(9.4, y, 2);
+          ctx.beginPath();
+          ctx.moveTo(west.x, west.y);
+          ctx.lineTo(east.x, east.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(255, 247, 218, 0.9)";
+        ctx.fillText("WORKSHOP", 92, 88);
+        ctx.fillStyle = accent;
+        ctx.fillText(subtitle, 92, 108);
+        ctx.restore();
+      }
+
+      function drawWorkshopBlock(ctx, x, y, w, h, z, color) {
+        raisedBox(ctx, x, y, w, h, z, {
+          top: color,
+          front: "rgba(7, 28, 35, 0.95)",
+          side: "rgba(9, 38, 47, 0.93)",
+          left: "rgba(13, 48, 55, 0.9)",
+          stroke: color,
+        });
+      }
+
+      function drawWorkshopToolPost(ctx, x, y, color, height = 42) {
+        drawWorkshopBlock(ctx, x, y, 0.28, 0.28, height, color);
+        const p = iso(x + 0.14, y + 0.14, height + 6);
+        glow(ctx, p.x, p.y, 20, color.replace("0.78", "0.26").replace("0.72", "0.24"));
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 10, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawWorkshopFloorMark(ctx, x, y, label, color, rx = 42, ry = 16) {
+        const p = iso(x, y, 7);
+        glow(ctx, p.x, p.y, rx * 1.25, color.replace("0.78", "0.18").replace("0.72", "0.16"));
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(5, 26, 33, 0.6)";
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "rgba(234, 248, 251, 0.86)";
+        ctx.font = "800 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, p.x, p.y + 3);
+        ctx.restore();
+      }
+
+      function drawWorkshopAgent(ctx, x, y, color = "rgba(69, 169, 255, 0.72)") {
+        const p = iso(x, y, 8);
+        glow(ctx, p.x, p.y - 16, 28, color);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(p.x - 10, p.y - 42, 20, 23, 7);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4.5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 16);
+        ctx.lineTo(p.x, p.y - 3);
+        ctx.stroke();
+        ctx.fillStyle = "#f5fbff";
+        ctx.beginPath();
+        ctx.arc(p.x - 3.8, p.y - 32, 1.7, 0, Math.PI * 2);
+        ctx.arc(p.x + 3.8, p.y - 32, 1.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawWorkshopSchematic(ctx, points, color) {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 9;
+        ctx.beginPath();
+        points.forEach(([x, y], index) => {
+          const p = iso(x, y, 10);
+          if (index === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawAssemblyIslands(ctx, width, height) {
+        drawWorkshopBackground(ctx, width, height, "staggered work islands and part bins", "rgba(57, 217, 255, 0.84)");
+        [
+          [2.15, 3.35, 1.2, 1.05, 18, "rgba(57, 217, 255, 0.5)"],
+          [4.45, 2.75, 1.55, 0.9, 24, "rgba(43, 224, 177, 0.5)"],
+          [6.8, 3.9, 1.15, 1.25, 20, "rgba(178, 102, 255, 0.48)"],
+          [3.35, 6.1, 1.65, 0.82, 16, "rgba(255, 145, 70, 0.5)"],
+          [6.05, 6.25, 1.35, 0.76, 14, "rgba(244, 212, 77, 0.46)"],
+        ].forEach(([x, y, w, h, z, color]) => drawWorkshopBlock(ctx, x, y, w, h, z, color));
+        [
+          [1.55, 2.55, "rgba(244, 212, 77, 0.68)", 34],
+          [7.92, 2.98, "rgba(57, 217, 255, 0.68)", 46],
+          [1.85, 6.65, "rgba(255, 145, 70, 0.68)", 38],
+          [7.7, 6.9, "rgba(43, 224, 177, 0.68)", 32],
+        ].forEach(([x, y, color, height]) => drawWorkshopToolPost(ctx, x, y, color, height));
+        drawWorkshopFloorMark(ctx, 5.0, 4.82, "OPEN", "rgba(234, 248, 251, 0.42)", 52, 18);
+        drawWorkshopSchematic(ctx, [[2.7, 4.85], [4.2, 4.2], [5.0, 4.82], [6.45, 5.25], [7.35, 4.8]], "rgba(244, 212, 77, 0.42)");
+        drawWorkshopAgent(ctx, 2.2, 5.6, "rgba(255, 145, 70, 0.66)");
+        drawWorkshopAgent(ctx, 6.1, 3.15, "rgba(43, 224, 177, 0.62)");
+      }
+
+      function launchIso(x, y, z = 0) {
+        const originX = 560;
+        const originY = 116;
+        const tileW = 64;
+        const tileH = 32;
+        return {
+          x: originX + (x - y) * tileW * 0.5,
+          y: originY + (x + y) * tileH * 0.5 - z,
+        };
+      }
+
+      function launchPoly(ctx, points, fill, stroke, lineWidth = 1.5) {
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = lineWidth;
+          ctx.stroke();
+        }
+      }
+
+      function drawLaunchTile(ctx, x, y, fill, stroke) {
+        const a = launchIso(x, y);
+        const b = launchIso(x + 1, y);
+        const c = launchIso(x + 1, y + 1);
+        const d = launchIso(x, y + 1);
+        launchPoly(ctx, [a, b, c, d], fill, stroke);
+      }
+
+      function drawLaunchBackground(ctx, width, height) {
+        ctx.clearRect(0, 0, width, height);
+        const bg = ctx.createLinearGradient(0, 0, width, height);
+        bg.addColorStop(0, "#030f14");
+        bg.addColorStop(0.55, "#061a23");
+        bg.addColorStop(1, "#081014");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(69, 208, 244, 0.12)";
+        ctx.lineWidth = 1;
+        for (let x = -2; x < 13; x++) {
+          for (let y = -2; y < 13; y++) {
+            drawLaunchTile(ctx, x, y, "rgba(5, 21, 28, 0.42)", "rgba(69, 208, 244, 0.12)");
+          }
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 14px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(218, 250, 255, 0.82)";
+        ctx.fillText("LAUNCH CONTROL", 128, 100);
+        ctx.fillStyle = "rgba(148, 186, 195, 0.84)";
+        ctx.fillText("merge room cube with four approach destinations", 128, 123);
+        ctx.restore();
+      }
+
+      function drawLaunchCube(ctx) {
+        const z = 138;
+        const a = launchIso(0.6, 0.6, 0);
+        const b = launchIso(8.4, 0.6, 0);
+        const c = launchIso(8.4, 8.4, 0);
+        const d = launchIso(0.6, 8.4, 0);
+        const at = launchIso(0.6, 0.6, z);
+        const bt = launchIso(8.4, 0.6, z);
+        const ct = launchIso(8.4, 8.4, z);
+        const dt = launchIso(0.6, 8.4, z);
+
+        launchPoly(ctx, [a, b, c, d], "rgba(9, 37, 48, 0.78)", "rgba(57, 217, 255, 0.5)", 2);
+        launchPoly(ctx, [a, b, bt, at], "rgba(57, 217, 255, 0.08)", "rgba(57, 217, 255, 0.36)");
+        launchPoly(ctx, [b, c, ct, bt], "rgba(43, 224, 177, 0.06)", "rgba(57, 217, 255, 0.3)");
+        launchPoly(ctx, [d, c, ct, dt], "rgba(57, 217, 255, 0.05)", "rgba(57, 217, 255, 0.26)");
+        launchPoly(ctx, [a, d, dt, at], "rgba(57, 217, 255, 0.07)", "rgba(57, 217, 255, 0.32)");
+        launchPoly(ctx, [at, bt, ct, dt], "rgba(57, 217, 255, 0.035)", "rgba(125, 230, 255, 0.5)", 2);
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(125, 230, 255, 0.46)";
+        ctx.lineWidth = 1.3;
+        for (let i = 2; i <= 7; i += 1) {
+          const north = launchIso(i, 0.6);
+          const south = launchIso(i, 8.4);
+          const west = launchIso(0.6, i);
+          const east = launchIso(8.4, i);
+          ctx.beginPath();
+          ctx.moveTo(north.x, north.y);
+          ctx.lineTo(south.x, south.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(west.x, west.y);
+          ctx.lineTo(east.x, east.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(244, 212, 77, 0.58)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 8]);
+        const center = launchIso(4.5, 4.5, 28);
+        [[4.5, 1.35], [7.65, 4.5], [4.5, 7.65], [1.35, 4.5]].forEach(([x, y]) => {
+          const pad = launchIso(x, y, 12);
+          ctx.beginPath();
+          ctx.moveTo(pad.x, pad.y);
+          ctx.lineTo(center.x, center.y);
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+
+      function drawWalkPad(ctx, x, y, label, color) {
+        const p = launchIso(x, y, 12);
+        glow(ctx, p.x, p.y, 46, color);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(5, 25, 33, 0.82)";
+        ctx.lineWidth = 2.4;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, 43, 17, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "rgba(234, 248, 251, 0.88)";
+        ctx.font = "800 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(label, p.x, p.y + 4);
+        ctx.restore();
+      }
+
+      function drawMergeButton(ctx) {
+        const x = 3.48;
+        const y = 3.48;
+        const size = 2.04;
+        const topZ = 50;
+        const a = launchIso(x, y, topZ);
+        const b = launchIso(x + size, y, topZ);
+        const c = launchIso(x + size, y + size, topZ);
+        const d = launchIso(x, y + size, topZ);
+        const af = launchIso(x, y, 0);
+        const bf = launchIso(x + size, y, 0);
+        const cf = launchIso(x + size, y + size, 0);
+        const df = launchIso(x, y + size, 0);
+        const center = launchIso(4.5, 4.5, topZ + 9);
+
+        ctx.save();
+        ctx.shadowColor = "rgba(57, 217, 255, 0.42)";
+        ctx.shadowBlur = 18;
+        launchPoly(ctx, [d, c, cf, df], "rgba(7, 28, 36, 0.95)", "rgba(125, 230, 255, 0.78)", 2);
+        launchPoly(ctx, [b, c, cf, bf], "rgba(9, 35, 45, 0.94)", "rgba(125, 230, 255, 0.72)", 2);
+        launchPoly(ctx, [a, d, df, af], "rgba(12, 45, 57, 0.9)", "rgba(125, 230, 255, 0.62)", 2);
+        launchPoly(ctx, [a, b, c, d], "rgba(20, 74, 91, 0.96)", "rgba(171, 244, 255, 0.9)", 2.5);
+        ctx.restore();
+
+        ctx.save();
+        const buttonRadiusX = 36;
+        const buttonRadiusY = 16;
+        const buttonHeight = 16;
+        glow(ctx, center.x, center.y + 2, 58, "rgba(255, 48, 53, 0.2)");
+        ctx.shadowColor = "#ff3035";
+        ctx.shadowBlur = 14;
+        const sideGradient = ctx.createLinearGradient(
+          center.x,
+          center.y,
+          center.x,
+          center.y + buttonHeight + buttonRadiusY,
+        );
+        sideGradient.addColorStop(0, "#ff4247");
+        sideGradient.addColorStop(0.55, "#d4131c");
+        sideGradient.addColorStop(1, "#74070d");
+        ctx.fillStyle = sideGradient;
+        ctx.strokeStyle = "#ffaca7";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(center.x - buttonRadiusX, center.y);
+        ctx.bezierCurveTo(
+          center.x - buttonRadiusX,
+          center.y + buttonHeight + buttonRadiusY * 0.55,
+          center.x + buttonRadiusX,
+          center.y + buttonHeight + buttonRadiusY * 0.55,
+          center.x + buttonRadiusX,
+          center.y,
+        );
+        ctx.lineTo(center.x + buttonRadiusX, center.y + buttonHeight);
+        ctx.bezierCurveTo(
+          center.x + buttonRadiusX,
+          center.y + buttonHeight + buttonRadiusY,
+          center.x - buttonRadiusX,
+          center.y + buttonHeight + buttonRadiusY,
+          center.x - buttonRadiusX,
+          center.y + buttonHeight,
+        );
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        const topGradient = ctx.createLinearGradient(
+          center.x - buttonRadiusX,
+          center.y - buttonRadiusY,
+          center.x + buttonRadiusX,
+          center.y + buttonRadiusY,
+        );
+        topGradient.addColorStop(0, "#ff7770");
+        topGradient.addColorStop(0.45, "#ff3035");
+        topGradient.addColorStop(1, "#b90d15");
+        ctx.fillStyle = topGradient;
+        ctx.strokeStyle = "#ffd6d2";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.ellipse(center.x, center.y, buttonRadiusX, buttonRadiusY, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255, 244, 241, 0.82)";
+        ctx.beginPath();
+        ctx.ellipse(center.x - 13, center.y - 6, 8, 4, -0.15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = "rgba(234, 248, 251, 0.84)";
+        ctx.font = "900 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("MERGE", center.x, launchIso(4.5, 5.48, 24).y);
+        ctx.restore();
+      }
+
+      function drawLaunchAgents(ctx) {
+        const agents = [
+          { x: 4.5, y: 1.35, color: "rgba(69, 169, 255, 0.82)" },
+          { x: 7.65, y: 4.5, color: "rgba(244, 212, 77, 0.78)" },
+          { x: 1.35, y: 4.5, color: "rgba(255, 145, 70, 0.76)" },
+        ];
+        agents.forEach((agent) => {
+          const p = launchIso(agent.x, agent.y, 24);
+          glow(ctx, p.x, p.y - 20, 34, agent.color);
+          ctx.fillStyle = agent.color;
+          ctx.beginPath();
+          ctx.roundRect(p.x - 12, p.y - 50, 24, 27, 8);
+          ctx.fill();
+          ctx.strokeStyle = agent.color;
+          ctx.lineWidth = 5;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y - 21);
+          ctx.lineTo(p.x, p.y - 4);
+          ctx.stroke();
+          ctx.fillStyle = "#f5fbff";
+          ctx.beginPath();
+          ctx.arc(p.x - 4.5, p.y - 38, 2, 0, Math.PI * 2);
+          ctx.arc(p.x + 4.5, p.y - 38, 2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function drawLaunchRoom(ctx, width, height) {
+        drawLaunchBackground(ctx, width, height);
+        drawLaunchCube(ctx);
+        drawWalkPad(ctx, 4.5, 1.35, "N WALK", "rgba(57, 217, 255, 0.7)");
+        drawWalkPad(ctx, 7.65, 4.5, "E WALK", "rgba(43, 224, 177, 0.68)");
+        drawWalkPad(ctx, 4.5, 7.65, "S WALK", "rgba(244, 212, 77, 0.7)");
+        drawWalkPad(ctx, 1.35, 4.5, "W WALK", "rgba(255, 145, 70, 0.72)");
+        drawMergeButton(ctx);
+        drawLaunchAgents(ctx);
+      }
+
+      function render(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        drawBackground(ctx, width, height);
+        drawAgentGhost(ctx);
+        drawCurtain(ctx);
+        drawLabels(ctx);
+      }
+
+      function renderLab(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        drawLabBackground(ctx, width, height);
+        drawCompilerReactor(ctx);
+      }
+
+      function renderWar(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.war;
+        if (variant === "strategy-table") drawTacticalMapTable(ctx, width, height);
+      }
+
+      function renderEditor(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.editor;
+        if (variant === "pair-pods") drawPairPods(ctx, width, height);
+      }
+
+      function renderRepair(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.repair;
+        if (variant === "dead-zone-mat") drawDeadZoneMat(ctx, width, height);
+      }
+
+      function renderZen(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.zen;
+        if (variant === "recharge-field") drawStaggeredRechargeField(ctx, width, height);
+      }
+
+      function renderWorkshop(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.workshop;
+        if (variant === "assembly-islands") drawAssemblyIslands(ctx, width, height);
+      }
+
+      function renderLaunch(canvas) {
+        const { ctx, width, height } = setupCanvas(canvas);
+        const variant = canvas.dataset.launch;
+        if (variant === "cube-button") drawLaunchRoom(ctx, width, height);
+      }
+
+      document.querySelectorAll("canvas[data-variant]").forEach((canvas) => render(canvas));
+      document.querySelectorAll("canvas[data-lab]").forEach((canvas) => renderLab(canvas));
+      document.querySelectorAll("canvas[data-war]").forEach((canvas) => renderWar(canvas));
+      document.querySelectorAll("canvas[data-editor]").forEach((canvas) => renderEditor(canvas));
+      document.querySelectorAll("canvas[data-repair]").forEach((canvas) => renderRepair(canvas));
+      document.querySelectorAll("canvas[data-zen]").forEach((canvas) => renderZen(canvas));
+      document.querySelectorAll("canvas[data-workshop]").forEach((canvas) => renderWorkshop(canvas));
+      document.querySelectorAll("canvas[data-launch]").forEach((canvas) => renderLaunch(canvas));
+    </script>
+  </body>
+</html>

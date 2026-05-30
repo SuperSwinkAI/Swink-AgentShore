@@ -1,0 +1,960 @@
+"""Tests for ``agentshore.agents.identity.resolve_identity_env``."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from agentshore.agents import identity as identity_mod
+from agentshore.agents.identity import reset_token_cache, resolve_identity_env
+from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
+from agentshore.errors import AgentAuthError
+
+
+def _cfg(
+    *,
+    identity_name: str | None = "example-user",
+    identities: dict[str, GitHubIdentity] | None = None,
+) -> tuple[RuntimeConfig, AgentConfig]:
+    if identities is None:
+        identities = {
+            "example-user": GitHubIdentity(
+                git_user_name="Example User",
+                git_user_email="user@example.com",
+                gh_token_login="example-user",
+            )
+        }
+    fc = RuntimeConfig(identities=identities)
+    ac = AgentConfig(identity=identity_name)
+    return fc, ac
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache() -> None:
+    reset_token_cache()
+
+
+def test_no_identity_returns_empty() -> None:
+    fc, ac = _cfg(identity_name=None)
+    assert resolve_identity_env(fc, ac) == {}
+
+
+def test_authorship_env_always_present() -> None:
+    fc, ac = _cfg(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Example User",
+                git_user_email="user@example.com",
+            )
+        }
+    )
+    env = resolve_identity_env(fc, ac)
+    assert env["GIT_AUTHOR_NAME"] == "Example User"
+    assert env["GIT_AUTHOR_EMAIL"] == "user@example.com"
+    assert env["GIT_COMMITTER_NAME"] == "Example User"
+    assert env["GIT_COMMITTER_EMAIL"] == "user@example.com"
+    # No token configured -> nothing injected.
+    assert "GH_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+
+
+def test_token_env_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_secret")
+    fc, ac = _cfg(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        identity_name="unseriousAI",
+    )
+    env = resolve_identity_env(fc, ac)
+    assert env["GH_TOKEN"] == "ghp_secret"
+    assert env["GITHUB_TOKEN"] == "ghp_secret"
+
+
+def test_token_env_missing_logs_warning_and_omits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    fc, ac = _cfg(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        identity_name="unseriousAI",
+    )
+    env = resolve_identity_env(fc, ac)
+    assert "GH_TOKEN" not in env
+
+
+def test_strict_token_env_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentshore.agents.identity import IdentityResolutionError
+
+    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    fc, ac = _cfg(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        identity_name="unseriousAI",
+    )
+    with pytest.raises(IdentityResolutionError, match="token missing"):
+        resolve_identity_env(fc, ac, strict=True)
+
+
+def test_strict_token_env_rejects_wrong_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentshore.agents.identity import IdentityResolutionError
+
+    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_wrong_login")
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "someoneElse", None),
+    )
+    fc, ac = _cfg(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="Unserious AI Bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        identity_name="unseriousai",
+    )
+
+    with pytest.raises(IdentityResolutionError, match="expected 'unseriousai'"):
+        resolve_identity_env(fc, ac, strict=True)
+
+
+def test_token_login_uses_gh_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    class _Result:
+        stdout = "ghp_from_gh_cli\n"
+
+    def fake_run(argv: list[str], **_: Any) -> _Result:
+        calls.append(argv)
+        return _Result()
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    fc, ac = _cfg()  # default uses gh_token_login="example-user"
+    env = resolve_identity_env(fc, ac)
+
+    assert env["GH_TOKEN"] == "ghp_from_gh_cli"
+    assert calls == [["/usr/bin/gh", "auth", "token", "-h", "github.com", "-u", "example-user"]]
+
+
+def test_token_login_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    class _Result:
+        stdout = "ghp_cached\n"
+
+    def fake_run(argv: list[str], **_: Any) -> _Result:
+        calls.append(argv)
+        return _Result()
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    fc, ac = _cfg()
+    resolve_identity_env(fc, ac)
+    resolve_identity_env(fc, ac)
+    resolve_identity_env(fc, ac)
+
+    assert len(calls) == 1
+
+
+def test_token_login_uses_gh_config_dir_for_lookup(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str | None] = []
+
+    class _Result:
+        stdout = "ghp_from_config_dir\n"
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _Result:
+        assert argv[1:3] == ["auth", "token"]
+        calls.append(kwargs["env"].get("GH_CONFIG_DIR"))
+        return _Result()
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    config_dir = tmp_path / "gh-one"
+    fc, ac = _cfg(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Wes",
+                git_user_email="user@example.com",
+                gh_token_login="example-user",
+                gh_config_dir=str(config_dir),
+            )
+        }
+    )
+
+    env = resolve_identity_env(fc, ac)
+
+    assert env["GH_TOKEN"] == "ghp_from_config_dir"
+    assert env["GH_CONFIG_DIR"] == str(config_dir)
+    assert calls == [str(config_dir)]
+
+
+def test_token_login_cache_is_scoped_by_gh_config_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str | None] = []
+
+    class _Result:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _Result:
+        assert argv[1:3] == ["auth", "token"]
+        config_dir = kwargs["env"].get("GH_CONFIG_DIR")
+        calls.append(config_dir)
+        return _Result(f"token_for_{config_dir}\n")
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    one = str(tmp_path / "one")
+    two = str(tmp_path / "two")
+    cfg = RuntimeConfig(
+        identities={
+            "first": GitHubIdentity(
+                git_user_name="First",
+                git_user_email="first@example.com",
+                gh_token_login="shared",
+                gh_config_dir=one,
+            ),
+            "second": GitHubIdentity(
+                git_user_name="Second",
+                git_user_email="second@example.com",
+                gh_token_login="shared",
+                gh_config_dir=two,
+            ),
+        }
+    )
+
+    first_env = resolve_identity_env(cfg, AgentConfig(identity="first"))
+    second_env = resolve_identity_env(cfg, AgentConfig(identity="second"))
+
+    assert first_env["GH_TOKEN"] == f"token_for_{one}"
+    assert second_env["GH_TOKEN"] == f"token_for_{two}"
+    assert calls == [one, two]
+
+
+def test_token_login_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+
+    def fake_run(argv: list[str], **_: Any) -> Any:
+        raise subprocess.CalledProcessError(returncode=1, cmd=argv, stderr="not logged in")
+
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    fc, ac = _cfg()
+    env = resolve_identity_env(fc, ac)
+    assert "GH_TOKEN" not in env
+    # Authorship still set.
+    assert env["GIT_AUTHOR_NAME"] == "Example User"
+
+
+def test_gh_cli_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: None)
+    fc, ac = _cfg()
+    env = resolve_identity_env(fc, ac)
+    assert "GH_TOKEN" not in env
+
+
+def test_ssh_key_path_emits_git_ssh_command() -> None:
+    fc, ac = _cfg(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Wes",
+                git_user_email="user@example.com",
+                ssh_key_path="/keys/id_ed25519",
+            )
+        }
+    )
+    env = resolve_identity_env(fc, ac)
+    assert env["GIT_SSH_COMMAND"] == ("ssh -i /keys/id_ed25519 -o IdentitiesOnly=yes")
+
+
+def test_unknown_identity_at_dispatch_returns_empty_authorship() -> None:
+    """If parser-level validation is bypassed, the resolver fails open."""
+    fc = RuntimeConfig(identities={})
+    ac = AgentConfig(identity="ghost")
+    assert resolve_identity_env(fc, ac) == {}
+
+
+def test_isolated_gh_config_dir_when_unspecified(tmp_path, monkeypatch) -> None:
+    """Identity without an explicit gh_config_dir gets an isolated empty one.
+
+    Regression for #316: a codex/claude/gemini subprocess that scrubs GH_TOKEN
+    from its env will fall back to gh's hosts.yml. If we leave the parent's
+    GH_CONFIG_DIR in place that means falling back to the user's default
+    account — silent identity impersonation. The fix forces gh to either use
+    the injected GH_TOKEN or fail explicitly: never silently impersonate.
+    """
+    import agentshore.agents.identity as ident_mod
+
+    monkeypatch.setattr(ident_mod, "user_data_dir", lambda _name: str(tmp_path), raising=False)
+    fc, ac = _cfg(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+            )
+        },
+        identity_name="unseriousai",
+    )
+    env = resolve_identity_env(fc, ac)
+    gh_dir = Path(env["GH_CONFIG_DIR"])
+    assert gh_dir.is_dir(), "isolated GH_CONFIG_DIR must exist"
+    assert not any(gh_dir.iterdir()), "isolated dir must be empty so gh has no fallback"
+    assert gh_dir.name == "gh"
+    assert "unseriousai" in gh_dir.parts
+
+
+def test_explicit_gh_config_dir_takes_precedence(tmp_path) -> None:
+    """A configured gh_config_dir wins over the auto-isolated path."""
+    explicit = tmp_path / "configured"
+    explicit.mkdir()
+    fc, ac = _cfg(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Wes",
+                git_user_email="user@example.com",
+                gh_config_dir=str(explicit),
+            )
+        }
+    )
+    env = resolve_identity_env(fc, ac)
+    assert env["GH_CONFIG_DIR"] == str(explicit)
+
+
+# ---------------------------------------------------------------------------
+# report_identities — diagnostic / startup banner
+# ---------------------------------------------------------------------------
+
+
+def _report(*, identities: dict[str, GitHubIdentity], agents: dict[str, AgentConfig]) -> list:
+    from agentshore.agents.identity import report_identities
+
+    fc = RuntimeConfig(identities=identities, agents=agents)
+    return report_identities(fc)
+
+
+def test_report_no_identity_marks_ambient() -> None:
+    rows = _report(
+        identities={},
+        agents={"claude_code": AgentConfig(identity=None)},
+    )
+    (row,) = rows
+    assert row.identity_name is None
+    assert row.token_resolved is False
+    assert row.token_source == "none"
+
+
+def test_report_env_token_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousAI", None),
+    )
+    rows = _report(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        agents={"codex": AgentConfig(identity="unseriousAI")},
+    )
+    (row,) = rows
+    assert row.token_source == "env"
+    assert row.token_resolved is True
+    assert row.token_valid is True
+    assert row.resolved_login == "unseriousai"
+    assert "UNSERIOUSAI_GH_TOKEN" in row.detail
+
+
+def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_bad")
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (False, None, "HTTP 401 Bad credentials"),
+    )
+    rows = _report(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        agents={"codex": AgentConfig(identity="unseriousAI")},
+    )
+    (row,) = rows
+    assert row.token_resolved is True
+    assert row.token_valid is False
+    assert row.resolved_login is None
+    assert "Bad credentials" in row.detail
+
+
+def test_report_env_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    rows = _report(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+            )
+        },
+        agents={"codex": AgentConfig(identity="unseriousAI")},
+    )
+    (row,) = rows
+    assert row.token_resolved is False
+    assert "is unset" in row.detail
+    assert "UNSERIOUSAI_GH_TOKEN" in row.detail
+
+
+def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    monkeypatch.setattr(
+        keyring,
+        "get_password",
+        lambda service, username: (
+            "ghp_keychain_token" if service == "agentshore/unseriousAI" else None
+        ),
+    )
+
+    fc = RuntimeConfig(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_keychain="agentshore/unseriousAI",
+            )
+        }
+    )
+    ac = AgentConfig(identity="unseriousAI")
+    env = resolve_identity_env(fc, ac)
+    assert env["GH_TOKEN"] == "ghp_keychain_token"
+
+
+def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    monkeypatch.setattr(
+        keyring,
+        "get_password",
+        lambda service, username: (
+            "ghp_keychain_token" if service == "agentshore/unseriousai" else None
+        ),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        identity_mod._logger,
+        "warning",
+        lambda event, **_fields: warnings.append(str(event)),
+    )
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousai", None),
+    )
+
+    fc = RuntimeConfig(
+        identities={
+            "unseriousAI": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_keychain="agentshore/unseriousAI",
+            )
+        }
+    )
+    ac = AgentConfig(identity="unseriousAI")
+    env = resolve_identity_env(fc, ac, strict=True)
+    assert env["GH_TOKEN"] == "ghp_keychain_token"
+    assert "identity_keychain_token_empty" not in warnings
+
+
+def test_repo_scoped_keychain_service_validates_login_from_last_segment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        identity_mod,
+        "_read_keychain_token",
+        lambda service, warn_missing=True: (
+            "ghp_keychain_token"
+            if service == "agentshore/example-user/example-repo/unseriousai"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousAI", None),
+    )
+
+    fc = RuntimeConfig(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_keychain="agentshore/example-user/example-repo/unseriousai",
+            )
+        }
+    )
+    ac = AgentConfig(identity="unseriousai")
+
+    env = resolve_identity_env(fc, ac, strict=True)
+
+    assert env["GH_TOKEN"] == "ghp_keychain_token"
+
+
+def test_strict_keychain_token_rejects_wrong_agentshore_service_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentshore.agents.identity import IdentityResolutionError
+
+    monkeypatch.setattr(
+        identity_mod,
+        "_read_keychain_token",
+        lambda service, warn_missing=True: (
+            "ghp_keychain_token" if service == "agentshore/unseriousai" else None
+        ),
+    )
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "someoneElse", None),
+    )
+
+    fc = RuntimeConfig(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="Unserious AI Bot",
+                git_user_email="bot@example.com",
+                gh_token_keychain="agentshore/unseriousai",
+            )
+        }
+    )
+
+    with pytest.raises(IdentityResolutionError, match="expected 'unseriousai'"):
+        resolve_identity_env(fc, AgentConfig(identity="unseriousai"), strict=True)
+
+
+def test_strict_custom_keychain_token_requires_configured_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentshore.agents.identity import IdentityResolutionError
+
+    monkeypatch.setattr(
+        identity_mod,
+        "_read_keychain_token",
+        lambda service, warn_missing=True: "ghp_custom" if service == "custom/service" else None,
+    )
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousAI", None),
+    )
+
+    fc = RuntimeConfig(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="Unserious AI Bot",
+                git_user_email="bot@example.com",
+                gh_token_keychain="custom/service",
+            )
+        }
+    )
+
+    with pytest.raises(IdentityResolutionError, match="no configured GitHub login"):
+        resolve_identity_env(fc, AgentConfig(identity="unseriousai"), strict=True)
+
+
+def test_keychain_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda *_a, **_kw: None)
+    fc = RuntimeConfig(
+        identities={
+            "x": GitHubIdentity(
+                git_user_name="x",
+                git_user_email="x@example.com",
+                gh_token_keychain="agentshore/x",
+            )
+        }
+    )
+    ac = AgentConfig(identity="x")
+    env = resolve_identity_env(fc, ac)
+    assert "GH_TOKEN" not in env
+
+
+def test_keychain_backend_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+    from keyring.errors import KeyringError
+
+    def _boom(*_a: object, **_kw: object) -> str | None:
+        raise KeyringError("backend unavailable")
+
+    monkeypatch.setattr(keyring, "get_password", _boom)
+    fc = RuntimeConfig(
+        identities={
+            "x": GitHubIdentity(
+                git_user_name="x",
+                git_user_email="x@example.com",
+                gh_token_keychain="agentshore/x",
+            )
+        }
+    )
+    ac = AgentConfig(identity="x")
+    env = resolve_identity_env(fc, ac)
+    assert "GH_TOKEN" not in env
+    # Authorship still set even when the backend errored.
+    assert env["GIT_AUTHOR_NAME"] == "x"
+
+
+def test_report_identity_repo_access_flags_wrong_repo_pat(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid token scoped away from the repo is a startup-blocking config issue."""
+
+    monkeypatch.setenv("BOT_GH_TOKEN", "ghp_valid_for_other_repo")
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousAI", None),
+    )
+
+    def deny_repo_access(_project_path, _identity_env):
+        raise AgentAuthError(
+            "GitHub repository access preflight failed for the assigned identity token: "
+            "GraphQL: Could not resolve to a Repository with the name 'example-user/example-repo'."
+        )
+
+    monkeypatch.setattr(identity_mod, "verify_identity_repo_access", deny_repo_access)
+    cfg = RuntimeConfig(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="unseriousAI",
+                git_user_email="bot@example.com",
+                gh_token_env="BOT_GH_TOKEN",
+            ),
+        },
+        agents={"codex": AgentConfig(identity="unseriousai")},
+    )
+
+    rows = identity_mod.report_identity_repo_access(cfg, tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0].agent_key == "codex"
+    assert rows[0].identity_name == "unseriousai"
+    assert rows[0].ok is False
+    assert "Could not resolve" in rows[0].detail
+
+
+def test_report_identity_repo_access_skips_disabled_agents(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOT_GH_TOKEN", "ghp_valid")
+    monkeypatch.setattr(
+        identity_mod,
+        "_validate_github_token",
+        lambda _token: (True, "unseriousAI", None),
+    )
+    checked = False
+
+    def record_repo_access(_project_path, _identity_env):
+        nonlocal checked
+        checked = True
+
+    monkeypatch.setattr(identity_mod, "verify_identity_repo_access", record_repo_access)
+    cfg = RuntimeConfig(
+        identities={
+            "unseriousai": GitHubIdentity(
+                git_user_name="unseriousAI",
+                git_user_email="bot@example.com",
+                gh_token_env="BOT_GH_TOKEN",
+            ),
+        },
+        agents={"codex": AgentConfig(enabled=False, identity="unseriousai")},
+    )
+
+    assert identity_mod.report_identity_repo_access(cfg, tmp_path) == []
+    assert checked is False
+
+
+def test_three_token_sources_rejected_at_parse(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from agentshore.config import load_config
+    from agentshore.errors import ConfigError
+
+    yaml_text = """\
+agents:
+  claude_code:
+    enabled: true
+identities:
+  bad:
+    git_user_name: x
+    git_user_email: x@example.com
+    gh_token_env: X_TOKEN
+    gh_token_keychain: x/k
+"""
+    p = tmp_path / "agentshore.yaml"
+    p.write_text(yaml_text, encoding="utf-8")
+    with pytest.raises(ConfigError, match="at most one of"):
+        load_config(p)
+
+
+def test_report_gh_login_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, stdout: str, returncode: int = 0) -> None:
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    def fake_run(argv: list[str], **_: Any) -> _Result:
+        if argv[1:3] == ["auth", "token"]:
+            return _Result("ghp_login_token\n")
+        if argv[1:3] == ["api", "user"]:
+            return _Result("example-user\n")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+
+    rows = _report(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Wes",
+                git_user_email="user@example.com",
+                gh_token_login="example-user",
+            )
+        },
+        agents={"claude_code": AgentConfig(identity="example-user")},
+    )
+    (row,) = rows
+    assert row.token_source == "gh_login"
+    assert row.token_resolved is True
+    assert row.token_valid is True
+    assert row.resolved_login == "example-user"
+
+
+# ---------------------------------------------------------------------------
+# require_two_distinct_gh_identities
+# ---------------------------------------------------------------------------
+
+
+def test_require_two_identities_passes_with_two_logins() -> None:
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                gh_token_login="alice",
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob",
+                git_user_email="bob@example.com",
+                gh_token_login="bob",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="bob"),
+        },
+    )
+    require_two_distinct_gh_identities(fc)  # no raise
+
+
+def test_require_two_identities_raises_when_all_share_one_login() -> None:
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                gh_token_login="alice",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="alice"),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"≥2 distinct GitHub identities"):
+        require_two_distinct_gh_identities(fc)
+
+
+def test_require_two_identities_raises_when_no_identity_configured() -> None:
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(),
+            "codex": AgentConfig(),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"no identity bound"):
+        require_two_distinct_gh_identities(fc)
+
+
+def test_require_two_identities_no_op_when_no_cli_agents() -> None:
+    """No enabled CLI agents → code_review is structurally unavailable, skip check."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+
+    require_two_distinct_gh_identities(RuntimeConfig())  # no raise
+
+
+def test_require_two_identities_skips_disabled_agents() -> None:
+    """Disabled agents don't count toward the identity diversity requirement."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                gh_token_login="alice",
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob",
+                git_user_email="bob@example.com",
+                gh_token_login="bob",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice", enabled=True),
+            "codex": AgentConfig(identity="bob", enabled=False),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"only one identity"):
+        require_two_distinct_gh_identities(fc)
+
+
+def test_require_two_identities_rejects_missing_token_source() -> None:
+    """Identities with no token source are rejected (would inherit ambient gh auth)."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                # no token source at all → inherits ambient gh auth
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob",
+                git_user_email="bob@example.com",
+                # no token source at all → inherits ambient gh auth (likely SAME login)
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="bob"),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"no token source"):
+        require_two_distinct_gh_identities(fc)
+
+
+def test_require_two_identities_accepts_keychain_token() -> None:
+    """AgentShore-managed gh_token_keychain services encode the login."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+
+    fc = RuntimeConfig(
+        identities={
+            "example-user": GitHubIdentity(
+                git_user_name="Wes",
+                git_user_email="user@example.com",
+                gh_token_login="example-user",
+            ),
+            "unseriousAI": GitHubIdentity(
+                git_user_name="Unserious AI",
+                git_user_email="bot@example.com",
+                gh_token_keychain="agentshore/unseriousAI",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="example-user"),
+            "codex": AgentConfig(identity="unseriousAI"),
+        },
+    )
+    require_two_distinct_gh_identities(fc)  # no raise
+
+
+def test_require_two_identities_accepts_env_token() -> None:
+    """Env-token identities use the identity key as the login."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                gh_token_env="ALICE_GH_TOKEN",
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob",
+                git_user_email="bob@example.com",
+                gh_token_login="bob",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="bob"),
+        },
+    )
+    require_two_distinct_gh_identities(fc)  # no raise
+
+
+def test_require_two_identities_rejects_undefined_identity() -> None:
+    """An agent referencing an identity name not in the identities block."""
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice",
+                git_user_email="alice@example.com",
+                gh_token_login="alice",
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="ghost"),  # not defined
+        },
+    )
+    with pytest.raises(ConfigError, match=r"not defined"):
+        require_two_distinct_gh_identities(fc)

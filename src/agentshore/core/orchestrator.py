@@ -1,0 +1,347 @@
+"""``Orchestrator`` — the AgentShore RL loop composed from mixins.
+
+The class declaration is intentionally minimal: it inherits each mixin
+(roughly grouped by responsibility) and the ``_OrchestratorBase`` class that
+provides ``__init__`` and the shared attributes.  Mixins access these via
+``self._*`` and rely on Python's MRO to resolve cross-mixin method calls at
+runtime.
+
+Behavioural code lives in the mixins so each file stays under the LOC budget;
+the public-API methods that are short and not naturally grouped with a single
+responsibility live here.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from contextlib import suppress
+from typing import TYPE_CHECKING
+
+from agentshore.agents.health import HealthMonitor
+from agentshore.config.models import PolicyMode
+from agentshore.core.base import _OrchestratorBase
+from agentshore.core.helpers import (
+    _bootstrap_phase_publisher,
+    _emit_weights_dir_inventory,
+)
+from agentshore.core.mixins.completion import _CompletionMixin
+from agentshore.core.mixins.dispatch import _DispatchMixin
+from agentshore.core.mixins.drain import _DrainMixin
+from agentshore.core.mixins.lifecycle import _LifecycleMixin
+from agentshore.core.mixins.loop import _LoopMixin
+from agentshore.core.mixins.snapshots import _SnapshotsMixin
+from agentshore.core.mixins.state import _StateMixin
+
+# NOTE: bootstrap calls phase functions via ``agentshore.core._phase_X`` (looked
+# up at runtime through the ``_core_pkg`` indirection) so tests can patch
+# them on the package. We deliberately do NOT import the phase functions
+# here at module load — those imports would shadow the patchable surface.
+from agentshore.data.store import SessionRecord
+from agentshore.plays.base import PlayParams
+from agentshore.plays.override import OverrideEntry, OverrideKind
+from agentshore.rl.mask_reason import MaskClassification
+from agentshore.state import (
+    NullStateProvider,
+    OrchestratorState,
+    PlayType,
+)
+from agentshore.utils import now_iso
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from pathlib import Path
+
+    from agentshore.config import RuntimeConfig
+    from agentshore.plays.selector import PlaySelector
+    from agentshore.state import (
+        PlayOutcome,
+        StateProvider,
+    )
+
+    NaturalExitCallback = Callable[[str], Awaitable[None]]
+
+
+class Orchestrator(
+    _LifecycleMixin,
+    _DispatchMixin,
+    _CompletionMixin,
+    _LoopMixin,
+    _DrainMixin,
+    _StateMixin,
+    _SnapshotsMixin,
+    _OrchestratorBase,
+):
+    """The AgentShore RL loop: observe → select → execute → repeat.
+
+    Usage::
+
+        async with await Orchestrator.bootstrap(cfg=cfg, repo_root=...) as orch:
+            await orch.run_until_idle()
+    """
+
+    @classmethod
+    async def bootstrap(
+        cls,
+        *,
+        cfg: RuntimeConfig,
+        repo_root: Path,
+        seed_path: Path | None = None,
+        selector: PlaySelector | None = None,
+        state_provider: StateProvider | None = None,
+        session_id: str | None = None,
+        policy_path: Path | None = None,
+        policy_mode: PolicyMode = PolicyMode.LEARNING,
+        config_path: Path | None = None,
+        embedded_mode: bool = False,
+    ) -> Orchestrator:
+        """Construct and wire all components.
+
+        Returns an Orchestrator ready to use as an async context manager.
+
+        The bootstrap pipeline is split into named phases so each can be
+        unit-tested in isolation. Phase ordering is load-bearing — DB must
+        exist before manager + executor; metrics must exist before PPO
+        selector; the session row must be inserted before any FK-referencing
+        write (skills install, GitHub cache, learnings load) runs.
+        """
+        sid = session_id or str(uuid.uuid4())
+
+        # Setup logging first so all subsequent steps emit structured logs.
+        # Dispatch via agentshore.core so tests that patch the symbol intercept it.
+        from agentshore import core as _core_pkg
+
+        log_path = (
+            repo_root / cfg.logging.log_dir / f"agentshore-{sid}.log" if cfg.logging.file else None
+        )
+        _core_pkg.setup_logging(
+            level=cfg.logging.level,
+            log_dir=log_path.parent if log_path is not None else None,
+            session_id=sid,
+        )
+
+        # A transient seed_path (CLI --seed / sidecar session.start) always
+        # wins; otherwise fall back to the persisted ``intake.seed_paths`` so
+        # every start path (CLI, sidecar, desktop Quick Start, TUI) honors a
+        # configured seed. (policy_path has the analogous fallback inside
+        # ``_resolve_policy_path``.) Resolved once and threaded everywhere.
+        effective_seed = _core_pkg._resolve_seed_path(cfg, seed_path, repo_root)
+
+        provider: StateProvider = state_provider or NullStateProvider()
+
+        async def _publish_bootstrap_phase(phase: str, status: str, elapsed_ms: float) -> None:
+            await provider.on_bootstrap_phase(phase, status, elapsed_ms)
+
+        token = _bootstrap_phase_publisher.set(_publish_bootstrap_phase)
+        try:
+            store = await _core_pkg._phase_init_datastore(repo_root)
+            await _core_pkg._phase_reset_session_scoped_tables(store)
+            manager, gh, executor, registry = await _core_pkg._phase_init_executor(
+                cfg=cfg, repo_root=repo_root, sid=sid, store=store, provider=provider
+            )
+
+            # Selector is set to a temporary placeholder; PPO init below replaces it
+            # unless a test explicitly passes a selector.
+            orch = cls(
+                cfg=cfg,
+                repo_root=repo_root,
+                session_id=sid,
+                store=store,
+                manager=manager,
+                executor=executor,
+                selector=selector,
+                state_provider=provider,
+            )
+            orch._seed_path = effective_seed
+            orch._config_path = config_path
+            orch._registry = registry
+            orch._embedded_mode = embedded_mode
+            orch._log_path = log_path
+
+            # Wire the requeue callback now that orch owns _override_queue.
+            executor._requeue_callback = lambda pt, p: orch._override_queue.put_nowait(
+                OverrideEntry(
+                    play_type=pt,
+                    params=p,
+                    kind=OverrideKind.EXECUTOR_REQUEUE,
+                    enqueue_classification=MaskClassification.TRANSIENT,
+                )
+            )
+
+            await _core_pkg._phase_init_metrics(orch=orch, cfg=cfg, store=store, sid=sid)
+            _emit_weights_dir_inventory(orch._weights_dir(), phase="session_start")
+            _core_pkg._phase_cleanup_stale_weights(repo_root)
+            if selector is None:
+                await _core_pkg._phase_init_ppo_selector(
+                    orch=orch,
+                    cfg=cfg,
+                    executor=executor,
+                    registry=registry,
+                    policy_path=policy_path,
+                    policy_mode=policy_mode,
+                )
+
+            await _core_pkg._phase_create_session_row(
+                store=store, sid=sid, repo_root=repo_root, seed_path=effective_seed
+            )
+            # desktop-12g9: instantiate the worktree manager and reap any
+            # leftovers from prior sessions before dispatch opens. The manager
+            # must be in place before any FK-referencing worktree row inserts
+            # (A2's dispatch wiring), and the sweep must happen after the
+            # current session row exists so list_orphans correctly excludes it.
+            await _core_pkg._phase_init_worktree_manager(
+                orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
+            )
+            await _core_pkg._phase_session_start_worktree_sweep(orch=orch, sid=sid)
+            await _core_pkg._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
+            # Snapshot pre-session dirty trunk state before _phase_git_safety_sweep
+            # restores any branch state — RECONCILE_STATE uses this sidecar to
+            # attribute dirty paths to prior sessions even when the DB/log was
+            # recovered or rotated.
+            await _core_pkg._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
+            # desktop-kqo5: cache default branch + sweep main-repo HEAD before
+            # opening dispatch. Must run before _phase_install_skills so the
+            # cached value is available to any phase that needs it.
+            await _core_pkg._phase_git_safety_sweep(orch=orch, repo_root=repo_root, sid=sid)
+            _core_pkg._phase_install_skills(repo_root)
+            await _core_pkg._phase_fetch_github(
+                gh=gh, store=store, sid=sid, cfg=cfg, repo_root=repo_root
+            )
+            # Stamp the refresh clock so the first _build_state tick doesn't
+            # immediately re-run _refresh_issues (bootstrap already fetched).
+            orch._last_refresh_time = time.monotonic()
+            await _core_pkg._phase_ensure_labels(gh=gh, cfg=cfg)
+            await _core_pkg._phase_load_learnings(cfg=cfg, repo_root=repo_root)
+            if selector is None:
+                open_issues_at_bootstrap = await store.get_open_issues(sid)
+                _core_pkg._phase_queue_agent_instantiation(
+                    orch=orch,
+                    cfg=cfg,
+                    seed_path=effective_seed,
+                    open_issues_count=len(open_issues_at_bootstrap),
+                )
+
+            with suppress(Exception):
+                await _publish_bootstrap_phase("ready", "completed", 0.0)
+            return orch
+        finally:
+            _bootstrap_phase_publisher.reset(token)
+
+    # -------------------------------------------------------------------------
+    # Async context manager
+    # -------------------------------------------------------------------------
+
+    async def __aenter__(self) -> Orchestrator:
+        # Session row is created during bootstrap (before FK-referencing inserts).
+        # If bootstrap was skipped (e.g., tests using __new__), create it now.
+        existing = await self._store.get_session(self._session_id)
+        if existing is None:
+            await self._store.create_session(
+                SessionRecord(
+                    session_id=self._session_id,
+                    project_path=str(self._repo_root),
+                    started_at=now_iso(),
+                    status="running",
+                    seed_path=str(getattr(self, "_seed_path", None) or ""),
+                )
+            )
+        await self._store.abandon_unfinished_plays(
+            self._session_id,
+            reason="unfinished play abandoned during session startup recovery",
+        )
+        await self._store.abandon_active_work_claims(self._session_id)
+
+        self._health = HealthMonitor(
+            handles=self._manager.handles,
+            circuit_breakers=self._manager.circuit_breakers,
+            on_crash=self._on_crash,
+            on_context_pressure=self._on_context_pressure,
+        )
+        self._health.start()
+
+        # desktop-gkku: keep the OS from idling our process while a session
+        # is active. macOS holds an IOPMAssertion (PreventUserIdleSystemSleep,
+        # which keeps I/O priority normal and prevents the screen-lock
+        # corruption window from desktop-tvsb). Windows holds
+        # SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED). Linux
+        # and other platforms get a no-op.
+        from agentshore.power import acquire as _acquire_power
+
+        self._power_assertion = _acquire_power("AgentShore session active")
+
+        # desktop-jc7p: defense-in-depth against silent SQLite corruption.
+        # Canary runs PRAGMA quick_check on a schedule, snapshot ring keeps a
+        # known-good image alongside the live DB, restore_from_snapshot_ring
+        # auto-swaps at next startup if quick_check fails on the main file.
+        integrity_cfg = self._cfg.data_integrity
+        if integrity_cfg.enabled:
+            from agentshore.data.integrity import IntegrityMonitor
+
+            self._integrity = IntegrityMonitor(
+                self._store,
+                self._repo_root / ".agentshore",
+                db_path=self._repo_root / ".agentshore" / "agentshore.db",
+                canary_interval_seconds=float(integrity_cfg.canary_interval_seconds),
+                snapshot_interval_seconds=float(integrity_cfg.snapshot_interval_seconds),
+                snapshot_ring_size=integrity_cfg.snapshot_ring_size,
+                wal_checkpoint_interval_seconds=float(
+                    integrity_cfg.wal_checkpoint_interval_seconds
+                ),
+            )
+            self._integrity.start()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.stop()
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    async def run_play(
+        self,
+        play_type: PlayType,
+        params: PlayParams | None = None,
+    ) -> PlayOutcome:
+        """Execute a single play synchronously (for tests and direct invocation)."""
+        state = await self._build_state()
+        return await self._executor.execute(
+            play_type,
+            state,
+            override=params or PlayParams(),
+        )
+
+    async def reload_config(self) -> None:
+        """Reload configuration from the configured path."""
+        await self._reload_config()
+
+    async def publish_initial_state(self) -> OrchestratorState:
+        """Publish and return the current state snapshot."""
+        state = await self._build_state()
+        await self._safe_call(
+            self._state_provider.on_state_update(state),
+            "on_state_update_initial",
+        )
+        return state
+
+    def enqueue_override(self, play_type: PlayType, params: PlayParams) -> None:
+        """Enqueue a human-override play (sync, FIFO). Consumed at the top of each loop body."""
+        self._override_queue.put_nowait(
+            OverrideEntry(
+                play_type=play_type,
+                params=params,
+                kind=OverrideKind.USER_REQUEST,
+            )
+        )
+
+    def on_natural_exit(self, callback: NaturalExitCallback) -> None:
+        """Register a callback fired when the loop exits without an explicit stop.
+
+        Natural exit is a ``_should_terminate`` return of ``should_stop=True``
+        with a reason other than ``"stop_requested"`` (drain_complete,
+        max_plays, timeout, shutting_down). The callback is awaited from
+        ``run_until_idle``'s exit branch and receives the termination reason
+        as its only argument. The sidecar boot wrapper uses it to fire
+        ``session.completed`` over the JSON-RPC stdio transport (DESIGN §5.2).
+        """
+        self._natural_exit_callback = callback

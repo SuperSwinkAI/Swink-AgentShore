@@ -1,0 +1,74 @@
+#!/bin/bash
+# cli-postinstall — runs for the .pkg's CLI component (Distribution.xml
+# `ai.agentshore.cli` choice). The component is nopayload; this script and
+# the bundled wheel + helper are the entire deliverable.
+#
+# Responsibilities:
+#   1. Resolve the console user. Skip on root/headless installs.
+#   2. Hand off to install-agentshore-cli.sh under the console user's
+#      session via `launchctl asuser` so `uv tool install` lands in
+#      ~/.local/bin/agentshore (not /root or postinstall's tmp).
+#   3. Surface failure via an osascript alert. The desktop already
+#      installed independently — a failed CLI install must not be silent
+#      (which is the bug this whole component fix addresses), but it
+#      also shouldn't fail the wizard since the user can still launch
+#      the desktop app.
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_HELPER="$SCRIPT_DIR/install-agentshore-cli.sh"
+BUNDLED_WHEEL="$(ls -t "$SCRIPT_DIR"/agentshore-*-py3-none-any.whl 2>/dev/null | head -1 || true)"
+CLI_LOG="/tmp/agentshore-cli-install.log"
+
+CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
+  # Headless install — nothing to provision under a user account.
+  exit 0
+fi
+CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
+if [[ -z "${CONSOLE_UID}" ]]; then
+  exit 0
+fi
+
+if [[ -z "$BUNDLED_WHEEL" || ! -f "$BUNDLED_WHEEL" ]]; then
+  # CLI component was assembled without a wheel — should never happen
+  # in production builds; surface so a hand-rolled .pkg doesn't silently
+  # no-op.
+  launchctl asuser "${CONSOLE_UID}" sudo -u "${CONSOLE_USER}" \
+    /usr/bin/osascript -e 'display alert "AgentShore CLI install skipped" message "The CLI component shipped without a bundled wheel; the agentshore command was not installed." buttons {"OK"}' \
+    >/dev/null 2>&1 || true
+  exit 0
+fi
+if [[ ! -x "$INSTALL_HELPER" ]]; then
+  exit 0
+fi
+
+CLI_OK=0
+if launchctl asuser "${CONSOLE_UID}" sudo -u "${CONSOLE_USER}" \
+     /bin/bash "$INSTALL_HELPER" --wheel "$BUNDLED_WHEEL" \
+     >"$CLI_LOG" 2>&1; then
+  CLI_OK=1
+fi
+
+if [[ "$CLI_OK" -eq 0 ]]; then
+  # Install failed — surface to the user but don't fail the wizard.
+  DIALOG_BODY="The 'agentshore' CLI install did not complete. The desktop app still works.\\n\\nDetails: $CLI_LOG"
+  launchctl asuser "${CONSOLE_UID}" sudo -u "${CONSOLE_USER}" \
+    /usr/bin/osascript -e "display alert \"AgentShore CLI install failed\" message \"$DIALOG_BODY\" buttons {\"OK\"}" \
+    >/dev/null 2>&1 || true
+fi
+
+# Auto-close the Installer window. The CLI component is the LAST entry in
+# the choices-outline (Distribution.xml) so by the time this runs the
+# wizard has finished all installs and is rendering Summary — quit is safe.
+# Backgrounded with a short sleep so postinstall returns cleanly before
+# osascript fires.
+(
+  sleep 2
+  launchctl asuser "${CONSOLE_UID}" sudo -u "${CONSOLE_USER}" \
+    /usr/bin/osascript -e 'tell application "Installer" to quit' >/dev/null 2>&1 || true
+) </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true
+
+exit 0

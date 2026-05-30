@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentShore Grid Top-Down Floor Plan</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #050d12;
+        --panel: #071820;
+        --line: #1d748b;
+        --line-soft: rgba(70, 202, 240, 0.28);
+        --text: #eaf8fb;
+        --muted: #93b9c2;
+        --cyan: #37d9ff;
+        --yellow: #f4d44d;
+        --orange: #ff9146;
+        --green: #40e088;
+        --red: #ff4c63;
+        --purple: #c650d4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at 78% 8%, rgba(36, 134, 174, 0.24), transparent 28%),
+          linear-gradient(135deg, #07120f 0%, #06131a 55%, #071d25 100%);
+        color: var(--text);
+        font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: var(--cyan);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .page {
+        width: min(1380px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 34px 0 64px;
+      }
+
+      .hero {
+        display: flex;
+        gap: 24px;
+        align-items: end;
+        justify-content: space-between;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        margin-top: 6px;
+        font-size: clamp(30px, 4.5vw, 56px);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .dek {
+        max-width: 820px;
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: end;
+        gap: 8px;
+        min-width: 300px;
+      }
+
+      .nav a {
+        display: inline-flex;
+        min-height: 32px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 10px;
+        background: rgba(7, 34, 44, 0.72);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .sheet {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(4, 14, 20, 0.96);
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+      }
+
+      svg {
+        display: block;
+        width: 100%;
+        min-width: 1120px;
+        height: auto;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .note {
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+        padding: 14px;
+        background: rgba(7, 24, 32, 0.86);
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .note span {
+        color: var(--muted);
+      }
+
+      .bg {
+        fill: #061116;
+      }
+
+      .map-floor {
+        fill: #06151c;
+        stroke: rgba(55, 217, 255, 0.48);
+        stroke-width: 2;
+      }
+
+      .tile-grid {
+        fill: url(#tileGrid);
+        opacity: 0.8;
+      }
+
+      .major-grid {
+        fill: url(#majorGrid);
+        opacity: 0.4;
+      }
+
+      .room {
+        stroke-width: 2;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .war {
+        fill: rgba(244, 212, 77, 0.07);
+        stroke: rgba(244, 212, 77, 0.78);
+      }
+
+      .workshop {
+        fill: rgba(55, 217, 255, 0.06);
+        stroke: rgba(55, 217, 255, 0.55);
+      }
+
+      .launch {
+        fill: rgba(255, 145, 70, 0.08);
+        stroke: rgba(255, 145, 70, 0.78);
+      }
+
+      .editor {
+        fill: rgba(198, 80, 212, 0.08);
+        stroke: rgba(198, 80, 212, 0.72);
+      }
+
+      .entry {
+        fill: rgba(64, 224, 136, 0.08);
+        stroke: rgba(64, 224, 136, 0.72);
+      }
+
+      .recovery {
+        fill: rgba(255, 76, 99, 0.09);
+        stroke: rgba(255, 76, 99, 0.78);
+      }
+
+      .zen {
+        fill: rgba(64, 224, 136, 0.08);
+        stroke: rgba(64, 224, 136, 0.66);
+      }
+
+      .lab {
+        fill: rgba(55, 217, 255, 0.07);
+        stroke: rgba(55, 217, 255, 0.72);
+      }
+
+      .wall-shell {
+        fill: rgba(11, 34, 44, 0.96);
+        stroke: rgba(55, 217, 255, 0.82);
+        stroke-width: 2;
+        filter: url(#cyanGlow);
+      }
+
+      .wall-segment {
+        stroke: rgba(234, 248, 251, 0.35);
+        stroke-width: 1;
+      }
+
+      .wall-todo {
+        fill: rgba(244, 212, 77, 0.16);
+      }
+
+      .wall-active {
+        fill: rgba(55, 217, 255, 0.13);
+      }
+
+      .wall-review {
+        fill: rgba(198, 80, 212, 0.13);
+      }
+
+      .wall-done {
+        fill: rgba(64, 224, 136, 0.13);
+      }
+
+      .furniture {
+        fill: rgba(8, 29, 38, 0.86);
+        stroke: rgba(154, 224, 241, 0.78);
+        stroke-width: 1.6;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .furniture-hot {
+        fill: rgba(255, 145, 70, 0.16);
+        stroke: rgba(255, 145, 70, 0.86);
+      }
+
+      .furniture-red {
+        fill: rgba(255, 76, 99, 0.15);
+        stroke: rgba(255, 76, 99, 0.86);
+      }
+
+      .furniture-green {
+        fill: rgba(64, 224, 136, 0.12);
+        stroke: rgba(64, 224, 136, 0.78);
+      }
+
+      .beam {
+        fill: rgba(64, 224, 136, 0.18);
+        stroke: rgba(64, 224, 136, 0.92);
+        stroke-width: 1.4;
+        filter: url(#greenGlow);
+      }
+
+      .reactor-ring {
+        fill: rgba(55, 217, 255, 0.08);
+        stroke: rgba(55, 217, 255, 0.9);
+        stroke-width: 2;
+        filter: url(#cyanGlow);
+      }
+
+      .reactor-core {
+        fill: rgba(55, 217, 255, 0.52);
+        stroke: #eaf8fb;
+        stroke-width: 1;
+      }
+
+      .route {
+        fill: none;
+        stroke-width: 2.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 9 8;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .route.todo {
+        stroke: var(--yellow);
+      }
+
+      .route.recover {
+        stroke: var(--red);
+      }
+
+      .route.idle {
+        stroke: var(--green);
+      }
+
+      .seat,
+      .spot {
+        stroke-width: 1.4;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .seat {
+        fill: rgba(55, 217, 255, 0.25);
+        stroke: rgba(55, 217, 255, 0.95);
+      }
+
+      .spawn {
+        fill: rgba(64, 224, 136, 0.26);
+        stroke: rgba(64, 224, 136, 0.95);
+      }
+
+      .fail {
+        fill: rgba(255, 76, 99, 0.28);
+        stroke: rgba(255, 76, 99, 0.95);
+      }
+
+      .idle-spot {
+        fill: rgba(64, 224, 136, 0.18);
+        stroke: rgba(64, 224, 136, 0.88);
+        stroke-dasharray: 4 3;
+      }
+
+      .label {
+        fill: #eaf8fb;
+        font-size: 14px;
+        font-weight: 850;
+        letter-spacing: 0.05em;
+      }
+
+      .sub-label {
+        fill: rgba(234, 248, 251, 0.74);
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.04em;
+      }
+
+      .small-label {
+        fill: rgba(234, 248, 251, 0.74);
+        font-size: 8.8px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+
+      .wall-label {
+        fill: #eaf8fb;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.06em;
+        text-anchor: middle;
+      }
+
+      .legend-title {
+        fill: #eaf8fb;
+        font-size: 16px;
+        font-weight: 850;
+      }
+
+      .legend-text {
+        fill: rgba(234, 248, 251, 0.76);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .coord {
+        fill: rgba(147, 185, 194, 0.78);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .divider {
+        stroke: rgba(70, 202, 240, 0.22);
+        stroke-width: 1;
+      }
+
+      @media (max-width: 900px) {
+        .page {
+          width: min(100% - 28px, 1380px);
+        }
+
+        .hero {
+          display: block;
+        }
+
+        .nav {
+          justify-content: start;
+          margin-top: 16px;
+          min-width: 0;
+        }
+
+        .notes {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div>
+          <div class="eyebrow">Grid dashboard current floor-plan direction</div>
+          <h1>Top-Down Office Plan</h1>
+          <p class="dek">
+            Updated top-down read of the Grid office. Northeast is Launch Control for merge and
+            ship work; southwest is recovery for failed, timeout, and blocked states.
+          </p>
+        </div>
+        <div class="nav" aria-label="Related design docs">
+          <a href="../DESIGN.md">Dashboard design</a>
+          <a href="GRID_OFFICE_MOCKUPS.html">Grid decisions</a>
+          <a href="unused%20drafts/GRID_LAUNCH_CONTROL_FURNITURE_MOCKUPS.html">Launch furniture</a>
+          <a href="grid-top-down-floor-plan.png">PNG preview</a>
+        </div>
+      </div>
+
+      <div class="sheet">
+        <svg viewBox="0 0 1240 920" role="img" aria-labelledby="title desc">
+          <title id="title">AgentShore Grid top-down floor plan</title>
+          <desc id="desc">
+            Fully top-down Grid office floor plan with a full-width Kanban wall, northeast Launch
+            Control, southwest recovery bay, selected D entry turnstiles, selected D reactor lab,
+            and Zen idle zone.
+          </desc>
+          <defs>
+            <pattern id="tileGrid" width="12" height="12" patternUnits="userSpaceOnUse">
+              <path d="M 12 0 L 0 0 0 12" fill="none" stroke="rgba(70, 202, 240, 0.12)" stroke-width="1" />
+            </pattern>
+            <pattern id="majorGrid" width="60" height="60" patternUnits="userSpaceOnUse">
+              <path d="M 60 0 L 0 0 0 60" fill="none" stroke="rgba(70, 202, 240, 0.22)" stroke-width="1" />
+            </pattern>
+            <filter id="cyanGlow" x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="5" result="blur" />
+              <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.05 0 0 0 0 0.76 0 0 0 0 1 0 0 0 0.82 0" />
+              <feMerge>
+                <feMergeNode />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <filter id="greenGlow" x="-40%" y="-60%" width="180%" height="220%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.05 0 0 0 0 1 0 0 0 0 0.54 0 0 0 0.7 0" />
+              <feMerge>
+                <feMergeNode />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          <rect class="bg" x="0" y="0" width="1240" height="920" />
+          <text class="coord" x="80" y="112">75 x 56 dashboard grid, top-down view</text>
+          <text class="coord" x="80" y="132">One square = one floor tile / one foot reference unit</text>
+
+          <rect class="map-floor" x="80" y="150" width="900" height="672" />
+          <rect class="tile-grid" x="80" y="150" width="900" height="672" />
+          <rect class="major-grid" x="80" y="150" width="900" height="672" />
+
+          <rect class="wall-shell" x="140" y="150" width="768" height="72" rx="4" />
+          <rect class="wall-segment wall-todo" x="140" y="150" width="180" height="72" />
+          <rect class="wall-segment wall-active" x="320" y="150" width="204" height="72" />
+          <rect class="wall-segment wall-review" x="524" y="150" width="204" height="72" />
+          <rect class="wall-segment wall-done" x="728" y="150" width="180" height="72" />
+          <text class="wall-label" x="524" y="169">FULL WIDTH LIVE KANBAN MIRROR</text>
+          <text class="wall-label" x="230" y="198">TODO / WAR</text>
+          <text class="wall-label" x="422" y="198">ACTIVE</text>
+          <text class="wall-label" x="626" y="198">REVIEW</text>
+          <text class="wall-label" x="818" y="198">DONE ISSUES</text>
+
+          <rect class="room war" x="140" y="222" width="180" height="180" />
+          <rect class="room workshop" x="320" y="222" width="408" height="420" />
+          <rect class="room launch" x="728" y="222" width="180" height="180" />
+          <rect class="room editor" x="140" y="402" width="180" height="180" />
+          <rect class="room entry" x="728" y="402" width="180" height="180" />
+          <rect class="room recovery" x="140" y="594" width="180" height="180" />
+          <rect class="room zen" x="320" y="642" width="408" height="132" />
+          <rect class="room lab" x="728" y="594" width="180" height="180" />
+
+          <path class="route todo" d="M 230 222 C 230 252 230 265 230 286 C 318 286 356 314 394 350" />
+          <path class="route recover" d="M 526 494 C 450 520 398 548 320 620 C 280 654 244 674 200 680" />
+          <path class="route idle" d="M 520 584 C 520 620 520 640 520 672 C 484 690 452 704 412 718" />
+
+          <text class="label" x="154" y="246">WAR ROOM</text>
+          <text class="sub-label" x="154" y="264">planning and TODO triage</text>
+          <text class="label" x="338" y="246">WORKSHOP HUB</text>
+          <text class="sub-label" x="338" y="264">build lanes, active work, central circulation</text>
+          <text class="label" x="744" y="246">LAUNCH CONTROL</text>
+          <text class="sub-label" x="744" y="264">merges and shipping</text>
+          <text class="label" x="154" y="426">EDITOR REVIEW</text>
+          <text class="sub-label" x="154" y="444">review and planning desk</text>
+          <text class="label" x="744" y="426">ENTRY GATE</text>
+          <text class="sub-label" x="744" y="444">D light curtain turnstiles</text>
+          <text class="label" x="154" y="618">RECOVERY BAY</text>
+          <text class="sub-label" x="154" y="636">failed, timeout, blocked</text>
+          <text class="label" x="338" y="666">ZEN IDLE ONLY</text>
+          <text class="sub-label" x="338" y="684">healthy waiting agents return here</text>
+          <text class="label" x="744" y="618">COMPILER REACTOR LAB</text>
+          <text class="sub-label" x="744" y="636">selected science lab D</text>
+
+          <rect class="furniture" x="174" y="284" width="112" height="48" rx="4" />
+          <text class="small-label" x="230" y="312" text-anchor="middle">PLANNING TABLE</text>
+          <rect class="furniture" x="156" y="354" width="50" height="20" rx="3" />
+          <rect class="furniture" x="254" y="354" width="50" height="20" rx="3" />
+          <circle class="seat" cx="178" cy="270" r="5" />
+          <circle class="seat" cx="230" cy="342" r="5" />
+          <circle class="seat" cx="285" cy="270" r="5" />
+
+          <rect class="furniture" x="358" y="292" width="88" height="36" rx="4" />
+          <rect class="furniture" x="602" y="292" width="88" height="36" rx="4" />
+          <rect class="furniture" x="398" y="384" width="248" height="38" rx="4" />
+          <rect class="furniture" x="362" y="512" width="128" height="42" rx="4" />
+          <rect class="furniture" x="562" y="512" width="116" height="42" rx="4" />
+          <rect class="furniture" x="478" y="452" width="82" height="42" rx="4" />
+          <text class="small-label" x="522" y="407" text-anchor="middle">ACTIVE WORK RAIL</text>
+          <text class="small-label" x="522" y="477" text-anchor="middle">DEBUG PIT</text>
+          <circle class="seat" cx="390" cy="344" r="5" />
+          <circle class="seat" cx="646" cy="344" r="5" />
+          <circle class="seat" cx="418" cy="440" r="5" />
+          <circle class="seat" cx="622" cy="440" r="5" />
+          <circle class="seat" cx="430" cy="572" r="5" />
+          <circle class="seat" cx="626" cy="572" r="5" />
+
+          <rect class="furniture-hot" x="756" y="296" width="124" height="42" rx="4" />
+          <rect class="furniture-hot" x="756" y="350" width="42" height="20" rx="3" />
+          <rect class="furniture-hot" x="838" y="350" width="42" height="20" rx="3" />
+          <circle cx="818" cy="354" r="10" fill="rgba(255,145,70,0.3)" stroke="rgba(255,145,70,0.95)" filter="url(#greenGlow)" />
+          <text class="small-label" x="818" y="322" text-anchor="middle">MERGE CONSOLE</text>
+          <circle class="seat" cx="770" cy="280" r="5" />
+          <circle class="seat" cx="818" cy="280" r="5" />
+          <circle class="seat" cx="866" cy="280" r="5" />
+
+          <rect class="furniture" x="170" y="468" width="106" height="40" rx="4" />
+          <rect class="furniture" x="154" y="530" width="52" height="24" rx="3" />
+          <rect class="furniture" x="252" y="530" width="52" height="24" rx="3" />
+          <text class="small-label" x="223" y="493" text-anchor="middle">REVIEW DESK</text>
+          <circle class="seat" cx="186" cy="458" r="5" />
+          <circle class="seat" cx="224" cy="520" r="5" />
+          <circle class="seat" cx="270" cy="458" r="5" />
+
+          <rect class="furniture-hot" x="760" y="462" width="18" height="96" rx="3" />
+          <rect class="furniture-hot" x="856" y="462" width="18" height="96" rx="3" />
+          <rect class="beam" x="778" y="472" width="78" height="9" rx="4" />
+          <rect class="beam" x="778" y="508" width="78" height="9" rx="4" />
+          <rect class="beam" x="778" y="544" width="78" height="9" rx="4" />
+          <text class="small-label" x="817" y="493" text-anchor="middle">GATE 1</text>
+          <text class="small-label" x="817" y="529" text-anchor="middle">GATE 2</text>
+          <text class="small-label" x="817" y="565" text-anchor="middle">GATE 3</text>
+          <circle class="spot spawn" cx="884" cy="460" r="5" />
+          <circle class="spot spawn" cx="884" cy="508" r="5" />
+          <circle class="spot spawn" cx="884" cy="568" r="5" />
+          <rect class="furniture-green" x="888" y="488" width="12" height="34" rx="2" />
+
+          <rect class="furniture-red" x="162" y="658" width="132" height="30" rx="4" />
+          <rect class="furniture-red" x="162" y="700" width="132" height="36" rx="4" />
+          <line x1="184" y1="658" x2="184" y2="736" stroke="rgba(255,76,99,0.7)" stroke-width="1.2" />
+          <line x1="228" y1="658" x2="228" y2="736" stroke="rgba(255,76,99,0.7)" stroke-width="1.2" />
+          <line x1="272" y1="658" x2="272" y2="736" stroke="rgba(255,76,99,0.7)" stroke-width="1.2" />
+          <text class="small-label" x="228" y="679" text-anchor="middle">ERROR / TIMEOUTS</text>
+          <text class="small-label" x="228" y="722" text-anchor="middle">BLOCKED QUEUE</text>
+          <circle class="spot fail" cx="180" cy="648" r="5" />
+          <circle class="spot fail" cx="228" cy="648" r="5" />
+          <circle class="spot fail" cx="276" cy="648" r="5" />
+
+          <rect class="furniture-green" x="360" y="704" width="136" height="22" rx="11" />
+          <rect class="furniture-green" x="554" y="704" width="96" height="22" rx="11" />
+          <path d="M 382 682 C 430 670 482 670 526 682 C 580 696 630 690 684 674" fill="none" stroke="rgba(64,224,136,0.55)" stroke-width="1.6" />
+          <path d="M 386 738 C 444 728 500 730 548 740 C 592 750 642 744 690 730" fill="none" stroke="rgba(64,224,136,0.38)" stroke-width="1.4" />
+          <circle class="spot idle-spot" cx="382" cy="690" r="5" />
+          <circle class="spot idle-spot" cx="496" cy="704" r="5" />
+          <circle class="spot idle-spot" cx="612" cy="690" r="5" />
+          <circle class="spot idle-spot" cx="682" cy="724" r="5" />
+
+          <circle class="reactor-ring" cx="818" cy="686" r="50" />
+          <circle class="reactor-ring" cx="818" cy="686" r="32" />
+          <circle class="reactor-core" cx="818" cy="686" r="12" />
+          <line x1="818" y1="636" x2="818" y2="606" stroke="rgba(55,217,255,0.7)" stroke-width="2" />
+          <line x1="818" y1="736" x2="818" y2="766" stroke="rgba(55,217,255,0.7)" stroke-width="2" />
+          <line x1="768" y1="686" x2="738" y2="686" stroke="rgba(55,217,255,0.7)" stroke-width="2" />
+          <line x1="868" y1="686" x2="898" y2="686" stroke="rgba(55,217,255,0.7)" stroke-width="2" />
+          <rect class="furniture" x="750" y="736" width="54" height="22" rx="3" />
+          <rect class="furniture" x="832" y="736" width="54" height="22" rx="3" />
+          <text class="small-label" x="818" y="691" text-anchor="middle">QA</text>
+          <circle class="seat" cx="766" cy="652" r="5" />
+          <circle class="seat" cx="870" cy="652" r="5" />
+          <circle class="seat" cx="818" cy="746" r="5" />
+
+          <line class="divider" x1="1008" y1="146" x2="1008" y2="822" />
+          <rect x="1030" y="150" width="160" height="672" rx="8" fill="rgba(7,24,32,0.78)" stroke="rgba(70,202,240,0.28)" />
+          <text class="legend-title" x="1050" y="184">Plan Decisions</text>
+          <rect x="1052" y="214" width="16" height="16" fill="rgba(244,212,77,0.24)" stroke="rgba(244,212,77,0.9)" />
+          <text class="legend-text" x="1078" y="227">TODO anchors the</text>
+          <text class="legend-text" x="1078" y="244">War Room west side.</text>
+          <rect x="1052" y="274" width="16" height="16" fill="rgba(64,224,136,0.24)" stroke="rgba(64,224,136,0.9)" />
+          <text class="legend-text" x="1078" y="287">Launch north wall</text>
+          <text class="legend-text" x="1078" y="304">is Done issues.</text>
+          <rect x="1052" y="334" width="16" height="16" fill="rgba(255,76,99,0.24)" stroke="rgba(255,76,99,0.9)" />
+          <text class="legend-text" x="1078" y="347">SW recovery holds</text>
+          <text class="legend-text" x="1078" y="364">failures/timeouts.</text>
+          <rect x="1052" y="394" width="16" height="16" fill="rgba(64,224,136,0.24)" stroke="rgba(64,224,136,0.9)" />
+          <text class="legend-text" x="1078" y="407">Zen is healthy idle</text>
+          <text class="legend-text" x="1078" y="424">only.</text>
+          <rect x="1052" y="454" width="16" height="16" fill="rgba(64,224,136,0.18)" stroke="rgba(64,224,136,0.9)" filter="url(#greenGlow)" />
+          <text class="legend-text" x="1078" y="467">Entry uses selected</text>
+          <text class="legend-text" x="1078" y="484">D light curtain.</text>
+          <circle cx="1060" cy="524" r="10" fill="rgba(55,217,255,0.22)" stroke="rgba(55,217,255,0.9)" filter="url(#cyanGlow)" />
+          <text class="legend-text" x="1078" y="521">Lab uses selected</text>
+          <text class="legend-text" x="1078" y="538">D reactor bay.</text>
+          <path class="route todo" d="M 1052 582 L 1088 582" />
+          <text class="legend-text" x="1098" y="586">TODO route</text>
+          <path class="route recover" d="M 1052 620 L 1088 620" />
+          <text class="legend-text" x="1098" y="624">Recovery route</text>
+          <path class="route idle" d="M 1052 658 L 1088 658" />
+          <text class="legend-text" x="1098" y="662">Idle route</text>
+          <text class="coord" x="1052" y="746">Coordinate source:</text>
+          <text class="coord" x="1052" y="766">dashboard/src/office/layout.ts</text>
+          <text class="coord" x="1052" y="800">Concept update:</text>
+          <text class="coord" x="1052" y="818">NE launch, SW recovery.</text>
+        </svg>
+      </div>
+
+      <div class="notes">
+        <div class="note">
+          <strong>Back Wall</strong>
+          <span>
+            The Kanban mirror becomes a taller continuous north wall, with TODO in the War Room
+            and the Launch Control north wall dedicated to Done issues.
+          </span>
+        </div>
+        <div class="note">
+          <strong>Launch</strong>
+          <span>
+            The northeast corner owns merge and ship work, replacing the stale boardroom/intake
+            interpretation.
+          </span>
+        </div>
+        <div class="note">
+          <strong>Recovery</strong>
+          <span>
+            Failed, timeout, and blocked agents move southwest instead of mixing with healthy idle
+            agents.
+          </span>
+        </div>
+        <div class="note">
+          <strong>Furniture</strong>
+          <span>
+            Entry uses the selected light-curtain turnstiles, while QA uses the selected compiler
+            reactor lab language.
+          </span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
