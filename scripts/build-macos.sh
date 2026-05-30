@@ -241,9 +241,11 @@ fi
 
 log "Building Tauri app bundle ($BUILD_MODE)"
 if [[ "$BUILD_MODE" == "debug" ]]; then
-  (cd "$DESKTOP_DIR" && npx tauri build --debug)
+  # `-- --locked` forwards to the cargo runner so the build fails if Cargo.lock
+  # is stale, keeping the shipping artifact pinned to the committed lockfile.
+  (cd "$DESKTOP_DIR" && npx tauri build --debug -- --locked)
 else
-  (cd "$DESKTOP_DIR" && npx tauri build)
+  (cd "$DESKTOP_DIR" && npx tauri build -- --locked)
 fi
 
 BUILT_APP="$DESKTOP_DIR/src-tauri/target/$BUILD_MODE/bundle/macos/$APP_NAME.app"

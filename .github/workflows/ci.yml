@@ -18,7 +18,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --group dev
+        # --locked: fail if uv.lock is stale vs pyproject.toml (no silent re-resolve)
+        run: uv sync --group dev --locked
 
       - name: Lint (ruff)
         run: uv run ruff check src/ tests/

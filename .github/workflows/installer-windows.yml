@@ -30,7 +30,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Python dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --locked
 
       - name: Install npm dependencies
         run: npm ci
@@ -38,7 +38,9 @@ jobs:
       - name: Build Tauri (Windows)
         # NOTE: produces an unsigned .msi and .exe; SmartScreen warning expected until
         # Authenticode signing is wired in (TODO above).
-        run: npm --prefix desktop run tauri build
+        # `-- -- --locked` forwards --locked through npm → tauri → cargo so the
+        # build fails if Cargo.lock is stale (no silent dependency re-resolve).
+        run: npm --prefix desktop run tauri build -- -- --locked
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
