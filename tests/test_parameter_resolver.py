@@ -285,6 +285,94 @@ async def test_resolve_unblock_pr_falls_back_to_github() -> None:
     assert result.pr_number == 99
 
 
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_skips_pr_already_being_unblocked() -> None:
+    """#6: two unblock_pr plays must not run against the same PR concurrently.
+
+    A PR with an in-flight unblock_pr dispatch (an agent BUSY on UNBLOCK_PR for
+    that PR) is masked from re-selection via the per-PR resource key / in-flight
+    guard, so the resolver returns no other candidate for it.
+    """
+    store = AsyncMock()
+    pr = MagicMock()
+    pr.pr_number = 9
+    pr.state = "open"
+    pr.labels = []
+    pr.review_decision = "CHANGES_REQUESTED"
+    pr.status_check_summary = None
+    pr.is_draft = False
+    pr.mergeable = "MERGEABLE"
+    pr.issue_number = None
+    pr.branch = "feature/9"
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    busy_agent = _make_snapshot(
+        "agent-a",
+        status=AgentStatus.BUSY,
+        current_play_type=PlayType.UNBLOCK_PR,
+        current_play_pr_number=9,
+    )
+
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, _make_state(agents=[busy_agent]))
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_skips_manual_required_pr() -> None:
+    """#6: once an unblock_pr terminal failure labels the PR ``manual-required``,
+    ``pr_unblockable`` returns False so the candidate filter excludes it.
+    """
+    store = AsyncMock()
+    pr = MagicMock()
+    pr.pr_number = 9
+    pr.state = "open"
+    pr.labels = ["agentshore/manual-required"]
+    pr.review_decision = "CHANGES_REQUESTED"
+    pr.status_check_summary = None
+    pr.is_draft = False
+    pr.mergeable = "MERGEABLE"
+    pr.issue_number = None
+    pr.branch = "feature/9"
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, _make_state())
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_skips_exhausted_pr() -> None:
+    """#6: after the failure threshold, the PR is excluded from unblock_pr picks."""
+    store = AsyncMock()
+    pr = MagicMock()
+    pr.pr_number = 9
+    pr.state = "open"
+    pr.labels = []
+    pr.review_decision = "CHANGES_REQUESTED"
+    pr.status_check_summary = None
+    pr.is_draft = False
+    pr.mergeable = "MERGEABLE"
+    pr.issue_number = None
+    pr.branch = "feature/9"
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    # Drive the per-PR failure counter to exhaustion; the last call returns True.
+    assert resolver.record_unblock_pr_failure(9) is False
+    assert resolver.record_unblock_pr_failure(9) is False
+    assert resolver.record_unblock_pr_failure(9) is True
+
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, _make_state())
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # WRITE_IMPLEMENTATION_PLAN
 # ---------------------------------------------------------------------------

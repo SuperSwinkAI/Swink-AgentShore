@@ -297,6 +297,36 @@ def test_issue_pickup_excludes_only_matching_in_progress_bead() -> None:
     assert plan.work_availability.bead_in_progress_issue_count == 1
 
 
+def test_issue_pickup_excludes_dependency_blocked_bead() -> None:
+    """#2: an issue whose beads task is blocked by an open dependency (a ``blocks``
+    edge, now parsed into ``blocked_by_ids``) must be pre-masked from issue_pickup
+    CANDIDATES so the policy never re-selects a deterministically dep-blocked issue.
+    """
+    graph = _seeded_graph(
+        has_ready_tasks=True,
+        tasks_ready=1,
+        tasks=[
+            # gh-964 is blocked by the still-open dep bead for gh-963.
+            SimpleNamespace(
+                issue_number=964,
+                status=BeadStatus.OPEN,
+                ready=False,
+                blocked_by_ids=frozenset({"bd-963"}),
+            ),
+            SimpleNamespace(
+                issue_number=965,
+                status=BeadStatus.OPEN,
+                ready=True,
+                blocked_by_ids=frozenset(),
+            ),
+        ],
+    )
+    plan = build_candidate_plan(_state(graph=graph, open_issues=[_issue(964), _issue(965)]))
+
+    assert [c.params.issue_number for c in plan.candidates_for(PlayType.ISSUE_PICKUP)] == [965]
+    assert plan.work_availability.bead_blocked_issue_count == 1
+
+
 def _in_progress_then_open_graph() -> MagicMock:
     """Graph where gh-6 is in_progress (orphaned) and gh-7 is open/ready."""
     return _seeded_graph(
