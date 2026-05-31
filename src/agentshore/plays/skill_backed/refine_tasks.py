@@ -42,7 +42,14 @@ class RefineTaskBreakdownPlay(SkillBackedPlay):
         # run. The Step 6 label-cleanup sweeps
         # that previously justified unconditional dispatch now live in
         # agentshore-project-alignment-check.
-        if not any("agentshore/needs-refinement" in i.labels for i in state.open_issues):
+        # Mirror the candidate filter (candidates.issue_available_for_refine):
+        # an issue is refine-eligible only when it still needs refinement AND
+        # has not already been refined (agentshore/refined). This keeps the play
+        # from being dispatched to no-op on already-refined issues.
+        if not any(
+            "agentshore/needs-refinement" in i.labels and "agentshore/refined" not in i.labels
+            for i in state.open_issues
+        ):
             return [
                 MaskReason(
                     text="no issues carry agentshore/needs-refinement",

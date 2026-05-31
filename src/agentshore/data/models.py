@@ -279,6 +279,7 @@ class ExperienceRecord:
     old_log_prob: float | None = None
     value_estimate: float | None = None
     action_mask: bytes | None = None
+    mask_reason: str | None = None
     policy_version: str | None = None
     config_hash: str | None = None
     step_index: int | None = None

@@ -25,9 +25,9 @@ class _RLMixin:
             """
             INSERT INTO rl_experience
                 (session_id, play_id, state_vector, action, reward, next_state,
-                 done, old_log_prob, value_estimate, action_mask, policy_version,
-                 action_space_version, config_hash, step_index)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 done, old_log_prob, value_estimate, action_mask, mask_reason,
+                 policy_version, action_space_version, config_hash, step_index)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.session_id,
@@ -40,6 +40,7 @@ class _RLMixin:
                 record.old_log_prob,
                 record.value_estimate,
                 record.action_mask,
+                record.mask_reason,
                 record.policy_version,
                 record.action_space_version,
                 record.config_hash,

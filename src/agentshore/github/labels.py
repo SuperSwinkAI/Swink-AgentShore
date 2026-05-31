@@ -49,6 +49,7 @@ AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
     ("agentshore/planned", "7fdbca"),
     ("agentshore/has-plan", "7fdbca"),
     ("agentshore/needs-refinement", "f9d0c4"),
+    ("agentshore/refined", "0e8a16"),
     ("agentshore/revert-reopened", "e4e669"),
     ("agentshore/alignment", "5319e7"),
     ("agentshore/epic", "5e81ac"),

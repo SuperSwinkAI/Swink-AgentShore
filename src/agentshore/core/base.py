@@ -373,6 +373,10 @@ class _OrchestratorBase:
         # nothing in flight — the wedge signature. Drives the auto-stop in
         # _continue_if_selector_idle_work_remains; reset on any dispatch.
         self._wedged_idle_ticks = 0
+        # Bounded reprieves granted to an unanswered loop-detection auto-stop
+        # while actionable work (merge-ready PRs / workable issues) remains, so
+        # the session is not torn down on top of finished work. Resets per loop.
+        self._auto_stop_reprieves_used = 0
 
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins

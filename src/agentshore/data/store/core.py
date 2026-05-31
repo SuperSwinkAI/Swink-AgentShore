@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from agentshore.data.migrations import migrate_v1_to_v2
+from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3
 from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.helpers import _load_schema_sql
 from agentshore.data.store.mixins.agents import _AgentsMixin
@@ -167,6 +167,7 @@ class DataStore(
         ``initialize()`` against an already-migrated database is safe.
         """
         await migrate_v1_to_v2(self._conn)
+        await migrate_v2_to_v3(self._conn)
 
     async def wal_checkpoint(self) -> None:
         """Merge WAL frames into the main DB file (passive checkpoint)."""

@@ -53,6 +53,13 @@ _WAITING_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 30.0, 60.0)
 # a trunk it cannot heal. At the 21s backoff ceiling this is ~3-4 minutes grace.
 _WEDGED_IDLE_STOP_TICKS = 12
 
+# How many times an unanswered loop-detection auto-stop is deferred while
+# actionable work (merge-ready PRs / workable issues) still remains. Each
+# reprieve lifts the pause and resumes the loop (it never leaves the loop
+# wedged); once exhausted, the auto-stop drains as normal so a genuinely stuck
+# session still terminates rather than re-wedging (#9).
+_AUTO_STOP_WORK_REPRIEVE_LIMIT = 2
+
 # Loop-liveness watchdog (#9): how often the independent watchdog task wakes to
 # compare the loop heartbeat against the configured timeout. Kept well below the
 # default 600s timeout so the watchdog reacts promptly once the deadline passes
@@ -87,6 +94,7 @@ class _LoopMixin(_OrchestratorBase):
     _idle_streak: int
     _main_repo_dispatch_paused: bool
     _wedged_idle_ticks: int
+    _auto_stop_reprieves_used: int
     _last_refresh_time: float
     _last_loop_iteration_at: float
     _loop_liveness_task: asyncio.Task[None] | None
@@ -628,6 +636,22 @@ class _LoopMixin(_OrchestratorBase):
             return_when=asyncio.FIRST_COMPLETED,
         )
 
+    async def _actionable_work_remains(self) -> tuple[bool, int, int]:
+        """Return (has_actionable_work, mergeable_pr_count, workable_issue_count).
+
+        ``actionable work`` = a merge-ready PR (finished, approved, reviewed
+        work waiting only to land) or a workable issue. Used by the auto-stop
+        guard so the session is not torn down on top of it.
+        """
+        from agentshore.plays.candidates import build_candidate_plan
+
+        state = await self._build_state()
+        wa = build_candidate_plan(state).work_availability
+        mergeable = wa.mergeable_pr_count
+        workable = wa.workable_issue_count
+        has_work = mergeable > 0 or wa.actionable_pr_work_count > 0 or workable > 0
+        return has_work, mergeable, workable
+
     async def _auto_stop_unanswered_pause(self) -> None:
         """Auto-stop a feedback pause that went unanswered past its deadline (#9).
 
@@ -637,7 +661,37 @@ class _LoopMixin(_OrchestratorBase):
         unanswered loop-detection popup wedged the loop for hours, and the drain
         RPC could not be serviced while wedged. Emits ``loop_detection_prompt_timeout``
         so the auto-stop is visible in the NDJSON log (the wedge was silent).
+
+        Guard: do not drain on top of actionable work (merge-ready PRs /
+        workable issues). The drain retires *every* agent — observed abandoning
+        6 APPROVED+MERGEABLE PRs. While work remains, lift the pause and
+        **resume** (not drain) so the policy gets another chance to act on it;
+        bounded by ``_AUTO_STOP_WORK_REPRIEVE_LIMIT`` so a genuinely stuck loop
+        still stops rather than re-wedging (#9). This only defers — the pause is
+        always lifted, so the loop is never left wedged.
         """
+        if self._auto_stop_reprieves_used < _AUTO_STOP_WORK_REPRIEVE_LIMIT:
+            has_work, mergeable, workable = await self._actionable_work_remains()
+            if has_work:
+                self._auto_stop_reprieves_used += 1
+                _logger.warning(
+                    "auto_stop_deferred_actionable_work",
+                    session_id=self._session_id,
+                    pause_reason=self._pause_reason,
+                    reprieve=self._auto_stop_reprieves_used,
+                    limit=_AUTO_STOP_WORK_REPRIEVE_LIMIT,
+                    mergeable_pr_count=mergeable,
+                    workable_issue_count=workable,
+                    note=(
+                        "unanswered loop-detection pause not auto-stopped — actionable "
+                        "work remains; lifting pause and resuming the loop instead of "
+                        "draining so the policy can land the work"
+                    ),
+                )
+                self._pause_deadline = None
+                # Resume the loop WITHOUT draining (do not set _draining).
+                self._pause_event.set()
+                return
         _logger.warning(
             "loop_detection_prompt_timeout",
             session_id=self._session_id,

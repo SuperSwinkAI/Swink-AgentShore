@@ -18,7 +18,7 @@ Decompose oversized open issues into linked sub-issues and re-prioritize by depe
 gh issue list --state open --limit 200 --json number,title,labels,body,assignees
 ```
 
-Process only issues still carrying `agentshore/needs-refinement` — anything without that gate is already sized. If none, exit with `success: true`, empty artifacts, `error: "all issues already refined"`.
+Process only issues still carrying `agentshore/needs-refinement` and **not** `agentshore/refined` — anything without the gate (or already marked refined) is already sized. If none, exit with `success: true`, empty artifacts, `error: "all issues already refined"`. (Selection already excludes refined issues; this is a defensive double-check.)
 
 **Choose decomposition source (one per issue).** If the issue has an `AGENTSHORE_IMPLEMENTATION_PLAN` comment with **≥ 3** `### Task N` headers, it's canonical — use the plan as the map (`decomposition_source: "plan"`). Otherwise estimate from the codebase: read the body, `git grep`/list implied files, and size as **S** (<15 min, 1–2 files), **M** (15–30 min, 2–3 files), **L** (30–60 min, 3–5 files), **XL** (>60 min, >5 files). Record `decomposition_source: "estimate"`. Decompose if the path was plan-structured, or if the estimate is L/XL. Otherwise skip to the label swap.
 
@@ -61,11 +61,11 @@ gh issue edit <parent> --body "$ORIGINAL
 - [ ] #<child2>"
 ```
 
-**Label swap (every processed issue):** `gh issue edit <N> --remove-label "agentshore/needs-refinement"`. For decomposed parents additionally `--remove-label "agentshore/planned" --add-label "agentshore/decomposed"` so `issue_pickup` doesn't grab the now-empty parent — it stays open as a tracker and closes when its children's PRs close. Sized S/M leaves from the estimate path keep just their `priority/*`/`size/*` labels and become pickup-eligible.
+**Label swap (every processed issue):** `gh issue edit <N> --remove-label "agentshore/needs-refinement" --add-label "agentshore/refined"`. The `agentshore/refined` mark is mandatory — it removes the issue from refine selection so an agent is never re-dispatched to no-op on it (re-armed only when groom/design-audit later removes the label). For decomposed parents additionally `--remove-label "agentshore/planned" --add-label "agentshore/decomposed"` so `issue_pickup` doesn't grab the now-empty parent — it stays open as a tracker and closes when its children's PRs close. Sized S/M leaves from the estimate path keep their `priority/*`/`size/*` labels plus `agentshore/refined` and become pickup-eligible (`agentshore/refined` does not block pickup).
 
 **Re-prioritize.** Identify dependencies (explicit `depends on #N`/`blocked by #N` in bodies; implicit parent-child) and apply priority labels where missing: `gh issue edit <N> --add-label "priority/<critical|high|medium|low>"`. No-blocker + small = higher priority.
 
-**Validate:** every processed issue no longer carries `agentshore/needs-refinement`; decomposed parents link to children; every new sub-issue has `agentshore/intake`, references its parent, and lacks `agentshore/needs-refinement`; no duplicate sub-issues.
+**Validate:** every processed issue no longer carries `agentshore/needs-refinement` and now carries `agentshore/refined`; decomposed parents link to children; every new sub-issue has `agentshore/intake`, references its parent, and lacks `agentshore/needs-refinement`; no duplicate sub-issues.
 
 **Report — one fenced JSON block:**
 
