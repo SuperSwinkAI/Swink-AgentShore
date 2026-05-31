@@ -1225,6 +1225,55 @@ async def test_resolve_merge_pr_returns_none_when_pr_claimed() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Trunk-claim split (#17): only trunk-*mutating* plays take trunk:main_repo;
+# read-only trunk plays self-serialize on a session key instead, so they can't
+# starve merge_pr.
+# ---------------------------------------------------------------------------
+
+
+# ``_resource_keys_for_params`` is the chokepoint every play-type→claim-key
+# decision flows through: no-arg trunk plays reach it via _claim_candidate →
+# _claim_params (empty candidate keys → ``keys = [] or _resource_keys_for_params``),
+# and run_qa via _resolve_run_qa. The DB evidence for #17 — a design_audit
+# claim whose only key was ``trunk:main_repo`` — is exactly this function's
+# output, so testing it directly pins the fix.
+
+
+@pytest.mark.parametrize(
+    "play_type",
+    [
+        PlayType.RUN_QA,
+        PlayType.DESIGN_AUDIT,
+        PlayType.CALIBRATE_ALIGNMENT,
+        PlayType.GROOM_BACKLOG,
+        PlayType.SEED_PROJECT,
+    ],
+)
+@pytest.mark.asyncio
+async def test_read_only_trunk_plays_self_serialize_not_trunk_lock(
+    play_type: PlayType,
+) -> None:
+    """run_qa/design_audit/calibrate/groom/seed claim only a session key — never trunk."""
+    resolver = _make_resolver()
+
+    keys = await resolver._resource_keys_for_params(play_type, _make_state(), PlayParams())
+
+    assert keys == [f"session:{play_type.value}"]
+    assert "trunk:main_repo" not in keys
+
+
+@pytest.mark.parametrize("play_type", [PlayType.CLEANUP, PlayType.RECONCILE_STATE])
+@pytest.mark.asyncio
+async def test_trunk_mutating_plays_keep_trunk_lock(play_type: PlayType) -> None:
+    """cleanup + reconcile_state still serialize on trunk:main_repo (merge_pr covered above)."""
+    resolver = _make_resolver()
+
+    keys = await resolver._resource_keys_for_params(play_type, _make_state(), PlayParams())
+
+    assert keys == ["trunk:main_repo"]
+
+
 @pytest.mark.asyncio
 async def test_resolve_merge_pr_skips_unmergeable_approved_pr() -> None:
     # Regression for the example-repo burn: resolver returned the first

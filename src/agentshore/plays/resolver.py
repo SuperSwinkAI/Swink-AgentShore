@@ -11,7 +11,7 @@ from agentshore.agents.model_tiers import (
     MODEL_TIER_PRIORITY,
     enabled_model_tiers,
 )
-from agentshore.agents.worktree import TRUNK_SCOPED_PLAYS
+from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS, TRUNK_SCOPED_PLAYS
 from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.logging import get_logger
 from agentshore.play_rules import needs_review
@@ -67,6 +67,16 @@ _ISSUE_WORK_PLAY_TYPES = frozenset(
         PlayType.REFINE_TASK_BREAKDOWN,
     }
 )
+
+# Trunk-scoped plays that do NOT mutate trunk and are not issue/PR-scoped
+# (run_qa, design_audit, calibrate_alignment, groom_backlog, seed_project).
+# They still serialize against *themselves* via a session-scoped key — so two
+# of the same metadata play can't race on beads/issue writes — but they no
+# longer take the exclusive trunk:main_repo writer lock, which used to starve
+# merge_pr for 10–20 min at a stretch (issue #17). The issue-scoped planning
+# plays (write_implementation_plan, refine_task_breakdown) are excluded: they
+# serialize per-issue via their issue:<n> key and must stay parallel.
+_SELF_SERIALIZED_TRUNK_PLAYS = (TRUNK_SCOPED_PLAYS - TRUNK_MUTATING_PLAYS) - _ISSUE_WORK_PLAY_TYPES
 
 _idle_can_review_agents = idle_can_review_agents
 _pick_reviewer_for_pr = pick_reviewer_for_pr
@@ -547,13 +557,17 @@ class ParameterResolver:
             keys.append(f"issue:{params.issue_number}")
         elif params.branch:
             keys.append(f"branch:{params.branch}")
-        elif play_type == PlayType.RUN_QA:
-            keys.append(f"session:{PlayType.RUN_QA.value}")
+        elif play_type in _SELF_SERIALIZED_TRUNK_PLAYS:
+            keys.append(f"session:{play_type.value}")
 
-        # Trunk-scoped plays mutate the main checkout. Serialize them by
-        # claiming a synthetic trunk:main_repo key — prevents concurrent
-        # cleanup + merge_pr races that leave trunk dirty.
-        if play_type in TRUNK_SCOPED_PLAYS and _TRUNK_RESOURCE_KEY not in keys:
+        # Trunk-*mutating* plays (merge_pr, cleanup, reconcile_state) serialize
+        # on a synthetic trunk:main_repo key — prevents concurrent mutations
+        # that leave trunk dirty/half-merged. Read-only trunk-scoped plays
+        # (run_qa, design_audit, calibrate_alignment, groom_backlog,
+        # seed_project) deliberately do NOT claim it: they only read the
+        # checkout / update beads + issues, and holding the writer lock for
+        # their multi-minute duration starved merge_pr (issue #17).
+        if play_type in TRUNK_MUTATING_PLAYS and _TRUNK_RESOURCE_KEY not in keys:
             keys.append(_TRUNK_RESOURCE_KEY)
         return keys
 
