@@ -1065,6 +1065,24 @@ def _reader_loop(
 async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
+
+    def _handle_loop_exception(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, object]
+    ) -> None:
+        # Global backstop for orphaned-task exceptions the per-task callbacks
+        # don't cover. structlog is already routed to stderr by
+        # _configure_sidecar_logging (stdout is reserved for JSON-RPC), and
+        # dict_tracebacks renders the stack when an exception is present.
+        import structlog
+
+        exc = context.get("exception")
+        structlog.get_logger(__name__).error(
+            "sidecar_unhandled_loop_exception",
+            message=context.get("message"),
+            exc_info=exc if isinstance(exc, BaseException) else None,
+        )
+
+    loop.set_exception_handler(_handle_loop_exception)
     reader = threading.Thread(target=_reader_loop, args=(stdin, loop, queue), daemon=True)
     reader.start()
     in_flight: dict[int | str, asyncio.Task[None]] = {}

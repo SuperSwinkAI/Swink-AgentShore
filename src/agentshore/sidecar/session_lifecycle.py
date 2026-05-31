@@ -629,7 +629,39 @@ async def _start_orchestrator(
         if emit_session_completed is not None and payload is not None:
             emit_session_completed(payload)
 
+    def _on_orchestrator_done(task: asyncio.Task[None]) -> None:
+        """Retrieve + report a crashed orchestrator task and finalize the session.
+
+        ``_supervise`` is fire-and-forget; without this callback a crash logged
+        ``sidecar_orchestrator_run_failed`` and then vanished (the exception was
+        never retrieved, and the session row stayed ``running`` forever). The
+        callback retrieves the exception (clearing the "never retrieved"
+        warning), logs it with a rendered traceback, and writes a terminal
+        ``failed`` status off the loop.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        _logger.error(
+            "sidecar_orchestrator_task_crashed",
+            session_id=session_id,
+            exc_info=exc,
+        )
+
+        async def _finalize_crashed_session() -> None:
+            try:
+                await orch._store.fail_session(session_id, "orchestrator_task_crashed")
+            except Exception:
+                _logger.exception("sidecar_fail_session_failed", session_id=session_id)
+
+        asyncio.get_event_loop().create_task(
+            _finalize_crashed_session(), name=f"fail-session-{session_id}"
+        )
+
     state.orchestrator_task = asyncio.create_task(_supervise(), name=f"orchestrator-{session_id}")
+    state.orchestrator_task.add_done_callback(_on_orchestrator_done)
 
 
 def _make_bridge(project_path: Path, ipc_endpoint: dict[str, object]) -> EmbeddedBridge:

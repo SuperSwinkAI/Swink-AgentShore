@@ -104,3 +104,26 @@ class _SessionsMixin:
             (now_iso(), final_alignment, session_id),
         )
         await self._conn.commit()
+
+    async def fail_session(self, session_id: str, reason: str) -> None:
+        """Finalize a session that crashed or was force-terminated.
+
+        Writes a terminal ``failed`` status + ``ended_at`` so a crashed session
+        does not linger as ``running`` forever (the orchestrator run loop dying
+        skips the graceful ``complete_session`` path). ``reason`` is logged by
+        the caller rather than stored — there is no ``failure_reason`` column and
+        this is deliberately schema-free.
+
+        Idempotent and race-safe: the ``ended_at IS NULL`` guard means a session
+        already finalized by the normal stop path (``complete_session``) is left
+        untouched, so a done-callback firing after a clean stop is a no-op.
+        """
+        await self._conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'failed', ended_at = ?
+            WHERE session_id = ? AND ended_at IS NULL
+            """,
+            (now_iso(), session_id),
+        )
+        await self._conn.commit()
