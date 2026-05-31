@@ -135,8 +135,14 @@ class ArmedByFailureGate:
 
     def __call__(self, state: OrchestratorState) -> MaskReason | None:
         own_age = state.plays_since_last_play_type.get(self.play_type, float("inf"))
+        # Arm only on a GENUINE failure since this play last ran. A no-op
+        # ``skip:*`` outcome is recorded success=False but is not a wedge —
+        # arming on it lets a write_impl skip ↔ reconcile arm/run pair spin
+        # forever making zero progress (the no-op spin root).
         armed = any(
-            age < own_age and state.last_play_success_by_type.get(pt) is False
+            age < own_age
+            and state.last_play_success_by_type.get(pt) is False
+            and not state.last_play_skipped_by_type.get(pt, False)
             for pt, age in state.plays_since_last_play_type.items()
         )
         if armed:

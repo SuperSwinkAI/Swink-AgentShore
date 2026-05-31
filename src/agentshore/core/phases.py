@@ -304,6 +304,24 @@ async def _phase_init_ppo_selector(
 
         orch._selector = ppo
 
+        # Wire the guarded RL experience recorder now that the PPO selector,
+        # metrics, and policy/config versions are all final. The completion
+        # path no-ops the RL tail when this stays None (non-PPO / headless).
+        from agentshore.core.experience_recorder import ExperienceRecorder
+
+        orch._experience_recorder = ExperienceRecorder(
+            store=orch._store,
+            metrics=orch._metrics,
+            selector=ppo,
+            cfg=cfg,
+            host=orch,
+        )
+
+        # Pure progress assessor for no-op-spin detection + reprieve gating.
+        from agentshore.core.progress_monitor import LoopProgressMonitor
+
+        orch._progress_monitor = LoopProgressMonitor(host=orch)
+
 
 async def _phase_create_session_row(
     *, store: DataStore, sid: str, repo_root: Path, seed_path: Path | None

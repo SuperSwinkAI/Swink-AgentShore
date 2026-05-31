@@ -14,12 +14,11 @@ from agentshore.budget import budget_reserve_reached
 from agentshore.core.base import _OrchestratorBase
 from agentshore.core.git_safety import check_main_repo_branch_mutated, restore_default_branch
 from agentshore.core.helpers import (
-    _build_reward_signals,
     _logger,
     _ppo_selector_cls,
     _str_extra,
 )
-from agentshore.data.store import ExperienceRecord, PlayRecord, PullRequestRecord
+from agentshore.data.store import PlayRecord, PullRequestRecord
 from agentshore.github.labels import (
     DEBUG_TRIGGER_LABELS,
     ISSUE_PICKUP_SKIP_LABELS,
@@ -29,9 +28,6 @@ from agentshore.github.labels import (
 from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
-from agentshore.rl.action_space import ACTION_SPACE_VERSION
-from agentshore.rl.observation import encode_observation
-from agentshore.rl.reward import compute_reward
 from agentshore.state import AgentStatus, PlayType
 from agentshore.utils import now_iso
 
@@ -51,32 +47,6 @@ if TYPE_CHECKING:
         PlayOutcome,
         StateProvider,
     )
-
-
-_MASK_REASON_SUMMARY_MAX_CHARS = 1000
-
-
-def _mask_reason_summary(state: StateProvider | object) -> str | None:
-    """Serialize a tick's per-play mask reasons into one compact string.
-
-    Persisted to ``rl_experience.mask_reason`` so it is possible to answer,
-    post-hoc, why a play (e.g. ``merge_pr``) was not selected on a given tick —
-    the empty ``action_mask`` blob alone is opaque. Format is
-    ``play_type=reason; …`` sorted by play type, truncated to keep the row
-    small (this is the "reason only" summary, not a structured per-play map).
-    Returns ``None`` when no plays were masked (nothing to record).
-    """
-    reasons = getattr(state, "mask_reasons", None)
-    if not reasons:
-        return None
-    parts = [
-        f"{pt.value}={reason.text}"
-        for pt, reason in sorted(reasons.items(), key=lambda kv: kv[0].value)
-    ]
-    summary = "; ".join(parts)
-    if not summary:
-        return None
-    return summary[:_MASK_REASON_SUMMARY_MAX_CHARS]
 
 
 _PROMOTABLE_REQUEST_PLAYS: frozenset[str] = frozenset(
@@ -443,6 +413,11 @@ class _CompletionMixin(_OrchestratorBase):
             is_masked_skip = outcome.skip_category == "masked"
             self._recent_executor_skip = is_masked_skip
             self._executor_skip_window.append(is_masked_skip)
+            # All-category no-op window for spin detection. The skip path returns
+            # early (below) before the loop-detection/stagnation checks ever run,
+            # so the no-op-spin check is invoked HERE — this is the exact path the
+            # write_impl↔reconcile spin lived on.
+            self._recent_play_outcomes.append((True, completed_play_type.value))
             await self._safe_call(
                 self._promote_request_play_mutations(), "promote_request_play_mutations"
             )
@@ -450,11 +425,14 @@ class _CompletionMixin(_OrchestratorBase):
             await self._safe_call(
                 self._state_provider.on_state_update(post_state), "on_state_update_post"
             )
+            if self._check_noop_spin(post_state) and self._pause_event.is_set():
+                await self._pause_with_reason("loop_detected")
             return
 
         # Any completed (non-skipped) play clears the executor-skip flag.
         self._recent_executor_skip = False
         self._executor_skip_window.append(False)
+        self._recent_play_outcomes.append((False, completed_play_type.value))
 
         _logger.info(
             "play_completed",
@@ -618,13 +596,27 @@ class _CompletionMixin(_OrchestratorBase):
 
         if self._check_loop_detection(next_state) and self._pause_event.is_set():
             await self._pause_with_reason("loop_detected")
+        if self._check_noop_spin(next_state) and self._pause_event.is_set():
+            await self._pause_with_reason("loop_detected")
         if await self._check_stagnation_escalation(next_state) and self._pause_event.is_set():
             await self._pause_with_reason("stagnation")
         self._feedback_cadence_plays_since_ack += 1
         await self._pause_for_feedback_cadence_if_due()
 
-        # Phase 3: RL experience collection and policy update
-        if isinstance(self._selector, _ppo_selector_cls()) and self._metrics is not None:
+        # Phase 3: RL experience collection and policy update.
+        #
+        # The fragile, crash-prone tail (snapshots, reward, observation encoding,
+        # ExperienceRecord build+persist, policy update, checkpoint) lives in the
+        # fully-guarded ``ExperienceRecorder`` — a failure there degrades to a
+        # skipped record / skipped update with a logged error, instead of
+        # propagating out of ``run_until_idle`` and killing the loop (the
+        # ``sidecar_orchestrator_run_failed`` crash). Only the cheap, safe
+        # bookkeeping (velocity events, ``done``) stays inline here.
+        if (
+            self._experience_recorder is not None
+            and isinstance(self._selector, _ppo_selector_cls())
+            and self._metrics is not None
+        ):
             from agentshore.rl.selector import _PendingStep
 
             done = (
@@ -640,7 +632,8 @@ class _CompletionMixin(_OrchestratorBase):
                 )
             )
 
-            # Update velocity tracking (before snapshot so ctx_after sees current velocity)
+            # Update velocity tracking (before the recorder snapshots so
+            # ctx_after sees current velocity).
             play_id_for_velocity = next_state.total_plays
             if outcome.success:
                 if completed_play_type == PlayType.MERGE_PR:
@@ -660,78 +653,18 @@ class _CompletionMixin(_OrchestratorBase):
                 if agent_snap is not None:
                     self._recent_agent_types.append(agent_snap.agent_type.value)
 
-            ctx_after = await self._metrics.snapshot(next_state)
-
-            reward, _ = compute_reward(
-                _build_reward_signals(
-                    state_before,
-                    outcome,
-                    next_state,
-                    ctx_after,
-                    rolling_velocity=self._compute_rolling_velocity(next_state.total_plays),
-                    type_diversity_in_window=len(set(self._recent_agent_types)),
-                ),
-                self._cfg.rl.reward,
-                reward_clip_low=self._cfg.rl.ppo.reward_clip_low,
-                reward_clip_high=self._cfg.rl.ppo.reward_clip_high,
-            )
-
             raw_pending = ctx.pending_step
             pending_step: _PendingStep | None = (
                 raw_pending if isinstance(raw_pending, _PendingStep) else None
             )
 
-            if outcome.play_id is not None and pending_step is not None:
-                ctx_before = await self._metrics.snapshot(state_before)
-                obs_before = encode_observation(state_before, ctx_before)
-                obs_after = encode_observation(next_state, ctx_after)
-                await self._safe_call(
-                    self._store.record_experience(
-                        ExperienceRecord(
-                            session_id=self._session_id,
-                            play_id=outcome.play_id,
-                            state_vector=obs_before.tobytes(),
-                            action=pending_step.action,
-                            reward=reward,
-                            next_state=obs_after.tobytes(),
-                            done=int(done),
-                            old_log_prob=pending_step.log_prob,
-                            value_estimate=pending_step.value,
-                            action_mask=pending_step.mask.tobytes(),
-                            mask_reason=_mask_reason_summary(state_before),
-                            policy_version=self._policy_version,
-                            action_space_version=ACTION_SPACE_VERSION,
-                            config_hash=self._config_hash,
-                            step_index=self._step_index,
-                        )
-                    ),
-                    "record_experience",
-                )
-                self._step_index += 1
-
-            await self._selector.on_play_completed(
+            await self._experience_recorder.record_and_update(
                 state_before=state_before,
                 next_state=next_state,
-                reward=reward,
-                done=done,
+                outcome=outcome,
                 pending_step=pending_step,
+                done=done,
             )
-
-            if self._selector.should_update():
-                bootstrap_v = 0.0 if done else await self._selector.value_of(next_state)
-                await self._selector.update_policy(next_state_value=bootstrap_v)
-
-            total_plays = next_state.total_plays
-            weights_dir = self._repo_root / ".agentshore" / "weights"
-            if self._selector.should_checkpoint(total_plays):
-                await self._safe_call(
-                    self._selector.save_checkpoint(
-                        self._store, self._session_id, weights_dir, total_plays
-                    ),
-                    "save_checkpoint",
-                )
-            if total_plays % 25 == 0:
-                await self._safe_call(self._store.wal_checkpoint(), "wal_checkpoint")
 
         # Persist alignment scores back to DB after calibrate_alignment plays
         if completed_play_type == PlayType.CALIBRATE_ALIGNMENT and outcome.success:
