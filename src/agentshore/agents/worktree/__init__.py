@@ -33,6 +33,7 @@ from agentshore.agents.worktree.allocator import (
     remove_worktree,
 )
 from agentshore.agents.worktree.manager import (
+    TRUNK_MUTATING_PLAYS,
     TRUNK_SCOPED_PLAYS,
     TrunkAllocation,
     WorktreeAllocation,
@@ -66,6 +67,7 @@ __all__ = [
     "OrphanRecord",
     "ReapReport",
     "ReconcileReport",
+    "TRUNK_MUTATING_PLAYS",
     "TRUNK_SCOPED_PLAYS",
     "TrunkAllocation",
     "WorktreeAllocation",

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
-from agentshore.agents.worktree import TRUNK_SCOPED_PLAYS
+from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS
 from agentshore.beads import BeadStatus, ready_tasks
 from agentshore.github.labels import (
     BUG_LABELS,
@@ -197,14 +197,16 @@ def active_resource_keys(state: OrchestratorState) -> frozenset[str]:
             continue
         add_issue(agent.current_play_issue_number)
         add_pr(agent.current_play_pr_number)
-        if agent.current_play_type in TRUNK_SCOPED_PLAYS:
+        # Only trunk-*mutating* plays mark trunk busy. A running read-only
+        # trunk play (run_qa, design_audit, …) must not mask merge_pr (#17).
+        if agent.current_play_type in TRUNK_MUTATING_PLAYS:
             keys.add(_TRUNK_RESOURCE_KEY)
 
     # in_flight_plays carries play types that lack agent context (e.g. a
     # play dispatched before the agent snapshot updates). Still need to
-    # honor their trunk lock.
+    # honor their trunk lock — but again only for trunk-mutating plays.
     for play_type in state.in_flight_plays:
-        if play_type in TRUNK_SCOPED_PLAYS:
+        if play_type in TRUNK_MUTATING_PLAYS:
             keys.add(_TRUNK_RESOURCE_KEY)
             break
 
@@ -678,7 +680,10 @@ class PlayCandidateAnalyzer:
                 PlayCandidate(
                     play_type=PlayType.GROOM_BACKLOG,
                     params=PlayParams(),
-                    resource_keys=(_TRUNK_RESOURCE_KEY,),
+                    # groom_backlog only updates beads metadata — it must not
+                    # take the trunk writer lock (would starve merge_pr, #17).
+                    # Self-serialize on a session key so two grooms don't race.
+                    resource_keys=(f"session:{PlayType.GROOM_BACKLOG.value}",),
                     source="state",
                     sort_key=(0,),
                 )

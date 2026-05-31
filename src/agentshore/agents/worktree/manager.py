@@ -108,6 +108,29 @@ _TRUNK_SCOPED_PLAYS: frozenset[PlayType] = frozenset(
 )
 
 
+# Plays that actually *mutate* the trunk working tree (merge into the default
+# branch, rewrite/clean the checkout, repair a dirty trunk). These — and only
+# these — take the exclusive ``trunk:main_repo`` work-claim so concurrent
+# trunk mutations can't race each other into a dirty/half-merged checkout.
+#
+# This is DELIBERATELY narrower than ``_TRUNK_SCOPED_PLAYS``. Membership there
+# means "execute in the main checkout, don't allocate a per-PR worktree" — an
+# *allocation* concern. Membership here means "needs an exclusive writer lock
+# on trunk" — a *serialization* concern. Read-only / metadata-only trunk plays
+# (RUN_QA, DESIGN_AUDIT, CALIBRATE_ALIGNMENT, GROOM_BACKLOG, SEED_PROJECT, and
+# the planning plays) run in the main checkout but only read it / update beads
+# + GitHub issues, so they must NOT hold the writer lock — holding it for their
+# full (multi-minute) duration starved MERGE_PR for 10–20 min at a stretch and
+# left approved+mergeable PRs unmerged (issue #17).
+_TRUNK_MUTATING_PLAYS: frozenset[PlayType] = frozenset(
+    {
+        PlayType.MERGE_PR,
+        PlayType.CLEANUP,
+        PlayType.RECONCILE_STATE,
+    }
+)
+
+
 # --- Public allocation results -----------------------------------------------
 
 
@@ -651,6 +674,7 @@ async def _best_effort_remove(main_repo: Path, worktree_path: Path) -> None:
 
 
 __all__ = [
+    "TRUNK_MUTATING_PLAYS",
     "TRUNK_SCOPED_PLAYS",
     "TrunkAllocation",
     "WorktreeAllocation",
@@ -658,6 +682,8 @@ __all__ = [
 ]
 
 
-# Public re-export so other modules can ask "is this play type trunk-scoped?"
-# without reaching into the private constant.
+# Public re-exports so other modules can ask "is this play type trunk-scoped?"
+# (allocation) or "does this play mutate trunk?" (serialization) without
+# reaching into the private constants.
 TRUNK_SCOPED_PLAYS: frozenset[PlayType] = _TRUNK_SCOPED_PLAYS
+TRUNK_MUTATING_PLAYS: frozenset[PlayType] = _TRUNK_MUTATING_PLAYS
