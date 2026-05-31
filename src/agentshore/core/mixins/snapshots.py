@@ -280,16 +280,21 @@ class _SnapshotsMixin(_OrchestratorBase):
         dict[PlayType, bool],
         dict[PlayType, bool],
         int | None,
+        dict[PlayType, int],
     ]:
         """Compute play recency and latest success/failure by play type.
 
         Returns ``(last_play_type, plays_since_last_instantiate,
         plays_since_last_play_type, last_play_success_by_type,
-        last_play_skipped_by_type, seed_freshness)``. ``last_play_skipped_by_type``
+        last_play_skipped_by_type, seed_freshness,
+        consecutive_nonproductive_by_type)``. ``last_play_skipped_by_type``
         records whether each type's most-recent outcome was a no-op ``skip:*``
         (vs a genuine failure) so self-heal gates don't treat a skip as a wedge.
         ``seed_freshness`` is plays since the most-recent *successful*
         SEED_PROJECT, or ``None`` if no successful seed exists (V1 contract).
+        ``consecutive_nonproductive_by_type`` is the tail run of consecutive
+        ``not success`` outcomes per play type (fail OR skip, since skips record
+        ``success=False``) — the signal the 3-strikes circuit breaker masks on.
         """
         play_history = [p for p in play_history if p.ended_at is not None]
         last_play_type: PlayType | None = None
@@ -301,6 +306,8 @@ class _SnapshotsMixin(_OrchestratorBase):
         plays_since_last_play_type: dict[PlayType, int] = {}
         last_play_success_by_type: dict[PlayType, bool] = {}
         last_play_skipped_by_type: dict[PlayType, bool] = {}
+        consecutive_nonproductive_by_type: dict[PlayType, int] = {}
+        _streak_broken: set[PlayType] = set()
         seed_freshness: int | None = None
         # Non-work plays (``_NON_WORK_PLAY_VALUES``) are skipped so the
         # cooldown offset reflects "real plays since last X". The set is
@@ -328,6 +335,17 @@ class _SnapshotsMixin(_OrchestratorBase):
                     # not a wedge — track it so ArmedByFailureGate doesn't arm a
                     # self-heal play off a skip (the write_impl↔reconcile spin).
                     last_play_skipped_by_type[pt] = (p.failure_category or "").startswith("skip:")
+                # Tail run of consecutive non-productive (fail OR skip) outcomes
+                # per type — keep counting newest→oldest until this type's first
+                # success terminates its streak (the 3-strikes breaker signal).
+                if pt not in _streak_broken:
+                    if p.success:
+                        _streak_broken.add(pt)
+                        consecutive_nonproductive_by_type.setdefault(pt, 0)
+                    else:
+                        consecutive_nonproductive_by_type[pt] = (
+                            consecutive_nonproductive_by_type.get(pt, 0) + 1
+                        )
             real_offset += 1
         return (
             last_play_type,
@@ -336,6 +354,7 @@ class _SnapshotsMixin(_OrchestratorBase):
             last_play_success_by_type,
             last_play_skipped_by_type,
             seed_freshness,
+            consecutive_nonproductive_by_type,
         )
 
     def _build_budget_snapshot(self, total_plays: int, total_cost: float) -> BudgetSnapshot:

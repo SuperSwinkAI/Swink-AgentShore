@@ -9,8 +9,10 @@ from agentshore.rl.action_space import NUM_ACTIONS, PLAY_TO_INDEX, V1_ACTION_ORD
 from agentshore.rl.mask import (
     compute_action_mask,
     compute_agent_eligibility_mask,
+    compute_mask_reasons,
     compute_terminal_no_work_decision,
 )
+from agentshore.rl.mask_reason import MaskSource
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
 
@@ -244,6 +246,53 @@ def test_selective_mask():
     assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
     assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
     assert not mask[PLAY_TO_INDEX[PlayType.CODE_REVIEW]]
+
+
+def _breaker_state(strikes: int, plays_since: int) -> OrchestratorState:
+    """ISSUE_PICKUP candidate-available, with a given strike count / cooldown age."""
+    return _state(
+        open_issues=[_issue_snapshot(501)],
+        plays_since_last_play_type={
+            PlayType.SEED_PROJECT: 0,
+            PlayType.ISSUE_PICKUP: plays_since,
+        },
+        consecutive_nonproductive_by_type={PlayType.ISSUE_PICKUP: strikes},
+    )
+
+
+def test_circuit_breaker_benches_play_after_three_strikes():
+    """3 consecutive fail/skip within the cooldown window → the play is masked."""
+    mask = compute_action_mask(_breaker_state(strikes=3, plays_since=0), _registry_all_true())
+    assert not mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
+
+
+def test_circuit_breaker_below_threshold_not_benched():
+    mask = compute_action_mask(_breaker_state(strikes=2, plays_since=0), _registry_all_true())
+    assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
+
+
+def test_circuit_breaker_lifts_after_cooldown():
+    """Once 20 plays elapse since the last attempt the mask lifts for a retry."""
+    mask = compute_action_mask(_breaker_state(strikes=3, plays_since=20), _registry_all_true())
+    assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
+
+
+def test_circuit_breaker_excludes_reconcile_state():
+    """Self-heal (reconcile_state) is never benched — it must stay available."""
+    state = _state(
+        plays_since_last_play_type={
+            PlayType.SEED_PROJECT: 0,
+            PlayType.RECONCILE_STATE: 0,
+        },
+        consecutive_nonproductive_by_type={PlayType.RECONCILE_STATE: 5},
+    )
+    mask = compute_action_mask(state, _registry_all_true())
+    assert mask[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
+
+
+def test_circuit_breaker_emits_reason():
+    reasons = compute_mask_reasons(_breaker_state(strikes=3, plays_since=0), _registry_all_true())
+    assert reasons[PlayType.ISSUE_PICKUP].source == MaskSource.CIRCUIT_BREAKER
 
 
 def test_mask_blocks_seed_project_when_precondition_fails():
