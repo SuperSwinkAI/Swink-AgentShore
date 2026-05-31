@@ -274,6 +274,7 @@ function RepoBadge({ access }: { access: string }): React.ReactElement {
 
 const TOKEN_SOURCE_OPTIONS = [
   { value: "gh_token_login", label: "gh auth login" },
+  { value: "gh_token_env", label: "env var" },
   { value: "gh_token_keychain", label: "PAT (stored in Keychain)" },
 ] as const;
 

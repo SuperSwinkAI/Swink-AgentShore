@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { Dashboard, createDemoTransport, type DemoScenario } from "agentshore-dashboard";
+import { Dashboard, createDemoTransport, type DemoScenario } from "@agentshore/dashboard";
 
 const SCENARIOS: ReadonlyArray<DemoScenario> = [
   "active",
@@ -16,7 +16,7 @@ const SCENARIOS: ReadonlyArray<DemoScenario> = [
  *
  * Routed at /demo (also reachable via the Cmd+Shift+D shortcut wired in
  * App.tsx). Mirrors the bridge SPA's ?demo=1 entry point — the same
- * createDemoTransport from agentshore-dashboard drives a deterministic mock
+ * createDemoTransport from @agentshore/dashboard drives a deterministic mock
  * AgentShore session so there's no need to walk through Choose Project →
  * Readiness → Target Branch → Identities → Agents → Start.
  *

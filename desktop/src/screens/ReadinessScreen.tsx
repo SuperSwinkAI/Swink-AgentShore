@@ -40,7 +40,7 @@ export function isHardBlocker(kind: ReadinessFindingKind): boolean {
 
 export function isFromAgentShoreSourceRepo(originUrl: string | null | undefined): boolean {
   if (!originUrl) return false;
-  return /SuperSwinkAI\/AgentShore(\.git)?$/i.test(originUrl);
+  return /SuperSwinkAI\/(?:Swink-)?AgentShore(\.git)?$/i.test(originUrl);
 }
 
 /**

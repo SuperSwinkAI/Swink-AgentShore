@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { Dashboard } from "agentshore-dashboard";
+import { Dashboard } from "@agentshore/dashboard";
 
 import { SessionContext } from "../services/sessionContext";
 import { stopSession } from "../services/sessionClient";
