@@ -83,6 +83,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
 
     orch._recent_executor_skip = False
     orch._executor_skip_window = _collections.deque(maxlen=50)
+    orch._recent_play_outcomes = _collections.deque(maxlen=50)
     # desktop-65bg: in-memory shadow of just-completed plays.
     orch._recent_play_completions = _collections.deque(maxlen=64)
     # desktop-quv9: in-memory shadow of just-applied issue labels so the next

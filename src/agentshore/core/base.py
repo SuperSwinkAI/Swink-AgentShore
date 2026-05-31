@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext, _StateData
+    from agentshore.core.experience_recorder import ExperienceRecorder
+    from agentshore.core.progress_monitor import LoopProgressMonitor
     from agentshore.data.integrity import IntegrityMonitor
     from agentshore.data.store import (
         DataStore,
@@ -123,6 +125,20 @@ class _OrchestratorBase:
     # bypass __init__ (Orchestrator.__new__) can call stop_loop_liveness_watchdog
     # during a partial-stop without first wiring the attribute.
     _loop_liveness_task: asyncio.Task[None] | None = None
+    # Guarded RL experience-recording collaborator (crash hardening). Class-level
+    # default None so tests that bypass __init__ (Orchestrator.__new__) and the
+    # non-PPO/headless paths are safe; constructed in phases.py once the PPO
+    # selector + metrics + policy/config versions are wired. The completion path
+    # no-ops the RL tail when this is None.
+    _experience_recorder: ExperienceRecorder | None = None
+    # Pure progress assessor (no-op-spin detection + WS3 reprieve gating).
+    # Class-level default None; constructed in phases.py. Callers guard on None.
+    _progress_monitor: LoopProgressMonitor | None = None
+    # Consecutive run_until_idle ticks whose body raised. The per-tick guard
+    # increments this and resets it on any clean tick; at
+    # _MAX_CONSECUTIVE_TICK_FAILURES the loop drains gracefully rather than
+    # spinning on a permanently-throwing tick. Class-level default for __new__.
+    _tick_failure_streak: int = 0
 
     # Type annotations for instance attributes set in __init__ — mixins access
     # these via self.* and rely on these annotations for mypy resolution.
@@ -173,6 +189,11 @@ class _OrchestratorBase:
     _last_play_id: int | None
     _recent_executor_skip: bool
     _executor_skip_window: collections.deque[bool]
+    # All-category no-op window for spin detection: (was_skip, play_type_value)
+    # per completed play. Unlike _executor_skip_window (masked-only), this counts
+    # every skip category (masked + no_target + staffing) so the LoopProgressMonitor
+    # can see an alternating no_target/masked spin the masked-only rate misses.
+    _recent_play_outcomes: collections.deque[tuple[bool, str]]
     _budget_override: bool
     _stop_done: asyncio.Event
     _config_path: Path | None
@@ -309,6 +330,8 @@ class _OrchestratorBase:
         # (slot 177). Skipped plays are not persisted to DataStore, so this
         # state has to live on the orchestrator.
         self._executor_skip_window = collections.deque(maxlen=50)
+        # All-category no-op window for the LoopProgressMonitor (see annotation).
+        self._recent_play_outcomes = collections.deque(maxlen=50)
         # Retained for IPC compatibility with older feedback responses. Budget
         # reserve drain itself is not bypassable once reached.
         self._budget_override = False
@@ -377,6 +400,12 @@ class _OrchestratorBase:
         # while actionable work (merge-ready PRs / workable issues) remains, so
         # the session is not torn down on top of finished work. Resets per loop.
         self._auto_stop_reprieves_used = 0
+        # Crash-hardening collaborators (constructed in phases.py once the PPO
+        # selector / metrics / versions are wired). None on the non-PPO path.
+        self._experience_recorder = None
+        self._progress_monitor = None
+        # Per-tick guard circuit-breaker counter (see class annotation).
+        self._tick_failure_streak = 0
 
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
@@ -471,6 +500,9 @@ class _OrchestratorBase:
         raise NotImplementedError
 
     def _check_loop_detection(self, state: OrchestratorState) -> bool:
+        raise NotImplementedError
+
+    def _check_noop_spin(self, state: OrchestratorState) -> bool:
         raise NotImplementedError
 
     async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:
@@ -622,6 +654,7 @@ class _OrchestratorBase:
         PlayType | None,
         int | None,
         dict[PlayType, int],
+        dict[PlayType, bool],
         dict[PlayType, bool],
         int | None,
     ]:

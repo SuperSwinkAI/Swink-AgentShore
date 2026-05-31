@@ -53,6 +53,7 @@ def _state(
     in_flight_plays: list[PlayType] | None = None,
     plays_since_last_play_type: dict[PlayType, int] | None = None,
     last_play_success_by_type: dict[PlayType, bool] | None = None,
+    last_play_skipped_by_type: dict[PlayType, bool] | None = None,
     total_plays: int = 10,
 ) -> OrchestratorState:
     return OrchestratorState(
@@ -65,6 +66,7 @@ def _state(
         in_flight_plays=[] if in_flight_plays is None else in_flight_plays,
         plays_since_last_play_type=plays_since_last_play_type or {},
         last_play_success_by_type=last_play_success_by_type or {},
+        last_play_skipped_by_type=last_play_skipped_by_type or {},
     )
 
 
@@ -282,6 +284,42 @@ def test_armed_gate_tie_age_treated_as_consumed() -> None:
         },
     )
     assert gate(state) is not None
+
+
+def test_armed_gate_not_armed_by_a_skip() -> None:
+    """A ``skip:*`` outcome (success=False but skipped) must NOT arm the gate.
+
+    This is the no-op-spin root: a write_impl skip is recorded success=False,
+    which previously re-armed reconcile every tick, producing the
+    write_impl-skip ↔ reconcile-run no-op loop. A skip is not a wedge.
+    """
+    gate = ArmedByFailureGate(PlayType.RECONCILE_STATE)
+    state = _state(
+        plays_since_last_play_type={PlayType.WRITE_IMPLEMENTATION_PLAN: 1},
+        last_play_success_by_type={PlayType.WRITE_IMPLEMENTATION_PLAN: False},
+        last_play_skipped_by_type={PlayType.WRITE_IMPLEMENTATION_PLAN: True},
+    )
+    assert gate(state) is not None  # masked — a skip does not arm self-heal
+
+
+def test_armed_gate_still_arms_on_genuine_failure_amid_skips() -> None:
+    """A genuine (non-skip) failure still arms even when a skip is also present."""
+    gate = ArmedByFailureGate(PlayType.RECONCILE_STATE)
+    state = _state(
+        plays_since_last_play_type={
+            PlayType.WRITE_IMPLEMENTATION_PLAN: 2,
+            PlayType.MERGE_PR: 1,
+        },
+        last_play_success_by_type={
+            PlayType.WRITE_IMPLEMENTATION_PLAN: False,
+            PlayType.MERGE_PR: False,
+        },
+        last_play_skipped_by_type={
+            PlayType.WRITE_IMPLEMENTATION_PLAN: True,  # skip — ignored
+            PlayType.MERGE_PR: False,  # genuine failure — arms
+        },
+    )
+    assert gate(state) is None  # armed by the real merge_pr failure
 
 
 # --- WarmupGate -------------------------------------------------------------

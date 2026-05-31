@@ -67,6 +67,13 @@ _AUTO_STOP_WORK_REPRIEVE_LIMIT = 2
 # a blocked loop still gets reaped within ~one interval of the deadline.
 _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS = 15.0
 
+# Per-tick guard circuit-breaker: consecutive run_until_idle ticks whose body
+# raises before the loop stops spinning on the failure and drains gracefully.
+# A single bad tick (recovered next iteration) is normal and never escalates —
+# the streak resets on any clean tick. Set well above transient noise but low
+# enough that a permanently-throwing tick drains in seconds, not silently hangs.
+_MAX_CONSECUTIVE_TICK_FAILURES = 10
+
 
 class _LoopMixin(_OrchestratorBase):
     """The main orchestration loop plus loop-detection and stagnation laddering."""
@@ -168,6 +175,62 @@ class _LoopMixin(_OrchestratorBase):
         # within the policy via the stagnation entropy boost
         # (_check_stagnation_escalation), keeping the PPO in the driver's seat.
         return fail_streak >= pause_streak or any_streak >= 2 * pause_streak
+
+    def _check_noop_spin(self, state: OrchestratorState) -> bool:
+        """No-op-spin backstop. Returns True if the loop should pause.
+
+        Catches the degenerate state the same-type-streak detector is blind to:
+        the policy alternating two (or one) plays that all deterministically
+        ``skip`` at $0, making zero progress (the write_impl↔reconcile spin).
+        Driven by the ``LoopProgressMonitor`` (strict verdict). A pure backstop —
+        it does not influence which play the policy picks; it only surfaces a
+        wedge so the existing ``loop_detected`` pause→reprieve→drain path can act.
+        """
+        monitor = self._progress_monitor
+        if monitor is None:
+            return False
+        if (
+            getattr(self, "_draining", False)
+            or getattr(self, "_stop_requested", False)
+            or state.session_state in {SessionState.DRAINING, SessionState.SHUTTING_DOWN}
+        ):
+            return False
+        if not monitor.detect_noop_spin(total_plays=state.total_plays):
+            return False
+        _logger.warning(
+            "noop_spin_detected",
+            session_id=self._session_id,
+            skip_rate=round(monitor.all_skip_rate(), 3),
+            distinct_productive_types=monitor.distinct_productive_types(),
+            total_plays=state.total_plays,
+            note=(
+                "loop spinning on no-op skips with zero velocity — pausing "
+                "(loop_detected); an unanswered pause auto-stops via drain"
+            ),
+        )
+        return True
+
+    async def _loop_is_progressing(self) -> bool:
+        """Guarded progress check for the unanswered-pause reprieve (WS3 item C).
+
+        Returns True (preserve prior behavior) when no monitor is wired. On a
+        state-build error it fails **closed** (not progressing) so a session that
+        cannot even build state is not granted a reprieve — it stops.
+        """
+        monitor = self._progress_monitor
+        if monitor is None:
+            return True
+        try:
+            state = await self._build_state()
+            return monitor.is_making_progress(total_plays=state.total_plays)
+        except Exception as exc:
+            _logger.error(
+                "loop_progress_check_failed",
+                session_id=self._session_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            return False
 
     async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:
         """Stagnation ladder (warn+entropy at 5, surface at 10, pause at 15)."""
@@ -645,8 +708,20 @@ class _LoopMixin(_OrchestratorBase):
         """
         from agentshore.plays.candidates import build_candidate_plan
 
-        state = await self._build_state()
-        wa = build_candidate_plan(state).work_availability
+        # Guarded (WS3 item B): a state-build / candidate-plan failure here must
+        # not crash the loop, and must not wrongly grant a reprieve. Fail closed —
+        # report no work so a genuinely stuck session still drains.
+        try:
+            state = await self._build_state()
+            wa = build_candidate_plan(state).work_availability
+        except Exception as exc:
+            _logger.error(
+                "actionable_work_check_failed",
+                session_id=self._session_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            return False, 0, 0
         mergeable = wa.mergeable_pr_count
         workable = wa.workable_issue_count
         has_work = mergeable > 0 or wa.actionable_pr_work_count > 0 or workable > 0
@@ -672,7 +747,13 @@ class _LoopMixin(_OrchestratorBase):
         """
         if self._auto_stop_reprieves_used < _AUTO_STOP_WORK_REPRIEVE_LIMIT:
             has_work, mergeable, workable = await self._actionable_work_remains()
-            if has_work:
+            # WS3 item C: only reprieve when work remains AND the loop is actually
+            # progressing. A no-op spin keeps workable issues / mergeable PRs > 0
+            # while making zero progress — reprieving it would keep the wedged
+            # session alive. Requiring progress means a spinning-but-work-remains
+            # session drains instead of being kept alive, while a healthy session
+            # landing work still gets its reprieve.
+            if has_work and await self._loop_is_progressing():
                 self._auto_stop_reprieves_used += 1
                 _logger.warning(
                     "auto_stop_deferred_actionable_work",
@@ -684,8 +765,8 @@ class _LoopMixin(_OrchestratorBase):
                     workable_issue_count=workable,
                     note=(
                         "unanswered loop-detection pause not auto-stopped — actionable "
-                        "work remains; lifting pause and resuming the loop instead of "
-                        "draining so the policy can land the work"
+                        "work remains and the loop is progressing; lifting pause and "
+                        "resuming the loop instead of draining so the policy can land it"
                     ),
                 )
                 self._pause_deadline = None
@@ -790,10 +871,11 @@ class _LoopMixin(_OrchestratorBase):
     async def run_until_idle(self) -> None:
         """Drive the RL loop until selector returns None or a stop is requested.
 
-        Each iteration: pause-gate, harvest completions, build state, check
-        termination, run loop-detection ladder, gate on idle agents, resolve
-        an override or selector pick, dispatch, and wait for any in-flight
-        task to make progress.
+        Each iteration runs ``_run_loop_body`` (one tick: pause-gate, harvest,
+        build state, terminate-check, detectors, idle-gate, select, dispatch)
+        behind a per-tick guard so a single throwing tick can never kill the
+        loop (the ``sidecar_orchestrator_run_failed`` silent-hang class). A
+        permanently-throwing tick trips the circuit breaker and drains cleanly.
         """
         self._loop_started_at = time.monotonic()
         # Arm the loop-liveness heartbeat before the first iteration so the
@@ -802,220 +884,27 @@ class _LoopMixin(_OrchestratorBase):
 
         while not self._stop_requested:
             # Loop-liveness heartbeat (#9): stamp every iteration so the
-            # independent watchdog can detect a hard-frozen loop. Must be the
-            # first statement in the body so it advances even on ticks that
-            # `continue` early (pause-gate, idle wait, drain init).
+            # independent watchdog can detect a hard-frozen loop. Stays OUTSIDE
+            # the per-tick guard so it advances even on a throwing tick — a
+            # fast-failing-but-looping tick must not look hard-frozen.
             self._last_loop_iteration_at = time.monotonic()
-            # Pause blocks new selection/dispatch, but completed in-flight plays
-            # still need to be harvested so agent completions, costs, and rewards
-            # do not get stranded behind the pause gate.
-            if not self._pause_event.is_set():
-                # Bound the wait by the unanswered-pause deadline (#9) so a
-                # feedback pause nobody answers auto-stops instead of wedging the
-                # loop indefinitely. ``remaining`` is None when no deadline is
-                # armed (manual pause), making this a plain block-until-resume.
-                remaining: float | None = None
-                if self._pause_deadline is not None:
-                    remaining = max(0.0, self._pause_deadline - time.monotonic())
-                pause_wait = asyncio.create_task(self._pause_event.wait())
-                try:
-                    await asyncio.wait(
-                        [pause_wait, *self._in_flight.values()],
-                        timeout=remaining,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                finally:
-                    if not pause_wait.done():
-                        pause_wait.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await pause_wait
-                if self._stop_requested:
+            tick_raised = False
+            try:
+                should_break = await self._run_loop_body()
+            except Exception as exc:
+                # Per-tick guard: contain the failure, never let one tick kill
+                # the loop. The breaker drains gracefully once failures persist.
+                tick_raised = True
+                if await self._handle_tick_failure(exc):
                     break
-                if self._in_flight:
-                    # Harvest completions so they aren't stranded behind the gate.
-                    await self._harvest_completed()
-                if (
-                    not self._pause_event.is_set()
-                    and self._pause_deadline is not None
-                    and time.monotonic() >= self._pause_deadline
-                ):
-                    # Unanswered feedback pause past its deadline → clean drain.
-                    await self._auto_stop_unanswered_pause()
-                elif not self._pause_event.is_set():
-                    continue
-
-            if self._stop_requested:
+                continue
+            finally:
+                # A clean tick (no exception, including break/continue exits)
+                # resets the breaker; an exception leaves the streak to escalate.
+                if not tick_raised:
+                    self._tick_failure_streak = 0
+            if should_break:
                 break
-
-            # Drain requested from sync context (e.g. signal handler) — initialize fully.
-            if self._draining and not self._drain_initialized:
-                await self.begin_drain(self._drain_reason or "signal_sigterm")
-
-            await self._harvest_completed()
-
-            # Periodic GitHub refresh fallback: fires when no refresh-triggering
-            # play has completed recently, keeping cache fresh across long runs of
-            # run_qa / systematic_debugging / unblock_pr. Invalidates the digest
-            # so the next tick re-runs the selector; does NOT reset the idle
-            # streak — a fleet sitting idle through a refresh has not become
-            # less idle (desktop-mib1).
-            if time.monotonic() - self._last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
-                await self._safe_call(self._refresh_issues(), "refresh_issues_periodic")
-                self._last_selection_digest = None
-
-            state = await self._build_state()
-
-            state = await self._begin_budget_reserve_drain_if_needed(state)
-
-            should_stop, reason = self._should_terminate(state)
-            if should_stop:
-                _logger.info(
-                    "loop_terminating",
-                    reason=reason,
-                    session_id=self._session_id,
-                )
-                if reason is not None and reason != "stop_requested":
-                    self._natural_exit_reason = reason
-                break
-            if reason is not None:
-                # reason set but should_stop False → pause; loop blocks at wait() next iteration
-                await self._pause_with_reason(reason)
-                continue
-
-            # PPO sees the full mask every tick — the eligibility mask
-            # (``compute_agent_eligibility_mask``) already zeros out worker
-            # plays when no IDLE agent matches, and ``compute_config_mask``
-            # still bounds INSTANTIATE_AGENT by per-(type, tier)
-            # ``max_per_config`` / ``cooldown_plays``. Letting selection run
-            # even when the fleet
-            # is fully busy lets PPO grow the fleet under sustained pressure;
-            # if nothing is pickable, the ``selection is None`` path below
-            # falls through to ``_wait_for_in_flight`` as before.
-            idle_agents = [a for a in state.agents if a.status == AgentStatus.IDLE]
-
-            # Skip ``_select_play`` (and its log line) when nothing the selector
-            # cares about has changed since the last attempt. The watchdog at
-            # the ceiling tick still re-evaluates regardless, so a missed
-            # signal recovers within ~21s. See ``_selection_state_digest``.
-            digest = self._selection_state_digest(state, idle_agents)
-            ceiling_tick = self._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
-            if digest == self._last_selection_digest and not ceiling_tick:
-                self._idle_streak += 1
-                if self._in_flight:
-                    await self._wait_for_in_flight(
-                        timeout=self._idle_backoff("waiting_for_in_flight_resource")
-                    )
-                    continue
-                if await self._continue_if_selector_idle_work_remains(
-                    state, reason="unchanged_digest"
-                ):
-                    continue
-                break  # truly idle, nothing changed
-
-            self._last_selection_digest = digest
-
-            override_play = await self._consume_override(state)
-            from_override = override_play is not None
-
-            selection = await self._select_play(state, override_play=override_play)
-            if selection is None:
-                # Only log once per distinct digest. With the digest gate
-                # above, this fires at most once per state transition rather
-                # than once per loop tick.
-                self._idle_streak += 1
-                _idle_log = _logger.debug if self._idle_streak > 1 else _logger.info
-                _idle_log(
-                    "selector_idle", session_id=self._session_id, idle_streak=self._idle_streak
-                )
-                if self._in_flight:
-                    await self._emit_structured_play_skipped_for_current_tick(state)
-                    await self._wait_for_in_flight(
-                        timeout=self._idle_backoff("waiting_for_in_flight_resource")
-                    )
-                    continue
-                if await self._continue_if_selector_idle_work_remains(
-                    state, reason="selector_none"
-                ):
-                    continue
-                break  # truly idle
-
-            # Selector picked a play — reset the streak so the next idle window
-            # starts at the 1s backoff floor. If we were inside a fleet-idle
-            # persistent window (desktop-85ex), emit the exit transition once
-            # before clearing the flag — this is the second of the two
-            # bookend events the memory project_loop_detector_warning_storm
-            # mandates we preserve, instead of re-emitting per tick.
-            if self._fleet_idle_persistent_active:
-                _logger.info(
-                    "fleet_idle_persistent",
-                    session_id=self._session_id,
-                    idle_streak=self._idle_streak,
-                    threshold=self._cfg.rl.loop_detection.fleet_idle_threshold,
-                    transition="exited",
-                )
-                self._fleet_idle_persistent_active = False
-            self._idle_streak = 0
-            self._wedged_idle_ticks = 0
-
-            play_type, params = selection
-
-            if (
-                not from_override
-                and play_type == PlayType.INSTANTIATE_AGENT
-                and not idle_agents
-                and self._in_flight
-            ):
-                _logger.info(
-                    "ppo_instantiate_under_pressure",
-                    session_id=self._session_id,
-                    in_flight=len(self._in_flight),
-                    live_agents=len(state.agents),
-                    open_issues=len(state.open_issues),
-                )
-            if self._shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
-                _logger.warning(
-                    "selection_blocked_during_shutdown",
-                    play_type=play_type.value,
-                    session_id=self._session_id,
-                )
-                if idle_agents:
-                    play_type, params = PlayType.END_AGENT, PlayParams()
-                else:
-                    if self._in_flight:
-                        await self._wait_for_in_flight(
-                            timeout=self._idle_backoff("waiting_for_in_flight_resource")
-                        )
-                        continue
-                    break
-            end_session_blocked = (
-                play_type == PlayType.END_SESSION
-                and not await self._revalidate_end_session_before_dispatch()
-            )
-            if end_session_blocked:
-                if isinstance(self._selector, _ppo_selector_cls()):
-                    self._selector.consume_pending()
-                continue
-            should_revalidate = isinstance(self._selector, _ppo_selector_cls()) or (
-                override_play is not None and self._params_have_dispatch_target(params)
-            )
-            dispatched = await self._dispatch_play(
-                play_type,
-                params,
-                state,
-                revalidate=should_revalidate,
-            )
-            if not dispatched:
-                continue
-            # NO await — continue loop
-
-            # Efficient wait if tasks in flight. Look up the timeout via
-            # agentshore.core so tests that patch the constant take effect.
-            if self._in_flight:
-                from agentshore import core as _core_pkg
-
-                await self._wait_for_in_flight(timeout=_core_pkg.AGENT_PING_TIMEOUT_SECONDS)
-            elif not self._in_flight:
-                break  # truly idle
 
         # Natural-exit hook fires only when termination came from
         # _should_terminate (drain_complete, max_plays, timeout, shutting_down),
@@ -1026,3 +915,261 @@ class _LoopMixin(_OrchestratorBase):
                 self._natural_exit_callback(self._natural_exit_reason),
                 "on_natural_exit_callback",
             )
+
+    async def _handle_tick_failure(self, exc: Exception) -> bool:
+        """Handle an exception raised by one ``_run_loop_body`` tick.
+
+        Returns True when the loop should stop (circuit breaker tripped → a
+        graceful drain was initiated), False to back off briefly and retry. The
+        backoff is bounded so a fast-throwing tick logs ~N times over a few
+        seconds and then drains, rather than busy-logging thousands of times.
+        """
+        self._tick_failure_streak += 1
+        _logger.error(
+            "loop_tick_failed",
+            session_id=self._session_id,
+            error=str(exc),
+            consecutive_failures=self._tick_failure_streak,
+            in_flight=len(self._in_flight),
+            idle_streak=self._idle_streak,
+            exc_info=True,
+        )
+        if self._tick_failure_streak >= _MAX_CONSECUTIVE_TICK_FAILURES:
+            _logger.error(
+                "loop_circuit_breaker_tripped",
+                session_id=self._session_id,
+                consecutive_failures=self._tick_failure_streak,
+                note=(
+                    "run_until_idle tick raised on every recent iteration — "
+                    "draining the session gracefully instead of spinning on the "
+                    "failure or hanging silently"
+                ),
+            )
+            self._natural_exit_reason = "tick_failure_circuit_breaker"
+            self._drain_reason = "tick_failure_circuit_breaker"
+            await self._safe_call(
+                self.begin_drain("tick_failure_circuit_breaker"),
+                "circuit_breaker_begin_drain",
+            )
+            return True
+        await asyncio.sleep(min(self._tick_failure_streak * 0.5, 5.0))
+        return False
+
+    async def _run_loop_body(self) -> bool:
+        """Run one RL-loop iteration. Returns True if the loop should break.
+
+        Extracted from ``run_until_idle`` so each tick runs behind the per-tick
+        guard there. Control flow that previously ``break``-ed the while loop
+        returns True; everything that previously ``continue``-d (or fell off the
+        end) returns False so the loop re-iterates.
+        """
+        # Pause blocks new selection/dispatch, but completed in-flight plays
+        # still need to be harvested so agent completions, costs, and rewards
+        # do not get stranded behind the pause gate.
+        if not self._pause_event.is_set():
+            # Bound the wait by the unanswered-pause deadline (#9) so a
+            # feedback pause nobody answers auto-stops instead of wedging the
+            # loop indefinitely. ``remaining`` is None when no deadline is
+            # armed (manual pause), making this a plain block-until-resume.
+            remaining: float | None = None
+            if self._pause_deadline is not None:
+                remaining = max(0.0, self._pause_deadline - time.monotonic())
+            pause_wait = asyncio.create_task(self._pause_event.wait())
+            try:
+                await asyncio.wait(
+                    [pause_wait, *self._in_flight.values()],
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not pause_wait.done():
+                    pause_wait.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pause_wait
+            if self._stop_requested:
+                return True
+            if self._in_flight:
+                # Harvest completions so they aren't stranded behind the gate.
+                await self._harvest_completed()
+            if (
+                not self._pause_event.is_set()
+                and self._pause_deadline is not None
+                and time.monotonic() >= self._pause_deadline
+            ):
+                # Unanswered feedback pause past its deadline → clean drain.
+                await self._auto_stop_unanswered_pause()
+            elif not self._pause_event.is_set():
+                return False
+
+        if self._stop_requested:
+            return True
+
+        # Drain requested from sync context (e.g. signal handler) — initialize fully.
+        if self._draining and not self._drain_initialized:
+            await self.begin_drain(self._drain_reason or "signal_sigterm")
+
+        await self._harvest_completed()
+
+        # Periodic GitHub refresh fallback: fires when no refresh-triggering
+        # play has completed recently, keeping cache fresh across long runs of
+        # run_qa / systematic_debugging / unblock_pr. Invalidates the digest
+        # so the next tick re-runs the selector; does NOT reset the idle
+        # streak — a fleet sitting idle through a refresh has not become
+        # less idle (desktop-mib1).
+        if time.monotonic() - self._last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
+            await self._safe_call(self._refresh_issues(), "refresh_issues_periodic")
+            self._last_selection_digest = None
+
+        state = await self._build_state()
+
+        state = await self._begin_budget_reserve_drain_if_needed(state)
+
+        should_stop, reason = self._should_terminate(state)
+        if should_stop:
+            _logger.info(
+                "loop_terminating",
+                reason=reason,
+                session_id=self._session_id,
+            )
+            if reason is not None and reason != "stop_requested":
+                self._natural_exit_reason = reason
+            return True
+        if reason is not None:
+            # reason set but should_stop False → pause; loop blocks at wait() next iteration
+            await self._pause_with_reason(reason)
+            return False
+
+        # PPO sees the full mask every tick — the eligibility mask
+        # (``compute_agent_eligibility_mask``) already zeros out worker
+        # plays when no IDLE agent matches, and ``compute_config_mask``
+        # still bounds INSTANTIATE_AGENT by per-(type, tier)
+        # ``max_per_config`` / ``cooldown_plays``. Letting selection run
+        # even when the fleet
+        # is fully busy lets PPO grow the fleet under sustained pressure;
+        # if nothing is pickable, the ``selection is None`` path below
+        # falls through to ``_wait_for_in_flight`` as before.
+        idle_agents = [a for a in state.agents if a.status == AgentStatus.IDLE]
+
+        # Skip ``_select_play`` (and its log line) when nothing the selector
+        # cares about has changed since the last attempt. The watchdog at
+        # the ceiling tick still re-evaluates regardless, so a missed
+        # signal recovers within ~21s. See ``_selection_state_digest``.
+        digest = self._selection_state_digest(state, idle_agents)
+        ceiling_tick = self._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
+        if digest == self._last_selection_digest and not ceiling_tick:
+            self._idle_streak += 1
+            if self._in_flight:
+                await self._wait_for_in_flight(
+                    timeout=self._idle_backoff("waiting_for_in_flight_resource")
+                )
+                return False
+            # truly idle, nothing changed → break unless idle-work remains
+            return not await self._continue_if_selector_idle_work_remains(
+                state, reason="unchanged_digest"
+            )
+
+        self._last_selection_digest = digest
+
+        override_play = await self._consume_override(state)
+        from_override = override_play is not None
+
+        selection = await self._select_play(state, override_play=override_play)
+        if selection is None:
+            # Only log once per distinct digest. With the digest gate
+            # above, this fires at most once per state transition rather
+            # than once per loop tick.
+            self._idle_streak += 1
+            _idle_log = _logger.debug if self._idle_streak > 1 else _logger.info
+            _idle_log(
+                "selector_idle", session_id=self._session_id, idle_streak=self._idle_streak
+            )
+            if self._in_flight:
+                await self._emit_structured_play_skipped_for_current_tick(state)
+                await self._wait_for_in_flight(
+                    timeout=self._idle_backoff("waiting_for_in_flight_resource")
+                )
+                return False
+            # truly idle → break unless idle-work remains
+            return not await self._continue_if_selector_idle_work_remains(
+                state, reason="selector_none"
+            )
+
+        # Selector picked a play — reset the streak so the next idle window
+        # starts at the 1s backoff floor. If we were inside a fleet-idle
+        # persistent window (desktop-85ex), emit the exit transition once
+        # before clearing the flag — this is the second of the two
+        # bookend events the memory project_loop_detector_warning_storm
+        # mandates we preserve, instead of re-emitting per tick.
+        if self._fleet_idle_persistent_active:
+            _logger.info(
+                "fleet_idle_persistent",
+                session_id=self._session_id,
+                idle_streak=self._idle_streak,
+                threshold=self._cfg.rl.loop_detection.fleet_idle_threshold,
+                transition="exited",
+            )
+            self._fleet_idle_persistent_active = False
+        self._idle_streak = 0
+        self._wedged_idle_ticks = 0
+
+        play_type, params = selection
+
+        if (
+            not from_override
+            and play_type == PlayType.INSTANTIATE_AGENT
+            and not idle_agents
+            and self._in_flight
+        ):
+            _logger.info(
+                "ppo_instantiate_under_pressure",
+                session_id=self._session_id,
+                in_flight=len(self._in_flight),
+                live_agents=len(state.agents),
+                open_issues=len(state.open_issues),
+            )
+        if self._shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
+            _logger.warning(
+                "selection_blocked_during_shutdown",
+                play_type=play_type.value,
+                session_id=self._session_id,
+            )
+            if idle_agents:
+                play_type, params = PlayType.END_AGENT, PlayParams()
+            else:
+                if self._in_flight:
+                    await self._wait_for_in_flight(
+                        timeout=self._idle_backoff("waiting_for_in_flight_resource")
+                    )
+                    return False
+                return True
+        end_session_blocked = (
+            play_type == PlayType.END_SESSION
+            and not await self._revalidate_end_session_before_dispatch()
+        )
+        if end_session_blocked:
+            if isinstance(self._selector, _ppo_selector_cls()):
+                self._selector.consume_pending()
+            return False
+        should_revalidate = isinstance(self._selector, _ppo_selector_cls()) or (
+            override_play is not None and self._params_have_dispatch_target(params)
+        )
+        dispatched = await self._dispatch_play(
+            play_type,
+            params,
+            state,
+            revalidate=should_revalidate,
+        )
+        if not dispatched:
+            return False
+        # NO await — continue loop
+
+        # Efficient wait if tasks in flight. Look up the timeout via
+        # agentshore.core so tests that patch the constant take effect.
+        if self._in_flight:
+            from agentshore import core as _core_pkg
+
+            await self._wait_for_in_flight(timeout=_core_pkg.AGENT_PING_TIMEOUT_SECONDS)
+        elif not self._in_flight:
+            return True  # truly idle
+
+        return False

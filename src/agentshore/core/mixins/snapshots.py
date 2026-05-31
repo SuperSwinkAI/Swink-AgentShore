@@ -278,15 +278,18 @@ class _SnapshotsMixin(_OrchestratorBase):
         int | None,
         dict[PlayType, int],
         dict[PlayType, bool],
+        dict[PlayType, bool],
         int | None,
     ]:
         """Compute play recency and latest success/failure by play type.
 
         Returns ``(last_play_type, plays_since_last_instantiate,
         plays_since_last_play_type, last_play_success_by_type,
-        seed_freshness)``. ``seed_freshness`` is plays since the most-recent
-        *successful* SEED_PROJECT, or ``None`` if no successful seed exists
-        in history (V1 contract).
+        last_play_skipped_by_type, seed_freshness)``. ``last_play_skipped_by_type``
+        records whether each type's most-recent outcome was a no-op ``skip:*``
+        (vs a genuine failure) so self-heal gates don't treat a skip as a wedge.
+        ``seed_freshness`` is plays since the most-recent *successful*
+        SEED_PROJECT, or ``None`` if no successful seed exists (V1 contract).
         """
         play_history = [p for p in play_history if p.ended_at is not None]
         last_play_type: PlayType | None = None
@@ -297,6 +300,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         plays_since_last_instantiate: int | None = None
         plays_since_last_play_type: dict[PlayType, int] = {}
         last_play_success_by_type: dict[PlayType, bool] = {}
+        last_play_skipped_by_type: dict[PlayType, bool] = {}
         seed_freshness: int | None = None
         # Non-work plays (``_NON_WORK_PLAY_VALUES``) are skipped so the
         # cooldown offset reflects "real plays since last X". The set is
@@ -319,12 +323,18 @@ class _SnapshotsMixin(_OrchestratorBase):
                     plays_since_last_play_type[pt] = real_offset
                 if pt not in last_play_success_by_type:
                     last_play_success_by_type[pt] = p.success
+                if pt not in last_play_skipped_by_type:
+                    # A ``skip:*`` outcome (recorded success=False) is a no-op,
+                    # not a wedge — track it so ArmedByFailureGate doesn't arm a
+                    # self-heal play off a skip (the write_impl↔reconcile spin).
+                    last_play_skipped_by_type[pt] = (p.failure_category or "").startswith("skip:")
             real_offset += 1
         return (
             last_play_type,
             plays_since_last_instantiate,
             plays_since_last_play_type,
             last_play_success_by_type,
+            last_play_skipped_by_type,
             seed_freshness,
         )
 

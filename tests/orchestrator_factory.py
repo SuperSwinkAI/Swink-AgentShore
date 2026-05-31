@@ -99,6 +99,7 @@ def make_test_orchestrator(
     orch._last_play_id = None
     orch._recent_executor_skip = False
     orch._executor_skip_window = collections.deque(maxlen=50)
+    orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._budget_override = False
     orch._stop_done = asyncio.Event()
     orch._config_path = None

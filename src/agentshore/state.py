@@ -504,6 +504,11 @@ class OrchestratorState:
     # gates use this for plays whose failure means the apparent backlog is not
     # trustworthy enough to declare the session complete.
     last_play_success_by_type: dict[PlayType, bool] = field(default_factory=dict)
+    # Whether each play type's most-recent outcome was a no-op ``skip:*`` (vs a
+    # genuine failure). ``ArmedByFailureGate`` uses this so a skip — which is
+    # recorded success=False but is not a wedge — does not arm a self-heal play
+    # (the write_impl skip ↔ reconcile arm/run loop that drove the no-op spin).
+    last_play_skipped_by_type: dict[PlayType, bool] = field(default_factory=dict)
     # Action mask and reasons for IPC consumers (e.g. dashboard Plays Panel).
     # Populated by core after _build_state(); empty when registry is unavailable.
     action_mask: tuple[bool, ...] = field(default_factory=tuple)

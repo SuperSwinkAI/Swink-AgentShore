@@ -92,9 +92,10 @@ async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_auto_stop_deferred_while_actionable_work_remains(tmp_path: Path) -> None:
-    """Merge-ready/workable work present → resume instead of draining (no teardown)."""
+    """Merge-ready/workable work present AND progressing → resume, not drain."""
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     orch._actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
+    orch._loop_is_progressing = AsyncMock(return_value=True)  # WS3 item C gate
     await orch.pause("loop_detected")
     orch._pause_event.clear()
     await orch._auto_stop_unanswered_pause()
@@ -102,6 +103,26 @@ async def test_auto_stop_deferred_while_actionable_work_remains(tmp_path: Path) 
     assert orch._pause_event.is_set()  # pause lifted — loop resumes, not wedged
     assert orch._pause_deadline is None
     assert orch._auto_stop_reprieves_used == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_drains_when_spinning_despite_work(tmp_path: Path) -> None:
+    """Work remains but the loop is spinning (no progress) → drain, do NOT reprieve.
+
+    WS3 item C: a no-op spin keeps workable issues / mergeable PRs > 0, so the
+    old work-only reprieve would keep the wedged session alive. Requiring real
+    progress means a spinning-but-work-remains session stops.
+    """
+    orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
+    orch._actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
+    orch._loop_is_progressing = AsyncMock(return_value=False)  # spinning
+    await orch.pause("loop_detected")
+    orch._pause_event.clear()
+    await orch._auto_stop_unanswered_pause()
+    assert orch._draining is True  # stops despite work remaining
+    assert orch._drain_reason == "loop_detection_prompt_timeout"
+    assert orch._auto_stop_reprieves_used == 0  # no reprieve granted
+    assert orch._pause_event.is_set()
 
 
 @pytest.mark.asyncio

@@ -76,6 +76,7 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._feedback_cadence_last_ack_monotonic = 0.0
     orch._recent_executor_skip = False
     orch._executor_skip_window = collections.deque(maxlen=50)
+    orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
     orch._pending_override_kind = None
