@@ -1109,6 +1109,67 @@ async def test_record_experience_round_trip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_experience_persists_mask_reason(tmp_path) -> None:
+    """mask_reason (v2->v3 column) round-trips through record_experience."""
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        play_id = await store.record_play(
+            PlayRecord(session_id="s1", play_type="refine_task_breakdown", started_at="T0", success=True)
+        )
+        sv = b"\x00" * 8
+        summary = "merge_pr=no eligible reviewer; code_review=anti-bias"
+        exp = ExperienceRecord(
+            session_id="s1",
+            play_id=play_id,
+            state_vector=sv,
+            action=12,
+            reward=-1.0,
+            next_state=sv,
+            done=0,
+            mask_reason=summary,
+        )
+        await store.record_experience(exp)
+        async with store._conn.execute(
+            "SELECT mask_reason FROM rl_experience WHERE session_id='s1'"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row["mask_reason"] == summary
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_migrate_v2_to_v3_adds_mask_reason_column(tmp_path) -> None:
+    """A v2-shaped rl_experience (no mask_reason) gains the column idempotently."""
+    import aiosqlite
+
+    from agentshore.data.migrations import migrate_v2_to_v3
+
+    db_path = tmp_path / "legacy.db"
+    conn = await aiosqlite.connect(str(db_path))
+    try:
+        await conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
+        # v2-shaped rl_experience: action_mask present, mask_reason absent.
+        await conn.execute(
+            "CREATE TABLE rl_experience (experience_id INTEGER PRIMARY KEY, action_mask BLOB)"
+        )
+        await conn.commit()
+
+        await migrate_v2_to_v3(conn)
+        async with conn.execute("PRAGMA table_info(rl_experience)") as cur:
+            cols = {r[1] for r in await cur.fetchall()}
+        assert "mask_reason" in cols
+
+        # Idempotent: a second run does not raise (duplicate-column).
+        await migrate_v2_to_v3(conn)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_iter_experience_empty_for_unknown_session(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()

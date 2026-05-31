@@ -76,6 +76,25 @@ class _LifecycleMixin(_OrchestratorBase):
                 a.status == AgentStatus.TERMINATED for a in state.agents
             )
             if no_live_agents:
+                # Defensive visibility: drain should not have been entered with
+                # merge-ready PRs outstanding (the auto-stop guard in loop.py
+                # defers that). If we still reach drain_complete with mergeable
+                # PRs, surface it loudly — finished work is being abandoned and
+                # the entry guard did not hold.
+                from agentshore.plays.candidates import build_candidate_plan
+
+                mergeable = build_candidate_plan(state).work_availability.mergeable_pr_count
+                if mergeable > 0:
+                    _logger.error(
+                        "drain_complete_with_mergeable_prs",
+                        session_id=self._session_id,
+                        mergeable_pr_count=mergeable,
+                        note=(
+                            "session draining to completion while merge-ready PRs remain "
+                            "unmerged — finished work abandoned; the auto-stop entry guard "
+                            "should have prevented this drain"
+                        ),
+                    )
                 return True, "drain_complete"
             return False, None  # continue; mask allows only end_agent
         if state.session_state == SessionState.SHUTTING_DOWN:

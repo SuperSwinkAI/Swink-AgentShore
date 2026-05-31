@@ -38,6 +38,7 @@ def _make_orch(tmp_path: Path, feedback: FeedbackConfig | None = None) -> Any:
     orch._budget_override = False
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
+    orch._auto_stop_reprieves_used = 0
     return orch
 
 
@@ -78,6 +79,8 @@ async def test_resume_clears_deadline(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
+    # No actionable work → the guard does not defer; the pause auto-stops.
+    orch._actionable_work_remains = AsyncMock(return_value=(False, 0, 0))
     await orch.pause("loop_detected")
     orch._pause_event.clear()  # simulate still-paused
     await orch._auto_stop_unanswered_pause()
@@ -85,3 +88,33 @@ async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) ->
     assert orch._drain_reason == "loop_detection_prompt_timeout"
     assert orch._pause_event.is_set()  # gate unblocked so loop reaches drain
     assert orch._pause_deadline is None
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_deferred_while_actionable_work_remains(tmp_path: Path) -> None:
+    """Merge-ready/workable work present → resume instead of draining (no teardown)."""
+    orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
+    orch._actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
+    await orch.pause("loop_detected")
+    orch._pause_event.clear()
+    await orch._auto_stop_unanswered_pause()
+    assert orch._draining is False  # NOT torn down
+    assert orch._pause_event.is_set()  # pause lifted — loop resumes, not wedged
+    assert orch._pause_deadline is None
+    assert orch._auto_stop_reprieves_used == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_stop_drains_after_reprieve_budget_exhausted(tmp_path: Path) -> None:
+    """A genuinely stuck loop still stops once the reprieve budget is spent (#9)."""
+    from agentshore.core.mixins.loop import _AUTO_STOP_WORK_REPRIEVE_LIMIT
+
+    orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
+    orch._actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
+    orch._auto_stop_reprieves_used = _AUTO_STOP_WORK_REPRIEVE_LIMIT  # budget spent
+    await orch.pause("loop_detected")
+    orch._pause_event.clear()
+    await orch._auto_stop_unanswered_pause()
+    assert orch._draining is True
+    assert orch._drain_reason == "loop_detection_prompt_timeout"
+    assert orch._pause_event.is_set()

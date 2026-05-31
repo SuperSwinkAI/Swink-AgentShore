@@ -363,6 +363,22 @@ def test_in_progress_bead_excluded_from_refine_candidates() -> None:
     assert nums == [7]
 
 
+def test_refined_issue_excluded_from_refine_candidates() -> None:
+    # An issue marked agentshore/refined is not a refine candidate even though
+    # it still carries needs-refinement; removing refined re-arms it.
+    plan = build_candidate_plan(
+        _state(
+            open_issues=[
+                _issue(6, labels=["agentshore/needs-refinement", "agentshore/refined"]),
+                _issue(7, labels=["agentshore/needs-refinement"]),
+            ],
+        )
+    )
+    nums = [c.params.issue_number for c in plan.candidates_for(PlayType.REFINE_TASK_BREAKDOWN)]
+    assert 6 not in nums
+    assert nums == [7]
+
+
 def test_in_progress_bead_excluded_from_debug_candidates() -> None:
     plan = build_candidate_plan(
         _state(

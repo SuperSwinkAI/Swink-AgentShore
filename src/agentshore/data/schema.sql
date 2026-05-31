@@ -239,6 +239,7 @@ CREATE TABLE IF NOT EXISTS rl_experience (
     old_log_prob  REAL,
     value_estimate REAL,
     action_mask   BLOB,
+    mask_reason   TEXT,
     policy_version TEXT,
     action_space_version INTEGER NOT NULL DEFAULT 1,
     config_hash   TEXT,
@@ -359,4 +360,4 @@ VALUES ('schema_namespace', 'agentshore_dev_v1');
 
 -- Current schema version for the agentshore_dev_v1 generation.
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (2, datetime('now'));
+VALUES (3, datetime('now'));

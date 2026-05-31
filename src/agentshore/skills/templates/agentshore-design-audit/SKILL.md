@@ -36,7 +36,7 @@ For each unmet requirement: if an open GH issue and open beads task exist, mark 
 
 **New GH issues must include:** source file + heading, why current evidence is insufficient, acceptance criteria an implementer can test, and likely source/test areas. Labels: `enhancement` by default plus existing project labels only when clearly appropriate.
 
-**Size routing.** Sizing and decomposition belong to `agentshore-refine-tasks`. This play only routes by intent: when the cited source section describes multiple distinct deliverables worth separate issues, apply `agentshore/needs-refinement` via `gh issue edit <N> --add-label "agentshore/needs-refinement"`. Single-deliverable issues pass through unlabeled.
+**Size routing.** Sizing and decomposition belong to `agentshore-refine-tasks`. This play only routes by intent: when the cited source section describes multiple distinct deliverables worth separate issues, apply `agentshore/needs-refinement` via `gh issue edit <N> --add-label "agentshore/needs-refinement" --remove-label "agentshore/refined"` (removing `agentshore/refined` re-arms refinement if the issue was previously refined). Single-deliverable issues pass through unlabeled.
 
 **Close shipped trackers.** For each `verified_done` requirement, match any still-open GH issue or beads task by title keyword, source-file reference, or `external_ref` and close it:
 

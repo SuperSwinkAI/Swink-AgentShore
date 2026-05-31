@@ -451,6 +451,11 @@ class PlayCandidateAnalyzer:
             issue.state.upper() == "OPEN"
             and self._base_issue_available(issue)
             and "agentshore/needs-refinement" in issue.labels
+            # An issue refine has already processed carries agentshore/refined.
+            # Without this, refine is re-selected on already-refined issues and
+            # an agent is dispatched only to no-op ("all issues already
+            # refined"). Re-armed by groom/design-audit removing the label.
+            and "agentshore/refined" not in issue.labels
         )
 
     def issue_available_for_debug(self, issue: IssueSnapshot) -> bool:
@@ -849,6 +854,7 @@ def issue_available_for_refine(
             bead_in_progress_issue_numbers=bead_in_progress_issue_numbers,
         )
         and "agentshore/needs-refinement" in issue.labels
+        and "agentshore/refined" not in issue.labels
     )
 
 

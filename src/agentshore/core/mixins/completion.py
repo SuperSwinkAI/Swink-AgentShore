@@ -53,6 +53,32 @@ if TYPE_CHECKING:
     )
 
 
+_MASK_REASON_SUMMARY_MAX_CHARS = 1000
+
+
+def _mask_reason_summary(state: StateProvider | object) -> str | None:
+    """Serialize a tick's per-play mask reasons into one compact string.
+
+    Persisted to ``rl_experience.mask_reason`` so it is possible to answer,
+    post-hoc, why a play (e.g. ``merge_pr``) was not selected on a given tick —
+    the empty ``action_mask`` blob alone is opaque. Format is
+    ``play_type=reason; …`` sorted by play type, truncated to keep the row
+    small (this is the "reason only" summary, not a structured per-play map).
+    Returns ``None`` when no plays were masked (nothing to record).
+    """
+    reasons = getattr(state, "mask_reasons", None)
+    if not reasons:
+        return None
+    parts = [
+        f"{pt.value}={reason.text}"
+        for pt, reason in sorted(reasons.items(), key=lambda kv: kv[0].value)
+    ]
+    summary = "; ".join(parts)
+    if not summary:
+        return None
+    return summary[:_MASK_REASON_SUMMARY_MAX_CHARS]
+
+
 _PROMOTABLE_REQUEST_PLAYS: frozenset[str] = frozenset(
     {
         "code_review",
@@ -672,6 +698,7 @@ class _CompletionMixin(_OrchestratorBase):
                             old_log_prob=pending_step.log_prob,
                             value_estimate=pending_step.value,
                             action_mask=pending_step.mask.tobytes(),
+                            mask_reason=_mask_reason_summary(state_before),
                             policy_version=self._policy_version,
                             action_space_version=ACTION_SPACE_VERSION,
                             config_hash=self._config_hash,
