@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from agentshore.plays.selector import PlaySelector
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
+        OrchestratorState,
         PlayOutcome,
         StateProvider,
     )
@@ -425,8 +426,10 @@ class _CompletionMixin(_OrchestratorBase):
             await self._safe_call(
                 self._state_provider.on_state_update(post_state), "on_state_update_post"
             )
-            if self._check_noop_spin(post_state) and self._pause_event.is_set():
-                await self._pause_with_reason("loop_detected")
+            # A skip is the canonical no-forward-progress tick (no agent
+            # dispatched) — feed the forward-progress monitor here, on the skip
+            # path that returns early before the main checks below.
+            await self._check_no_forward_progress(post_state, outcome)
             return
 
         # Any completed (non-skipped) play clears the executor-skip flag.
@@ -594,10 +597,7 @@ class _CompletionMixin(_OrchestratorBase):
         elif reason is not None and self._pause_event.is_set():
             await self._pause_with_reason(reason)
 
-        if self._check_loop_detection(next_state) and self._pause_event.is_set():
-            await self._pause_with_reason("loop_detected")
-        if self._check_noop_spin(next_state) and self._pause_event.is_set():
-            await self._pause_with_reason("loop_detected")
+        await self._check_no_forward_progress(next_state, outcome)
         if await self._check_stagnation_escalation(next_state) and self._pause_event.is_set():
             await self._pause_with_reason("stagnation")
         self._feedback_cadence_plays_since_ack += 1
@@ -1135,6 +1135,56 @@ class _CompletionMixin(_OrchestratorBase):
                 pr=request.get("pr"),
                 idempotency_key=mutation.idempotency_key,
             )
+
+    async def _check_no_forward_progress(
+        self, state: OrchestratorState, outcome: PlayOutcome
+    ) -> None:
+        """Forward-progress backstop: drain after N consecutive dead ticks.
+
+        A tick makes forward progress if a play was dispatched to an agent, an
+        agent is busy, or the beads/GitHub graph fingerprint changed (an issue/
+        PR/beads-task created, closed, or advanced). N consecutive no-progress
+        ticks drain the session directly. This is the single autonomous-stop
+        signal — it replaces the same-type-streak loop-detector and the no-op-
+        spin detector, which watched play activity rather than project progress
+        and so missed an interleaved write_impl↔refine churn. Pure backstop: it
+        never influences which play the policy selects.
+        """
+        monitor = self._progress_monitor
+        if monitor is None:
+            return
+        if getattr(self, "_draining", False) or getattr(self, "_stop_requested", False):
+            return
+        graph = state.graph
+        fingerprint = (
+            round(graph.global_closure_ratio, 4) if graph is not None else 0.0,
+            graph.tasks_ready if graph is not None else 0,
+            len(state.open_issues),
+            sum(1 for pr in state.pull_requests if pr.state.upper() == "OPEN"),
+            sum(1 for pr in state.pull_requests if pr.state.upper() == "MERGED"),
+        )
+        dispatched = not outcome.skipped and outcome.agent_id is not None
+        any_busy = any(a.status == AgentStatus.BUSY for a in state.agents)
+        tripped = monitor.record_tick(
+            dispatched_to_agent=dispatched,
+            any_agent_busy=any_busy,
+            fingerprint=fingerprint,
+        )
+        if not tripped:
+            return
+        _logger.warning(
+            "no_forward_progress",
+            session_id=self._session_id,
+            no_progress_ticks=monitor.no_progress_ticks,
+            limit=monitor.limit,
+            note=(
+                "no agent dispatch, all agents idle, and no beads/GitHub change "
+                f"for {monitor.limit} consecutive ticks — draining the stalled session"
+            ),
+        )
+        self._natural_exit_reason = "no_forward_progress"
+        self._drain_reason = "no_forward_progress"
+        await self.begin_drain("no_forward_progress")
 
     async def _resource_keys_for_request_play(
         self, play_type: PlayType, params: PlayParams

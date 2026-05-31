@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext, _StateData
     from agentshore.core.experience_recorder import ExperienceRecorder
-    from agentshore.core.progress_monitor import LoopProgressMonitor
+    from agentshore.core.progress_monitor import ForwardProgressMonitor
     from agentshore.data.integrity import IntegrityMonitor
     from agentshore.data.store import (
         DataStore,
@@ -133,7 +133,7 @@ class _OrchestratorBase:
     _experience_recorder: ExperienceRecorder | None = None
     # Pure progress assessor (no-op-spin detection + WS3 reprieve gating).
     # Class-level default None; constructed in phases.py. Callers guard on None.
-    _progress_monitor: LoopProgressMonitor | None = None
+    _progress_monitor: ForwardProgressMonitor | None = None
     # Consecutive run_until_idle ticks whose body raised. The per-tick guard
     # increments this and resets it on any clean tick; at
     # _MAX_CONSECUTIVE_TICK_FAILURES the loop drains gracefully rather than
@@ -499,10 +499,9 @@ class _OrchestratorBase:
     def _should_terminate(self, state: OrchestratorState) -> tuple[bool, str | None]:
         raise NotImplementedError
 
-    def _check_loop_detection(self, state: OrchestratorState) -> bool:
-        raise NotImplementedError
-
-    def _check_noop_spin(self, state: OrchestratorState) -> bool:
+    async def _check_no_forward_progress(
+        self, state: OrchestratorState, outcome: PlayOutcome
+    ) -> None:
         raise NotImplementedError
 
     async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:

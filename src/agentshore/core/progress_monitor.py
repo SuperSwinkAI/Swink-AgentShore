@@ -1,119 +1,77 @@
-"""Loop progress assessment — no-op-spin detection and reprieve gating.
+"""Forward-progress assessment — the single autonomous-stop signal.
 
-A live session burned ~84% of 939 plays alternating two plays that both
-deterministically *skip* at $0 (``write_implementation_plan`` skip:masked ↔
-``reconcile_state`` skip:no_target), making zero progress while merge-ready PRs
-sat unmerged — and **no detector fired**. The existing detectors are blind to it:
-loop-detection keys on *same-type* streaks (an A↔B alternation never builds one),
-stagnation/liveness reset on every $0 completion, and the masked-only
-``_executor_skip_window`` records ``False`` for ``no_target`` skips so a
-masked-only rate sits near 0.5.
+The old approach stacked three overlapping detectors (same-type-streak
+loop-detection, a strict no-op-spin detector, and a time-based stagnation
+ladder) and still missed a live session that burned ~253 plays at 94%
+``write_implementation_plan`` skip:masked with alignment frozen — because every
+detector watched play *activity* (streaks, skip rate, completion velocity)
+rather than project *advancement*. An interleaved write_impl↔refine churn keeps
+all of those signals "healthy" while the graph never moves.
 
-``LoopProgressMonitor`` consolidates the progress signals into a single pure
-assessor (no side effects — callers decide what to do). It reads an all-category
-skip window plus the rolling-velocity signal already maintained on the
-orchestrator. Two deliberately *non-complementary* predicates:
-
-* ``detect_noop_spin`` — strict; drives the backstop pause. A borderline session
-  is **not** flagged.
-* ``is_making_progress`` — permissive; gates the WS3 unanswered-pause reprieve. A
-  borderline session is still treated as progressing so a legitimately-slow run
-  is never starved of its reprieve.
+``ForwardProgressMonitor`` replaces them with one rule the owner specified: a
+tick makes **forward progress** iff a play was dispatched to an agent, an agent
+is busy, or the beads/GitHub graph fingerprint changed (an issue/PR/task was
+created, closed, or advanced). N consecutive no-progress ticks → the session
+should drain. The host computes the per-tick inputs (it owns state); the monitor
+owns only the counter, so it is trivially unit-testable.
 
 This is a deterministic backstop, not a policy director: it never influences
-*which* play the PPO selects — it only detects a degenerate state so the loop can
-stop, and tells the reprieve guard whether the loop is actually advancing.
+*which* play the PPO selects — it only stops a session that has stopped making
+progress.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import Final
 
-if TYPE_CHECKING:
-    import collections
+# Consecutive no-progress ticks before the session drains. A tick with any busy
+# agent, any agent dispatch, or a graph-fingerprint change resets the counter,
+# so this is a sustained full stall — matches the project-standard 20-play
+# cooldown window.
+_DEFAULT_NO_PROGRESS_TICKS: Final[int] = 20
 
-
-# A play with no real work done — counts toward the spin signal. Defaults chosen
-# against the incident: the spin held a ~1.0 all-skip rate over hundreds of plays.
-_DEFAULT_SKIP_RATE_THRESHOLD = 0.80
-# Minimum completed plays in the window before any spin verdict — avoids flagging
-# a cold start or a brief lull as a spin.
-_DEFAULT_MIN_WINDOW = 20
-
-
-class _ProgressStateHost(Protocol):
-    """The slice of orchestrator state the monitor reads."""
-
-    # Rolling window of recent completed plays: (was_skip, play_type_value).
-    _recent_play_outcomes: collections.deque[tuple[bool, str]]
-
-    def _compute_rolling_velocity(self, current_play_id: int) -> float: ...
+# Fingerprint of project advancement. Comparing this tuple across ticks detects
+# an issue/PR/beads-task being created, closed, or advanced without an extra DB
+# read (all fields come from next_state + the already-built candidate plan).
+GraphFingerprint = tuple[float, int, int, int, int]
 
 
-class LoopProgressMonitor:
-    """Pure assessor of whether the loop is progressing or spinning on no-ops."""
+class ForwardProgressMonitor:
+    """Counts consecutive no-forward-progress ticks and trips a stop."""
 
-    def __init__(
+    def __init__(self, *, no_progress_ticks: int = _DEFAULT_NO_PROGRESS_TICKS) -> None:
+        self._limit = no_progress_ticks
+        self._last_fingerprint: GraphFingerprint | None = None
+        self._no_progress_ticks = 0
+
+    @property
+    def no_progress_ticks(self) -> int:
+        return self._no_progress_ticks
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def record_tick(
         self,
         *,
-        host: _ProgressStateHost,
-        skip_rate_threshold: float = _DEFAULT_SKIP_RATE_THRESHOLD,
-        min_window: int = _DEFAULT_MIN_WINDOW,
-    ) -> None:
-        self._host = host
-        self._skip_rate_threshold = skip_rate_threshold
-        self._min_window = min_window
+        dispatched_to_agent: bool,
+        any_agent_busy: bool,
+        fingerprint: GraphFingerprint,
+    ) -> bool:
+        """Record one loop tick; return True when the no-progress threshold trips.
 
-    # ------------------------------------------------------------------
-    # Window readers
-    # ------------------------------------------------------------------
-
-    def _window(self) -> collections.deque[tuple[bool, str]]:
-        return self._host._recent_play_outcomes
-
-    def all_skip_rate(self) -> float:
-        """Fraction of recent completed plays that were no-op skips (any category)."""
-        window = self._window()
-        if not window:
-            return 0.0
-        return sum(1 for (was_skip, _pt) in window if was_skip) / len(window)
-
-    def distinct_productive_types(self) -> int:
-        """Distinct play types among recent *non-skip* (real-work) completions."""
-        return len({pt for (was_skip, pt) in self._window() if not was_skip})
-
-    # ------------------------------------------------------------------
-    # Verdicts
-    # ------------------------------------------------------------------
-
-    def detect_noop_spin(self, *, total_plays: int) -> bool:
-        """True only when the loop is clearly spinning on no-op skips (strict).
-
-        All four must hold: a full-enough window, **zero** rolling velocity (the
-        false-positive guard — any merged PR / closed issue clears it), an
-        all-category skip rate at/above the threshold, and at most one distinct
-        productive play type. A session landing any real work is never flagged.
+        Forward progress = a play dispatched to an agent, an agent currently
+        busy, or the graph fingerprint changed vs the prior tick. Any of these
+        resets the counter to 0. The first tick establishes the fingerprint
+        baseline and never trips. Once ``limit`` consecutive no-progress ticks
+        accumulate, returns True so the caller can drain.
         """
-        window = self._window()
-        if len(window) < self._min_window:
+        first_tick = self._last_fingerprint is None
+        graph_changed = not first_tick and fingerprint != self._last_fingerprint
+        self._last_fingerprint = fingerprint
+        if first_tick or dispatched_to_agent or any_agent_busy or graph_changed:
+            self._no_progress_ticks = 0
             return False
-        if self._host._compute_rolling_velocity(total_plays) > 0.0:
-            return False
-        if self.all_skip_rate() < self._skip_rate_threshold:
-            return False
-        return self.distinct_productive_types() <= 1
-
-    def is_making_progress(self, *, total_plays: int) -> bool:
-        """True unless the loop looks stalled on no-ops (permissive).
-
-        Used to gate the unanswered-pause reprieve: a session with real velocity,
-        too short a window to judge, or a sub-threshold skip rate is treated as
-        progressing so it keeps its reprieve. Only a window dominated by skips is
-        called not-progressing.
-        """
-        if self._host._compute_rolling_velocity(total_plays) > 0.0:
-            return True
-        window = self._window()
-        if len(window) < self._min_window:
-            return True
-        return self.all_skip_rate() < self._skip_rate_threshold
+        self._no_progress_ticks += 1
+        return self._no_progress_ticks >= self._limit
