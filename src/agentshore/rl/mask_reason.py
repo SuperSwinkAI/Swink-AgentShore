@@ -47,6 +47,7 @@ class MaskSource(StrEnum):
     DRAIN = "drain"
     TERMINAL = "terminal"
     RESERVED = "reserved"
+    CIRCUIT_BREAKER = "circuit_breaker"
 
 
 @dataclass(frozen=True, slots=True, eq=False)

@@ -657,6 +657,7 @@ class _OrchestratorBase:
         dict[PlayType, bool],
         dict[PlayType, bool],
         int | None,
+        dict[PlayType, int],
     ]:
         raise NotImplementedError
 

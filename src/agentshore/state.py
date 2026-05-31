@@ -509,6 +509,12 @@ class OrchestratorState:
     # recorded success=False but is not a wedge — does not arm a self-heal play
     # (the write_impl skip ↔ reconcile arm/run loop that drove the no-op spin).
     last_play_skipped_by_type: dict[PlayType, bool] = field(default_factory=dict)
+    # Tail run of consecutive non-productive (fail OR skip) outcomes per play
+    # type. The 3-strikes circuit breaker (rl/mask.py) masks a work play once
+    # this reaches its threshold, until the cooldown lifts — so a play that can
+    # only skip (e.g. write_implementation_plan losing the resolve-time TOCTOU
+    # race) stops being re-selected instead of spinning.
+    consecutive_nonproductive_by_type: dict[PlayType, int] = field(default_factory=dict)
     # Action mask and reasons for IPC consumers (e.g. dashboard Plays Panel).
     # Populated by core after _build_state(); empty when registry is unavailable.
     action_mask: tuple[bool, ...] = field(default_factory=tuple)

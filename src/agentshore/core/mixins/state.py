@@ -405,6 +405,7 @@ class _StateMixin(_OrchestratorBase):
             last_play_success_by_type,
             last_play_skipped_by_type,
             seed_freshness,
+            consecutive_nonproductive_by_type,
         ) = self._compute_play_recency(data.play_history)
         budget = self._build_budget_snapshot(total_plays, total_cost)
         trajectory = self._extract_trajectory(data.trajectory_record)
@@ -448,6 +449,7 @@ class _StateMixin(_OrchestratorBase):
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,
             last_play_skipped_by_type=last_play_skipped_by_type,
+            consecutive_nonproductive_by_type=consecutive_nonproductive_by_type,
             forced_mask_zeros=self._forced_mask_play_types,
             recovery_exhausted_agent_ids=frozenset(
                 a.agent_id

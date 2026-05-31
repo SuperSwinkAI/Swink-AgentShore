@@ -76,6 +76,22 @@ _CANDIDATE_REQUIRED_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
     }
 )
 
+# 3-strikes circuit breaker: a work play that records this many consecutive
+# non-productive (fail OR skip) outcomes is masked until ``_CIRCUIT_BREAKER_
+# COOLDOWN_PLAYS`` have elapsed since its last attempt, then the policy may
+# retry it once (a fresh strike re-arms it). This benches a play that can only
+# skip — e.g. write_implementation_plan losing the resolve-time TOCTOU race —
+# instead of letting the policy re-select it every tick. Cooldown matches the
+# project-standard 20-play window (cf. SEED/DESIGN_AUDIT cooldowns). Internal
+# control plays and RECONCILE_STATE (self-heal must stay available) are excluded.
+_CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
+_CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
+_CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = _CANDIDATE_REQUIRED_PLAY_TYPES | {
+    PlayType.RUN_QA,
+    PlayType.DESIGN_AUDIT,
+    PlayType.CALIBRATE_ALIGNMENT,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class TerminalNoWorkDecision:
@@ -641,6 +657,27 @@ class ActionMaskBuilder:
             ):
                 self._mask[V1_ACTION_ORDER.index(candidate_pt)] = False
 
+    def _breaker_benched(self, pt: PlayType) -> bool:
+        """True if ``pt`` is currently benched by the 3-strikes circuit breaker.
+
+        Benched = at least ``_CIRCUIT_BREAKER_THRESHOLD`` consecutive
+        non-productive (fail OR skip) outcomes AND fewer than
+        ``_CIRCUIT_BREAKER_COOLDOWN_PLAYS`` real plays since its last attempt.
+        Once the cooldown elapses the mask lifts so the policy may retry. Pure
+        option-removal — the policy still chooses freely among valid plays.
+        """
+        if pt not in _CIRCUIT_BREAKER_ELIGIBLE_PLAYS:
+            return False
+        if self._state.consecutive_nonproductive_by_type.get(pt, 0) < _CIRCUIT_BREAKER_THRESHOLD:
+            return False
+        since = self._state.plays_since_last_play_type.get(pt)
+        return since is not None and since < _CIRCUIT_BREAKER_COOLDOWN_PLAYS
+
+    def _stage_consecutive_failure_breaker(self) -> None:
+        for pt in _CIRCUIT_BREAKER_ELIGIBLE_PLAYS:
+            if pt in V1_ACTION_ORDER and self._breaker_benched(pt):
+                self._mask[V1_ACTION_ORDER.index(pt)] = False
+
     def _stage_instantiate_config(self) -> None:
         if PlayType.INSTANTIATE_AGENT not in V1_ACTION_ORDER:
             return
@@ -717,6 +754,7 @@ class ActionMaskBuilder:
         self._stage_agent_eligibility()
         self._stage_wedged_end_agent()
         self._stage_candidate_required()
+        self._stage_consecutive_failure_breaker()
         self._stage_instantiate_config()
         self._stage_end_session()
         self._stage_take_break()
@@ -763,6 +801,18 @@ class ActionMaskBuilder:
 
         for i, pt in enumerate(V1_ACTION_ORDER):
             if mask[i]:
+                continue
+
+            if self._breaker_benched(pt):
+                strikes = state.consecutive_nonproductive_by_type.get(pt, 0)
+                reasons[pt] = MaskReason(
+                    text=(
+                        f"circuit breaker: {strikes} consecutive non-productive "
+                        f"outcomes — cooling down ({_CIRCUIT_BREAKER_COOLDOWN_PLAYS} plays)"
+                    ),
+                    classification=MaskClassification.TRANSIENT,
+                    source=MaskSource.CIRCUIT_BREAKER,
+                )
                 continue
 
             if pt in (PlayType.FUTURE_7, PlayType.FUTURE_8):
