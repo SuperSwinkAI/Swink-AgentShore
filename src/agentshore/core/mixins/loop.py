@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from agentshore.core.base import _OrchestratorBase
-from agentshore.core.helpers import _is_loop_bucket, _logger, _ppo_selector_cls
+from agentshore.core.helpers import _logger, _ppo_selector_cls
 from agentshore.plays.base import PlayParams
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.state import AgentStatus, PlaySkipReason, PlayType, SessionState
@@ -112,125 +112,6 @@ class _LoopMixin(_OrchestratorBase):
     _fleet_idle_persistent_active: bool
 
     # ------------------------------------------------------------------
-
-    def _check_loop_detection(self, state: OrchestratorState) -> bool:
-        """Loop-detection ladder (warn/pause). Returns True if pausing.
-
-        Failure streaks: same play type failing back-to-back, signal is
-        "this play can't make progress" → tight thresholds.
-
-        Any-outcome streaks: same play type firing repeatedly, even when it
-        succeeds. Signal is "policy collapsed onto a play it likes," often a
-        cheap repeated action. Looser thresholds (2x) since some legitimate
-        work is bursty (e.g., reviewing several PRs).
-        """
-        if (
-            getattr(self, "_draining", False)
-            or getattr(self, "_stop_requested", False)
-            or state.session_state in {SessionState.DRAINING, SessionState.SHUTTING_DOWN}
-        ):
-            self._forced_mask_play_types = ()
-            return False
-
-        fail_streak = state.same_type_failure_streak
-        any_streak = state.same_type_streak
-        warn_streak = self._cfg.rl.loop_detection.warn_after
-        pause_streak = self._cfg.rl.loop_detection.escalate_after
-
-        if fail_streak >= warn_streak:
-            if (
-                self._last_warned_failure_streak is None
-                or fail_streak > self._last_warned_failure_streak
-            ) and _is_loop_bucket(fail_streak, warn_streak):
-                _logger.warning(
-                    "loop_detected",
-                    streak=fail_streak,
-                    kind="failure",
-                    session_id=self._session_id,
-                )
-                self._last_warned_failure_streak = fail_streak
-        elif fail_streak == 0:
-            # Reset only on a genuine streak clearance (back to zero). Dips that
-            # stay above zero are part of the same streak run and must not
-            # re-trigger the same bucket warning on the next crossing.
-            self._last_warned_failure_streak = None
-
-        any_warn_threshold = 2 * warn_streak
-        if any_streak >= any_warn_threshold:
-            if (
-                self._last_warned_any_streak is None or any_streak > self._last_warned_any_streak
-            ) and _is_loop_bucket(any_streak, any_warn_threshold):
-                _logger.warning(
-                    "loop_detected",
-                    streak=any_streak,
-                    kind="any_outcome",
-                    session_id=self._session_id,
-                )
-                self._last_warned_any_streak = any_streak
-        elif any_streak == 0:
-            self._last_warned_any_streak = None
-
-        # Loop-detection no longer force-masks the repeated play type — that
-        # overrode the policy's revealed preference. Collapse is handled from
-        # within the policy via the stagnation entropy boost
-        # (_check_stagnation_escalation), keeping the PPO in the driver's seat.
-        return fail_streak >= pause_streak or any_streak >= 2 * pause_streak
-
-    def _check_noop_spin(self, state: OrchestratorState) -> bool:
-        """No-op-spin backstop. Returns True if the loop should pause.
-
-        Catches the degenerate state the same-type-streak detector is blind to:
-        the policy alternating two (or one) plays that all deterministically
-        ``skip`` at $0, making zero progress (the write_impl↔reconcile spin).
-        Driven by the ``LoopProgressMonitor`` (strict verdict). A pure backstop —
-        it does not influence which play the policy picks; it only surfaces a
-        wedge so the existing ``loop_detected`` pause→reprieve→drain path can act.
-        """
-        monitor = self._progress_monitor
-        if monitor is None:
-            return False
-        if (
-            getattr(self, "_draining", False)
-            or getattr(self, "_stop_requested", False)
-            or state.session_state in {SessionState.DRAINING, SessionState.SHUTTING_DOWN}
-        ):
-            return False
-        if not monitor.detect_noop_spin(total_plays=state.total_plays):
-            return False
-        _logger.warning(
-            "noop_spin_detected",
-            session_id=self._session_id,
-            skip_rate=round(monitor.all_skip_rate(), 3),
-            distinct_productive_types=monitor.distinct_productive_types(),
-            total_plays=state.total_plays,
-            note=(
-                "loop spinning on no-op skips with zero velocity — pausing "
-                "(loop_detected); an unanswered pause auto-stops via drain"
-            ),
-        )
-        return True
-
-    async def _loop_is_progressing(self) -> bool:
-        """Guarded progress check for the unanswered-pause reprieve (WS3 item C).
-
-        Returns True (preserve prior behavior) when no monitor is wired. On a
-        state-build error it fails **closed** (not progressing) so a session that
-        cannot even build state is not granted a reprieve — it stops.
-        """
-        monitor = self._progress_monitor
-        if monitor is None:
-            return True
-        try:
-            state = await self._build_state()
-            return monitor.is_making_progress(total_plays=state.total_plays)
-        except Exception as exc:
-            _logger.error(
-                "loop_progress_check_failed",
-                session_id=self._session_id,
-                error=str(exc),
-                exc_info=True,
-            )
-            return False
 
     async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:
         """Stagnation ladder (warn+entropy at 5, surface at 10, pause at 15)."""
@@ -737,42 +618,12 @@ class _LoopMixin(_OrchestratorBase):
         RPC could not be serviced while wedged. Emits ``loop_detection_prompt_timeout``
         so the auto-stop is visible in the NDJSON log (the wedge was silent).
 
-        Guard: do not drain on top of actionable work (merge-ready PRs /
-        workable issues). The drain retires *every* agent — observed abandoning
-        6 APPROVED+MERGEABLE PRs. While work remains, lift the pause and
-        **resume** (not drain) so the policy gets another chance to act on it;
-        bounded by ``_AUTO_STOP_WORK_REPRIEVE_LIMIT`` so a genuinely stuck loop
-        still stops rather than re-wedging (#9). This only defers — the pause is
-        always lifted, so the loop is never left wedged.
+        This covers genuine operator/feedback pauses that nobody answered.
+        Autonomous no-progress stops are handled separately and directly by the
+        forward-progress monitor (``_check_no_forward_progress`` → ``begin_drain``),
+        so this path no longer needs the work/progress reprieve it once used to
+        defer a blunt loop-detection pause.
         """
-        if self._auto_stop_reprieves_used < _AUTO_STOP_WORK_REPRIEVE_LIMIT:
-            has_work, mergeable, workable = await self._actionable_work_remains()
-            # WS3 item C: only reprieve when work remains AND the loop is actually
-            # progressing. A no-op spin keeps workable issues / mergeable PRs > 0
-            # while making zero progress — reprieving it would keep the wedged
-            # session alive. Requiring progress means a spinning-but-work-remains
-            # session drains instead of being kept alive, while a healthy session
-            # landing work still gets its reprieve.
-            if has_work and await self._loop_is_progressing():
-                self._auto_stop_reprieves_used += 1
-                _logger.warning(
-                    "auto_stop_deferred_actionable_work",
-                    session_id=self._session_id,
-                    pause_reason=self._pause_reason,
-                    reprieve=self._auto_stop_reprieves_used,
-                    limit=_AUTO_STOP_WORK_REPRIEVE_LIMIT,
-                    mergeable_pr_count=mergeable,
-                    workable_issue_count=workable,
-                    note=(
-                        "unanswered loop-detection pause not auto-stopped — actionable "
-                        "work remains and the loop is progressing; lifting pause and "
-                        "resuming the loop instead of draining so the policy can land it"
-                    ),
-                )
-                self._pause_deadline = None
-                # Resume the loop WITHOUT draining (do not set _draining).
-                self._pause_event.set()
-                return
         _logger.warning(
             "loop_detection_prompt_timeout",
             session_id=self._session_id,
@@ -1080,9 +931,7 @@ class _LoopMixin(_OrchestratorBase):
             # than once per loop tick.
             self._idle_streak += 1
             _idle_log = _logger.debug if self._idle_streak > 1 else _logger.info
-            _idle_log(
-                "selector_idle", session_id=self._session_id, idle_streak=self._idle_streak
-            )
+            _idle_log("selector_idle", session_id=self._session_id, idle_streak=self._idle_streak)
             if self._in_flight:
                 await self._emit_structured_play_skipped_for_current_tick(state)
                 await self._wait_for_in_flight(

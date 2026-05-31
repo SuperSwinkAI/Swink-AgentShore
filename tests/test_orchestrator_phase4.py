@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentshore.config import LoopDetectionConfig, RuntimeConfig, SessionConfig
+from agentshore.config import RuntimeConfig, SessionConfig
 from agentshore.data.models import PlayRecord
 from agentshore.plays.base import PlayParams
 from agentshore.state import BudgetSnapshot, OrchestratorState, PlayOutcome, PlayType, SessionState
@@ -433,110 +433,6 @@ def test_compute_trajectory_record_slope_none_deltas_excluded(tmp_path: Path) ->
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.6)
 
 
-# ---------------------------------------------------------------------------
-# Loop detection: warn at streak == warn_after
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_loop_detection_warns_at_warn_streak(
-    tmp_path: Path, capsys: Any, caplog: Any
-) -> None:
-    """One WARNING per geometric streak bucket.
-
-    With warn_after=3 and the geometric bucket gate (multipliers
-    1, 2, 5, …), only streaks at {3, 6, 15, …} emit. A streak walking
-    1→2→3→4 fires once (at depth 3, the 1× bucket); depth 4 is silent.
-    A streak that *holds* at the same depth across many ticks emits only
-    one warn (covered separately in
-    tests/test_loop_detection_warning_dedup.py).
-    """
-    import dataclasses
-    import logging
-
-    cfg = dataclasses.replace(
-        RuntimeConfig(),
-        rl=dataclasses.replace(
-            RuntimeConfig().rl,
-            loop_detection=LoopDetectionConfig(
-                warn_after=3, force_switch_after=5, escalate_after=7
-            ),
-        ),
-    )
-    orch = _make_orch(tmp_path, cfg)
-
-    mock_outcome = MagicMock()
-    mock_outcome.play_type = PlayType.ISSUE_PICKUP
-    mock_outcome.success = False
-    mock_outcome.partial = False
-    mock_outcome.dollar_cost = 0.01
-    mock_outcome.duration_seconds = 1.0
-    mock_outcome.alignment_delta = 0.0
-    mock_outcome.play_id = 1
-    mock_outcome.inflation_raised = False
-
-    call_count = 0
-
-    async def mock_select(state: OrchestratorState) -> tuple[PlayType, PlayParams] | None:
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 4:
-            return (PlayType.ISSUE_PICKUP, PlayParams())
-        return None
-
-    orch._selector.select = mock_select
-    orch._selector.consume_pending = MagicMock(return_value=None)
-    orch._selector.should_update = MagicMock(return_value=False)
-    orch._selector.should_checkpoint = MagicMock(return_value=False)
-    orch._selector.on_play_completed = AsyncMock()
-
-    # play_records grows as execute is called (executor records plays internally)
-    play_records: list[MagicMock] = []
-
-    async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
-        r = MagicMock()
-        r.success = False
-        r.play_type = "issue_pickup"
-        r.dollar_cost = 0.01
-        play_records.append(r)
-        return mock_outcome
-
-    orch._executor.execute = mock_execute
-
-    async def mock_get_play_history(session_id: str) -> list[MagicMock]:
-        return list(play_records)
-
-    async def mock_get_open_issues(session_id: str) -> list:
-        return []
-
-    async def mock_get_latest_trajectory(session_id: str) -> None:
-        return None
-
-    orch._store.get_play_history = mock_get_play_history
-    orch._store.get_open_issues = mock_get_open_issues
-    orch._store.get_latest_trajectory = mock_get_latest_trajectory
-    orch._store.record_experience = AsyncMock()
-    orch._store.update_session_state = AsyncMock()
-
-    with caplog.at_level(logging.WARNING):
-        await orch.run_until_idle()
-
-    # structlog routes to stdout (PrintLogger) or stdlib depending on prior test order;
-    # check both sinks and require the warning appeared in exactly one of them
-    captured = capsys.readouterr()
-    in_stdout = (captured.out + captured.err).count("loop_detected")
-    in_caplog = sum(1 for r in caplog.records if "loop_detected" in r.getMessage())
-    total = in_stdout + in_caplog
-    # Streak depths reached: 1, 2, 3, 4. With buckets {3, 6, 15, …}, only depth 3
-    # fires (the 1× bucket); depth 4 is between buckets and stays silent.
-    assert total == 1, f"Expected 1 loop_detected total; stdout={in_stdout} caplog={in_caplog}"
-
-
-# ---------------------------------------------------------------------------
-# Loop detection: pause at escalate_after
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_path: Path) -> None:
     """Skipped plays are observability events, not completed agent plays or PPO samples."""
@@ -668,51 +564,6 @@ async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path)
     await orch._process_completion("fail", task)
 
     orch._store.record_trajectory_snapshot.assert_not_awaited()
-
-
-def test_loop_detection_check_returns_true_at_escalate_streak(tmp_path: Path) -> None:
-    """_check_loop_detection returns True (pause-worthy) when streak >= escalate_after."""
-    import dataclasses
-
-    cfg = dataclasses.replace(
-        RuntimeConfig(),
-        rl=dataclasses.replace(
-            RuntimeConfig().rl,
-            loop_detection=LoopDetectionConfig(
-                warn_after=3, force_switch_after=5, escalate_after=7
-            ),
-        ),
-    )
-    orch = _make_orch(tmp_path, cfg)
-
-    state_at_threshold = OrchestratorState(
-        session_id="test-session",
-        session_state=SessionState.RUNNING,
-        total_plays=7,
-        total_cost=0.07,
-        same_type_failure_streak=7,
-        same_type_streak=0,
-        last_play_type=PlayType.ISSUE_PICKUP,
-    )
-    should_pause = orch._check_loop_detection(state_at_threshold)
-
-    assert should_pause is True
-    # Item 9: loop detection no longer force-masks the looping play type —
-    # _forced_mask_play_types stays empty; collapse is handled by the
-    # stagnation entropy boost, keeping the PPO in the driver's seat.
-    assert orch._forced_mask_play_types == ()
-
-    # Below threshold: returns False, mask clears
-    state_clear = OrchestratorState(
-        session_id="test-session",
-        session_state=SessionState.RUNNING,
-        total_plays=1,
-        total_cost=0.01,
-        same_type_failure_streak=0,
-        same_type_streak=0,
-    )
-    assert orch._check_loop_detection(state_clear) is False
-    assert orch._forced_mask_play_types == ()
 
 
 # ---------------------------------------------------------------------------

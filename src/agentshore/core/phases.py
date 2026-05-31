@@ -317,10 +317,11 @@ async def _phase_init_ppo_selector(
             host=orch,
         )
 
-        # Pure progress assessor for no-op-spin detection + reprieve gating.
-        from agentshore.core.progress_monitor import LoopProgressMonitor
+        # Single autonomous-stop signal: drain after N consecutive ticks with no
+        # agent dispatch, all agents idle, and no beads/GitHub graph change.
+        from agentshore.core.progress_monitor import ForwardProgressMonitor
 
-        orch._progress_monitor = LoopProgressMonitor(host=orch)
+        orch._progress_monitor = ForwardProgressMonitor()
 
 
 async def _phase_create_session_row(
