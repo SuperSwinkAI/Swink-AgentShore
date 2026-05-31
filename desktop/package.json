@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm --prefix ../dashboard run build:lib",
     "build": "tsc && vite build",
     "prepare:tauri-assets": "node scripts/prepare-tauri-assets.mjs",
     "prebuild:tauri-frontend": "npm --prefix ../dashboard run build:lib",
@@ -12,13 +13,14 @@
     "build:tauri-sidecars": "uv run python ../packaging/desktop/build_bd_sidecar.py --out src-tauri/binaries",
     "preview": "vite preview",
     "tauri": "tauri",
+    "pretest": "npm --prefix ../dashboard run build:lib",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-dialog": "2.7.1",
-    "agentshore-dashboard": "*",
+    "@agentshore/dashboard": "*",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.30.3"

@@ -11,7 +11,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import { DashboardCanvas, IdentitiesScreen, type IdentitiesSidecar } from "agentshore-dashboard";
+import { DashboardCanvas, IdentitiesScreen, type IdentitiesSidecar } from "@agentshore/dashboard";
 import {
   addIdentity,
   checkKeychainToken,

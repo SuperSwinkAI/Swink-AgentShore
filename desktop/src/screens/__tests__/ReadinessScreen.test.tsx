@@ -58,6 +58,12 @@ describe("isFromAgentShoreSourceRepo", () => {
     expect(isFromAgentShoreSourceRepo("git@github.com:SuperSwinkAI/Swink-AgentShore.git")).toBe(true);
   });
 
+  it("keeps legacy SuperSwinkAI/AgentShore origins accepted", () => {
+    expect(isFromAgentShoreSourceRepo("https://github.com/SuperSwinkAI/AgentShore")).toBe(true);
+    expect(isFromAgentShoreSourceRepo("https://github.com/SuperSwinkAI/AgentShore.git")).toBe(true);
+    expect(isFromAgentShoreSourceRepo("git@github.com:SuperSwinkAI/AgentShore.git")).toBe(true);
+  });
+
   it("returns false for unrelated origins", () => {
     expect(isFromAgentShoreSourceRepo("git@github.com:wes/example-repo.git")).toBe(false);
     expect(isFromAgentShoreSourceRepo(null)).toBe(false);

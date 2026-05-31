@@ -1,5 +1,5 @@
 {
-  "name": "agentshore-dashboard",
+  "name": "@agentshore/dashboard",
   "private": true,
   "version": "0.1.0",
   "type": "module",

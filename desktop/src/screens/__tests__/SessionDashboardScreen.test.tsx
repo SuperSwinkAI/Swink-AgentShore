@@ -18,7 +18,7 @@ vi.mock("../../services/sessionClient", () => ({
   stopSession: stopSessionMock,
 }));
 
-vi.mock("agentshore-dashboard", () => ({
+vi.mock("@agentshore/dashboard", () => ({
   Dashboard: (props: unknown) => {
     dashboardMock(props);
     return <div data-testid="dashboard-sentinel" />;
