@@ -306,6 +306,11 @@
             );
             border-color: var(--log-fail-border);
         }
+        .play-log-legend-swatch.skip {
+            background: transparent;
+            border-color: var(--log-muted);
+            border-style: dashed;
+        }
         .play-log-legend-swatch.future {
             border-style: dashed;
             background: repeating-linear-gradient(
@@ -484,6 +489,12 @@
             border-radius: 2px;
             padding: 0 3px;
         }
+        .play-log-chip.skip {
+            border-color: var(--log-muted);
+            color: var(--log-muted);
+            background: transparent;
+            border-style: dashed;
+        }
         footer {
             margin-top: 32px;
             padding-top: 16px;
@@ -558,6 +569,7 @@
                 <th class="num">Total</th>
                 <th class="num">OK</th>
                 <th class="num">Failed</th>
+                <th class="num">Skipped</th>
                 <th class="num">Success</th>
                 <th class="num">Cost</th>
                 <th class="num">Avg Duration</th>
@@ -570,6 +582,7 @@
                 <td class="num">{{ row.total }}</td>
                 <td class="num ok">{{ row.successful }}</td>
                 <td class="num fail">{{ row.failed }}</td>
+                <td class="num muted">{{ row.skipped }}</td>
                 <td class="num">{{ "%.1f%%" | format(row.success_rate * 100) }}</td>
                 <td class="num">${{ "%.4f" | format(row.total_cost) }}</td>
                 <td class="num">{{ row.avg_duration_seconds | duration }}</td>
@@ -683,6 +696,9 @@
                         <span class="play-log-legend-swatch fail"></span>FAIL
                     </span>
                     <span class="play-log-legend-item">
+                        <span class="play-log-legend-swatch skip"></span>SKIP (gated)
+                    </span>
+                    <span class="play-log-legend-item">
                         <span class="play-log-legend-swatch future"></span>future
                     </span>
                 </span>
@@ -715,10 +731,10 @@
                             <div class="play-log-cell{% if col.phase_start %} phase-start{% endif %}{% if col.future %} future{% endif %}{% if row.play_type != col.play_type and not col.future %} unused{% endif %}">
                                 {% if row.play_type == col.play_type %}
                                 <div
-                                    class="play-log-chip {% if row.success %}ok{% else %}fail{% endif %}"
+                                    class="play-log-chip {{ row.status }}"
                                     title="play #{{ row.play_id }} | {{ row.play_type }} | {{ row.started_at }} | {{ row.duration_seconds | duration }} | ${{ '%.4f' | format(row.dollar_cost) }}{% if row.error %} | {{ row.error }}{% endif %}"
                                 >
-                                    {% if row.success %}OK{% else %}<span>FAIL</span>{% endif %}
+                                    {% if row.status == 'ok' %}OK{% elif row.status == 'skip' %}SKIP{% else %}<span>FAIL</span>{% endif %}
                                 </div>
                                 {% endif %}
                             </div>

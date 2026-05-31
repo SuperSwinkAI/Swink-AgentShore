@@ -253,6 +253,47 @@ async def test_collect_end_session_report_play_log_uses_persisted_display_name(s
     assert report["play_log_rows"][0]["agent_name"] == "Claude/large: Ember Raven"
 
 
+async def test_gated_skip_renders_as_skip_not_fail_or_agentshore(store):
+    """A PPO-selected-then-gated play (skip:*, no agent) must not show as FAIL/agentshore."""
+    await _seed_session(store)
+    await _seed_agent(store, agent_id="agent-1", display_name="Claude/large: Ember Raven")
+    # A real dispatched play that failed, and a gated skip (no agent).
+    await _seed_play(store, play_type="issue_pickup", agent_id="agent-1", success=True)
+    await _seed_play(
+        store,
+        play_type="write_implementation_plan",
+        agent_id=None,
+        success=False,
+        dollar_cost=0.0,
+        duration_ms=0,
+        failure_category="skip:masked",
+    )
+    await _seed_issues(store)
+
+    collector = ReportDataCollector(store)
+    report = await collector.collect_end_session_report(SID)
+    summary = await collector.collect_session_summary(SID)
+
+    rows = {r["play_type"]: r for r in report["play_log_rows"]}
+    skip_row = rows["write_implementation_plan"]
+    assert skip_row["status"] == "skip"
+    assert skip_row["agent_name"] == "— (gated)"
+    assert rows["issue_pickup"]["status"] == "ok"
+
+    # Overview: the skip is not a failure.
+    ov = summary["overview"]
+    assert ov["skipped_plays"] == 1
+    assert ov["failed_plays"] == 0
+    assert ov["successful_plays"] == 1
+
+    # Per-type stats: skip lands in the skipped bucket, not failed; and the
+    # gated skip is excluded from the failure analysis.
+    stats = {s["play_type"]: s for s in report["play_stats"]}
+    assert stats["write_implementation_plan"]["skipped"] == 1
+    assert stats["write_implementation_plan"]["failed"] == 0
+    assert all(not fa["category"].startswith("skip:") for fa in summary["failure_analysis"])
+
+
 async def test_collect_end_session_report_includes_control_rejection_counts(store):
     await _seed_session(store)
     await store.record_external_mutation(
