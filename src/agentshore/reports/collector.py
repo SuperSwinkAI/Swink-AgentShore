@@ -103,6 +103,7 @@ __all__ = [
 class _PlayStatsAccumulator:
     total: int = 0
     successful: int = 0
+    skipped: int = 0
     total_cost: float = 0.0
     total_duration_seconds: float = 0.0
 
@@ -157,6 +158,17 @@ _AGENT_TYPE_LABEL: dict[str, str] = {
     "codex": "Codex",
     "gemini": "Gemini",
 }
+
+
+def _is_skip(play: PlayRecord) -> bool:
+    """True for a play that was PPO-selected then gated — never dispatched to an agent.
+
+    Skips are persisted with ``success=False`` and ``failure_category="skip:<kind>"``
+    (see ``Executor._record_pre_dispatch_skip``). They are *not* failed plays and were
+    never assigned to an agent, so report surfaces must not render them as FAIL or
+    attribute them to "agentshore".
+    """
+    return (play.failure_category or "").startswith("skip:")
 
 
 def _format_agent_label(
@@ -371,7 +383,9 @@ class ReportDataCollector:
                 pass
 
         successful = sum(1 for p in plays if p.success)
-        failed = len(plays) - successful
+        skipped = sum(1 for p in plays if _is_skip(p))
+        # Skips are gated no-ops, not failures — exclude them from the failed count.
+        failed = len(plays) - successful - skipped
 
         return OverviewData(
             session_id=session.session_id,
@@ -379,6 +393,7 @@ class ReportDataCollector:
             total_plays=len(plays),
             successful_plays=successful,
             failed_plays=failed,
+            skipped_plays=skipped,
             total_cost=session.total_cost,
             final_alignment=session.final_alignment,
             started_at=session.started_at,
@@ -422,6 +437,7 @@ class ReportDataCollector:
             acc = by_type[play.play_type]
             acc.total += 1
             acc.successful += int(play.success)
+            acc.skipped += int(_is_skip(play))
             acc.total_cost += play.dollar_cost
             acc.total_duration_seconds += (
                 (play.duration_ms / 1000.0) if play.duration_ms is not None else 0.0
@@ -429,14 +445,18 @@ class ReportDataCollector:
 
         result: list[PlayStatsEntry] = []
         for play_type, acc in by_type.items():
-            failed = acc.total - acc.successful
+            # Skips are gated no-ops, not failures — report them in their own bucket
+            # and keep success_rate over real (dispatched) attempts only.
+            failed = acc.total - acc.successful - acc.skipped
+            dispatched = acc.total - acc.skipped
             result.append(
                 PlayStatsEntry(
                     play_type=play_type,
                     total=acc.total,
                     successful=acc.successful,
                     failed=failed,
-                    success_rate=acc.successful / max(acc.total, 1),
+                    skipped=acc.skipped,
+                    success_rate=acc.successful / max(dispatched, 1),
                     total_cost=acc.total_cost,
                     avg_duration_seconds=acc.total_duration_seconds / max(acc.total, 1),
                 )
@@ -533,13 +553,22 @@ class ReportDataCollector:
                 continue
             row_number += 1
             duration_s = (play.duration_ms / 1000.0) if play.duration_ms is not None else 0.0
+            # A gated/skipped play was never dispatched to an agent — show it as a
+            # neutral SKIP with a non-agent actor, not FAIL / "agentshore".
+            if _is_skip(play):
+                status = "skip"
+                agent_name = "— (gated)"
+            else:
+                status = "ok" if play.success else "fail"
+                agent_name = _format_agent_label(play.agent_id, agent_lookup)
             rows.append(
                 PlayLogRowEntry(
                     row_number=row_number,
                     play_id=play.play_id if play.play_id is not None else 0,
                     play_type=play.play_type,
-                    agent_name=_format_agent_label(play.agent_id, agent_lookup),
+                    agent_name=agent_name,
                     success=play.success,
+                    status=status,
                     started_at=play.started_at,
                     duration_seconds=duration_s,
                     dollar_cost=play.dollar_cost,
@@ -712,7 +741,8 @@ class ReportDataCollector:
         """Group failed plays by failure category."""
         by_category: dict[str, list[FailurePlayEntry]] = {}
         for p in plays:
-            if not p.success:
+            # Skips are gated no-ops (failure_category="skip:*"), not failures.
+            if not p.success and not _is_skip(p):
                 cat = p.failure_category or "unknown"
                 entry = FailurePlayEntry(
                     play_id=p.play_id if p.play_id is not None else 0,

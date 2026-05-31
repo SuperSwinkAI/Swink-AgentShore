@@ -27,6 +27,7 @@ class OverviewData(TypedDict):
     total_plays: int
     successful_plays: int
     failed_plays: int
+    skipped_plays: int
     total_cost: float
     final_alignment: float | None
     started_at: str
@@ -50,6 +51,7 @@ class PlayStatsEntry(TypedDict):
     total: int
     successful: int
     failed: int
+    skipped: int
     success_rate: float
     total_cost: float
     avg_duration_seconds: float
@@ -77,6 +79,7 @@ class PlayLogRowEntry(TypedDict):
     play_type: str
     agent_name: str
     success: bool
+    status: str  # "ok" | "fail" | "skip" (skip = PPO-selected then gated, no agent)
     started_at: str
     duration_seconds: float
     dollar_cost: float

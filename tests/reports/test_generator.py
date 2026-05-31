@@ -42,6 +42,7 @@ def _overview(
         total_plays=total_plays,
         successful_plays=2,
         failed_plays=1,
+        skipped_plays=0,
         total_cost=5.0,
         final_alignment=final_alignment,
         started_at=NOW,
