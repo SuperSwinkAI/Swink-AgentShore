@@ -97,12 +97,16 @@ mod platform_macos {
         token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
     }
 
-    // The retained NSObject is safe to send across threads — NSProcessInfo's
-    // activity tokens are documented as thread-safe (the system manages them
-    // internally and releases happen on whatever thread calls endActivity:).
-    // Without these the ActivityHolder Mutex would have to live on a single
-    // thread, which doesn't fit the Tauri async command shape.
+    // SAFETY: The retained NSObject activity token is managed by
+    // NSProcessInfo and may be ended from the thread that owns the desktop
+    // shutdown/session callback. Keeping it Send lets ActivityHolder release
+    // the token from Tauri command/event paths without moving the underlying
+    // Cocoa object into Rust-managed interior mutation.
     unsafe impl Send for ActivityToken {}
+
+    // SAFETY: ActivityToken is an opaque retained token whose only operation
+    // is handoff back to NSProcessInfo::endActivity. ActivityHolder guards it
+    // with a Mutex, and the token itself has no Rust-visible mutable state.
     unsafe impl Sync for ActivityToken {}
 
     pub fn begin_activity(reason: &str) -> Option<ActivityToken> {
