@@ -69,6 +69,8 @@ For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<
 
 **Beads tasks for orphan GH issues (C).** For each open GH issue with no matching bead: `bd create task "<issue title>" --description "Closes gh-<issue_number>" --external-ref "gh-<issue_number>"`, then `bd link <task-id> <story-id> --type parent-child` (create a story via Step 3 if none fits). Don't duplicate tasks already in the graph.
 
+**Ordering edges for body-declared dependencies (C2).** Once every issue has a task, mirror `depends on #N` / `blocked by #N` declared in issue bodies into real beads `blocks` edges so `issue_pickup`'s candidate mask excludes a dependent issue *before* an agent is dispatched (#14). For each open GH issue whose body declares `depends on #N` / `blocked by #N` where **#N is still open**: `bd link <this-task-id> <dep-task-id> --type blocks` (second arg blocks first, so `<this>` becomes `blocked_by <dep>`; idempotent — skip if the snapshot already shows the edge; never self-link; skip closed deps). This is the *only* sanctioned use of `blocks` — containment is always `parent-child`. beads clears the edge automatically when the dependency task closes.
+
 **Performance constraints (in-skill, non-negotiable):**
 - **Snapshot once.** Call `bd list --all --json --limit 0` exactly once in Pre-flight; reuse the result across the audit, repair, and verify phases.
 - **Work in-memory.** Parse the snapshot into a dict keyed by bead id; build the adjacency map from each bead's `dependencies` field. Never fan out per-bead `bd show <id>` calls — each is a ~100 ms `fork/exec/wait`; 200 beads = 20+ s of pure subprocess overhead and the pattern repeats every run (same class of bug as gh#529 batch-write).
