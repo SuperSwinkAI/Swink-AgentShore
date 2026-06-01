@@ -109,7 +109,7 @@ def test_init_target_branch_flag_writes_value_and_skips_prompt(tmp_path: Path) -
         patch("agentshore.skills.install_skills", return_value=[]),
         patch("agentshore.cli._run_beads_init"),
         patch("agentshore.cli._interactive_agent_select"),
-        patch("agentshore.cli_identity.run_identity_wizard"),
+        patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         result = runner.invoke(
             main,
@@ -133,7 +133,7 @@ def test_init_target_branch_flag_rejects_empty(tmp_path: Path) -> None:
         patch("agentshore.skills.install_skills", return_value=[]),
         patch("agentshore.cli._run_beads_init"),
         patch("agentshore.cli._interactive_agent_select"),
-        patch("agentshore.cli_identity.run_identity_wizard"),
+        patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         result = runner.invoke(
             main,
@@ -159,7 +159,7 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
         patch("agentshore.skills.install_skills", return_value=[]),
         patch("agentshore.cli._run_beads_init"),
         patch("agentshore.cli._interactive_agent_select"),
-        patch("agentshore.cli_identity.run_identity_wizard"),
+        patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         # CliRunner.invoke without input keeps stdin non-TTY.
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
@@ -263,7 +263,7 @@ def test_init_passes_force_run_to_agent_setup_wizard(tmp_path: Path, monkeypatch
         return cfg
 
     monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
-    monkeypatch.setattr("agentshore.cli_identity.run_identity_wizard", lambda *_a, **_k: None)
+    monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", lambda *_a, **_k: None)
 
     runner = CliRunner()
     with (
@@ -304,7 +304,7 @@ def test_init_does_not_assume_cli_agents_when_none_detected(tmp_path: Path, monk
         captured["identity_wizard_called"] = True
 
     monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
-    monkeypatch.setattr("agentshore.cli_identity.run_identity_wizard", fake_identity_wizard)
+    monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", fake_identity_wizard)
 
     runner = CliRunner()
     with (
@@ -366,7 +366,7 @@ identities:
         return cfg
 
     monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
-    monkeypatch.setattr("agentshore.cli_identity.run_identity_wizard", lambda *_a, **_k: None)
+    monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", lambda *_a, **_k: None)
 
     runner = CliRunner()
     with (

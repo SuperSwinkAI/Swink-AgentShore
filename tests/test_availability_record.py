@@ -112,7 +112,7 @@ def test_refresh_marks_undetected_agents_unavailable(tmp_path: Path) -> None:
 
 
 def test_refresh_picks_up_gh_accounts(tmp_path: Path) -> None:
-    from agentshore.cli_identity import GhAccount
+    from agentshore.identity_wizard.gh_accounts import GhAccount
 
     accounts = [
         GhAccount(login="alice", active=True),

@@ -42,7 +42,7 @@ def identity(project: str, reconfigure: bool) -> None:
 
     if reconfigure:
         from agentshore.availability import refresh as refresh_availability
-        from agentshore.cli_identity import run_identity_wizard
+        from agentshore.identity_wizard import run_identity_wizard
 
         agent_keys = _cli_pkg._agent_keys_from_yaml(cfg_path)
         if not agent_keys:
@@ -66,8 +66,8 @@ def identity(project: str, reconfigure: bool) -> None:
         report_identities,
         report_identity_repo_access,
     )
-    from agentshore.cli_identity import echo_identity_report, echo_repo_access_report
     from agentshore.config import load_config
+    from agentshore.identity_wizard import echo_identity_report, echo_repo_access_report
 
     cfg = load_config(cfg_path)
     rows = report_identities(cfg)
