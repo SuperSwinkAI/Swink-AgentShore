@@ -312,12 +312,8 @@ def encode_observation(
 
     # ---- DEPENDENCY (0-1): beads blocked/ready task ratios (v13) ----
     if state.graph is not None and state.graph.tasks_total > 0:
-        obs[_S_BLOCKED_TASK_RATIO] = _clamp(
-            state.graph.tasks_blocked / state.graph.tasks_total
-        )
-        obs[_S_READY_TASK_RATIO] = _clamp(
-            state.graph.tasks_ready / state.graph.tasks_total
-        )
+        obs[_S_BLOCKED_TASK_RATIO] = _clamp(state.graph.tasks_blocked / state.graph.tasks_total)
+        obs[_S_READY_TASK_RATIO] = _clamp(state.graph.tasks_ready / state.graph.tasks_total)
     # Slots 2-7 remain zero-filled (formerly cluster data).
 
     # ---- EPIC (8-11): live beads closure ratios (Track 5) ----

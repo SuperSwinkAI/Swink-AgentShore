@@ -82,9 +82,7 @@ class InstantiateAgentPlay:
         # The gate only applies once at least one agent is already active: in
         # seed mode the first play is SEED_PROJECT/CLEANUP; in open-start any
         # non-INSTANTIATE_AGENT play is evidence the first PPO cycle progressed.
-        active_agents = any(
-            a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in state.agents
-        )
+        active_agents = any(a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in state.agents)
         has_first_play = any(
             pt != PlayType.INSTANTIATE_AGENT for pt in state.plays_since_last_play_type
         )

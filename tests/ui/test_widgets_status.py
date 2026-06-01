@@ -87,7 +87,9 @@ def _make_budget(total: float, spent: float) -> BudgetSnapshot:
     )
 
 
-def _make_state(total_plays: int = 0, total_cost: float = 0.0, streak: int = 0) -> OrchestratorState:
+def _make_state(
+    total_plays: int = 0, total_cost: float = 0.0, streak: int = 0
+) -> OrchestratorState:
     return OrchestratorState(
         session_id="s1",
         session_state=SessionState.RUNNING,

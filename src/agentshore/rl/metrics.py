@@ -29,9 +29,9 @@ _logger = structlog.get_logger(__name__)
 
 _HIST_LEN = 5
 _ROLLING_WINDOW = 10  # plays to average over
-_AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset({
-    "agentshore/intake", "agentshore/qa", "agentshore/review"
-})
+_AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset(
+    {"agentshore/intake", "agentshore/qa", "agentshore/review"}
+)
 
 
 def _is_agentshore_created_issue(issue: GitHubIssueRecord) -> bool:

@@ -34,11 +34,13 @@ INDEX_TO_PLAY: Final[Mapping[int, PlayType]] = {i: pt for i, pt in enumerate(V1_
 # Config-head action space (second policy head for instantiate_agent)
 # ---------------------------------------------------------------------------
 
+
 class ConfigKey(NamedTuple):
     """A spawnable agent config: (agent_type.value, model_tier)."""
 
     agent_type: str
     model_tier: str
+
 
 # Sanity cap on the config head's output dimension. Real deployments use 4–6
 # configs (claude_code/codex × small/medium/large) so 32 is plenty of headroom.

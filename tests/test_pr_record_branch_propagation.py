@@ -250,9 +250,7 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
     # carries the PR number for triage.
     warning_calls = mock_logger.warning.call_args_list
     matching = [
-        call
-        for call in warning_calls
-        if call.args and call.args[0] == "pr_snapshot_missing_branch"
+        call for call in warning_calls if call.args and call.args[0] == "pr_snapshot_missing_branch"
     ]
     assert len(matching) == 1
     assert matching[0].kwargs.get("pr_number") == 508

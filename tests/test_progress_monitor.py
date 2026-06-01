@@ -15,9 +15,7 @@ _FP = (0.25, 4, 10, 8, 5)
 
 def _dead_tick(monitor: ForwardProgressMonitor) -> bool:
     """A tick with no dispatch, no busy agent, and the same graph fingerprint."""
-    return monitor.record_tick(
-        dispatched_to_agent=False, any_agent_busy=False, fingerprint=_FP
-    )
+    return monitor.record_tick(dispatched_to_agent=False, any_agent_busy=False, fingerprint=_FP)
 
 
 def test_first_tick_never_trips() -> None:
@@ -66,9 +64,7 @@ def test_graph_change_resets_counter() -> None:
     # An issue/PR/beads-task created/closed/advanced changes the fingerprint.
     changed = (0.30, 5, 11, 7, 6)
     assert (
-        monitor.record_tick(
-            dispatched_to_agent=False, any_agent_busy=False, fingerprint=changed
-        )
+        monitor.record_tick(dispatched_to_agent=False, any_agent_busy=False, fingerprint=changed)
         is False
     )
     assert monitor.no_progress_ticks == 0
@@ -83,8 +79,6 @@ def test_interleaved_progress_never_trips() -> None:
         assert _dead_tick(monitor) is False  # 2
         # ...then real work resets it before the 3rd dead tick.
         assert (
-            monitor.record_tick(
-                dispatched_to_agent=True, any_agent_busy=False, fingerprint=_FP
-            )
+            monitor.record_tick(dispatched_to_agent=True, any_agent_busy=False, fingerprint=_FP)
             is False
         )

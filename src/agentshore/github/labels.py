@@ -19,9 +19,9 @@ ROOT_CAUSE_FOUND_LABEL = "agentshore/root-cause-found"
 
 # Issues that returned to the backlog from failed or follow-up workflows. These
 # typically need implementation pickup, not necessarily root-cause debugging.
-FAILURE_LABELS: frozenset[str] = frozenset({
-    "agentshore/qa", "agentshore/review", "bug", "type/bug"
-})
+FAILURE_LABELS: frozenset[str] = frozenset(
+    {"agentshore/qa", "agentshore/review", "bug", "type/bug"}
+)
 
 # Issues with an existing decomposition / plan attached. The resolver skips
 # planning for these and goes straight to issue pickup.

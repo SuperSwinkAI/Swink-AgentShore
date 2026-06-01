@@ -12,30 +12,32 @@ import pytest
 
 from agentshore.data.store import DataStore
 
-EXPECTED_TABLES = frozenset({
-    "schema_info",
-    "schema_version",
-    "sessions",
-    "plays",
-    "agents",
-    "github_issues",
-    "pull_requests",
-    "branch_activity",
-    "review_queue",
-    "work_claims",
-    "dispatch_replay",
-    "external_mutations",
-    "scope_drift_log",
-    "policy_checkpoints",
-    "rl_experience",
-    "agent_handoffs",
-    "trajectory_snapshots",
-    "human_feedback",
-    "session_learnings",
-    "session_archives",
-    "review_feedback_patterns",
-    "worktrees",
-})
+EXPECTED_TABLES = frozenset(
+    {
+        "schema_info",
+        "schema_version",
+        "sessions",
+        "plays",
+        "agents",
+        "github_issues",
+        "pull_requests",
+        "branch_activity",
+        "review_queue",
+        "work_claims",
+        "dispatch_replay",
+        "external_mutations",
+        "scope_drift_log",
+        "policy_checkpoints",
+        "rl_experience",
+        "agent_handoffs",
+        "trajectory_snapshots",
+        "human_feedback",
+        "session_learnings",
+        "session_archives",
+        "review_feedback_patterns",
+        "worktrees",
+    }
+)
 
 
 @pytest.mark.asyncio
@@ -63,9 +65,7 @@ async def test_fresh_db_schema_version_is_3(tmp_path) -> None:
     store = DataStore(db_path)
     await store.initialize()
     try:
-        async with store._conn.execute(
-            "SELECT MAX(version) AS v FROM schema_version"
-        ) as cursor:
+        async with store._conn.execute("SELECT MAX(version) AS v FROM schema_version") as cursor:
             row = await cursor.fetchone()
     finally:
         await store.close()

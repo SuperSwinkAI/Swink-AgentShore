@@ -111,10 +111,7 @@ def test_cleanup_blocked_during_cooldown() -> None:
 
 def test_cleanup_allowed_after_cooldown() -> None:
     assert (
-        CleanupPlay().preconditions(
-            _state(plays_since_last_play_type={PlayType.CLEANUP: 20})
-        )
-        == []
+        CleanupPlay().preconditions(_state(plays_since_last_play_type={PlayType.CLEANUP: 20})) == []
     )
 
 
@@ -169,7 +166,12 @@ def test_cleanup_allowed_after_warmup_completes_on_fresh_project() -> None:
 # ---------------------------------------------------------------------------
 
 _TEMPLATE_ROOT = (
-    Path(__file__).parent.parent / "src" / "agentshore" / "skills" / "templates" / "agentshore-cleanup"
+    Path(__file__).parent.parent
+    / "src"
+    / "agentshore"
+    / "skills"
+    / "templates"
+    / "agentshore-cleanup"
 )
 
 
@@ -184,6 +186,7 @@ def test_cleanup_skill_includes_forbidden_mutations() -> None:
     content = (_TEMPLATE_ROOT / "SKILL.md").read_text()
     # Forbidden section exists in some form (heading or bold inline).
     import re as _re
+
     assert _re.search(r"(?:^|\n)(?:#+\s*Forbidden|\*\*Forbidden)", content), (
         "agentshore-cleanup: missing a Forbidden section"
     )

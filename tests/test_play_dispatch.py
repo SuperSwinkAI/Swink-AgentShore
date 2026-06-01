@@ -55,7 +55,9 @@ async def test_render_prompt_unblock_pr_pr_number(tmp_path: Path) -> None:
 
 async def test_render_prompt_no_args_emits_none_marker(tmp_path: Path) -> None:
     params = PlayParams()
-    result = await render_skill_prompt("agentshore-calibrate-alignment", params, project_path=tmp_path)
+    result = await render_skill_prompt(
+        "agentshore-calibrate-alignment", params, project_path=tmp_path
+    )
     assert result.startswith("$ARGUMENTS: (none)")
 
 

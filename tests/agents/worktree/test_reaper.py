@@ -406,9 +406,7 @@ async def test_manager_reap_closed_prs_does_not_touch_active_rows(
 # ---------------------------------------------------------------------------
 
 
-async def test_reap_git_orphans_is_noop_on_clean_state(
-    store: DataStore, main_repo: Path
-) -> None:
+async def test_reap_git_orphans_is_noop_on_clean_state(store: DataStore, main_repo: Path) -> None:
     """No worktrees beyond main → returns empty list, never errors."""
     from agentshore.agents.worktree.reaper import reap_git_orphans
 
@@ -431,9 +429,7 @@ async def test_reap_git_orphans_removes_worktree_with_no_db_row(
     assert not orphan.exists()
 
 
-async def test_reap_git_orphans_preserves_main_checkout(
-    store: DataStore, main_repo: Path
-) -> None:
+async def test_reap_git_orphans_preserves_main_checkout(store: DataStore, main_repo: Path) -> None:
     """Main repo path is never returned as an orphan even with no rows."""
     from agentshore.agents.worktree.reaper import reap_git_orphans
 
@@ -503,9 +499,7 @@ async def test_sweep_session_start_returns_both_reap_sources(
     git_orphan_path = worktree_root / "git-only-orphan"
     _git("worktree", "add", "-b", "git-only", str(git_orphan_path), "HEAD", cwd=main_repo)
 
-    report = await sweep_session_start(
-        store, current_session_id="sess-1", main_repo=main_repo
-    )
+    report = await sweep_session_start(store, current_session_id="sess-1", main_repo=main_repo)
     assert len(report.removed) == 1
     assert report.removed[0].worktree_id == db_orphan_id
     assert str(git_orphan_path) in report.git_orphans_removed

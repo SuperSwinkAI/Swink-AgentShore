@@ -477,11 +477,11 @@ fn locate_managed_venv_python_in_home(home: &std::path::Path) -> Option<std::pat
 fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        return home.join("Library/Application Support/AgentShore/venv/bin/python");
+        home.join("Library/Application Support/AgentShore/venv/bin/python")
     }
     #[cfg(target_os = "linux")]
     {
-        return home.join(".local/share/agentshore/venv/bin/python");
+        home.join(".local/share/agentshore/venv/bin/python")
     }
     #[cfg(target_os = "windows")]
     {

@@ -205,7 +205,9 @@ async def test_play_started_routes_to_active_play() -> None:
     async with app.run_test() as pilot:
         app.push_screen(MainDashboard())
         await pilot.pause()
-        app.screen.post_message(OrchestratorApp.PlayStarted(PlayType.ISSUE_PICKUP, PlayParams.empty()))
+        app.screen.post_message(
+            OrchestratorApp.PlayStarted(PlayType.ISSUE_PICKUP, PlayParams.empty())
+        )
         await pilot.pause()
         widget = app.screen.query_one("#agent-panel", AgentPanel)
         assert widget.active_play is not None
@@ -238,7 +240,9 @@ async def test_alert_events_show_alert_bar() -> None:
         await pilot.pause()
 
         screen = _main_dashboard(app)
-        screen.on_orchestrator_app_feedback_requested(OrchestratorApp.FeedbackRequested("Need input"))
+        screen.on_orchestrator_app_feedback_requested(
+            OrchestratorApp.FeedbackRequested("Need input")
+        )
         alert = screen.query_one("#alert-bar", AlertBar)
         assert alert.display is True
         assert "Need input" in alert._message
@@ -362,11 +366,15 @@ async def test_loop_detection_resets_when_streak_drops() -> None:
         await pilot.pause()
 
         app.post_message(
-            OrchestratorApp.StateUpdated(_make_state(streak=7, last_play_type=PlayType.ISSUE_PICKUP))
+            OrchestratorApp.StateUpdated(
+                _make_state(streak=7, last_play_type=PlayType.ISSUE_PICKUP)
+            )
         )
         await pilot.pause()
         app.post_message(
-            OrchestratorApp.StateUpdated(_make_state(streak=0, last_play_type=PlayType.ISSUE_PICKUP))
+            OrchestratorApp.StateUpdated(
+                _make_state(streak=0, last_play_type=PlayType.ISSUE_PICKUP)
+            )
         )
         await pilot.pause()
 

@@ -105,9 +105,7 @@ async def test_embedded_mode_skips_browser_and_emits_callback(tmp_path: Path) ->
         await orch._stop_inner(0.0)
 
     mock_open.assert_not_called()
-    assert callback_calls == [
-        ("sess-test", str(report_path.resolve()), str(log_path.resolve()))
-    ]
+    assert callback_calls == [("sess-test", str(report_path.resolve()), str(log_path.resolve()))]
 
 
 @pytest.mark.asyncio

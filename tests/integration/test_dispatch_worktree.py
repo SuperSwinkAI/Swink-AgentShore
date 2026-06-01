@@ -228,9 +228,9 @@ async def test_branch_scoped_dispatch_runs_in_worktree_with_main_repo_env(
         # The fake CLI wrote the cwd + env it saw.
         observed = json.loads(sentinel.read_text())
         assert Path(observed["cwd"]).resolve() == allocation.path.resolve()
-        assert (
-            Path(observed["agentshore_project_path"]).resolve() == main_repo.resolve()
-        ), "AGENTSHORE_PROJECT_PATH must point at main repo, not the worktree"
+        assert Path(observed["agentshore_project_path"]).resolve() == main_repo.resolve(), (
+            "AGENTSHORE_PROJECT_PATH must point at main repo, not the worktree"
+        )
 
         # Worktrees table has an active row for the branch.
         assert await _count_active_worktrees(store, session_id="s-branch") == 1
@@ -309,9 +309,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         )
         # Force the allocator to fail.
         failing_allocate = AsyncMock(
-            side_effect=WorktreeAllocationFailed(
-                "simulated allocate failure", reason="simulated"
-            )
+            side_effect=WorktreeAllocationFailed("simulated allocate failure", reason="simulated")
         )
         monkeypatch.setattr(manager.worktrees, "allocate_for_dispatch", failing_allocate)
 

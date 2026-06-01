@@ -401,9 +401,7 @@ class WorktreeManager:
 
     # -- internals -----------------------------------------------------------
 
-    async def _verify_worktree_registered(
-        self, allocate: AllocateResult, *, scope: str
-    ) -> None:
+    async def _verify_worktree_registered(self, allocate: AllocateResult, *, scope: str) -> None:
         """Confirm ``git worktree add`` registration actually landed.
 
         After ``ensure_worktree`` reports ``created=True`` we expect the path

@@ -52,6 +52,7 @@ def _worktree_cwd_override(params: PlayParams) -> Path | None:
         return allocation.path
     return None
 
+
 _SKILL_AUTH_FAILURE_MARKERS = (
     "bad credentials",
     "http 401",

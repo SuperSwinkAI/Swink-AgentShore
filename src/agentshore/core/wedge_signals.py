@@ -286,11 +286,7 @@ def write_session_start_dirty_baseline(
             st = abs_path.stat()
         except OSError:
             continue
-        mtime_utc = (
-            datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat().replace(
-                "+00:00", "Z"
-            )
-        )
+        mtime_utc = datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat().replace("+00:00", "Z")
         enriched.append(
             {
                 "path": entry.path,
@@ -308,9 +304,7 @@ def write_session_start_dirty_baseline(
         try:
             oldest_ts = datetime.fromisoformat(mtimes[0].replace("Z", "+00:00"))
             newest_ts = datetime.fromisoformat(mtimes[-1].replace("Z", "+00:00"))
-            summary["mtime_cluster_span_seconds"] = int(
-                (newest_ts - oldest_ts).total_seconds()
-            )
+            summary["mtime_cluster_span_seconds"] = int((newest_ts - oldest_ts).total_seconds())
             start_ts = datetime.fromisoformat(session_start_utc.replace("Z", "+00:00"))
             summary["pre_session"] = newest_ts < start_ts
         except (ValueError, TypeError):

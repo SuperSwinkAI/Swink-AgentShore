@@ -179,8 +179,6 @@ async def test_phase_ensure_labels_skipped_when_gh_unavailable() -> None:
     mock_gh.ensure_labels.assert_not_awaited()
 
 
-
-
 # ---------------------------------------------------------------------------
 # unblock_pr resolver: in-flight collision dedup
 # ---------------------------------------------------------------------------
@@ -293,7 +291,9 @@ async def test_unblock_pr_resolver_github_fallback_excludes_exhausted() -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_pr_resolver_skips_manual_required_pr() -> None:
-    resolver = _make_resolver(open_prs=[_make_pr_record(187, labels=["agentshore/manual-required"])])
+    resolver = _make_resolver(
+        open_prs=[_make_pr_record(187, labels=["agentshore/manual-required"])]
+    )
     state = OrchestratorState(
         session_id="test",
         session_state=SessionState.RUNNING,

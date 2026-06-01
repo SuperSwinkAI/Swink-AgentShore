@@ -165,9 +165,7 @@ async def _add_worktree_with_collision_retry(
     stderr = stderr_b.decode("utf-8", errors="replace")
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
-    is_pickup = collision is not None and Path(collision.group(1)).name.startswith(
-        "pickup-"
-    )
+    is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")
     if not is_pickup or branch_name is None:
         # Not a pickup-* collision (or detached-HEAD path) — bubble the
         # original error via the standard reason classifier.
@@ -196,9 +194,7 @@ async def _add_worktree_with_collision_retry(
     # Retry once. Any second failure bubbles via the normal path with the
     # standard reason classifier so it surfaces in the orchestrator logs the
     # way other allocation failures do.
-    rc2, _, stderr2 = await _run_git(
-        *args, cwd=main_repo, check=False, timeout=180.0
-    )
+    rc2, _, stderr2 = await _run_git(*args, cwd=main_repo, check=False, timeout=180.0)
     if rc2 != 0:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} failed after pickup-collision retry (rc={rc2}): "
@@ -418,9 +414,7 @@ async def ensure_worktree(
         args.extend(["--detach", str(worktree_path), base_ref])
 
     try:
-        await _add_worktree_with_collision_retry(
-            args, main_repo=main_repo, branch_name=branch_name
-        )
+        await _add_worktree_with_collision_retry(args, main_repo=main_repo, branch_name=branch_name)
     except WorktreeAllocationFailed:
         if worktree_path.exists():
             shutil.rmtree(worktree_path, ignore_errors=True)
@@ -569,9 +563,7 @@ class WorktreeRootScan:
     git_list_ok: bool = True
 
 
-async def _walk_worktree_root_once(
-    *, main_repo: Path, worktree_root: Path
-) -> WorktreeRootScan:
+async def _walk_worktree_root_once(*, main_repo: Path, worktree_root: Path) -> WorktreeRootScan:
     """Single filesystem + ``git worktree list`` pass over ``worktree_root``.
 
     Returns the resolved registered-paths set and the list of on-disk dirs
@@ -590,9 +582,7 @@ async def _walk_worktree_root_once(
         return WorktreeRootScan(registered_paths=set(), orphan_dirs=[], git_list_ok=True)
 
     try:
-        _, stdout, _ = await _run_git(
-            "worktree", "list", "--porcelain", cwd=main_repo, check=False
-        )
+        _, stdout, _ = await _run_git("worktree", "list", "--porcelain", cwd=main_repo, check=False)
     except WorktreeAllocationFailed:
         log.warning("worktree_reconcile_git_list_failed", worktree_root=str(worktree_root))
         return WorktreeRootScan(registered_paths=set(), orphan_dirs=[], git_list_ok=False)
@@ -648,9 +638,7 @@ async def reconcile_worktrees(
     the same git registry snapshot.
     """
     if scan is None:
-        scan = await _walk_worktree_root_once(
-            main_repo=main_repo, worktree_root=worktree_root
-        )
+        scan = await _walk_worktree_root_once(main_repo=main_repo, worktree_root=worktree_root)
     if not scan.git_list_ok:
         # Cannot enumerate git's view → can't safely identify orphans.
         return ReconcileReport(quarantined=[])
@@ -658,9 +646,7 @@ async def reconcile_worktrees(
     quarantined: list[Path] = []
     for entry in scan.orphan_dirs:
         try:
-            destination = await quarantine_orphan(
-                orphan_path=entry, worktree_root=worktree_root
-            )
+            destination = await quarantine_orphan(orphan_path=entry, worktree_root=worktree_root)
         except (OSError, shutil.Error) as exc:
             log.warning(
                 "worktree_orphan_quarantine_failed",

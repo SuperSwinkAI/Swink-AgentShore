@@ -102,9 +102,7 @@ def _power_state() -> dict[str, Any]:
     if sys.platform != "darwin":
         return {"_skipped": f"power capture only implemented for macOS (got {sys.platform})"}
     out: dict[str, Any] = {}
-    ps_stdout, ps_err = _run_capture(
-        ["pmset", "-g", "ps"], byte_limit=_PMSET_OUTPUT_BYTES_LIMIT
-    )
+    ps_stdout, ps_err = _run_capture(["pmset", "-g", "ps"], byte_limit=_PMSET_OUTPUT_BYTES_LIMIT)
     out["pmset_ps"] = ps_stdout
     if ps_err:
         out["pmset_ps_error"] = ps_err
@@ -215,9 +213,7 @@ def capture_corruption_evidence(db_path: Path) -> dict[str, Any]:
     # Time since last successful write (approximated via main file mtime)
     main_stat = files.get(db_path.name)
     if isinstance(main_stat, dict):
-        evidence["seconds_since_db_mtime"] = max(
-            0.0, time.time() - float(main_stat["mtime_unix"])
-        )
+        evidence["seconds_since_db_mtime"] = max(0.0, time.time() - float(main_stat["mtime_unix"]))
 
     # Power + caffeinate
     evidence["power_state"] = _power_state()
