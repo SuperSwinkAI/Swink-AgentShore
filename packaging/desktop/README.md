@@ -77,8 +77,9 @@ Each component carries its own postinstall:
    - Hands off to `install-agentshore-venv.sh` under the console user via
      `launchctl asuser` to provision
      `~/Library/Application Support/AgentShore/venv` from the bundled wheel.
-   - Smoke-tests `python -c "import agentshore.sidecar"` and launches the
-     app.
+   - Smoke-tests `python -c "import agentshore.sidecar"` and schedules a
+     one-shot LaunchAgent that waits for Installer to close, then opens
+     `/Applications/AgentShore.app` by absolute path.
 2. **CLI postinstall** (`cli-postinstall`) — runs as root, then hands
    off to `install-agentshore-cli.sh` under the console user. The helper:
    - Searches well-known per-user locations for `uv`
