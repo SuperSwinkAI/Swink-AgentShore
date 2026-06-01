@@ -28,11 +28,12 @@ Review PR #$ARGUMENTS. AgentShore has placed you in a worktree pinned to the PR'
 - **Logic / Spec:** code matches the linked issue's required behavior.
 - **Safety:** happy-path bias (missing null/empty/error paths), edge cases, async/sync friction (blocking calls in `async`).
 - **Tests:** new behavior has tests; tests assert behavior, not mocks; edge cases covered.
-- **Architecture:** shadow utilities (reimplements `utils/`/`helpers/`), scope creep beyond the linked issue, property drilling (5+ layers).
+- **Architecture:** shadow utilities (reimplements `utils/`/`helpers/`), scope creep beyond the linked issue, property drilling (5+ layers), spaghetti growth (one-off booleans/nullable modes bolted onto unrelated flows where a small abstraction would isolate the case).
 - **Performance:** N+1 (DB/API/file in loop), O(n²) where a set/map suffices, lazy cloning, ghost dependencies (heavy lib for stdlib-covered task).
 - **Types:** `Any` (Py), `any`/`as` casts (TS), `unsafe` without `// SAFETY:`.
 - **Naming:** clear and consistent with codebase conventions.
 - **Bloat:** redundant code, meta-comments restating the next line.
+- **File size (non-blocking):** if the diff pushes a source file across ~1500 lines, note it as a suggestion and file a follow-up issue proposing a decomposition — never block the PR on size alone.
 
 **Security:** injection, hardcoded secrets, unsafe deserialization, path traversal, access control, unvalidated input, untrusted deps.
 
