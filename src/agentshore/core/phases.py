@@ -36,7 +36,6 @@ from agentshore.core.helpers import (
 )
 from agentshore.data.store import SessionRecord
 from agentshore.github.labels import AGENTSHORE_WORKFLOW_LABELS
-from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.paths import GLOBAL_CONFIG_DIR as _GLOBAL_CONFIG_DIR
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.paths import project_db_path, project_dir, project_weights_dir
@@ -741,10 +740,11 @@ async def _phase_fetch_github(
                 # cursor exists yet, so we always do a complete fetch. After
                 # success, advance the cursor so subsequent refreshes can use
                 # the cheap incremental ``since=`` path.
-                from datetime import UTC, datetime, timedelta
+                from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
-                startup_cutoff = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
-                issues = await gh.list_issues(state="open")
+                syncer = GitHubSyncer(gh=gh, store=store, cfg=cfg, session_id=sid)
+                startup_cutoff = sync_cursor_now()
+                issues = await syncer.fetch_issues(state="open", since=None)
                 if issues is None:
                     _logger.error(
                         "github_issues_fetch_failed",
@@ -754,8 +754,7 @@ async def _phase_fetch_github(
                         session_id=sid,
                     )
                 elif issues:
-                    await store.cache_github_issues(sid, issues)
-                    await store.set_last_issue_sync_at(sid, startup_cutoff)
+                    await syncer.cache_issues(issues, cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_cached",
                         count=len(issues),
@@ -771,19 +770,15 @@ async def _phase_fetch_github(
                 else:
                     # Empty result is success — set cursor so we don't repeat
                     # the full sweep on the next refresh.
-                    await store.set_last_issue_sync_at(sid, startup_cutoff)
+                    await syncer.cache_issues([], cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_fetched_empty",
                         expected_issues_known=True,
                         note="0 open issues on GitHub (healthy empty-repo state)",
                         session_id=sid,
                     )
-                pull_requests = await gh.list_pull_requests(
-                    state="open", limit=GITHUB_PR_FETCH_LIMIT
-                )
-                pull_requests = filter_trusted_pull_requests(
-                    pull_requests,
-                    cfg,
+                pull_requests = await syncer.fetch_trusted_open_pull_requests(
+                    limit=GITHUB_PR_FETCH_LIMIT,
                     context="startup",
                 )
                 if pull_requests:

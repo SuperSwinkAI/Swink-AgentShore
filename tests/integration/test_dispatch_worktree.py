@@ -349,7 +349,6 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
             PlayType.CODE_REVIEW,
             params,
             state_mock,
-            revalidate=False,
         )
 
         assert result is False

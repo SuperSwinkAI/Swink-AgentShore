@@ -22,15 +22,21 @@ from agentshore.state import (
 
 
 def _host(limit: int = 2) -> types.SimpleNamespace:
-    return types.SimpleNamespace(
+    host = types.SimpleNamespace(
         _progress_monitor=ForwardProgressMonitor(no_progress_ticks=limit),
         _draining=False,
         _stop_requested=False,
         _session_id="s1",
         _natural_exit_reason=None,
         _drain_reason=None,
+        _pause_deadline=None,
+        _pause_event=None,
         begin_drain=AsyncMock(),
     )
+    # _check_no_forward_progress routes the stop through the real
+    # _initiate_autonomous_stop collaborator, which delegates to begin_drain.
+    host._initiate_autonomous_stop = types.MethodType(Orchestrator._initiate_autonomous_stop, host)
+    return host
 
 
 def _state() -> OrchestratorState:
