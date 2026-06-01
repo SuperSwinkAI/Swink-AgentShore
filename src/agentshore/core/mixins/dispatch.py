@@ -20,7 +20,6 @@ from agentshore.data.store import ExternalMutationRecord
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import (
     ACTION_MASKED,
-    SELECTED_CANDIDATE_NO_LONGER_AVAILABLE,
     MaskClassification,
     MaskReason,
     MaskSource,
@@ -67,20 +66,6 @@ def _is_git_work_tree(path: Path) -> bool:
             return False
         candidate = candidate.parent
     return False
-
-
-_CANDIDATE_REVALIDATED_PLAY_TYPES: frozenset[PlayType] = frozenset(
-    {
-        PlayType.WRITE_IMPLEMENTATION_PLAN,
-        PlayType.ISSUE_PICKUP,
-        PlayType.REFINE_TASK_BREAKDOWN,
-        PlayType.SYSTEMATIC_DEBUGGING,
-        PlayType.CODE_REVIEW,
-        PlayType.MERGE_PR,
-        PlayType.UNBLOCK_PR,
-        PlayType.GROOM_BACKLOG,
-    }
-)
 
 
 class _DispatchMixin(_OrchestratorBase):
@@ -243,10 +228,9 @@ class _DispatchMixin(_OrchestratorBase):
                 await self._handle_masked_override(entry, wait_reason)
                 entry = None
 
-        from agentshore.plays.candidates import build_candidate_plan
         from agentshore.plays.registry import PlayRegistry as _PlayRegistry
         from agentshore.rl.action_space import V1_ACTION_ORDER
-        from agentshore.rl.mask import compute_action_mask, compute_mask_reasons
+        from agentshore.rl.eligibility import EligibilityAuthority
 
         if (
             entry is not None
@@ -254,26 +238,19 @@ class _DispatchMixin(_OrchestratorBase):
             and isinstance(self._registry, _PlayRegistry)
             and entry.play_type in V1_ACTION_ORDER
         ):
-            config_index = self._selector_config_index()
-            candidate_plan = build_candidate_plan(state)
-            mask = compute_action_mask(
+            # Single source of truth: route the override through the same
+            # EligibilityAuthority that masks PPO's action space. One live
+            # confirm; a not-valid verdict means a clean re-pick via the
+            # existing masked-override requeue taxonomy.
+            authority = EligibilityAuthority(
                 state,
                 self._registry,
                 cfg=self._cfg,
-                config_index=config_index,
-                apply_reverse_failsafe=self._cfg.rl.reverse_failsafe_enabled,
-                candidate_plan=candidate_plan,
+                config_index=self._selector_config_index(),
             )
-            if not mask[V1_ACTION_ORDER.index(entry.play_type)]:
-                reasons = compute_mask_reasons(
-                    state,
-                    self._registry,
-                    cfg=self._cfg,
-                    config_index=config_index,
-                    apply_reverse_failsafe=self._cfg.rl.reverse_failsafe_enabled,
-                    candidate_plan=candidate_plan,
-                )
-                reason = reasons.get(entry.play_type, ACTION_MASKED)
+            verdict = await authority.confirm(entry.play_type, entry.params, state)
+            if not verdict.valid:
+                reason = verdict.reason or ACTION_MASKED
                 log_fn = (
                     _logger.info
                     if self._mask_reason_is_indefinite_wait(reason)
@@ -523,193 +500,6 @@ class _DispatchMixin(_OrchestratorBase):
             revalidation_window_seconds=revalidation_window_seconds,
         )
 
-    async def _dispatch_revalidation_reason(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        state: OrchestratorState,
-    ) -> MaskReason | None:
-        if params.bypass_preconditions:
-            return None
-        if play_type in _CANDIDATE_REVALIDATED_PLAY_TYPES and not self._params_have_dispatch_target(
-            params
-        ):
-            return None
-
-        from agentshore.plays.candidates import build_candidate_plan
-        from agentshore.plays.registry import PlayRegistry as _PlayRegistry
-        from agentshore.rl.action_space import V1_ACTION_ORDER
-        from agentshore.rl.mask import compute_action_mask, compute_mask_reasons
-
-        candidate_plan = build_candidate_plan(state)
-        if isinstance(self._registry, _PlayRegistry) and play_type in V1_ACTION_ORDER:
-            mask = compute_action_mask(
-                state,
-                self._registry,
-                cfg=self._cfg,
-                config_index=self._selector_config_index(),
-                apply_reverse_failsafe=bool(params.extras.get("reverse_failsafe")),
-                candidate_plan=candidate_plan,
-            )
-            if not mask[V1_ACTION_ORDER.index(play_type)]:
-                reasons = compute_mask_reasons(
-                    state,
-                    self._registry,
-                    cfg=self._cfg,
-                    config_index=self._selector_config_index(),
-                    apply_reverse_failsafe=bool(params.extras.get("reverse_failsafe")),
-                    candidate_plan=candidate_plan,
-                )
-                return reasons.get(play_type, ACTION_MASKED)
-
-        if play_type not in _CANDIDATE_REVALIDATED_PLAY_TYPES:
-            return None
-        candidates = candidate_plan.candidates_for(play_type)
-        if not candidates:
-            blocked = candidate_plan.blocked_reasons_by_play_type.get(play_type, ())
-            if blocked:
-                return MaskReason(
-                    text=blocked[0],
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
-            return SELECTED_CANDIDATE_NO_LONGER_AVAILABLE
-
-        for candidate in candidates:
-            if params.issue_number is not None:
-                if candidate.params.issue_number == params.issue_number:
-                    # desktop-xi9d: live beads graph can race ahead of the
-                    # cached snapshot the selector saw. Do a final refresh
-                    # before claiming dispatch so a CLOSED/IN_PROGRESS bead
-                    # produces a HARD revalidation block (which does NOT
-                    # consume the action) rather than a play_completed:
-                    # skipped row inside execute() (which used to burn a
-                    # whole PPO step on the race).
-                    live_reason = await self._refresh_live_graph_for_issue(
-                        play_type, candidate.params.issue_number
-                    )
-                    if live_reason is not None:
-                        return live_reason
-                    return None
-                continue
-            if params.pr_number is not None:
-                if candidate.params.pr_number == params.pr_number:
-                    return None
-                continue
-            return None
-        return SELECTED_CANDIDATE_NO_LONGER_AVAILABLE
-
-    async def _refresh_live_graph_for_issue(
-        self,
-        play_type: PlayType,
-        issue_number: int,
-    ) -> MaskReason | None:
-        """Re-check the live beads graph for *issue_number* at dispatch time.
-
-        Returns a HARD MaskReason when the live graph reports the bead is
-        no longer OPEN; ``None`` otherwise (including when the live graph
-        is unavailable — fall back to the cached snapshot path used to
-        gate dispatch since the desktop-mb5g rework).
-
-        Only fires for the issue-graph plays in
-        ``_CANDIDATE_REVALIDATED_PLAY_TYPES``; PR-graph plays use the
-        existing candidate set and don't consult beads.
-        """
-        if play_type not in {
-            PlayType.ISSUE_PICKUP,
-            PlayType.WRITE_IMPLEMENTATION_PLAN,
-            PlayType.SYSTEMATIC_DEBUGGING,
-            PlayType.REFINE_TASK_BREAKDOWN,
-        }:
-            return None
-
-        try:
-            from agentshore.beads import BeadStatus, load_graph, pick_bead_for_issue
-        except ImportError:
-            return None
-
-        try:
-            graph = await load_graph(self._repo_root)
-        except Exception as exc:  # pragma: no cover - defensive, beads CLI shouldn't blow up
-            _logger.warning(
-                "dispatch_live_graph_refresh_failed",
-                play_type=play_type.value,
-                issue_number=issue_number,
-                error=str(exc),
-                session_id=self._session_id,
-            )
-            return None
-
-        if graph is None:
-            return None
-
-        live_task = pick_bead_for_issue(graph.tasks, issue_number)
-        if live_task is None or live_task.status == BeadStatus.OPEN:
-            return None
-
-        if live_task.status == BeadStatus.IN_PROGRESS:
-            self._record_live_graph_skip(play_type, issue_number)
-            return MaskReason(
-                text=(
-                    f"live beads check: bead {live_task.bead_id} for gh-{issue_number} "
-                    f"is in_progress — refusing dispatch"
-                ),
-                classification=MaskClassification.HARD,
-                source=MaskSource.CANDIDATE,
-            )
-
-        _logger.info(
-            "bead_closed_but_github_open",
-            bead_id=live_task.bead_id,
-            issue_number=issue_number,
-            play_type=play_type.value,
-            session_id=self._session_id,
-        )
-        return None
-
-    def _record_live_graph_skip(self, play_type: PlayType, issue_number: int) -> None:
-        """Update the play instance's skip-circuit-breaker, if it exposes one.
-
-        Currently only ``IssuePickupPlay`` tracks per-issue skip streaks; the
-        other ``_CANDIDATE_REVALIDATED_PLAY_TYPES`` simply re-evaluate every
-        tick. Guard against missing attributes so we stay forward-compatible
-        with plays that gain (or lose) the hook.
-        """
-        from agentshore.plays.registry import PlayRegistry as _PlayRegistry
-
-        if not isinstance(self._registry, _PlayRegistry):
-            return
-        try:
-            play = self._registry.get(play_type)
-        except KeyError:
-            return
-        record_skip = getattr(play, "_record_skip", None)
-        if record_skip is None:
-            return
-        # IssuePickupPlay._record_skip(issue_number, total_plays). The
-        # ``total_plays`` field on OrchestratorState normally drives the
-        # cooldown expiry; at dispatch time we use the loop counter we
-        # already have access to via the orchestrator.
-        try:
-            record_skip(issue_number, self._total_plays_for_skip())
-        except Exception as exc:  # pragma: no cover - defensive
-            _logger.warning(
-                "live_graph_skip_record_failed",
-                play_type=play_type.value,
-                issue_number=issue_number,
-                error=str(exc),
-                session_id=self._session_id,
-            )
-
-    def _total_plays_for_skip(self) -> int:
-        """Return the current play counter for the skip-circuit-breaker.
-
-        Subclasses can override; the base implementation uses the dispatch
-        context dict size which approximates total dispatches for the
-        session and is safe for the cooldown's relative-distance check.
-        """
-        return len(self._dispatch_ctx)
-
     async def _select_play(
         self,
         state: OrchestratorState,
@@ -743,7 +533,17 @@ class _DispatchMixin(_OrchestratorBase):
         cause of the cross-tick divergence (HOTSPOT 1 in
         docs/design/play_lifecycle.html) and produced the
         ``play_skipped_masked_at_executor`` events fixed in v0.14.4.
+
+        Eligibility refactor (Wave 1): this method is now purely
+        side-effecting (worktree alloc, ``active_play`` snapshot, dispatch
+        context + task creation). Play validity is settled upstream by the
+        ``EligibilityAuthority`` — the action mask presents only valid plays
+        to PPO, and ``_consume_override`` confirms overrides against the same
+        authority. The dispatch-time revalidation pass is gone. ``revalidate``
+        is accepted-and-ignored for caller back-compat and will be removed
+        once callers stop passing it.
         """
+        del revalidate  # eligibility now settled upstream; retained for back-compat
         # desktop-kqo5: hard pause when auto-restore failed. Refuse to spawn
         # further work until the trunk is healed. END_AGENT is still allowed so a
         # draining shutdown can complete cleanly. RECONCILE_STATE is ALSO allowed:
@@ -777,8 +577,6 @@ class _DispatchMixin(_OrchestratorBase):
                 event="dispatch_revalidation_blocked",
             )
             return False
-        if revalidate is None:
-            revalidate = isinstance(self._selector, _ppo_selector_cls())
         if self._shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
             await self._drop_selected_play_before_dispatch(
                 play_type,
@@ -787,31 +585,6 @@ class _DispatchMixin(_OrchestratorBase):
                 event="dispatch_blocked_during_shutdown",
             )
             return False
-        if revalidate:
-            selected_at = time.monotonic()
-            reason = await self._dispatch_revalidation_reason(play_type, params, state)
-            if reason is not None:
-                revalidated_at = time.monotonic()
-                # Capture the selector→revalidate delta so the size of the
-                # race window is queryable from the log stream. Stored on
-                # the params extras so the warning emission inside
-                # _drop_selected_play_before_dispatch picks it up.
-                params = dataclasses.replace(
-                    params,
-                    extras={
-                        **params.extras,
-                        "selected_at_monotonic": selected_at,
-                        "revalidated_at_monotonic": revalidated_at,
-                        "revalidation_window_seconds": round(revalidated_at - selected_at, 6),
-                    },
-                )
-                await self._drop_selected_play_before_dispatch(
-                    play_type,
-                    params,
-                    reason=reason,
-                    event="dispatch_revalidation_blocked",
-                )
-                return False
         # desktop-4ugk part 2: refuse to spawn any agent against a working
         # directory whose path contains a literal backslash-space. The
         # canonical leak comes from a quoting bug in a skill template; once

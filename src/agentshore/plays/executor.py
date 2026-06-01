@@ -2,16 +2,18 @@
 
 Execution order:
   1. Retrieve play from registry.
-  2. Resolve params (return skipped outcome if unresolvable).
-  3. Run preconditions check (return failure outcome if unmet).
-  4. For skill-backed plays: select agent + anti-confirmation DB re-check.
-  5. Insert placeholder play row to obtain play_id (FK constraint).
-  6. Build PlayExecutionContext with play_id.
-  7. Execute the play.
-  8. Scope validation (skill-backed only).
-  9. Phase-1 deferral wiring (handoffs, PR authorship, branch tracking).
- 10. Persist requested_mutations if the play exposes a SkillResult.
- 11. Update play row with final outcome.
+  2. Trust authority-confirmed override params, or resolve for legacy callers
+     (return a no_target skip if the legacy resolve finds no claimable target).
+     The EligibilityAuthority's confirm() owns validity, so the executor no
+     longer re-runs play.preconditions().
+  3. For skill-backed plays: select agent + anti-confirmation DB re-check.
+  4. Insert placeholder play row to obtain play_id (FK constraint).
+  5. Build PlayExecutionContext with play_id.
+  6. Execute the play.
+  7. Scope validation (skill-backed only).
+  8. Phase-1 deferral wiring (handoffs, PR authorship, branch tracking).
+  9. Persist requested_mutations if the play exposes a SkillResult.
+ 10. Update play row with final outcome.
 """
 
 from __future__ import annotations
@@ -283,6 +285,18 @@ class PlayExecutor:
             )
             return _failed(play_type, f"no play registered for {play_type!r}", "code_error")
 
+        # When override params are already populated, the EligibilityAuthority's
+        # confirm() has already validated this play and the resolver has already
+        # enumerated + claimed the target — trust that here and do NOT re-resolve
+        # or re-check eligibility (no preconditions recheck). PPO can never reach
+        # the no_target / resolve-None path because it never re-resolves.
+        if override is not None and override != PlayParams():
+            return play, override
+
+        # Legacy / non-PPO callers (no populated override) still drive a resolve()
+        # pass; they have no authority confirm upstream. A None here means the
+        # resolver found no claimable target — surface the no_target skip so the
+        # run history reflects it (this path is unreachable from the PPO loop).
         params = await self._resolver.resolve(play_type, state, override=override)
         if params is None:
             await self._finish_claim_group(override, status="released")
@@ -297,32 +311,6 @@ class PlayExecutor:
                 "no_target",
                 error="unresolved parameters",
             )
-
-        # Trusted internal queueing (bootstrap fleet seeding) sets
-        # params.bypass_preconditions so the cooldown/budget gates that protect
-        # the RL policy don't block the boot-time fleet. The override-queue
-        # mask check honors the same flag — see Orchestrator._next_play.
-        if not params.bypass_preconditions:
-            errors = play.preconditions(state)
-            if errors:
-                # Reaching here means the mask said the play was selectable but
-                # state shifted between selector and executor (e.g. labels
-                # refreshed, planned_issues mutated). Treat as a transient skip
-                # so PPO doesn't learn a spurious negative-reward sample, and
-                # the play row never gets recorded as a failure.
-                await self._finish_claim_group(params, status="released")
-                await self._record_pre_dispatch_skip(
-                    play_type,
-                    started_at=started_at,
-                    skip_category="masked",
-                    error=str(errors[0]),
-                    agent_id=params.agent_id,
-                )
-                return PlayOutcome.skipped_outcome(
-                    play_type,
-                    "masked",
-                    error=str(errors[0]),
-                )
         return play, params
 
     async def _select_skill_agent(
