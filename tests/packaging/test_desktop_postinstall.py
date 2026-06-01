@@ -20,7 +20,9 @@ def test_desktop_postinstall_runs_venv_helper_as_console_user() -> None:
 
 def test_desktop_postinstall_launch_agent_opens_app_by_path_after_installer() -> None:
     script = _script()
-    launch_line = next(line for line in script.splitlines() if "/usr/bin/pgrep -qx Installer" in line)
+    launch_line = next(
+        line for line in script.splitlines() if "/usr/bin/pgrep -qx Installer" in line
+    )
 
     assert "/usr/bin/pgrep -qx Installer" in script
     assert "/usr/bin/open '${APP_PATH}'" in script
