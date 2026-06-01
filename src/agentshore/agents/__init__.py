@@ -1,4 +1,4 @@
-"""Agent manager — lifecycle, subprocess management, API adapters."""
+"""Agent manager — lifecycle and CLI subprocess management."""
 
 from __future__ import annotations
 
