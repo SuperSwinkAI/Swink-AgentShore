@@ -106,7 +106,7 @@ def _keychain_has_token(service: str) -> bool:
 def keychain_status(login: str) -> dict[str, object]:
     """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
 
-    Mirrors the CLI wizard's pre-flight check (``cli_identity._keychain_has_token``)
+    Mirrors the CLI wizard's pre-flight check (``identity_wizard.keychain._keychain_has_token``)
     so the desktop "Add identity" form can offer to reuse a stored PAT instead of
     forcing the user to paste it again. Returns the canonical login, the managed
     keychain service name, and whether a non-empty token is present there.

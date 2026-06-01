@@ -622,7 +622,7 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
             # Defensive redaction: a previous wizard bug let a literal PAT
             # land in `gh_token_env`. Detect and redact rather than echo it
             # to terminals (and from there into shell scrollback).
-            from agentshore.cli_identity import looks_like_pat
+            from agentshore.identity_wizard import looks_like_pat
 
             if looks_like_pat(ident.gh_token_env):
                 rows.append(
