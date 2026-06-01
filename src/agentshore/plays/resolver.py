@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections import Counter
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING
 
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
@@ -17,30 +17,26 @@ from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import (
     PlayCandidate,
     PlayCandidateService,
-    build_candidate_plan,
     idle_can_review_agents,
     pick_reviewer_for_pr,
     pr_resource_keys,
     pr_resource_keys_for_pr,
-    pr_unblockable,
 )
 from agentshore.plays.internal.end_agent import _MIN_PLAYS_PER_AGENT
 from agentshore.state import (
     AgentStatus,
     AgentType,
-    IssueSnapshot,
     OrchestratorState,
     PlayType,
     SessionState,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
-    from agentshore.data.models import PullRequestRecord, ReviewQueueRecord
+    from agentshore.data.models import ReviewQueueRecord
     from agentshore.data.store import DataStore
     from agentshore.github.adapter import GitHubAdapter
     from agentshore.state import AgentSnapshot
@@ -144,9 +140,7 @@ class ParameterResolver:
         claim_group_id = _claim_group_id(params)
         if claim_group_id is None:
             return
-        method = getattr(self._store, "release_work_claim_group", None)
-        if method is not None:
-            await method(state.session_id, claim_group_id)
+        await self._store.release_work_claim_group(state.session_id, claim_group_id)
 
     def record_unblock_pr_failure(self, pr_number: int) -> bool:
         """Increment the session-level failure count for *pr_number*.
@@ -201,22 +195,20 @@ class ParameterResolver:
                 return self._resolve_end_agent(state)
             case PlayType.TAKE_BREAK:
                 return self._resolve_take_break(state)
-            # -- skill-backed plays (synchronous) ----------------------------
-            case PlayType.REFINE_TASK_BREAKDOWN:
-                return await self._resolve_refine_tasks(state)
-            # -- skill-backed plays (async) -----------------------------------
-            case PlayType.UNBLOCK_PR:
-                return await self._resolve_unblock_pr(state)
-            case PlayType.WRITE_IMPLEMENTATION_PLAN:
-                return await self._resolve_write_implementation_plan(state)
-            case PlayType.SYSTEMATIC_DEBUGGING:
-                return await self._resolve_systematic_debugging(state)
-            case PlayType.ISSUE_PICKUP:
-                return await self._resolve_issue_pickup(state)
+            # -- skill-backed plays (candidate-loop resolution) --------------
+            case (
+                PlayType.REFINE_TASK_BREAKDOWN
+                | PlayType.UNBLOCK_PR
+                | PlayType.WRITE_IMPLEMENTATION_PLAN
+                | PlayType.SYSTEMATIC_DEBUGGING
+                | PlayType.ISSUE_PICKUP
+                | PlayType.MERGE_PR
+            ):
+                return await self._resolve_via_candidates(play_type, state)
             case PlayType.CODE_REVIEW:
-                return await self._resolve_code_review(state)
-            case PlayType.MERGE_PR:
-                return await self._resolve_merge_pr(state)
+                return await self._resolve_via_candidates(
+                    play_type, state, idle_reviewers=idle_can_review_agents(state)
+                )
             case PlayType.RUN_QA:
                 return await self._resolve_run_qa(state)
             case PlayType.BROWSER_VERIFICATION:
@@ -469,27 +461,24 @@ class ParameterResolver:
         if claim_group_id is None:
             pending = await self._pending_review_for_pr(state.session_id, params.pr_number)
             if pending is not None and pending.queue_id is not None:
-                method = getattr(self._store, "claim_review_with_work_claims", None)
-                if callable(method):
-                    claimed = await method(
-                        session_id=state.session_id,
-                        queue_id=pending.queue_id,
-                        agent_id=reviewer_agent_id,
-                        play_type=PlayType.CODE_REVIEW.value,
-                        resource_keys=resource_keys,
+                claimed = await self._store.claim_review_with_work_claims(
+                    session_id=state.session_id,
+                    queue_id=pending.queue_id,
+                    agent_id=reviewer_agent_id,
+                    play_type=PlayType.CODE_REVIEW.value,
+                    resource_keys=resource_keys,
+                )
+                if claimed is not None:
+                    return dataclasses.replace(
+                        params,
+                        extras={
+                            **params.extras,
+                            "claim_group_id": claimed,
+                            "resource_keys": resource_keys,
+                            "review_queue_id": pending.queue_id,
+                        },
                     )
-                    if isinstance(claimed, str):
-                        return dataclasses.replace(
-                            params,
-                            extras={
-                                **params.extras,
-                                "claim_group_id": claimed,
-                                "resource_keys": resource_keys,
-                                "review_queue_id": pending.queue_id,
-                            },
-                        )
-                    if claimed is None:
-                        return None
+                return None
 
         claimed_params = await self._claim_params(
             PlayType.CODE_REVIEW, state, params, resource_keys=resource_keys
@@ -498,17 +487,17 @@ class ParameterResolver:
             return None
 
         if review_queue_id is None:
-            method = getattr(self._store, "claim_pending_review_for_pr", None)
-            if callable(method):
-                claimed_review = await method(state.session_id, params.pr_number, reviewer_agent_id)
-                if claimed_review is not None and claimed_review.queue_id is not None:
-                    claimed_params = dataclasses.replace(
-                        claimed_params,
-                        extras={
-                            **claimed_params.extras,
-                            "review_queue_id": claimed_review.queue_id,
-                        },
-                    )
+            claimed_review = await self._store.claim_pending_review_for_pr(
+                state.session_id, params.pr_number, reviewer_agent_id
+            )
+            if claimed_review is not None and claimed_review.queue_id is not None:
+                claimed_params = dataclasses.replace(
+                    claimed_params,
+                    extras={
+                        **claimed_params.extras,
+                        "review_queue_id": claimed_review.queue_id,
+                    },
+                )
         return claimed_params
 
     async def _claim_params(
@@ -533,26 +522,16 @@ class ParameterResolver:
                 extras={**params.extras, "resource_keys": keys},
             )
 
-        method = getattr(self._store, "acquire_work_claims", None)
-        if not callable(method):
-            return params
-        claimed = await method(state.session_id, play_type.value, keys)
-        if isinstance(claimed, str):
-            return dataclasses.replace(
-                params,
-                extras={**params.extras, "claim_group_id": claimed, "resource_keys": keys},
-            )
+        claimed = await self._store.acquire_work_claims(state.session_id, play_type.value, keys)
         if claimed is None:
             return None
-        # Unconfigured AsyncMock in older unit tests: preserve legacy resolution.
-        return params
+        return dataclasses.replace(
+            params,
+            extras={**params.extras, "claim_group_id": claimed, "resource_keys": keys},
+        )
 
-    async def _claim_group_is_active(self, session_id: str, claim_group_id: str) -> bool | None:
-        method = getattr(self._store, "work_claim_group_is_active", None)
-        if not callable(method):
-            return None
-        active = await method(session_id, claim_group_id)
-        return active if isinstance(active, bool) else None
+    async def _claim_group_is_active(self, session_id: str, claim_group_id: str) -> bool:
+        return await self._store.work_claim_group_is_active(session_id, claim_group_id)
 
     async def _resource_keys_for_params(
         self, play_type: PlayType, state: OrchestratorState, params: PlayParams
@@ -590,11 +569,8 @@ class ParameterResolver:
         for pr in state.pull_requests:
             if pr.pr_number == pr_number:
                 return pr
-        method = getattr(self._store, "get_pull_request", None)
-        if not callable(method):
-            return None
-        pr = await method(state.session_id, pr_number)
-        return pr if getattr(pr, "pr_number", None) == pr_number else None
+        record = await self._store.get_pull_request(state.session_id, pr_number)
+        return record if record is not None and record.pr_number == pr_number else None
 
     async def _pending_review_for_pr(
         self, session_id: str, pr_number: int
@@ -626,233 +602,29 @@ class ParameterResolver:
             resource_keys=list(candidate.resource_keys),
         )
 
-    async def _resolve_unblock_pr(self, state: OrchestratorState) -> PlayParams | None:
-        for candidate in await self._candidate_service.candidates_for(PlayType.UNBLOCK_PR, state):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _resolve_write_implementation_plan(
-        self, state: OrchestratorState
-    ) -> PlayParams | None:
-        for candidate in await self._candidate_service.candidates_for(
-            PlayType.WRITE_IMPLEMENTATION_PLAN, state
-        ):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _resolve_systematic_debugging(self, state: OrchestratorState) -> PlayParams | None:
-        for candidate in await self._candidate_service.candidates_for(
-            PlayType.SYSTEMATIC_DEBUGGING, state
-        ):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _resolve_issue_pickup(self, state: OrchestratorState) -> PlayParams | None:
-        """Pick the highest-priority eligible open issue.
-
-        Eligibility filters (mirror the agentshore-issue-pickup skill's Step 2):
-
-        - Skip CLOSED issues — should already be excluded by the open-issues
-          query, but state may be stale right after a merge_pr.
-        - Skip issues already covered by an open PR (in-progress).
-        - Skip issues labeled with an AgentShore issue gate such as
-          ``agentshore/blocked`` or ``agentshore/disallowed``.
-        - Skip issues still labeled ``agentshore/needs-refinement`` — they have
-          not been sized yet by ``agentshore-refine-tasks``.
-
-        Ranking among remaining candidates:
-        - When beads has ready tasks, prefer issues matching a bead's
-          ``external_ref`` ("gh-{number}"). Falls back to priority ordering
-          when no candidates match a ready bead.
-        - ``priority/critical`` > ``high`` > ``medium`` > ``low`` > unset
-        - then ``size/S`` > ``M`` > ``L`` > ``XL`` > unset
-        - then lower issue number
-        """
-        for candidate in await self._candidate_service.candidates_for(PlayType.ISSUE_PICKUP, state):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _eligible_issue_candidates(self, state: OrchestratorState) -> list[IssueSnapshot]:
-        eligible_numbers = {
-            candidate.params.issue_number
-            for candidate in build_candidate_plan(state).candidates_for(PlayType.ISSUE_PICKUP)
-            if candidate.params.issue_number is not None
-        }
-        return [issue for issue in state.open_issues if issue.issue_number in eligible_numbers]
-
-    async def _resolve_refine_tasks(self, state: OrchestratorState) -> PlayParams | None:
-        for candidate in await self._candidate_service.candidates_for(
-            PlayType.REFINE_TASK_BREAKDOWN, state
-        ):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _resolve_code_review(self, state: OrchestratorState) -> PlayParams | None:
-        """Pick the oldest pending review with an idle cross-identity reviewer.
-
-        Deconfliction is identity-only: a candidate may review iff its
-        ``github_identity`` differs from the PR author's GitHub login. Agent
-        type plays no role — a human and an agent can share a login; two
-        agents of the same type can have different logins. The resolver pins
-        ``target_agent_id`` to a specific eligible agent and the executor
-        re-checks the identity invariant at dispatch.
-
-        When no eligible reviewer is idle for a PR, that PR is skipped (not
-        dispatched with target=None) — dispatching against an ineligible pool
-        only burns requeue attempts.
-        """
-        idle_reviewers = idle_can_review_agents(state)
-        for candidate in await self._candidate_service.candidates_for(
-            PlayType.CODE_REVIEW,
-            state,
-            idle_reviewers=idle_reviewers,
-        ):
-            claimed = await self._claim_candidate(state, candidate)
-            if claimed is not None:
-                return claimed
-        return None
-
-    async def _first_open_pr_with_reviewer(
+    async def _resolve_via_candidates(
         self,
+        play_type: PlayType,
         state: OrchestratorState,
-        idle_reviewers: list[AgentSnapshot],
         *,
-        excluded: set[int],
-        limit: int = 5,
+        idle_reviewers: list[AgentSnapshot] | None = None,
     ) -> PlayParams | None:
-        """Code-review fallback: return the first open PR with a cross-identity reviewer.
+        """Resolve a skill-backed play by claiming the first claimable candidate.
 
-        Mirrors ``_first_open_pr_matching`` but also pins ``target_agent_id``
-        to the chosen reviewer. The general helper drops the pin and lets the
-        selector pick freely, which can land on a same-identity agent and
-        violate the anti-confirmation invariant.
+        The candidate ordering and eligibility live entirely in
+        ``PlayCandidateService.candidates_for`` (see ``candidates.py``); this
+        loop only walks that ranked list and acquires the work claim for the
+        first candidate that can be claimed. ``CODE_REVIEW`` passes its idle
+        cross-identity reviewer pool so the candidate service can pin a
+        ``target_agent_id`` per PR.
         """
-        if self._github is None:
-            return None
-        candidates = await self._candidate_service._github_code_review_candidates(
-            state,
-            idle_reviewers,
-            excluded=excluded,
-            source="github_fallback",
-            limit=limit,
-        )
-        return candidates[0].params if candidates else None
-
-    @overload
-    async def _first_open_pr_matching(
-        self,
-        state: Callable[[PullRequestRecord], bool],
-        predicate: None = None,
-        *,
-        limit: int = 5,
-        log_key: str = "github_pr_resolve_failed",
-    ) -> PlayParams | None: ...
-
-    @overload
-    async def _first_open_pr_matching(
-        self,
-        state: OrchestratorState,
-        predicate: Callable[[PullRequestRecord], bool],
-        *,
-        limit: int = 5,
-        log_key: str = "github_pr_resolve_failed",
-    ) -> PlayParams | None: ...
-
-    async def _first_open_pr_matching(
-        self,
-        state: OrchestratorState | Callable[[PullRequestRecord], bool],
-        predicate: Callable[[PullRequestRecord], bool] | None = None,
-        *,
-        limit: int = 5,
-        log_key: str = "github_pr_resolve_failed",
-    ) -> PlayParams | None:
-        """Return the first open GitHub PR for which *predicate* is True.
-
-        Two call shapes (see ``@overload`` above):
-        - ``(predicate)`` — predicate-only; synthesises a minimal state.
-        - ``(state, predicate)`` — explicit state + predicate.
-
-        Narrows via ``isinstance(state, OrchestratorState)`` instead of
-        ``cast()`` so mypy verifies the assignment (GH #508 / desktop-1bv).
-        """
-        if self._github is None:
-            return None
-        candidate_state: OrchestratorState
-        candidate_predicate: Callable[[PullRequestRecord], bool]
-        if predicate is None:
-            if isinstance(state, OrchestratorState):
-                # Defensive: caller passed a state without a predicate.
-                # Treat as "no predicate" → match every open PR.
-                candidate_state = state
-                candidate_predicate = lambda _pr: True  # noqa: E731
-            else:
-                candidate_state = OrchestratorState(
-                    session_id="",
-                    session_state=SessionState.RUNNING,
-                    total_plays=0,
-                    total_cost=0.0,
-                )
-                candidate_predicate = state
-        else:
-            if not isinstance(state, OrchestratorState):
-                msg = (
-                    "_first_open_pr_matching: when predicate is provided, "
-                    "state must be a OrchestratorState"
-                )
-                raise TypeError(msg)
-            candidate_state = state
-            candidate_predicate = predicate
-        candidates = await self._candidate_service._github_pr_candidates(
-            candidate_state,
-            PlayType.MERGE_PR,
-            candidate_predicate,
-            limit=limit,
-            log_key=log_key,
-        )
-        return candidates[0].params if candidates else None
-
-    async def _resolve_merge_pr(self, state: OrchestratorState) -> PlayParams | None:
-        for candidate in await self._candidate_service.candidates_for(PlayType.MERGE_PR, state):
+        for candidate in await self._candidate_service.candidates_for(
+            play_type, state, idle_reviewers=idle_reviewers
+        ):
             claimed = await self._claim_candidate(state, candidate)
             if claimed is not None:
                 return claimed
         return None
-
-    async def _resolve_pr_from_github(self, state: OrchestratorState) -> PlayParams | None:
-        """Query GitHub for open PRs when the DataStore has none cached."""
-        candidates = await self._candidate_service._github_pr_candidates(
-            state,
-            PlayType.CODE_REVIEW,
-            lambda _pr: True,
-            limit=5,
-            log_key="github_pr_resolve_failed",
-        )
-        return candidates[0].params if candidates else None
-
-    async def _resolve_blocked_pr_from_github(
-        self, state: OrchestratorState, *, exclude_pr_numbers: set[int] | None = None
-    ) -> PlayParams | None:
-        """Query GitHub for open PRs with requested changes, block labels, or failed checks."""
-        _exclude = exclude_pr_numbers or set()
-
-        candidates = await self._candidate_service._github_pr_candidates(
-            state,
-            PlayType.UNBLOCK_PR,
-            lambda pr: pr.pr_number not in _exclude and pr_unblockable(pr),
-            limit=20,
-            log_key="github_blocked_pr_resolve_failed",
-        )
-        return candidates[0].params if candidates else None
 
     async def _resolve_run_qa(self, state: OrchestratorState) -> PlayParams | None:
         """Run QA against the default branch (the merged trunk).

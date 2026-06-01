@@ -21,6 +21,7 @@ from agentshore.core import _phase_fetch_github
 from agentshore.data.models import PullRequestRecord
 from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
 from agentshore.plays.resolver import ParameterResolver
+from agentshore.state import OrchestratorState, PlayType, SessionState
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -392,7 +393,19 @@ async def test_resolver_live_fallback_ignores_untrusted_prs() -> None:
     github.list_pull_requests = AsyncMock(return_value=[_pr(1, "stranger"), _pr(2, "trusted")])
     resolver = ParameterResolver(store=store, manager=manager, cfg=cfg, github=github)
 
-    params = await resolver._first_open_pr_matching(lambda _pr: True)
+    state = OrchestratorState(
+        session_id="",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+    )
+    candidates = await resolver._candidate_service._github_pr_candidates(
+        state,
+        PlayType.MERGE_PR,
+        lambda _pr: True,
+        limit=5,
+        log_key="github_pr_resolve_failed",
+    )
 
-    assert params is not None
-    assert params.pr_number == 2
+    assert candidates
+    assert candidates[0].params.pr_number == 2
