@@ -10,9 +10,9 @@ import pytest
 from agentshore.beads import BeadStatus
 from agentshore.config.models import RuntimeConfig, TrustedIdsConfig
 from agentshore.plays.candidates import (
+    PlayCandidateAnalyzer,
     PlayCandidateService,
     build_candidate_plan,
-    issue_available_for_plan,
 )
 from agentshore.state import (
     AgentSnapshot,
@@ -420,20 +420,20 @@ def test_in_progress_bead_does_not_starve_workable_issues_e2e() -> None:
     assert plan_nums == set(workable)
 
 
-def test_issue_available_for_plan_free_function_excludes_in_progress() -> None:
+def test_analyzer_issue_available_for_plan_excludes_in_progress() -> None:
     issue = _issue(6)
-    state = _state(open_issues=[issue])
-    kwargs = dict(
-        open_pr_issue_numbers=set(),
-        merged_pr_issue_numbers=set(),
-        in_flight_issue_numbers=set(),
+    in_progress_graph = _seeded_graph(
+        has_ready_tasks=True,
+        tasks_ready=1,
+        tasks=[SimpleNamespace(issue_number=6, status=BeadStatus.IN_PROGRESS, ready=False)],
     )
-    assert (
-        issue_available_for_plan(issue, state, bead_in_progress_issue_numbers={6}, **kwargs)
-        is False
+    analyzer_in_progress = PlayCandidateAnalyzer(
+        _state(graph=in_progress_graph, open_issues=[issue])
     )
-    # Default-None path is unchanged (issue still available).
-    assert issue_available_for_plan(issue, state, **kwargs) is True
+    assert analyzer_in_progress.issue_available_for_plan(issue) is False
+    # With no in-progress bead the same issue is still available for planning.
+    analyzer_open = PlayCandidateAnalyzer(_state(open_issues=[issue]))
+    assert analyzer_open.issue_available_for_plan(issue) is True
 
 
 def test_beads_epics_without_ready_tasks_expose_groom_work() -> None:

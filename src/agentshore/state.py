@@ -11,6 +11,7 @@ from agentshore.github.pr_links import issue_numbers_for_pr
 
 if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
+    from agentshore.errors import FailureKind
     from agentshore.plays.base import PlayParams
     from agentshore.rl.mask_reason import MaskReason
 
@@ -155,6 +156,11 @@ class PlayOutcome:
     skipped: bool = False
     skip_category: SkipCategory | None = None
     retry_requested: bool = False
+    # Typed cause set at the failure site when the play knows it. The persisted
+    # ``failure_category`` string is derived from this (see executor
+    # ``_infer_failure_category``); the substring inferer is the fallback when a
+    # play leaves this None.
+    failure_kind: FailureKind | None = None
 
     @classmethod
     def failed(
@@ -165,6 +171,7 @@ class PlayOutcome:
         dollar_cost: float = 0.0,
         partial: bool = False,
         retry_requested: bool = False,
+        failure_kind: FailureKind | None = None,
     ) -> PlayOutcome:
         """Convenience constructor for a zero-cost failure outcome."""
         return cls(
@@ -179,6 +186,7 @@ class PlayOutcome:
             alignment_delta=0.0,
             error=error,
             retry_requested=retry_requested,
+            failure_kind=failure_kind,
         )
 
     @classmethod
