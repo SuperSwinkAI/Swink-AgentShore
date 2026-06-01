@@ -10,14 +10,13 @@ Stdin/stdout carry JSON-RPC; logs go to stderr (§2.2). The loop exits on
 EOF, matching Tauri sidecar lifecycle (§1.2: "Sidecar death == orchestrator
 death").
 
-Two entry shapes coexist:
-
-* :func:`serve` / :func:`run` — synchronous stdio loop. Kept for handshake-
-  only deployments and the existing test suite.
-* :func:`serve_async` / :func:`run_async` — coroutine versions that read
-  stdin in the default executor so other asyncio tasks (notably the
-  embedded :class:`agentshore.sidecar.EmbeddedBridge` per §1.2 and §2.3) can
-  run concurrently in the same loop.
+A single stdio serve loop (:func:`_serve_async`) backs both the async path
+and the synchronous :func:`serve` / :func:`run` entry points. It reads stdin
+on a daemon thread so other asyncio tasks (notably the embedded
+:class:`agentshore.sidecar.EmbeddedBridge` per §1.2 and §2.3, booted by
+``session.start``) run concurrently in the same loop, carries the
+request-cancellation machinery (``$/cancelRequest``), and fires the
+``sidecar.health`` heartbeat (§5.1) so the shell can detect a stalled sidecar.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, TypedDict
 
+from agentshore.ipc.wire import frame
 from agentshore.sidecar import archive_rpc
 from agentshore.sidecar import project as project_rpc
 from agentshore.sidecar.agents import (
@@ -157,6 +157,16 @@ def _result(req_id: int | str | None, result: object) -> JsonRpcResponse:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
+def notification(method: str, params: dict[str, object]) -> JsonRpcNotification:
+    """Build a JSON-RPC 2.0 notification (sidecar → shell).
+
+    The single factory every notification builder routes through, so the
+    ``{"jsonrpc": "2.0", "method": ..., "params": ...}`` envelope is authored
+    in exactly one place (DESIGN §5.1).
+    """
+    return {"jsonrpc": "2.0", "method": method, "params": params}
+
+
 class _ParamError(Exception):
     """Raised inside dispatch when params fail shape validation."""
 
@@ -168,18 +178,6 @@ def _as_dict(params: object) -> dict[str, object]:
         return params
     raise _ParamError("params must be an object")
 
-
-_PROJECT_METHODS = frozenset(
-    {
-        "project.select",
-        "project.inspect",
-        "project.branches",
-        "project.set_target_branch",
-        "project.set_seed_paths",
-        "project.set_budget",
-        "project.deselect",
-    }
-)
 
 # Methods whose `project_rpc.ERR_PROJECT_NOT_ACTIVE` (-32004) is remapped to
 # the public `ERR_NO_ACTIVE_PROJECT` (-32011) for the shell. `project.select`
@@ -222,7 +220,7 @@ def _dispatch_project(method: str, params: object, state: ServerState) -> object
         return project_rpc.set_budget(budget_param)
     if method == "project.deselect":
         return project_rpc.deselect()
-    raise KeyError(method)  # pragma: no cover — guarded by _PROJECT_METHODS
+    raise KeyError(method)  # pragma: no cover — guarded by HANDLERS routing
 
 
 async def _close_project_handles(state: ServerState) -> None:
@@ -317,16 +315,15 @@ def _progress_notification(
     percent: int,
     message: str,
 ) -> JsonRpcNotification:
-    return {
-        "jsonrpc": "2.0",
-        "method": "$/progress",
-        "params": {
+    return notification(
+        "$/progress",
+        {
             "token": token,
             "step": step,
             "percent": percent,
             "message": message,
         },
-    }
+    )
 
 
 # DESIGN §10.2 — the six startup phases reported by ``session.start`` so the
@@ -432,11 +429,7 @@ def build_session_completed_notification(payload: dict[str, object]) -> JsonRpcN
     pass the same payload returned by ``session.stop`` so Screen 10 receives
     identical data on both transports.
     """
-    return {
-        "jsonrpc": "2.0",
-        "method": "session.completed",
-        "params": payload,
-    }
+    return notification("session.completed", payload)
 
 
 def build_esr_ready_notification(
@@ -454,49 +447,45 @@ def build_esr_ready_notification(
     shell needs to navigate — the richer ``session.completed`` notification
     delivers the full ESR payload immediately after.
     """
-    return {
-        "jsonrpc": "2.0",
-        "method": "$/esr_ready",
-        "params": {
+    return notification(
+        "$/esr_ready",
+        {
             "session_id": session_id,
             "archive_path": archive_path,
             "report_path": report_path,
             "log_path": log_path,
         },
-    }
+    )
 
 
 def build_sidecar_health_notification() -> JsonRpcNotification:
-    return {
-        "jsonrpc": "2.0",
-        "method": "sidecar.health",
-        "params": {"status": "ok", "timestamp": datetime.now(UTC).isoformat()},
-    }
+    return notification(
+        "sidecar.health",
+        {"status": "ok", "timestamp": datetime.now(UTC).isoformat()},
+    )
 
 
 def build_agent_subprocess_spawned_notification(
     *, agent_id: str, agent_type: str, pid: int
 ) -> JsonRpcNotification:
-    return {
-        "jsonrpc": "2.0",
-        "method": "agent.subprocess_spawned",
-        "params": {"agent_id": agent_id, "agent_type": agent_type, "pid": pid},
-    }
+    return notification(
+        "agent.subprocess_spawned",
+        {"agent_id": agent_id, "agent_type": agent_type, "pid": pid},
+    )
 
 
 def build_agent_subprocess_exited_notification(
     *, agent_id: str, agent_type: str, pid: int, exit_code: int | None
 ) -> JsonRpcNotification:
-    return {
-        "jsonrpc": "2.0",
-        "method": "agent.subprocess_exited",
-        "params": {
+    return notification(
+        "agent.subprocess_exited",
+        {
             "agent_id": agent_id,
             "agent_type": agent_type,
             "pid": pid,
             "exit_code": exit_code,
         },
-    }
+    )
 
 
 async def _build_session_stop_response(
@@ -596,7 +585,19 @@ async def _build_session_stop_response(
     return _result(req_id, payload)
 
 
-async def _dispatch_archive(
+def _dispatch_archive(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
+) -> DispatchResult:
+    return _archive_response(method, raw_params, state, req_id)
+
+
+async def _archive_response(
     method: str,
     raw_params: object,
     state: ServerState,
@@ -645,13 +646,14 @@ def _extract_path_param(params: object) -> str | None:
 
 
 def _dispatch_app_handshake(
+    method: str,
     raw_params: object,
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
 ) -> DispatchResult:
-    if is_notification:
-        return None
     try:
         handshake_params = validate_params(raw_params)
     except ValueError as exc:
@@ -786,10 +788,9 @@ def _dispatch_project_rpc(
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
     state: ServerState,
 ) -> DispatchResult:
-    if is_notification:
-        return None
     if method == "project.select":
         return _dispatch_project_select(raw_params, state, req_id)
     try:
@@ -813,23 +814,19 @@ def _dispatch_recents_rpc(
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
 ) -> DispatchResult:
     if method == "recents.list":
-        if is_notification:
-            return None
         return _result(req_id, list_recents(recents_path()))
 
     path = _extract_path_param(raw_params)
     if path is None:
-        if is_notification:
-            return None
         return _error(req_id, INVALID_PARAMS, "path (string) is required")
     if method == "recents.touch":
         touch_recent(path, recents_path())
     else:
         remove_recent(path, recents_path())
-    if is_notification:
-        return None
     return _result(req_id, None)
 
 
@@ -839,10 +836,9 @@ def _dispatch_config_rpc(
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
     state: ServerState,
 ) -> DispatchResult:
-    if is_notification:
-        return None
     if method == "config.read":
         return _result(req_id, read_config(_active_project_path(state)))
 
@@ -864,10 +860,9 @@ def _dispatch_identities_rpc(
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
     state: ServerState,
 ) -> DispatchResult:
-    if is_notification:
-        return None
     if method == "identities.list":
         try:
             return _result(req_id, list_identities(_active_project_path(state)))
@@ -943,10 +938,9 @@ def _dispatch_agents_rpc(
     *,
     req_id: int | str | None,
     is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
     state: ServerState,
 ) -> DispatchResult:
-    if is_notification:
-        return None
     if method == "agents.list":
         try:
             return _result(req_id, list_agents(_active_project_path(state)))
@@ -1018,6 +1012,71 @@ def _dispatch_custom_method(
     return _result(req_id, result)
 
 
+# Uniform signature shared by every registered dispatcher. A handler receives
+# the method name, the raw ``params`` value, and the request envelope context;
+# it returns a response, an awaitable response, or ``None`` for "no reply".
+RouteHandler = Callable[..., DispatchResult]
+
+
+@dataclass(frozen=True)
+class Route:
+    """One entry in the :data:`HANDLERS` dispatch table.
+
+    ``fn`` is the dispatcher; ``notify_ok`` declares whether the method runs
+    when the request arrives as a JSON-RPC notification (no ``id``). The
+    default ``False`` makes ``handle_request`` short-circuit to ``None`` for
+    notifications — replacing the per-handler ``if is_notification: return
+    None`` boilerplate with one declarative rule (H4). Only ``session.*`` opts
+    in (``notify_ok=True``) because it emits ``$/progress`` side effects even
+    for fire-and-forget stop notifications.
+    """
+
+    fn: RouteHandler
+    notify_ok: bool = False
+
+
+# Exact-match dispatch table. Prefix families (``identities.*``, ``agents.*``)
+# fan out from one entry each via _ROUTE_GROUPS below.
+HANDLERS: dict[str, Route] = {
+    "app.handshake": Route(_dispatch_app_handshake),
+    "session.start": Route(_dispatch_session, notify_ok=True),
+    "session.status": Route(_dispatch_session, notify_ok=True),
+    "session.stop": Route(_dispatch_session, notify_ok=True),
+    "project.select": Route(_dispatch_project_rpc),
+    "project.inspect": Route(_dispatch_project_rpc),
+    "project.branches": Route(_dispatch_project_rpc),
+    "project.set_target_branch": Route(_dispatch_project_rpc),
+    "project.set_seed_paths": Route(_dispatch_project_rpc),
+    "project.set_budget": Route(_dispatch_project_rpc),
+    "project.deselect": Route(_dispatch_project_rpc),
+    "archive.list": Route(_dispatch_archive),
+    "archive.fetch_report": Route(_dispatch_archive),
+    "archive.fetch_logs": Route(_dispatch_archive),
+    "recents.list": Route(_dispatch_recents_rpc),
+    "recents.touch": Route(_dispatch_recents_rpc),
+    "recents.remove": Route(_dispatch_recents_rpc),
+    "config.read": Route(_dispatch_config_rpc),
+    "config.write": Route(_dispatch_config_rpc),
+}
+
+# Prefix-matched dispatch groups, tried after the exact table. Each family
+# keeps its single fan-out function and resolves the concrete method itself.
+_ROUTE_GROUPS: tuple[tuple[str, Route], ...] = (
+    ("identities.", Route(_dispatch_identities_rpc)),
+    ("agents.", Route(_dispatch_agents_rpc)),
+)
+
+
+def _resolve_route(method: str) -> Route | None:
+    route = HANDLERS.get(method)
+    if route is not None:
+        return route
+    for prefix, group in _ROUTE_GROUPS:
+        if method.startswith(prefix):
+            return group
+    return None
+
+
 def handle_request(
     payload: object,
     notify: Callable[[JsonRpcNotification], None] | None = None,
@@ -1043,64 +1102,16 @@ def handle_request(
     is_notification = "id" not in payload
     state = state or ServerState()
 
-    if method == "app.handshake":
-        return _dispatch_app_handshake(
-            payload.get("params"), req_id=req_id, is_notification=is_notification
-        )
-
-    if method in {"session.start", "session.status", "session.stop"}:
-        return _dispatch_session(
+    route = _resolve_route(method)
+    if route is not None:
+        if is_notification and not route.notify_ok:
+            return None
+        return route.fn(
             method,
             payload.get("params"),
             req_id=req_id,
             is_notification=is_notification,
             notify=notify,
-            state=state,
-        )
-
-    if method in _PROJECT_METHODS:
-        return _dispatch_project_rpc(
-            method,
-            payload.get("params"),
-            req_id=req_id,
-            is_notification=is_notification,
-            state=state,
-        )
-
-    if method in {"archive.list", "archive.fetch_report", "archive.fetch_logs"}:
-        if is_notification:
-            return None
-        return _dispatch_archive(method, payload.get("params"), state, req_id)
-
-    if method in {"recents.list", "recents.touch", "recents.remove"}:
-        return _dispatch_recents_rpc(
-            method, payload.get("params"), req_id=req_id, is_notification=is_notification
-        )
-
-    if method in {"config.read", "config.write"}:
-        return _dispatch_config_rpc(
-            method,
-            payload.get("params"),
-            req_id=req_id,
-            is_notification=is_notification,
-            state=state,
-        )
-
-    if method.startswith("identities."):
-        return _dispatch_identities_rpc(
-            method,
-            payload.get("params"),
-            req_id=req_id,
-            is_notification=is_notification,
-            state=state,
-        )
-
-    if method.startswith("agents."):
-        return _dispatch_agents_rpc(
-            method,
-            payload.get("params"),
-            req_id=req_id,
-            is_notification=is_notification,
             state=state,
         )
 
@@ -1112,27 +1123,6 @@ def handle_request(
     if is_notification:
         return None
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
-
-
-async def _process_line(line: str, *, state: ServerState | None = None) -> str | None:
-    """Process one input line; return the serialized response, or ``None``.
-
-    ``None`` covers blank lines and JSON-RPC notifications, neither of
-    which write a response.
-    """
-    stripped = line.strip()
-    if not stripped:
-        return None
-    try:
-        payload: object = json.loads(stripped)
-    except json.JSONDecodeError:
-        return json.dumps(_error(None, PARSE_ERROR, "invalid JSON"))
-    response = handle_request(payload, state=state)
-    if inspect.isawaitable(response):
-        response = await response
-    if response is None:
-        return None
-    return json.dumps(response)
 
 
 def _cancel_request_id(payload: object) -> int | str | None:
@@ -1159,7 +1149,26 @@ def _reader_loop(
         loop.call_soon_threadsafe(queue.put_nowait, None)
 
 
-async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
+DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
+"""Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
+
+
+async def _serve_async(
+    stdin: IO[str],
+    stdout: IO[str],
+    *,
+    health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS,
+) -> None:
+    """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
+
+    The single stdio serve loop (DESIGN §1.2). Carries the request-cancellation
+    machinery (``$/cancelRequest``, in-flight tracking, background drain of
+    cancelled handlers) and fires ``sidecar.health`` JSON-RPC notifications on a
+    fixed interval (DESIGN §5.1) so the Tauri shell can detect a stalled
+    sidecar. Pass ``health_interval_seconds <= 0`` to disable the heartbeat
+    (used by tests that drive a quick request and then close stdin). Returns
+    when ``stdin`` reaches EOF and any in-flight async requests have drained.
+    """
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -1204,9 +1213,20 @@ async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
         drain_tasks.add(drain)
         drain.add_done_callback(drain_tasks.discard)
 
-    def _write_notification(notification: JsonRpcNotification) -> None:
-        stdout.write(json.dumps(notification) + "\n")
+    def _emit(obj: object) -> None:
+        # One framing site for every stdout write (H2/H3): json_safe +
+        # allow_nan=False so a non-finite float in a response can never emit
+        # invalid JSON, then flush so the shell sees the line immediately.
+        stdout.write(frame(obj))
         stdout.flush()
+
+    def _write_notification(notification: JsonRpcNotification) -> None:
+        _emit(notification)
+
+    async def _health_emitter() -> None:
+        while True:
+            await asyncio.sleep(health_interval_seconds)
+            _emit(build_sidecar_health_notification())
 
     async def run_request(req_id: int | str, response: Awaitable[JsonRpcResponse]) -> None:
         emitted = False
@@ -1218,24 +1238,21 @@ async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
             # CancelledError with a RuntimeError that the inner
             # `_await_handler` then turned into a normal error response.
             if req_id not in cancelled_ids:
-                stdout.write(json.dumps(rpc_response) + "\n")
-                stdout.flush()
+                _emit(rpc_response)
             emitted = True
         except asyncio.CancelledError:
             if req_id not in cancelled_ids:
-                stdout.write(
-                    json.dumps(_error(req_id, REQUEST_CANCELLED, "request cancelled")) + "\n"
-                )
-                stdout.flush()
+                _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
                 emitted = True
             raise
         finally:
             if not emitted and req_id not in cancelled_ids:
-                stdout.write(
-                    json.dumps(_error(req_id, REQUEST_CANCELLED, "request cancelled")) + "\n"
-                )
-                stdout.flush()
+                _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
             in_flight.pop(req_id, None)
+
+    health_task: asyncio.Task[None] | None = None
+    if health_interval_seconds > 0:
+        health_task = asyncio.create_task(_health_emitter())
 
     while True:
         line = await queue.get()
@@ -1247,8 +1264,7 @@ async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
         try:
             payload_obj: object = json.loads(line)
         except json.JSONDecodeError:
-            stdout.write(json.dumps(_error(None, PARSE_ERROR, "invalid JSON")) + "\n")
-            stdout.flush()
+            _emit(_error(None, PARSE_ERROR, "invalid JSON"))
             continue
 
         cancel_id = _cancel_request_id(payload_obj)
@@ -1259,10 +1275,7 @@ async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
                 task.cancel()
                 # Write the cancellation reply immediately — never block the
                 # serve loop on the cancelled handler's cleanup (desktop-y4g).
-                stdout.write(
-                    json.dumps(_error(cancel_id, REQUEST_CANCELLED, "request cancelled")) + "\n"
-                )
-                stdout.flush()
+                _emit(_error(cancel_id, REQUEST_CANCELLED, "request cancelled"))
                 # Drain the cancelled task in the background so a non-
                 # CancelledError raised by its `finally` cleanup is swallowed
                 # rather than killing the loop (desktop-6hd). The drain
@@ -1301,83 +1314,30 @@ async def _serve_async(stdin: IO[str], stdout: IO[str]) -> None:
                 continue
         if response is None:
             continue
-        stdout.write(json.dumps(response) + "\n")
-        stdout.flush()
+        _emit(response)
 
+    if health_task is not None:
+        health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await health_task
     if in_flight:
         await asyncio.gather(*in_flight.values(), return_exceptions=True)
     if drain_tasks:
         await asyncio.gather(*drain_tasks, return_exceptions=True)
 
 
-def serve(stdin: IO[str], stdout: IO[str]) -> None:
-    """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
-
-    Returns when ``stdin`` reaches EOF and any in-flight async requests have
-    drained.
-    """
-    asyncio.run(_serve_async(stdin, stdout))
-
-
-def _write_line(stdout: IO[str], text: str) -> None:
-    stdout.write(text + "\n")
-    stdout.flush()
-
-
-DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
-"""Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
-
-
-async def serve_async(
+def serve(
     stdin: IO[str],
     stdout: IO[str],
     *,
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS,
 ) -> None:
-    """Coroutine version of :func:`serve`.
+    """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
 
-    Reads each line in the default executor so the running event loop can
-    service cooperating tasks (e.g. the embedded dashboard bridge) while
-    the sidecar waits for the next request.
-
-    Also fires ``sidecar.health`` JSON-RPC notifications on a fixed
-    interval (DESIGN §5.1) so the Tauri shell can detect a stalled
-    sidecar. Pass ``health_interval_seconds <= 0`` to disable the heartbeat
-    (used by tests that drive a quick request and then close stdin).
+    Synchronous wrapper around :func:`_serve_async`. Returns when ``stdin``
+    reaches EOF and any in-flight async requests have drained.
     """
-    loop = asyncio.get_running_loop()
-    state = ServerState()
-    write_lock = asyncio.Lock()
-
-    async def emit_line(text: str) -> None:
-        async with write_lock:
-            await loop.run_in_executor(None, _write_line, stdout, text)
-
-    async def health_emitter() -> None:
-        while True:
-            await asyncio.sleep(health_interval_seconds)
-            await emit_line(json.dumps(build_sidecar_health_notification()))
-
-    async def stdio_pump() -> None:
-        while True:
-            line = await loop.run_in_executor(None, stdin.readline)
-            if line == "":  # EOF
-                return
-            out = await _process_line(line, state=state)
-            if out is None:
-                continue
-            await emit_line(out)
-
-    health_task: asyncio.Task[None] | None = None
-    if health_interval_seconds > 0:
-        health_task = asyncio.create_task(health_emitter())
-    try:
-        await stdio_pump()
-    finally:
-        if health_task is not None:
-            health_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await health_task
+    asyncio.run(_serve_async(stdin, stdout, health_interval_seconds=health_interval_seconds))
 
 
 def _configure_sidecar_logging() -> None:
@@ -1398,22 +1358,3 @@ def run() -> None:
     """Sync entry point. Wraps :func:`serve` against the real stdio streams."""
     _configure_sidecar_logging()
     serve(sys.stdin, sys.stdout)
-
-
-async def run_async(*, bridge: EmbeddedBridge | None = None) -> None:
-    """Async entry point.
-
-    If ``bridge`` is provided, it is started before the stdio loop and
-    stopped when stdin closes, matching the §1.2 single-process topology
-    where the JSON-RPC server and the dashboard WebSocket bridge share one
-    asyncio loop.
-    """
-    _configure_sidecar_logging()
-    if bridge is not None:
-        await bridge.start()
-    try:
-        await serve_async(sys.stdin, sys.stdout)
-    finally:
-        if bridge is not None:
-            with contextlib.suppress(Exception):
-                await bridge.stop()
