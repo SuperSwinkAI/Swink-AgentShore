@@ -360,6 +360,7 @@ async def test_session_stop_returns_full_esr_payload(tmp_path: Path) -> None:
         "archive_path",
         "report_path",
         "log_path",
+        "timelapse_output_path",
         "esr_summary",
     }
     assert result["session_id"] == session_id

@@ -990,3 +990,98 @@ def test_set_seed_paths_rejects_non_string_entry(git_repo: Path) -> None:
     project_rpc.select(str(git_repo))
     with pytest.raises(project_rpc.ProjectError):
         project_rpc.set_seed_paths([123])
+
+
+# ---------------------------------------------------------------------------
+# project.set_timelapse / project.install_timelapse (timelapse feature)
+# ---------------------------------------------------------------------------
+
+
+def test_set_timelapse_writes_block(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n  goals: ship it\n")
+    project_rpc.select(str(tmp_path))
+
+    result = project_rpc.set_timelapse({"enabled": True, "installed": True})
+
+    timelapse = cast("dict[str, object]", result["timelapse"])
+    assert timelapse["enabled"] is True
+    assert timelapse["installed"] is True
+    text = yaml_path.read_text()
+    assert "timelapse:" in text
+    assert "enabled: true" in text
+    assert "installed: true" in text
+    # Pre-existing keys preserved by ruamel.yaml round-trip.
+    assert "path: ." in text
+    assert "goals: ship it" in text
+
+
+def test_set_timelapse_defaults_false(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    result = project_rpc.set_timelapse({})
+    timelapse = cast("dict[str, object]", result["timelapse"])
+    assert timelapse["enabled"] is False
+    assert timelapse["installed"] is False
+
+
+def test_set_timelapse_rejects_non_bool(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError):
+        project_rpc.set_timelapse({"enabled": "yes"})
+
+
+def test_set_timelapse_rejects_unknown_key(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError):
+        project_rpc.set_timelapse({"fps": 24})
+
+
+def test_set_timelapse_preserves_other_keys(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("budget:\n  enabled: false\n  total: 0.0\n")
+    project_rpc.select(str(tmp_path))
+
+    project_rpc.set_timelapse({"enabled": True, "installed": True})
+
+    text = yaml_path.read_text()
+    assert "budget:" in text
+    assert "timelapse:" in text
+
+
+def test_install_timelapse_persists_installed_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.timelapse.setup import InstallResult
+
+    async def _fake_install(cwd: Path | None = None) -> InstallResult:
+        return InstallResult(success=True, message="ok")
+
+    monkeypatch.setattr("agentshore.timelapse.setup.install_timelapse", _fake_install)
+    yaml_path = tmp_path / "agentshore.yaml"
+    project_rpc.select(str(tmp_path))
+
+    result = asyncio.run(project_rpc.install_timelapse())
+
+    assert result["success"] is True
+    assert result["installed"] is True
+    assert "installed: true" in yaml_path.read_text()
+
+
+def test_install_timelapse_failure_does_not_persist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.timelapse.setup import InstallResult
+
+    async def _fake_install(cwd: Path | None = None) -> InstallResult:
+        return InstallResult(success=False, message="brew missing")
+
+    monkeypatch.setattr("agentshore.timelapse.setup.install_timelapse", _fake_install)
+    yaml_path = tmp_path / "agentshore.yaml"
+    project_rpc.select(str(tmp_path))
+
+    result = asyncio.run(project_rpc.install_timelapse())
+
+    assert result["success"] is False
+    assert result["installed"] is False
+    assert result["message"] == "brew missing"
+    assert not yaml_path.exists()

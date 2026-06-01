@@ -44,11 +44,22 @@ export interface EndSessionReportScreenProps {
    * ``startSessionFromPersistedSetup`` from setup/startFromPersistedSetup.
    */
   repeatImpl?: typeof startSessionFromPersistedSetup;
+  /**
+   * Overridable seam for opening the rendered timelapse MP4. Production uses
+   * the Tauri ``open_path_in_default_app`` command (same as RecoveryScreen).
+   */
+  openPathImpl?: (path: string) => Promise<void>;
+}
+
+async function defaultOpenPath(path: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_path_in_default_app", { path });
 }
 
 export function EndSessionReportScreen({
   adapter,
   repeatImpl,
+  openPathImpl = defaultOpenPath,
 }: EndSessionReportScreenProps = {}) {
   const { esr, lastProjectPath } = useContext(SessionContext);
   const navigate = useNavigate();
@@ -91,6 +102,14 @@ export function EndSessionReportScreen({
   const [logsLoading, setLogsLoading] = useState(false);
   const reportPath = esr?.report_path ? esr.report_path : null;
   const logPath = esr?.log_path ? esr.log_path : null;
+  const timelapsePath = esr?.timelapse_output_path ? esr.timelapse_output_path : null;
+
+  // Auto-open the rendered timelapse MP4 once, when the completed session
+  // produced one. Keyed on the path so it fires exactly once per video.
+  useEffect(() => {
+    if (timelapsePath === null) return;
+    void openPathImpl(timelapsePath).catch(() => undefined);
+  }, [timelapsePath, openPathImpl]);
 
   useEffect(() => {
     setReport(null);
@@ -185,6 +204,19 @@ export function EndSessionReportScreen({
           <span role="alert" className={styles.chromeError}>
             {repeatError}
           </span>
+        )}
+        {timelapsePath !== null && (
+          <button
+            type="button"
+            className={styles.chromeButton}
+            onClick={() => {
+              void openPathImpl(timelapsePath).catch(() => undefined);
+            }}
+            aria-label="Open timelapse video"
+            data-testid="esr-open-timelapse"
+          >
+            Open timelapse
+          </button>
         )}
         <button
           type="button"
