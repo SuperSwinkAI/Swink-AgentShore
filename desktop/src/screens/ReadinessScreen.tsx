@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { inspectProject, type ProjectInspectResult } from "../rpc/projectClient";
+import {
+  inspectProject,
+  installTimelapse,
+  setTimelapse,
+  type ProjectInspectResult,
+  type TimelapseInstallResult,
+} from "../rpc/projectClient";
+import { parseProjectYaml } from "../setup/projectYaml";
 
 import styles from "./ReadinessScreen.module.css";
 
@@ -89,11 +96,23 @@ export function findingsFromInspect(inspect: ProjectInspectResult): ReadinessFin
 
 export interface ReadinessAdapter {
   inspect: () => Promise<ProjectInspectResult>;
+  /** Auto-install the optional timelapse-capture CLI + deps. */
+  installTimelapse?: () => Promise<TimelapseInstallResult>;
+  /** Persist the timelapse enabled/installed flags to agentshore.yaml. */
+  setTimelapse?: (input: { enabled?: boolean; installed?: boolean }) => Promise<unknown>;
 }
 
 const defaultAdapter: ReadinessAdapter = {
   inspect: inspectProject,
+  installTimelapse,
+  setTimelapse,
 };
+
+/** Read the persisted ``timelapse.installed`` flag from an inspect result. */
+export function timelapseInstalledFromInspect(inspect: ProjectInspectResult | null): boolean {
+  const raw = inspect?.agentshore_yaml?.raw;
+  return parseProjectYaml(raw).timelapse?.installed ?? false;
+}
 
 export interface ReadinessScreenProps {
   adapter?: ReadinessAdapter;
@@ -106,6 +125,9 @@ export function ReadinessScreen({
   const [inspect, setInspect] = useState<ProjectInspectResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timelapseInstalled, setTimelapseInstalled] = useState(false);
+  const [timelapseBusy, setTimelapseBusy] = useState(false);
+  const [timelapseError, setTimelapseError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -113,6 +135,7 @@ export function ReadinessScreen({
     try {
       const result = await adapter.inspect();
       setInspect(result);
+      setTimelapseInstalled(timelapseInstalledFromInspect(result));
     } catch (err) {
       setError(`Unable to inspect project: ${err instanceof Error ? err.message : String(err)}`);
       setInspect(null);
@@ -124,6 +147,37 @@ export function ReadinessScreen({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const onToggleTimelapse = useCallback(
+    async (checked: boolean) => {
+      setTimelapseError(null);
+      if (!checked) {
+        // Untick: keep the install but disable per-project capture.
+        setTimelapseInstalled(false);
+        try {
+          await adapter.setTimelapse?.({ enabled: false });
+        } catch (err) {
+          setTimelapseError(err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+      if (adapter.installTimelapse === undefined) return;
+      setTimelapseBusy(true);
+      try {
+        const result = await adapter.installTimelapse();
+        if (result.success) {
+          setTimelapseInstalled(true);
+        } else {
+          setTimelapseError(result.message);
+        }
+      } catch (err) {
+        setTimelapseError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setTimelapseBusy(false);
+      }
+    },
+    [adapter],
+  );
 
   const findings = useMemo(
     () => (inspect ? findingsFromInspect(inspect) : []),
@@ -174,6 +228,37 @@ export function ReadinessScreen({
               </div>
             );
           })}
+      </section>
+
+      <section
+        className={styles.panel}
+        aria-label="Optional features"
+        data-testid="readiness-optional-features"
+      >
+        <h2 className={styles.sectionTitle}>Optional features</h2>
+        <label className={styles.optionRow} data-testid="timelapse-option">
+          <input
+            type="checkbox"
+            checked={timelapseInstalled}
+            disabled={timelapseBusy || loading}
+            onChange={(e) => void onToggleTimelapse(e.target.checked)}
+            data-testid="timelapse-checkbox"
+          />
+          <span>
+            <strong>Timelapse capture</strong> — record a timelapse video of the dashboard each
+            session. Installs the timelapse-capture CLI, ffmpeg, and a headless browser.
+          </span>
+        </label>
+        {timelapseBusy && (
+          <p className={styles.empty} data-testid="timelapse-installing">
+            Installing timelapse-capture and dependencies… this can take a few minutes.
+          </p>
+        )}
+        {timelapseError !== null && (
+          <div className={`${styles.banner} ${styles.bannerError}`} role="alert" data-testid="timelapse-error">
+            {timelapseError}
+          </div>
+        )}
       </section>
 
       <div className={styles.actions}>

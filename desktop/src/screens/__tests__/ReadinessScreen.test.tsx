@@ -183,3 +183,54 @@ describe("ReadinessScreen", () => {
     await waitFor(() => expect(adapter.inspect).toHaveBeenCalledTimes(2));
   });
 });
+
+describe("ReadinessScreen timelapse option", () => {
+  it("checking the box installs and ticks on success", async () => {
+    const adapter: ReadinessAdapter = {
+      inspect: vi.fn().mockResolvedValue(baseInspect()),
+      installTimelapse: vi
+        .fn()
+        .mockResolvedValue({ success: true, message: "ok", installed: true }),
+      setTimelapse: vi.fn().mockResolvedValue({}),
+    };
+    renderScreen(adapter);
+    const user = userEvent.setup();
+
+    const checkbox = await screen.findByTestId("timelapse-checkbox");
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+
+    await waitFor(() => expect(adapter.installTimelapse).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(checkbox).toBeChecked());
+  });
+
+  it("surfaces an install failure and stays unchecked", async () => {
+    const adapter: ReadinessAdapter = {
+      inspect: vi.fn().mockResolvedValue(baseInspect()),
+      installTimelapse: vi
+        .fn()
+        .mockResolvedValue({ success: false, message: "brew missing", installed: false }),
+    };
+    renderScreen(adapter);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId("timelapse-checkbox"));
+
+    expect(await screen.findByTestId("timelapse-error")).toHaveTextContent(/brew missing/);
+    expect(screen.getByTestId("timelapse-checkbox")).not.toBeChecked();
+  });
+
+  it("reflects a persisted installed flag from agentshore.yaml", async () => {
+    const adapter = makeAdapter(
+      baseInspect({
+        agentshore_yaml: {
+          path: "/x/agentshore.yaml",
+          raw: "timelapse:\n  enabled: true\n  installed: true\n",
+        },
+      }),
+    );
+    renderScreen(adapter);
+
+    await waitFor(() => expect(screen.getByTestId("timelapse-checkbox")).toBeChecked());
+  });
+});

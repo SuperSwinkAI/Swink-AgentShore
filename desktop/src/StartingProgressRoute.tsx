@@ -20,6 +20,8 @@ const FINAL_STEP_ID = "first_snapshot";
 
 interface StartingLocationState {
   seedInputPath?: string | null;
+  /** Per-session timelapse-capture override from the Start screen toggle. */
+  timelapse?: boolean;
   /**
    * Issue #582 handoff from ``startSessionFromPersistedSetup`` (Repeat
    * via #561, Quick Start via #565). When ``sessionStarted`` is true and
@@ -129,6 +131,7 @@ export function StartingProgressRoute(): JSX.Element {
         void startSession({
           progressToken: `desktop-start-${Date.now()}`,
           seedInputPath,
+          ...(state?.timelapse !== undefined ? { timelapse: state.timelapse } : {}),
         })
           .then((result) => {
             if (cancelled) return;

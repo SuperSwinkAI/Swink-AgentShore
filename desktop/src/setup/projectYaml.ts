@@ -27,11 +27,19 @@ export interface BudgetHydration {
   totalUsd: number | null;
 }
 
+export interface TimelapseHydration {
+  /** ``timelapse.enabled`` — the per-project default capture toggle. */
+  enabled: boolean;
+  /** ``timelapse.installed`` — the CLI + deps were provisioned. */
+  installed: boolean;
+}
+
 export interface ProjectYamlHydration {
   targetBranch: string | null;
   enabledAgents: string[];
   identityLogins: string[];
   budget: BudgetHydration | null;
+  timelapse: TimelapseHydration | null;
 }
 
 const EMPTY: ProjectYamlHydration = {
@@ -39,6 +47,7 @@ const EMPTY: ProjectYamlHydration = {
   enabledAgents: [],
   identityLogins: [],
   budget: null,
+  timelapse: null,
 };
 
 interface ParsedLine {
@@ -104,11 +113,12 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     enabledAgents: [],
     identityLogins: [],
     budget: null,
+    timelapse: null,
   };
 
   // Single pass; track which top-level section we are inside and, for the
   // ``agents`` block, which runner we are inside.
-  type TopSection = "project" | "agents" | "identities" | "budget" | null;
+  type TopSection = "project" | "agents" | "identities" | "budget" | "timelapse" | null;
   let topSection: TopSection = null;
   let currentAgent: string | null = null;
   let currentAgentEnabled: boolean | null = null;
@@ -120,6 +130,9 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
   let budgetSeen = false;
   let budgetEnabled = false;
   let budgetTotal: number | null = null;
+  let timelapseSeen = false;
+  let timelapseEnabled = false;
+  let timelapseInstalled = false;
 
   const closeAgent = () => {
     if (currentAgent && currentAgentEnabled === true) {
@@ -145,8 +158,27 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
         topSection = "identities";
       } else if (line.key === "budget") {
         topSection = "budget";
+      } else if (line.key === "timelapse") {
+        topSection = "timelapse";
       } else {
         topSection = null;
+      }
+      continue;
+    }
+
+    if (topSection === "timelapse" && line.indent === 2) {
+      if (line.key === "enabled") {
+        const v = asBool(line.value);
+        if (v !== null) {
+          timelapseEnabled = v;
+          timelapseSeen = true;
+        }
+      } else if (line.key === "installed") {
+        const v = asBool(line.value);
+        if (v !== null) {
+          timelapseInstalled = v;
+          timelapseSeen = true;
+        }
       }
       continue;
     }
@@ -200,6 +232,13 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     result.budget = {
       enabled: budgetEnabled,
       totalUsd: budgetTotal,
+    };
+  }
+
+  if (timelapseSeen) {
+    result.timelapse = {
+      enabled: timelapseEnabled,
+      installed: timelapseInstalled,
     };
   }
 
