@@ -591,14 +591,6 @@ class _OrchestratorBase:
     async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         raise NotImplementedError
 
-    async def _promote_request_play_mutations(self) -> None:
-        raise NotImplementedError
-
-    async def _resource_keys_for_request_play(
-        self, play_type: PlayType, params: PlayParams
-    ) -> list[str]:
-        raise NotImplementedError
-
     async def _on_crash(self, agent_id: str, return_code: int) -> None:
         raise NotImplementedError
 

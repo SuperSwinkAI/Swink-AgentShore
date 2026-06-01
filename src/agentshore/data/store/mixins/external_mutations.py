@@ -95,36 +95,6 @@ class _ExternalMutationsMixin:
         )
         await self._conn.commit()
 
-    async def list_pending_request_play_mutations(
-        self, session_id: str
-    ) -> list[ExternalMutationRecord]:
-        """Return all pending request_play mutations for this session."""
-        cursor = await self._conn.execute(
-            """
-            SELECT session_id, idempotency_key, mutation_type, target,
-                   status, created_at, play_id, request_json, response_json
-              FROM external_mutations
-             WHERE session_id = ? AND mutation_type = 'request_play' AND status = 'pending'
-             ORDER BY created_at ASC
-            """,
-            (session_id,),
-        )
-        rows = await cursor.fetchall()
-        return [
-            ExternalMutationRecord(
-                session_id=row["session_id"],
-                idempotency_key=row["idempotency_key"],
-                mutation_type=row["mutation_type"],
-                target=row["target"],
-                status=row["status"],
-                created_at=row["created_at"],
-                play_id=row["play_id"],
-                request_json=row["request_json"],
-                response_json=row["response_json"],
-            )
-            for row in rows
-        ]
-
     async def list_external_mutations(
         self,
         session_id: str,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
 from typing import TYPE_CHECKING
@@ -37,7 +36,6 @@ class _WorkClaimsMixin:
         claim_group_id: str | None = None,
         agent_id: str | None = None,
         play_id: int | None = None,
-        request_mutation_key: str | None = None,
         review_queue_id: int | None = None,
     ) -> str | None:
         """Atomically acquire active claims for every resource key.
@@ -63,60 +61,8 @@ class _WorkClaimsMixin:
                 now=now,
                 agent_id=agent_id,
                 play_id=play_id,
-                request_mutation_key=request_mutation_key,
                 review_queue_id=review_queue_id,
             )
-            await self._conn.commit()
-            return group_id
-        except sqlite3.IntegrityError:
-            await self._conn.rollback()
-            return None
-        except (sqlite3.DatabaseError, OSError):
-            await self._conn.rollback()
-            raise
-
-    async def claim_request_play_mutation(
-        self,
-        session_id: str,
-        idempotency_key: str,
-        play_type: str,
-        resource_keys: list[str] | tuple[str, ...],
-    ) -> str | None:
-        """Claim request_play resources and mark that mutation queued atomically."""
-        keys = _dedupe_resource_keys(resource_keys)
-        if not keys:
-            return None
-        group_id = uuid.uuid4().hex
-        now = now_iso()
-        try:
-            await self._conn.execute("BEGIN IMMEDIATE")
-            await self._insert_work_claim_rows(
-                group_id,
-                session_id,
-                play_type,
-                keys,
-                status="queued",
-                now=now,
-                request_mutation_key=idempotency_key,
-            )
-            async with self._conn.execute(
-                """
-                UPDATE external_mutations
-                   SET status = 'queued', response_json = ?
-                 WHERE session_id = ?
-                   AND idempotency_key = ?
-                   AND mutation_type = 'request_play'
-                   AND status = 'pending'
-                """,
-                (
-                    json.dumps({"claim_group_id": group_id, "resource_keys": keys}),
-                    session_id,
-                    idempotency_key,
-                ),
-            ) as cursor:
-                if cursor.rowcount != 1:
-                    await self._conn.rollback()
-                    return None
             await self._conn.commit()
             return group_id
         except sqlite3.IntegrityError:
@@ -184,16 +130,18 @@ class _WorkClaimsMixin:
         now: str,
         agent_id: str | None = None,
         play_id: int | None = None,
-        request_mutation_key: str | None = None,
         review_queue_id: int | None = None,
     ) -> None:
+        # ``request_mutation_key`` column is left to its NULL default (the
+        # request_play mechanism that populated it was removed); the column
+        # itself is retained as an inert nullable field.
         await self._conn.executemany(
             """
             INSERT INTO work_claims
                 (claim_group_id, session_id, play_type, resource_key, status,
-                 agent_id, play_id, request_mutation_key, review_queue_id,
+                 agent_id, play_id, review_queue_id,
                  created_at, claimed_at, started_at, finished_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
             """,
             [
                 (
@@ -204,7 +152,6 @@ class _WorkClaimsMixin:
                     status,
                     agent_id,
                     play_id,
-                    request_mutation_key,
                     review_queue_id,
                     now,
                     now if status in _ACTIVE_WORK_CLAIM_STATUSES else None,
