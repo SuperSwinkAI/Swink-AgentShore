@@ -21,13 +21,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from agentshore.agents.model_tiers import default_model_tiers_for
-from agentshore.cli_identity import detect_gh_accounts
 from agentshore.config import (
     AgentTypeAvailability,
     AvailabilityRecord,
     GhAccountAvailability,
 )
 from agentshore.environment import detect_agent_binaries, resolve_executable
+from agentshore.identity_wizard import detect_gh_accounts
 from agentshore.paths import GLOBAL_AVAILABILITY_PATH as DEFAULT_AVAILABILITY_PATH
 from agentshore.state import AgentType
 

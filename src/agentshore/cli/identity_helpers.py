@@ -17,7 +17,7 @@ from agentshore.errors import OrchestratorError
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from agentshore.cli_identity import IdentityBinding
+    from agentshore.identity_wizard import IdentityBinding
 
 
 def _agent_keys_from_yaml(
@@ -131,8 +131,8 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
     import yaml
 
     from agentshore.agents.identity import configured_github_login_from_fields
-    from agentshore.cli_identity import IdentityBinding
     from agentshore.identity_names import canonical_identity_name, canonical_keychain_service
+    from agentshore.identity_wizard import IdentityBinding
 
     try:
         raw = yaml.safe_load(config_path.read_text()) or {}

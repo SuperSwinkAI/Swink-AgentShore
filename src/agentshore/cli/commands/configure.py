@@ -40,8 +40,8 @@ def configure(project: str) -> None:
         raise SystemExit(1)
 
     from agentshore.availability import refresh as refresh_availability
-    from agentshore.cli_identity import run_identity_wizard
     from agentshore.config import load_config
+    from agentshore.identity_wizard import run_identity_wizard
 
     refresh_availability()
 
