@@ -238,7 +238,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         bookkeeping plays can opt into the same treatment.
 
         Plays dispatched from the override queue (bootstrap recipe,
-        user_request, retry) are excluded via ``override_play_ids`` because
+        retry) are excluded via ``override_play_ids`` because
         they were not selected by the policy — counting them would fire
         loop_detected on legitimate fleet spin-up bursts (e.g. bootstrap
         queuing 4 instantiate_agent overrides in sequence).
