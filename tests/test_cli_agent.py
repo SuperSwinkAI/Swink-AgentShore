@@ -1044,6 +1044,59 @@ def test_classify_error_codex_chatgpt_unsupported_model() -> None:
     )
 
 
+def test_classify_error_stdout_work_product_not_misclassified() -> None:
+    """#19: generic tokens in a coding agent's stdout (its work product) must
+    NOT be classified as rate_limit/auth/timeout/invalid_model. These are the
+    failure modes that corrupted the RL signal and tore down working agents."""
+    # A failed file edit whose surrounding diff/output happens to mention these.
+    assert (
+        _classify_error(
+            1,
+            "",
+            "Error executing tool replace: could not find the string to replace.\n"
+            "context near: if resp.status == 429: raise Overloaded('capacity')  # throttle\n",
+        )
+        == "unknown"
+    )
+    # Agent editing HTTP/error-handling code; 403/forbidden/401 are work product.
+    assert (
+        _classify_error(1, "", "added handler for 403 Forbidden and 401 Unauthorized") == "unknown"
+    )
+    # "timeout" is ubiquitous in code/test names.
+    assert (
+        _classify_error(1, "", "def test_request_timeout(): ...  # deadline exceeded path")
+        == "unknown"
+    )
+    # Generic invalid-model phrasing inside written code, not a CLI verdict.
+    assert _classify_error(1, "", 'raise ModelNotFoundError("model not found")') == "unknown"
+
+
+def test_classify_error_stderr_still_matches_generic_tokens() -> None:
+    """The full pattern set still applies to stderr (a CLI's own diagnostics)."""
+    assert _classify_error(1, "Error: 429 overloaded, retry after 5s", "") == "rate_limit"
+    assert _classify_error(1, "HTTP 403 Forbidden", "") == "auth"
+    assert _classify_error(1, "request timeout", "") == "timeout"
+    assert _classify_error(1, "model not found", "") == "invalid_model"
+
+
+def test_classify_error_high_precision_stdout_phrases_still_match() -> None:
+    """Distinctive phrases (real CLI/tool verdicts) are still caught in stdout."""
+    # Claude reports quota exhaustion on stdout with nothing on stderr.
+    assert _classify_error(1, "", "...\nrate limit exceeded\n") == "rate_limit"
+    # gh tool auth failure echoed into the agent's stdout JSONL.
+    assert (
+        _classify_error(1, "", "GraphQL: Could not resolve to a Repository with the name 'o/r'")
+        == "auth"
+    )
+    # Codex prints this model error to stdout.
+    assert (
+        _classify_error(
+            1, "", "The 'o4-mini' model is not supported when using Codex with a ChatGPT account."
+        )
+        == "invalid_model"
+    )
+
+
 def test_classify_error_unknown() -> None:
     assert _classify_error(1, "something went wrong", "generic output") == "unknown"
 
