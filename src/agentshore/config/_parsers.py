@@ -38,6 +38,7 @@ from agentshore.config.models import (
     SkillsConfig,
     StagnationConfig,
     TaskValidationConfig,
+    TimelapseConfig,
     TrustedIdsConfig,
     UIConfig,
     WorktreeConfig,
@@ -287,6 +288,11 @@ class _RawBrowser(TypedDict, total=False):
     timeout_seconds: int
 
 
+class _RawTimelapse(TypedDict, total=False):
+    enabled: bool
+    installed: bool
+
+
 class _RawLearnings(TypedDict, total=False):
     enabled: bool
     file: str
@@ -330,6 +336,7 @@ class _RawConfig(TypedDict, total=False):
     ui: _RawUI
     logging: _RawLogging
     browser: _RawBrowser
+    timelapse: _RawTimelapse
     learnings: _RawLearnings
     skills: _RawSkills
     worktrees: _RawWorktrees
@@ -938,6 +945,13 @@ def _parse_browser(raw: _RawBrowser) -> BrowserConfig:
     )
 
 
+def _parse_timelapse(raw: _RawTimelapse) -> TimelapseConfig:
+    return TimelapseConfig(
+        enabled=bool(raw.get("enabled", False)),
+        installed=bool(raw.get("installed", False)),
+    )
+
+
 def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
     return LearningsConfig(
         enabled=raw.get("enabled", True),
@@ -1080,6 +1094,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         ui=_parse_ui(data.get("ui", {}) or {}),
         logging=_parse_logging(data.get("logging", {}) or {}),
         browser=_parse_browser(data.get("browser", {}) or {}),
+        timelapse=_parse_timelapse(data.get("timelapse", {}) or {}),
         learnings=_parse_learnings(data.get("learnings", {}) or {}),
         skills=_parse_skills(data.get("skills", {}) or {}),
         worktrees=_parse_worktrees(data.get("worktrees", {}) or {}),

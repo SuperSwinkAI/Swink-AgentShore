@@ -273,6 +273,7 @@ async def run_session_start(
     start_orchestrator: bool = False,
     first_snapshot_timeout_seconds: float = DEFAULT_FIRST_SNAPSHOT_TIMEOUT_SECONDS,
     seed_path: str | None = None,
+    timelapse_enabled: bool | None = None,
 ) -> SessionStartOutcome:
     """Execute the six-phase ``session.start`` bringup (async).
 
@@ -365,6 +366,19 @@ async def run_session_start(
             raise SessionStartError(STEP_START_BRIDGE, -32603, msg) from exc
         state.bridge = bridge
     _emit(notify, progress_token, STEP_START_BRIDGE, "ok")
+
+    # Optional: start a dashboard timelapse capture for this session. The
+    # per-session ``timelapse_enabled`` override (from the desktop Start
+    # toggle) wins over ``cfg.timelapse.enabled``. Best-effort — any failure
+    # is logged and swallowed so it can never block session start.
+    if start_bridge and project_path is not None and state.bridge is not None:
+        effective = (
+            timelapse_enabled
+            if timelapse_enabled is not None
+            else (cfg.timelapse.enabled if cfg is not None else False)
+        )
+        if effective:
+            await _maybe_start_timelapse(state, project_path)
 
     # Phase 6: first_snapshot — when the orchestrator is enabled, this
     # phase boots it and waits for the first state publish to reach the
@@ -624,6 +638,10 @@ async def _start_orchestrator(
         if payload is not None and state.session_context is not None:
             payload["report_path"] = state.session_context.report_path
             payload["log_path"] = state.session_context.log_path
+        # Stop any timelapse capture (best-effort) and attach the MP4 path so
+        # the desktop opens it when the naturally-ended session completes.
+        if payload is not None:
+            payload["timelapse_output_path"] = await stop_timelapse_capture(state)
         if emit_session_completed is not None and payload is not None:
             emit_session_completed(payload)
 
@@ -660,6 +678,62 @@ async def _start_orchestrator(
 
     state.orchestrator_task = asyncio.create_task(_supervise(), name=f"orchestrator-{session_id}")
     state.orchestrator_task.add_done_callback(_on_orchestrator_done)
+
+
+def _timelapse_runs_cwd(project_path: Path) -> Path:
+    """Working dir for all timelapse calls (so the run-id resolves consistently)."""
+    return project_path / ".agentshore"
+
+
+def _dashboard_url(ipc_endpoint: dict[str, object] | None) -> str | None:
+    """Build the dashboard HTTP root the bridge serves, from the IPC endpoint."""
+    if not isinstance(ipc_endpoint, dict):
+        return None
+    host = ipc_endpoint.get("host")
+    port = ipc_endpoint.get("port")
+    if not isinstance(host, str) or not isinstance(port, int):
+        return None
+    return f"http://{host}:{port}/"
+
+
+async def _maybe_start_timelapse(state: ServerState, project_path: Path) -> None:
+    """Start a best-effort dashboard timelapse; stash the run-id on *state*."""
+    url = _dashboard_url(state.ipc_endpoint)
+    if url is None:
+        _logger.warning("timelapse_start_skipped", reason="no_dashboard_url")
+        return
+    from agentshore.timelapse import TimelapseError, start_capture
+
+    runs_cwd = _timelapse_runs_cwd(project_path)
+    try:
+        run = await start_capture(url, runs_cwd)
+    except TimelapseError as exc:
+        _logger.warning("timelapse_start_failed", error=str(exc))
+        return
+    state.timelapse_run_id = run.run_id
+    state.timelapse_runs_cwd = runs_cwd
+
+
+async def stop_timelapse_capture(state: ServerState) -> str | None:
+    """Stop any active capture and return the rendered MP4 path (best-effort).
+
+    Clears the run-id from *state*. Never raises — a stuck or failed render
+    must not wedge session shutdown. Returns None when no capture was running
+    or the render did not complete in time.
+    """
+    run_id = state.timelapse_run_id
+    runs_cwd = state.timelapse_runs_cwd
+    state.timelapse_run_id = None
+    if run_id is None or runs_cwd is None:
+        return None
+    from agentshore.timelapse import TimelapseError, await_output, stop_capture
+
+    try:
+        await stop_capture(run_id, runs_cwd)
+    except TimelapseError as exc:
+        _logger.warning("timelapse_stop_failed", run_id=run_id, error=str(exc))
+        return None
+    return await await_output(run_id, runs_cwd)
 
 
 def _make_bridge(project_path: Path, ipc_endpoint: dict[str, object]) -> EmbeddedBridge:

@@ -126,6 +126,12 @@ class ServerState:
     orchestrator_task: asyncio.Task[None] | None = None
     esr_ready_report_path: str | None = None
     esr_ready_log_path: str | None = None
+    # Optional timelapse capture (desktop feature). ``timelapse_run_id`` is the
+    # CLI run-id of an active capture; ``timelapse_runs_cwd`` is the working dir
+    # every timelapse call must share so the run-id resolves. session.stop stops
+    # the capture and attaches the rendered MP4 path to the ESR payload.
+    timelapse_run_id: str | None = None
+    timelapse_runs_cwd: Path | None = None
 
 
 class JsonRpcError(TypedDict):
@@ -189,6 +195,8 @@ _PROJECT_NO_ACTIVE_REMAP = frozenset(
         "project.set_target_branch",
         "project.set_seed_paths",
         "project.set_budget",
+        "project.set_timelapse",
+        "project.install_timelapse",
     }
 )
 
@@ -218,6 +226,11 @@ def _dispatch_project(method: str, params: object, state: ServerState) -> object
         if not isinstance(budget_param, dict):
             raise _ParamError("project.set_budget requires object 'budget'")
         return project_rpc.set_budget(budget_param)
+    if method == "project.set_timelapse":
+        timelapse_param = obj_params.get("timelapse")
+        if not isinstance(timelapse_param, dict):
+            raise _ParamError("project.set_timelapse requires object 'timelapse'")
+        return project_rpc.set_timelapse(timelapse_param)
     if method == "project.deselect":
         return project_rpc.deselect()
     raise KeyError(method)  # pragma: no cover — guarded by HANDLERS routing
@@ -563,6 +576,11 @@ async def _build_session_stop_response(
         state.orchestrator_task = None
         payload["report_path"] = context.report_path
         payload["log_path"] = context.log_path
+    # Stop any timelapse capture (triggers render) before tearing the bridge
+    # down, and attach the rendered MP4 path so the desktop can open it.
+    from agentshore.sidecar.session_lifecycle import stop_timelapse_capture
+
+    payload["timelapse_output_path"] = await stop_timelapse_capture(state)
     state.session_active = False
     state.session_id = None
     state.started_at = None
@@ -700,6 +718,14 @@ def _dispatch_session(
         if isinstance(raw_seed, str) and raw_seed:
             seed_path = raw_seed
 
+    # Per-session timelapse override from the desktop Start toggle. ``None``
+    # leaves the decision to ``cfg.timelapse.enabled``.
+    timelapse_enabled: bool | None = None
+    if isinstance(raw_params, dict):
+        raw_timelapse = raw_params.get("timelapse")
+        if isinstance(raw_timelapse, bool):
+            timelapse_enabled = raw_timelapse
+
     if method == "session.stop" and notify is not None and progress_token is not None:
         if stop_mode == "drain" and state.session_active:
             _emit_session_stop_drain_progress(notify, progress_token)
@@ -739,6 +765,7 @@ def _dispatch_session(
                     notify=notify,
                     start_orchestrator=True,
                     seed_path=seed_path,
+                    timelapse_enabled=timelapse_enabled,
                 )
             except SessionStartError as exc:
                 return _error(req_id, exc.code, str(exc))
@@ -793,6 +820,8 @@ def _dispatch_project_rpc(
 ) -> DispatchResult:
     if method == "project.select":
         return _dispatch_project_select(raw_params, state, req_id)
+    if method == "project.install_timelapse":
+        return _dispatch_install_timelapse(req_id)
     try:
         result = _dispatch_project(method, raw_params, state)
         if method == "project.deselect":
@@ -806,6 +835,23 @@ def _dispatch_project_rpc(
     except Exception as exc:  # pragma: no cover — defensive guard
         return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
     return _result(req_id, result)
+
+
+def _dispatch_install_timelapse(req_id: int | str | None) -> Awaitable[JsonRpcResponse]:
+    """``project.install_timelapse`` — long-running auto-install, returns a coroutine."""
+
+    async def _run() -> JsonRpcResponse:
+        try:
+            result = await project_rpc.install_timelapse()
+        except project_rpc.ProjectError as exc:
+            if exc.code == project_rpc.ERR_PROJECT_NOT_ACTIVE:
+                return _error(req_id, ERR_NO_ACTIVE_PROJECT, str(exc))
+            return _error(req_id, exc.code, str(exc))
+        except Exception as exc:  # pragma: no cover — defensive guard
+            return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+        return _result(req_id, result)
+
+    return _run()
 
 
 def _dispatch_recents_rpc(
@@ -1048,6 +1094,8 @@ HANDLERS: dict[str, Route] = {
     "project.set_target_branch": Route(_dispatch_project_rpc),
     "project.set_seed_paths": Route(_dispatch_project_rpc),
     "project.set_budget": Route(_dispatch_project_rpc),
+    "project.set_timelapse": Route(_dispatch_project_rpc),
+    "project.install_timelapse": Route(_dispatch_project_rpc),
     "project.deselect": Route(_dispatch_project_rpc),
     "archive.list": Route(_dispatch_archive),
     "archive.fetch_report": Route(_dispatch_archive),

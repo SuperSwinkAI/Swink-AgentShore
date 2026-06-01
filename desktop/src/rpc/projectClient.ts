@@ -86,6 +86,41 @@ export async function setBudget(budget: BudgetRpcInput): Promise<BudgetRpcResult
   return callJsonRpc<BudgetRpcResult>("project.set_budget", { budget });
 }
 
+/**
+ * Payload/result for the optional timelapse-capture feature. Mirrors the
+ * ``TimelapseConfig`` dataclass at ``src/agentshore/config/models.py``.
+ */
+export interface TimelapseRpcInput {
+  enabled?: boolean;
+  installed?: boolean;
+}
+
+export interface TimelapseRpcResult {
+  timelapse: { enabled: boolean; installed: boolean };
+  yaml_path: string;
+}
+
+export interface TimelapseInstallResult {
+  success: boolean;
+  message: string;
+  installed: boolean;
+  yaml_path?: string;
+}
+
+/** Persist the ``timelapse`` block (enabled/installed) to agentshore.yaml. */
+export async function setTimelapse(timelapse: TimelapseRpcInput): Promise<TimelapseRpcResult> {
+  return callJsonRpc<TimelapseRpcResult>("project.set_timelapse", { timelapse });
+}
+
+/**
+ * Auto-install the timelapse-capture CLI + dependencies (ffmpeg, Node 24+,
+ * Playwright Chromium). Long-running; on success the sidecar also persists
+ * ``timelapse.installed = true``.
+ */
+export async function installTimelapse(): Promise<TimelapseInstallResult> {
+  return callJsonRpc<TimelapseInstallResult>("project.install_timelapse", {});
+}
+
 export async function inspectProject(): Promise<ProjectInspectResult> {
   return callJsonRpc<ProjectInspectResult>("project.inspect");
 }
