@@ -320,3 +320,36 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
     assert requeued_entry.requeue_attempts == 0
     assert requeued_entry.kind == OverrideKind.MASK_REQUEUE
     orch._store.release_work_claim_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_override_confirm_reuses_selector_live_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The override-confirm path must reuse the SAME live-graph loader as PPO
+    selection, so a queued override is revalidated against fresh beads (not just
+    the snapshot).
+
+    Regression: the dispatch-side ``EligibilityAuthority`` was constructed
+    without a ``live_graph_loader``, silently downgrading override confirm to a
+    snapshot-only read and dropping the selection->dispatch drift detection a
+    PPO-selected play gets. A non-PPO selector (test stubs / non-beads sessions)
+    yields ``None`` (snapshot-only), matching the selector's own fallback.
+    """
+    orch = _make_orch(tmp_path)
+
+    # Default test selector is a MagicMock (not a real PPO selector) -> no loader.
+    assert orch._override_confirm_live_loader() is None
+
+    # A real PPO selector -> reuse its loader verbatim (single source of truth).
+    sentinel_loader = AsyncMock()
+    ppo_selector = MagicMock()
+    ppo_selector._build_live_graph_loader = MagicMock(return_value=sentinel_loader)
+    orch._selector = ppo_selector
+    monkeypatch.setattr(
+        "agentshore.core.mixins.dispatch._ppo_selector_cls",
+        lambda: type(ppo_selector),
+    )
+
+    assert orch._override_confirm_live_loader() is sentinel_loader
+    ppo_selector._build_live_graph_loader.assert_called_once_with()

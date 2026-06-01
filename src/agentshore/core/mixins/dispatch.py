@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
+    from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.state import (
         OrchestratorState,
         PlayOutcome,
@@ -247,6 +248,7 @@ class _DispatchMixin(_OrchestratorBase):
                 self._registry,
                 cfg=self._cfg,
                 config_index=self._selector_config_index(),
+                live_graph_loader=self._override_confirm_live_loader(),
             )
             verdict = await authority.confirm(entry.play_type, entry.params, state)
             if not verdict.valid:
@@ -283,6 +285,22 @@ class _DispatchMixin(_OrchestratorBase):
             self._pending_override_kind = entry.kind
             return entry.play_type, entry.params
         return None
+
+    def _override_confirm_live_loader(self) -> LiveGraphLoader | None:
+        """Live-graph loader for the override-confirm path.
+
+        Reuses the selector's loader so an override is revalidated against the
+        same fresh-beads view as a PPO-selected play. Without it, ``confirm``
+        would fall back to the snapshot and miss the selection→dispatch drift a
+        sibling agent can introduce (e.g. flipping a bead to in_progress).
+        Returns ``None`` (snapshot-only confirm) when the selector is not a real
+        PPO selector (test stubs / non-beads sessions), matching the selector's
+        own fallback.
+        """
+        selector = self._selector
+        if not isinstance(selector, _ppo_selector_cls()):
+            return None
+        return selector._build_live_graph_loader()
 
     @staticmethod
     def _params_have_dispatch_target(params: PlayParams) -> bool:
