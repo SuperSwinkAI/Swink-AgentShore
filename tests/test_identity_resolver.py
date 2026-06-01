@@ -119,9 +119,9 @@ def test_strict_token_env_rejects_wrong_login(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_wrong_login")
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "someoneElse", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "someoneElse", None),
     )
     fc, ac = _cfg(
         identities={
@@ -374,9 +374,9 @@ def test_report_no_identity_marks_ambient() -> None:
 def test_report_env_token_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
     rows = _report(
         identities={
@@ -399,9 +399,9 @@ def test_report_env_token_present(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_bad")
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (False, None, "HTTP 401 Bad credentials"),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (False, None, "HTTP 401 Bad credentials"),
     )
     rows = _report(
         identities={
@@ -480,9 +480,9 @@ def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.Monke
         lambda event, **_fields: warnings.append(str(event)),
     )
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousai", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousai", None),
     )
 
     fc = RuntimeConfig(
@@ -504,18 +504,18 @@ def test_repo_scoped_keychain_service_validates_login_from_last_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        identity_mod,
-        "_read_keychain_token",
-        lambda service, warn_missing=True: (
+        identity_mod.IdentityResolver,
+        "read_keychain_token",
+        lambda _self, service, warn_missing=True: (
             "ghp_keychain_token"
             if service == "agentshore/example-user/example-repo/unseriousai"
             else None
         ),
     )
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
 
     fc = RuntimeConfig(
@@ -540,16 +540,16 @@ def test_strict_keychain_token_rejects_wrong_agentshore_service_login(
     from agentshore.agents.identity import IdentityResolutionError
 
     monkeypatch.setattr(
-        identity_mod,
-        "_read_keychain_token",
-        lambda service, warn_missing=True: (
+        identity_mod.IdentityResolver,
+        "read_keychain_token",
+        lambda _self, service, warn_missing=True: (
             "ghp_keychain_token" if service == "agentshore/unseriousai" else None
         ),
     )
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "someoneElse", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "someoneElse", None),
     )
 
     fc = RuntimeConfig(
@@ -572,14 +572,16 @@ def test_strict_custom_keychain_token_requires_configured_login(
     from agentshore.agents.identity import IdentityResolutionError
 
     monkeypatch.setattr(
-        identity_mod,
-        "_read_keychain_token",
-        lambda service, warn_missing=True: "ghp_custom" if service == "custom/service" else None,
+        identity_mod.IdentityResolver,
+        "read_keychain_token",
+        lambda _self, service, warn_missing=True: (
+            "ghp_custom" if service == "custom/service" else None
+        ),
     )
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
 
     fc = RuntimeConfig(
@@ -645,9 +647,9 @@ def test_report_identity_repo_access_flags_wrong_repo_pat(
 
     monkeypatch.setenv("BOT_GH_TOKEN", "ghp_valid_for_other_repo")
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
 
     def deny_repo_access(_project_path, _identity_env):
@@ -682,9 +684,9 @@ def test_report_identity_repo_access_skips_disabled_agents(
 ) -> None:
     monkeypatch.setenv("BOT_GH_TOKEN", "ghp_valid")
     monkeypatch.setattr(
-        identity_mod,
-        "_validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
     checked = False
 
