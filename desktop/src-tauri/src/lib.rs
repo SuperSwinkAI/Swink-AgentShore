@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 #[cfg(not(test))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::{AppHandle, Manager, WindowEvent};
 #[cfg(not(test))]
-use tauri::Runtime;
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 pub mod activity;
@@ -92,6 +92,7 @@ fn with_ui_state<R>(app: &AppHandle, f: impl FnOnce(&mut UiState) -> R) -> Resul
     Ok(f(&mut guard))
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn capture_window_state(app: &AppHandle) -> Option<WindowState> {
     let window = app.get_webview_window("main")?;
     let position = window.outer_position().ok()?;
@@ -104,6 +105,7 @@ fn capture_window_state(app: &AppHandle) -> Option<WindowState> {
     })
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn update_window_state(app: &AppHandle) {
     let Some(window_state) = capture_window_state(app) else {
         return;
@@ -118,6 +120,7 @@ fn update_window_state(app: &AppHandle) {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn load_ui_state(app: AppHandle) -> Result<UiState, String> {
     let state = read_ui_state(&app);
@@ -127,6 +130,7 @@ fn load_ui_state(app: AppHandle) -> Result<UiState, String> {
     Ok(state)
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn set_ui_theme(app: AppHandle, theme: String) -> Result<UiState, String> {
     let trimmed = theme.trim();
@@ -148,6 +152,7 @@ fn read_text_file_impl(path: PathBuf) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     read_text_file_impl(PathBuf::from(path))
@@ -165,6 +170,7 @@ fn with_supervisor<R>(
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn jsonrpc_call(app: AppHandle, method: String, params: Option<Value>) -> Result<Value, String> {
     let method_for_hook = method.clone();
@@ -193,6 +199,7 @@ fn jsonrpc_call(app: AppHandle, method: String, params: Option<Value>) -> Result
 // DESIGN §1.4 — Recovery Screen actions. These commands trust the caller-
 // supplied path (the recovery screen plumbs it from the SidecarCrashedPayload
 // the supervisor emitted, never from a user-typed input).
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn open_path_in_default_app(path: String) -> Result<(), String> {
     if path.trim().is_empty() {
@@ -212,6 +219,7 @@ fn open_path_in_default_app(path: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn restart_sidecar(app: AppHandle) -> Result<(), String> {
     // Full restart of the entire app — the simplest implementation that
@@ -221,22 +229,26 @@ fn restart_sidecar(app: AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn quit_app(app: AppHandle) -> Result<(), String> {
     app.exit(0);
     Ok(())
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn tracked_agent_pids(app: AppHandle) -> Vec<sidecar::TrackedAgent> {
     with_supervisor(&app, |sup| sup.tracked_agents()).unwrap_or_default()
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn kill_all_agents(app: AppHandle) -> Vec<sidecar::TrackedAgent> {
     with_supervisor(&app, |sup| sup.kill_all_agents()).unwrap_or_default()
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn get_fatal_shell_state(app: AppHandle) -> Result<Option<sidecar::SupervisorStartError>, String> {
     let state = app.state::<FatalShellState>();
@@ -244,6 +256,7 @@ fn get_fatal_shell_state(app: AppHandle) -> Result<Option<sidecar::SupervisorSta
     Ok(guard.clone())
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn set_last_selected_tab(app: AppHandle, tab: String) -> Result<UiState, String> {
     let trimmed = tab.trim();
@@ -258,6 +271,7 @@ fn set_last_selected_tab(app: AppHandle, tab: String) -> Result<UiState, String>
     Ok(next)
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn attach_window_persistence(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let app_handle = app.clone();
@@ -288,6 +302,7 @@ fn default_window_rect(
     (x, y, width, height)
 }
 
+#[cfg_attr(test, allow(dead_code))]
 fn apply_restored_window_state(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -349,9 +364,8 @@ fn apply_restored_window_state(app: &AppHandle) {
                 (pos.x as f64 / scale, pos.y as f64 / scale),
             );
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-                x, y,
-            )));
+            let _ =
+                window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         }
     }
 
@@ -411,7 +425,10 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     let file = SubmenuBuilder::new(app, "File")
         .item(&stop_session)
         .separator()
-        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+        .item(&PredefinedMenuItem::close_window(
+            app,
+            Some("Close Window"),
+        )?)
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
@@ -494,7 +511,10 @@ pub fn run() {
             // leave SidecarHolderState as ``None`` so the WebView can route
             // to /fatal-error. Quit / Open log buttons on that screen are
             // the only allowed actions.
-            match sidecar::SidecarSupervisor::start_classified(&app_handle, bd_sidecar_path.as_deref()) {
+            match sidecar::SidecarSupervisor::start_classified(
+                &app_handle,
+                bd_sidecar_path.as_deref(),
+            ) {
                 Ok(supervisor) => {
                     let holder_state = app_handle.state::<SidecarHolderState>();
                     let mut guard = holder_state
@@ -574,8 +594,7 @@ pub fn run() {
                     }
                     // Now drop the supervisor so its Drop impl SIGKILLs
                     // the Python sidecar itself.
-                    let sidecar_state: tauri::State<'_, SidecarHolderState> =
-                        app_handle.state();
+                    let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
                     let lock_result = sidecar_state.lock();
                     if let Ok(mut guard) = lock_result {
                         *guard = None;
@@ -627,7 +646,10 @@ mod tests {
         // pre-fix Physical path produced (which appeared as a window
         // ~1.8× the logical screen width).
         let (_x, _y, w, _h) = default_window_rect((2560.0, 1440.0), (0.0, 0.0));
-        assert!(w < 2560.0, "window must not be wider than the logical screen");
+        assert!(
+            w < 2560.0,
+            "window must not be wider than the logical screen"
+        );
     }
 
     #[test]

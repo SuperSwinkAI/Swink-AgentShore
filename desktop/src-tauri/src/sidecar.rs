@@ -116,7 +116,10 @@ impl SidecarSupervisor {
     /// Wraps :meth:`start_classified` and flattens the error to a string
     /// for existing callers / cargo-tests that don't need the variant
     /// discrimination.
-    pub fn start(app: &AppHandle, bd_sidecar_path: Option<&std::path::Path>) -> Result<Self, String> {
+    pub fn start(
+        app: &AppHandle,
+        bd_sidecar_path: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
         Self::start_classified(app, bd_sidecar_path).map_err(|e| e.message())
     }
 
@@ -124,7 +127,10 @@ impl SidecarSupervisor {
     /// error variant so the shell can distinguish build_id mismatch (the
     /// named fatal case from gh-337) from generic spawn / handshake
     /// failures.
-    pub fn start_classified(app: &AppHandle, bd_sidecar_path: Option<&std::path::Path>) -> Result<Self, SupervisorStartError> {
+    pub fn start_classified(
+        app: &AppHandle,
+        bd_sidecar_path: Option<&std::path::Path>,
+    ) -> Result<Self, SupervisorStartError> {
         let mut cmd = sidecar_command(bd_sidecar_path);
         let mut child = cmd.spawn().map_err(|e| SupervisorStartError::Other {
             reason: format!("spawn sidecar: {e}"),
@@ -456,17 +462,30 @@ fn apply_user_path_overlay(cmd: &mut Command) {
 /// ``sidecar_command()`` then falls back to ``uv run``.
 fn locate_managed_venv_python() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
-    let home = std::path::PathBuf::from(home);
-    #[cfg(target_os = "macos")]
-    let path = home.join("Library/Application Support/AgentShore/venv/bin/python");
-    #[cfg(target_os = "linux")]
-    let path = home.join(".local/share/agentshore/venv/bin/python");
-    #[cfg(target_os = "windows")]
-    let path = home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe");
+    locate_managed_venv_python_in_home(std::path::Path::new(&home))
+}
+
+fn locate_managed_venv_python_in_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = managed_venv_python_path(home);
     if path.is_file() {
         Some(path)
     } else {
         None
+    }
+}
+
+fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        return home.join("Library/Application Support/AgentShore/venv/bin/python");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return home.join(".local/share/agentshore/venv/bin/python");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
     }
 }
 
@@ -597,16 +616,9 @@ fn kill_agent_pid(pid: u32) {
     // best-effort semantics here.
     #[cfg(unix)]
     {
-        // SAFETY: ``libc::kill`` accepts a raw PID. We discard the
-        // return value because already-dead processes return ESRCH and
-        // we treat that as success.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
+        send_unix_signal(pid, libc::SIGTERM);
         std::thread::sleep(std::time::Duration::from_millis(250));
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-        }
+        send_unix_signal(pid, libc::SIGKILL);
     }
     #[cfg(windows)]
     {
@@ -614,6 +626,18 @@ fn kill_agent_pid(pid: u32) {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output();
+    }
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: u32, signal: libc::c_int) {
+    // SAFETY: ``libc::kill`` is the Unix process-signal boundary. The
+    // PID comes from the Python sidecar's tracked subprocess
+    // notifications, and this recovery path treats ESRCH/already-dead
+    // processes as successful cleanup, so the return value is deliberately
+    // ignored.
+    unsafe {
+        let _ = libc::kill(pid as libc::pid_t, signal);
     }
 }
 
@@ -677,16 +701,25 @@ mod tests {
     }
 
     #[test]
-    fn locate_managed_venv_python_returns_none_in_dev_tree() {
-        // ``cargo test`` runs on a developer machine that has no
-        // pkg-installed managed venv at the production system path.
-        // The function must return None so ``sidecar_command()`` falls
-        // back to ``uv run``. (A packaged build is exercised end-to-end
-        // by ``sidecar_round_trip_handshake_and_recents_list`` below.)
-        assert!(
-            locate_managed_venv_python().is_none(),
-            "dev test environment must not have a managed venv at the production path"
-        );
+    fn locate_managed_venv_python_in_home_returns_none_when_absent() {
+        let root = unique_temp_dir("absent-managed-venv");
+        std::fs::create_dir_all(&root).expect("create temp home");
+        let result = locate_managed_venv_python_in_home(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn locate_managed_venv_python_in_home_returns_python_when_present() {
+        let root = unique_temp_dir("present-managed-venv");
+        let python = managed_venv_python_path(&root);
+        std::fs::create_dir_all(python.parent().expect("python parent")).expect("create venv bin");
+        std::fs::write(&python, b"#!/bin/sh\n").expect("write fake python");
+
+        let result = locate_managed_venv_python_in_home(&root);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(result, Some(python));
     }
 
     #[test]
@@ -707,7 +740,10 @@ mod tests {
     fn sidecar_command_without_bd_path_omits_agentshore_bd_bin_env() {
         let cmd = sidecar_command(None);
         let found = cmd.get_envs().any(|(k, _)| k == AGENTSHORE_BD_BIN_ENV);
-        assert!(!found, "AGENTSHORE_BD_BIN must not be set when bd_path is None");
+        assert!(
+            !found,
+            "AGENTSHORE_BD_BIN must not be set when bd_path is None"
+        );
     }
 
     #[test]
@@ -904,5 +940,16 @@ mod tests {
         handle_agent_subprocess_notification("$/progress", &params, &pids);
         handle_agent_subprocess_notification("sidecar.health", &params, &pids);
         assert!(pids.lock().unwrap().is_empty());
+    }
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "agentshore-desktop-{label}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 }
