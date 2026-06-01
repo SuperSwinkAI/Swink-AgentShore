@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import hashlib
 import time
 from contextlib import suppress
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 
     from agentshore.config import RuntimeConfig
     from agentshore.data.store import DataStore
+    from agentshore.plays.candidates import PlayCandidatePlan
     from agentshore.plays.override import OverrideEntry
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.selector import PlaySelector
@@ -32,6 +34,23 @@ if TYPE_CHECKING:
     )
 
     NaturalExitCallback = Callable[[str], Awaitable[None]]
+
+
+@dataclasses.dataclass(frozen=True)
+class SkipDiagnosis:
+    """Why nothing was dispatched this tick — the shared skip-classification.
+
+    Built once by ``_compute_skip_diagnosis`` and consumed by every site that
+    needs to emit ``play_skipped`` / decide an idle wait: the in-flight
+    selector-None path, the truly-idle ``_continue_if_selector_idle_work_remains``
+    path, and any future autonomous-stop classifier. Bundles the candidate plan
+    (so callers can read ``work_availability`` / ``has_remaining_work`` without
+    rebuilding it), the top mask reasons, and the resolved ``PlaySkipReason``.
+    """
+
+    candidate_plan: PlayCandidatePlan
+    reason_counts: list[dict[str, object]]
+    skip_reason: PlaySkipReason
 
 
 ISSUE_REFRESH_INTERVAL_SECONDS = 120
@@ -305,16 +324,14 @@ class _LoopMixin(_OrchestratorBase):
         _skip_log = _logger.debug if self._idle_streak > 1 else _logger.info
         _skip_log("play_skipped", **payload)
 
-    async def _emit_structured_play_skipped_for_current_tick(
-        self,
-        state: OrchestratorState,
-    ) -> None:
-        """Compute mask reasons + classify + emit ``play_skipped`` once.
+    def _compute_skip_diagnosis(self, state: OrchestratorState) -> SkipDiagnosis:
+        """Build the candidate plan + top mask reasons + ``PlaySkipReason`` once.
 
-        Convenience wrapper for the in-flight selector-None branch so it
-        doesn't have to duplicate ``_continue_if_selector_idle_work_remains``
-        plumbing. Skips the ``fleet_idle_persistent`` check because the loop
-        is not actually idle — work is still in flight.
+        Single source of truth for the "why was nothing dispatched" computation
+        that was previously inlined verbatim at every selector-idle site (the
+        in-flight selector-None path and the truly-idle
+        ``_continue_if_selector_idle_work_remains`` path). Pure: builds state-
+        derived structures only, mutating nothing.
         """
         from agentshore.plays.candidates import build_candidate_plan
         from agentshore.rl.mask import compute_mask_reasons
@@ -341,11 +358,29 @@ class _LoopMixin(_OrchestratorBase):
             reason_counts,
             candidate_plan_has_work=candidate_plan.has_remaining_work,
         )
+        return SkipDiagnosis(
+            candidate_plan=candidate_plan,
+            reason_counts=reason_counts,
+            skip_reason=skip_reason,
+        )
+
+    async def _emit_structured_play_skipped_for_current_tick(
+        self,
+        state: OrchestratorState,
+    ) -> None:
+        """Compute mask reasons + classify + emit ``play_skipped`` once.
+
+        Convenience wrapper for the in-flight selector-None branch so it
+        doesn't have to duplicate ``_continue_if_selector_idle_work_remains``
+        plumbing. Skips the ``fleet_idle_persistent`` check because the loop
+        is not actually idle — work is still in flight.
+        """
+        diagnosis = self._compute_skip_diagnosis(state)
         await self._emit_play_skipped(
             state,
-            reason=skip_reason,
-            mask_reasons=reason_counts,
-            candidate_plan_has_work=candidate_plan.has_remaining_work,
+            reason=diagnosis.skip_reason,
+            mask_reasons=diagnosis.reason_counts,
+            candidate_plan_has_work=diagnosis.candidate_plan.has_remaining_work,
         )
 
     async def _check_fleet_idle_persistent(
@@ -460,9 +495,6 @@ class _LoopMixin(_OrchestratorBase):
         dashboards keep working — operators upgrade to the new event at
         their own pace.
         """
-        from agentshore.plays.candidates import build_candidate_plan
-        from agentshore.rl.mask import compute_mask_reasons
-
         # desktop-kqo5 wedge auto-stop: a latched trunk-dispatch pause blocks all
         # plays except END_AGENT/RECONCILE_STATE. RECONCILE_STATE should heal the
         # trunk and clear the latch within a few ticks; if it cannot (nothing in
@@ -481,37 +513,17 @@ class _LoopMixin(_OrchestratorBase):
                         "heal the main checkout); auto-stopping via drain"
                     ),
                 )
-                self._draining = True
-                self._drain_reason = "main_repo_wedged"
-                self._pause_event.set()
+                await self._initiate_autonomous_stop("main_repo_wedged", arm_gate_only=True)
                 return False
         else:
             self._wedged_idle_ticks = 0
 
-        candidate_plan = build_candidate_plan(state)
+        diagnosis = self._compute_skip_diagnosis(state)
+        candidate_plan = diagnosis.candidate_plan
         availability = candidate_plan.work_availability
         candidate_plan_has_work = candidate_plan.has_remaining_work
-        reason_counts: list[dict[str, object]] = []
-        if self._registry is not None:
-            counts = collections.Counter(
-                compute_mask_reasons(
-                    state,
-                    cast("PlayRegistry", self._registry),
-                    cfg=self._cfg,
-                    config_index=self._selector_config_index(),
-                    apply_reverse_failsafe=self._cfg.rl.reverse_failsafe_enabled,
-                    candidate_plan=candidate_plan,
-                ).values()
-            )
-            reason_counts = [
-                {"reason": mask_reason, "count": count}
-                for mask_reason, count in counts.most_common(5)
-            ]
-        skip_reason = self._classify_play_skipped_reason(
-            state,
-            reason_counts,
-            candidate_plan_has_work=candidate_plan_has_work,
-        )
+        reason_counts = diagnosis.reason_counts
+        skip_reason = diagnosis.skip_reason
         await self._emit_play_skipped(
             state,
             reason=skip_reason,
@@ -608,6 +620,49 @@ class _LoopMixin(_OrchestratorBase):
         has_work = mergeable > 0 or wa.actionable_pr_work_count > 0 or workable > 0
         return has_work, mergeable, workable
 
+    async def _initiate_autonomous_stop(
+        self,
+        reason: str,
+        *,
+        arm_gate_only: bool = False,
+        fire_natural_exit: bool = False,
+        clear_pause_deadline: bool = False,
+    ) -> None:
+        """Single entry point for every autonomous (non-operator) session stop.
+
+        The five autonomous-stop paths (forward-progress monitor, wedged-trunk
+        pause, unanswered-feedback pause, loop-liveness watchdog, tick-failure
+        breaker) share the same drain-flag set + ``begin_drain`` shape; only the
+        trigger condition and a couple of side-flags differ. They route through
+        here so the stop taxonomy lives in one place.
+
+        Modes (behaviour-preserving — each prior call site maps onto exactly
+        one combination):
+
+        * ``arm_gate_only=True`` — set the drain flags and wake the pause gate so
+          the loop reaches ``begin_drain`` on its next iteration. Used by the
+          in-loop wedged-trunk and unanswered-pause paths, which run inside the
+          pause gate where the loop has not yet hit drain-init.
+        * default — set the drain reason and call ``begin_drain`` immediately.
+          Used by the forward-progress monitor, the tick-failure breaker, and the
+          watchdog (which then also calls ``stop`` directly).
+
+        ``fire_natural_exit`` stamps ``_natural_exit_reason`` so the natural-exit
+        callback fires on loop exit. ``clear_pause_deadline`` resets the
+        unanswered-pause deadline.
+        """
+        self._drain_reason = reason
+        if fire_natural_exit:
+            self._natural_exit_reason = reason
+        if clear_pause_deadline:
+            self._pause_deadline = None
+        if arm_gate_only:
+            self._draining = True
+            # Unblock the gate so the loop proceeds to begin_drain next iteration.
+            self._pause_event.set()
+            return
+        await self.begin_drain(reason)
+
     async def _auto_stop_unanswered_pause(self) -> None:
         """Auto-stop a feedback pause that went unanswered past its deadline (#9).
 
@@ -631,11 +686,11 @@ class _LoopMixin(_OrchestratorBase):
             timeout_seconds=self._cfg.feedback.unanswered_timeout_seconds,
             note="no human response within feedback.unanswered_timeout_seconds; auto-stopping",
         )
-        self._pause_deadline = None
-        self._draining = True
-        self._drain_reason = "loop_detection_prompt_timeout"
-        # Unblock the gate so the loop proceeds to begin_drain on the next steps.
-        self._pause_event.set()
+        await self._initiate_autonomous_stop(
+            "loop_detection_prompt_timeout",
+            arm_gate_only=True,
+            clear_pause_deadline=True,
+        )
 
     def _loop_liveness_timeout_seconds(self) -> float | None:
         """Resolve the configured loop-liveness watchdog timeout (None disables)."""
@@ -710,10 +765,10 @@ class _LoopMixin(_OrchestratorBase):
             # Drive teardown off the (dead) loop. begin_drain is idempotent and
             # records the drain reason / fires the ESR; stop() then performs the
             # full graceful shutdown (end agents, checkpoint, beads clear, store
-            # close) and is re-entrancy safe.
-            self._drain_reason = "loop_liveness_timeout"
+            # close) and is re-entrancy safe. Guarded because the watchdog runs
+            # off the (dead) loop — a begin_drain failure must not kill it.
             await self._safe_call(
-                self.begin_drain("loop_liveness_timeout"),
+                self._initiate_autonomous_stop("loop_liveness_timeout"),
                 "loop_liveness_begin_drain",
             )
             await self.stop()
@@ -796,10 +851,10 @@ class _LoopMixin(_OrchestratorBase):
                     "failure or hanging silently"
                 ),
             )
-            self._natural_exit_reason = "tick_failure_circuit_breaker"
-            self._drain_reason = "tick_failure_circuit_breaker"
             await self._safe_call(
-                self.begin_drain("tick_failure_circuit_breaker"),
+                self._initiate_autonomous_stop(
+                    "tick_failure_circuit_breaker", fire_natural_exit=True
+                ),
                 "circuit_breaker_begin_drain",
             )
             return True
@@ -1004,15 +1059,7 @@ class _LoopMixin(_OrchestratorBase):
             if isinstance(self._selector, _ppo_selector_cls()):
                 self._selector.consume_pending()
             return False
-        should_revalidate = isinstance(self._selector, _ppo_selector_cls()) or (
-            override_play is not None and self._params_have_dispatch_target(params)
-        )
-        dispatched = await self._dispatch_play(
-            play_type,
-            params,
-            state,
-            revalidate=should_revalidate,
-        )
+        dispatched = await self._dispatch_play(play_type, params, state)
         if not dispatched:
             return False
         # NO await — continue loop

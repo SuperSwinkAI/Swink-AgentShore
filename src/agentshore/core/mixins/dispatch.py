@@ -303,50 +303,26 @@ class _DispatchMixin(_OrchestratorBase):
         return selector._build_live_graph_loader()
 
     @staticmethod
-    def _params_have_dispatch_target(params: PlayParams) -> bool:
-        return bool(
-            params.issue_number is not None
-            or params.pr_number is not None
-            or params.extras.get("claim_group_id")
-            or params.extras.get("resource_keys")
-        )
-
-    @staticmethod
-    def _mask_reason_is_transient(reason: MaskReason | str) -> bool:
+    def _mask_reason_is_transient(reason: MaskReason) -> bool:
         """True if the override should re-queue with a bounded retry counter.
 
-        Accepts typed MaskReason (preferred — read .classification) or a raw
-        string for the remaining legacy emission sites yet to be migrated.
+        ``MaskReason.classification`` is the single source of truth — every
+        override-queue caller now passes a typed reason (the eligibility
+        authority and the sequencing gate both emit ``MaskReason``).
         """
-        if isinstance(reason, MaskReason):
-            return reason.classification == MaskClassification.TRANSIENT
-        lowered = reason.lower()
-        return any(
-            marker in lowered
-            for marker in (
-                "no idle",
-                "idle agent",
-                "rate_limit",
-                "quota",
-                "temporarily",
-            )
-        )
+        return reason.classification == MaskClassification.TRANSIENT
 
     @staticmethod
-    def _mask_reason_is_indefinite_wait(reason: MaskReason | str) -> bool:
+    def _mask_reason_is_indefinite_wait(reason: MaskReason) -> bool:
         """True if the override should re-queue without bumping the retry counter.
 
         Deterministic-clear waits (cooldown, sequencing, evidence windows) live
-        here — the override survives until the awaited condition lifts.
-        Accepts typed MaskReason (preferred — read .classification) or a raw
-        string for the remaining legacy emission sites yet to be migrated.
+        here — the override survives until the awaited condition lifts. Driven
+        entirely by ``MaskReason.classification``.
         """
-        if isinstance(reason, MaskReason):
-            return reason.classification == MaskClassification.INDEFINITE_WAIT
-        lowered = reason.lower()
-        return "waiting for" in lowered or "cooldown" in lowered or "plays since last" in lowered
+        return reason.classification == MaskClassification.INDEFINITE_WAIT
 
-    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason | str) -> None:
+    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason) -> None:
         # 1. BOOTSTRAP entries never drop. They drive the fleet-sequencing
         #    invariant (large agent → seed → medium of different type) and
         #    must survive arbitrary cooldown / wait masks until the awaited
@@ -386,9 +362,7 @@ class _DispatchMixin(_OrchestratorBase):
         #    budget) drops with a surfaced error.
         await self._release_masked_override(entry, reason=reason)
 
-    async def _release_masked_override(
-        self, entry: OverrideEntry, *, reason: MaskReason | str
-    ) -> None:
+    async def _release_masked_override(self, entry: OverrideEntry, *, reason: MaskReason) -> None:
         play_type = entry.play_type
         params = entry.params
         claim_group_id = params.extras.get("claim_group_id")
@@ -400,9 +374,7 @@ class _DispatchMixin(_OrchestratorBase):
             play_type=play_type.value,
             kind=entry.kind.value,
             reason=str(reason),
-            classification=(
-                reason.classification.value if isinstance(reason, MaskReason) else "unknown"
-            ),
+            classification=reason.classification.value,
             session_id=self._session_id,
         )
 
@@ -496,8 +468,6 @@ class _DispatchMixin(_OrchestratorBase):
         play_type: PlayType,
         params: PlayParams,
         state: OrchestratorState,
-        *,
-        revalidate: bool | None = None,
     ) -> bool:
         """Build the dispatch context and create the play task (fire-and-forget).
 
@@ -517,11 +487,9 @@ class _DispatchMixin(_OrchestratorBase):
         context + task creation). Play validity is settled upstream by the
         ``EligibilityAuthority`` — the action mask presents only valid plays
         to PPO, and ``_consume_override`` confirms overrides against the same
-        authority. The dispatch-time revalidation pass is gone. ``revalidate``
-        is accepted-and-ignored for caller back-compat and will be removed
-        once callers stop passing it.
+        authority. The dispatch-time revalidation pass is gone, so there is no
+        ``revalidate`` parameter to thread through.
         """
-        del revalidate  # eligibility now settled upstream; retained for back-compat
         # desktop-kqo5: hard pause when auto-restore failed. Refuse to spawn
         # further work until the trunk is healed. END_AGENT is still allowed so a
         # draining shutdown can complete cleanly. RECONCILE_STATE is ALSO allowed:

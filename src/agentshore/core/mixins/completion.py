@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import re
 from typing import TYPE_CHECKING
@@ -47,6 +48,22 @@ if TYPE_CHECKING:
 
 
 DEFAULT_LEARNING_CONFIDENCE = 0.5
+
+
+class _CompletionVerdict(enum.Enum):
+    """Outcome of an early completion-pipeline step.
+
+    Replaces the prior ``return True means abort`` bool convention scattered
+    across the skip and retry helpers: each early step now returns a typed
+    verdict, and one ``match`` in ``_process_completion`` decides whether to
+    abort (``SKIPPED`` / ``RETRIED``) or run the remaining pipeline
+    (``CONTINUE``).
+    """
+
+    CONTINUE = "continue"
+    SKIPPED = "skipped"
+    RETRIED = "retried"
+
 
 # Consecutive take_break failures (attempt_recovery returned False) on the same
 # agent before it is considered recovery-exhausted. At/above this count the
@@ -106,10 +123,6 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.PRUNE,
     }
 )
-
-# Lookback applied to the sync cursor so an issue updated mid-fetch is still
-# caught on the next call. Cheaper than racing against gh's wall clock.
-_INCREMENTAL_SYNC_LOOKBACK_SECONDS = 60
 
 # Substring signatures that mean "the agent ran issue_pickup, looked at the
 # real GH state, and discovered the issue was already CLOSED while our cache
@@ -311,12 +324,18 @@ class _CompletionMixin(_OrchestratorBase):
         state_before = ctx.state_at_dispatch
 
         await self._check_main_repo_after_completion(dispatch_id, ctx, outcome)
-        if await self._handle_skipped_completion(outcome):
-            return
+        match await self._handle_skipped_completion(outcome):
+            case _CompletionVerdict.SKIPPED:
+                return
+            case _:
+                pass
 
         self._record_completion_bookkeeping(ctx, outcome, completed_play_type)
-        if await self._schedule_retry_if_requested(ctx, outcome, completed_play_type):
-            return
+        match await self._schedule_retry_if_requested(ctx, outcome, completed_play_type):
+            case _CompletionVerdict.RETRIED:
+                return
+            case _:
+                pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
@@ -403,7 +422,7 @@ class _CompletionMixin(_OrchestratorBase):
                 default_branch=self._default_branch,
             )
 
-    async def _handle_skipped_completion(self, outcome: PlayOutcome) -> bool:
+    async def _handle_skipped_completion(self, outcome: PlayOutcome) -> _CompletionVerdict:
         completed_play_type = outcome.play_type
         if getattr(outcome, "skipped", False) is True:
             # desktop-85ex: unify the ``play_skipped`` schema between the
@@ -456,8 +475,8 @@ class _CompletionMixin(_OrchestratorBase):
             # dispatched) — feed the forward-progress monitor here, on the skip
             # path that returns early before the main checks below.
             await self._check_no_forward_progress(post_state, outcome)
-            return True
-        return False
+            return _CompletionVerdict.SKIPPED
+        return _CompletionVerdict.CONTINUE
 
     def _record_completion_bookkeeping(
         self,
@@ -547,7 +566,7 @@ class _CompletionMixin(_OrchestratorBase):
         ctx: _DispatchContext,
         outcome: PlayOutcome,
         completed_play_type: PlayType,
-    ) -> bool:
+    ) -> _CompletionVerdict:
         if outcome.retry_requested:
             claim_group_id_raw = ctx.params.extras.get("claim_group_id")
             if isinstance(claim_group_id_raw, str) and claim_group_id_raw:
@@ -584,7 +603,7 @@ class _CompletionMixin(_OrchestratorBase):
                             claim_group_id=claim_group_id_raw,
                             attempt=new_attempt,
                         )
-                        return True
+                        return _CompletionVerdict.RETRIED
                 _logger.warning(
                     "play_retry_exhausted",
                     session_id=self._session_id,
@@ -597,7 +616,7 @@ class _CompletionMixin(_OrchestratorBase):
                     claim_group_id_raw,
                     status="released",
                 )
-        return False
+        return _CompletionVerdict.CONTINUE
 
     async def _record_unblock_attempt_if_needed(
         self,
@@ -1127,9 +1146,7 @@ class _CompletionMixin(_OrchestratorBase):
                 f"for {monitor.limit} consecutive ticks — draining the stalled session"
             ),
         )
-        self._natural_exit_reason = "no_forward_progress"
-        self._drain_reason = "no_forward_progress"
-        await self.begin_drain("no_forward_progress")
+        await self._initiate_autonomous_stop("no_forward_progress", fire_natural_exit=True)
 
     async def _refresh_issues(
         self,
@@ -1159,15 +1176,17 @@ class _CompletionMixin(_OrchestratorBase):
         up the new state.
         """
         import time as _time
-        from datetime import UTC, datetime, timedelta
 
-        from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
+        from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
         try:
             from agentshore.github.adapter import GitHubAdapter
 
             gh = GitHubAdapter(store=self._store, session_id=self._session_id, cfg=self._cfg)
             await gh.probe()
+            syncer = GitHubSyncer(
+                gh=gh, store=self._store, cfg=self._cfg, session_id=self._session_id
+            )
             if gh.available:
                 last_sync = await self._store.get_last_issue_sync_at(self._session_id)
                 full_sync = (
@@ -1180,13 +1199,11 @@ class _CompletionMixin(_OrchestratorBase):
                 # Capture the cutoff *before* the fetch so anything that
                 # updates mid-fetch is picked up next time. Lookback absorbs
                 # clock skew between gh and the local box.
-                new_cutoff = (
-                    datetime.now(UTC) - timedelta(seconds=_INCREMENTAL_SYNC_LOOKBACK_SECONDS)
-                ).isoformat()
+                new_cutoff = sync_cursor_now()
 
                 # ``state="all"`` so close/reopen transitions surface — the
                 # cache_github_issues upsert flips local state to match.
-                issues = await gh.list_issues(state="all", since=since)
+                issues = await syncer.fetch_issues(state="all", since=since)
                 if issues is None:
                     _logger.warning(
                         "github_issues_refresh_failed",
@@ -1194,9 +1211,7 @@ class _CompletionMixin(_OrchestratorBase):
                         since=since,
                     )
                 else:
-                    if issues:
-                        await self._store.cache_github_issues(self._session_id, issues)
-                    await self._store.set_last_issue_sync_at(self._session_id, new_cutoff)
+                    await syncer.cache_issues(issues, cursor=new_cutoff)
                     _logger.info(
                         "github_issues_refreshed",
                         changed_count=len(issues),
@@ -1243,37 +1258,22 @@ class _CompletionMixin(_OrchestratorBase):
                                     issue_number=issue.issue_number,
                                     bead_count=len(related),
                                 )
-                pull_requests = await gh.list_pull_requests(state="open", limit=_PR_LIMIT)
-                trusted_pr_authors = trusted_pr_author_logins(self._cfg)
-                pull_requests = filter_trusted_pull_requests(
-                    pull_requests,
-                    self._cfg,
+                trusted_pr_authors = syncer.trusted_authors()
+                pull_requests = await syncer.fetch_trusted_open_pull_requests(
+                    limit=_PR_LIMIT,
                     trusted_authors=trusted_pr_authors,
                     context="refresh_open",
                 )
-                fetched_numbers = {pr.pr_number for pr in pull_requests}
-                locally_open = await self._store.list_open_pull_requests(self._session_id)
-                missing = [pr for pr in locally_open if pr.pr_number not in fetched_numbers]
-                refetched: list[PullRequestRecord] = []
-                if missing:
-                    all_prs = await gh.list_pull_requests(state="all", limit=_PR_LIMIT)
-                    all_prs = filter_trusted_pull_requests(
-                        all_prs,
-                        self._cfg,
-                        trusted_authors=trusted_pr_authors,
-                        context="refresh_resync",
-                    )
-                    by_number = {pr.pr_number: pr for pr in all_prs}
-                    refetched = [
-                        by_number[stale.pr_number]
-                        for stale in missing
-                        if stale.pr_number in by_number
-                    ]
-                    if refetched:
-                        pull_requests.extend(refetched)
-                        _logger.info("github_pull_requests_state_resync", count=len(refetched))
+                refetched = await syncer.resync_missing_pull_requests(
+                    fetched_open=pull_requests,
+                    limit=_PR_LIMIT,
+                    trusted_authors=trusted_pr_authors,
+                )
+                if refetched:
+                    pull_requests.extend(refetched)
+                    _logger.info("github_pull_requests_state_resync", count=len(refetched))
                 if pull_requests:
-                    await self._store.cache_pull_requests(self._session_id, pull_requests)
+                    await syncer.cache_pull_requests(pull_requests)
                     _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
                 # desktop-12g9: mark worktree rows ``stale`` for PRs that
                 # transitioned to MERGED or CLOSED, then run the TTL reaper.

@@ -10,6 +10,7 @@ import pytest
 
 from agentshore.config import RuntimeConfig
 from agentshore.plays.base import PlayParams
+from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
 
@@ -256,40 +257,57 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 # _mask_reason_is_indefinite_wait: classifies deterministic-clear mask reasons
 # so the override stays queued (no counter bump, no drop) until the wait lifts.
+# Driven by MaskReason.classification (the single source of truth) — the legacy
+# string-substring fallback was deleted.
 # ---------------------------------------------------------------------------
+
+
+def _mask(text: str, classification: MaskClassification) -> MaskReason:
+    return MaskReason(
+        text=text,
+        classification=classification,
+        source=MaskSource.PRECONDITION,
+    )
 
 
 def test_mask_reason_is_indefinite_wait_matches_waiting_for() -> None:
     from agentshore.core import Orchestrator
 
     assert Orchestrator._mask_reason_is_indefinite_wait(
-        "waiting for seed_project to complete before expanding the fleet"
+        _mask(
+            "waiting for seed_project to complete before expanding the fleet",
+            MaskClassification.INDEFINITE_WAIT,
+        )
     )
 
 
 def test_mask_reason_is_indefinite_wait_matches_instantiate_cooldown() -> None:
     """Regression for desktop-e26.
 
-    The bootstrap medium-of-different-type override was dropped on
-    'instantiate cooldown (1/2 plays since last)' because the original predicate
-    only matched 'waiting for'. The cooldown is also a deterministic-clear wait
-    (it lifts after the configured number of plays), so the override should
-    survive without counter bump.
+    The bootstrap medium-of-different-type override was dropped on an
+    instantiate cooldown. The cooldown is a deterministic-clear wait
+    (INDEFINITE_WAIT), so the override should survive without counter bump.
     """
     from agentshore.core import Orchestrator
 
     assert Orchestrator._mask_reason_is_indefinite_wait(
-        "instantiate cooldown (1/2 plays since last)"
+        _mask("instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT)
     )
-    assert Orchestrator._mask_reason_is_indefinite_wait("cooldown active for write_plan")
+    assert Orchestrator._mask_reason_is_indefinite_wait(
+        _mask("cooldown active for write_plan", MaskClassification.INDEFINITE_WAIT)
+    )
 
 
 def test_mask_reason_is_indefinite_wait_does_not_match_transient_staffing() -> None:
     """Staffing gaps go through the transient retry path (counter bumps), not here."""
     from agentshore.core import Orchestrator
 
-    assert not Orchestrator._mask_reason_is_indefinite_wait("no idle agents")
-    assert not Orchestrator._mask_reason_is_indefinite_wait("rate_limit")
+    assert not Orchestrator._mask_reason_is_indefinite_wait(
+        _mask("no idle agents", MaskClassification.TRANSIENT)
+    )
+    assert not Orchestrator._mask_reason_is_indefinite_wait(
+        _mask("rate_limit", MaskClassification.TRANSIENT)
+    )
 
 
 @pytest.mark.asyncio
@@ -312,7 +330,12 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
         kind=OverrideKind.EXECUTOR_REQUEUE,
     )
 
-    await orch._handle_masked_override(entry, reason="instantiate cooldown (1/2 plays since last)")
+    await orch._handle_masked_override(
+        entry,
+        reason=_mask(
+            "instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT
+        ),
+    )
 
     assert not orch._override_queue.empty()
     requeued_entry = orch._override_queue.get_nowait()

@@ -488,6 +488,16 @@ class _OrchestratorBase:
     async def begin_drain(self, reason: str) -> None:
         raise NotImplementedError
 
+    async def _initiate_autonomous_stop(
+        self,
+        reason: str,
+        *,
+        arm_gate_only: bool = False,
+        fire_natural_exit: bool = False,
+        clear_pause_deadline: bool = False,
+    ) -> None:
+        raise NotImplementedError
+
     def start_loop_liveness_watchdog(self) -> None:
         raise NotImplementedError
 
@@ -549,8 +559,6 @@ class _OrchestratorBase:
         play_type: PlayType,
         params: PlayParams,
         state: OrchestratorState,
-        *,
-        revalidate: bool | None = None,
     ) -> bool:
         raise NotImplementedError
 
@@ -560,16 +568,10 @@ class _OrchestratorBase:
     async def _revalidate_end_session_before_dispatch(self) -> bool:
         raise NotImplementedError
 
-    @staticmethod
-    def _params_have_dispatch_target(params: PlayParams) -> bool:
+    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason) -> None:
         raise NotImplementedError
 
-    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason | str) -> None:
-        raise NotImplementedError
-
-    async def _release_masked_override(
-        self, entry: OverrideEntry, *, reason: MaskReason | str
-    ) -> None:
+    async def _release_masked_override(self, entry: OverrideEntry, *, reason: MaskReason) -> None:
         raise NotImplementedError
 
     async def _record_control_rejection(
