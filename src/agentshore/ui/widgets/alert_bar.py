@@ -15,7 +15,7 @@ class AlertBar(Widget):
 
     def render(self) -> str:
         if self._level == "loop":
-            return f"  LOOP DETECTED — {self._message} — [R]evert [O]verride [Q]uit"
+            return f"  LOOP DETECTED — {self._message} — [Q]uit or wait for auto-stop"
         icon = {"error": "✗", "warning": "⚠", "info": "ℹ"}.get(self._level, "ℹ")
         return f"  {icon} {self._message}"
 

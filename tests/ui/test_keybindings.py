@@ -1,14 +1,11 @@
-"""Tests for OrchestratorApp keybinding actions, EscalationModal, and RevertConfirmModal."""
+"""Tests for OrchestratorApp keybinding actions and EscalationModal."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from textual.app import App
-
 from agentshore.ui.app import OrchestratorApp
 from agentshore.ui.screens.escalation import EscalationModal
-from agentshore.ui.screens.revert import RevertConfirmModal
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,10 +21,6 @@ def _make_mock_orch() -> MagicMock:
     orch.hard_stop = AsyncMock()
     orch.adjust_budget = MagicMock()
     return orch
-
-
-class _ModalTestApp(App[None]):
-    """Minimal host app for standalone modal tests."""
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +159,6 @@ async def test_escalation_add_budget_keeps_non_budget_pause_paused() -> None:
         assert app._paused is True
 
 
-# ---------------------------------------------------------------------------
-# RevertConfirmModal
-# ---------------------------------------------------------------------------
-
-
 async def test_ctrl_q_no_double_screen() -> None:
     """Pressing Ctrl+Q should not push two SessionEndScreen instances."""
     from agentshore.ui.screens.shutdown import SessionEndScreen
@@ -198,34 +186,3 @@ async def test_escalation_dismiss_does_not_drain() -> None:
         await pilot.pause()
         app._orch.begin_drain.assert_not_called()
         assert app._paused is False
-
-
-# ---------------------------------------------------------------------------
-# RevertConfirmModal
-# ---------------------------------------------------------------------------
-
-
-async def test_revert_confirm_returns_true() -> None:
-    """Clicking Confirm Revert in RevertConfirmModal returns True."""
-    app = _ModalTestApp()
-    results: list[bool] = []
-
-    async with app.run_test() as pilot:
-        app.push_screen(RevertConfirmModal(), callback=results.append)
-        await pilot.pause()
-        await pilot.click("#btn-confirm")
-        await pilot.pause()
-        assert results == [True]
-
-
-async def test_revert_cancel_returns_false() -> None:
-    """Clicking Cancel in RevertConfirmModal returns False."""
-    app = _ModalTestApp()
-    results: list[bool] = []
-
-    async with app.run_test() as pilot:
-        app.push_screen(RevertConfirmModal(), callback=results.append)
-        await pilot.pause()
-        await pilot.click("#btn-cancel")
-        await pilot.pause()
-        assert results == [False]
