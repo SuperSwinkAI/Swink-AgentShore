@@ -1539,6 +1539,53 @@ async def test_resolve_end_agent_returns_none_when_no_idle_agents() -> None:
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_end_agent_targets_terminal_error_agent() -> None:
+    """#20: a non-recoverable ERROR agent (e.g. auth) is the END_AGENT target,
+    bypassing the min-plays gate, even with zero plays — it has no recovery
+    path and would otherwise leak until end_session."""
+    resolver = _make_resolver()
+    agents = [
+        _make_snapshot("healthy", status=AgentStatus.IDLE, tasks_completed=1),
+        _make_snapshot(
+            "broken",
+            status=AgentStatus.ERROR,
+            last_error_class="auth",
+            tasks_completed=0,
+            tasks_failed=1,
+        ),
+    ]
+    state = _make_state(agents=agents)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "broken"
+    assert result.bypass_preconditions is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_end_agent_skips_recoverable_error_agent() -> None:
+    """A recoverable ERROR agent (rate_limit/unknown) is NOT a terminal target —
+    it still has the TAKE_BREAK recovery path, so END_AGENT falls through to the
+    normal idle-failure-rate selection (no idle past the gate here → None)."""
+    resolver = _make_resolver()
+    agents = [
+        _make_snapshot(
+            "throttled",
+            status=AgentStatus.ERROR,
+            last_error_class="rate_limit",
+            tasks_completed=0,
+            tasks_failed=1,
+        ),
+    ]
+    state = _make_state(agents=agents)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # INSTANTIATE_AGENT
 # ---------------------------------------------------------------------------

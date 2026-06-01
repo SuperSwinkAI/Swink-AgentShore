@@ -54,7 +54,7 @@ from agentshore.rl.mask_reason import (
     MaskReason,
     MaskSource,
 )
-from agentshore.state import AgentStatus, AgentType, PlayType
+from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -402,8 +402,8 @@ class EligibilityAuthority:
         # the sole re-enable — it hands the retire decision to the policy). It
         # MUST be evaluated before the precondition early-return below, otherwise
         # the precondition reason returns first and the re-enable is unreachable.
-        wedged_end_agent_reenable = pt == PlayType.END_AGENT and bool(
-            state.recovery_exhausted_agent_ids
+        wedged_end_agent_reenable = pt == PlayType.END_AGENT and (
+            bool(state.recovery_exhausted_agent_ids) or self._has_terminal_error_agent(state)
         )
 
         # 1. Registry preconditions (runs each play's declared gates).
@@ -563,8 +563,23 @@ class EligibilityAuthority:
     def _has_break_trigger(state: OrchestratorState) -> bool:
         return any(
             a.status == AgentStatus.ERROR
-            and a.last_error_class in ("rate_limit", "unknown")
+            and a.last_error_class in RECOVERABLE_ERROR_CLASSES
             and a.current_play_type != PlayType.TAKE_BREAK
+            for a in state.agents
+        )
+
+    @staticmethod
+    def _has_terminal_error_agent(state: OrchestratorState) -> bool:
+        """True if any agent is in a non-recoverable ERROR state (#20).
+
+        Such an agent has no TAKE_BREAK recovery path, so it never reaches
+        ``recovery_exhausted`` and END_AGENT would otherwise stay masked,
+        leaking it (and any subprocess it holds) until end_session. Unmasking
+        END_AGENT hands the retire decision to the PPO — it does not force one.
+        """
+        return any(
+            a.status == AgentStatus.ERROR
+            and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
             for a in state.agents
         )
 
