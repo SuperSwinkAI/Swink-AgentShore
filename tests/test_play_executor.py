@@ -278,6 +278,57 @@ async def test_issue_pickup_publish_failure_existing_pr_reconciles_to_success() 
 
 
 @pytest.mark.asyncio
+async def test_issue_pickup_publish_reconcile_tolerates_torn_down_agent() -> None:
+    """issue_pickup publish-reconcile degrades gracefully when the runner agent
+    was already end_agent'd before the post-dispatch reconcile runs.
+
+    Regression (#18): get_handle raises PreconditionFailed (an OrchestratorError,
+    not a KeyError) for an unregistered agent. The reconcile path's identity
+    overlay only caught IdentityResolutionError, so a torn-down agent leaked the
+    PreconditionFailed out of the play task — surfacing as play_task_failed and
+    losing the completion bookkeeping. The reconcile must instead fall back to
+    branch evidence without trying to flag the (already gone) agent.
+    """
+    store = _make_store()
+    github = MagicMock()
+    manager = _make_manager()
+    # Agent torn down between dispatch and the post-completion reconcile.
+    manager.get_handle = MagicMock(side_effect=PreconditionFailed("Unknown agent_id: 'gone'"))
+
+    play = _make_play(
+        outcome=_make_outcome(
+            success=False,
+            error="gh pr create failed: HTTP 401 Bad credentials",
+        )
+    )
+    play._last_skill_result = SkillResult(
+        success=False,
+        error="gh pr create failed: HTTP 401 Bad credentials",
+        issue_picked_up=225,
+        branch="agentshore/225-fix-auth",
+        tests_passed=True,
+    )
+    params = PlayParams(issue_number=225)
+    executor = _make_executor(
+        play=play, params=params, store=store, manager=manager, github=github
+    )
+
+    with patch("agentshore.plays.executor.validate_scope", new_callable=AsyncMock):
+        outcome = await executor.execute(
+            PlayType.ISSUE_PICKUP,
+            _make_state(
+                agents=[_agent()], issues=[IssueSnapshot(225, "Auth fix", "open", None, [], None)]
+            ),
+        )
+
+    # No exception propagated; the play resolved to a real (failed) outcome with
+    # branch evidence, and the gone agent was NOT flagged (nothing to flag).
+    assert outcome.success is False
+    manager.mark_agent_error.assert_not_awaited()
+    github.find_open_pr_by_branch.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_issue_pickup_reconcile_create_pr_uses_configured_target_branch() -> None:
     """desktop-53m0: when ``project.target_branch`` is set, the executor's PR
     publish-reconcile path must pass that value as ``base`` to ``create_pr``
