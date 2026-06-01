@@ -23,7 +23,6 @@ def _make_mock_orch() -> MagicMock:
     orch.begin_drain = AsyncMock()
     orch.hard_stop = AsyncMock()
     orch.adjust_budget = MagicMock()
-    orch.enqueue_override = MagicMock()
     return orch
 
 

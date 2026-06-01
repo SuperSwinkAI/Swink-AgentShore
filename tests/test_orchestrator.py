@@ -804,7 +804,7 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
             OverrideEntry(
                 play_type=PlayType.INSTANTIATE_AGENT,
                 params=PlayParams(bypass_preconditions=True),
-                kind=OverrideKind.USER_REQUEST,
+                kind=OverrideKind.BOOTSTRAP,
             )
         )
 
@@ -1057,140 +1057,6 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
 
         # Should not raise even with cancelled task and missing dispatch context
         await orch._process_completion("nonexistent-dispatch-id", task)
-
-
-# ---------------------------------------------------------------------------
-# _promote_request_play_mutations wires request_play to override queue
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_promote_request_play_mutations_enqueues_eligible_play(tmp_path: Path) -> None:
-    """A pending request_play mutation is promoted to _override_queue and marked queued."""
-    import json
-
-    from agentshore.data.store import ExternalMutationRecord
-
-    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
-    async with orch:
-        # Inject a pending request_play mutation directly into the DB
-        await orch._store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id=orch._session_id,
-                idempotency_key="test-promote-key",
-                mutation_type="request_play",
-                target="plays",
-                status="pending",
-                created_at="T0",
-                request_json=json.dumps({"play": "code_review", "pr": 52}),
-            )
-        )
-
-        # Drain bootstrap overrides (calibration + seed) before testing
-        while not orch._override_queue.empty():
-            orch._override_queue.get_nowait()
-
-        await orch._promote_request_play_mutations()
-
-        # Override queue now contains exactly the promoted play
-        assert not orch._override_queue.empty()
-        entry = orch._override_queue.get_nowait()
-        assert entry.play_type == PlayType.CODE_REVIEW
-        assert entry.params.pr_number == 52
-        assert orch._override_queue.empty()
-
-        # Row status is now "queued" — won't be promoted again
-        pending = await orch._store.list_pending_request_play_mutations(orch._session_id)
-        assert pending == []
-
-
-@pytest.mark.asyncio
-async def test_promote_request_play_mutations_dedupes_same_pr_across_plays(
-    tmp_path: Path,
-) -> None:
-    """merge_pr(PR N) and unblock_pr(PR N) cannot both enter the override queue."""
-    import json
-
-    from agentshore.data.store import ExternalMutationRecord, PullRequestRecord
-
-    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
-    async with orch:
-        await orch._store.record_pull_request(
-            PullRequestRecord(
-                pr_number=210,
-                session_id=orch._session_id,
-                issue_number=195,
-                state="open",
-                created_at="T0",
-                mergeable="MERGEABLE",
-                review_decision="APPROVED",
-            )
-        )
-        for key, request in [
-            ("merge-210", {"play": "merge_pr", "pr": 210}),
-            ("unblock-210", {"play": "unblock_pr", "pr": 210}),
-        ]:
-            await orch._store.record_external_mutation(
-                ExternalMutationRecord(
-                    session_id=orch._session_id,
-                    idempotency_key=key,
-                    mutation_type="request_play",
-                    target="plays",
-                    status="pending",
-                    created_at=key,
-                    request_json=json.dumps(request),
-                )
-            )
-
-        while not orch._override_queue.empty():
-            orch._override_queue.get_nowait()
-
-        await orch._promote_request_play_mutations()
-
-        assert not orch._override_queue.empty()
-        entry = orch._override_queue.get_nowait()
-        assert entry.play_type == PlayType.MERGE_PR
-        assert entry.params.pr_number == 210
-        assert orch._override_queue.empty()
-
-        first = await orch._store.get_external_mutation(orch._session_id, "merge-210")
-        second = await orch._store.get_external_mutation(orch._session_id, "unblock-210")
-        assert first is not None and first.status == "queued"
-        assert second is not None and second.status == "duplicate"
-
-
-@pytest.mark.asyncio
-async def test_promote_request_play_mutations_ignores_non_safelisted_play(tmp_path: Path) -> None:
-    """A request_play mutation for a non-promotable play (e.g. end_session) is skipped."""
-    import json
-
-    from agentshore.data.store import ExternalMutationRecord
-
-    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
-    async with orch:
-        await orch._store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id=orch._session_id,
-                idempotency_key="test-skip-key",
-                mutation_type="request_play",
-                target="plays",
-                status="pending",
-                created_at="T0",
-                request_json=json.dumps({"play": "end_session"}),
-            )
-        )
-
-        # Drain bootstrap overrides before testing
-        while not orch._override_queue.empty():
-            orch._override_queue.get_nowait()
-
-        await orch._promote_request_play_mutations()
-
-        # Non-safelisted play must not touch the override queue
-        assert orch._override_queue.empty()
-        # Row is marked ignored so it does not get retried forever.
-        pending = await orch._store.list_pending_request_play_mutations(orch._session_id)
-        assert pending == []
 
 
 # ---------------------------------------------------------------------------

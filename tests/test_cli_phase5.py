@@ -417,27 +417,6 @@ async def test_dispatch_command_shutdown() -> None:
 
 
 @pytest.mark.asyncio()
-async def test_dispatch_command_override_accepts_enum_name() -> None:
-    orch = MagicMock()
-    orch.enqueue_override = MagicMock()
-
-    await _dispatch_command({"command": "override_play", "play_type": "ISSUE_PICKUP"}, orch)
-
-    orch.enqueue_override.assert_called_once()
-
-
-@pytest.mark.asyncio()
-async def test_dispatch_command_override_rejects_reserved_slots() -> None:
-    orch = MagicMock()
-    orch.enqueue_override = MagicMock()
-
-    await _dispatch_command({"command": "override_play", "play_type": "future_5"}, orch)
-    await _dispatch_command({"command": "override_play", "play_type": "clear_agent"}, orch)
-
-    orch.enqueue_override.assert_not_called()
-
-
-@pytest.mark.asyncio()
 async def test_dispatch_command_feedback_response_continue_resumes_session() -> None:
     """Regression for desktop-4hp — Continue button must actually resume.
 

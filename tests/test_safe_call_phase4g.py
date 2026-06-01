@@ -139,7 +139,15 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
 
     # Enqueue CODE_REVIEW which will be masked (preconditions_met returns False)
     if PlayType.CODE_REVIEW in V1_ACTION_ORDER:
-        orch.enqueue_override(PlayType.CODE_REVIEW, PlayParams())
+        from agentshore.plays.override import OverrideEntry, OverrideKind
+
+        orch._override_queue.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.CODE_REVIEW,
+                params=PlayParams(),
+                kind=OverrideKind.EXECUTOR_REQUEUE,
+            )
+        )
         await orch.run_until_idle()
 
         # Selector was consulted after override was dropped
@@ -147,8 +155,8 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_masked_request_override_releases_claim_when_not_actionable(tmp_path: Path) -> None:
-    """A queued request_play that is no longer eligible is dropped, not requeued forever."""
+async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path) -> None:
+    """A queued override that is no longer eligible is dropped and its claim released."""
     from agentshore.plays.registry import build_default_registry
     from agentshore.state import (
         AgentSnapshot,
@@ -161,12 +169,10 @@ async def test_masked_request_override_releases_claim_when_not_actionable(tmp_pa
     orch = _make_orch(tmp_path)
     orch._registry = build_default_registry(orch._cfg)
     orch._store.release_work_claim_group = AsyncMock()
-    orch._store.update_external_mutation_status = AsyncMock()
     params = PlayParams(
         pr_number=210,
         extras={
             "claim_group_id": "claim-210",
-            "request_mutation_key": "req-210",
             "resource_keys": ["pr:210"],
         },
     )
@@ -176,7 +182,7 @@ async def test_masked_request_override_releases_claim_when_not_actionable(tmp_pa
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
-            kind=OverrideKind.USER_REQUEST,
+            kind=OverrideKind.EXECUTOR_REQUEUE,
         )
     )
     state = OrchestratorState(
@@ -203,25 +209,21 @@ async def test_masked_request_override_releases_claim_when_not_actionable(tmp_pa
     assert await orch._consume_override(state) is None
     assert orch._override_queue.empty()
     orch._store.release_work_claim_group.assert_awaited_once_with(orch._session_id, "claim-210")
-    status_call = orch._store.update_external_mutation_status.await_args.args
-    assert status_call[:3] == (orch._session_id, "req-210", "blocked")
 
 
 @pytest.mark.asyncio
-async def test_masked_request_override_requeues_transient_staffing_gap(tmp_path: Path) -> None:
-    """A queued request_play waits briefly when the only blocker is missing idle staff."""
+async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -> None:
+    """A queued override waits briefly when the only blocker is missing idle staff."""
     from agentshore.plays.registry import build_default_registry
     from agentshore.state import OrchestratorState, SessionState
 
     orch = _make_orch(tmp_path)
     orch._registry = build_default_registry(orch._cfg)
     orch._store.release_work_claim_group = AsyncMock()
-    orch._store.update_external_mutation_status = AsyncMock()
     params = PlayParams(
         pr_number=210,
         extras={
             "claim_group_id": "claim-210",
-            "request_mutation_key": "req-210",
             "resource_keys": ["pr:210"],
         },
     )
@@ -231,7 +233,7 @@ async def test_masked_request_override_requeues_transient_staffing_gap(tmp_path:
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
-            kind=OverrideKind.USER_REQUEST,
+            kind=OverrideKind.EXECUTOR_REQUEUE,
         )
     )
     state = OrchestratorState(
@@ -307,7 +309,7 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
     entry = OverrideEntry(
         play_type=PlayType.INSTANTIATE_AGENT,
         params=PlayParams(extras={"mask_requeue_attempts": 0}),
-        kind=OverrideKind.USER_REQUEST,
+        kind=OverrideKind.EXECUTOR_REQUEUE,
     )
 
     await orch._handle_masked_override(entry, reason="instantiate cooldown (1/2 plays since last)")

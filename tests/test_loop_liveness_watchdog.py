@@ -1,7 +1,7 @@
 """Tests for the loop-liveness watchdog (#9).
 
-The orchestrator run loop hard-froze after a ``request_play_mutation_promoted``
-event: no further plays, no periodic GitHub refresh, and crucially no clean
+The orchestrator run loop was observed to hard-freeze mid-tick: no further
+plays, no periodic GitHub refresh, and crucially no clean
 drain/stop. The idle/unanswered-pause backstops cannot catch this because they
 require the loop to keep ticking. The loop-liveness watchdog is an independent
 task that stamps a heartbeat each loop iteration and force-drains/stops the

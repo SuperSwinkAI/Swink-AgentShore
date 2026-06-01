@@ -170,9 +170,6 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
         ) -> list[object]:
             return []
 
-        async def list_pending_request_play_mutations(self, _session_id: str) -> list[object]:
-            return []
-
         async def record_trajectory_snapshot(self, _record: object) -> None:
             return None
 
