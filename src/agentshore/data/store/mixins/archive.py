@@ -18,29 +18,24 @@ class _ArchiveMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def create_archive(self, record: ArchiveRecord) -> None:
         """Insert an archive record."""
-        await self._conn.execute(
-            """
-            INSERT INTO session_archives
-                (archive_id, session_id, archive_path,
-                 total_cost, final_alignment, total_plays,
-                 issues_closed, issues_created, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.archive_id,
-                record.session_id,
-                record.archive_path,
-                record.total_cost,
-                record.final_alignment,
-                record.total_plays,
-                record.issues_closed,
-                record.issues_created,
-                record.created_at,
-            ),
+        await self._insert(
+            "session_archives",
+            archive_id=record.archive_id,
+            session_id=record.session_id,
+            archive_path=record.archive_path,
+            total_cost=record.total_cost,
+            final_alignment=record.final_alignment,
+            total_plays=record.total_plays,
+            issues_closed=record.issues_closed,
+            issues_created=record.issues_created,
+            created_at=record.created_at,
         )
-        await self._conn.commit()
 
     async def list_archives(self) -> list[ArchiveRecord]:
         """Return all archives, ordered by ``created_at`` descending."""

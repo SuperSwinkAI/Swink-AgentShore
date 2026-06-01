@@ -71,10 +71,10 @@ def _row_to_session_record(row: aiosqlite.Row) -> SessionRecord:
 
 
 def _row_to_agent_record(row: aiosqlite.Row) -> AgentRecord:
-    # model_tier, display_name, dispatch_count are absent in older DBs that
-    # predate their respective migrations — guard with a key-existence check
-    # before pulling them.
-    keys = row.keys()
+    # model_tier, display_name, dispatch_count all exist in every supported DB:
+    # the baseline schema declares them and the migrations carry pre-existing
+    # DBs forward. The single SELECT in ``get_agents`` projects the full column
+    # set, so reading them directly (a loud KeyError on drift) is correct.
     return AgentRecord(
         agent_id=row["agent_id"],
         session_id=row["session_id"],
@@ -85,9 +85,9 @@ def _row_to_agent_record(row: aiosqlite.Row) -> AgentRecord:
         total_cost=row["total_cost"],
         tasks_completed=row["tasks_completed"],
         tasks_failed=row["tasks_failed"],
-        model_tier=row["model_tier"] if "model_tier" in keys else None,
-        display_name=row["display_name"] if "display_name" in keys else None,
-        dispatch_count=row["dispatch_count"] if "dispatch_count" in keys else 0,
+        model_tier=row["model_tier"],
+        display_name=row["display_name"],
+        dispatch_count=row["dispatch_count"] if row["dispatch_count"] is not None else 0,
     )
 
 
@@ -199,21 +199,34 @@ def _decode_artifacts(raw_artifacts: str | None) -> list[JsonArtifact]:
     return artifacts
 
 
+def _load_json_str_list(raw: str | None) -> list[str]:
+    """Decode a JSON string-list column defensively.
+
+    Returns ``[]`` for NULL/empty input, malformed JSON, or a non-list value
+    — the single failure policy shared by every label/list column (PR labels,
+    issue labels). A bare ``json.loads`` here previously raised and blew up the
+    whole ``get_open_issues`` / ``list_all_issues`` read on a malformed value.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
+
+
 def _row_to_pull_request(row: aiosqlite.Row) -> PullRequestRecord:
-    keys = row.keys() if hasattr(row, "keys") else []
-    labels_raw = row["labels"] if "labels" in keys else None
-    linked_issue_numbers_raw = (
-        row["linked_issue_numbers"] if "linked_issue_numbers" in keys else None
-    )
-    labels: list[str] = []
-    if labels_raw:
-        try:
-            parsed = json.loads(labels_raw)
-            if isinstance(parsed, list):
-                labels = [str(label) for label in parsed]
-        except json.JSONDecodeError:
-            labels = []
+    # Every PR read selects the full ``_PULL_REQUEST_COLUMNS`` projection, so
+    # all columns are present in every row and are read directly. A missing
+    # column raising ``KeyError`` is the desired loud failure — defensive
+    # ``"x" in keys`` guards are what previously let ``base_ref`` rot into a
+    # silent write-only column.
+    labels = _load_json_str_list(row["labels"])
     linked_issue_numbers: tuple[int, ...] = ()
+    linked_issue_numbers_raw = row["linked_issue_numbers"]
     if linked_issue_numbers_raw:
         try:
             parsed_links = json.loads(linked_issue_numbers_raw)
@@ -228,25 +241,22 @@ def _row_to_pull_request(row: aiosqlite.Row) -> PullRequestRecord:
         linked_issue_numbers=linked_issue_numbers,
         branch=row["branch"],
         state=row["state"],
-        title=row["title"] if "title" in keys else "",
-        url=row["url"] if "url" in keys else None,
-        github_author=row["github_author"] if "github_author" in keys else None,
+        title=row["title"],
+        url=row["url"],
+        github_author=row["github_author"],
         labels=labels,
-        review_decision=row["review_decision"] if "review_decision" in keys else None,
-        status_check_summary=(
-            row["status_check_summary"] if "status_check_summary" in keys else None
-        ),
-        is_draft=(
-            bool(row["is_draft"]) if "is_draft" in keys and row["is_draft"] is not None else None
-        ),
+        review_decision=row["review_decision"],
+        status_check_summary=row["status_check_summary"],
+        is_draft=bool(row["is_draft"]) if row["is_draft"] is not None else None,
         author_agent_id=row["author_agent_id"],
-        author_agent_type=row["author_agent_type"] if "author_agent_type" in keys else None,
+        author_agent_type=row["author_agent_type"],
         created_at=row["created_at"],
         merged_at=row["merged_at"],
-        head_sha=row["head_sha"] if "head_sha" in keys else None,
-        mergeable=row["mergeable"] if "mergeable" in keys else None,
-        last_reviewed_sha=row["last_reviewed_sha"] if "last_reviewed_sha" in keys else None,
-        last_review_status=(row["last_review_status"] if "last_review_status" in keys else None),
+        head_sha=row["head_sha"],
+        mergeable=row["mergeable"],
+        base_ref=row["base_ref"],
+        last_reviewed_sha=row["last_reviewed_sha"],
+        last_review_status=row["last_review_status"],
     )
 
 
@@ -289,18 +299,15 @@ def _row_to_trajectory(row: aiosqlite.Row) -> TrajectorySnapshotRecord:
 
 
 def _row_to_github_issue(row: aiosqlite.Row) -> GitHubIssueRecord:
-    raw_labels = row["labels"]
-    labels: list[str] = json.loads(raw_labels) if raw_labels else []
-    keys = set(row.keys())
     return GitHubIssueRecord(
         issue_number=row["issue_number"],
         session_id=row["session_id"],
         title=row["title"],
         state=row["state"],
         priority=row["priority"],
-        labels=labels,
+        labels=_load_json_str_list(row["labels"]),
         source=row["source"],
-        url=row["url"] if "url" in keys else None,
+        url=row["url"],
         created_at=row["created_at"],
         closed_at=row["closed_at"],
     )
@@ -352,6 +359,7 @@ def _row_to_experience(row: aiosqlite.Row) -> ExperienceRecord:
         old_log_prob=row["old_log_prob"],
         value_estimate=row["value_estimate"],
         action_mask=bytes(row["action_mask"]) if row["action_mask"] is not None else None,
+        mask_reason=row["mask_reason"],
         policy_version=row["policy_version"],
         action_space_version=row["action_space_version"],
         config_hash=row["config_hash"],
