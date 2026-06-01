@@ -185,14 +185,24 @@ def _make_pr_record(
 
 
 @pytest.mark.asyncio
-async def test_override_rejects_stale_issue_target() -> None:
+async def test_override_claims_target_without_revalidating_eligibility() -> None:
+    """The resolver claims the override target; it no longer re-decides validity.
+
+    Eligibility refactor: target validity (issue open + available) is owned by
+    the EligibilityAuthority's confirm(), not the resolver. _resolve_override
+    enumerates the named target and acquires the work claim, returning the
+    params verbatim (or None only on a claim-CAS loss). A stale target is
+    rejected upstream by confirm()'s live candidate-set check (clean re-pick),
+    not by the resolver — see test_confirm_live_drift_is_clean_repick.
+    """
     resolver = _make_resolver()
     override = PlayParams(issue_number=99)
     state = _make_state(issues=[_make_issue(1)])
 
     result = await resolver.resolve(PlayType.ISSUE_PICKUP, state, override=override)
 
-    assert result is None
+    assert result is not None
+    assert result.issue_number == 99
 
 
 # ---------------------------------------------------------------------------

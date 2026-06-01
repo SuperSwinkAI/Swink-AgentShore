@@ -527,6 +527,10 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
 @pytest.mark.asyncio
 async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path) -> None:
     selector = MagicMock()
+    # Eligibility refactor: the loop drains the selector's confirm-repick tally
+    # once per cycle via consume_repick_count(). Return a real int so
+    # _record_selection_repicks doesn't choke on a MagicMock comparison.
+    selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     calls = 0
 
@@ -555,52 +559,16 @@ async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path
     dispatch.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_dispatch_revalidation_blocks_fresh_cooldown_without_play_row(
-    tmp_path: Path,
-) -> None:
-    selector = MagicMock()
-    selector.consume_pending = MagicMock(return_value=object())
-    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
-    fresh_state = OrchestratorState(
-        session_id=orch._session_id,
-        session_state=SessionState.RUNNING,
-        total_plays=30,
-        total_cost=0.0,
-        agents=[_idle_agent()],
-        budget=BudgetSnapshot(
-            total_budget=200.0,
-            spent=0.0,
-            remaining=200.0,
-            estimated_cost_per_play=0.1,
-        ),
-        plays_since_last_play_type={PlayType.RUN_QA: 1},
-        last_play_success_by_type={PlayType.RUN_QA: True},
-    )
-    params = PlayParams(extras={"claim_group_id": "claim-qa"})
-
-    async with orch:
-        with (
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=fresh_state)),
-            patch.object(orch._executor, "execute", new=AsyncMock()) as execute,
-            patch("agentshore.core._logger.warning") as warning,
-        ):
-            dispatched = await orch._dispatch_play(
-                PlayType.RUN_QA, params, fresh_state, revalidate=True
-            )
-
-        history = await orch._store.get_play_history(orch._session_id)
-        mutations = await orch._store.list_external_mutations(
-            orch._session_id,
-            mutation_types=("dispatch_revalidation_block",),
-        )
-
-    assert dispatched is False
-    execute.assert_not_awaited()
-    assert history == []
-    assert len(mutations) == 1
-    assert mutations[0].target == "run_qa"
-    assert any(call.args == ("dispatch_revalidation_blocked",) for call in warning.call_args_list)
+# Removed: test_dispatch_revalidation_blocks_fresh_cooldown_without_play_row.
+#
+# Eligibility refactor: the dispatch-time revalidation pass (``revalidate=True``
+# → ``_dispatch_revalidation_reason`` → ``dispatch_revalidation_block`` mutation)
+# was deleted. ``_dispatch_play`` is now purely side-effecting; play validity
+# (including cooldown gates) is settled upstream by ``EligibilityAuthority`` —
+# the action mask presents only valid plays and ``confirm()`` rejects live
+# drift with a clean re-pick (no plays-table skip row, no RL sample). The
+# clean-re-pick contract is covered by test_confirm_live_drift_is_clean_repick
+# and the parallel-dispatch drained-pool test in tests/test_rl_selector.py.
 
 
 @pytest.mark.asyncio
@@ -836,6 +804,10 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
 ) -> None:
     selector = MagicMock()
     selector.select = AsyncMock(return_value=(PlayType.INSTANTIATE_AGENT, PlayParams()))
+    # Eligibility refactor: the loop drains confirm-repicks once per cycle via
+    # consume_repick_count(); return a real int so _record_selection_repicks
+    # doesn't crash on a MagicMock comparison.
+    selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
     busy_state = OrchestratorState(

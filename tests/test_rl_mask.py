@@ -55,16 +55,40 @@ def _state(**kwargs: object) -> OrchestratorState:
     return OrchestratorState(**base)  # type: ignore[arg-type]
 
 
-def _registry_all_true() -> MagicMock:
+def _make_registry(precondition_pred) -> MagicMock:
+    """Build a registry mock the EligibilityAuthority can read.
+
+    The authority resolves validity via ``registry.get(pt).preconditions(state)``
+    (an empty list == met) and ``play.capability`` (None == internal, no
+    agent-eligibility gate). The legacy ``_stage_*`` free functions still call
+    ``registry.preconditions_met(pt, state)`` directly, so both surfaces are
+    wired here and kept consistent via ``precondition_pred(pt) -> bool``.
+
+    ``capability`` is None on every stub so the agent-eligibility stage is a
+    no-op; these helpers are only used without a ``cfg`` (the cfg-bearing tests
+    use a real ``build_default_registry()``), so that stage never runs anyway.
+    """
+    from agentshore.rl.mask_reason import NOT_AVAILABLE
+
     reg = MagicMock()
-    reg.preconditions_met.return_value = True
+
+    def _get(pt: PlayType) -> MagicMock:
+        play = MagicMock()
+        play.capability = None
+        play.preconditions.return_value = [] if precondition_pred(pt) else [NOT_AVAILABLE]
+        return play
+
+    reg.get.side_effect = _get
+    reg.preconditions_met.side_effect = lambda pt, _s: precondition_pred(pt)
     return reg
+
+
+def _registry_all_true() -> MagicMock:
+    return _make_registry(lambda _pt: True)
 
 
 def _registry_all_false() -> MagicMock:
-    reg = MagicMock()
-    reg.preconditions_met.return_value = False
-    return reg
+    return _make_registry(lambda _pt: False)
 
 
 def test_mask_shape():
@@ -208,10 +232,26 @@ def test_no_preconditions_met_returns_all_false():
 
 
 def test_mask_queries_each_action_once():
-    reg = _registry_all_true()
-    state = _state()
-    compute_action_mask(state, reg)
-    assert reg.preconditions_met.call_count == NUM_ACTIONS
+    """The authority reads validity via registry.get(pt).preconditions(state).
+
+    Source of truth moved from registry.preconditions_met to the
+    EligibilityAuthority, which calls get(pt) once per action and reads the
+    play's own preconditions() — so we count those instead.
+    """
+    called_types: list[PlayType] = []
+
+    reg = MagicMock()
+
+    def _get(pt: PlayType) -> MagicMock:
+        called_types.append(pt)
+        play = MagicMock()
+        play.capability = None
+        play.preconditions.return_value = []
+        return play
+
+    reg.get.side_effect = _get
+    compute_action_mask(_state(), reg)
+    assert len(called_types) == NUM_ACTIONS
 
 
 def test_mask_queries_in_v1_order():
@@ -219,18 +259,28 @@ def test_mask_queries_in_v1_order():
 
     reg = MagicMock()
 
-    def _record(pt: PlayType, state: OrchestratorState) -> bool:
+    def _get(pt: PlayType) -> MagicMock:
         called_types.append(pt)
-        return True
+        play = MagicMock()
+        play.capability = None
+        play.preconditions.return_value = []
+        return play
 
-    reg.preconditions_met.side_effect = _record
+    reg.get.side_effect = _get
     compute_action_mask(_state(), reg)
     assert called_types == list(V1_ACTION_ORDER)
 
 
 def test_mask_exception_in_preconditions_treated_as_false():
     reg = MagicMock()
-    reg.preconditions_met.side_effect = RuntimeError("boom")
+
+    def _get(pt: PlayType) -> MagicMock:
+        play = MagicMock()
+        play.capability = None
+        play.preconditions.side_effect = RuntimeError("boom")
+        return play
+
+    reg.get.side_effect = _get
     mask = compute_action_mask(_state(), reg)
     assert not mask.any()
 
@@ -238,8 +288,7 @@ def test_mask_exception_in_preconditions_treated_as_false():
 def test_selective_mask():
     allowed = {PlayType.ISSUE_PICKUP, PlayType.SEED_PROJECT}
 
-    reg = MagicMock()
-    reg.preconditions_met.side_effect = lambda pt, _s: pt in allowed
+    reg = _make_registry(lambda pt: pt in allowed)
 
     mask = compute_action_mask(_state(open_issues=[_issue_snapshot(234)]), reg)
     assert mask.sum() == 2
@@ -843,7 +892,19 @@ def test_terminal_no_work_qa_recency_does_not_change_mask():
 
     recent = _mask_for(49)
     stale = _mask_for(50)
-    assert recent.tolist() == stale.tolist()
+    # Item 1: the RUN_QA / END_SESSION terminal directional choices are
+    # recency-independent. The idle-audit plays (CALIBRATE_ALIGNMENT,
+    # DESIGN_AUDIT) are deliberately excepted: the eligibility refactor added an
+    # idle-audit freshness gate that masks them in terminal no-work once their
+    # own audit window is fresh — and QA recency feeds terminal-audit freshness,
+    # so those two bits legitimately flip. Compare every other action.
+    idle_audit_idx = {
+        PLAY_TO_INDEX[PlayType.CALIBRATE_ALIGNMENT],
+        PLAY_TO_INDEX[PlayType.DESIGN_AUDIT],
+    }
+    recent_rest = [b for i, b in enumerate(recent.tolist()) if i not in idle_audit_idx]
+    stale_rest = [b for i, b in enumerate(stale.tolist()) if i not in idle_audit_idx]
+    assert recent_rest == stale_rest
     assert recent[PLAY_TO_INDEX[PlayType.RUN_QA]]
     assert recent[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
@@ -1311,14 +1372,31 @@ def test_compute_mask_reasons_emits_tier_eligibility_string():
     from agentshore.state import AgentType
 
     cfg = _make_cfg_with_prefs()
-    state = _state(agents=[_agent_snapshot("a", AgentType.CLAUDE_CODE, "small")])
+    # An open issue is required so the ISSUE_PICKUP precondition is satisfied;
+    # then the small-tier-only fleet is the genuine blocker and the
+    # agent-eligibility stage surfaces the tier reason (the authority evaluates
+    # preconditions before agent eligibility, so without work the precondition
+    # reason would win first).
+    state = _state(
+        agents=[_agent_snapshot("a", AgentType.CLAUDE_CODE, "small")],
+        open_issues=[_issue_snapshot(234)],
+    )
     reasons = compute_mask_reasons(state, build_default_registry(), cfg=cfg)
     assert PlayType.ISSUE_PICKUP in reasons
     assert "tier" in reasons[PlayType.ISSUE_PICKUP].lower()
 
 
 def test_compute_mask_reasons_explains_idle_same_config_for_instantiate():
+    """INSTANTIATE_AGENT is masked when every eligible config is unspawnable.
+
+    Eligibility refactor: the authority masks INSTANTIATE_AGENT via its config
+    viability gate (``compute_config_mask`` empty → no spawnable config). With
+    an idle claude_code/medium already present, that config cell is filtered
+    out, leaving no eligible configuration — the authority surfaces the typed
+    CONFIG reason rather than the legacy mask pipeline's free-text string.
+    """
     from agentshore.rl.mask import compute_mask_reasons
+    from agentshore.rl.mask_reason import MaskSource
     from agentshore.state import AgentType
 
     cfg = _make_cfg(enabled=("claude_code",), max_per_config=5)
@@ -1331,9 +1409,8 @@ def test_compute_mask_reasons_explains_idle_same_config_for_instantiate():
         config_index=(("claude_code", "medium"),),
     )
 
-    assert reasons[PlayType.INSTANTIATE_AGENT] == (
-        "Idle agent already available for every eligible type/tier"
-    )
+    assert reasons[PlayType.INSTANTIATE_AGENT].source == MaskSource.CONFIG
+    assert reasons[PlayType.INSTANTIATE_AGENT].text == "No eligible agent configuration"
 
 
 def test_code_review_masked_all_same_identity():
