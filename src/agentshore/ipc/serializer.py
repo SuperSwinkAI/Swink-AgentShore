@@ -13,13 +13,13 @@ Outbound message types:
 from __future__ import annotations
 
 import itertools
-import json
 import math
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
 from agentshore.beads import EpicStatus, GraphTask, ProjectGraph
+from agentshore.ipc.wire import frame as _frame
 from agentshore.state import (
     ActivePlay,
     AgentPlaySpecializationSnapshot,
@@ -135,17 +135,6 @@ def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
         ),
         "estimated_cost_per_play": budget.estimated_cost_per_play,
     }
-
-
-def _json_safe(value: object) -> object:
-    """Return a browser-JSON-safe copy of a serialized payload."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 def _serialize_epic_status(epic: EpicStatus) -> dict[str, object]:
@@ -380,4 +369,4 @@ def make_message(msg_type: str, payload: dict[str, object]) -> str:
         "seq": next(_seq),
         "payload": payload,
     }
-    return json.dumps(_json_safe(envelope), allow_nan=False) + "\n"
+    return _frame(envelope)

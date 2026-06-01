@@ -135,6 +135,8 @@ def _progress(
     end-of-phase ``100`` pattern so the desktop step checklist can derive
     the transition without parsing the status text.
     """
+    from agentshore.sidecar.server import notification
+
     label = _STEP_LABELS.get(step, step)
     if status == "running":
         message = f"{label}…"
@@ -153,11 +155,7 @@ def _progress(
     }
     if status == "failed":
         params["error"] = error or message
-    return {
-        "jsonrpc": "2.0",
-        "method": "$/progress",
-        "params": params,
-    }
+    return notification("$/progress", params)
 
 
 def _emit(
