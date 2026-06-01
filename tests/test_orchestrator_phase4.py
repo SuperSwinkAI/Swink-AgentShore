@@ -456,7 +456,6 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
     provider = Provider()
     orch._state_provider = provider
     orch._build_state = AsyncMock(return_value=_make_state())
-    orch._promote_request_play_mutations = AsyncMock()
     orch._selector.on_play_completed = AsyncMock()
 
     task: asyncio.Future[PlayOutcome] = asyncio.Future()
@@ -482,7 +481,6 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
 
     assert provider.play_completed == 0
     assert provider.state_updates == 1
-    orch._promote_request_play_mutations.assert_awaited_once()
     orch._selector.on_play_completed.assert_not_awaited()
     orch._store.record_trajectory_snapshot.assert_not_awaited()
 
@@ -573,7 +571,7 @@ async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
-    """enqueue_override delivers plays in FIFO order, one per iteration."""
+    """The override queue delivers plays in FIFO order, one per iteration."""
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
 
@@ -604,8 +602,16 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
     orch._store.get_open_issues = AsyncMock(return_value=[])
     orch._store.get_latest_trajectory = AsyncMock(return_value=None)
 
-    orch.enqueue_override(PlayType.CODE_REVIEW, PlayParams())
-    orch.enqueue_override(PlayType.RUN_QA, PlayParams())
+    from agentshore.plays.override import OverrideEntry, OverrideKind
+
+    for pt in (PlayType.CODE_REVIEW, PlayType.RUN_QA):
+        orch._override_queue.put_nowait(
+            OverrideEntry(
+                play_type=pt,
+                params=PlayParams(bypass_preconditions=True),
+                kind=OverrideKind.BOOTSTRAP,
+            )
+        )
 
     # After both overrides, selector returns None and loop exits
     select_calls = 0

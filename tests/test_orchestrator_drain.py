@@ -230,7 +230,7 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
         OverrideEntry(
             play_type=PlayType.INSTANTIATE_AGENT,
             params=PlayParams(bypass_preconditions=True),
-            kind=OverrideKind.USER_REQUEST,
+            kind=OverrideKind.BOOTSTRAP,
         )
     )
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.IDLE)])

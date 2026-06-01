@@ -315,34 +315,6 @@ async def test_dispatch_replay_round_trip_and_retry_counter(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_claim_request_play_mutation_claims_and_marks_queued(tmp_path) -> None:
-    store = DataStore(tmp_path / "agentshore.db")
-    await store.initialize()
-    try:
-        await _setup_session(store, tmp_path)
-        await store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id="s1",
-                idempotency_key="req-1",
-                mutation_type="request_play",
-                target="plays",
-                status="pending",
-                created_at="T0",
-                request_json='{"play": "merge_pr", "pr": 210}',
-            )
-        )
-
-        group = await store.claim_request_play_mutation("s1", "req-1", "merge_pr", ["pr:210"])
-
-        assert isinstance(group, str)
-        assert await store.list_pending_request_play_mutations("s1") == []
-        active = await store.find_active_work_claims("s1", ["pr:210"])
-        assert [claim.request_mutation_key for claim in active] == ["req-1"]
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
 async def test_agent_terminated_timestamp_is_persisted(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()
@@ -890,60 +862,8 @@ async def test_list_handoffs_returns_recent_rows_oldest_first(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_pending_request_play_mutations_filters_correctly(tmp_path) -> None:
-    """list_pending_request_play_mutations returns only pending request_play rows for the session."""
-    store = DataStore(tmp_path / "agentshore.db")
-    await store.initialize()
-    try:
-        await _setup_session(store, tmp_path)
-
-        # Row 1: request_play, pending — should be returned
-        await store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id="s1",
-                idempotency_key="key-rp-pending",
-                mutation_type="request_play",
-                target="plays",
-                status="pending",
-                created_at="T0",
-                request_json='{"play": "code_review", "pr": 10}',
-            )
-        )
-        # Row 2: request_play but already queued — must NOT be returned
-        await store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id="s1",
-                idempotency_key="key-rp-queued",
-                mutation_type="request_play",
-                target="plays",
-                status="queued",
-                created_at="T1",
-                request_json='{"play": "run_qa", "pr": 10}',
-            )
-        )
-        # Row 3: different mutation_type, pending — must NOT be returned
-        await store.record_external_mutation(
-            ExternalMutationRecord(
-                session_id="s1",
-                idempotency_key="key-issue-create",
-                mutation_type="issue_create",
-                target="issues",
-                status="pending",
-                created_at="T2",
-            )
-        )
-        result = await store.list_pending_request_play_mutations("s1")
-        assert len(result) == 1
-        assert result[0].idempotency_key == "key-rp-pending"
-        assert result[0].mutation_type == "request_play"
-        assert result[0].status == "pending"
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
 async def test_update_external_mutation_status_transitions_to_queued(tmp_path) -> None:
-    """update_external_mutation_status moves a pending row to queued, removing it from pending list."""
+    """update_external_mutation_status moves a pending row to queued."""
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()
     try:
@@ -952,21 +872,17 @@ async def test_update_external_mutation_status_transitions_to_queued(tmp_path) -
             ExternalMutationRecord(
                 session_id="s1",
                 idempotency_key="key-to-promote",
-                mutation_type="request_play",
-                target="plays",
+                mutation_type="create_pr",
+                target="pr",
                 status="pending",
                 created_at="T0",
-                request_json='{"play": "code_review", "pr": 7}',
             )
         )
 
-        pending_before = await store.list_pending_request_play_mutations("s1")
-        assert len(pending_before) == 1
+        before = await store.get_external_mutation("s1", "key-to-promote")
+        assert before is not None and before.status == "pending"
 
         await store.update_external_mutation_status("s1", "key-to-promote", "queued", "{}")
-
-        pending_after = await store.list_pending_request_play_mutations("s1")
-        assert len(pending_after) == 0
 
         row = await store.get_external_mutation("s1", "key-to-promote")
         assert row is not None

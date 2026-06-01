@@ -1385,6 +1385,45 @@ async def test_requested_label_mutation_is_applied_to_issue() -> None:
     store.add_issue_labels.assert_awaited_once_with(209, "sess-test", ["agentshore/disallowed"])
 
 
+@pytest.mark.asyncio
+async def test_request_play_mutation_is_ignored() -> None:
+    """A ``request_play`` requested-mutation is dropped, not recorded or promoted.
+
+    The agent-dictates-next-play mechanism was removed (it bypassed the PPO
+    policy). Any lingering ``request_play`` emission must be a no-op: no
+    ``external_mutations`` row, no label applied — the PPO chooses the next play.
+    """
+    agent_id = "agent-1"
+    outcome = _make_outcome(success=True, agent_id=agent_id)
+    play = _make_play(outcome=outcome)
+    play._last_skill_result = SkillResult(
+        success=True,
+        requested_mutations=[{"type": "request_play", "play": "merge_pr", "pr": 42}],
+    )
+    store = _make_store()
+    manager = _make_manager(agent_id=agent_id)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch("agentshore.plays.executor.select_agent_for") as mock_select:
+        mock_select.return_value = manager.handles[agent_id]
+        executor = PlayExecutor(
+            registry=_make_registry(play),
+            resolver=_make_resolver(PlayParams(issue_number=209)),
+            store=store,
+            manager=manager,
+            cfg=_make_cfg(),
+            project_path=Path("/tmp/project"),
+            session_id="sess-test",
+            github=github,
+        )
+        await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
+
+    store.record_external_mutation.assert_not_awaited()
+    github.label_issue.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Loop B fix — requeue on AntiConfirmationViolation
 # ---------------------------------------------------------------------------
