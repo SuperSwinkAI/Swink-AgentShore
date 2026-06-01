@@ -76,9 +76,7 @@ async def test_pr_reuse_with_dirty_target_recovers_via_quarantine(
     wm = _make_manager(store, main_repo, worktree_root)
     params = PlayParams(branch=remote_branch)
 
-    allocation = await wm.allocate_for_dispatch(
-        play_type=PlayType.CODE_REVIEW, params=params
-    )
+    allocation = await wm.allocate_for_dispatch(play_type=PlayType.CODE_REVIEW, params=params)
 
     # Allocation succeeded; the path is now a real worktree.
     assert (Path(str(allocation.path)) / ".git").exists()  # type: ignore[attr-defined]
@@ -112,9 +110,7 @@ async def test_branch_creating_reuse_with_dirty_target_recovers(
 
     wm = _make_manager(store, main_repo, worktree_root)
     params = PlayParams(issue_number=77)
-    allocation = await wm.allocate_for_dispatch(
-        play_type=PlayType.ISSUE_PICKUP, params=params
-    )
+    allocation = await wm.allocate_for_dispatch(play_type=PlayType.ISSUE_PICKUP, params=params)
     assert (Path(str(allocation.path)) / ".git").exists()  # type: ignore[attr-defined]
 
     refreshed = await lookup_by_id(store, worktree_id=row.worktree_id)

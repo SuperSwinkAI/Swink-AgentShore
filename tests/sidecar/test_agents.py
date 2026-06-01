@@ -253,9 +253,7 @@ def test_set_spawn_limits_rejects_out_of_range(tmp_path: Path) -> None:
 
 
 def test_rpc_agents_get_spawn_limits_returns_default() -> None:
-    response = handle_request(
-        {"jsonrpc": "2.0", "id": 1, "method": "agents.get_spawn_limits"}
-    )
+    response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.get_spawn_limits"})
     assert response is not None
     # Without a configured project, defaults — the call itself must succeed.
     assert "error" not in response

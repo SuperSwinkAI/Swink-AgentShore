@@ -100,9 +100,7 @@ async def test_quarantine_orphan_handles_name_collision(
     orphan_a_again = worktree_root / "branch-a"
     orphan_a_again.mkdir()
     (orphan_a_again / "x").write_text("b\n")
-    dest_b = await quarantine_orphan(
-        orphan_path=orphan_a_again, worktree_root=worktree_root
-    )
+    dest_b = await quarantine_orphan(orphan_path=orphan_a_again, worktree_root=worktree_root)
 
     assert dest_a != dest_b, "both quarantines should land in distinct dirs"
     assert dest_a.exists() and dest_b.exists()
@@ -141,9 +139,7 @@ async def test_reconcile_quarantines_orphan_leaves_registered_alone(
     assert registered.exists(), "registered worktree must not be touched"
 
 
-async def test_reconcile_is_idempotent(
-    main_repo: Path, worktree_root: Path
-) -> None:
+async def test_reconcile_is_idempotent(main_repo: Path, worktree_root: Path) -> None:
     """Running reconcile twice in a row: second run has nothing to do."""
     orphan = worktree_root / "lonely-orphan"
     orphan.mkdir()
@@ -156,9 +152,7 @@ async def test_reconcile_is_idempotent(
     assert second.quarantined == []
 
 
-async def test_reconcile_no_worktree_root_returns_empty(
-    main_repo: Path, tmp_path: Path
-) -> None:
+async def test_reconcile_no_worktree_root_returns_empty(main_repo: Path, tmp_path: Path) -> None:
     """Brand-new machine with no worktree_root yet → empty report, no crash."""
     nonexistent = tmp_path / "never-created" / "agentshore-worktrees" / "repo"
     report = await reconcile_worktrees(main_repo=main_repo, worktree_root=nonexistent)

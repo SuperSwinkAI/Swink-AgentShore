@@ -736,8 +736,11 @@ def _collect_identity_details(
                 ),
             )
     elif repo_keychain_mismatch:
+        assert configured_keychain_service is not None
+        assert expected_keychain_service is not None
         migrated = _migrate_keychain_token(
-            configured_keychain_service, expected_keychain_service  # type: ignore[arg-type]
+            configured_keychain_service,
+            expected_keychain_service,
         )
         if migrated and existing is not None:
             click.echo(

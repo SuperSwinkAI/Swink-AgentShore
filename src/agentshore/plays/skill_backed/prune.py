@@ -84,8 +84,7 @@ class PrunePlay(SkillBackedPlay):
             return [
                 MaskReason(
                     text=(
-                        f"no prune-worthy debt "
-                        f"(<{_STALE_LINKED_BEAD_THRESHOLD} stale linked beads)"
+                        f"no prune-worthy debt (<{_STALE_LINKED_BEAD_THRESHOLD} stale linked beads)"
                     ),
                     classification=MaskClassification.HARD,
                     source=MaskSource.PRECONDITION,

@@ -356,9 +356,7 @@ def test_cluster_slots_0_to_7_are_zero_in_v0_10() -> None:
 def test_dependency_slots_and_retired_cluster_slots() -> None:
     from agentshore.beads import ProjectGraph
 
-    graph = ProjectGraph(
-        global_closure_ratio=0.5, tasks_ready=1, tasks_blocked=1, tasks_total=2
-    )
+    graph = ProjectGraph(global_closure_ratio=0.5, tasks_ready=1, tasks_blocked=1, tasks_total=2)
     state = _make_state(graph=graph)
     obs = encode_observation(state, _null_ctx())
     assert obs[0] == pytest.approx(0.5, abs=1e-5)  # blocked_task_ratio

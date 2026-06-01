@@ -1696,5 +1696,3 @@ async def test_merge_pr_execute_does_not_mark_merged_on_skill_failure() -> None:
 
     assert outcome.success is False
     ctx.store.mark_pr_merged.assert_not_awaited()
-
-

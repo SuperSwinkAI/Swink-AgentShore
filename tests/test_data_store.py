@@ -1116,7 +1116,9 @@ async def test_record_experience_persists_mask_reason(tmp_path) -> None:
     try:
         await _setup_session(store, tmp_path)
         play_id = await store.record_play(
-            PlayRecord(session_id="s1", play_type="refine_task_breakdown", started_at="T0", success=True)
+            PlayRecord(
+                session_id="s1", play_type="refine_task_breakdown", started_at="T0", success=True
+            )
         )
         sv = b"\x00" * 8
         summary = "merge_pr=no eligible reviewer; code_review=anti-bias"

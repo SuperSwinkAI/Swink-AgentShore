@@ -272,9 +272,7 @@ def _cluster_just_completed(state_before: OrchestratorState, next_state: Orchest
     if now_complete and not was_complete:
         return True
     # Per-epic completion: any epic newly crossing 1.0
-    before_ids = {
-        e.bead_id for e in state_before.graph.epics if e.closure_ratio >= 1.0
-    }
+    before_ids = {e.bead_id for e in state_before.graph.epics if e.closure_ratio >= 1.0}
     for epic in next_state.graph.epics:
         if epic.closure_ratio >= 1.0 and epic.bead_id not in before_ids:
             return True

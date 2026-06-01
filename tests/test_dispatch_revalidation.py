@@ -68,7 +68,9 @@ def _open_issue(issue_number: int = 42) -> IssueSnapshot:
     )
 
 
-def _state_with_issue(issue_number: int = 42, *, graph: ProjectGraph | None = None) -> OrchestratorState:
+def _state_with_issue(
+    issue_number: int = 42, *, graph: ProjectGraph | None = None
+) -> OrchestratorState:
     return OrchestratorState(
         session_id="s1",
         session_state=SessionState.RUNNING,

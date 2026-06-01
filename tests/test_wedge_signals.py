@@ -132,13 +132,15 @@ def _init_repo_with_dirty_state(tmp_path: Path) -> Path:
         ["git", "init", "-q", "-b", "main"],
         cwd=str(tmp_path),
         check=True,
-        env={"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "HOME": str(tmp_path)},
+        env={
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "HOME": str(tmp_path),
+        },
     )
     # Configure committer locally so the seed commit succeeds without a global git config.
     for key, val in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")]:
-        subprocess.run(
-            ["git", "config", "--local", key, val], cwd=str(tmp_path), check=True
-        )
+        subprocess.run(["git", "config", "--local", key, val], cwd=str(tmp_path), check=True)
     (tmp_path / "src.py").write_text("a = 1\n")
     subprocess.run(["git", "add", "src.py"], cwd=str(tmp_path), check=True)
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=str(tmp_path), check=True)

@@ -38,9 +38,10 @@ def test_workspace_layout_invariants() -> None:
     desktop_data = _read_json(ROOT / "desktop" / "package.json")
     deps = desktop_data.get("dependencies")
     assert isinstance(deps, dict), "desktop dependencies must be a mapping"
-    assert deps.get("agentshore-dashboard") == "*", (
+    assert deps.get("@agentshore/dashboard") == "*", (
         'desktop dependency "@agentshore/dashboard" must be "*" for workspace linking'
     )
+    assert deps.get("agentshore-dashboard") is None
 
 
 def test_dashboard_css_does_not_lock_desktop_routes() -> None:
@@ -50,9 +51,7 @@ def test_dashboard_css_does_not_lock_desktop_routes() -> None:
         r"^\s*html,\s*\n\s*body\s*\{[^}]*overflow:\s*hidden",
         css,
         flags=re.M | re.S,
-    ), (
-        "dashboard.css must not apply `overflow: hidden` to all desktop routes"
-    )
+    ), "dashboard.css must not apply `overflow: hidden` to all desktop routes"
     assert re.search(
         r"body\.dashboard-active\s*\{[^}]*overflow:\s*hidden",
         css,

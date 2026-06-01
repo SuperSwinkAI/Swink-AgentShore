@@ -152,9 +152,7 @@ def recover_via_sqlite_recover(
         return False, [f".recover dump OSError: {exc}"]
 
     if not dump.stdout:
-        stderr_snippet = (
-            dump.stderr.decode("utf-8", errors="replace")[:300] if dump.stderr else ""
-        )
+        stderr_snippet = dump.stderr.decode("utf-8", errors="replace")[:300] if dump.stderr else ""
         return False, [
             f".recover produced no output (rc={dump.returncode}); stderr={stderr_snippet}"
         ]
@@ -179,9 +177,7 @@ def recover_via_sqlite_recover(
         _logger.warning(
             "db_recovery_load_returned_nonzero",
             returncode=load.returncode,
-            stderr=load.stderr.decode("utf-8", errors="replace")[:300]
-            if load.stderr
-            else "",
+            stderr=load.stderr.decode("utf-8", errors="replace")[:300] if load.stderr else "",
         )
 
     return _check_sqlite_file(dest_path)
@@ -428,9 +424,7 @@ class IntegrityMonitor:
                     **evidence,
                 )
             except Exception as exc:  # noqa: BLE001 — evidence capture must not raise
-                _logger.warning(
-                    "db_corruption_evidence_capture_failed", error=str(exc)
-                )
+                _logger.warning("db_corruption_evidence_capture_failed", error=str(exc))
         # Failure → take an immediate snapshot so the next startup has a
         # fresh known-good image to restore from.
         await self._rotate_snapshot()

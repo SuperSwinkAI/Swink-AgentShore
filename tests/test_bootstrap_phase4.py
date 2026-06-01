@@ -21,7 +21,9 @@ async def test_null_state_provider_accepts_all_hooks() -> None:
     provider = NullStateProvider()
     state = OrchestratorState(
         session_id="test",
-        session_state=__import__("agentshore.state", fromlist=["SessionState"]).SessionState.RUNNING,
+        session_state=__import__(
+            "agentshore.state", fromlist=["SessionState"]
+        ).SessionState.RUNNING,
         total_plays=0,
         total_cost=0.0,
     )
@@ -60,6 +62,7 @@ async def test_bootstrap_default_state_provider_is_null(tmp_path: Path) -> None:
         patch("agentshore.core.build_default_registry", return_value=MagicMock()),
         patch("agentshore.core.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
+        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
         patch("agentshore.core.setup_logging"),
     ):
         mock_ds = AsyncMock()
@@ -94,6 +97,7 @@ async def test_bootstrap_calls_setup_logging(tmp_path: Path) -> None:
         patch("agentshore.core.build_default_registry", return_value=MagicMock()),
         patch("agentshore.core.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
+        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
         patch("agentshore.core.setup_logging", side_effect=capture_setup_logging),
     ):
         mock_ds = AsyncMock()
@@ -130,6 +134,7 @@ async def test_bootstrap_logs_each_step_with_timing(
         patch("agentshore.core.build_default_registry", return_value=MagicMock()),
         patch("agentshore.core.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
+        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
         patch("agentshore.core.setup_logging"),
     ):
         mock_ds = AsyncMock()
@@ -227,6 +232,7 @@ async def test_bootstrap_forwards_phases_to_state_provider(tmp_path: Path) -> No
         patch("agentshore.core.build_default_registry", return_value=MagicMock()),
         patch("agentshore.core.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
+        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
         patch("agentshore.core.setup_logging"),
     ):
         mock_ds = AsyncMock()

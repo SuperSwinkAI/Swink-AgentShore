@@ -190,9 +190,7 @@ async def reap_git_orphans(
 
     # 2. Enumerate registered worktrees.
     try:
-        _, stdout, _ = await _run_git(
-            "worktree", "list", "--porcelain", cwd=main_repo, check=False
-        )
+        _, stdout, _ = await _run_git("worktree", "list", "--porcelain", cwd=main_repo, check=False)
     except WorktreeAllocationFailed as exc:
         log.warning("reap_git_orphans_list_failed", reason=exc.reason)
         return []
@@ -219,9 +217,7 @@ async def reap_git_orphans(
         if path in db_paths:
             continue
         try:
-            await _run_git(
-                "worktree", "remove", "--force", path, cwd=main_repo, check=False
-            )
+            await _run_git("worktree", "remove", "--force", path, cwd=main_repo, check=False)
         except (TimeoutError, WorktreeAllocationFailed, OSError) as exc:
             log.warning(
                 "session_start_git_worktree_orphan_reap_failed",

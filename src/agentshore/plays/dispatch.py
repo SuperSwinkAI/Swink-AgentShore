@@ -185,9 +185,7 @@ def _context_discipline(skill_name: str, *, context_path: str) -> str:
 
 def _strip_full_learnings_reads(skill_name: str, skill_content: str) -> str:
     lines = [
-        line
-        for line in skill_content.splitlines()
-        if ".agentshore/learnings.json" not in line
+        line for line in skill_content.splitlines() if ".agentshore/learnings.json" not in line
     ]
     return "\n".join(lines).strip()
 

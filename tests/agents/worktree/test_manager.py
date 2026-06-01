@@ -23,9 +23,7 @@ from agentshore.plays.base import PlayParams
 from agentshore.state import PlayType
 
 
-def _make_manager(
-    store: DataStore, main_repo: Path, worktree_root: Path
-) -> WorktreeManager:
+def _make_manager(store: DataStore, main_repo: Path, worktree_root: Path) -> WorktreeManager:
     return WorktreeManager(
         session_id="sess-1",
         store=store,
@@ -72,10 +70,7 @@ def test_issue_pickup_classifies_as_branch_creating(
         worktree_root=tmp_path / "worktrees",
         cfg=RuntimeConfig(),
     )
-    assert (
-        wm._classify(PlayType.ISSUE_PICKUP, PlayParams(issue_number=42))
-        == "branch_creating"
-    )
+    assert wm._classify(PlayType.ISSUE_PICKUP, PlayParams(issue_number=42)) == "branch_creating"
 
 
 def test_systematic_debugging_routes_dynamically(tmp_path: Path) -> None:
@@ -93,12 +88,7 @@ def test_systematic_debugging_routes_dynamically(tmp_path: Path) -> None:
         cfg=RuntimeConfig(),
     )
     assert wm._classify(PlayType.SYSTEMATIC_DEBUGGING, PlayParams()) == "trunk"
-    assert (
-        wm._classify(
-            PlayType.SYSTEMATIC_DEBUGGING, PlayParams(pr_number=99, branch="x")
-        )
-        == "pr"
-    )
+    assert wm._classify(PlayType.SYSTEMATIC_DEBUGGING, PlayParams(pr_number=99, branch="x")) == "pr"
 
 
 # --- post-add registry verification (issue #584, item 5) --------------------
@@ -148,9 +138,7 @@ async def test_verify_worktree_registered_raises_on_mismatch(
     fake_path.mkdir()
 
     wm = _make_manager(store, main_repo, worktree_root)
-    allocate = AllocateResult(
-        path=fake_path, created=True, fetched=True, head_sha="deadbeef"
-    )
+    allocate = AllocateResult(path=fake_path, created=True, fetched=True, head_sha="deadbeef")
 
     with pytest.raises(WorktreeAllocationFailed) as exc:
         await wm._verify_worktree_registered(allocate, scope="pr")
@@ -179,9 +167,7 @@ async def test_verify_worktree_registered_passes_when_listed(
     monkeypatch.setattr(manager_mod, "_list_worktrees_porcelain", fake_list_porcelain)
 
     wm = _make_manager(store, main_repo, worktree_root)
-    allocate = AllocateResult(
-        path=target, created=True, fetched=True, head_sha="deadbeef"
-    )
+    allocate = AllocateResult(path=target, created=True, fetched=True, head_sha="deadbeef")
     await wm._verify_worktree_registered(allocate, scope="branch_creating")
     # Path survives because verification didn't trip cleanup.
     assert target.exists()
@@ -257,9 +243,7 @@ async def test_finalize_branch_creating_detects_branch_when_result_missing(
     assert returned_branch == "feature/detected"
 
     # Row should now be keyed by the detected branch, status active.
-    promoted = await lookup_by_branch(
-        store, session_id="sess-1", branch_name="feature/detected"
-    )
+    promoted = await lookup_by_branch(store, session_id="sess-1", branch_name="feature/detected")
     assert promoted is not None
     assert promoted.worktree_id == row.worktree_id
     assert promoted.status == "active"
@@ -367,9 +351,7 @@ async def test_finalize_pr_scoped_returns_none(
         alignment_delta=0.0,
     )
 
-    returned_branch = await wm.finalize_after_dispatch(
-        alloc, result=None, play_outcome=outcome
-    )
+    returned_branch = await wm.finalize_after_dispatch(alloc, result=None, play_outcome=outcome)
     assert returned_branch is None
 
 

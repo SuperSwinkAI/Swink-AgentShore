@@ -117,9 +117,13 @@ def test_trusted_ids_cli_add_list_remove(tmp_path: Path) -> None:
     _write(tmp_path, "project:\n  path: .\n")
     runner = CliRunner()
 
-    result = runner.invoke(main, ["trusted-ids", "add-gh", "EXAMPLE-USER", "--project", str(tmp_path)])
+    result = runner.invoke(
+        main, ["trusted-ids", "add-gh", "EXAMPLE-USER", "--project", str(tmp_path)]
+    )
     assert result.exit_code == 0, result.output
-    result = runner.invoke(main, ["trusted-ids", "add-gh", "example-user", "--project", str(tmp_path)])
+    result = runner.invoke(
+        main, ["trusted-ids", "add-gh", "example-user", "--project", str(tmp_path)]
+    )
     assert result.exit_code == 0, result.output
 
     data = yaml.safe_load((tmp_path / "agentshore.yaml").read_text(encoding="utf-8"))

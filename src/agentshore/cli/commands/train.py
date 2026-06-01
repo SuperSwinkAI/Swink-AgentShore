@@ -73,6 +73,7 @@ def train(
         out_path = Path(cfg.rl.policy_path)
     else:
         from agentshore.paths import GLOBAL_WEIGHTS_DIR
+
         out_path = GLOBAL_WEIGHTS_DIR / "policy.pt"
 
     async def _train() -> None:

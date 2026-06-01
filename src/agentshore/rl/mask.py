@@ -908,9 +908,7 @@ def _stage_agent_eligibility(
     return mask
 
 
-def _stage_wedged_end_agent(
-    mask: NDArray[np.bool_], state: OrchestratorState
-) -> NDArray[np.bool_]:
+def _stage_wedged_end_agent(mask: NDArray[np.bool_], state: OrchestratorState) -> NDArray[np.bool_]:
     """Re-enable END_AGENT when a recovery-exhausted agent exists (not draining)."""
     if PlayType.END_AGENT not in V1_ACTION_ORDER:
         return mask

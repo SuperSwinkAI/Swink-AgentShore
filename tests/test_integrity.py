@@ -406,9 +406,9 @@ def test_recover_via_sqlite_recover_salvages_localized_corruption(
     # pages may be fully shredded). The recovery succeeding at all is the
     # interesting signal, not the exact salvage rate.
     conn = sqlite3.connect(str(dest))
-    table_names = {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )}
+    table_names = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
     assert "t" in table_names
 
 
@@ -481,9 +481,7 @@ def test_restore_prefers_snapshot_over_recovery_when_both_viable(
         _corrupt_file(tmp_path / "agentshore.db")
 
     asyncio.run(_setup())
-    chosen = restore_from_snapshot_ring(
-        tmp_path / "agentshore.db", tmp_path
-    )
+    chosen = restore_from_snapshot_ring(tmp_path / "agentshore.db", tmp_path)
     # Snapshot path is what's returned (not the main db_path that the
     # recovery branch would have returned).
     assert chosen == tmp_path / "agentshore.db.snapshot.0"

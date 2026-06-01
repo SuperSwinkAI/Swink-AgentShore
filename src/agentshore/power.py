@@ -130,9 +130,7 @@ class PowerAssertion:
 
         # kCFStringEncodingUTF8 == 0x08000100
         _utf8 = 0x08000100
-        type_cf = cf.CFStringCreateWithCString(
-            None, b"PreventUserIdleSystemSleep", _utf8
-        )
+        type_cf = cf.CFStringCreateWithCString(None, b"PreventUserIdleSystemSleep", _utf8)
         name_cf = cf.CFStringCreateWithCString(None, self._reason.encode("utf-8"), _utf8)
         if not type_cf or not name_cf:
             if type_cf:

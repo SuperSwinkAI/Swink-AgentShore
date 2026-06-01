@@ -59,9 +59,7 @@ class PlayParams:
     # override path skips the action mask. Never set this from policy code.
     bypass_preconditions: bool = False
     extras: dict[str, object] = field(default_factory=dict)
-    _runtime_allocation: _RuntimeAllocation = field(
-        default=None, repr=False, compare=False
-    )
+    _runtime_allocation: _RuntimeAllocation = field(default=None, repr=False, compare=False)
 
     @classmethod
     def empty(cls) -> PlayParams:
