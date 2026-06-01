@@ -865,8 +865,10 @@ def test_cleanup_stale_canonical_uses_module_logger_for_rename(tmp_path: Path) -
         legacy_path,
     )
 
+    # The checkpoint lifecycle now lives in checkpoint_store; it logs via that
+    # module's logger (selector re-exports the function unchanged).
     logger = mock.Mock()
-    with mock.patch("agentshore.rl.selector._logger", logger):
+    with mock.patch("agentshore.rl.checkpoint_store._logger", logger):
         cleanup_stale_canonical_weights(weights_dir)
 
     logger.warning.assert_any_call(

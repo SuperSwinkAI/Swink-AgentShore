@@ -5,6 +5,7 @@ All components are pure functions of RewardSignals; no DB queries.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -192,6 +193,35 @@ class RewardBreakdown:
     clipped_total: float = 0.0
 
 
+# Additive reward-term fields whose values sum to ``raw_total``. Deriving the
+# sum from this tuple (rather than a hand-written 19-term addition) means a
+# dropped term can never silently vanish from the total. Excludes the
+# diagnostic-only fields: ``concurrent_agent_utilization`` /
+# ``concurrent_agent_multiplier`` (inputs to ``concurrent_agent_bonus``, not
+# themselves added) and the ``raw_total`` / ``clipped_total`` outputs.
+_SUMMED_TERMS: tuple[str, ...] = (
+    "issue_throughput",
+    "alignment_delta",
+    "cost_penalty",
+    "time_penalty",
+    "completion_bonus",
+    "stagnation_penalty",
+    "failure_penalty",
+    "issue_inflation_penalty",
+    "anti_confirmation_bonus",
+    "loop_penalty",
+    "progress_play_bonus",
+    "debug_success_bonus",
+    "reconcile_state_success_bonus",
+    "instantiate_success_bonus",
+    "cleanup_success_bonus",
+    "pr_pressure_bonus",
+    "concurrent_agent_bonus",
+    "type_diversity_bonus",
+    "velocity_bonus",
+)
+
+
 def compute_reward(
     signals: RewardSignals,
     cfg: RewardConfig,
@@ -364,27 +394,7 @@ def compute_reward(
     if any_streak >= 6:
         bd.loop_penalty += -0.5 * cfg.loop_penalty * (any_streak - 5)
 
-    raw = (
-        bd.issue_throughput
-        + bd.alignment_delta
-        + bd.cost_penalty
-        + bd.time_penalty
-        + bd.completion_bonus
-        + bd.stagnation_penalty
-        + bd.failure_penalty
-        + bd.issue_inflation_penalty
-        + bd.anti_confirmation_bonus
-        + bd.loop_penalty
-        + bd.progress_play_bonus
-        + bd.debug_success_bonus
-        + bd.reconcile_state_success_bonus
-        + bd.instantiate_success_bonus
-        + bd.cleanup_success_bonus
-        + bd.pr_pressure_bonus
-        + bd.concurrent_agent_bonus
-        + bd.type_diversity_bonus
-        + bd.velocity_bonus
-    )
+    raw = float(sum(getattr(bd, field) for field in _SUMMED_TERMS))
 
     if not math.isfinite(raw):
         _logger.error("reward_non_finite", raw=raw)
@@ -396,31 +406,13 @@ def compute_reward(
     clipped = max(reward_clip_low, min(reward_clip_high, raw))
     bd.clipped_total = clipped
 
-    _logger.debug(
-        "reward_breakdown",
-        issue_throughput=bd.issue_throughput,
-        alignment_delta=bd.alignment_delta,
-        cost_penalty=bd.cost_penalty,
-        time_penalty=bd.time_penalty,
-        completion_bonus=bd.completion_bonus,
-        stagnation_penalty=bd.stagnation_penalty,
-        failure_penalty=bd.failure_penalty,
-        issue_inflation_penalty=bd.issue_inflation_penalty,
-        anti_confirmation_bonus=bd.anti_confirmation_bonus,
-        loop_penalty=bd.loop_penalty,
-        progress_play_bonus=bd.progress_play_bonus,
-        debug_success_bonus=bd.debug_success_bonus,
-        reconcile_state_success_bonus=bd.reconcile_state_success_bonus,
-        instantiate_success_bonus=bd.instantiate_success_bonus,
-        cleanup_success_bonus=bd.cleanup_success_bonus,
-        pr_pressure_bonus=bd.pr_pressure_bonus,
-        concurrent_agent_bonus=bd.concurrent_agent_bonus,
-        concurrent_agent_utilization=bd.concurrent_agent_utilization,
-        concurrent_agent_multiplier=bd.concurrent_agent_multiplier,
-        type_diversity_bonus=bd.type_diversity_bonus,
-        velocity_bonus=bd.velocity_bonus,
-        raw=raw,
-        clipped=clipped,
-    )
+    # Log every breakdown field by name via ``asdict`` (so a new field is logged
+    # automatically), minus the two output fields that the call surfaces under
+    # the legacy ``raw`` / ``clipped`` keys instead of ``raw_total`` /
+    # ``clipped_total``.
+    fields = dataclasses.asdict(bd)
+    del fields["raw_total"]
+    del fields["clipped_total"]
+    _logger.debug("reward_breakdown", **fields, raw=raw, clipped=clipped)
 
     return clipped, bd
