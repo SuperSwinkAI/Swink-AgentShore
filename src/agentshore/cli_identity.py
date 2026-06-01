@@ -263,32 +263,6 @@ def _agentshore_managed_service(service: str) -> bool:
     return canonical_keychain_service(service).startswith("agentshore/")
 
 
-class KeychainManager:
-    """Convenience grouping of keychain operations — delegates to module-level
-    functions so monkeypatching in tests works transparently.
-    """
-
-    @staticmethod
-    def backend_label() -> str | None:
-        return _keychain_backend_label()
-
-    @staticmethod
-    def store(service: str, token: str) -> tuple[bool, str]:
-        return _store_in_keychain(service, token)
-
-    @staticmethod
-    def has_token(service: str) -> bool:
-        return _keychain_has_token(service)
-
-    @staticmethod
-    def managed_service(login: str, repo_name_with_owner: str | None) -> str:
-        return _managed_keychain_service(login, repo_name_with_owner)
-
-    @staticmethod
-    def is_agentshore_managed(service: str) -> bool:
-        return _agentshore_managed_service(service)
-
-
 class IdentityWizard:
     """Two-pass interactive wizard for binding GitHub identities to agents.
 
@@ -1145,7 +1119,12 @@ def _echo_post_wizard_report(config_path: Path, result: WizardResult) -> None:
     any env-strategy identity that's still unset.
     """
     try:
-        from agentshore.agents.identity import report_identities, report_identity_repo_access
+        from agentshore.agents.identity import (
+            bad_identity_rows,
+            missing_token_rows,
+            report_identities,
+            report_identity_repo_access,
+        )
         from agentshore.config import load_config
         from agentshore.errors import ConfigError
 
@@ -1157,14 +1136,8 @@ def _echo_post_wizard_report(config_path: Path, result: WizardResult) -> None:
 
     click.echo("")
     echo_identity_report(rows)
-    bad = [
-        r
-        for r in rows
-        if r.identity_name is not None
-        and r.token_source not in {"ambient", "none"}
-        and not r.token_valid
-    ]
-    missing = [r for r in bad if not r.token_resolved and r.token_source in {"env", "gh_login"}]
+    bad = bad_identity_rows(rows)
+    missing = missing_token_rows(rows)
     if bad and not missing:
         click.echo("\n  One or more identity tokens failed validation.")
         return
