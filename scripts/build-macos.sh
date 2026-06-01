@@ -30,16 +30,19 @@
 #   6. Resolve macOS code-signing identity (auto-detect Developer ID Application)
 #   7. Build Tauri app bundle (`npx tauri build`)
 #   8. Verify .app code signature via `codesign --verify --deep --strict`
-#   9. Build two component .pkgs via `pkgbuild`:
-#      - ai.agentshore.desktop  .app + install-agentshore-venv.sh + bundled wheel
+#   9. Build three component .pkgs via `pkgbuild`:
+#      - ai.agentshore.desktop    .app + install-agentshore-venv.sh + bundled wheel
 #                            → provisions ~/Library/Application Support/AgentShore/venv
-#      - ai.agentshore.cli      nopayload + install-agentshore-cli.sh + bundled wheel
+#      - ai.agentshore.timelapse  nopayload + install-timelapse.sh
+#                            → drives install_timelapse() in the managed venv
+#                              (ffmpeg + Node 24 + timelapse-capture CLI)
+#      - ai.agentshore.cli        nopayload + install-agentshore-cli.sh + bundled wheel
 #                            → `uv tool install --force` for ~/.local/bin/agentshore
-#      Wrap both via `productbuild --distribution` so Installer.app's
-#      Customize panel shows "AgentShore Desktop" (required) and "AgentShore CLI"
-#      (opt-out checkbox) as deliberate visible choices. Sign with
-#      Developer ID Installer if that cert is in the Keychain
-#      (skipped via --no-pkg).
+#      Wrap all three via `productbuild --distribution` so Installer.app's
+#      Customize panel shows "AgentShore Desktop" (required), "Timelapse
+#      Capture" (opt-in checkbox), and "AgentShore CLI" (opt-out checkbox) as
+#      deliberate visible choices. Sign with Developer ID Installer if that
+#      cert is in the Keychain (skipped via --no-pkg).
 #  10. (optional --notarize) Submit the .pkg via `xcrun notarytool` + staple
 #  11. (optional --install) Install to /Applications (`installer -pkg`)
 #  12. Reveal the .pkg in Finder via `open -R`
@@ -336,6 +339,37 @@ if [[ "$BUILD_PKG" -eq 1 ]]; then
            "$CLI_COMPONENT_PKG"
   info "Wrote CLI component pkg: $CLI_COMPONENT_PKG"
 
+  # — Timelapse component (nopayload, scripts-only; opt-in) —
+  # Drives install_timelapse() in the managed sidecar venv the (required)
+  # Desktop component provisioned earlier in this same run — no wheel needed,
+  # so the install recipe (ffmpeg + Node 24 + npm + doctor) has a single
+  # source of truth in agentshore.timelapse.setup.
+  TIMELAPSE_COMPONENT_PKG="$COMPONENT_PKG_DIR/agentshore-timelapse-component.pkg"
+  TIMELAPSE_SCRIPTS_STAGE_DIR="$DESKTOP_DIR/src-tauri/target/pkg-timelapse-scripts"
+  rm -rf "$TIMELAPSE_SCRIPTS_STAGE_DIR" && mkdir -p "$TIMELAPSE_SCRIPTS_STAGE_DIR"
+  cp "$INSTALLER_SCRIPTS_DIR/timelapse-postinstall" "$TIMELAPSE_SCRIPTS_STAGE_DIR/postinstall"
+  cp "$REPO_ROOT/scripts/install-timelapse.sh" \
+     "$TIMELAPSE_SCRIPTS_STAGE_DIR/install-timelapse.sh"
+  chmod 0755 "$TIMELAPSE_SCRIPTS_STAGE_DIR/postinstall" \
+             "$TIMELAPSE_SCRIPTS_STAGE_DIR/install-timelapse.sh"
+  pkgbuild --nopayload \
+           --scripts "$TIMELAPSE_SCRIPTS_STAGE_DIR" \
+           --identifier "ai.agentshore.timelapse" \
+           --version "$APP_VERSION" \
+           "$TIMELAPSE_COMPONENT_PKG"
+  # Provisioning pulls Homebrew formulae (ffmpeg/node) plus a headless
+  # Chromium, which can exceed pkgbuild's default 600 s postinstall timeout.
+  # Expand → patch → flatten to raise it to 3600 s, mirroring the desktop venv
+  # provisioning bump above.
+  TL_EXPANDED_PKG_DIR="$COMPONENT_PKG_DIR/agentshore-timelapse-expanded"
+  rm -rf "$TL_EXPANDED_PKG_DIR"
+  pkgutil --expand "$TIMELAPSE_COMPONENT_PKG" "$TL_EXPANDED_PKG_DIR"
+  /usr/bin/sed -i '' 's/timeout="600"/timeout="3600"/g' \
+      "$TL_EXPANDED_PKG_DIR/PackageInfo"
+  pkgutil --flatten "$TL_EXPANDED_PKG_DIR" "$TIMELAPSE_COMPONENT_PKG"
+  rm -rf "$TL_EXPANDED_PKG_DIR"
+  info "Wrote timelapse component pkg: $TIMELAPSE_COMPONENT_PKG"
+
   # ── 9b. Wrap components in distribution pkg via productbuild ──────────────
   [[ -f "$DISTRIBUTION_TEMPLATE" ]] \
     || die "Distribution template missing: $DISTRIBUTION_TEMPLATE"
@@ -354,6 +388,7 @@ if [[ "$BUILD_PKG" -eq 1 ]]; then
   DISTRIBUTION_XML="$COMPONENT_PKG_DIR/Distribution.xml"
   sed -e "s|@VERSION@|$APP_VERSION|g" \
       -e "s|@APP_COMPONENT_PKG@|$(basename "$APP_COMPONENT_PKG")|g" \
+      -e "s|@TIMELAPSE_COMPONENT_PKG@|$(basename "$TIMELAPSE_COMPONENT_PKG")|g" \
       -e "s|@CLI_COMPONENT_PKG@|$(basename "$CLI_COMPONENT_PKG")|g" \
       "$DISTRIBUTION_TEMPLATE" > "$DISTRIBUTION_XML"
   info "Rendered distribution: $DISTRIBUTION_XML"
