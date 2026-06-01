@@ -318,17 +318,47 @@ class _CompletionMixin(_OrchestratorBase):
 
     async def _process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
         """Process a completed play task — RL experience, learnings, and state."""
+        loaded = self._pop_completed_dispatch(dispatch_id, task)
+        if loaded is None:
+            return
+        ctx, outcome = loaded
+        completed_play_type = outcome.play_type
+        state_before = ctx.state_at_dispatch
+
+        await self._check_main_repo_after_completion(dispatch_id, ctx, outcome)
+        if await self._handle_skipped_completion(outcome):
+            return
+
+        self._record_completion_bookkeeping(ctx, outcome, completed_play_type)
+        if await self._schedule_retry_if_requested(ctx, outcome, completed_play_type):
+            return
+
+        await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
+        next_state = await self._run_completion_control_checks(outcome)
+        await self._record_completion_experience(
+            ctx,
+            outcome,
+            state_before,
+            next_state,
+            completed_play_type,
+        )
+        await self._publish_completion_results(outcome, next_state, completed_play_type)
+        await self._handle_end_session_completion(ctx, outcome, next_state, completed_play_type)
+
+    def _pop_completed_dispatch(
+        self, dispatch_id: str, task: asyncio.Task[PlayOutcome]
+    ) -> tuple[_DispatchContext, PlayOutcome] | None:
         ctx = self._dispatch_ctx.pop(dispatch_id, None)
         if ctx is None:
             # Still drop the pre-play snapshot if we somehow have one without
             # matching dispatch context. Prevents the dict from leaking.
             self._pre_play_branches.pop(dispatch_id, None)
-            return
+            return None
 
         try:
             outcome: PlayOutcome = task.result()
         except asyncio.CancelledError:
-            return
+            return None
         except Exception as exc:
             _logger.error(
                 "play_task_failed",
@@ -337,10 +367,16 @@ class _CompletionMixin(_OrchestratorBase):
                 error=str(exc),
                 exc_info=True,
             )
-            return
+            return None
+        return ctx, outcome
 
+    async def _check_main_repo_after_completion(
+        self,
+        dispatch_id: str,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+    ) -> None:
         completed_play_type = outcome.play_type
-        state_before = ctx.state_at_dispatch
 
         # desktop-kqo5: main-repo symbolic-ref invariant guard. Fires at every
         # play boundary, including skipped outcomes — a play that skipped at
@@ -382,6 +418,8 @@ class _CompletionMixin(_OrchestratorBase):
                 default_branch=self._default_branch,
             )
 
+    async def _handle_skipped_completion(self, outcome: PlayOutcome) -> bool:
+        completed_play_type = outcome.play_type
         if getattr(outcome, "skipped", False) is True:
             # desktop-85ex: unify the ``play_skipped`` schema between the
             # loop-tick selector-None path (loop.py) and the executor-time
@@ -430,8 +468,15 @@ class _CompletionMixin(_OrchestratorBase):
             # dispatched) — feed the forward-progress monitor here, on the skip
             # path that returns early before the main checks below.
             await self._check_no_forward_progress(post_state, outcome)
-            return
+            return True
+        return False
 
+    def _record_completion_bookkeeping(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
         # Any completed (non-skipped) play clears the executor-skip flag.
         self._recent_executor_skip = False
         self._executor_skip_window.append(False)
@@ -506,6 +551,13 @@ class _CompletionMixin(_OrchestratorBase):
                 self._recent_applied_labels.append(
                     (ctx.params.issue_number, ROOT_CAUSE_FOUND_LABEL)
                 )
+
+    async def _schedule_retry_if_requested(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> bool:
         if outcome.retry_requested:
             claim_group_id_raw = ctx.params.extras.get("claim_group_id")
             if isinstance(claim_group_id_raw, str) and claim_group_id_raw:
@@ -542,7 +594,7 @@ class _CompletionMixin(_OrchestratorBase):
                             claim_group_id=claim_group_id_raw,
                             attempt=new_attempt,
                         )
-                        return
+                        return True
                 _logger.warning(
                     "play_retry_exhausted",
                     session_id=self._session_id,
@@ -555,7 +607,14 @@ class _CompletionMixin(_OrchestratorBase):
                     claim_group_id_raw,
                     status="released",
                 )
+        return False
 
+    async def _record_unblock_attempt_if_needed(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
         # Track per-PR unblock_pr ATTEMPTS so the resolver can stop retrying
         # irresolvable-conflict PRs after _UNBLOCK_PR_EXHAUSTION_THRESHOLD
         # attempts. We count every completion — success or failure — because
@@ -581,6 +640,7 @@ class _CompletionMixin(_OrchestratorBase):
                     "mark_pr_manual_required",
                 )
 
+    async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
         next_state = await self._build_state()
         await self._record_trajectory_snapshot(outcome, next_state)
         next_state = await self._begin_budget_reserve_drain_if_needed(next_state)
@@ -602,7 +662,16 @@ class _CompletionMixin(_OrchestratorBase):
             await self._pause_with_reason("stagnation")
         self._feedback_cadence_plays_since_ack += 1
         await self._pause_for_feedback_cadence_if_due()
+        return next_state
 
+    async def _record_completion_experience(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        state_before: OrchestratorState,
+        next_state: OrchestratorState,
+        completed_play_type: PlayType,
+    ) -> None:
         # Phase 3: RL experience collection and policy update.
         #
         # The fragile, crash-prone tail (snapshots, reward, observation encoding,
@@ -666,6 +735,12 @@ class _CompletionMixin(_OrchestratorBase):
                 done=done,
             )
 
+    async def _publish_completion_results(
+        self,
+        outcome: PlayOutcome,
+        next_state: OrchestratorState,
+        completed_play_type: PlayType,
+    ) -> None:
         # Persist alignment scores back to DB after calibrate_alignment plays
         if completed_play_type == PlayType.CALIBRATE_ALIGNMENT and outcome.success:
             await self._safe_call(
@@ -773,6 +848,13 @@ class _CompletionMixin(_OrchestratorBase):
             self._state_provider.on_state_update(post_state), "on_state_update_post"
         )
 
+    async def _handle_end_session_completion(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        next_state: OrchestratorState,
+        completed_play_type: PlayType,
+    ) -> None:
         if completed_play_type == PlayType.END_SESSION:
             if not outcome.success:
                 self._end_session_dispatch_started = False
