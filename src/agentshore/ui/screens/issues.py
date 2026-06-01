@@ -8,12 +8,15 @@ from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from agentshore.github.pr_links import issue_numbers_for_pr
-
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from agentshore.state import IssueSnapshot, OrchestratorState, PullRequestSnapshot
+    from agentshore.state import (
+        IssueSnapshot,
+        OrchestratorState,
+        PullRequestSnapshot,
+        WorkQueueItem,
+    )
 
 
 class IssueWorkQueueScreen(ModalScreen[None]):
@@ -37,51 +40,14 @@ def _render_work_queue(state: OrchestratorState | None) -> str:
     if state is None:
         return "Work Queue\n" + "-" * 60 + "\nNo session state available yet."
 
-    prs_by_issue: dict[int, PullRequestSnapshot] = {}
-    for pr in state.pull_requests:
-        for issue_number in issue_numbers_for_pr(pr):
-            existing = prs_by_issue.get(issue_number)
-            if existing is None or (existing.state != "open" and pr.state == "open"):
-                prs_by_issue[issue_number] = pr
-
-    pending_review_prs = {item.pr_number for item in state.pending_review_queue}
-    reviewing_issues = {
-        issue_number
-        for pr in state.pull_requests
-        if pr.state == "open" or pr.pr_number in pending_review_prs
-        for issue_number in issue_numbers_for_pr(pr)
-    }
-    in_progress_issues = {
-        agent.current_play_issue_number
-        for agent in state.agents
-        if agent.current_play_issue_number is not None and agent.current_play_type is not None
-    }
-
+    view = state.work_queue()
     groups: dict[str, list[str]] = {
-        "TO DO": [],
-        "IN PROGRESS": [],
-        "IN REVIEW": [],
-        "DONE": [],
+        "TO DO": [_issue_line(item) for item in view.todo],
+        "IN PROGRESS": [_issue_line(item) for item in view.in_progress],
+        "IN REVIEW": [_issue_line(item) for item in view.in_review],
+        "DONE": [_issue_line(item) for item in view.done],
     }
-    for issue in state.open_issues:
-        issue_pr = prs_by_issue.get(issue.issue_number)
-        if issue.state.lower() == "closed":
-            group = "DONE"
-        elif issue.issue_number in in_progress_issues:
-            group = "IN PROGRESS"
-        elif issue.issue_number in reviewing_issues:
-            group = "IN REVIEW"
-        else:
-            group = "TO DO"
-        groups[group].append(_issue_line(issue, issue_pr))
-
-    known_issue_numbers = {issue.issue_number for issue in state.open_issues}
-    for pr in state.pull_requests:
-        if pr.state != "open":
-            continue
-        if known_issue_numbers.intersection(issue_numbers_for_pr(pr)):
-            continue
-        groups["IN REVIEW"].append(_pr_line(pr, queued=pr.pr_number in pending_review_prs))
+    groups["IN REVIEW"].extend(_pr_line(pr, queued=queued) for pr, queued in view.orphan_review_prs)
 
     lines = [
         "Work Queue",
@@ -101,7 +67,8 @@ def _render_work_queue(state: OrchestratorState | None) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _issue_line(issue: IssueSnapshot, pr: PullRequestSnapshot | None) -> str:
+def _issue_line(item: WorkQueueItem) -> str:
+    issue: IssueSnapshot = item.issue
     bits = [
         f"#{issue.issue_number}",
         issue.title,
@@ -122,7 +89,8 @@ def _issue_line(issue: IssueSnapshot, pr: PullRequestSnapshot | None) -> str:
         bits.append(f"created={issue.created_at}")
     if issue.closed_at:
         bits.append(f"closed={issue.closed_at}")
-    if pr is not None:
+    if item.pr is not None:
+        pr = item.pr
         bits.append(f"PR #{pr.pr_number} {pr.status_check_summary or 'checks?'}")
         if pr.blocked:
             bits.append("blocked=" + ",".join(pr.blocked_reasons))
