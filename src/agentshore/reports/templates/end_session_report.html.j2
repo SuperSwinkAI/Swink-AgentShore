@@ -306,11 +306,6 @@
             );
             border-color: var(--log-fail-border);
         }
-        .play-log-legend-swatch.skip {
-            background: transparent;
-            border-color: var(--log-muted);
-            border-style: dashed;
-        }
         .play-log-legend-swatch.future {
             border-style: dashed;
             background: repeating-linear-gradient(
@@ -488,12 +483,6 @@
             background: var(--log-panel-strong);
             border-radius: 2px;
             padding: 0 3px;
-        }
-        .play-log-chip.skip {
-            border-color: var(--log-muted);
-            color: var(--log-muted);
-            background: transparent;
-            border-style: dashed;
         }
         footer {
             margin-top: 32px;
@@ -696,9 +685,6 @@
                         <span class="play-log-legend-swatch fail"></span>FAIL
                     </span>
                     <span class="play-log-legend-item">
-                        <span class="play-log-legend-swatch skip"></span>SKIP (gated)
-                    </span>
-                    <span class="play-log-legend-item">
                         <span class="play-log-legend-swatch future"></span>future
                     </span>
                 </span>
@@ -734,7 +720,7 @@
                                     class="play-log-chip {{ row.status }}"
                                     title="play #{{ row.play_id }} | {{ row.play_type }} | {{ row.started_at }} | {{ row.duration_seconds | duration }} | ${{ '%.4f' | format(row.dollar_cost) }}{% if row.error %} | {{ row.error }}{% endif %}"
                                 >
-                                    {% if row.status == 'ok' %}OK{% elif row.status == 'skip' %}SKIP{% else %}<span>FAIL</span>{% endif %}
+                                    {% if row.status == 'ok' %}OK{% else %}<span>FAIL</span>{% endif %}
                                 </div>
                                 {% endif %}
                             </div>

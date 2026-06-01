@@ -254,8 +254,13 @@ async def test_collect_end_session_report_play_log_uses_persisted_display_name(s
     assert report["play_log_rows"][0]["agent_name"] == "Claude/large: Ember Raven"
 
 
-async def test_gated_skip_renders_as_skip_not_fail_or_agentshore(store):
-    """A PPO-selected-then-gated play (skip:*, no agent) must not show as FAIL/agentshore."""
+async def test_gated_skip_excluded_from_play_log(store):
+    """A PPO-selected-then-gated play (skip:*, no agent) is omitted from the play log.
+
+    Gated skips never reach an agent (0ms, $0, agent_id=None) — they are not
+    executed plays, so they have no row in the play-log timeline. The per-type
+    stats table still accounts for them via its ``skipped`` bucket.
+    """
     await _seed_session(store)
     await _seed_agent(store, agent_id="agent-1", display_name="Claude/large: Ember Raven")
     # A real dispatched play that failed, and a gated skip (no agent).
@@ -276,10 +281,12 @@ async def test_gated_skip_renders_as_skip_not_fail_or_agentshore(store):
     summary = await collector.collect_session_summary(SID)
 
     rows = {r["play_type"]: r for r in report["play_log_rows"]}
-    skip_row = rows["write_implementation_plan"]
-    assert skip_row["status"] == "skip"
-    assert skip_row["agent_name"] == "— (gated)"
+    # The gated skip is not in the play log at all; the real play remains.
+    assert "write_implementation_plan" not in rows
     assert rows["issue_pickup"]["status"] == "ok"
+    # No row carries the "agentshore" fallback actor or a skip status.
+    assert all(r["agent_name"] != "agentshore" for r in report["play_log_rows"])
+    assert all(r["status"] != "skip" for r in report["play_log_rows"])
 
     # Overview: the skip is not a failure.
     ov = summary["overview"]
