@@ -354,7 +354,7 @@ async def _phase_init_worktree_manager(
     async with _step("init_worktree_manager"):
         from agentshore.agents.worktree import WorktreeManager, default_worktree_root
 
-        worktree_root = default_worktree_root(repo_root)
+        worktree_root = default_worktree_root(repo_root, cfg)
         worktree_root.mkdir(parents=True, exist_ok=True)
         orch._worktrees = WorktreeManager(
             session_id=sid,

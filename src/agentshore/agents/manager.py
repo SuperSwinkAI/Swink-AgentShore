@@ -74,17 +74,19 @@ class AgentManager:
         self._store = store
         self._cfg = cfg
         self._working_dir = working_dir
-        # WorktreeManager: when not injected, build one anchored on
-        # ``<repo>/../agentshore-worktrees/<project-name>/``. Constructed lazily-
+        # WorktreeManager: when not injected, build one anchored on the
+        # canonical worktree root (project-local ``<repo>/.agentshore/worktrees/``
+        # by default, or ``cfg.worktrees.root`` when set). Constructed lazily-
         # cheap, no I/O — heavy work happens inside allocate_for_dispatch.
         if worktree_manager is None:
+            from agentshore.agents.worktree import default_worktree_root
+
             resolved_dir = working_dir.resolve()
-            default_root = resolved_dir.parent / "agentshore-worktrees" / resolved_dir.name
             worktree_manager = WorktreeManager(
                 session_id=session_id,
                 store=store,
                 main_repo=resolved_dir,
-                worktree_root=default_root,
+                worktree_root=default_worktree_root(resolved_dir, cfg),
                 cfg=cfg,
             )
         self._worktrees = worktree_manager

@@ -40,6 +40,7 @@ from agentshore.agents.worktree.allocator import (
 from agentshore.agents.worktree.reaper import (
     ReapReport,
     reap_for_closed_prs,
+    sweep_orphans,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -383,6 +384,10 @@ class WorktreeManager:
             current_session_id=self._session_id,
             main_repo=self._main_repo,
         )
+        # Bound the orphan quarantine: delete aged-out orphan worktrees so the
+        # ``-orphan`` dir can't grow unbounded (it never auto-cleaned before).
+        retention = getattr(getattr(self._cfg, "worktrees", None), "orphan_retention_seconds", 0)
+        await sweep_orphans(self._worktree_root, retention_seconds=retention)
         # Prune locks whose (scope, key) no longer maps to a live row in
         # the current session (desktop-kdl5).
         await self._prune_locks()

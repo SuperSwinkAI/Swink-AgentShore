@@ -449,6 +449,18 @@ class WorktreeConfig:
     # ``reaped``. Default 1h matches the plan's PR-close grace period.
     reap_ttl_seconds: int = 3600
 
+    # Base directory for AgentShore-managed worktrees. ``None`` (default) keeps
+    # them project-local under ``<repo>/.agentshore/worktrees/`` (gitignored,
+    # same filesystem, never the repo's parent). Set to an absolute path to
+    # centralize worktrees elsewhere; per-repo subdirs disambiguate by name.
+    root: str | None = None
+
+    # Seconds an orphaned (quarantined) worktree is retained before the
+    # session-start sweep deletes it. Orphans are full repo checkouts that
+    # otherwise accumulate unbounded (only uncommitted agent work is unique —
+    # committed work is already in git). Default 7 days.
+    orphan_retention_seconds: int = 604800
+
 
 # ---------------------------------------------------------------------------
 # Master availability record (~/.config/swink/agentshore/availability.yaml)

@@ -494,14 +494,14 @@ class ReconcileReport:
 
 
 def _quarantine_root(worktree_root: Path) -> Path:
-    """Sibling-of-worktree-root layout: ``<parent>/agentshore-worktrees-orphan/<repo>``.
+    """Quarantine dir: an ``-orphan`` sibling of the worktree root.
 
-    For a typical bootstrap layout where ``worktree_root`` is
-    ``<workspace>/agentshore-worktrees/<repo>``, this returns
-    ``<workspace>/agentshore-worktrees-orphan/<repo>``.
+    For ``worktree_root`` = ``<base>/worktrees`` this returns
+    ``<base>/worktrees-orphan`` (same parent), so the orphan dir tracks
+    whatever base the worktree root uses (project-local ``.agentshore/`` by
+    default, or a configured central root).
     """
-    parent = worktree_root.parent
-    return parent.with_name(parent.name + "-orphan") / worktree_root.name
+    return worktree_root.with_name(worktree_root.name + "-orphan")
 
 
 async def quarantine_orphan(*, orphan_path: Path, worktree_root: Path) -> Path:
