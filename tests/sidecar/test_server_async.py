@@ -15,8 +15,6 @@ import pytest
 from agentshore import __version__ as agentshore_version
 from agentshore.data.models import ArchiveRecord, PlayRecord, SessionRecord
 from agentshore.data.store import DataStore
-from agentshore.session_path import IpcEndpoint
-from agentshore.sidecar.embedded_bridge import EmbeddedBridge
 from agentshore.sidecar.handshake import PROTOCOL_VERSION, build_response
 from agentshore.sidecar.server import (
     ERR_SESSION_ACTIVE,
@@ -32,17 +30,7 @@ from agentshore.sidecar.server import (
     build_session_completed_notification,
     build_sidecar_health_notification,
     handle_request,
-    run_async,
-    serve_async,
 )
-
-
-@pytest.fixture()
-def static_dir(tmp_path: Path) -> Path:
-    d = tmp_path / "static"
-    d.mkdir()
-    (d / "index.html").write_text("<html><body>test</body></html>", encoding="utf-8")
-    return d
 
 
 @pytest.mark.asyncio
@@ -60,7 +48,7 @@ async def test_serve_async_round_trips_handshake() -> None:
         + "\n"
     )
     stdout = io.StringIO()
-    await serve_async(stdin, stdout)
+    await _serve_async(stdin, stdout, health_interval_seconds=0)
     [reply_line] = [line for line in stdout.getvalue().splitlines() if line.strip()]
     reply = json.loads(reply_line)
     assert reply["id"] == 1
@@ -82,7 +70,7 @@ async def test_serve_async_handles_multiple_requests() -> None:
     ]
     stdin = io.StringIO("\n".join(json.dumps(p) for p in payloads) + "\n")
     stdout = io.StringIO()
-    await serve_async(stdin, stdout)
+    await _serve_async(stdin, stdout, health_interval_seconds=0)
     replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
     assert [r["id"] for r in replies] == ["a", "b"]
     assert "result" in replies[0]
@@ -97,7 +85,7 @@ async def test_serve_async_returns_on_eof() -> None:
     # stdin yields a clean empty stdout (regression for any future heartbeat
     # default-firing surprise on synchronous one-shot tests).
     await asyncio.wait_for(
-        serve_async(stdin, stdout, health_interval_seconds=0),
+        _serve_async(stdin, stdout, health_interval_seconds=0),
         timeout=1.0,
     )
     assert stdout.getvalue() == ""
@@ -108,26 +96,36 @@ async def test_serve_async_emits_periodic_sidecar_health_notifications() -> None
     """``sidecar.health`` fires on a fixed interval (DESIGN §5.1).
 
     Closes part of desktop-8e1: the health notification builder existed but
-    was never invoked. Drives ``serve_async`` with a small interval and a
+    was never invoked. Drives ``_serve_async`` with a small interval and a
     stdin that briefly stalls so the heartbeat fires before EOF.
     """
     import time
 
     class _StalledThenEofStdin:
+        """Iterable stdin that stalls once (so the heartbeat fires) then hits EOF.
+
+        ``_serve_async`` reads stdin on a daemon thread via ``for line in
+        stdin``; the iterator sleeps once before raising ``StopIteration`` so a
+        ``sidecar.health`` notification lands before the loop sees EOF.
+        """
+
         def __init__(self, stall_seconds: float) -> None:
             self._stall_seconds = stall_seconds
             self._stalled = False
 
-        def readline(self) -> str:
+        def __iter__(self) -> Iterator[str]:
+            return self  # type: ignore[return-value]
+
+        def __next__(self) -> str:
             if not self._stalled:
                 self._stalled = True
                 time.sleep(self._stall_seconds)
-            return ""
+            raise StopIteration
 
     stdin = _StalledThenEofStdin(stall_seconds=0.2)
     stdout = io.StringIO()
     await asyncio.wait_for(
-        serve_async(stdin, stdout, health_interval_seconds=0.05),
+        _serve_async(stdin, stdout, health_interval_seconds=0.05),
         timeout=2.0,
     )
     notifications = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
@@ -148,10 +146,10 @@ async def test_serve_async_cancels_health_emitter_on_shutdown() -> None:
     stdin = io.StringIO("")
     stdout = io.StringIO()
     # Real (positive) interval so the heartbeat task is created; EOF then
-    # forces the finally-block to cancel it. ``serve_async`` must return
+    # forces the shutdown path to cancel it. ``_serve_async`` must return
     # promptly without leaking the task.
     await asyncio.wait_for(
-        serve_async(stdin, stdout, health_interval_seconds=10.0),
+        _serve_async(stdin, stdout, health_interval_seconds=10.0),
         timeout=1.0,
     )
 
@@ -212,7 +210,7 @@ async def test_serve_async_cancel_responds_before_handler_cleanup_completes() ->
     # Cancel reply must be observed *before* cleanup completes — i.e. the
     # cleanup_done flag is still clear at the moment we wrote "request cancelled".
     assert cancel_observed_after_cleanup is False
-    # And cleanup must still run to completion — serve_async drains pending
+    # And cleanup must still run to completion — _serve_async drains pending
     # tasks before returning, so the event is set by the time we get here.
     assert cleanup_done.is_set()
 
@@ -262,38 +260,33 @@ async def test_serve_async_cancel_swallows_non_cancelled_error_from_handler_clea
 
 
 @pytest.mark.asyncio
-async def test_run_async_hosts_bridge_alongside_stdio(
-    monkeypatch: pytest.MonkeyPatch, static_dir: Path
-) -> None:
-    """``run_async`` starts the bridge, serves a request, then stops the bridge."""
-    bridge = EmbeddedBridge(
-        IpcEndpoint.tcp("127.0.0.1", 0),
-        session_dir=static_dir.parent,
-        static_dir=static_dir,
-    )
+async def test_serve_async_emits_valid_json_for_non_finite_floats() -> None:
+    """A response carrying ``inf``/``nan`` must serialize as valid JSON.
 
-    sidecar_build_id = build_response()["sidecar_build_id"]
-    request = {
-        "jsonrpc": "2.0",
-        "id": 99,
-        "method": "app.handshake",
-        "params": {"client": "agentshore-desktop", "client_build_id": sidecar_build_id},
-    }
-    stdin = io.StringIO(json.dumps(request) + "\n")
-    stdout = io.StringIO()
-    monkeypatch.setattr("sys.stdin", stdin)
-    monkeypatch.setattr("sys.stdout", stdout)
+    The sidecar stdout writes now route through ``ipc.wire.frame`` (json_safe +
+    ``allow_nan=False``), so non-finite floats become ``null`` instead of the
+    bare ``Infinity``/``NaN`` tokens that trip a strict JSON parser. Regression
+    for the divergence between the IPC and sidecar wire framings.
+    """
 
-    await asyncio.wait_for(run_async(bridge=bridge), timeout=15.0)
+    async def _handler(_payload: object) -> object:
+        return {"value": float("inf"), "ratio": float("nan"), "ok": 1.5}
 
-    replies = [
-        json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")
-    ]
-    handshake_replies = [r for r in replies if isinstance(r, dict) and r.get("id") == 99]
-    assert len(handshake_replies) == 1, replies
-    reply = handshake_replies[0]
-    assert reply["result"]["protocol_version"] == PROTOCOL_VERSION
-    assert bridge.is_running is False
+    METHOD_HANDLERS["test.non_finite"] = _handler
+    try:
+        stdin = io.StringIO(
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "test.non_finite"}) + "\n"
+        )
+        stdout = io.StringIO()
+        await _serve_async(stdin, stdout, health_interval_seconds=0)
+    finally:
+        METHOD_HANDLERS.pop("test.non_finite", None)
+
+    [line] = [text for text in stdout.getvalue().splitlines() if text.strip()]
+    assert "Infinity" not in line and "NaN" not in line
+    # Strict parse — would raise on bare Infinity/NaN tokens.
+    reply = json.loads(line)
+    assert reply["result"] == {"value": None, "ratio": None, "ok": 1.5}
 
 
 async def _populated_session(db_path: Path) -> tuple[DataStore, str, str]:
