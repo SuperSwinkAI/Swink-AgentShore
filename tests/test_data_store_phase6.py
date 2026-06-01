@@ -163,6 +163,38 @@ async def test_list_all_issues(store):
     assert states == {"open", "closed"}
 
 
+async def test_get_open_issues_tolerates_malformed_labels(store):
+    """A malformed ``labels`` JSON value must degrade to ``[]`` rather than
+    raising and blowing up the whole ``get_open_issues`` read.
+
+    Regression for the bare ``json.loads(raw_labels)`` in
+    ``_row_to_github_issue``; it now routes through ``_load_json_str_list``.
+    """
+    sid, _ = await _seed(store)
+    await store.cache_github_issues(
+        sid,
+        [
+            GitHubIssueRecord(
+                issue_number=7,
+                session_id=sid,
+                title="Issue with bad labels",
+                state="open",
+                created_at="2026-04-27T00:00:00",
+            )
+        ],
+    )
+    # Corrupt the persisted labels column to a non-JSON value.
+    await store._conn.execute(
+        "UPDATE github_issues SET labels = ? WHERE issue_number = ? AND session_id = ?",
+        ("{not json", 7, sid),
+    )
+    await store._conn.commit()
+
+    issues = await store.get_open_issues(sid)
+    assert len(issues) == 1
+    assert issues[0].labels == []
+
+
 # ---------------------------------------------------------------------------
 # list_scope_drift
 # ---------------------------------------------------------------------------

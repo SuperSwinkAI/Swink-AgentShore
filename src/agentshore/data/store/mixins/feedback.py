@@ -18,28 +18,21 @@ class _FeedbackMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_human_feedback(self, record: HumanFeedbackRecord) -> int:
         """Insert a human-feedback checkpoint row and return its ``feedback_id``."""
-        cursor = await self._conn.execute(
-            """
-            INSERT INTO human_feedback
-                (session_id, play_id, trigger, feedback_text, action_taken, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.play_id,
-                record.trigger,
-                record.feedback_text,
-                record.action_taken,
-                record.created_at,
-            ),
+        return await self._insert(
+            "human_feedback",
+            session_id=record.session_id,
+            play_id=record.play_id,
+            trigger=record.trigger,
+            feedback_text=record.feedback_text,
+            action_taken=record.action_taken,
+            created_at=record.created_at,
         )
-        await self._conn.commit()
-        if cursor.lastrowid is None:
-            msg = "INSERT did not return a row ID"
-            raise RuntimeError(msg)
-        return cursor.lastrowid
 
     async def list_human_feedback(self, session_id: str) -> list[HumanFeedbackRecord]:
         """Return all human-feedback rows for *session_id*."""
