@@ -324,12 +324,16 @@ class _OrchestratorBase:
         # ``state.recent_executor_skip`` as a diagnostic; cleared by the next
         # non-skipped play completion.
         self._recent_executor_skip = False
-        # Rolling 50-outcome window of executor masked-skip occurrences. Each
-        # entry is True iff that outcome was ``skipped_outcome("masked")``.
-        # Exposed via ``MetricsEngine.executor_skip_rate_provider`` so PPO's
-        # observation vector carries the divergence rate as a signal
-        # (slot 177). Skipped plays are not persisted to DataStore, so this
-        # state has to live on the orchestrator.
+        # Rolling 50-cycle window of EligibilityAuthority confirm-repick
+        # occurrences. Each entry is True iff that selection cycle hit at least
+        # one confirm-repick — the authority's live ``confirm`` rejected a
+        # snapshot-eligible play (live drift → clean re-pick). Fed once per
+        # selection cycle by ``_record_selection_repicks`` (draining the
+        # selector's per-select repick tally), NOT per play completion. Exposed
+        # via ``MetricsEngine.executor_skip_rate_provider`` so PPO's observation
+        # vector carries the same rolling divergence signal (slot 177) it always
+        # did — same slot, same [0,1] range. Repicks are not persisted to
+        # DataStore, so this state lives on the orchestrator.
         self._executor_skip_window = collections.deque(maxlen=50)
         # All-category no-op window for the LoopProgressMonitor (see annotation).
         self._recent_play_outcomes = collections.deque(maxlen=50)
@@ -433,16 +437,35 @@ class _OrchestratorBase:
         return min(1.0, len(self._velocity_events) / denom)
 
     def _executor_skip_rate_recent_50(self) -> float:
-        """Fraction of the last 50 play outcomes that hit the executor masked-skip path.
+        """Fraction of the last 50 selection cycles that hit a confirm-repick.
 
-        Empty window returns 0.0 — a fresh session hasn't had any executor
-        outcomes yet, which is the same observable signal as "no recent
-        divergence." Feeds ``ObservationContext.executor_skip_rate_recent_50``
-        and ultimately observation slot 177.
+        Post the eligibility refactor this is the live-drift rate: how often the
+        EligibilityAuthority's one live ``confirm`` rejected a snapshot-eligible
+        play, forcing a clean re-pick. Empty window returns 0.0 — a fresh session
+        hasn't run the selector yet, the same observable signal as "no recent
+        divergence." Feeds ``ObservationContext.executor_skip_rate_recent_50`` and
+        ultimately observation slot 177 (unchanged slot and [0,1] range).
         """
         if not self._executor_skip_window:
             return 0.0
         return sum(self._executor_skip_window) / len(self._executor_skip_window)
+
+    def _record_selection_repicks(self) -> None:
+        """Drain the selector's confirm-repick tally into the divergence window.
+
+        Called once per selection cycle, right after ``_select_play`` returns.
+        Appends a single bool to ``_executor_skip_window`` — True iff the cycle
+        hit at least one confirm-repick (the EligibilityAuthority's live confirm
+        rejected a snapshot-eligible play). Non-PPO selectors have no repick
+        notion and contribute nothing, so the window stays empty (rate 0.0) on
+        the FixedPlanSelector path.
+        """
+        selector = self._selector
+        consume = getattr(selector, "consume_repick_count", None)
+        if consume is None:
+            return
+        repicks = consume()
+        self._executor_skip_window.append(repicks > 0)
 
     # ------------------------------------------------------------------
     # Abstract method declarations — supplied by mixins via MRO.
@@ -567,14 +590,6 @@ class _OrchestratorBase:
         reason: MaskReason | str,
         event: str,
     ) -> None:
-        raise NotImplementedError
-
-    async def _dispatch_revalidation_reason(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        state: OrchestratorState,
-    ) -> MaskReason | None:
         raise NotImplementedError
 
     async def _mark_pr_manual_required(self, pr_number: int) -> None:

@@ -23,8 +23,9 @@ Slot layout (OBSERVATION_DIM=246, OBSERVATION_VERSION=13):
   174     unreviewed ( 1)  fraction of open PRs with unreviewed commits
   175     mergeable  ( 1)  fraction of open PRs with mergeable=MERGEABLE
   176     in-flight  ( 1)  normalized in-flight issue_pickup issue count
-  177     skip-rate  ( 1)  v0.15 Phase 5 — fraction of last 50 plays that hit the
-                          executor-time masked-skip path (HOTSPOT 1 signal)
+  177     skip-rate  ( 1)  fraction of recent selection cycles that hit a clean
+                          confirm/claim re-pick (live-drift signal; slot repointed
+                          from the removed executor masked-skip path)
   178     pr-pressure( 1)  desktop-8zzy — open_pr_count / _SAT_OPEN_PRS_COUNT, clamped
                           to [0, 1]. PPO can learn "press harder near the cap"
                           directly from this ratio rather than inferring it from
@@ -206,8 +207,10 @@ _S_BUSY_AGENTS: Final[int] = 173
 _S_FRAC_UNREVIEWED_PRS: Final[int] = 174
 _S_FRAC_MERGEABLE_PRS: Final[int] = 175
 _S_INFLIGHT_ISSUES: Final[int] = 176
-# Executor masked-skip rate over the last 50 plays. Diagnostic signal so PPO
-# sees the cross-tick state-divergence rate; no associated action.
+# Clean confirm/claim re-pick rate over recent selection cycles. Diagnostic
+# signal so PPO sees the live-drift rate (a selected play whose live confirm or
+# work-claim CAS lost a race); no associated action. Repointed from the removed
+# executor masked-skip path — same slot, same [0, 1] range.
 _S_EXECUTOR_SKIP_RATE: Final[int] = 177
 # desktop-8zzy: open_pr_count / _SAT_OPEN_PRS_COUNT, clamped to [0, 1]. Mirrors
 # the _PR_PRESSURE_BONUS reward shaping; lets PPO learn "drain harder near the
@@ -252,10 +255,12 @@ class ObservationContext:
     rolling_velocity: float = 0.0
     busy_agent_count: int = 0
     stagnation_entropy_multiplier: float = 1.0
-    # Fraction of the last 50 plays whose executor preconditions check
-    # returned ``skipped_outcome("masked")`` — i.e. the mask said the play
-    # was selectable but state had shifted between selector and executor.
-    # Observation-only diagnostic; no associated PPO action.
+    # Fraction of recent selection cycles that ended in a clean confirm/claim
+    # re-pick — i.e. a snapshot-eligible play whose live confirm or work-claim
+    # CAS lost a race, so it was cleanly re-picked (never a skip row).
+    # Observation-only diagnostic; no associated PPO action. (Field name kept
+    # for checkpoint/back-compat; semantics repointed from the removed
+    # executor masked-skip path.)
     executor_skip_rate_recent_50: float = 0.0
     # Per-agent / per-play specialization cells derived from play history. The
     # encoder aggregates these by the agent's ``model_tier`` into the
@@ -521,8 +526,8 @@ def encode_observation(
     )
 
     # ---- EXECUTOR SKIP RATE (177) ----
-    # Fraction of the last 50 plays whose executor preconditions check
-    # returned skipped_outcome("masked"). Already a rate in [0.0, 1.0]; just clamp.
+    # Fraction of recent selection cycles ending in a clean confirm/claim
+    # re-pick (live-drift signal). Already a rate in [0.0, 1.0]; just clamp.
     obs[_S_EXECUTOR_SKIP_RATE] = _clamp(ctx.executor_skip_rate_recent_50)
 
     # ---- PR PRESSURE RATIO (178) ----

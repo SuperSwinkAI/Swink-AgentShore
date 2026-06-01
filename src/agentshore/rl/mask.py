@@ -10,15 +10,17 @@ import structlog
 
 from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
-from agentshore.agents.model_tiers import (
-    DEFAULT_MODEL_TIER,
-    effective_model_tier_config,
-    enabled_model_tiers,
-)
-from agentshore.identity_names import canonical_identity_name, same_identity
-from agentshore.play_rules import TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS, needs_review
+from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
+from agentshore.play_rules import TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import NUM_ACTIONS, V1_ACTION_ORDER
+from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
+from agentshore.rl.eligibility import (
+    compute_agent_eligibility_mask as compute_agent_eligibility_mask,
+)
+from agentshore.rl.eligibility import (
+    compute_config_mask as compute_config_mask,
+)
 from agentshore.rl.mask_reason import (
     NOT_AVAILABLE,
     RESERVED_SLOT,
@@ -101,283 +103,6 @@ class TerminalNoWorkDecision:
     mode: str
     availability: WorkAvailability
     qa_plays_since_last: int | None
-
-
-def _auth_config_blocked(
-    blocked: set[tuple[str, str, str | None]],
-    *,
-    agent_type: str,
-    tier: str,
-    identity: str | None,
-) -> bool:
-    """Return True when an auth failure belongs to this spawn config."""
-    identity_lower = canonical_identity_name(identity) if identity else None
-    for blocked_type, blocked_tier, blocked_identity in blocked:
-        if blocked_type != agent_type or blocked_tier != tier:
-            continue
-        if blocked_identity is None or identity_lower is None:
-            return True
-        if canonical_identity_name(blocked_identity) == identity_lower:
-            return True
-    return False
-
-
-def _model_config_blocked(
-    blocked: set[tuple[str, str, str | None]],
-    *,
-    agent_type: str,
-    tier: str,
-    model: str | None,
-) -> bool:
-    """Return True when an invalid-model failure belongs to this spawn config."""
-    for blocked_type, blocked_tier, blocked_model in blocked:
-        if blocked_type != agent_type or blocked_tier != tier:
-            continue
-        if blocked_model is None or model is None:
-            return True
-        if blocked_model == model:
-            return True
-    return False
-
-
-def compute_agent_eligibility_mask(
-    state: OrchestratorState,
-    registry: PlayRegistry,
-    *,
-    cfg: RuntimeConfig,
-) -> NDArray[np.bool_]:
-    """Return a (NUM_ACTIONS,) bool mask where False means no eligible agent exists.
-
-    Applies the same hard-filter chain as ``select_agent_for`` in
-    ``agents/_selection.py``, but operating purely on ``OrchestratorState`` so the
-    PPO never selects plays that the executor would refuse:
-
-    1. Tier eligibility — agent's ``model_tier`` must be in
-       ``allowed_tiers_for(play_type)``.
-    2. Exclude list — agent's ``agent_type`` must not be in
-       ``cfg.agent_preferences.exclude[play_type]``.
-    3. Capability — agent must have the play's required capability flag set
-       in ``AGENT_CAPABILITIES``.
-    4. Anti-confirmation (CODE_REVIEW only) — at least one (IDLE+eligible,
-       open-reviewable-PR) pair must exist where the agent's ``github_identity``
-       differs from the PR's ``github_author``. Identity is the only
-       deconfliction key (humans and agents may share a GH login; agents of
-       the same type may have different logins). RUN_QA has no anti-
-       confirmation: it runs against the merged trunk.
-
-    Internal plays (``capability is None``) are not restricted here; they
-    bypass agent selection entirely.
-    """
-    mask = np.ones(NUM_ACTIONS, dtype=bool)
-
-    excluded_by_prefs: dict[str, set[str]] = {}
-    for pt_val, types in cfg.agent_preferences.exclude.items():
-        excluded_by_prefs[pt_val] = set(types)
-
-    # Agent types with an active rate_limit quota hold — all instances share
-    # the same API quota, so blocking one blocks all of the same type.
-    rate_limited_types: set[str] = {
-        a.agent_type.value
-        for a in state.agents
-        if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
-    }
-
-    for i, pt in enumerate(V1_ACTION_ORDER):
-        try:
-            play = registry.get(pt)
-        except KeyError:
-            continue
-
-        # Internal plays bypass agent selection — no eligibility gate.
-        if play.capability is None:
-            continue
-
-        cap_key: str = play.capability  # capability is non-None: checked above
-        allowed_tiers = allowed_tiers_for(pt)
-        excluded_types = excluded_by_prefs.get(pt.value, set())
-
-        candidates = [
-            a
-            for a in state.agents
-            if a.status == AgentStatus.IDLE
-            and (allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers)
-            and a.agent_type.value not in excluded_types
-            and a.agent_type.value not in rate_limited_types
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-
-        if not candidates:
-            mask[i] = False
-            continue
-
-        # Anti-confirmation for CODE_REVIEW: at least one (eligible agent,
-        # reviewable PR) pair must satisfy ``agent.github_identity !=
-        # pr.github_author``. PR author is the GitHub creator login (truth);
-        # identity is the agent's resolved GH login. When a queue row has
-        # no corresponding PR snapshot (or the PR has no recorded author),
-        # treat author as unknown and allow any candidate — the resolver
-        # / executor's identity check is the final arbiter.
-        if pt == PlayType.CODE_REVIEW:
-            pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
-            if state.pending_review_queue:
-                # Each queue row represents a PR needing review. Use the PR
-                # snapshot when available (to read github_author); otherwise
-                # treat the row as "review wanted, author unknown."
-                review_authors: list[str | None] = [
-                    pr_by_number[row.pr_number].github_author
-                    if row.pr_number in pr_by_number
-                    else None
-                    for row in state.pending_review_queue
-                ]
-            else:
-                review_authors = [
-                    pr.github_author
-                    for pr in state.pull_requests
-                    if not pr.is_draft and needs_review(pr)
-                ]
-
-            if not review_authors:
-                mask[i] = False
-                continue
-
-            viable = False
-            for author in review_authors:
-                for agent in candidates:
-                    if author is None or not same_identity(agent.github_identity, author):
-                        viable = True
-                        break
-                if viable:
-                    break
-            if not viable:
-                mask[i] = False
-
-    return mask
-
-
-def compute_config_mask(
-    state: OrchestratorState,
-    cfg: RuntimeConfig,
-    config_index: tuple[ConfigKey, ...],
-) -> NDArray[np.bool_]:
-    """Return a (len(config_index),) bool mask: True means this config is spawnable now.
-
-    A config is spawnable when:
-    - the agent_type is enabled in agentshore.yaml
-    - the model_tier is in that agent's enabled tiers
-    - no IDLE agent already exists for the same (agent_type, model_tier)
-    - live count for the (type, tier) pair is below ``agent_spawn.max_per_config``
-
-    The previous global ``max_total`` ceiling was removed in desktop-ty04 —
-    per-(type, tier) gating is sufficient because PPO can't concentrate
-    all spawns in one cell anymore.
-    """
-    n = len(config_index)
-    if n == 0:
-        return np.zeros(0, dtype=bool)
-
-    spawn_cfg = cfg.agent_spawn
-
-    # Per-(type, tier) live counts. Rate-limited ERROR agents are included
-    # so a quota-exhausted type isn't immediately re-spawned; other ERROR /
-    # TERMINATED agents are excluded so their slots stay open.
-    counts: dict[tuple[str, str], int] = {}
-    idle_configs: set[tuple[str, str]] = set()
-    blocked_auth_configs: set[tuple[str, str, str | None]] = set()
-    blocked_model_configs: set[tuple[str, str, str | None]] = set()
-    for a in state.agents:
-        if a.status.value == "terminated":
-            continue
-        tier = a.model_tier or "medium"
-        key = (a.agent_type.value, tier)
-        if a.status == AgentStatus.IDLE:
-            idle_configs.add(key)
-        if a.status.value == "error" and a.last_error_class == "auth":
-            blocked_auth_configs.add((a.agent_type.value, tier, a.github_identity))
-            continue
-        if a.status.value == "error" and a.last_error_class == "invalid_model":
-            blocked_model_configs.add((a.agent_type.value, tier, a.model))
-            continue
-        if a.status.value == "error" and a.last_error_class != "rate_limit":
-            continue
-        counts[key] = counts.get(key, 0) + 1
-
-    mask = np.zeros(n, dtype=bool)
-    for i, (agent_type, tier) in enumerate(config_index):
-        agent_cfg = cfg.agents.get(agent_type)
-        if agent_cfg is None or not agent_cfg.enabled:
-            continue
-        configured_model = None
-        try:
-            agent_type_enum = AgentType(agent_type)
-            configured_model = effective_model_tier_config(agent_type_enum, agent_cfg, tier).model
-        except ValueError:
-            configured_model = None
-        if _auth_config_blocked(
-            blocked_auth_configs,
-            agent_type=agent_type,
-            tier=tier,
-            identity=agent_cfg.identity,
-        ):
-            continue
-        if _model_config_blocked(
-            blocked_model_configs,
-            agent_type=agent_type,
-            tier=tier,
-            model=configured_model,
-        ):
-            continue
-        if (agent_type, tier) in idle_configs:
-            continue
-        if counts.get((agent_type, tier), 0) >= spawn_cfg.max_per_config:
-            continue
-        mask[i] = True
-    return mask
-
-
-def _instantiate_config_block_reason(
-    state: OrchestratorState,
-    cfg: RuntimeConfig,
-    config_index: tuple[ConfigKey, ...],
-) -> MaskReason:
-    if not config_index:
-        return MaskReason(
-            text="No eligible agent configuration",
-            classification=MaskClassification.HARD,
-            source=MaskSource.CONFIG,
-        )
-
-    idle_configs = {
-        (a.agent_type.value, a.model_tier or DEFAULT_MODEL_TIER)
-        for a in state.agents
-        if a.status == AgentStatus.IDLE
-    }
-    enabled_configs = 0
-    enabled_configs_without_idle = 0
-    for agent_type, tier in config_index:
-        agent_cfg = cfg.agents.get(agent_type)
-        if agent_cfg is None or not agent_cfg.enabled:
-            continue
-        try:
-            agent_type_enum = AgentType(agent_type)
-        except ValueError:
-            continue
-        if tier not in enabled_model_tiers(agent_type_enum, agent_cfg):
-            continue
-        enabled_configs += 1
-        if (agent_type, tier) not in idle_configs:
-            enabled_configs_without_idle += 1
-
-    if enabled_configs > 0 and enabled_configs_without_idle == 0:
-        return MaskReason(
-            text="Idle agent already available for every eligible type/tier",
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.CONFIG,
-        )
-    return MaskReason(
-        text="No eligible agent configuration",
-        classification=MaskClassification.HARD,
-        source=MaskSource.CONFIG,
-    )
 
 
 def compute_terminal_no_work_config_mask(
@@ -571,30 +296,34 @@ def compute_reverse_failsafe_mask(
 
 
 class ActionMaskBuilder:
-    """Staged pipeline that computes an action mask from OrchestratorState.
+    """Compute an action mask by composing the eligibility authority with policy overlays.
 
-    Holds shared state (registry, config, candidate plan) so individual
+    Holds shared state (registry, config, candidate plan) so the policy-overlay
     stages read from ``self`` instead of receiving repeated keyword arguments.
 
-    Pipeline stages run in this order:
+    The base mask — every A-type validity gate (preconditions, agent
+    eligibility, candidate-required, instantiate-config viability, end-session,
+    take-break, wedged-END_AGENT re-enable) — now comes from a single
+    :class:`~agentshore.rl.eligibility.EligibilityAuthority` computation via
+    ``EligibilityAuthority(...).eligibility().mask()``. The authority is the one
+    source of truth for validity, used both here (to present options to the PPO)
+    and at confirm time (to validate the play the PPO selected).
 
-    1. ``_stage_preconditions``      — seed mask from registry preconditions
-    2. ``_stage_agent_eligibility``  — AND in agent-eligibility mask
-    3. ``_stage_wedged_end_agent``   — re-enable END_AGENT for recovery-exhausted agents
-    4. ``_stage_candidate_required`` — zero candidate-required plays with no target
-    5. ``_stage_instantiate_config`` — zero INSTANTIATE_AGENT if no config viable
-    6. ``_stage_end_session``        — zero END_SESSION while actionable work remains
-    7. ``_stage_take_break``         — zero TAKE_BREAK unless rate_limit/unknown
-    8. ``_stage_reserved_slots``     — zero reserved tensor slots
-    9. ``_stage_drain_mode``         — short-circuit: END_AGENT-only when draining
+    On top of that base mask this builder layers ONLY the policy overlays, in
+    order:
 
-    All stages except ``_stage_wedged_end_agent`` and ``_stage_drain_mode`` are
-    zero-only (a play stays valid only if every stage agrees). The wedged stage
-    is the sole re-enable: it lifts the precondition mask on END_AGENT so the
-    PPO — not deterministic code — decides whether to retire a wedged agent.
-    ``_stage_drain_mode`` is a short-circuit that replaces the mask entirely.
-    Directional choices (final QA vs spawn vs end, when to end the session) are
-    left to the policy; the pipeline only masks genuinely-invalid actions.
+    1. ``_stage_consecutive_failure_breaker`` — bench a play under the 3-strikes
+       circuit breaker (zero-only).
+    2. ``_stage_reserved_slots``              — zero reserved tensor slots.
+    3. ``_stage_drain_mode``                  — short-circuit: END_AGENT-only when
+       draining (replaces the mask entirely).
+    4. reverse-failsafe overlay               — when the composed mask is empty
+       and open work + idle capacity exist, lift a constrained fallback menu.
+
+    Validity gates live in the authority, not here; the wedged-END_AGENT
+    re-enable moved into the authority's eligibility computation. Directional
+    choices (final QA vs spawn vs end, when to end the session) remain the
+    policy's to make — the overlays only remove genuinely-unavailable actions.
     """
 
     def __init__(
@@ -612,50 +341,13 @@ class ActionMaskBuilder:
         self._config_index = config_index
         self._candidate_plan = candidate_plan or build_candidate_plan(state)
         self._mask = np.zeros(NUM_ACTIONS, dtype=bool)
+        self._report: EligibilityReport | None = None
 
     @property
     def candidate_plan(self) -> PlayCandidatePlan:
         return self._candidate_plan
 
-    # -- zero-only stages (mutate self._mask in place) -----------------------
-
-    def _stage_preconditions(self) -> None:
-        for i, pt in enumerate(V1_ACTION_ORDER):
-            try:
-                self._mask[i] = self._registry.preconditions_met(pt, self._state)
-            except (KeyError, ValueError, AttributeError, RuntimeError) as exc:
-                _logger.warning("precondition_check_failed", play_type=pt.value, error=str(exc))
-                self._mask[i] = False
-
-    def _stage_agent_eligibility(self) -> None:
-        if self._cfg is None:
-            return
-        self._mask &= compute_agent_eligibility_mask(self._state, self._registry, cfg=self._cfg)
-
-    def _stage_wedged_end_agent(self) -> None:
-        """Re-enable END_AGENT when a recovery-exhausted agent exists.
-
-        This is the only re-enable in the pipeline. When an agent has burned
-        through its break-recovery attempts it is wedged (typically ERROR
-        state), so the normal END_AGENT preconditions (>=2 active agents, a
-        minimum play count) would keep it masked. Lifting that mask hands the
-        retire-or-not decision to the PPO instead of a forced override. The
-        resolver targets the wedged agent with ``bypass_preconditions``.
-        Suppressed during DRAINING, which the drain short-circuit owns.
-        """
-        if PlayType.END_AGENT not in V1_ACTION_ORDER:
-            return
-        if self._state.session_state == SessionState.DRAINING:
-            return
-        if self._state.recovery_exhausted_agent_ids:
-            self._mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = True
-
-    def _stage_candidate_required(self) -> None:
-        for candidate_pt in _CANDIDATE_REQUIRED_PLAY_TYPES:
-            if candidate_pt in V1_ACTION_ORDER and not self._candidate_plan.candidates_for(
-                candidate_pt
-            ):
-                self._mask[V1_ACTION_ORDER.index(candidate_pt)] = False
+    # -- policy-overlay stages (mutate self._mask in place) ------------------
 
     def _breaker_benched(self, pt: PlayType) -> bool:
         """True if ``pt`` is currently benched by the 3-strikes circuit breaker.
@@ -678,57 +370,6 @@ class ActionMaskBuilder:
             if pt in V1_ACTION_ORDER and self._breaker_benched(pt):
                 self._mask[V1_ACTION_ORDER.index(pt)] = False
 
-    def _stage_instantiate_config(self) -> None:
-        if PlayType.INSTANTIATE_AGENT not in V1_ACTION_ORDER:
-            return
-        idx = V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)
-        # Don't open an *empty* fleet when there is nothing for the agent to do:
-        # zero active agents AND no remaining work AND not a terminal QA-setup.
-        # Without this an empty no-work fleet keeps INSTANTIATE_AGENT selectable
-        # forever, so the loop spins spawning idle agents instead of going idle.
-        # Scaling a non-empty fleet stays the policy's call (handled below); and
-        # when work remains or we are in terminal no-work, the first spawn is
-        # legitimately valid so the PPO can open the fleet or set up final QA.
-        no_active_agents = not any(
-            a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in self._state.agents
-        )
-        if (
-            no_active_agents
-            and not self._candidate_plan.has_remaining_work
-            and not self._candidate_plan.work_availability.terminal_no_work
-        ):
-            self._mask[idx] = False
-            return
-        if self._cfg is None or self._config_index is None:
-            return
-        config_mask = compute_config_mask(self._state, self._cfg, self._config_index)
-        if not config_mask.any():
-            self._mask[idx] = False
-
-    def _stage_end_session(self) -> None:
-        # END_SESSION is masked only while genuinely-actionable work remains.
-        # ``terminal_no_work`` already folds in "graph has epics, terminal
-        # audits fresh, nothing in flight, no actionable work" — once that holds
-        # the PPO is free to end the session (or keep going) as a judgment call.
-        # No closure-ratio or failure-streak gate: ending is a directional
-        # decision the policy owns, not a deterministic threshold.
-        if PlayType.END_SESSION not in V1_ACTION_ORDER:
-            return
-        if not self._candidate_plan.work_availability.terminal_no_work:
-            self._mask[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
-
-    def _stage_take_break(self) -> None:
-        if PlayType.TAKE_BREAK not in V1_ACTION_ORDER:
-            return
-        has_break_trigger = any(
-            a.status == AgentStatus.ERROR
-            and a.last_error_class in ("rate_limit", "unknown")
-            and a.current_play_type != PlayType.TAKE_BREAK
-            for a in self._state.agents
-        )
-        if not has_break_trigger:
-            self._mask[V1_ACTION_ORDER.index(PlayType.TAKE_BREAK)] = False
-
     def _stage_reserved_slots(self) -> None:
         for reserved in (PlayType.FUTURE_7, PlayType.FUTURE_8):
             if reserved in V1_ACTION_ORDER:
@@ -748,16 +389,28 @@ class ActionMaskBuilder:
 
     # -- pipeline entry points -----------------------------------------------
 
+    def _eligibility_report(self) -> EligibilityReport:
+        """Compute (and cache) the one authority report — base A-type validity."""
+        if self._report is None:
+            self._report = EligibilityAuthority(
+                self._state,
+                self._registry,
+                cfg=self._cfg,
+                config_index=self._config_index,
+                candidate_plan=self._candidate_plan,
+            ).eligibility()
+        return self._report
+
     def build(self, *, apply_reverse_failsafe: bool = False) -> NDArray[np.bool_]:
-        """Run the full mask pipeline and return the result."""
-        self._stage_preconditions()
-        self._stage_agent_eligibility()
-        self._stage_wedged_end_agent()
-        self._stage_candidate_required()
+        """Run the mask pipeline and return the result.
+
+        The base mask is the eligibility authority's verdict (every A-type
+        validity gate). The remaining stages are policy overlays the authority
+        deliberately does not own.
+        """
+        self._mask = self._eligibility_report().mask()
+
         self._stage_consecutive_failure_breaker()
-        self._stage_instantiate_config()
-        self._stage_end_session()
-        self._stage_take_break()
         self._stage_reserved_slots()
 
         if self._stage_drain_mode():
@@ -778,21 +431,22 @@ class ActionMaskBuilder:
         return self._mask
 
     def build_reasons(self, *, apply_reverse_failsafe: bool = False) -> dict[PlayType, MaskReason]:
-        """Run the pipeline and return a reason for every masked play type."""
+        """Return a reason for every masked play type.
+
+        Mask and reasons come from the one authority computation: ``build`` runs
+        the full pipeline (authority base + B-type overlays) and caches the
+        report, then A-type reasons are read from
+        ``EligibilityReport.verdicts[pt].reason`` while the B-type overlays
+        (drain short-circuit, circuit breaker, reserved slots) supply their own.
+        """
         mask = self.build(apply_reverse_failsafe=apply_reverse_failsafe)
         state = self._state
-        cfg = self._cfg
-        candidate_plan = self._candidate_plan
-        config_index = self._config_index
-
-        elig_mask = (
-            compute_agent_eligibility_mask(state, self._registry, cfg=cfg)
-            if cfg is not None
-            else None
-        )
+        verdicts = self._eligibility_report().verdicts
 
         reasons: dict[PlayType, MaskReason] = {}
 
+        # Drain short-circuit (B-type overlay): every play but END_AGENT is
+        # masked with the SESSION_DRAINING reason.
         if state.session_state == SessionState.DRAINING:
             for pt in V1_ACTION_ORDER:
                 if pt != PlayType.END_AGENT:
@@ -803,6 +457,8 @@ class ActionMaskBuilder:
             if mask[i]:
                 continue
 
+            # Circuit breaker (B-type overlay) takes priority: it benches a play
+            # even when the authority deemed it valid.
             if self._breaker_benched(pt):
                 strikes = state.consecutive_nonproductive_by_type.get(pt, 0)
                 reasons[pt] = MaskReason(
@@ -815,73 +471,19 @@ class ActionMaskBuilder:
                 )
                 continue
 
+            # Reserved tensor slots (B-type overlay).
             if pt in (PlayType.FUTURE_7, PlayType.FUTURE_8):
                 reasons[pt] = RESERVED_SLOT
-            elif pt == PlayType.TAKE_BREAK:
-                reasons[pt] = MaskReason(
-                    text="No agent in rate_limit or unknown-error state",
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.PRECONDITION,
-                )
-            elif pt == PlayType.END_SESSION:
-                reasons[pt] = self._end_session_reason(candidate_plan)
-            elif pt == PlayType.INSTANTIATE_AGENT:
-                no_active_agents = not any(
-                    a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in state.agents
-                )
-                if (
-                    no_active_agents
-                    and not candidate_plan.has_remaining_work
-                    and not candidate_plan.work_availability.terminal_no_work
-                ):
-                    reasons[pt] = MaskReason(
-                        text="No agents and no remaining work — nothing to spawn an agent for",
-                        classification=MaskClassification.INDEFINITE_WAIT,
-                        source=MaskSource.PRECONDITION,
-                    )
-                elif (
-                    cfg is not None
-                    and config_index is not None
-                    and not compute_config_mask(state, cfg, config_index).any()
-                ):
-                    reasons[pt] = _instantiate_config_block_reason(state, cfg, config_index)
-                else:
-                    reasons[pt] = _precondition_reason(self._registry, pt, state)
-            elif elig_mask is not None and not elig_mask[i] and cfg is not None:
-                reasons[pt] = _eligibility_reason(state, self._registry, pt, cfg)
+                continue
+
+            # A-type validity reason from the single authority computation.
+            verdict = verdicts.get(pt)
+            if verdict is not None and verdict.reason is not None:
+                reasons[pt] = verdict.reason
             else:
-                reasons[pt] = _precondition_reason(self._registry, pt, state)
-            if (
-                pt in _CANDIDATE_REQUIRED_PLAY_TYPES
-                and not candidate_plan.candidates_for(pt)
-                and reasons.get(pt) == NOT_AVAILABLE
-            ):
-                blocked_reasons_for_pt = candidate_plan.blocked_reasons_by_play_type.get(pt, ())
-                blocked_text = (
-                    blocked_reasons_for_pt[0]
-                    if blocked_reasons_for_pt
-                    else f"no {pt.value} candidates"
-                )
-                reasons[pt] = MaskReason(
-                    text=blocked_text,
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
+                reasons[pt] = NOT_AVAILABLE
 
         return reasons
-
-    def _end_session_reason(self, candidate_plan: PlayCandidatePlan) -> MaskReason:
-        # Mirrors ``_stage_end_session``: the only gate is "actionable work
-        # still remains." Once no actionable work is left, ending is the
-        # policy's call, so any residual mask falls through to the registry
-        # precondition reason.
-        if not candidate_plan.work_availability.terminal_no_work:
-            return MaskReason(
-                text="Actionable work still remains",
-                classification=MaskClassification.INDEFINITE_WAIT,
-                source=MaskSource.TERMINAL,
-            )
-        return _precondition_reason(self._registry, PlayType.END_SESSION, self._state)
 
 
 # ---------------------------------------------------------------------------
@@ -891,9 +493,14 @@ class ActionMaskBuilder:
 
 def _stage_preconditions(state: OrchestratorState, registry: PlayRegistry) -> NDArray[np.bool_]:
     """Seed a fresh mask from the registry's per-play precondition checks."""
-    builder = ActionMaskBuilder(state, registry)
-    builder._stage_preconditions()
-    return builder._mask
+    mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    for i, pt in enumerate(V1_ACTION_ORDER):
+        try:
+            mask[i] = registry.preconditions_met(pt, state)
+        except (KeyError, ValueError, AttributeError, RuntimeError) as exc:
+            _logger.warning("precondition_check_failed", play_type=pt.value, error=str(exc))
+            mask[i] = False
+    return mask
 
 
 def _stage_agent_eligibility(
@@ -1038,99 +645,3 @@ def compute_mask_reasons(
         config_index=config_index,
         candidate_plan=candidate_plan,
     ).build_reasons(apply_reverse_failsafe=apply_reverse_failsafe)
-
-
-def _precondition_reason(
-    registry: PlayRegistry, pt: PlayType, state: OrchestratorState
-) -> MaskReason:
-    """Return the first unmet precondition for *pt*, or a generic fallback."""
-    try:
-        unmet = registry.get(pt).preconditions(state)
-        return unmet[0] if unmet else NOT_AVAILABLE
-    except (KeyError, ValueError, AttributeError, RuntimeError) as exc:
-        _logger.debug("precondition_check_failed", play=pt.value, error=str(exc))
-        return NOT_AVAILABLE
-
-
-def _eligibility_reason(
-    state: OrchestratorState,
-    registry: PlayRegistry,
-    pt: PlayType,
-    cfg: RuntimeConfig,
-) -> MaskReason:
-    """Return a typed MaskReason explaining why the eligibility gate fired."""
-    try:
-        play = registry.get(pt)
-    except KeyError:
-        return MaskReason(
-            text="No play registered",
-            classification=MaskClassification.HARD,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    cap_key: str | None = play.capability
-    if cap_key is None:
-        return NOT_AVAILABLE
-
-    allowed_tiers = allowed_tiers_for(pt)
-    excluded_types = set(cfg.agent_preferences.exclude.get(pt.value, []))
-
-    idle = [a for a in state.agents if a.status == AgentStatus.IDLE]
-
-    # Diagnose most-specific reason in priority order. All eligibility
-    # reasons are TRANSIENT — they clear as soon as an idle agent matching
-    # the constraints appears.
-    if not idle:
-        return MaskReason(
-            text="No IDLE agents",
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    tier_ok = [
-        a
-        for a in idle
-        if allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers
-    ]
-    if not tier_ok:
-        tier_str = "|".join(sorted(allowed_tiers)) if allowed_tiers else "any"
-        return MaskReason(
-            text=f"No IDLE agent of allowed tier ({tier_str})",
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    excl_ok = [a for a in tier_ok if a.agent_type.value not in excluded_types]
-    if not excl_ok:
-        return MaskReason(
-            text=f"No IDLE agent type permitted by exclude rule for {pt.value!r}",
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    cap_ok = [
-        a for a in excl_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-    ]
-    if not cap_ok:
-        return MaskReason(
-            text=f"No IDLE agent with {cap_key!r} capability",
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    # Must be anti-confirmation (CODE_REVIEW).
-    if pt == PlayType.CODE_REVIEW:
-        return MaskReason(
-            text=(
-                "No eligible reviewer for any open PR"
-                " (anti-confirmation: all candidates authored the PR)"
-            ),
-            classification=MaskClassification.TRANSIENT,
-            source=MaskSource.ELIGIBILITY,
-        )
-
-    return MaskReason(
-        text="No eligible agent (eligibility filter)",
-        classification=MaskClassification.TRANSIENT,
-        source=MaskSource.ELIGIBILITY,
-    )

@@ -1,33 +1,33 @@
-"""Pin the param-resolve-time live-graph check (desktop-xi9d).
+"""Live-drift confirmation moved from dispatch revalidation to the authority.
 
 Background: ``IssuePickupPlay.execute`` used to do a final live-beads-graph
-check after the PPO action had already been picked. When the bead had
-closed between selection and execute, the play returned a partial-failure
-outcome — but that still counted as a play_completed (with reason="skipped"),
-which consumed a PPO action and contributed to the 89-skip stall observed
-in session 2b8729bf.
+check after the PPO action had already been picked. When the bead had closed
+between selection and execute, the play returned a partial-failure outcome —
+counted as a play_completed (reason="skipped"), consuming a PPO action and
+contributing to the skip stalls observed in production.
 
-The new contract: live-graph revalidation lives in
-``_DispatchMixin._dispatch_revalidation_reason`` at param-resolve time.
-When the live graph reports the bead is non-OPEN, the dispatch is dropped
-via ``dispatch_revalidation_blocked`` (no play_completed row, no PPO action
-consumed). The skip-circuit-breaker on ``IssuePickupPlay`` is still wired
-in via ``_DispatchMixin._record_live_graph_skip`` so a repeated race on
-the same issue still graduates to a precondition cooldown.
+A later iteration moved that check to a dispatch-time revalidation pass
+(``_DispatchMixin._dispatch_revalidation_reason`` /
+``_refresh_live_graph_for_issue``, emitting ``dispatch_revalidation_blocked``).
+
+Eligibility refactor: that pass is gone too. ``EligibilityAuthority.confirm()``
+is now the single source of truth — it does ONE live re-derivation of the
+candidate plan from the freshly-refreshed ``state``. An issue whose bead flipped
+to ``in_progress`` drops out of the live candidate set, so ``confirm`` returns
+``valid=False`` and the selector cleanly re-picks: no plays-table skip row, no
+RL experience sample. A closed bead with an open GitHub issue stays valid
+(GitHub is canonical). PR-target plays are confirmed against the live PR set,
+not the beads graph.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
-from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator
 from agentshore.plays.base import PlayParams
-from agentshore.plays.selector import FixedPlanSelector
+from agentshore.plays.registry import build_default_registry
+from agentshore.rl.eligibility import EligibilityAuthority
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
@@ -38,9 +38,6 @@ from agentshore.state import (
     PlayType,
     SessionState,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _idle_agent(agent_id: str = "agent-1") -> AgentSnapshot:
@@ -68,27 +65,7 @@ def _open_issue(issue_number: int = 42) -> IssueSnapshot:
     )
 
 
-def _state_with_issue(
-    issue_number: int = 42, *, graph: ProjectGraph | None = None
-) -> OrchestratorState:
-    return OrchestratorState(
-        session_id="s1",
-        session_state=SessionState.RUNNING,
-        total_plays=5,
-        total_cost=0.0,
-        agents=[_idle_agent()],
-        open_issues=[_open_issue(issue_number)],
-        graph=graph,
-        budget=BudgetSnapshot(
-            total_budget=200.0,
-            spent=0.0,
-            remaining=200.0,
-            estimated_cost_per_play=0.1,
-        ),
-    )
-
-
-def _live_graph(issue_number: int, status: BeadStatus) -> ProjectGraph:
+def _graph(issue_number: int, status: BeadStatus) -> ProjectGraph:
     task = GraphTask(
         bead_id=f"bd-{issue_number:04d}",
         title=f"Task for #{issue_number}",
@@ -99,154 +76,74 @@ def _live_graph(issue_number: int, status: BeadStatus) -> ProjectGraph:
     return ProjectGraph(tasks=[task])
 
 
-@pytest.mark.asyncio
-async def test_live_graph_in_progress_blocks_dispatch_without_consuming_action(
-    tmp_path: Path,
-) -> None:
-    """desktop-xi9d: in_progress bead at param-resolve time emits
-    dispatch_revalidation_blocked and does NOT consume a PPO action."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-
-    state = _state_with_issue(issue_number=42, graph=_live_graph(42, BeadStatus.OPEN))
-    params = PlayParams(issue_number=42)
-
-    live_graph = _live_graph(42, BeadStatus.IN_PROGRESS)
-
-    async with orch:
-        with (
-            patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)),
-            patch.object(orch._executor, "execute", new=AsyncMock()) as execute,
-            patch("agentshore.core._logger.warning") as warning,
-        ):
-            dispatched = await orch._dispatch_play(
-                PlayType.ISSUE_PICKUP, params, state, revalidate=True
-            )
-
-        history = await orch._store.get_play_history(orch._session_id)
-
-    assert dispatched is False
-    execute.assert_not_awaited()
-    assert history == []
-    warned = [call.args[0] for call in warning.call_args_list]
-    assert "dispatch_revalidation_blocked" in warned
-
-
-@pytest.mark.asyncio
-async def test_live_graph_closed_allows_dispatch_github_is_canonical(
-    tmp_path: Path,
-) -> None:
-    """GitHub is the canonical source of truth. A closed bead with an open
-    GitHub issue should NOT block dispatch — the bead is stale."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-
-    live_graph = _live_graph(42, BeadStatus.CLOSED)
-
-    async with orch:
-        with patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)):
-            reason = await orch._refresh_live_graph_for_issue(PlayType.ISSUE_PICKUP, 42)
-
-    assert reason is None
-
-
-@pytest.mark.asyncio
-async def test_live_graph_blocked_emits_selected_and_revalidated_timestamps(
-    tmp_path: Path,
-) -> None:
-    """desktop-xi9d: dispatch_revalidation_blocked carries selected_at +
-    revalidated_at timestamps so the race window is queryable."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-
-    state = _state_with_issue(issue_number=7, graph=_live_graph(7, BeadStatus.OPEN))
-    params = PlayParams(issue_number=7)
-    live_graph = _live_graph(7, BeadStatus.IN_PROGRESS)
-
-    async with orch:
-        with (
-            patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)),
-            patch.object(orch._executor, "execute", new=AsyncMock()),
-            patch("agentshore.core._logger.warning") as warning,
-        ):
-            dispatched = await orch._dispatch_play(
-                PlayType.ISSUE_PICKUP, params, state, revalidate=True
-            )
-
-    assert dispatched is False
-    revalidation_calls = [
-        call for call in warning.call_args_list if call.args == ("dispatch_revalidation_blocked",)
-    ]
-    assert revalidation_calls, "expected dispatch_revalidation_blocked"
-    kwargs = revalidation_calls[-1].kwargs
-    assert "selected_at" in kwargs
-    assert "revalidated_at" in kwargs
-    assert "revalidation_window_seconds" in kwargs
-    assert isinstance(kwargs["revalidation_window_seconds"], float)
-    assert kwargs["revalidation_window_seconds"] >= 0.0
-    # Race window for an in-process live-graph mock is always sub-tick.
-    assert kwargs["revalidation_window_seconds"] < 1.0
-
-
-@pytest.mark.asyncio
-async def test_live_graph_open_lets_dispatch_proceed(tmp_path: Path) -> None:
-    """desktop-xi9d: when the live graph still shows OPEN, dispatch goes through."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-
-    live_graph = _live_graph(11, BeadStatus.OPEN)
-
-    async with orch:
-        with (
-            patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)),
-            patch.object(orch._executor, "execute", new=AsyncMock()),
-            # Skip the action-mask path entirely so we test live-graph isolation.
-            patch.object(
-                orch,
-                "_dispatch_revalidation_reason",
-                wraps=orch._dispatch_revalidation_reason,
-            ) as reval,
-        ):
-            # Force revalidate=False so we directly exercise live-graph refresh
-            # via the helper itself, isolating it from the candidate-plan path.
-            reason = await orch._refresh_live_graph_for_issue(PlayType.ISSUE_PICKUP, 11)
-
-    assert reason is None
-    reval.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_live_graph_refresh_records_skip_on_play_instance(tmp_path: Path) -> None:
-    """desktop-xi9d: an in_progress live-graph block bumps the skip-circuit-breaker on
-    IssuePickupPlay so repeated races eventually cooldown the issue at
-    preconditions time."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-    live_graph = _live_graph(99, BeadStatus.IN_PROGRESS)
-
-    async with orch:
-        assert orch._registry is not None, "registry must be wired by bootstrap"
-        with patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)):
-            reason = await orch._refresh_live_graph_for_issue(PlayType.ISSUE_PICKUP, 99)
-            issue_pickup = orch._registry.get(PlayType.ISSUE_PICKUP)
-            skip_streaks_in_context = dict(getattr(issue_pickup, "_skip_streaks", {}))
-
-    assert reason is not None
-    assert skip_streaks_in_context.get(99, 0) == 1, (
-        f"expected skip streak == 1, got {skip_streaks_in_context!r}"
+def _state(issue_number: int, status: BeadStatus) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=5,
+        total_cost=0.0,
+        agents=[_idle_agent()],
+        open_issues=[_open_issue(issue_number)],
+        graph=_graph(issue_number, status),
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=0.0,
+            remaining=200.0,
+            estimated_cost_per_play=0.1,
+        ),
     )
 
 
 @pytest.mark.asyncio
-async def test_pr_play_skips_live_graph_refresh(tmp_path: Path) -> None:
-    """desktop-xi9d: PR plays do not consult beads — keep behaviour unchanged."""
-    selector = FixedPlanSelector([])
-    orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path, selector=selector)
-    live_graph = _live_graph(99, BeadStatus.CLOSED)
+async def test_live_in_progress_invalidates_confirm_clean_repick() -> None:
+    """in_progress bead at confirm time → valid=False (clean re-pick)."""
+    state = _state(42, BeadStatus.IN_PROGRESS)
+    authority = EligibilityAuthority(state, build_default_registry())
 
-    async with orch:
-        with patch("agentshore.beads.load_graph", new=AsyncMock(return_value=live_graph)) as loader:
-            reason = await orch._refresh_live_graph_for_issue(PlayType.CODE_REVIEW, 99)
+    verdict = await authority.confirm(PlayType.ISSUE_PICKUP, PlayParams(issue_number=42), state)
 
-    assert reason is None
-    loader.assert_not_called()
+    assert verdict.valid is False
+    assert verdict.reason is not None
+    # Clean re-pick: the picked issue is no longer a live candidate.
+    assert all(c.params.issue_number != 42 for c in verdict.candidates)
+
+
+@pytest.mark.asyncio
+async def test_live_closed_allows_confirm_github_is_canonical() -> None:
+    """GitHub is canonical: a closed bead with an open GitHub issue stays valid."""
+    state = _state(42, BeadStatus.CLOSED)
+    authority = EligibilityAuthority(state, build_default_registry())
+
+    verdict = await authority.confirm(PlayType.ISSUE_PICKUP, PlayParams(issue_number=42), state)
+
+    assert verdict.valid is True
+    assert verdict.reason is None
+
+
+@pytest.mark.asyncio
+async def test_live_open_lets_confirm_proceed() -> None:
+    """When the live graph still shows OPEN, confirm passes."""
+    state = _state(11, BeadStatus.OPEN)
+    authority = EligibilityAuthority(state, build_default_registry())
+
+    verdict = await authority.confirm(PlayType.ISSUE_PICKUP, PlayParams(issue_number=11), state)
+
+    assert verdict.valid is True
+    assert verdict.reason is None
+
+
+@pytest.mark.asyncio
+async def test_pr_play_confirms_against_live_pr_set_not_beads() -> None:
+    """PR-target plays are confirmed against the live PR set, not the beads graph.
+
+    A CODE_REVIEW pinned to a PR that no longer exists in the live plan is a
+    clean re-pick; the beads graph status is irrelevant to PR confirmation.
+    """
+    # No PRs in state → CODE_REVIEW has no live candidate for PR #99.
+    state = _state(99, BeadStatus.CLOSED)
+    authority = EligibilityAuthority(state, build_default_registry())
+
+    verdict = await authority.confirm(PlayType.CODE_REVIEW, PlayParams(pr_number=99), state)
+
+    assert verdict.valid is False
+    assert all(c.params.pr_number != 99 for c in verdict.candidates)

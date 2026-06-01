@@ -42,6 +42,11 @@ def make_test_orchestrator(
     if selector is None:
         selector = MagicMock()
         selector.__class__.__name__ = "MockSelector"
+        # Eligibility refactor: the loop drains the selector's confirm-repick
+        # tally once per cycle via consume_repick_count(). On a bare MagicMock
+        # that returns a MagicMock, which then explodes on ``repicks > 0`` in
+        # _record_selection_repicks. Return a real int so the window stays clean.
+        selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = Orchestrator.__new__(Orchestrator)
     orch._cfg = cfg

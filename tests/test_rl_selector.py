@@ -10,6 +10,7 @@ import numpy as np
 
 from agentshore.config.models import PolicyMode
 from agentshore.plays.base import PlayParams
+from agentshore.plays.registry import build_default_registry
 from agentshore.rl.action_space import NUM_ACTIONS, PLAY_TO_INDEX
 from agentshore.rl.experience import RolloutBuffer
 from agentshore.rl.observation import OBSERVATION_DIM
@@ -873,3 +874,236 @@ def test_cleanup_stale_canonical_uses_module_logger_for_rename(tmp_path: Path) -
         from_path=str(legacy_path),
         to_path=mock.ANY,
     )
+
+
+# ---------------------------------------------------------------------------
+# Parallel-dispatch drained-pool clean re-pick
+# ---------------------------------------------------------------------------
+
+
+def _parallel_state():
+    """One eligible write_implementation_plan issue + one mergeable PR."""
+    from agentshore.state import AgentSnapshot, AgentStatus, AgentType, PullRequestSnapshot
+
+    agent = AgentSnapshot(
+        agent_id="agent-1",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.IDLE,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        model_tier="large",
+        github_identity="reviewer",
+    )
+    pr = PullRequestSnapshot(
+        pr_number=50,
+        title="PR 50",
+        state="open",
+        branch="feature/50",
+        issue_number=None,
+        labels=[],
+        review_decision="APPROVED",
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+        github_author="author",
+        mergeable="MERGEABLE",
+        head_sha="abc",
+        last_reviewed_sha="abc",
+        last_review_status="PASS",
+    )
+    return _state(
+        agents=[agent],
+        open_issues=[_issue(234)],
+        pull_requests=[pr],
+        target_branch="main",
+    )
+
+
+def test_parallel_dispatch_drained_pool_clean_repick():
+    """A lost write_impl work-claim CAS cleanly re-picks the still-valid merge_pr.
+
+    Setup mirrors a parallel session draining the pool: write_implementation_plan
+    is snapshot-eligible (issue #234) and merge_pr is eligible (PR #50). The
+    policy picks write_impl first; confirm() passes (no live drift), but the
+    resolver loses the work-claim CAS to a sibling and returns None. That is a
+    clean re-pick — re-mask the action, resample — and the policy then picks the
+    still-valid merge_pr, which dispatches.
+
+    Asserts:
+      * the dispatched play is the re-picked MERGE_PR (or a clean idle None,
+        never write_impl),
+      * exactly one PPO step is pending (the dispatched play only — the lost
+        write_impl contributes no _pending, hence no RL experience sample),
+      * no skip:* outcome is produced by the selector (it returns a play, not a
+        skip row — the orchestrator writes rows, and a clean re-pick never asks
+        it to),
+      * a clean-re-pick telemetry event is logged and counted.
+    """
+    from agentshore.rl.action_space import PLAY_TO_INDEX
+
+    policy = ActorCritic()
+    buffer = RolloutBuffer()
+    updater = PPOUpdater(policy)
+
+    wip_idx = PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]
+    merge_idx = PLAY_TO_INDEX[PlayType.MERGE_PR]
+
+    # Force the play head: write_impl first, then merge_pr. (value, log_prob, value)
+    act_calls = {"n": 0}
+
+    def _act(obs, mask, *, greedy):  # noqa: ANN001
+        act_calls["n"] += 1
+        idx = wip_idx if act_calls["n"] == 1 else merge_idx
+        # Respect the running mask: once write_impl is re-masked it must be off.
+        assert bool(mask[idx]), f"forced action {idx} must be unmasked on call {act_calls['n']}"
+        return idx, -0.5, 0.0
+
+    policy.act = _act  # type: ignore[method-assign]
+
+    # Resolver: lose the CAS for write_impl (None), succeed for merge_pr.
+    async def _resolve(pt, state, **kw):  # noqa: ANN001
+        if pt == PlayType.WRITE_IMPLEMENTATION_PLAN:
+            return None  # work-claim CAS lost to a sibling
+        return PlayParams(pr_number=50)
+
+    resolver = MagicMock()
+    resolver.resolve = _resolve
+    resolver.project_path = None  # no live-graph loader; confirm uses the snapshot
+    resolver.release_claim = AsyncMock()
+
+    sel = PPOSelector(
+        policy=policy,
+        resolver=resolver,
+        registry=build_default_registry(),
+        buffer=buffer,
+        updater=updater,
+        metrics=_mock_metrics(),
+        cfg=_make_cfg(),
+    )
+
+    # confirm() runs AFTER resolve+claim on the resolved target; isolate the
+    # claim-lost path (write_impl resolve→None) by accepting any confirmed target
+    # so the re-picked merge_pr dispatches deterministically.
+    async def _confirm_ok(self, play_type, params, state):  # noqa: ANN001
+        from agentshore.rl.eligibility import PlayVerdict
+
+        return PlayVerdict(play_type=play_type, valid=True, reason=None, candidates=())
+
+    with (
+        patch("agentshore.rl.eligibility.EligibilityAuthority.confirm", new=_confirm_ok),
+        patch("agentshore.rl.selector._logger") as logger,
+    ):
+        result = asyncio.run(sel.select(_parallel_state()))
+
+    assert result is not None, "the still-valid merge_pr should be dispatched"
+    play_type, params = result
+    assert play_type == PlayType.MERGE_PR
+    assert play_type != PlayType.WRITE_IMPLEMENTATION_PLAN
+
+    # Exactly one PPO step pending — the dispatched merge_pr. The lost write_impl
+    # CAS produced NO _pending (no RL experience sample for the re-pick).
+    assert sel._pending is not None
+    assert sel._pending.action == merge_idx
+
+    # The clean re-pick is logged. Losing the work-claim CAS after a passing
+    # confirm() is the claim_lost_repick clean re-pick (the confirm-rejection
+    # variant is confirm_repick; both re-mask the action and resample). The
+    # selector's confirm-repick telemetry counter specifically tracks live-drift
+    # confirm rejections, so a lost CAS leaves it at 0 — assert that contract too.
+    repick_events = [
+        call.args[0]
+        for call in logger.info.call_args_list
+        if call.args and call.args[0].startswith("ppo_selector.") and "repick" in call.args[0]
+    ]
+    assert "ppo_selector.claim_lost_repick" in repick_events, (
+        f"a clean re-pick event must be logged; got {repick_events}"
+    )
+    assert sel.consume_repick_count() == 0
+
+    # The selector never emits a skip:* play outcome — a clean re-pick is a pure
+    # resample, not a skip row. (Selector returns a play; no resolver_exhausted /
+    # all_masked warning fired.)
+    skip_warnings = [
+        call.args[0]
+        for call in logger.warning.call_args_list
+        if call.args
+        and call.args[0] in ("ppo_selector.resolver_exhausted", "ppo_selector.all_masked")
+    ]
+    assert not skip_warnings
+
+
+def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
+    """A live-drift confirm rejection cleanly re-picks and is counted as a repick.
+
+    The policy picks write_implementation_plan for issue #234; confirm() is
+    monkeypatched to reject the first selection (live drift) and accept the
+    re-pick. The selector re-masks the action, resamples merge_pr, dispatches it,
+    logs ``confirm_repick``, and counts exactly one confirm-repick in the
+    telemetry the orchestrator drains via consume_repick_count().
+    """
+    from agentshore.rl.action_space import PLAY_TO_INDEX
+    from agentshore.rl.eligibility import PlayVerdict
+    from agentshore.rl.mask_reason import SELECTED_CANDIDATE_NO_LONGER_AVAILABLE
+
+    policy = ActorCritic()
+    buffer = RolloutBuffer()
+    updater = PPOUpdater(policy)
+
+    wip_idx = PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]
+    merge_idx = PLAY_TO_INDEX[PlayType.MERGE_PR]
+    act_calls = {"n": 0}
+
+    def _act(obs, mask, *, greedy):  # noqa: ANN001
+        act_calls["n"] += 1
+        idx = wip_idx if act_calls["n"] == 1 else merge_idx
+        return idx, -0.5, 0.0
+
+    policy.act = _act  # type: ignore[method-assign]
+
+    resolver = MagicMock()
+    resolver.resolve = AsyncMock(return_value=PlayParams(pr_number=50))
+    resolver.project_path = None  # confirm is patched below; no real live read
+    # confirm() now runs after resolve+claim, so a rejection releases the claim.
+    resolver.release_claim = AsyncMock()
+
+    sel = PPOSelector(
+        policy=policy,
+        resolver=resolver,
+        registry=build_default_registry(),
+        buffer=buffer,
+        updater=updater,
+        metrics=_mock_metrics(),
+        cfg=_make_cfg(),
+    )
+
+    # Reject the first confirm (write_impl drifted), accept the merge_pr re-pick.
+    async def _confirm(self, play_type, params, state):  # noqa: ANN001
+        if play_type == PlayType.WRITE_IMPLEMENTATION_PLAN:
+            return PlayVerdict(
+                play_type=play_type,
+                valid=False,
+                reason=SELECTED_CANDIDATE_NO_LONGER_AVAILABLE,
+                candidates=(),
+            )
+        return PlayVerdict(play_type=play_type, valid=True, reason=None, candidates=())
+
+    with (
+        patch("agentshore.rl.eligibility.EligibilityAuthority.confirm", new=_confirm),
+        patch("agentshore.rl.selector._logger") as logger,
+    ):
+        result = asyncio.run(sel.select(_parallel_state()))
+
+    assert result is not None
+    assert result[0] == PlayType.MERGE_PR
+    # The live-drift confirm rejection is counted as a confirm-repick.
+    assert sel.consume_repick_count() == 1
+    confirm_repicks = [
+        call.args[0]
+        for call in logger.info.call_args_list
+        if call.args and call.args[0] == "ppo_selector.confirm_repick"
+    ]
+    assert confirm_repicks, "confirm_repick must be logged for a live-drift re-pick"

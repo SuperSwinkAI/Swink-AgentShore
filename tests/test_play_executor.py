@@ -397,24 +397,37 @@ async def test_issue_pickup_reconcile_create_pr_falls_back_to_default_branch_whe
 
 
 @pytest.mark.asyncio
-async def test_executor_releases_claim_on_precondition_failure() -> None:
+async def test_executor_releases_claim_on_unresolved_target() -> None:
+    """A legacy resolve that finds no claimable target still releases the claim.
+
+    Eligibility refactor: the executor no longer re-runs play.preconditions()
+    (validity is settled upstream by the EligibilityAuthority). The surviving
+    pre-dispatch skip on the non-PPO legacy path is ``no_target`` — the resolver
+    returned None because the target was lost. The claim group is still
+    released and no plays row advances beyond the skip record.
+    """
     store = _make_store()
-    params = PlayParams(issue_number=1, extras={"claim_group_id": "claim-1"})
-    play = _make_play(preconditions_result=["blocked"])
-    executor = _make_executor(play=play, params=params, store=store)
+    play = _make_play()
+    # Legacy resolve-None path: no override is passed to execute(), so the
+    # executor resolves and gets None back (target lost between mask and
+    # dispatch). Carry a claim_group_id so we can assert it is released.
+    resolver = AsyncMock()
+    resolver.resolve = AsyncMock(return_value=None)
+    executor = PlayExecutor(
+        registry=_make_registry(play),
+        resolver=resolver,
+        store=store,
+        manager=_make_manager(),
+        cfg=_make_cfg(),
+        project_path=Path("/tmp/project"),
+        session_id="sess-test",
+    )
 
     outcome = await executor.execute(PlayType.ISSUE_PICKUP, _make_state(agents=[_agent()]))
 
-    # Precondition failure at executor time is a transient skip (state shifted
-    # between mask computation and dispatch), not a real failure — see commit
-    # for desktop-wwr. The claim group is still released.
     assert outcome.skipped is True
-    assert outcome.skip_category == "masked"
-    assert outcome.error == "blocked"
+    assert outcome.skip_category == "no_target"
     store.start_work_claim_group.assert_not_awaited()
-    store.finish_work_claim_group.assert_awaited_once_with(
-        "sess-test", "claim-1", status="released"
-    )
 
 
 @pytest.mark.asyncio
@@ -483,30 +496,36 @@ async def test_unregistered_play_returns_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_precondition_failure_returns_skipped_masked() -> None:
-    """Precondition failure post-selection is a transient skip, not a real fail.
+async def test_unresolved_target_persists_skip_no_target_row() -> None:
+    """A legacy resolve-None persists a plays-table row with skip:no_target.
 
-    The mask should have prevented selection; reaching the executor preconditions
-    branch means state shifted between selector and executor. Treat as masked so
-    PPO doesn't learn a spurious negative-reward sample and the noisy
-    play_completed loop never appears in the log. See desktop-wwr.
-
-    Issue #565 (Bug B): the executor now persists a plays-table row with
-    failure_category="skip:masked" so the UI run history reflects what the
-    active-play panel showed.
+    Eligibility refactor: the executor no longer re-checks preconditions
+    (validity is owned by the EligibilityAuthority and confirm() upstream). On
+    the legacy non-PPO path, an unresolved target is the surviving pre-dispatch
+    skip; the executor persists a plays-table row with
+    failure_category="skip:no_target" so the UI run history reflects what the
+    active-play panel showed (issue #565, Bug B).
     """
     store = _make_store()
-    play = _make_play(preconditions_result=["no open issues"])
-    executor = _make_executor(play=play, store=store)
+    play = _make_play()
+    resolver = AsyncMock()
+    resolver.resolve = AsyncMock(return_value=None)
+    executor = PlayExecutor(
+        registry=_make_registry(play),
+        resolver=resolver,
+        store=store,
+        manager=_make_manager(),
+        cfg=_make_cfg(),
+        project_path=Path("/tmp/project"),
+        session_id="sess-test",
+    )
     outcome = await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
     assert outcome.skipped is True
-    assert outcome.skip_category == "masked"
-    assert "no open issues" in (outcome.error or "")
+    assert outcome.skip_category == "no_target"
     store.record_play.assert_awaited_once()
     recorded = store.record_play.await_args.args[0]
     assert recorded.success is False
-    assert recorded.failure_category == "skip:masked"
-    assert "no open issues" in (recorded.error or "")
+    assert recorded.failure_category == "skip:no_target"
 
 
 @pytest.mark.asyncio

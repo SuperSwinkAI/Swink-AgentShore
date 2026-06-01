@@ -25,9 +25,10 @@ _logger = structlog.get_logger(__name__)
 _MAX_OPEN_PRS = 10
 
 # Per-issue circuit breaker. Two failure classes flip the same streak:
-#   (1) Live beads-graph revalidation rejects the dispatch at param-resolve
-#       time (``_DispatchMixin._dispatch_revalidation_reason`` calls
-#       ``_record_skip``). Historical race-condition guard.
+#   (1) The EligibilityAuthority's live ``confirm`` rejects the selected
+#       issue when its bead dropped out of the live candidate set
+#       (``EligibilityAuthority._live_target_reason``), which the selector
+#       turns into a clean re-pick. Historical race-condition guard.
 #   (2) ``execute()`` runs the agent and the returned outcome has
 #       ``success=False`` — typically a body-declared dependency like
 #       "blocked by open dependency: #N". Without this, PPO keeps
@@ -205,10 +206,11 @@ class IssuePickupPlay(SkillBackedPlay):
         Historical note (desktop-xi9d): this method used to do a final
         live-beads-graph check before dispatch and short-circuit with a
         partial-failure outcome whenever the bead was no longer OPEN. The
-        check has moved to ``_DispatchMixin._dispatch_revalidation_reason``
-        (param-resolve time), which raises ``dispatch_revalidation_blocked``
-        instead. DB-backed work claims remain the actual dispatch lock;
-        beads is an external progress mirror.
+        check has moved into the ``EligibilityAuthority``'s one live
+        ``confirm`` (``_live_target_reason``), which drops the selected
+        issue from the live candidate set and triggers a clean re-pick in
+        the selector instead. DB-backed work claims remain the actual
+        dispatch lock; beads is an external progress mirror.
 
         Streak accounting: a successful outcome clears the per-issue
         streak and any cooldown; a failed outcome increments the streak
