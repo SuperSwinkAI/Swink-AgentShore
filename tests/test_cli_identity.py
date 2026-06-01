@@ -545,8 +545,8 @@ def test_agentshore_identity_prints_table_when_resolved(
 
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
-        "agentshore.agents.identity._validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        "agentshore.agents.identity.IdentityResolver.validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
@@ -617,8 +617,8 @@ def test_agentshore_identity_prints_repo_access_when_available(
 
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
-        "agentshore.agents.identity._validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        "agentshore.agents.identity.IdentityResolver.validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
@@ -664,8 +664,8 @@ def test_agentshore_identity_exits_nonzero_on_repo_access_block(
 
     monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
-        "agentshore.agents.identity._validate_github_token",
-        lambda _token: (True, "unseriousAI", None),
+        "agentshore.agents.identity.IdentityResolver.validate_github_token",
+        lambda _self, _token: (True, "unseriousAI", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
@@ -1254,8 +1254,8 @@ def test_run_identity_wizard_post_report_includes_repo_access(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(
-        "agentshore.agents.identity._validate_github_token",
-        lambda _token: (True, "example-user", None),
+        "agentshore.agents.identity.IdentityResolver.validate_github_token",
+        lambda _self, _token: (True, "example-user", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
@@ -1307,8 +1307,8 @@ def test_run_identity_wizard_post_report_fails_on_repo_access_block(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(
-        "agentshore.agents.identity._validate_github_token",
-        lambda _token: (True, "example-user", None),
+        "agentshore.agents.identity.IdentityResolver.validate_github_token",
+        lambda _self, _token: (True, "example-user", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",

@@ -9,7 +9,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
@@ -18,7 +18,7 @@ from agentshore.logging import get_logger
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
 
     from agentshore.agents.handle import AgentHandle
@@ -662,7 +662,6 @@ async def _read_output(
         raise RuntimeError(msg)
     chunks: list[bytes] = []
     total_bytes = 0
-    usage = _UsageTotals()
     drift_warned = False
 
     try:
@@ -685,14 +684,13 @@ async def _read_output(
                 )
             chunks.append(line)
 
-            if agent_type == AgentType.CLAUDE_CODE:
-                usage = _maybe_parse_usage(line, usage)
-                if (
-                    stdout_activity is not None
-                    and not stdout_activity.response_complete
-                    and _is_claude_result_event(line)
-                ):
-                    stdout_activity.mark_response_complete()
+            if (
+                agent_type == AgentType.CLAUDE_CODE
+                and stdout_activity is not None
+                and not stdout_activity.response_complete
+                and _is_claude_result_event(line)
+            ):
+                stdout_activity.mark_response_complete()
     except asyncio.LimitOverrunError as exc:
         raise AgentOutputInvalid(
             f"agent {agent_id!r} stream-json line exceeded {line_limit} bytes "
@@ -713,14 +711,11 @@ async def _read_output(
 
     raw = b"".join(chunks).decode("utf-8", errors="replace")
 
-    if agent_type == AgentType.CLAUDE_CODE:
-        session_id = _extract_session_id_from_jsonl(raw)
-        raw = _extract_text_from_stream_json(raw)
-    elif agent_type == AgentType.CODEX:
-        raw, usage, session_id = _extract_text_from_codex_jsonl(raw)
-    elif agent_type == AgentType.GEMINI:
-        raw, usage, session_id = _extract_text_from_gemini_jsonl(raw)
+    parser = _PARSERS.get(agent_type)
+    if parser is not None:
+        raw, usage, session_id = parser.parse(raw)
     else:
+        usage = _UsageTotals()
         session_id = None
 
     await proc.wait()
@@ -810,316 +805,6 @@ async def _watch_stream_idle(
 
 
 # ---------------------------------------------------------------------------
-# CliOutputParser — per-agent-type JSONL/stream output parsing
-# ---------------------------------------------------------------------------
-
-
-class CliOutputParser:
-    """Parses CLI agent output streams into text, usage totals, and session IDs.
-
-    Groups the three per-agent-type parsers (Claude, Codex, Gemini) and their
-    shared helpers into a cohesive class. All methods are static since parsers
-    are stateless — the class provides namespace cohesion and discoverability.
-    """
-
-    @staticmethod
-    def extract_session_id(raw: str) -> str | None:
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            for key in ("session_id", "thread_id"):
-                value = event.get(key)
-                if isinstance(value, str) and value:
-                    return value
-        return None
-
-    @staticmethod
-    def maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            return current
-
-        usage: object = {}
-        if event.get("type") == "result":
-            usage = event.get("usage", {})
-        elif event.get("type") == "assistant":
-            message = event.get("message", {})
-            usage = message.get("usage", {}) if isinstance(message, dict) else {}
-        elif event.get("type") == "message_delta":
-            usage = event.get("usage", {})
-
-        if not isinstance(usage, dict):
-            return current
-        parsed = CliOutputParser.usage_totals_from_dict(usage, input_includes_cache=False)
-        return CliOutputParser.max_usage(current, parsed)
-
-    @staticmethod
-    def usage_totals_from_dict(
-        usage: dict[str, object], *, input_includes_cache: bool
-    ) -> _UsageTotals:
-        total_usage = usage.get("total_token_usage")
-        last_usage = usage.get("last_token_usage")
-        turn_usage: dict[str, object] | None = None
-        if isinstance(total_usage, dict):
-            if isinstance(last_usage, dict):
-                turn_usage = last_usage
-            usage = total_usage
-            input_includes_cache = True
-        elif isinstance(last_usage, dict):
-            usage = last_usage
-            turn_usage = last_usage
-            input_includes_cache = True
-
-        input_tokens = _safe_int(usage.get("input_tokens"))
-        cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
-            usage.get("cache_read_input_tokens")
-        )
-        cache_write_tokens = _safe_int(usage.get("cache_creation_input_tokens"))
-        output_tokens = _safe_int(usage.get("output_tokens"))
-        reasoning_tokens = _safe_int(usage.get("reasoning_output_tokens"))
-
-        tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
-        if not input_includes_cache:
-            tokens_in += cache_write_tokens
-
-        tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
-        max_turn_input_tokens = (
-            _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
-        )
-        return _UsageTotals(
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cached_tokens_in=cache_read_tokens,
-            cache_write_tokens_in=cache_write_tokens,
-            max_turn_input_tokens=max_turn_input_tokens,
-        )
-
-    @staticmethod
-    def max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-        return _UsageTotals(
-            tokens_in=max(left.tokens_in, right.tokens_in),
-            tokens_out=max(left.tokens_out, right.tokens_out),
-            cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
-            cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
-            turn_count=max(left.turn_count, right.turn_count),
-            max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
-        )
-
-    @staticmethod
-    def parse_codex(raw: str) -> tuple[str, _UsageTotals, str | None]:
-        session_id: str | None = None
-        usage_totals = _UsageTotals()
-        turn_count = 0
-        max_turn_input_tokens = 0
-        messages: list[str] = []
-
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if event.get("type") == "thread.started":
-                thread_id = event.get("thread_id")
-                if isinstance(thread_id, str) and thread_id:
-                    session_id = thread_id
-                continue
-
-            if event.get("type") in {"turn.completed", "token_count"}:
-                usage = event.get("usage" if event.get("type") == "turn.completed" else "info", {})
-                if isinstance(usage, dict):
-                    turn_count += 1
-                    parsed = CliOutputParser.usage_totals_from_dict(
-                        usage, input_includes_cache=True
-                    )
-                    max_turn_input_tokens = max(
-                        max_turn_input_tokens,
-                        parsed.max_turn_input_tokens,
-                    )
-                    usage_totals = CliOutputParser.max_usage(usage_totals, parsed)
-                continue
-
-            if event.get("type") != "item.completed":
-                continue
-            item = event.get("item", {})
-            if not isinstance(item, dict) or item.get("type") != "agent_message":
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                messages.append(text)
-
-        usage_totals = _UsageTotals(
-            tokens_in=usage_totals.tokens_in,
-            tokens_out=usage_totals.tokens_out,
-            cached_tokens_in=usage_totals.cached_tokens_in,
-            cache_write_tokens_in=usage_totals.cache_write_tokens_in,
-            turn_count=turn_count,
-            max_turn_input_tokens=max_turn_input_tokens,
-        )
-        return (messages[-1] if messages else raw), usage_totals, session_id
-
-    @staticmethod
-    def parse_gemini(raw: str) -> tuple[str, _UsageTotals, str | None]:
-        session_id: str | None = None
-        usage_totals = _UsageTotals()
-        messages: list[str] = []
-        final_response: str | None = None
-
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-
-            session_id = session_id or CliOutputParser._extract_gemini_session_id(event)
-
-            event_type = event.get("type")
-            if event_type == "message":
-                role = event.get("role")
-                message = event.get("message")
-                if role is None and isinstance(message, dict):
-                    role = message.get("role")
-                if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
-                    continue
-                text = CliOutputParser._extract_text_value(event.get("message"))
-                if text is None:
-                    text = CliOutputParser._extract_text_value(event)
-                if text:
-                    messages.append(text)
-                continue
-
-            if event_type == "result" or "response" in event:
-                text = CliOutputParser._extract_text_value(event.get("response"))
-                if text is None:
-                    text = CliOutputParser._extract_text_value(event.get("result"))
-                if text:
-                    final_response = text
-
-                stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
-                if isinstance(stats, dict):
-                    usage_totals = CliOutputParser.max_usage(
-                        usage_totals, CliOutputParser._usage_totals_from_gemini_stats(stats)
-                    )
-
-        return (final_response or "".join(messages) or raw), usage_totals, session_id
-
-    @staticmethod
-    def parse_claude(raw: str) -> str:
-        for line in map(str.strip, reversed(raw.splitlines())):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "result" and "result" in event:
-                return str(event["result"])
-
-        parts: list[str] = []
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "assistant":
-                msg = event.get("message", {})
-                for block in msg.get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        parts.append(str(block.get("text", "")))
-            elif event.get("type") == "content_block_delta":
-                delta = event.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    parts.append(str(delta.get("text", "")))
-        return "".join(parts)
-
-    @staticmethod
-    def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-        for key in ("session_id", "sessionId", "thread_id", "id"):
-            value = event.get(key)
-            if isinstance(value, str) and value:
-                return value
-        metadata = event.get("metadata")
-        if isinstance(metadata, dict):
-            for key in ("session_id", "sessionId", "thread_id", "id"):
-                value = metadata.get(key)
-                if isinstance(value, str) and value:
-                    return value
-        return None
-
-    @staticmethod
-    def _extract_text_value(value: object) -> str | None:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            parts = [CliOutputParser._extract_text_value(item) for item in value]
-            return "".join(part for part in parts if part)
-        if not isinstance(value, dict):
-            return None
-
-        for key in ("text", "content", "response", "result"):
-            text = CliOutputParser._extract_text_value(value.get(key))
-            if text:
-                return text
-
-        value_parts = value.get("parts")
-        if isinstance(value_parts, list):
-            text_parts = [CliOutputParser._extract_text_value(part) for part in value_parts]
-            return "".join(part for part in text_parts if part)
-        return None
-
-    @staticmethod
-    def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-        usage = stats.get("usageMetadata")
-        if isinstance(usage, dict):
-            stats = usage
-
-        tokens_in = _first_int(
-            stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-        )
-        cached_tokens_in = _first_int(
-            stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
-        )
-        tokens_out = _first_int(
-            stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-        )
-
-        if tokens_in == 0 and tokens_out == 0:
-            nested = [
-                CliOutputParser._usage_totals_from_gemini_stats(value)
-                for value in stats.values()
-                if isinstance(value, dict)
-            ]
-            if nested:
-                return _UsageTotals(
-                    tokens_in=sum(item.tokens_in for item in nested),
-                    tokens_out=sum(item.tokens_out for item in nested),
-                    cached_tokens_in=sum(item.cached_tokens_in for item in nested),
-                    cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
-                    max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
-                )
-
-        return _UsageTotals(
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cached_tokens_in=cached_tokens_in,
-            max_turn_input_tokens=tokens_in,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Stream event detection
 # ---------------------------------------------------------------------------
 
@@ -1141,50 +826,321 @@ def _is_claude_result_event(line: bytes) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible free functions
+# Per-agent-type JSONL/stream output parsing
 # ---------------------------------------------------------------------------
 
 
+def _iter_json_events(raw: str) -> Iterator[dict[str, object]]:
+    """Yield each non-blank, JSON-decodable line of *raw* as a dict event.
+
+    The three CLI agents all emit JSONL on stdout; this is the single scan
+    loop they share (skip blank lines, ``json.loads``, drop ``JSONDecodeError``
+    and non-dict payloads) so the per-format parsers below only express their
+    own event semantics.
+    """
+    for line in map(str.strip, raw.splitlines()):
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
 def _extract_session_id_from_jsonl(raw: str) -> str | None:
-    return CliOutputParser.extract_session_id(raw)
+    for event in _iter_json_events(raw):
+        for key in ("session_id", "thread_id"):
+            value = event.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
-    return CliOutputParser.maybe_parse_usage(line, current)
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return current
+
+    usage: object = {}
+    if event.get("type") == "result":
+        usage = event.get("usage", {})
+    elif event.get("type") == "assistant":
+        message = event.get("message", {})
+        usage = message.get("usage", {}) if isinstance(message, dict) else {}
+    elif event.get("type") == "message_delta":
+        usage = event.get("usage", {})
+
+    if not isinstance(usage, dict):
+        return current
+    parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
+    return _max_usage(current, parsed)
 
 
 def _usage_totals_from_dict(
     usage: dict[str, object], *, input_includes_cache: bool
 ) -> _UsageTotals:
-    return CliOutputParser.usage_totals_from_dict(usage, input_includes_cache=input_includes_cache)
+    total_usage = usage.get("total_token_usage")
+    last_usage = usage.get("last_token_usage")
+    turn_usage: dict[str, object] | None = None
+    if isinstance(total_usage, dict):
+        if isinstance(last_usage, dict):
+            turn_usage = last_usage
+        usage = total_usage
+        input_includes_cache = True
+    elif isinstance(last_usage, dict):
+        usage = last_usage
+        turn_usage = last_usage
+        input_includes_cache = True
+
+    input_tokens = _safe_int(usage.get("input_tokens"))
+    cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
+        usage.get("cache_read_input_tokens")
+    )
+    cache_write_tokens = _safe_int(usage.get("cache_creation_input_tokens"))
+    output_tokens = _safe_int(usage.get("output_tokens"))
+    reasoning_tokens = _safe_int(usage.get("reasoning_output_tokens"))
+
+    tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
+    if not input_includes_cache:
+        tokens_in += cache_write_tokens
+
+    tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
+    max_turn_input_tokens = _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
+    return _UsageTotals(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cached_tokens_in=cache_read_tokens,
+        cache_write_tokens_in=cache_write_tokens,
+        max_turn_input_tokens=max_turn_input_tokens,
+    )
 
 
 def _max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-    return CliOutputParser.max_usage(left, right)
+    return _UsageTotals(
+        tokens_in=max(left.tokens_in, right.tokens_in),
+        tokens_out=max(left.tokens_out, right.tokens_out),
+        cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
+        cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
+        turn_count=max(left.turn_count, right.turn_count),
+        max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
+    )
 
 
 def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    return CliOutputParser.parse_codex(raw)
+    session_id: str | None = None
+    usage_totals = _UsageTotals()
+    turn_count = 0
+    max_turn_input_tokens = 0
+    messages: list[str] = []
+
+    for event in _iter_json_events(raw):
+        if event.get("type") == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                session_id = thread_id
+            continue
+
+        if event.get("type") in {"turn.completed", "token_count"}:
+            usage = event.get("usage" if event.get("type") == "turn.completed" else "info", {})
+            if isinstance(usage, dict):
+                turn_count += 1
+                parsed = _usage_totals_from_dict(usage, input_includes_cache=True)
+                max_turn_input_tokens = max(
+                    max_turn_input_tokens,
+                    parsed.max_turn_input_tokens,
+                )
+                usage_totals = _max_usage(usage_totals, parsed)
+            continue
+
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item", {})
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            messages.append(text)
+
+    usage_totals = _UsageTotals(
+        tokens_in=usage_totals.tokens_in,
+        tokens_out=usage_totals.tokens_out,
+        cached_tokens_in=usage_totals.cached_tokens_in,
+        cache_write_tokens_in=usage_totals.cache_write_tokens_in,
+        turn_count=turn_count,
+        max_turn_input_tokens=max_turn_input_tokens,
+    )
+    return (messages[-1] if messages else raw), usage_totals, session_id
 
 
 def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    return CliOutputParser.parse_gemini(raw)
+    session_id: str | None = None
+    usage_totals = _UsageTotals()
+    messages: list[str] = []
+    final_response: str | None = None
+
+    for event in _iter_json_events(raw):
+        session_id = session_id or _extract_gemini_session_id(event)
+
+        event_type = event.get("type")
+        if event_type == "message":
+            role = event.get("role")
+            message = event.get("message")
+            if role is None and isinstance(message, dict):
+                role = message.get("role")
+            if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
+                continue
+            text = _extract_text_value(event.get("message"))
+            if text is None:
+                text = _extract_text_value(event)
+            if text:
+                messages.append(text)
+            continue
+
+        if event_type == "result" or "response" in event:
+            text = _extract_text_value(event.get("response"))
+            if text is None:
+                text = _extract_text_value(event.get("result"))
+            if text:
+                final_response = text
+
+            stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
+            if isinstance(stats, dict):
+                usage_totals = _max_usage(usage_totals, _usage_totals_from_gemini_stats(stats))
+
+    return (final_response or "".join(messages) or raw), usage_totals, session_id
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
-    return CliOutputParser.parse_claude(raw)
+    last_result: str | None = None
+    for event in _iter_json_events(raw):
+        if event.get("type") == "result" and "result" in event:
+            last_result = str(event["result"])
+    if last_result is not None:
+        return last_result
+
+    parts: list[str] = []
+    for event in _iter_json_events(raw):
+        if event.get("type") == "assistant":
+            msg = event.get("message", {})
+            content = msg.get("content", []) if isinstance(msg, dict) else []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+        elif event.get("type") == "content_block_delta":
+            delta = event.get("delta", {})
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                parts.append(str(delta.get("text", "")))
+    return "".join(parts)
+
+
+def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    """Parse a Claude Code stream-json transcript into text/usage/session id."""
+    usage = _UsageTotals()
+    for line in map(str.strip, raw.splitlines()):
+        if line:
+            usage = _maybe_parse_usage(line.encode("utf-8"), usage)
+    return _extract_text_from_stream_json(raw), usage, _extract_session_id_from_jsonl(raw)
 
 
 def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    return CliOutputParser._extract_gemini_session_id(event)
+    for key in ("session_id", "sessionId", "thread_id", "id"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return value
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("session_id", "sessionId", "thread_id", "id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _extract_text_value(value: object) -> str | None:
-    return CliOutputParser._extract_text_value(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_extract_text_value(item) for item in value]
+        return "".join(part for part in parts if part)
+    if not isinstance(value, dict):
+        return None
+
+    for key in ("text", "content", "response", "result"):
+        text = _extract_text_value(value.get(key))
+        if text:
+            return text
+
+    value_parts = value.get("parts")
+    if isinstance(value_parts, list):
+        text_parts = [_extract_text_value(part) for part in value_parts]
+        return "".join(part for part in text_parts if part)
+    return None
 
 
 def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-    return CliOutputParser._usage_totals_from_gemini_stats(stats)
+    usage = stats.get("usageMetadata")
+    if isinstance(usage, dict):
+        stats = usage
+
+    tokens_in = _first_int(
+        stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
+    )
+    cached_tokens_in = _first_int(
+        stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
+    )
+    tokens_out = _first_int(
+        stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
+    )
+
+    if tokens_in == 0 and tokens_out == 0:
+        nested = [
+            _usage_totals_from_gemini_stats(value)
+            for value in stats.values()
+            if isinstance(value, dict)
+        ]
+        if nested:
+            return _UsageTotals(
+                tokens_in=sum(item.tokens_in for item in nested),
+                tokens_out=sum(item.tokens_out for item in nested),
+                cached_tokens_in=sum(item.cached_tokens_in for item in nested),
+                cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
+                max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
+            )
+
+    return _UsageTotals(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cached_tokens_in=cached_tokens_in,
+        max_turn_input_tokens=tokens_in,
+    )
+
+
+class CliOutputFormat(Protocol):
+    """A per-agent-type parser: raw stdout -> (text, usage totals, session id)."""
+
+    def parse(self, raw: str) -> tuple[str, _UsageTotals, str | None]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _FunctionFormat:
+    """Adapt a free parse function into the :class:`CliOutputFormat` protocol."""
+
+    _parse: Callable[[str], tuple[str, _UsageTotals, str | None]]
+
+    def parse(self, raw: str) -> tuple[str, _UsageTotals, str | None]:
+        return self._parse(raw)
+
+
+# Registry: adding a fourth agent type is one entry here, not an if/elif edit
+# in ``_read_output``.
+_PARSERS: dict[AgentType, CliOutputFormat] = {
+    AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
+    AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
+    AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
+}
 
 
 def _first_int(values: dict[str, object], *keys: str) -> int:
@@ -1208,9 +1164,11 @@ def _safe_int(value: object) -> int:
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
     """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
-    with contextlib.suppress(ProcessLookupError):
+    try:
         pgid = os.getpgid(proc.pid)
-    if "pgid" not in locals():
+    except (ProcessLookupError, TypeError):
+        # ProcessLookupError: the process already exited. TypeError: proc.pid is
+        # None (subprocess never spawned). Either way there is no group to kill.
         _close_process_transport(proc)
         return
     try:
