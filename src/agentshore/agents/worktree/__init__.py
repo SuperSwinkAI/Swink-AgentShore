@@ -49,17 +49,30 @@ from agentshore.agents.worktree.registry import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from agentshore.config.models import RuntimeConfig
 
-def default_worktree_root(repo_root: Path) -> Path:
+
+def default_worktree_root(repo_root: Path, cfg: RuntimeConfig | None = None) -> Path:
     """Canonical worktree root for a given project.
 
-    Worktrees live alongside the main checkout in a sibling directory so a
-    ``git worktree add`` never escapes the parent filesystem and the path
-    layout matches the plan's ``<repo>/../agentshore-worktrees/<project>/``
-    convention.
+    Default (``cfg.worktrees.root`` unset): worktrees live project-local under
+    ``<repo>/.agentshore/worktrees/`` — inside the gitignored AgentShore home,
+    on the same filesystem as the repo, and crucially NOT in the repo's parent
+    directory (the old ``<repo>/../agentshore-worktrees/`` layout polluted any
+    shared workspace that held repos directly, e.g. ``~/Development/``).
+
+    When ``cfg.worktrees.root`` is set, worktrees are centralized under
+    ``<root>/<repo-name>/worktrees/`` (per-repo subdir disambiguates names).
     """
+    from agentshore.paths import project_dir
+
     repo_root = repo_root.resolve()
-    return repo_root.parent / "agentshore-worktrees" / repo_root.name
+    configured = getattr(getattr(cfg, "worktrees", None), "root", None)
+    if configured:
+        from pathlib import Path as _Path
+
+        return _Path(configured).expanduser() / repo_root.name / "worktrees"
+    return project_dir(repo_root) / "worktrees"
 
 
 __all__ = [
