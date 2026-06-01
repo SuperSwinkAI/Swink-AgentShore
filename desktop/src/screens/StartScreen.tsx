@@ -15,6 +15,11 @@ export interface StartSelection {
    * seed_project play will sweep the project tree without a hint.
    */
   seedInputPath: string | null;
+  /**
+   * Per-session override for timelapse capture. ``undefined`` means "use the
+   * default", which is on whenever the feature is installed.
+   */
+  timelapse?: boolean;
 }
 
 export interface StartGateBlockers {
@@ -59,6 +64,8 @@ export interface StartScreenProps {
   onChange: (next: StartSelection) => void;
   /** Caller-supplied click handler — receives final selection. */
   onStart: (selection: StartSelection) => void;
+  /** Whether the optional timelapse-capture feature is installed. */
+  timelapseAvailable?: boolean;
   adapter?: StartScreenAdapter;
 }
 
@@ -67,6 +74,7 @@ export function StartScreen({
   selection,
   onChange,
   onStart,
+  timelapseAvailable = false,
   adapter = defaultAdapter,
 }: StartScreenProps): JSX.Element {
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +97,7 @@ export function StartScreen({
     try {
       const path = await adapter.openFile();
       if (path !== null) {
-        onChange({ seedInputPath: path });
+        onChange({ ...selection, seedInputPath: path });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -101,7 +109,7 @@ export function StartScreen({
     try {
       const path = await adapter.openFolder();
       if (path !== null) {
-        onChange({ seedInputPath: path });
+        onChange({ ...selection, seedInputPath: path });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -110,10 +118,13 @@ export function StartScreen({
 
   const onClear = useCallback(() => {
     setError(null);
-    onChange({ seedInputPath: null });
-  }, [onChange]);
+    onChange({ ...selection, seedInputPath: null });
+  }, [onChange, selection]);
 
   const hasSeed = selection.seedInputPath !== null;
+  // Default the toggle on whenever the feature is installed; an explicit
+  // per-session choice (selection.timelapse) wins.
+  const timelapseOn = selection.timelapse ?? true;
 
   return (
     <main className={styles.screen} data-testid="start-screen">
@@ -172,13 +183,34 @@ export function StartScreen({
         </div>
       </section>
 
+      {timelapseAvailable && (
+        <section className={styles.section} aria-labelledby="timelapse-title">
+          <h2 id="timelapse-title" className={styles.sectionTitle}>
+            Timelapse capture
+          </h2>
+          <label className={styles.actionDescription} data-testid="timelapse-toggle-row">
+            <input
+              type="checkbox"
+              checked={timelapseOn}
+              onChange={(e) => onChange({ ...selection, timelapse: e.target.checked })}
+              data-testid="timelapse-toggle"
+            />{" "}
+            Record a timelapse video of the dashboard for this session. The MP4 opens
+            automatically when the session ends.
+          </label>
+        </section>
+      )}
+
       <button
         type="button"
         className={styles.startButton}
         disabled={gateBlocked || starting}
         onClick={() => {
           setStarting(true);
-          onStart(selection);
+          onStart({
+            ...selection,
+            timelapse: timelapseAvailable ? timelapseOn : undefined,
+          });
         }}
         data-testid="start-session"
       >

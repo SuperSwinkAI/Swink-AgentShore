@@ -57,6 +57,8 @@ export interface EsrPayload {
   archive_path: string;
   report_path: string;
   log_path: string | null;
+  /** Path to the rendered timelapse MP4 when capture ran; null otherwise. */
+  timelapse_output_path?: string | null;
   esr_summary: EsrSummary;
 }
 

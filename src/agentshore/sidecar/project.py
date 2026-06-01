@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from agentshore.budget import MIN_ENABLED_BUDGET_USD
-from agentshore.config.models import BudgetConfig
+from agentshore.config.models import BudgetConfig, TimelapseConfig
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
 # ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
@@ -575,3 +575,108 @@ def set_budget(payload: object) -> dict[str, object]:
         },
         "yaml_path": str(yaml_path),
     }
+
+
+# Accepted keys on the ``timelapse:`` mapping written to agentshore.yaml.
+# Mirrors the ``TimelapseConfig`` dataclass in
+# ``src/agentshore/config/models.py``.
+_TIMELAPSE_KEYS: frozenset[str] = frozenset({"enabled", "installed"})
+
+
+def _write_timelapse(yaml_text: str, timelapse: TimelapseConfig) -> str:
+    """Round-trip *yaml_text* and set the top-level ``timelapse`` mapping.
+
+    Preserves comments / key ordering on every other section via ruamel.yaml,
+    matching :func:`_write_budget`.
+    """
+    from ruamel.yaml import YAML
+
+    rt = YAML()
+    rt.preserve_quotes = True
+    data = rt.load(yaml_text) if yaml_text.strip() else None
+    if data is None:
+        data = {}
+    existing = data.get("timelapse")
+    block: dict[str, object] = existing if isinstance(existing, dict) else {}
+    block["enabled"] = bool(timelapse.enabled)
+    block["installed"] = bool(timelapse.installed)
+    data["timelapse"] = block
+    buf = io.StringIO()
+    rt.dump(data, buf)
+    return buf.getvalue()
+
+
+def _validate_timelapse_payload(payload: object) -> TimelapseConfig:
+    """Validate the ``set_timelapse`` payload and return a :class:`TimelapseConfig`.
+
+    Both ``enabled`` and ``installed`` are optional booleans (default False);
+    no unknown keys are allowed.
+    """
+    if not isinstance(payload, dict):
+        raise ProjectError("timelapse payload must be an object")
+    unknown = set(payload.keys()) - _TIMELAPSE_KEYS
+    if unknown:
+        raise ProjectError(f"unknown timelapse fields: {sorted(unknown)}")
+    enabled = payload.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ProjectError("timelapse.enabled must be a boolean")
+    installed = payload.get("installed", False)
+    if not isinstance(installed, bool):
+        raise ProjectError("timelapse.installed must be a boolean")
+    return TimelapseConfig(enabled=enabled, installed=installed)
+
+
+def _persist_timelapse(path: Path, timelapse: TimelapseConfig) -> str:
+    """Write the ``timelapse`` block into *path*/agentshore.yaml; return yaml path."""
+    yaml_path = path / "agentshore.yaml"
+    try:
+        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+        new_text = _write_timelapse(existing, timelapse)
+        _atomic_write_text(yaml_path, new_text)
+    except ProjectError:
+        raise
+    except Exception as exc:
+        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    return str(yaml_path)
+
+
+def set_timelapse(payload: object) -> dict[str, object]:
+    """Persist the ``timelapse`` block in agentshore.yaml.
+
+    Payload mirrors :class:`TimelapseConfig`::
+
+        {"enabled": bool?, "installed": bool?}
+
+    Returns the persisted values plus the resolved ``yaml_path``.
+    """
+    path = _require_active()
+    timelapse = _validate_timelapse_payload(payload)
+    yaml_path = _persist_timelapse(path, timelapse)
+    return {
+        "timelapse": {"enabled": timelapse.enabled, "installed": timelapse.installed},
+        "yaml_path": str(yaml_path),
+    }
+
+
+async def install_timelapse() -> dict[str, object]:
+    """Auto-install the timelapse-capture CLI + deps for the active project.
+
+    On success, persists ``timelapse.installed = true`` in agentshore.yaml so
+    the desktop can gate the Start-screen toggle. Returns
+    ``{"success": bool, "message": str, "installed": bool, "yaml_path": str?}``.
+    """
+    path = _require_active()
+    # Lazy import keeps the sidecar's cold-start import graph light: the
+    # installer module is only needed when the user opts into the feature.
+    from agentshore.timelapse.setup import install_timelapse as _install
+
+    result = await _install(cwd=path)
+    response: dict[str, object] = {
+        "success": result.success,
+        "message": result.message,
+        "installed": result.success,
+    }
+    if result.success:
+        yaml_path = _persist_timelapse(path, TimelapseConfig(enabled=True, installed=True))
+        response["yaml_path"] = yaml_path
+    return response

@@ -12,6 +12,7 @@ type RepeatImpl = typeof startSessionFromPersistedSetup;
 interface RenderOpts {
   lastProjectPath?: string | null;
   repeatImpl?: RepeatImpl;
+  openPathImpl?: (path: string) => Promise<void>;
 }
 
 function renderScreen(esr: EsrPayload | null, opts: RenderOpts = {}) {
@@ -41,7 +42,11 @@ function renderScreen(esr: EsrPayload | null, opts: RenderOpts = {}) {
           <Route
             path="/session/esr"
             element={
-              <EndSessionReportScreen adapter={adapter} repeatImpl={opts.repeatImpl} />
+              <EndSessionReportScreen
+                adapter={adapter}
+                repeatImpl={opts.repeatImpl}
+                openPathImpl={opts.openPathImpl}
+              />
             }
           />
           <Route path="/" element={<div data-testid="choose-project-sentinel">cp</div>} />
@@ -223,5 +228,39 @@ describe("EndSessionReportScreen", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /couldn't select — try again from home/i,
     );
+  });
+
+  it("auto-opens the timelapse MP4 when the payload carries one", async () => {
+    const openPathImpl = vi.fn(async () => undefined);
+    renderScreen(
+      { ...ESR_PAYLOAD, timelapse_output_path: "/tmp/proj/.agentshore/timelapse-runs/x/output.mp4" },
+      { openPathImpl },
+    );
+    await vi.waitFor(() =>
+      expect(openPathImpl).toHaveBeenCalledWith(
+        "/tmp/proj/.agentshore/timelapse-runs/x/output.mp4",
+      ),
+    );
+  });
+
+  it("does not open anything when no timelapse path is present", async () => {
+    const openPathImpl = vi.fn(async () => undefined);
+    renderScreen(ESR_PAYLOAD, { openPathImpl });
+    // Give effects a tick to run.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(openPathImpl).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("esr-open-timelapse")).not.toBeInTheDocument();
+  });
+
+  it("shows an Open timelapse button that re-opens the MP4", async () => {
+    const openPathImpl = vi.fn(async () => undefined);
+    renderScreen(
+      { ...ESR_PAYLOAD, timelapse_output_path: "/tmp/x/output.mp4" },
+      { openPathImpl },
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("esr-open-timelapse"));
+    // Auto-open (1) + button click (1).
+    expect(openPathImpl).toHaveBeenCalledTimes(2);
   });
 });
