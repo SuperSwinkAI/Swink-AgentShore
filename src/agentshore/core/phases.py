@@ -39,6 +39,7 @@ from agentshore.github.labels import AGENTSHORE_WORKFLOW_LABELS
 from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.paths import GLOBAL_CONFIG_DIR as _GLOBAL_CONFIG_DIR
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
+from agentshore.paths import project_db_path, project_dir, project_weights_dir
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import MaskClassification
@@ -74,9 +75,9 @@ _AGENTSHORE_SYSTEM_LABELS: tuple[tuple[str, str], ...] = AGENTSHORE_WORKFLOW_LAB
 async def _phase_init_datastore(repo_root: Path) -> DataStore:
     """Create ``.agentshore/`` and initialize the SQLite store."""
     async with _step("init_datastore"):
-        db_dir = repo_root / ".agentshore"
+        db_dir = project_dir(repo_root)
         db_dir.mkdir(exist_ok=True)
-        db_path = db_dir / "agentshore.db"
+        db_path = project_db_path(repo_root)
         # desktop-jc7p: before opening the live connection, check the main DB
         # for corruption and swap in the most recent intact snapshot if needed.
         # The corrupt file is preserved as agentshore.db.corrupt.<ts>. No-op when
@@ -182,7 +183,7 @@ def _phase_cleanup_stale_weights(repo_root: Path) -> None:
         cleanup_stale_canonical_weights,
     )
 
-    weights_dir = repo_root / ".agentshore" / "weights"
+    weights_dir = project_weights_dir(repo_root)
     weights_dir.mkdir(parents=True, exist_ok=True)
     cleanup_stale_canonical_weights(weights_dir)
     _prune_local_checkpoints(weights_dir)

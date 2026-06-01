@@ -11,6 +11,7 @@ import aiosqlite
 from agentshore.core.base import _OrchestratorBase
 from agentshore.core.helpers import _emit_weights_dir_inventory, _logger, _ppo_selector_cls
 from agentshore.errors import OrchestratorError
+from agentshore.paths import project_reports_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -199,7 +200,7 @@ class _DrainMixin(_OrchestratorBase):
         from agentshore.reports.generator import ReportGenerator
 
         generator = ReportGenerator(self._store)
-        output_dir = self._repo_root / ".agentshore" / "reports"
+        output_dir = project_reports_dir(self._repo_root)
         return await generator.generate_end_session_report(
             self._session_id,
             output_dir,

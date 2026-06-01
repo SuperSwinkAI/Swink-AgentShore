@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.paths import project_weights_dir
 from agentshore.state import NullStateProvider
 
 if TYPE_CHECKING:
@@ -413,7 +414,7 @@ class _OrchestratorBase:
 
     def _weights_dir(self) -> Path:
         """Canonical per-project PPO weights directory."""
-        return self._repo_root / ".agentshore" / "weights"
+        return project_weights_dir(self._repo_root)
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None:
         raw = getattr(self._selector, "_config_index", None)

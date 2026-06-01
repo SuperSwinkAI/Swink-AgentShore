@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
@@ -26,7 +27,7 @@ SESSION_ID = "test-session-1"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path: Path) -> DataStore:
     s = DataStore(tmp_path / "agentshore.db")
     await s.initialize()

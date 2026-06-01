@@ -26,6 +26,7 @@ from agentshore.cli.helpers import (
     _track_background_task,
 )
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.paths import project_archive_dir, project_db_path, project_reports_dir
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -132,7 +133,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         from agentshore.reports.generator import ReportGenerator
 
         gen = ReportGenerator(orch._store)
-        output_dir = orch._repo_root / ".agentshore" / "reports"
+        output_dir = project_reports_dir(orch._repo_root)
         if report_type == "progress":
             await gen.generate_progress_report(orch._session_id, output_dir)
         else:
@@ -140,8 +141,8 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
     elif command == "archive_session":
         from agentshore.archive import Archiver
 
-        archive_dir = orch._repo_root / ".agentshore" / "archives"
-        db_path = orch._repo_root / ".agentshore" / "agentshore.db"
+        archive_dir = project_archive_dir(orch._repo_root)
+        db_path = project_db_path(orch._repo_root)
         archiver = Archiver(orch._store, archive_dir)
         await archiver.create_archive(orch._session_id, db_path=db_path)
     elif command == "list_archives":

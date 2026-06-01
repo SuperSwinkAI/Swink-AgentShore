@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import aiosqlite
 import pytest
+import pytest_asyncio
 
 from agentshore.data import (
     DataStore,
@@ -28,7 +29,7 @@ from agentshore.data.store import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path):
     db = DataStore(tmp_path / "test.db")
     await db.initialize()

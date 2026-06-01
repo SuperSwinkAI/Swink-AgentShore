@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from agentshore.data.store import DataStore
 
@@ -98,7 +99,7 @@ def worktree_root(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path: Path) -> AsyncIterator[DataStore]:
     """Real DataStore backed by a temp SQLite file."""
     db_path = tmp_path / "wt-foundation.db"

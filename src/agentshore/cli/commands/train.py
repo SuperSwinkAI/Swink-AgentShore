@@ -6,6 +6,8 @@ from pathlib import Path
 
 import click
 
+from agentshore.paths import project_db_path
+
 
 @click.command()
 @click.option(
@@ -59,9 +61,7 @@ def train(
         click.echo(f"Warning: config load failed ({exc}), using defaults.", err=True)
 
     # Locate database
-    db_path = (
-        Path(sessions) if sessions is not None else project_path / ".agentshore" / "agentshore.db"
-    )
+    db_path = Path(sessions) if sessions is not None else project_db_path(project_path)
     if not db_path.exists():
         click.echo(f"Error: database not found at {db_path}", err=True)
         raise SystemExit(1)

@@ -38,6 +38,7 @@ from agentshore.core.mixins.state import _StateMixin
 # them on the package. We deliberately do NOT import the phase functions
 # here at module load — those imports would shadow the patchable surface.
 from agentshore.data.store import SessionRecord
+from agentshore.paths import project_db_path, project_dir
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import MaskClassification
@@ -286,8 +287,8 @@ class Orchestrator(
 
             self._integrity = IntegrityMonitor(
                 self._store,
-                self._repo_root / ".agentshore",
-                db_path=self._repo_root / ".agentshore" / "agentshore.db",
+                project_dir(self._repo_root),
+                db_path=project_db_path(self._repo_root),
                 canary_interval_seconds=float(integrity_cfg.canary_interval_seconds),
                 snapshot_interval_seconds=float(integrity_cfg.snapshot_interval_seconds),
                 snapshot_ring_size=integrity_cfg.snapshot_ring_size,
