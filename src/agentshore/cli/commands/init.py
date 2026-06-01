@@ -346,8 +346,8 @@ def init(
     # stdin isn't a TTY.
     if not install_skills_only:
         from agentshore.availability import refresh as refresh_availability
-        from agentshore.cli_identity import run_identity_wizard
         from agentshore.errors import ConfigError
+        from agentshore.identity_wizard import run_identity_wizard
 
         config_path = project_path / "agentshore.yaml"
         if config_path.exists():

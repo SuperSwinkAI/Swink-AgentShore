@@ -304,7 +304,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
         report_identities,
         report_identity_repo_access,
     )
-    from agentshore.cli_identity import echo_identity_report, echo_repo_access_report
+    from agentshore.identity_wizard import echo_identity_report, echo_repo_access_report
 
     click.echo("=" * 60)
     identity_rows = report_identities(cfg)
