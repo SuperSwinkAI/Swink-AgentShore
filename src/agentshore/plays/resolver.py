@@ -12,19 +12,14 @@ from agentshore.agents.model_tiers import (
     enabled_model_tiers,
 )
 from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS, TRUNK_SCOPED_PLAYS
-from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.logging import get_logger
-from agentshore.play_rules import needs_review
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import (
     PlayCandidate,
     PlayCandidateService,
     build_candidate_plan,
     idle_can_review_agents,
-    in_progress_issue_numbers,
-    issue_available_for_debug,
     pick_reviewer_for_pr,
-    pr_merge_ready,
     pr_resource_keys,
     pr_resource_keys_for_pr,
     pr_unblockable,
@@ -92,16 +87,6 @@ def _review_queue_id(params: PlayParams) -> int | None:
     return raw if isinstance(raw, int) else None
 
 
-def _issue_numbers_with_merged_prs(state: OrchestratorState) -> set[int]:
-    """Issue numbers already resolved by merged PRs in the current state snapshot."""
-    return {
-        issue_number
-        for pr in state.pull_requests
-        if pr.state.upper() == "MERGED"
-        for issue_number in issue_numbers_for_pr(pr)
-    }
-
-
 # After this many failed unblock_pr plays on the same PR in a single session,
 # the resolver stops dispatching that PR — the skill has already diagnosed it
 # as irresolvable (superseded, perpetual conflict, etc.).
@@ -142,6 +127,26 @@ class ParameterResolver:
             unblock_failures=self._unblock_pr_failures,
             unblock_exhaustion_threshold=_UNBLOCK_PR_EXHAUSTION_THRESHOLD,
         )
+
+    @property
+    def project_path(self) -> Path | None:
+        """Repository path for live reads (e.g. beads ``load_graph``)."""
+        return self._project_path
+
+    async def release_claim(self, state: OrchestratorState, params: PlayParams) -> None:
+        """Release the work-claim group held by ``params``, if any.
+
+        Used by the selector when a live ``confirm()`` rejects a play whose
+        target was already claimed during resolution — the claim must be freed
+        so the resource isn't held by a play that will never dispatch. A no-op
+        when ``params`` carries no claim group.
+        """
+        claim_group_id = _claim_group_id(params)
+        if claim_group_id is None:
+            return
+        method = getattr(self._store, "release_work_claim_group", None)
+        if method is not None:
+            await method(state.session_id, claim_group_id)
 
     def record_unblock_pr_failure(self, pr_number: int) -> bool:
         """Increment the session-level failure count for *pr_number*.
@@ -361,7 +366,14 @@ class ParameterResolver:
     async def _resolve_override(
         self, play_type: PlayType, state: OrchestratorState, override: PlayParams
     ) -> PlayParams | None:
-        """Treat override params as target constraints, then validate and claim them."""
+        """Treat override params as target constraints, then claim them.
+
+        Validity (issue open/available, debuggable, PR merge-ready/unblockable/
+        review-needed) is owned by the EligibilityAuthority's confirm(); this
+        path no longer re-decides eligibility — it enumerates the target and
+        acquires the work claim, returning None on a claim-CAS loss so the
+        selector treats it as a clean re-pick.
+        """
         claim_group_id = _claim_group_id(override)
         if claim_group_id is not None:
             active = await self._claim_group_is_active(state.session_id, claim_group_id)
@@ -382,17 +394,18 @@ class ParameterResolver:
         if play_type in _ISSUE_WORK_PLAY_TYPES:
             if override.issue_number is None:
                 return await self.resolve(play_type, state, override=PlayParams())
-            if not await self._issue_is_open_and_available(state, override.issue_number):
-                return None
+            # Eligibility (issue open + available) is owned by the
+            # EligibilityAuthority's confirm(); the resolver only claims.
             return await self._claim_params(play_type, state, override)
 
         if play_type == PlayType.SYSTEMATIC_DEBUGGING:
-            if override.issue_number is not None:
-                if not await self._issue_is_debuggable(state, override.issue_number):
-                    return None
-            elif override.branch is None:
-                return await self.resolve(play_type, state, override=PlayParams())
-            else:
+            # Debuggability is owned by the EligibilityAuthority's confirm(); the
+            # resolver only claims. With an issue_number it claims that issue;
+            # branch-only debugging bypasses preconditions; with neither, it
+            # re-resolves from scratch.
+            if override.issue_number is None:
+                if override.branch is None:
+                    return await self.resolve(play_type, state, override=PlayParams())
                 override = dataclasses.replace(override, bypass_preconditions=True)
             return await self._claim_params(play_type, state, override)
 
@@ -408,22 +421,24 @@ class ParameterResolver:
         if pr_number is None:
             return None
         pr = await self._find_pr(state, pr_number)
-        if pr is None or str(getattr(pr, "state", "")).lower() != "open":
+        # Target enumeration only: locate the PR so claim resource keys can be
+        # derived. PR validity (merge-ready, unblockable, review-needed, draft)
+        # is owned by the EligibilityAuthority's confirm(); the resolver no
+        # longer re-decides it here.
+        if pr is None:
             return None
 
         if play_type == PlayType.MERGE_PR:
-            if not pr_merge_ready(pr, target_branch=self._cfg.project.target_branch):
-                return None
             return await self._claim_params(play_type, state, params)
 
         if play_type == PlayType.UNBLOCK_PR:
-            if not pr_unblockable(pr):
-                return None
             return await self._claim_params(play_type, state, params)
 
         if play_type == PlayType.CODE_REVIEW:
-            if bool(getattr(pr, "is_draft", False)) or not needs_review(pr):
-                return None
+            # Reviewer selection is target enumeration for the claim key, not an
+            # eligibility decision; the executor's _select_skill_agent remains
+            # the anti-confirmation backstop. Returning None on no idle reviewer
+            # is a clean re-pick, not an eligibility rejection.
             idle_reviewers = idle_can_review_agents(state)
             author = getattr(pr, "github_author", None)
             reviewer = pick_reviewer_for_pr(
@@ -581,75 +596,6 @@ class ParameterResolver:
         pr = await method(state.session_id, pr_number)
         return pr if getattr(pr, "pr_number", None) == pr_number else None
 
-    async def _issue_is_open(self, state: OrchestratorState, issue_number: int) -> bool:
-        for issue in state.open_issues:
-            if issue.issue_number == issue_number and issue.state.upper() == "OPEN":
-                return True
-        method = getattr(self._store, "get_github_issue", None)
-        if not callable(method):
-            return False
-        issue = await method(issue_number, state.session_id)
-        return bool(issue is not None and str(issue.state).upper() == "OPEN")
-
-    async def _issue_is_open_and_available(
-        self, state: OrchestratorState, issue_number: int
-    ) -> bool:
-        if not await self._issue_is_open(state, issue_number):
-            return False
-        if issue_number in _issue_numbers_with_merged_prs(state):
-            return False
-        in_progress = {
-            linked_issue_number
-            for pr in state.pull_requests
-            if pr.state.upper() == "OPEN"
-            for linked_issue_number in issue_numbers_for_pr(pr)
-        }
-        return issue_number not in in_progress
-
-    async def _issue_is_debuggable(self, state: OrchestratorState, issue_number: int) -> bool:
-        open_pr_issue_numbers = {
-            linked_issue_number
-            for pr in state.pull_requests
-            if pr.state.upper() == "OPEN"
-            for linked_issue_number in issue_numbers_for_pr(pr)
-        }
-        if issue_number in open_pr_issue_numbers:
-            return False
-
-        bead_in_progress = in_progress_issue_numbers(state)
-        for issue in state.open_issues:
-            if issue.issue_number == issue_number and issue.state.upper() == "OPEN":
-                return issue_available_for_debug(
-                    issue,
-                    open_pr_issue_numbers=open_pr_issue_numbers,
-                    merged_pr_issue_numbers=_issue_numbers_with_merged_prs(state),
-                    in_flight_issue_numbers=set(state.in_flight_issues),
-                    bead_in_progress_issue_numbers=bead_in_progress,
-                )
-
-        method = getattr(self._store, "get_github_issue", None)
-        if not callable(method):
-            return False
-        issue = await method(issue_number, state.session_id)
-        if issue is None or str(issue.state).upper() != "OPEN":
-            return False
-        labels = list(getattr(issue, "labels", []) or [])
-        snapshot = IssueSnapshot(
-            issue_number=issue.issue_number,
-            title=getattr(issue, "title", ""),
-            state=issue.state,
-            priority=getattr(issue, "priority", None),
-            labels=labels,
-            source=getattr(issue, "source", None),
-        )
-        return issue_available_for_debug(
-            snapshot,
-            open_pr_issue_numbers=open_pr_issue_numbers,
-            merged_pr_issue_numbers=_issue_numbers_with_merged_prs(state),
-            in_flight_issue_numbers=set(state.in_flight_issues),
-            bead_in_progress_issue_numbers=bead_in_progress,
-        )
-
     async def _pending_review_for_pr(
         self, session_id: str, pr_number: int
     ) -> ReviewQueueRecord | None:
@@ -658,14 +604,6 @@ class ParameterResolver:
             if row.pr_number == pr_number:
                 return row
         return None
-
-    @staticmethod
-    def _pr_merge_ready(pr: object) -> bool:
-        return pr_merge_ready(pr)
-
-    @staticmethod
-    def _pr_blocked(pr: object) -> bool:
-        return pr_unblockable(pr)
 
     # -------------------------------------------------------------------------
     # Skill-backed play resolvers
