@@ -146,6 +146,9 @@ class JsonRpcNotification(TypedDict):
     params: dict[str, object]
 
 
+DispatchResult = JsonRpcResponse | Awaitable[JsonRpcResponse] | None
+
+
 def _error(req_id: int | str | None, code: int, message: str) -> JsonRpcResponse:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
@@ -641,12 +644,386 @@ def _extract_path_param(params: object) -> str | None:
     return None
 
 
+def _dispatch_app_handshake(
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    try:
+        handshake_params = validate_params(raw_params)
+    except ValueError as exc:
+        return _error(req_id, INVALID_REQUEST, str(exc))
+    response = build_response()
+    if handshake_params["client_build_id"] != response["sidecar_build_id"]:
+        return _error(req_id, INVALID_REQUEST, "build_id mismatch")
+    return _result(req_id, response)
+
+
+def _dispatch_session(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
+) -> DispatchResult:
+    if raw_params is not None and not isinstance(raw_params, dict):
+        return _error(req_id, INVALID_REQUEST, "params must be an object")
+
+    # session.stop's ``mode`` field must be validated before any side effects
+    # so an unknown value can be rejected cleanly (DESIGN §5.1).
+    stop_mode = "drain"
+    if method == "session.stop":
+        try:
+            stop_mode = _parse_session_stop_mode(raw_params)
+        except _ParamError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+
+    progress_token: object | None = None
+    if isinstance(raw_params, dict) and "progress_token" in raw_params:
+        progress_token = raw_params["progress_token"]
+
+    # #5: the desktop wizard's selected seed file, forwarded to the
+    # orchestrator so a desktop-launched session can take the seed bootstrap
+    # path instead of silently falling back to open-start. The shell sends it
+    # as ``seed_input_path`` (see desktop sessionClient); ``seed_path`` is
+    # accepted as an alias for non-shell callers.
+    seed_path: str | None = None
+    if isinstance(raw_params, dict):
+        raw_seed = raw_params.get("seed_input_path") or raw_params.get("seed_path")
+        if isinstance(raw_seed, str) and raw_seed:
+            seed_path = raw_seed
+
+    if method == "session.stop" and notify is not None and progress_token is not None:
+        if stop_mode == "drain" and state.session_active:
+            _emit_session_stop_drain_progress(notify, progress_token)
+        else:
+            notify(
+                _progress_notification(
+                    progress_token,
+                    step="lifecycle",
+                    percent=100,
+                    message="session.stop complete",
+                )
+            )
+
+    if is_notification:
+        return None
+    if method == "session.status":
+        return _result(req_id, _session_status_result(state))
+    if method == "session.stop" and state.session_context is not None:
+        return _build_session_stop_response(req_id, raw_params, state, mode=stop_mode)
+
+    was_active = state.session_active
+    if method == "session.start":
+        # Real bringup goes through session_lifecycle.run_session_start so
+        # each phase can do its own validation and signal failure via
+        # $/progress + a JSON-RPC error response (DESIGN §10.2). The runner is
+        # async (the start_bridge phase boots an EmbeddedBridge as a supervised
+        # task), so handle_request returns an awaitable for the dispatcher to
+        # resolve. ``start_orchestrator=True`` only takes effect when the state
+        # has an active_project_path; otherwise the legacy stub-mode bringup
+        # still applies (preserves
+        # test_session_start_then_status_reports_running_state).
+        async def _run_session_start_async() -> JsonRpcResponse:
+            try:
+                outcome = await run_session_start(
+                    state,
+                    progress_token=progress_token,
+                    notify=notify,
+                    start_orchestrator=True,
+                    seed_path=seed_path,
+                )
+            except SessionStartError as exc:
+                return _error(req_id, exc.code, str(exc))
+            state.session_active = True
+            state.session_id = outcome.session_id
+            state.started_at = outcome.started_at
+            return _result(
+                req_id,
+                {
+                    "session_id": outcome.session_id,
+                    "ipc_endpoint": outcome.ipc_endpoint,
+                },
+            )
+
+        return _run_session_start_async()
+
+    state.session_active = False
+    if method == "session.stop" and not was_active:
+        return _error(req_id, ERR_SESSION_ACTIVE, "no active session")
+    if method == "session.stop":
+        state.session_id = None
+        state.started_at = None
+        # Tear down a bridge that started without a SessionContext (e.g.
+        # session.start ran but the orchestrator never published).
+        if state.bridge is not None:
+
+            async def _stop_with_bridge() -> JsonRpcResponse:
+                if state.bridge is not None:
+                    await state.bridge.stop()
+                    state.bridge = None
+                return _result(req_id, _lifecycle_result(method))
+
+            return _stop_with_bridge()
+        return _result(req_id, _lifecycle_result(method))
+    return _result(
+        req_id,
+        {
+            "session_id": state.session_id,
+            "ipc_endpoint": state.ipc_endpoint,
+        },
+    )
+
+
+def _dispatch_project_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    state: ServerState,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    if method == "project.select":
+        return _dispatch_project_select(raw_params, state, req_id)
+    try:
+        result = _dispatch_project(method, raw_params, state)
+        if method == "project.deselect":
+            state.active_project_path = None
+    except _ParamError as exc:
+        return _error(req_id, INVALID_PARAMS, str(exc))
+    except project_rpc.ProjectError as exc:
+        if method in _PROJECT_NO_ACTIVE_REMAP and exc.code == project_rpc.ERR_PROJECT_NOT_ACTIVE:
+            return _error(req_id, ERR_NO_ACTIVE_PROJECT, str(exc))
+        return _error(req_id, exc.code, str(exc))
+    except Exception as exc:  # pragma: no cover — defensive guard
+        return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+    return _result(req_id, result)
+
+
+def _dispatch_recents_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+) -> DispatchResult:
+    if method == "recents.list":
+        if is_notification:
+            return None
+        return _result(req_id, list_recents(recents_path()))
+
+    path = _extract_path_param(raw_params)
+    if path is None:
+        if is_notification:
+            return None
+        return _error(req_id, INVALID_PARAMS, "path (string) is required")
+    if method == "recents.touch":
+        touch_recent(path, recents_path())
+    else:
+        remove_recent(path, recents_path())
+    if is_notification:
+        return None
+    return _result(req_id, None)
+
+
+def _dispatch_config_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    state: ServerState,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    if method == "config.read":
+        return _result(req_id, read_config(_active_project_path(state)))
+
+    if not isinstance(raw_params, dict):
+        return _error(req_id, INVALID_PARAMS, "params must be an object")
+    patch = raw_params.get("patch")
+    if not isinstance(patch, dict):
+        return _error(req_id, INVALID_PARAMS, "params.patch must be a mapping")
+    try:
+        write_config(_active_project_path(state), patch)
+    except TypeError as exc:
+        return _error(req_id, INVALID_PARAMS, str(exc))
+    return _result(req_id, {})
+
+
+def _dispatch_identities_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    state: ServerState,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    if method == "identities.list":
+        try:
+            return _result(req_id, list_identities(_active_project_path(state)))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.list: {exc}")
+
+    if method == "identities.check_keychain":
+        if not isinstance(raw_params, dict):
+            return _error(
+                req_id, INVALID_PARAMS, "identities.check_keychain requires object params"
+            )
+        login = raw_params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
+        try:
+            return _result(req_id, keychain_status(login))
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+
+    if method == "identities.add":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.add requires object params")
+        login = raw_params.get("login")
+        token_source = raw_params.get("token_source")
+        if not isinstance(login, str) or not isinstance(token_source, str):
+            return _error(req_id, INVALID_PARAMS, "identities.add requires login and token_source")
+        pat = raw_params.get("pat")
+        if pat is not None and not isinstance(pat, str):
+            return _error(req_id, INVALID_PARAMS, "identities.add: 'pat' must be a string")
+        try:
+            add_identity(_active_project_path(state), login, token_source, pat=pat or None)
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.add: {exc}")
+        return _result(req_id, {})
+
+    if method == "identities.update":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.update requires object params")
+        login = raw_params.get("login")
+        patch = raw_params.get("patch")
+        if not isinstance(login, str) or not isinstance(patch, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.update requires login and patch")
+        try:
+            update_identity(_active_project_path(state), login, patch)
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.update: {exc}")
+        return _result(req_id, {})
+
+    if method == "identities.remove":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.remove requires object params")
+        login = raw_params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, "identities.remove requires login")
+        try:
+            remove_identity(_active_project_path(state), login)
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.remove: {exc}")
+        return _result(req_id, {})
+
+    return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
+
+
+def _dispatch_agents_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    state: ServerState,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    if method == "agents.list":
+        try:
+            return _result(req_id, list_agents(_active_project_path(state)))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"agents.list: {exc}")
+    if method == "agents.detect":
+        return _result(req_id, detect_available_agents())
+    if method == "agents.catalog":
+        return _result(req_id, agents_catalog())
+
+    if method == "agents.configure":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "agents.configure requires object params")
+        agent_type = raw_params.get("type")
+        if not isinstance(agent_type, str) or not agent_type:
+            return _error(req_id, INVALID_PARAMS, "agents.configure requires string 'type'")
+        patch = {k: v for k, v in raw_params.items() if k != "type"}
+        try:
+            configure_agent(_active_project_path(state), agent_type, patch)
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"agents.configure: {exc}")
+        return _result(req_id, {})
+
+    if method == "agents.get_spawn_limits":
+        try:
+            return _result(req_id, get_spawn_limits(_active_project_path(state)))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"agents.get_spawn_limits: {exc}")
+
+    if method == "agents.set_spawn_limits":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "agents.set_spawn_limits requires object params")
+        try:
+            set_spawn_limits(_active_project_path(state), dict(raw_params))
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"agents.set_spawn_limits: {exc}")
+        return _result(req_id, {})
+
+    return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
+
+
+def _dispatch_custom_method(
+    method: str,
+    payload: dict[str, object],
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+) -> DispatchResult:
+    if is_notification:
+        return None
+    try:
+        result = METHOD_HANDLERS[method](payload)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+    if inspect.isawaitable(result):
+
+        async def _await_handler() -> JsonRpcResponse:
+            try:
+                resolved = await result
+            except Exception as exc:  # pragma: no cover - defensive guard
+                return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+            return _result(req_id, resolved)
+
+        return _await_handler()
+    return _result(req_id, result)
+
+
 def handle_request(
     payload: object,
     notify: Callable[[JsonRpcNotification], None] | None = None,
     *,
     state: ServerState | None = None,
-) -> JsonRpcResponse | Awaitable[JsonRpcResponse] | None:
+) -> DispatchResult:
     """Dispatch a single parsed request payload.
 
     Returns ``None`` for notifications (no ``id``); per JSON-RPC 2.0 these
@@ -667,350 +1044,70 @@ def handle_request(
     state = state or ServerState()
 
     if method == "app.handshake":
-        if is_notification:
-            return None
-        try:
-            handshake_params = validate_params(payload.get("params"))
-        except ValueError as exc:
-            return _error(req_id, INVALID_REQUEST, str(exc))
-        response = build_response()
-        if handshake_params["client_build_id"] != response["sidecar_build_id"]:
-            return _error(req_id, INVALID_REQUEST, "build_id mismatch")
-        return _result(req_id, response)
+        return _dispatch_app_handshake(
+            payload.get("params"), req_id=req_id, is_notification=is_notification
+        )
 
     if method in {"session.start", "session.status", "session.stop"}:
-        raw_params = payload.get("params")
-        if raw_params is not None and not isinstance(raw_params, dict):
-            return _error(req_id, INVALID_REQUEST, "params must be an object")
-
-        # session.stop's ``mode`` field must be validated before any side
-        # effects so an unknown value can be rejected cleanly (DESIGN §5.1).
-        stop_mode = "drain"
-        if method == "session.stop":
-            try:
-                stop_mode = _parse_session_stop_mode(raw_params)
-            except _ParamError as exc:
-                return _error(req_id, INVALID_PARAMS, str(exc))
-
-        progress_token: object | None = None
-        if isinstance(raw_params, dict) and "progress_token" in raw_params:
-            progress_token = raw_params["progress_token"]
-
-        # #5: the desktop wizard's selected seed file, forwarded to the
-        # orchestrator so a desktop-launched session can take the seed
-        # bootstrap path instead of silently falling back to open-start. The
-        # shell sends it as ``seed_input_path`` (see desktop sessionClient);
-        # ``seed_path`` is accepted as an alias for non-shell callers.
-        seed_path: str | None = None
-        if isinstance(raw_params, dict):
-            raw_seed = raw_params.get("seed_input_path") or raw_params.get("seed_path")
-            if isinstance(raw_seed, str) and raw_seed:
-                seed_path = raw_seed
-
-        if method == "session.stop" and notify is not None and progress_token is not None:
-            if stop_mode == "drain" and state.session_active:
-                _emit_session_stop_drain_progress(notify, progress_token)
-            else:
-                notify(
-                    _progress_notification(
-                        progress_token,
-                        step="lifecycle",
-                        percent=100,
-                        message="session.stop complete",
-                    )
-                )
-
-        if is_notification:
-            return None
-        if method == "session.status":
-            return _result(req_id, _session_status_result(state))
-        if method == "session.stop" and state.session_context is not None:
-            return _build_session_stop_response(req_id, raw_params, state, mode=stop_mode)
-        was_active = state.session_active
-
-        if method == "session.start":
-            # Real bringup goes through session_lifecycle.run_session_start
-            # so each phase can do its own validation and signal failure
-            # via $/progress + a JSON-RPC error response (DESIGN §10.2).
-            # The runner is async (the start_bridge phase boots an
-            # EmbeddedBridge as a supervised task), so handle_request
-            # returns an awaitable for the dispatcher to resolve.
-            # ``start_orchestrator=True`` only takes effect when the
-            # state has an active_project_path; otherwise the legacy
-            # stub-mode bringup still applies (preserves
-            # test_session_start_then_status_reports_running_state).
-            async def _run_session_start_async() -> JsonRpcResponse:
-                try:
-                    outcome = await run_session_start(
-                        state,
-                        progress_token=progress_token,
-                        notify=notify,
-                        start_orchestrator=True,
-                        seed_path=seed_path,
-                    )
-                except SessionStartError as exc:
-                    return _error(req_id, exc.code, str(exc))
-                state.session_active = True
-                state.session_id = outcome.session_id
-                state.started_at = outcome.started_at
-                return _result(
-                    req_id,
-                    {
-                        "session_id": outcome.session_id,
-                        "ipc_endpoint": outcome.ipc_endpoint,
-                    },
-                )
-
-            return _run_session_start_async()
-
-        state.session_active = False
-        if method == "session.stop" and not was_active:
-            return _error(req_id, ERR_SESSION_ACTIVE, "no active session")
-        if method == "session.stop":
-            state.session_id = None
-            state.started_at = None
-            # Tear down a bridge that started without a SessionContext
-            # (e.g. session.start ran but the orchestrator never published).
-            if state.bridge is not None:
-
-                async def _stop_with_bridge() -> JsonRpcResponse:
-                    if state.bridge is not None:
-                        await state.bridge.stop()
-                        state.bridge = None
-                    return _result(req_id, _lifecycle_result(method))
-
-                return _stop_with_bridge()
-            return _result(req_id, _lifecycle_result(method))
-        return _result(
-            req_id,
-            {
-                "session_id": state.session_id,
-                "ipc_endpoint": state.ipc_endpoint,
-            },
+        return _dispatch_session(
+            method,
+            payload.get("params"),
+            req_id=req_id,
+            is_notification=is_notification,
+            notify=notify,
+            state=state,
         )
 
     if method in _PROJECT_METHODS:
-        if is_notification:
-            return None
-        if method == "project.select":
-            return _dispatch_project_select(payload.get("params"), state, req_id)
-        try:
-            result = _dispatch_project(method, payload.get("params"), state)
-            if method == "project.deselect":
-                state.active_project_path = None
-        except _ParamError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except project_rpc.ProjectError as exc:
-            if (
-                method in _PROJECT_NO_ACTIVE_REMAP
-                and exc.code == project_rpc.ERR_PROJECT_NOT_ACTIVE
-            ):
-                return _error(req_id, ERR_NO_ACTIVE_PROJECT, str(exc))
-            return _error(req_id, exc.code, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive guard
-            return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
-        return _result(req_id, result)
+        return _dispatch_project_rpc(
+            method,
+            payload.get("params"),
+            req_id=req_id,
+            is_notification=is_notification,
+            state=state,
+        )
 
     if method in {"archive.list", "archive.fetch_report", "archive.fetch_logs"}:
         if is_notification:
             return None
         return _dispatch_archive(method, payload.get("params"), state, req_id)
 
-    if method == "recents.list":
-        if is_notification:
-            return None
-        return _result(req_id, list_recents(recents_path()))
+    if method in {"recents.list", "recents.touch", "recents.remove"}:
+        return _dispatch_recents_rpc(
+            method, payload.get("params"), req_id=req_id, is_notification=is_notification
+        )
 
-    if method in ("recents.touch", "recents.remove"):
-        path = _extract_path_param(payload.get("params"))
-        if path is None:
-            if is_notification:
-                return None
-            return _error(req_id, INVALID_PARAMS, "path (string) is required")
-        if method == "recents.touch":
-            touch_recent(path, recents_path())
-        else:
-            remove_recent(path, recents_path())
-        if is_notification:
-            return None
-        return _result(req_id, None)
+    if method in {"config.read", "config.write"}:
+        return _dispatch_config_rpc(
+            method,
+            payload.get("params"),
+            req_id=req_id,
+            is_notification=is_notification,
+            state=state,
+        )
 
-    if method == "config.read":
-        if is_notification:
-            return None
-        return _result(req_id, read_config(_active_project_path(state)))
+    if method.startswith("identities."):
+        return _dispatch_identities_rpc(
+            method,
+            payload.get("params"),
+            req_id=req_id,
+            is_notification=is_notification,
+            state=state,
+        )
 
-    if method == "config.write":
-        if is_notification:
-            return None
-        raw_params = payload.get("params")
-        if not isinstance(raw_params, dict):
-            return _error(req_id, INVALID_PARAMS, "params must be an object")
-        patch = raw_params.get("patch")
-        if not isinstance(patch, dict):
-            return _error(req_id, INVALID_PARAMS, "params.patch must be a mapping")
-        try:
-            write_config(_active_project_path(state), patch)
-        except TypeError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        return _result(req_id, {})
-
-    if method == "identities.list":
-        if is_notification:
-            return None
-        try:
-            return _result(req_id, list_identities(_active_project_path(state)))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"identities.list: {exc}")
-
-    if method == "identities.check_keychain":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(
-                req_id, INVALID_PARAMS, "identities.check_keychain requires object params"
-            )
-        login = params.get("login")
-        if not isinstance(login, str):
-            return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
-        try:
-            return _result(req_id, keychain_status(login))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-
-    if method == "identities.add":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(req_id, INVALID_PARAMS, "identities.add requires object params")
-        login = params.get("login")
-        token_source = params.get("token_source")
-        if not isinstance(login, str) or not isinstance(token_source, str):
-            return _error(req_id, INVALID_PARAMS, "identities.add requires login and token_source")
-        pat = params.get("pat")
-        if pat is not None and not isinstance(pat, str):
-            return _error(req_id, INVALID_PARAMS, "identities.add: 'pat' must be a string")
-        try:
-            add_identity(_active_project_path(state), login, token_source, pat=pat or None)
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"identities.add: {exc}")
-        return _result(req_id, {})
-
-    if method == "identities.update":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(req_id, INVALID_PARAMS, "identities.update requires object params")
-        login = params.get("login")
-        patch = params.get("patch")
-        if not isinstance(login, str) or not isinstance(patch, dict):
-            return _error(req_id, INVALID_PARAMS, "identities.update requires login and patch")
-        try:
-            update_identity(_active_project_path(state), login, patch)
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"identities.update: {exc}")
-        return _result(req_id, {})
-
-    if method == "identities.remove":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(req_id, INVALID_PARAMS, "identities.remove requires object params")
-        login = params.get("login")
-        if not isinstance(login, str):
-            return _error(req_id, INVALID_PARAMS, "identities.remove requires login")
-        try:
-            remove_identity(_active_project_path(state), login)
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"identities.remove: {exc}")
-        return _result(req_id, {})
-
-    if method == "agents.list":
-        if is_notification:
-            return None
-        try:
-            return _result(req_id, list_agents(_active_project_path(state)))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.list: {exc}")
-
-    if method == "agents.detect":
-        if is_notification:
-            return None
-        return _result(req_id, detect_available_agents())
-
-    if method == "agents.catalog":
-        if is_notification:
-            return None
-        return _result(req_id, agents_catalog())
-
-    if method == "agents.configure":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(req_id, INVALID_PARAMS, "agents.configure requires object params")
-        agent_type = params.get("type")
-        if not isinstance(agent_type, str) or not agent_type:
-            return _error(req_id, INVALID_PARAMS, "agents.configure requires string 'type'")
-        patch = {k: v for k, v in params.items() if k != "type"}
-        try:
-            configure_agent(_active_project_path(state), agent_type, patch)
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.configure: {exc}")
-        return _result(req_id, {})
-
-    if method == "agents.get_spawn_limits":
-        if is_notification:
-            return None
-        try:
-            return _result(req_id, get_spawn_limits(_active_project_path(state)))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.get_spawn_limits: {exc}")
-
-    if method == "agents.set_spawn_limits":
-        if is_notification:
-            return None
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            return _error(req_id, INVALID_PARAMS, "agents.set_spawn_limits requires object params")
-        try:
-            set_spawn_limits(_active_project_path(state), dict(params))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.set_spawn_limits: {exc}")
-        return _result(req_id, {})
+    if method.startswith("agents."):
+        return _dispatch_agents_rpc(
+            method,
+            payload.get("params"),
+            req_id=req_id,
+            is_notification=is_notification,
+            state=state,
+        )
 
     if method in METHOD_HANDLERS:
-        if is_notification:
-            return None
-        try:
-            result = METHOD_HANDLERS[method](payload)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
-        if inspect.isawaitable(result):
-
-            async def _await_handler() -> JsonRpcResponse:
-                try:
-                    resolved = await result
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
-                return _result(req_id, resolved)
-
-            return _await_handler()
-        return _result(req_id, result)
+        return _dispatch_custom_method(
+            method, payload, req_id=req_id, is_notification=is_notification
+        )
 
     if is_notification:
         return None
