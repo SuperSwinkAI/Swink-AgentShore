@@ -17,6 +17,7 @@ import click
 from agentshore import cli as _cli_pkg
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _PROJECT_DIR
 from agentshore.config.models import AgentConfig
+from agentshore.config.yaml_io import ruamel_get_nested, ruamel_set_nested
 from agentshore.errors import OrchestratorError
 
 
@@ -88,24 +89,7 @@ def _write_target_branch_to_yaml(config_path: Path, branch: str) -> None:
     wizard and the CLI converge on the same on-disk shape. Comments and key
     ordering on other top-level entries are preserved.
     """
-    import io
-
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    data = rt.load(existing) if existing.strip() else None
-    if data is None:
-        data = {}
-    project = data.get("project")
-    if not isinstance(project, dict):
-        project = {}
-        data["project"] = project
-    project["target_branch"] = branch
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    ruamel_set_nested(config_path, ("project", "target_branch"), branch)
 
 
 def _write_max_per_config_to_yaml(config_path: Path, max_per_config: int) -> None:
@@ -114,44 +98,12 @@ def _write_max_per_config_to_yaml(config_path: Path, max_per_config: int) -> Non
     Used by the CLI init wizard's "Max agents per type" prompt and the
     Desktop AgentsScreen to converge on the same yaml shape (desktop-ty04).
     """
-    import io
-
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    data = rt.load(existing) if existing.strip() else None
-    if data is None:
-        data = {}
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        agent_spawn = {}
-        data["agent_spawn"] = agent_spawn
-    agent_spawn["max_per_config"] = int(max_per_config)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    ruamel_set_nested(config_path, ("agent_spawn", "max_per_config"), int(max_per_config))
 
 
 def _read_max_per_config_from_yaml(config_path: Path) -> int | None:
     """Return the persisted ``agent_spawn.max_per_config`` if present, else None."""
-    if not config_path.exists():
-        return None
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    try:
-        data = rt.load(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, KeyError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        return None
-    value = agent_spawn.get("max_per_config")
+    value = ruamel_get_nested(config_path, ("agent_spawn", "max_per_config"))
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     return None

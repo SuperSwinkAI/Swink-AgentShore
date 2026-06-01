@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from agentshore.cli.helpers import open_store
 from agentshore.paths import project_db_path
 
 
@@ -49,22 +50,17 @@ def train(
 
     # Locate agentshore.yaml for config
     config_path = project_path / "agentshore.yaml"
-    try:
-        from agentshore.config import load_config
-        from agentshore.errors import ConfigError
+    from agentshore.config import load_config
+    from agentshore.errors import ConfigError
 
+    try:
         cfg = load_config(config_path if config_path.exists() else None)
     except (ConfigError, OSError, ValueError) as exc:
-        from agentshore.config import load_config
-
         cfg = load_config(None)
         click.echo(f"Warning: config load failed ({exc}), using defaults.", err=True)
 
     # Locate database
     db_path = Path(sessions) if sessions is not None else project_db_path(project_path)
-    if not db_path.exists():
-        click.echo(f"Error: database not found at {db_path}", err=True)
-        raise SystemExit(1)
 
     # Output path
     if output is not None:
@@ -77,17 +73,13 @@ def train(
         out_path = GLOBAL_WEIGHTS_DIR / "policy.pt"
 
     async def _train() -> None:
-        from agentshore.data.store import DataStore
         from agentshore.rl.action_space import ACTION_SPACE_VERSION
         from agentshore.rl.cold_start import apply_cold_start_bias
         from agentshore.rl.policy import ActorCritic
         from agentshore.rl.replay import ReplayLoader
         from agentshore.rl.training import PPOUpdater
 
-        store = DataStore(db_path)
-        try:
-            await store.initialize()
-
+        async with open_store(db_path) as store:
             # Load or cold-start policy
             if source_policy is not None:
                 policy = ActorCritic.load(Path(source_policy))
@@ -140,7 +132,5 @@ def train(
             policy.save(out_path)
             click.echo(f"\nSaved checkpoint to {out_path}")
             click.echo(f"Trained on {session_count} session(s), {total_updates} buffer(s).")
-        finally:
-            await store.close()
 
     asyncio.run(_train())

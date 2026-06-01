@@ -115,6 +115,47 @@ def find_free_tcp_port(host: str = "127.0.0.1") -> int:
         return int(sock.getsockname()[1])
 
 
+def resolve_start_ipc_endpoint(
+    project_path: Path,
+    *,
+    socket_override: str | None,
+    ipc_host: str,
+    ipc_port: int,
+) -> tuple[IpcEndpoint, str]:
+    """Resolve the IPC endpoint and on-disk socket path for ``agentshore start``.
+
+    Returns ``(ipc_endpoint, resolved_socket)``. With no ``socket_override`` the
+    platform-default endpoint is used (auto-selecting a free TCP port when the
+    requested port is 0) and the resolved socket is the well-known per-project
+    path. With an explicit ``socket_override`` a Unix endpoint is bound to it,
+    and a best-effort symlink is planted at the well-known path so
+    ``agentshore dashboard`` auto-discovery (which hashes the project dir) keeps
+    working; the symlink is skipped when the override already *is* the well-known
+    path (the backgrounded dashboard launcher re-passes the resolved path to the
+    child, so symlinking would create ``socket.sock -> socket.sock`` and later
+    ``bind()`` would fail with ``ELOOP``). Filesystems without symlink support
+    fall back to ``info.json`` discovery, so symlink ``OSError`` is swallowed.
+    """
+    well_known_socket = session_socket_path(project_path)
+    if socket_override is None:
+        ipc_endpoint = default_ipc_endpoint(project_path, host=ipc_host, port=ipc_port)
+        if ipc_endpoint.kind == "tcp" and ipc_endpoint.port == 0:
+            ipc_endpoint = IpcEndpoint.tcp(ipc_endpoint.host, find_free_tcp_port(ipc_endpoint.host))
+        return ipc_endpoint, str(well_known_socket)
+
+    resolved_socket = socket_override
+    ipc_endpoint = IpcEndpoint.unix(resolved_socket)
+    explicit = Path(resolved_socket)
+    if explicit.resolve() != well_known_socket.resolve():
+        try:
+            if well_known_socket.exists() or well_known_socket.is_symlink():
+                well_known_socket.unlink()
+            well_known_socket.symlink_to(explicit.resolve())
+        except OSError:
+            pass
+    return ipc_endpoint, resolved_socket
+
+
 def _project_hash(project_path: Path) -> str:
     """Stable 16-char hex hash of an absolute project path."""
     return hashlib.sha256(str(project_path).encode()).hexdigest()[:16]
