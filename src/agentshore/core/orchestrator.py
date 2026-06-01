@@ -332,16 +332,6 @@ class Orchestrator(
         )
         return state
 
-    def enqueue_override(self, play_type: PlayType, params: PlayParams) -> None:
-        """Enqueue a human-override play (sync, FIFO). Consumed at the top of each loop body."""
-        self._override_queue.put_nowait(
-            OverrideEntry(
-                play_type=play_type,
-                params=params,
-                kind=OverrideKind.USER_REQUEST,
-            )
-        )
-
     def on_natural_exit(self, callback: NaturalExitCallback) -> None:
         """Register a callback fired when the loop exits without an explicit stop.
 

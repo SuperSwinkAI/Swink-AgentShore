@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import math
 
-from agentshore.state import PlayType
-
 VALID_COMMANDS: frozenset[str] = frozenset(
     {
         "start",
@@ -16,7 +14,6 @@ VALID_COMMANDS: frozenset[str] = frozenset(
         "drain",
         "hard_stop",
         "adjust_budget",
-        "override_play",
         "rescan_issues",
         "feedback_response",
         "generate_report",
@@ -30,7 +27,6 @@ VALID_COMMANDS: frozenset[str] = frozenset(
 
 # Required params per command (empty = no required params beyond "command")
 _REQUIRED_PARAMS: dict[str, frozenset[str]] = {
-    "override_play": frozenset({"play_type"}),
     "feedback_response": frozenset({"action"}),
     "verification_response": frozenset({"checkpoint_id", "passed"}),
     "adjust_budget": frozenset({"delta_usd"}),
@@ -43,34 +39,6 @@ _BOOL_PARAMS: dict[str, frozenset[str]] = {
 _NUMERIC_POSITIVE_PARAMS: dict[str, frozenset[str]] = {
     "adjust_budget": frozenset({"delta_usd"}),
 }
-
-_RESERVED_OVERRIDE_PLAY_TYPES: frozenset[PlayType] = frozenset(
-    {PlayType.FUTURE_7, PlayType.FUTURE_8}
-)
-
-
-def parse_override_play_type(value: object) -> PlayType:
-    """Return a PlayType accepted for new override commands.
-
-    IPC clients historically sent enum names (``ISSUE_PICKUP``) while the
-    dashboard uses enum values (``issue_pickup``), so both forms are accepted.
-    Reserved slots and retired names are rejected.
-    """
-    if not isinstance(value, str):
-        raise ValueError(f"play_type must be a string, got {type(value).__name__}")
-
-    try:
-        play_type = PlayType(value)
-    except ValueError:
-        try:
-            play_type = PlayType[value]
-        except KeyError as exc:
-            raise ValueError(f"Unknown play_type: {value!r}") from exc
-
-    if play_type in _RESERVED_OVERRIDE_PLAY_TYPES:
-        raise ValueError(f"Reserved play_type: {value!r}")
-    return play_type
-
 
 def parse_command(line: str) -> dict[str, object]:
     """Parse one NDJSON line into a command dict.
@@ -122,6 +90,3 @@ def validate_command(cmd: dict[str, object]) -> None:
             raise ValueError(
                 f"Command '{command}': '{field}' must be a boolean, got {cmd[field]!r}"
             )
-
-    if command == "override_play":
-        parse_override_play_type(cmd.get("play_type"))

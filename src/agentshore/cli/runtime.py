@@ -21,8 +21,6 @@ from agentshore import cli as _cli_pkg
 from agentshore.cli.constants import _SOCKET_POLL_INTERVAL_S, _SOCKET_WAIT_RETRIES
 from agentshore.cli.helpers import (
     _install_loop_signal_handler,
-    _int_or_none,
-    _str_or_none,
     _track_background_task,
 )
 from agentshore.config.models import PolicyMode, RunMode
@@ -67,21 +65,6 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             return
         if orch.adjust_budget(delta):
             await orch.resume()
-    elif command == "override_play":
-        from agentshore.ipc.commands import parse_override_play_type
-        from agentshore.plays.base import PlayParams
-
-        play_type_str = str(cmd.get("play_type", ""))
-        try:
-            pt = parse_override_play_type(play_type_str)
-        except ValueError:
-            return
-        params = PlayParams(
-            agent_id=_str_or_none(cmd, "agent_id"),
-            issue_number=_int_or_none(cmd, "issue_number"),
-            pr_number=_int_or_none(cmd, "pr_number"),
-        )
-        orch.enqueue_override(pt, params)
     elif command == "rescan_issues":
         await orch._refresh_issues()
     elif command == "feedback_response":
