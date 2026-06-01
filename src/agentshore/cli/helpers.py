@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import signal
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,11 +26,48 @@ from agentshore.cli.constants import (
 from agentshore.config.models import PolicyMode, RunMode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Sequence
+    from collections.abc import AsyncIterator, Callable, Coroutine
 
-    from agentshore.agents.identity import RepoAccessStatus
+    from agentshore.data.store import DataStore
 
 _logger = structlog.get_logger(__name__)
+
+
+@asynccontextmanager
+async def open_store(db_path: Path) -> AsyncIterator[DataStore]:
+    """Open an initialised :class:`DataStore` for *db_path*, closing on exit.
+
+    Raises :class:`click.ClickException` (exit code 1, ``Error: …`` on stderr)
+    when no database exists at *db_path*, so the DB-backed read commands
+    (``archive``, ``report``, ``stop``, ``train``) share one existence-check
+    and one guaranteed-``close`` lifecycle instead of hand-rolling the same
+    try/finally per ``asyncio.run`` site.
+    """
+    if not db_path.exists():
+        raise click.ClickException(f"No database found at {db_path}")
+    from agentshore.data.store import DataStore
+
+    store = DataStore(db_path)
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+async def resolve_session_id(store: DataStore, explicit: str | None) -> str:
+    """Return *explicit* if given, else the most recent session in *store*.
+
+    Raises :class:`click.ClickException` when no explicit id is given and the
+    store holds no sessions. Centralises the "default to last session" rule
+    shared by ``archive create``, ``report``, and ``stop``'s ESR generation.
+    """
+    if explicit is not None:
+        return explicit
+    sessions = await store.list_sessions()
+    if not sessions:
+        raise click.ClickException("No sessions found.")
+    return sessions[0].session_id
 
 
 def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
@@ -64,23 +102,6 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
         return False, result.stderr.strip() or "no identities loaded"
     first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
     return True, first_line
-
-
-def _echo_repo_access_rows(repo_access_rows: Sequence[RepoAccessStatus]) -> None:
-    """Pretty-print repository access preflight rows with a leading blank line.
-
-    Thin adapter over the canonical renderer
-    :func:`agentshore.cli_identity.echo_repo_access_report` so there is exactly
-    one repo-access row formatter. This variant prepends a blank line (the
-    spacing its ``start``/``identity`` callers expect); the canonical renderer
-    leaves vertical spacing to the caller.
-    """
-    from agentshore.cli_identity import echo_repo_access_report
-
-    if not repo_access_rows:
-        return
-    click.echo()
-    echo_repo_access_report(list(repo_access_rows))
 
 
 def _drain_wait_timeout_label() -> str:
