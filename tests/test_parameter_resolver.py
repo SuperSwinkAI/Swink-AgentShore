@@ -968,8 +968,8 @@ async def test_resolve_code_review_skips_pr_when_only_same_identity_reviewer() -
     from unittest.mock import patch
 
     with patch(
-        "agentshore.plays.resolver.ParameterResolver._first_open_pr_matching",
-        return_value=None,
+        "agentshore.plays.candidates.PlayCandidateService._github_pr_candidates",
+        return_value=[],
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
     assert result is None
@@ -1175,12 +1175,25 @@ async def test_resolve_code_review_skips_draft_prs_in_state_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_run_qa_returns_empty_params_for_default_branch() -> None:
-    """run_qa now targets the merged default branch — no specific branch lookup."""
+    """run_qa now targets the merged default branch — no specific branch lookup.
+
+    run_qa is trunk-scoped but not trunk-mutating, so it self-serializes on a
+    ``session:run_qa`` claim. The resolved params carry the claim metadata but
+    no branch/issue/pr target.
+    """
     resolver = _make_resolver()
+    resolver._store.acquire_work_claims = AsyncMock(return_value="claim-qa")
 
     result = await resolver.resolve(PlayType.RUN_QA, _make_state())
 
-    assert result == PlayParams()
+    assert result is not None
+    assert result.branch is None
+    assert result.issue_number is None
+    assert result.pr_number is None
+    assert result.extras["claim_group_id"] == "claim-qa"
+    resolver._store.acquire_work_claims.assert_awaited_once_with(
+        "sess-test", "run_qa", ["session:run_qa"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1835,8 +1848,8 @@ async def test_resolve_code_review_skips_when_only_small_tier_idle() -> None:
     )
 
     with patch(
-        "agentshore.plays.resolver.ParameterResolver._first_open_pr_matching",
-        return_value=None,
+        "agentshore.plays.candidates.PlayCandidateService._github_pr_candidates",
+        return_value=[],
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
 
