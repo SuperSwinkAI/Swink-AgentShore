@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
-import structlog
 
 from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
-from agentshore.play_rules import TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
+from agentshore.play_rules import (
+    CANDIDATE_REQUIRED_PLAY_TYPES,
+    TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
+)
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import NUM_ACTIONS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
@@ -44,8 +46,6 @@ if TYPE_CHECKING:
     from agentshore.rl.action_space import ConfigKey
     from agentshore.state import OrchestratorState
 
-_logger = structlog.get_logger(__name__)
-
 _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 
 # Reverse failsafe: when normal policy gates paint AgentShore into an all-masked
@@ -65,19 +65,6 @@ _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = frozenset(
 _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {PlayType.END_AGENT, PlayType.END_SESSION}
 )
-_CANDIDATE_REQUIRED_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
-    {
-        PlayType.UNBLOCK_PR,
-        PlayType.WRITE_IMPLEMENTATION_PLAN,
-        PlayType.ISSUE_PICKUP,
-        PlayType.CODE_REVIEW,
-        PlayType.MERGE_PR,
-        PlayType.SYSTEMATIC_DEBUGGING,
-        PlayType.REFINE_TASK_BREAKDOWN,
-        PlayType.GROOM_BACKLOG,
-    }
-)
-
 # 3-strikes circuit breaker: a work play that records this many consecutive
 # non-productive (fail OR skip) outcomes is masked until ``_CIRCUIT_BREAKER_
 # COOLDOWN_PLAYS`` have elapsed since its last attempt, then the policy may
@@ -88,7 +75,7 @@ _CANDIDATE_REQUIRED_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
 # control plays and RECONCILE_STATE (self-heal must stay available) are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
-_CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = _CANDIDATE_REQUIRED_PLAY_TYPES | {
+_CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {
     PlayType.RUN_QA,
     PlayType.DESIGN_AUDIT,
     PlayType.CALIBRATE_ALIGNMENT,
@@ -278,7 +265,7 @@ def compute_reverse_failsafe_mask(
         lifted[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
 
     candidate_plan = build_candidate_plan(state)
-    for candidate_pt in _CANDIDATE_REQUIRED_PLAY_TYPES:
+    for candidate_pt in CANDIDATE_REQUIRED_PLAY_TYPES:
         if candidate_pt in V1_ACTION_ORDER and not candidate_plan.candidates_for(candidate_pt):
             lifted[V1_ACTION_ORDER.index(candidate_pt)] = False
 
@@ -484,129 +471,6 @@ class ActionMaskBuilder:
                 reasons[pt] = NOT_AVAILABLE
 
         return reasons
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible free functions
-# ---------------------------------------------------------------------------
-
-
-def _stage_preconditions(state: OrchestratorState, registry: PlayRegistry) -> NDArray[np.bool_]:
-    """Seed a fresh mask from the registry's per-play precondition checks."""
-    mask = np.zeros(NUM_ACTIONS, dtype=bool)
-    for i, pt in enumerate(V1_ACTION_ORDER):
-        try:
-            mask[i] = registry.preconditions_met(pt, state)
-        except (KeyError, ValueError, AttributeError, RuntimeError) as exc:
-            _logger.warning("precondition_check_failed", play_type=pt.value, error=str(exc))
-            mask[i] = False
-    return mask
-
-
-def _stage_agent_eligibility(
-    mask: NDArray[np.bool_],
-    state: OrchestratorState,
-    registry: PlayRegistry,
-    *,
-    cfg: RuntimeConfig,
-) -> NDArray[np.bool_]:
-    """AND in the agent-eligibility mask (mutates ``mask`` in place)."""
-    mask &= compute_agent_eligibility_mask(state, registry, cfg=cfg)
-    return mask
-
-
-def _stage_wedged_end_agent(mask: NDArray[np.bool_], state: OrchestratorState) -> NDArray[np.bool_]:
-    """Re-enable END_AGENT when a recovery-exhausted agent exists (not draining)."""
-    if PlayType.END_AGENT not in V1_ACTION_ORDER:
-        return mask
-    if state.session_state == SessionState.DRAINING:
-        return mask
-    if state.recovery_exhausted_agent_ids:
-        mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = True
-    return mask
-
-
-def _stage_candidate_required(
-    mask: NDArray[np.bool_], candidate_plan: PlayCandidatePlan
-) -> NDArray[np.bool_]:
-    """Zero out candidate-required plays that have no concrete candidate."""
-    for candidate_pt in _CANDIDATE_REQUIRED_PLAY_TYPES:
-        if candidate_pt in V1_ACTION_ORDER and not candidate_plan.candidates_for(candidate_pt):
-            mask[V1_ACTION_ORDER.index(candidate_pt)] = False
-    return mask
-
-
-def _stage_instantiate_config(
-    mask: NDArray[np.bool_],
-    state: OrchestratorState,
-    *,
-    cfg: RuntimeConfig,
-    config_index: tuple[ConfigKey, ...],
-) -> NDArray[np.bool_]:
-    """Zero ``INSTANTIATE_AGENT`` when no spawn config is viable or there is no work."""
-    if PlayType.INSTANTIATE_AGENT not in V1_ACTION_ORDER:
-        return mask
-    idx = V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)
-    candidate_plan = build_candidate_plan(state)
-    no_active_agents = not any(
-        a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in state.agents
-    )
-    if (
-        no_active_agents
-        and not candidate_plan.has_remaining_work
-        and not candidate_plan.work_availability.terminal_no_work
-    ):
-        mask[idx] = False
-        return mask
-    config_mask = compute_config_mask(state, cfg, config_index)
-    if not config_mask.any():
-        mask[idx] = False
-    return mask
-
-
-def _stage_end_session(
-    mask: NDArray[np.bool_],
-    state: OrchestratorState,
-    candidate_plan: PlayCandidatePlan,
-) -> NDArray[np.bool_]:
-    """Zero out ``END_SESSION`` while genuinely-actionable work remains."""
-    if PlayType.END_SESSION not in V1_ACTION_ORDER:
-        return mask
-    if not candidate_plan.work_availability.terminal_no_work:
-        mask[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
-    return mask
-
-
-def _stage_take_break(mask: NDArray[np.bool_], state: OrchestratorState) -> NDArray[np.bool_]:
-    """Zero out ``TAKE_BREAK`` unless an agent is in rate_limit/unknown error."""
-    if PlayType.TAKE_BREAK not in V1_ACTION_ORDER:
-        return mask
-    has_break_trigger = any(
-        a.status == AgentStatus.ERROR
-        and a.last_error_class in ("rate_limit", "unknown")
-        and a.current_play_type != PlayType.TAKE_BREAK
-        for a in state.agents
-    )
-    if not has_break_trigger:
-        mask[V1_ACTION_ORDER.index(PlayType.TAKE_BREAK)] = False
-    return mask
-
-
-def _stage_reserved_slots(mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
-    """Zero out reserved tensor slots that are not currently valid actions."""
-    for reserved in (PlayType.FUTURE_7, PlayType.FUTURE_8):
-        if reserved in V1_ACTION_ORDER:
-            mask[V1_ACTION_ORDER.index(reserved)] = False
-    return mask
-
-
-def _stage_drain_mode(state: OrchestratorState) -> NDArray[np.bool_] | None:
-    """Short-circuit when draining: return an ``END_AGENT``-only mask, else ``None``."""
-    if state.session_state == SessionState.DRAINING and PlayType.END_AGENT in V1_ACTION_ORDER:
-        drain_mask = np.zeros(NUM_ACTIONS, dtype=bool)
-        drain_mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = True
-        return drain_mask
-    return None
 
 
 def compute_action_mask(

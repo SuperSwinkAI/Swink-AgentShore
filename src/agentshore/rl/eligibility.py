@@ -35,7 +35,11 @@ from agentshore.agents.model_tiers import (
     effective_model_tier_config,
 )
 from agentshore.identity_names import canonical_identity_name, same_identity
-from agentshore.play_rules import needs_review
+from agentshore.play_rules import (
+    CANDIDATE_REQUIRED_PLAY_TYPES,
+    LIVE_CONFIRM_PLAY_TYPES,
+    needs_review,
+)
 from agentshore.plays.candidates import (
     PlayCandidate,
     PlayCandidatePlan,
@@ -114,24 +118,6 @@ class EligibilityReport:
             if verdict is not None and verdict.valid:
                 mask[i] = True
         return mask
-
-
-# Play types whose validity is gated on a concrete candidate target existing in
-# the snapshot candidate plan. Mirrors ``mask._CANDIDATE_REQUIRED_PLAY_TYPES``;
-# duplicated here to keep the import-direction contract (mask imports
-# eligibility, never the reverse).
-_CANDIDATE_REQUIRED_PLAY_TYPES: frozenset[PlayType] = frozenset(
-    {
-        PlayType.UNBLOCK_PR,
-        PlayType.WRITE_IMPLEMENTATION_PLAN,
-        PlayType.ISSUE_PICKUP,
-        PlayType.CODE_REVIEW,
-        PlayType.MERGE_PR,
-        PlayType.SYSTEMATIC_DEBUGGING,
-        PlayType.REFINE_TASK_BREAKDOWN,
-        PlayType.GROOM_BACKLOG,
-    }
-)
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +423,7 @@ class EligibilityAuthority:
                 return fn_reasons[0]
 
         # 4. Candidate-required plays: no concrete target → masked.
-        if pt in _CANDIDATE_REQUIRED_PLAY_TYPES and not plan.candidates_for(pt):
+        if pt in CANDIDATE_REQUIRED_PLAY_TYPES and not plan.candidates_for(pt):
             return _candidate_reason(plan, pt, f"no {pt.value} candidates")
 
         # 5. INSTANTIATE_AGENT config viability.
@@ -688,16 +674,7 @@ class EligibilityAuthority:
         """
         # The live-confirm set: candidate-bearing target plays. Internal/control
         # plays and audit plays are not target-confirmed here.
-        live_confirm_plays = {
-            PlayType.WRITE_IMPLEMENTATION_PLAN,
-            PlayType.ISSUE_PICKUP,
-            PlayType.SYSTEMATIC_DEBUGGING,
-            PlayType.REFINE_TASK_BREAKDOWN,
-            PlayType.CODE_REVIEW,
-            PlayType.MERGE_PR,
-            PlayType.UNBLOCK_PR,
-        }
-        if play_type not in live_confirm_plays:
+        if play_type not in LIVE_CONFIRM_PLAY_TYPES:
             return None
 
         target_issue = params.issue_number
