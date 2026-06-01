@@ -1,0 +1,52 @@
+#!/bin/bash
+# timelapse-postinstall — runs for the .pkg's Timelapse component
+# (Distribution.xml `ai.agentshore.timelapse` choice). The component is
+# nopayload; this script and install-timelapse.sh are the entire deliverable.
+#
+# Responsibilities:
+#   1. Resolve the console user. Skip on root/headless installs.
+#   2. Hand off to install-timelapse.sh under the console user's GUI session
+#      via `launchctl asuser` + `sudo -H -u` so Homebrew/npm run as the user
+#      (brew refuses to run as root) and $HOME resolves to the user's managed
+#      venv at ~/Library/Application Support/AgentShore/venv.
+#   3. Surface failure via an osascript alert, but never fail the wizard — the
+#      desktop app works without timelapse, and the user can retry from the
+#      app's Start screen (which drives the same installer).
+#
+# Ordering: this choice sits BEFORE the CLI choice in choices-outline, so the
+# managed venv (provisioned by the required Desktop component) already exists
+# when this runs, and the CLI component stays last to own the Installer
+# auto-close (see cli-postinstall). The pkg's postinstall timeout is bumped to
+# 3600 s in build-macos.sh because provisioning pulls Homebrew formulae plus a
+# headless Chromium.
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_HELPER="$SCRIPT_DIR/install-timelapse.sh"
+TL_LOG="/tmp/agentshore-timelapse-install.log"
+
+CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
+  # Headless install — nothing to provision under a user account.
+  exit 0
+fi
+CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
+if [[ -z "${CONSOLE_UID}" ]]; then
+  exit 0
+fi
+
+if [[ ! -x "$INSTALL_HELPER" ]]; then
+  exit 0
+fi
+
+if ! launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -H -u "${CONSOLE_USER}" \
+     /bin/bash "$INSTALL_HELPER" >"$TL_LOG" 2>&1; then
+  # Provision failed — surface to the user but don't fail the wizard.
+  DIALOG_BODY="The optional timelapse-capture toolchain did not finish installing. The desktop app still works; you can retry from the Start screen.\\n\\nDetails: $TL_LOG"
+  launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -H -u "${CONSOLE_USER}" \
+    /usr/bin/osascript -e "display alert \"AgentShore timelapse install failed\" message \"$DIALOG_BODY\" buttons {\"OK\"}" \
+    >/dev/null 2>&1 || true
+fi
+
+exit 0
