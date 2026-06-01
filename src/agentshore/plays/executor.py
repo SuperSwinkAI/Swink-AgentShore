@@ -43,6 +43,7 @@ from agentshore.errors import (
     AgentProcessCrashed,
     AgentTimeout,
     AntiConfirmationViolation,
+    FailureKind,
     IssueInflationDetected,
     PreconditionFailed,
 )
@@ -283,7 +284,9 @@ class PlayExecutor:
                 skip_category="code_error",
                 error=f"no play registered for {play_type!r}",
             )
-            return _failed(play_type, f"no play registered for {play_type!r}", "code_error")
+            return _failed(
+                play_type, f"no play registered for {play_type!r}", FailureKind.CODE_ERROR
+            )
 
         # When override params are already populated, the EligibilityAuthority's
         # confirm() has already validated this play and the resolver has already
@@ -497,7 +500,12 @@ class PlayExecutor:
                 failure_category="code_error",
                 agent_id=params.agent_id,
             )
-            return _failed(play_type, "work claim inactive", "code_error", agent_id=params.agent_id)
+            return _failed(
+                play_type,
+                "work claim inactive",
+                FailureKind.CODE_ERROR,
+                agent_id=params.agent_id,
+            )
 
         current_play_handle = await self._notify_dispatch_started(
             play, play_type, params, play_id, started_at
@@ -727,24 +735,18 @@ class PlayExecutor:
         claim_group_id = _claim_group_id(params)
         if claim_group_id is None:
             return True
-        method = getattr(self._store, "start_work_claim_group", None)
-        if not callable(method):
-            return True
-        started = await method(
+        return await self._store.start_work_claim_group(
             self._session_id,
             claim_group_id,
             play_id=play_id,
             agent_id=params.agent_id,
         )
-        return started if isinstance(started, bool) else True
 
     async def _finish_claim_group(self, params: PlayParams | None, *, status: str) -> None:
         claim_group_id = _claim_group_id(params)
         if claim_group_id is None:
             return
-        method = getattr(self._store, "finish_work_claim_group", None)
-        if callable(method):
-            await method(self._session_id, claim_group_id, status=status)
+        await self._store.finish_work_claim_group(self._session_id, claim_group_id, status=status)
 
     def _mark_agent_current_play(
         self,
@@ -844,10 +846,16 @@ class PlayExecutor:
                 agent_id=params.agent_id,
                 partial=True,
                 retry_requested=True,
+                failure_kind=FailureKind.AGENT_ERROR,
             )
         except (PreconditionFailed, AgentProcessCrashed, AgentOutputInvalid) as exc:
             _logger.warning("play_execution_error", play_type=play_type.value, error=str(exc))
-            return PlayOutcome.failed(play_type, str(exc), agent_id=params.agent_id)
+            return PlayOutcome.failed(
+                play_type,
+                str(exc),
+                agent_id=params.agent_id,
+                failure_kind=FailureKind.AGENT_ERROR,
+            )
         except Exception as exc:
             _logger.exception(
                 "unexpected_play_error",
@@ -958,144 +966,158 @@ class PlayExecutor:
                 continue
             artifact_type = artifact.get("type", "")
             if artifact_type in ("pull_request", "pr"):
+                # Non-authoring plays (unblock_pr, code_review, …) may emit a
+                # PR reference artifact for traceability but must not stamp
+                # authorship — skip the entire authorship-recording block.
                 if play_type not in _PR_AUTHORING_PLAYS:
-                    # Non-authoring plays (unblock_pr, code_review, …) may emit a
-                    # PR reference artifact for traceability but must not stamp
-                    # authorship — skip the entire authorship-recording block.
                     continue
-                pr_number = artifact.get("number")
-                # Extract PR number from URL if not provided directly
-                if pr_number is None:
-                    url = str(artifact.get("url", ""))
-                    m = re.search(r"/pull/(\d+)", url)
-                    if m:
-                        pr_number = int(m.group(1))
-                branch = str(artifact.get("branch") or params.branch or "")
-                if isinstance(pr_number, int) and outcome.agent_id:
-                    if not branch:
-                        # Surface the leak loudly: a PR-authoring play returned a
-                        # PR artifact without a branch, and the dispatch params
-                        # had no fallback either. The record will be persisted
-                        # with ``branch=None``; the COALESCE upsert preserves
-                        # any later refresh, but the in-memory snapshot used by
-                        # the next code_review dispatch will see ``None`` and
-                        # fail worktree allocation with ``missing_branch``.
-                        # See issue #567 follow-up.
-                        _logger.warning(
-                            "pr_record_missing_branch",
-                            pr_number=pr_number,
-                            play_type=play_type.value,
-                            agent_id=outcome.agent_id,
-                            artifact_keys=sorted(artifact.keys()),
-                            params_branch=params.branch,
-                        )
-                    self._manager.record_branch_exposure(branch, outcome.agent_id)
-                    author_agent_type: str | None = None
-                    author_github_login: str | None = None
-                    try:
-                        author_handle = self._manager.get_handle(outcome.agent_id)
-                        author_agent_type = author_handle.agent_type.value
-                        author_github_login = author_handle.github_identity
-                    except KeyError:
-                        # Agent already terminated by the time we record the PR.
-                        # Leave type/identity unset; the executor's identity check
-                        # treats author=None as "any reviewer eligible" and the
-                        # next GitHub state refresh will populate github_author.
-                        author_agent_type = None
-                        author_github_login = None
-                    await self._store.record_pull_request(
-                        PullRequestRecord(
-                            pr_number=pr_number,
-                            session_id=self._session_id,
-                            issue_number=params.issue_number,
-                            branch=branch or None,
-                            state="open",
-                            author_agent_id=outcome.agent_id,
-                            author_agent_type=author_agent_type,
-                            # Stamp the resolved GH login here so identity-based
-                            # anti-confirmation works the moment the PR is recorded
-                            # — without waiting for the next GitHub refresh to fill
-                            # github_author from the API.
-                            github_author=author_github_login,
-                            created_at=now,
-                        )
-                    )
-                    # Immediately enrich review_decision/mergeable/head_sha/
-                    # is_draft from GitHub so the next code_review / merge_pr
-                    # eligibility check sees real data, not the NULL defaults
-                    # left by the row above. Without this, the next periodic
-                    # refresh's COALESCE upsert can fail to populate these
-                    # fields if the PR-trust filter or another sync path
-                    # drops the record before the cache write commits.
-                    if self._github is not None:
-                        try:
-                            enriched = await self._github.fetch_pull_request_by_number(pr_number)
-                        except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover
-                            _logger.warning(
-                                "pr_enrichment_failed",
-                                pr_number=pr_number,
-                                error=str(exc),
-                            )
-                            enriched = None
-                        if enriched is not None:
-                            # Preserve the authorship fields we just stamped.
-                            enriched.author_agent_id = outcome.agent_id
-                            enriched.author_agent_type = author_agent_type
-                            if author_github_login is not None:
-                                enriched.github_author = author_github_login
-                            # Deterministic base correction at creation: agents
-                            # skip the skill's base step ~1-in-6 times, opening
-                            # PRs against the wrong base (e.g. `main`). Retarget
-                            # to the configured target_branch now, using the
-                            # fresh enriched base_ref (not a stale snapshot, the
-                            # gap in the pre-merge _maybe_retarget_pr_base path).
-                            # Idempotent via the mutation ledger; pairs with the
-                            # merge-side gate so a wrong-base PR never lands on
-                            # the wrong trunk regardless of agent adherence.
-                            target = self._cfg.project.target_branch
-                            if target and enriched.base_ref and enriched.base_ref != target:
-                                retargeted = await self._github.retarget_pr_base(
-                                    pr_number,
-                                    target,
-                                    idempotency_key=(
-                                        f"create_retarget_base:{pr_number}:"
-                                        f"{enriched.base_ref}->{target}"
-                                    ),
-                                )
-                                _logger.info(
-                                    "pr_base_auto_corrected"
-                                    if retargeted
-                                    else "pr_base_auto_correct_failed",
-                                    pr_number=pr_number,
-                                    from_base=enriched.base_ref,
-                                    to_base=target,
-                                    session_id=self._session_id,
-                                )
-                                if retargeted:
-                                    enriched.base_ref = target
-                            await self._store.record_pull_request(enriched)
-                    # Enqueue PR for code review
-                    await self._store.enqueue_review(
-                        ReviewQueueRecord(
-                            pr_number=pr_number,
-                            session_id=self._session_id,
-                            author_label=author_agent_type,
-                            enqueued_at=now,
-                        )
-                    )
-                    # Apply author label to GitHub PR for visibility
-                    if author_agent_type is not None and self._github is not None:
-                        label_name = f"{self._cfg.intake.label_prefix}author:{author_agent_type}"
-                        idem_key = f"author_label:pr{pr_number}:{author_agent_type}"
-                        await self._github.label_issue(pr_number, [label_name], idem_key)
-            elif artifact.get("type") == "commit":
-                branch = str(artifact.get("branch") or params.branch or "")
-                sha = str(artifact.get("sha") or "")
-                if branch and outcome.agent_id:
-                    self._manager.record_branch_commit(branch, outcome.agent_id, sha)
-                    await self._store.update_branch_activity(
-                        branch, self._session_id, outcome.agent_id, sha or None
-                    )
+                await self._record_pr_artifact(play_type, params, outcome, artifact, now)
+            elif artifact_type == "commit":
+                await self._record_commit_artifact(params, outcome, artifact)
+
+    async def _record_pr_artifact(
+        self,
+        play_type: PlayType,
+        params: PlayParams,
+        outcome: PlayOutcome,
+        artifact: dict[str, object],
+        now: str,
+    ) -> None:
+        """Record authorship, enrich, retarget, enqueue, and label a created PR."""
+        pr_number = _pr_number_from_payload(artifact)
+        branch = str(artifact.get("branch") or params.branch or "")
+        if pr_number is None or not outcome.agent_id:
+            return
+
+        if not branch:
+            # Surface the leak loudly: a PR-authoring play returned a PR
+            # artifact without a branch, and the dispatch params had no
+            # fallback either. The record will be persisted with
+            # ``branch=None``; the COALESCE upsert preserves any later refresh,
+            # but the in-memory snapshot used by the next code_review dispatch
+            # will see ``None`` and fail worktree allocation with
+            # ``missing_branch``. See issue #567 follow-up.
+            _logger.warning(
+                "pr_record_missing_branch",
+                pr_number=pr_number,
+                play_type=play_type.value,
+                agent_id=outcome.agent_id,
+                artifact_keys=sorted(artifact.keys()),
+                params_branch=params.branch,
+            )
+        self._manager.record_branch_exposure(branch, outcome.agent_id)
+
+        author_agent_type, author_github_login = self._resolve_pr_author(outcome.agent_id)
+        await self._store.record_pull_request(
+            PullRequestRecord(
+                pr_number=pr_number,
+                session_id=self._session_id,
+                issue_number=params.issue_number,
+                branch=branch or None,
+                state="open",
+                author_agent_id=outcome.agent_id,
+                author_agent_type=author_agent_type,
+                # Stamp the resolved GH login here so identity-based
+                # anti-confirmation works the moment the PR is recorded — without
+                # waiting for the next GitHub refresh to fill github_author from
+                # the API.
+                github_author=author_github_login,
+                created_at=now,
+            )
+        )
+        await self._enrich_and_retarget_pr(
+            pr_number, outcome.agent_id, author_agent_type, author_github_login
+        )
+        # Enqueue PR for code review.
+        await self._store.enqueue_review(
+            ReviewQueueRecord(
+                pr_number=pr_number,
+                session_id=self._session_id,
+                author_label=author_agent_type,
+                enqueued_at=now,
+            )
+        )
+        # Apply author label to GitHub PR for visibility.
+        if author_agent_type is not None and self._github is not None:
+            label_name = f"{self._cfg.intake.label_prefix}author:{author_agent_type}"
+            idem_key = f"author_label:pr{pr_number}:{author_agent_type}"
+            await self._github.label_issue(pr_number, [label_name], idem_key)
+
+    def _resolve_pr_author(self, agent_id: str) -> tuple[str | None, str | None]:
+        """Return (agent_type, github_login) for the PR author, or (None, None).
+
+        Falls back to (None, None) when the agent has already terminated: the
+        executor's identity check treats author=None as "any reviewer eligible"
+        and the next GitHub state refresh will populate github_author.
+        """
+        try:
+            handle = self._manager.get_handle(agent_id)
+        except KeyError:
+            return None, None
+        return handle.agent_type.value, handle.github_identity
+
+    async def _enrich_and_retarget_pr(
+        self,
+        pr_number: int,
+        author_agent_id: str,
+        author_agent_type: str | None,
+        author_github_login: str | None,
+    ) -> None:
+        """Enrich the freshly-recorded PR row from GitHub and correct its base.
+
+        Immediately enrich review_decision/mergeable/head_sha/is_draft from
+        GitHub so the next code_review / merge_pr eligibility check sees real
+        data, not the NULL defaults left by ``record_pull_request``. Without
+        this, the next periodic refresh's COALESCE upsert can fail to populate
+        these fields if the PR-trust filter or another sync path drops the
+        record before the cache write commits.
+        """
+        if self._github is None:
+            return
+        try:
+            enriched = await self._github.fetch_pull_request_by_number(pr_number)
+        except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover
+            _logger.warning("pr_enrichment_failed", pr_number=pr_number, error=str(exc))
+            enriched = None
+        if enriched is None:
+            return
+        # Preserve the authorship fields we just stamped.
+        enriched.author_agent_id = author_agent_id
+        enriched.author_agent_type = author_agent_type
+        if author_github_login is not None:
+            enriched.github_author = author_github_login
+        # Deterministic base correction at creation: agents skip the skill's
+        # base step ~1-in-6 times, opening PRs against the wrong base (e.g.
+        # `main`). Retarget to the configured target_branch now, using the fresh
+        # enriched base_ref (not a stale snapshot — the gap in the pre-merge
+        # _maybe_retarget_pr_base path). Idempotent via the mutation ledger;
+        # pairs with the merge-side gate so a wrong-base PR never lands on the
+        # wrong trunk regardless of agent adherence.
+        retargeted = await self._retarget_pr_to_target(
+            pr_number,
+            enriched.base_ref,
+            idempotency_prefix="create_retarget_base",
+            success_event="pr_base_auto_corrected",
+            failure_event="pr_base_auto_correct_failed",
+        )
+        if retargeted:
+            enriched.base_ref = self._cfg.project.target_branch
+        await self._store.record_pull_request(enriched)
+
+    async def _record_commit_artifact(
+        self,
+        params: PlayParams,
+        outcome: PlayOutcome,
+        artifact: dict[str, object],
+    ) -> None:
+        """Record branch-commit activity from a ``commit`` artifact."""
+        branch = str(artifact.get("branch") or params.branch or "")
+        sha = str(artifact.get("sha") or "")
+        if branch and outcome.agent_id:
+            self._manager.record_branch_commit(branch, outcome.agent_id, sha)
+            await self._store.update_branch_activity(
+                branch, self._session_id, outcome.agent_id, sha or None
+            )
 
     async def _persist_mutations(
         self, play_id: int, params: PlayParams, skill_result: SkillResult
@@ -1149,9 +1171,7 @@ class PlayExecutor:
             return False
         ok = await self._github.label_issue(issue_number, labels, idempotency_key)
         if ok:
-            add_labels = getattr(self._store, "add_issue_labels", None)
-            if callable(add_labels):
-                await add_labels(issue_number, self._session_id, labels)
+            await self._store.add_issue_labels(issue_number, self._session_id, labels)
         return bool(ok)
 
     async def _maybe_retarget_pr_base(
@@ -1168,29 +1188,59 @@ class PlayExecutor:
         :meth:`GitHubAdapter.retarget_pr_base`). Self-heals #8 regardless of
         whether the authoring agent honored the skill's base instruction.
         """
-        if self._github is None:
-            return
-        target = self._cfg.project.target_branch
         pr_number = params.pr_number
-        if not target or pr_number is None:
+        if pr_number is None:
             return
         snapshot = next((pr for pr in state.pull_requests if pr.pr_number == pr_number), None)
         base_ref = snapshot.base_ref if snapshot is not None else None
-        if not base_ref or base_ref == target:
-            return
+        await self._retarget_pr_to_target(
+            pr_number,
+            base_ref,
+            idempotency_prefix="retarget_base",
+            success_event="pr_base_retargeted",
+            failure_event="pr_base_retarget_failed",
+            log_fields={"play_type": play_type.value},
+        )
+
+    async def _retarget_pr_to_target(
+        self,
+        pr_number: int,
+        current_base: str | None,
+        *,
+        idempotency_prefix: str,
+        success_event: str,
+        failure_event: str,
+        log_fields: dict[str, str] | None = None,
+    ) -> bool:
+        """Retarget *pr_number* from *current_base* to the configured target.
+
+        Single source for both the pre-dispatch self-heal
+        (:meth:`_maybe_retarget_pr_base`) and the create-time correction in
+        :meth:`_wire_deferrals`. Returns True only when a retarget was issued
+        and GitHub reported success. No-op (returns False) when GitHub is
+        unavailable, no ``project.target_branch`` is configured, the base is
+        unknown, or it already matches the target. Idempotent via the mutation
+        ledger keyed on ``<idempotency_prefix>:<pr>:<from>-><to>``.
+        """
+        if self._github is None:
+            return False
+        target = self._cfg.project.target_branch
+        if not target or not current_base or current_base == target:
+            return False
         retargeted = await self._github.retarget_pr_base(
             pr_number,
             target,
-            idempotency_key=f"retarget_base:{pr_number}:{base_ref}->{target}",
+            idempotency_key=f"{idempotency_prefix}:{pr_number}:{current_base}->{target}",
         )
         _logger.info(
-            "pr_base_retargeted" if retargeted else "pr_base_retarget_failed",
-            play_type=play_type.value,
+            success_event if retargeted else failure_event,
             pr_number=pr_number,
-            from_base=base_ref,
+            from_base=current_base,
             to_base=target,
             session_id=self._session_id,
+            **(log_fields or {}),
         )
+        return retargeted
 
     async def _reconcile_issue_pickup_publish(
         self,
@@ -1423,7 +1473,7 @@ def build_idempotency_key(session_id: str, mutation: dict[str, object]) -> str:
 def _failed(
     play_type: PlayType,
     error: str,
-    failure_category: str,
+    failure_kind: FailureKind,
     agent_id: str | None = None,
 ) -> PlayOutcome:
     return PlayOutcome(
@@ -1437,11 +1487,19 @@ def _failed(
         artifacts=[],
         alignment_delta=0.0,
         error=error,
+        failure_kind=failure_kind,
     )
 
 
 def _infer_failure_category(outcome: PlayOutcome) -> str:
-    """Map a failed PlayOutcome to a FailureCategory string."""
+    """Map a failed PlayOutcome to a FailureCategory string.
+
+    Prefer the typed ``failure_kind`` the play set at the failure site; the
+    substring ladder below is the fallback for legacy / uncaught-Exception
+    paths that never set a kind.
+    """
+    if outcome.failure_kind is not None:
+        return str(outcome.failure_kind.to_category())
     error = (outcome.error or "").lower()
     if any(marker in error for marker in _AUTH_ERROR_MARKERS) or "auth" in error:
         return "agent_error"

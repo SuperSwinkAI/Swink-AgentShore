@@ -506,51 +506,18 @@ class PlayCandidateAnalyzer:
         )
 
     def seed_audit_is_fresh(self) -> bool:
-        state = self._state
-        if state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is not True:
-            return False
-        plays_since = state.plays_since_last_play_type.get(PlayType.SEED_PROJECT)
-        return plays_since is not None and plays_since < SEED_PROJECT_COOLDOWN_PLAYS
+        return seed_audit_is_fresh(self._state)
 
     def design_audit_is_fresh(self, *, window: int = DESIGN_AUDIT_COOLDOWN_PLAYS) -> bool:
-        state = self._state
-        if state.last_play_success_by_type.get(PlayType.DESIGN_AUDIT) is not True:
-            return False
-        plays_since = state.plays_since_last_play_type.get(PlayType.DESIGN_AUDIT)
-        return plays_since is not None and plays_since < window
+        return design_audit_is_fresh(self._state, window=window)
 
     def terminal_audits_are_fresh(self) -> bool:
-        """Return True when the audit posture justifies a clean shutdown.
-
-        Two paths into True:
-          - Seeded sessions: BOTH seed_project AND design_audit recent
-            (the original gate — preserves end_session evidence for the
-            normal lifecycle where SEED_PROJECT runs at bootstrap).
-          - Open-start sessions: SEED_PROJECT was never run in this
-            session at all, so only design_audit recency is required.
-            Without this fallback the failsafe is structurally unreachable
-            in open-start mode (observed 2026-05-28 session 08a948ed:
-            150 plays, $43 spent, end_session permanently masked because
-            no seed audit ever fired).
-        """
-        design_fresh = self.design_audit_is_fresh(window=TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS)
-        if not design_fresh:
-            return False
-        seed_ever_succeeded = (
-            self._state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is True
-        )
-        if not seed_ever_succeeded:
-            return True
-        return self.seed_audit_is_fresh()
+        return terminal_audits_are_fresh(self._state)
 
     def qa_ran_within_terminal_window(
         self, *, window: int = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
     ) -> bool:
-        state = self._state
-        if state.last_play_success_by_type.get(PlayType.RUN_QA) is not True:
-            return False
-        plays_since = state.plays_since_last_play_type.get(PlayType.RUN_QA)
-        return plays_since is not None and plays_since < window
+        return qa_ran_within_terminal_window(self._state, window=window)
 
     # -- candidate plan builder ----------------------------------------------
 
@@ -789,147 +756,63 @@ class PlayCandidateAnalyzer:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible free functions — delegate to PlayCandidateAnalyzer
+# State-only audit-freshness predicates
+#
+# These read only ``state`` (cooldown counters), so they are genuine
+# module-level functions rather than analyzer methods — callers on the hot
+# RL mask path (``rl/mask.py``) must not allocate a full ``PlayCandidateAnalyzer``
+# (which eagerly computes issue/PR sets) just to read one counter.
 # ---------------------------------------------------------------------------
-
-
-def issue_available_for_plan(
-    issue: IssueSnapshot,
-    state: OrchestratorState,
-    *,
-    open_pr_issue_numbers: set[int],
-    merged_pr_issue_numbers: set[int],
-    in_flight_issue_numbers: set[int],
-    bead_in_progress_issue_numbers: set[int] | None = None,
-) -> bool:
-    labels = set(issue.labels)
-    return (
-        issue.state.upper() == "OPEN"
-        and _base_issue_available(
-            issue,
-            open_pr_issue_numbers=open_pr_issue_numbers,
-            merged_pr_issue_numbers=merged_pr_issue_numbers,
-            in_flight_issue_numbers=in_flight_issue_numbers,
-            bead_in_progress_issue_numbers=bead_in_progress_issue_numbers,
-        )
-        and not (PLANNED_LABELS & labels)
-        and "agentshore/needs-refinement" not in labels
-        and issue.issue_number not in state.planned_issues
-    )
-
-
-def issue_available_for_pickup(
-    issue: IssueSnapshot,
-    *,
-    open_pr_issue_numbers: set[int],
-    merged_pr_issue_numbers: set[int],
-    in_flight_issue_numbers: set[int],
-    bead_in_progress_issue_numbers: set[int],
-    bead_blocked_issue_numbers: set[int] | None = None,
-    beads_blocks_issue_pickup: bool,
-) -> bool:
-    labels = set(issue.labels)
-    return (
-        issue.state.upper() == "OPEN"
-        and issue.issue_number not in open_pr_issue_numbers
-        and issue.issue_number not in merged_pr_issue_numbers
-        and issue.issue_number not in in_flight_issue_numbers
-        and issue.issue_number not in bead_in_progress_issue_numbers
-        and issue.issue_number not in (bead_blocked_issue_numbers or set())
-        and not beads_blocks_issue_pickup
-        and not (ISSUE_PICKUP_SKIP_LABELS & labels)
-    )
-
-
-def issue_available_for_refine(
-    issue: IssueSnapshot,
-    *,
-    open_pr_issue_numbers: set[int],
-    merged_pr_issue_numbers: set[int],
-    in_flight_issue_numbers: set[int],
-    bead_in_progress_issue_numbers: set[int] | None = None,
-) -> bool:
-    return (
-        issue.state.upper() == "OPEN"
-        and _base_issue_available(
-            issue,
-            open_pr_issue_numbers=open_pr_issue_numbers,
-            merged_pr_issue_numbers=merged_pr_issue_numbers,
-            in_flight_issue_numbers=in_flight_issue_numbers,
-            bead_in_progress_issue_numbers=bead_in_progress_issue_numbers,
-        )
-        and "agentshore/needs-refinement" in issue.labels
-        and "agentshore/refined" not in issue.labels
-    )
-
-
-def issue_available_for_debug(
-    issue: IssueSnapshot,
-    *,
-    open_pr_issue_numbers: set[int],
-    merged_pr_issue_numbers: set[int],
-    in_flight_issue_numbers: set[int],
-    bead_in_progress_issue_numbers: set[int] | None = None,
-) -> bool:
-    labels = set(issue.labels)
-    return (
-        issue.state.upper() == "OPEN"
-        and _base_issue_available(
-            issue,
-            open_pr_issue_numbers=open_pr_issue_numbers,
-            merged_pr_issue_numbers=merged_pr_issue_numbers,
-            in_flight_issue_numbers=in_flight_issue_numbers,
-            bead_in_progress_issue_numbers=bead_in_progress_issue_numbers,
-        )
-        and bool(DEBUG_TRIGGER_LABELS & labels)
-        and ROOT_CAUSE_FOUND_LABEL not in labels
-    )
-
-
-def beads_groom_needed(
-    state: OrchestratorState,
-    *,
-    backlog_sync_work_count: int,
-    beads_blocks_issue_pickup: bool,
-) -> bool:
-    graph = state.graph
-    if graph is None or getattr(graph, "has_epics", False) is not True:
-        return False
-    return backlog_sync_work_count > 0 or (
-        beads_blocks_issue_pickup
-        and any(
-            issue.state.upper() == "OPEN"
-            and issue.issue_number not in state.in_flight_issues
-            and "agentshore/blocked" not in issue.labels
-            and "blocked" not in issue.labels
-            and DISALLOWED_LABEL not in issue.labels
-            for issue in state.open_issues
-        )
-    )
 
 
 def seed_audit_is_fresh(state: OrchestratorState) -> bool:
     """Return True when a successful seed audit is still inside cooldown."""
-    return PlayCandidateAnalyzer(state).seed_audit_is_fresh()
+    if state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is not True:
+        return False
+    plays_since = state.plays_since_last_play_type.get(PlayType.SEED_PROJECT)
+    return plays_since is not None and plays_since < SEED_PROJECT_COOLDOWN_PLAYS
 
 
 def design_audit_is_fresh(
     state: OrchestratorState, *, window: int = DESIGN_AUDIT_COOLDOWN_PLAYS
 ) -> bool:
     """Return True when a successful design audit is still inside the requested window."""
-    return PlayCandidateAnalyzer(state).design_audit_is_fresh(window=window)
+    if state.last_play_success_by_type.get(PlayType.DESIGN_AUDIT) is not True:
+        return False
+    plays_since = state.plays_since_last_play_type.get(PlayType.DESIGN_AUDIT)
+    return plays_since is not None and plays_since < window
 
 
 def terminal_audits_are_fresh(state: OrchestratorState) -> bool:
-    """Return True once both scope and design audits are fresh enough to shut down."""
-    return PlayCandidateAnalyzer(state).terminal_audits_are_fresh()
+    """Return True when the audit posture justifies a clean shutdown.
+
+    Two paths into True:
+      - Seeded sessions: BOTH seed_project AND design_audit recent
+        (the original gate — preserves end_session evidence for the
+        normal lifecycle where SEED_PROJECT runs at bootstrap).
+      - Open-start sessions: SEED_PROJECT was never run in this
+        session at all, so only design_audit recency is required.
+        Without this fallback the failsafe is structurally unreachable
+        in open-start mode (observed 2026-05-28 session 08a948ed:
+        150 plays, $43 spent, end_session permanently masked because
+        no seed audit ever fired).
+    """
+    if not design_audit_is_fresh(state, window=TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS):
+        return False
+    seed_ever_succeeded = state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is True
+    if not seed_ever_succeeded:
+        return True
+    return seed_audit_is_fresh(state)
 
 
 def qa_ran_within_terminal_window(
     state: OrchestratorState, *, window: int = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 ) -> bool:
     """Return True when successful RUN_QA is recent enough to end a no-work session."""
-    return PlayCandidateAnalyzer(state).qa_ran_within_terminal_window(window=window)
+    if state.last_play_success_by_type.get(PlayType.RUN_QA) is not True:
+        return False
+    plays_since = state.plays_since_last_play_type.get(PlayType.RUN_QA)
+    return plays_since is not None and plays_since < window
 
 
 def build_candidate_plan(state: OrchestratorState) -> PlayCandidatePlan:
@@ -1281,26 +1164,6 @@ def pick_reviewer_for_pr(
         if not same_identity(candidate.github_identity, pr_github_author):
             return candidate
     return None
-
-
-def _base_issue_available(
-    issue: IssueSnapshot,
-    *,
-    open_pr_issue_numbers: set[int],
-    merged_pr_issue_numbers: set[int],
-    in_flight_issue_numbers: set[int],
-    bead_in_progress_issue_numbers: set[int] | None = None,
-) -> bool:
-    labels = set(issue.labels)
-    return (
-        issue.issue_number not in open_pr_issue_numbers
-        and issue.issue_number not in merged_pr_issue_numbers
-        and issue.issue_number not in in_flight_issue_numbers
-        and issue.issue_number not in (bead_in_progress_issue_numbers or set())
-        and "agentshore/blocked" not in labels
-        and "blocked" not in labels
-        and DISALLOWED_LABEL not in labels
-    )
 
 
 def _issue_candidate(play_type: PlayType, issue: IssueSnapshot, *, source: str) -> PlayCandidate:
