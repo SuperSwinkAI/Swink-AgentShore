@@ -17,7 +17,7 @@ from agentshore.cli.constants import (
     _DRAIN_WAIT_POLL_INTERVAL_S,
     _DRAIN_WAIT_RETRIES,
 )
-from agentshore.cli.helpers import _drain_wait_timeout_label
+from agentshore.cli.helpers import _drain_wait_timeout_label, open_store, resolve_session_id
 from agentshore.cli_helpers import _PROJECT_DIR
 
 
@@ -26,29 +26,18 @@ def _generate_end_session_report_cli(project_path: Path) -> Path:
     import asyncio
 
     db_path = project_path / _PROJECT_DIR / "agentshore.db"
-    if not db_path.exists():
-        msg = f"No database found at {db_path}"
-        raise RuntimeError(msg)
 
     async def _run() -> Path:
-        from agentshore.data.store import DataStore
         from agentshore.reports.generator import ReportGenerator
 
-        store = DataStore(db_path)
-        await store.initialize()
-        try:
-            sessions = await store.list_sessions()
-            if not sessions:
-                msg = "No sessions found."
-                raise RuntimeError(msg)
+        async with open_store(db_path) as store:
+            sess_id = await resolve_session_id(store, None)
             generator = ReportGenerator(store)
             return await generator.generate_end_session_report(
-                sessions[0].session_id,
+                sess_id,
                 project_path / _PROJECT_DIR / "reports",
                 open_browser=False,
             )
-        finally:
-            await store.close()
 
     return asyncio.run(_run())
 
