@@ -48,6 +48,17 @@ CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
 if [[ -z "${CONSOLE_UID}" ]]; then
   exit 0
 fi
+USER_HOME="$(/usr/bin/dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //' || true)"
+if [[ -z "${USER_HOME}" || ! -d "${USER_HOME}" ]]; then
+  USER_HOME="$(eval echo "~${CONSOLE_USER}")"
+fi
+if [[ -z "${USER_HOME}" || "${USER_HOME}" == "~${CONSOLE_USER}" ]]; then
+  exit 0
+fi
+
+run_as_console_user() {
+  launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -H -u "${CONSOLE_USER}" "$@"
+}
 
 # ── 0. Ensure Python 3.12 is installed (desktop-w618) ────────────────────────
 
@@ -102,8 +113,7 @@ fi
 
 VENV_OK=0
 if [[ -x "$INSTALL_HELPER" && -n "$BUNDLED_WHEEL" && -f "$BUNDLED_WHEEL" ]]; then
-  if launchctl asuser "${CONSOLE_UID}" \
-       /bin/bash "$INSTALL_HELPER" --wheel "$BUNDLED_WHEEL" \
+  if run_as_console_user /bin/bash "$INSTALL_HELPER" --wheel "$BUNDLED_WHEEL" \
        >"$VENV_LOG" 2>&1; then
     VENV_OK=1
   fi
@@ -117,8 +127,8 @@ if [[ "$VENV_OK" -eq 0 ]]; then
   else
     DIALOG_BODY="AgentShore needs Python 3.12 but the automatic install from python.org did not succeed. Install Python 3.12 manually from https://www.python.org/downloads/macos/ and re-run this installer.\\n\\nDetails: $PYTHON_AUTO_LOG"
   fi
-  launchctl asuser "${CONSOLE_UID}" \
-    /usr/bin/osascript -e "display alert \"AgentShore Desktop needs Python 3.12\" message \"$DIALOG_BODY\" buttons {\"OK\"}" \
+  run_as_console_user /usr/bin/osascript \
+    -e "display alert \"AgentShore Desktop needs Python 3.12\" message \"$DIALOG_BODY\" buttons {\"OK\"}" \
     >/dev/null 2>&1 || true
   exit 0
 fi
@@ -129,12 +139,11 @@ if [[ ! -d "${APP_PATH}" ]]; then
   exit 0
 fi
 
-# launchctl asuser + /usr/bin/open is unreliable on macOS 15 (Sequoia) — the
-# open request arrives at Launch Services but the app never comes to front.
-# A one-shot LaunchAgent loaded into the user's bootstrap namespace fires
-# immediately (RunAtLoad) and unloads itself after launching the app.
+# A one-shot LaunchAgent runs from the user's GUI bootstrap namespace. It waits
+# for Installer.app to close when the CLI component is still running, opens the
+# freshly-installed app by absolute path (not Launch Services name lookup), and
+# then removes itself.
 FIRST_LAUNCH_LABEL="ai.agentshore.firstlaunch"
-USER_HOME="$(eval echo "~${CONSOLE_USER}")"
 USER_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
 FIRST_LAUNCH_PLIST="${USER_AGENTS_DIR}/${FIRST_LAUNCH_LABEL}.plist"
 
@@ -152,7 +161,7 @@ cat >"${FIRST_LAUNCH_PLIST}" <<PLIST
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>/usr/bin/open -a AgentShore; /bin/launchctl bootout gui/${CONSOLE_UID}/${FIRST_LAUNCH_LABEL} 2>/dev/null; /bin/rm -f '${FIRST_LAUNCH_PLIST}'</string>
+        <string>for _attempt in {1..180}; do /usr/bin/pgrep -qx Installer >/dev/null 2>/dev/null || break; /bin/sleep 1; done; /usr/bin/open '${APP_PATH}'; /bin/rm -f '${FIRST_LAUNCH_PLIST}'; /bin/launchctl remove '${FIRST_LAUNCH_LABEL}' 2>/dev/null</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -161,8 +170,10 @@ cat >"${FIRST_LAUNCH_PLIST}" <<PLIST
 PLIST
 
 chown "${CONSOLE_USER}" "${FIRST_LAUNCH_PLIST}" 2>/dev/null || true
-launchctl asuser "${CONSOLE_UID}" /bin/launchctl load -w "${FIRST_LAUNCH_PLIST}" 2>/dev/null || \
-  launchctl asuser "${CONSOLE_UID}" /usr/bin/open "${APP_PATH}" 2>/dev/null || true
+chmod 0644 "${FIRST_LAUNCH_PLIST}" 2>/dev/null || true
+run_as_console_user /bin/launchctl remove "${FIRST_LAUNCH_LABEL}" 2>/dev/null || true
+run_as_console_user /bin/launchctl load -w "${FIRST_LAUNCH_PLIST}" 2>/dev/null || \
+  run_as_console_user /usr/bin/open "${APP_PATH}" 2>/dev/null || true
 
 # Auto-close logic intentionally lives in the CLI component's postinstall
 # (cli-postinstall), not here. The CLI component runs after this desktop
