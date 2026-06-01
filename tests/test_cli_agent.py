@@ -17,6 +17,7 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_codex_jsonl,
     _extract_text_from_gemini_jsonl,
     _extract_text_from_stream_json,
+    _is_terminal_event,
     build_argv,
     dispatch_cli,
 )
@@ -1121,6 +1122,37 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
     """SIGTERM/SIGINT are AgentShore/OS-initiated graceful stops, not crashes."""
     assert _classify_error(-15, "", "") == "unknown"
     assert _classify_error(-2, "", "") == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# _is_terminal_event (#21 — response-complete fast-kill for all agent types)
+# ---------------------------------------------------------------------------
+
+
+def test_is_terminal_event_detects_each_agent_type() -> None:
+    """Claude/Gemini emit type:result; Codex emits turn.completed. All three
+    must be recognized so the 60s post-response grace applies (not the 30-min
+    stream_idle_timeout)."""
+    assert _is_terminal_event(b'{"type":"result","result":"ok"}', AgentType.CLAUDE_CODE)
+    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GEMINI)
+    assert _is_terminal_event(
+        b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
+    )
+
+
+def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
+    # Mid-stream events are not terminal.
+    assert not _is_terminal_event(b'{"type":"assistant","message":{}}', AgentType.CLAUDE_CODE)
+    assert not _is_terminal_event(b'{"type":"item.completed","item":{}}', AgentType.CODEX)
+    # Codex's terminal type must not fire for Claude/Gemini and vice versa.
+    assert not _is_terminal_event(b'{"type":"turn.completed"}', AgentType.GEMINI)
+    assert not _is_terminal_event(b'{"type":"result"}', AgentType.CODEX)
+    # Work product mentioning the word "result" is not a result event.
+    assert not _is_terminal_event(
+        b'{"type":"assistant","text":"the result is 42"}', AgentType.GEMINI
+    )
+    # Non-JSON lines never raise.
+    assert not _is_terminal_event(b"not json at all", AgentType.CLAUDE_CODE)
 
 
 def test_classify_error_content_wins_over_signal() -> None:
