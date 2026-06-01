@@ -122,6 +122,16 @@ class AgentStatus(enum.Enum):
     TERMINATED = "terminated"
 
 
+# Error classes (from ``cli_agent._classify_error``) that a TAKE_BREAK recovery
+# can plausibly clear, so an ERROR agent in one of these gets a recovery-first
+# path (TAKE_BREAK → recovery-exhausted → END_AGENT). An ERROR agent in ANY
+# other class (auth, invalid_model, crash_oom, crash_signal, timeout,
+# codex_rollout, or None) is terminal: no recovery path exists, so END_AGENT is
+# unmasked for it immediately rather than leaving it leaked until end_session
+# (#20). Kept here so the eligibility mask and the END_AGENT resolver agree.
+RECOVERABLE_ERROR_CLASSES: frozenset[str] = frozenset({"rate_limit", "unknown"})
+
+
 class SessionState(enum.Enum):
     """Lifecycle state of an AgentShore session."""
 

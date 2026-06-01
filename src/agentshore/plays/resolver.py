@@ -24,6 +24,7 @@ from agentshore.plays.candidates import (
 )
 from agentshore.plays.internal.end_agent import _MIN_PLAYS_PER_AGENT
 from agentshore.state import (
+    RECOVERABLE_ERROR_CLASSES,
     AgentStatus,
     AgentType,
     OrchestratorState,
@@ -329,6 +330,20 @@ class ParameterResolver:
             wedged = [s for s in state.agents if s.agent_id in state.recovery_exhausted_agent_ids]
             if wedged:
                 return PlayParams(agent_id=wedged[0].agent_id, bypass_preconditions=True)
+
+        # A non-recoverable ERROR agent (auth/invalid_model/crash_*/timeout/...)
+        # has no recovery path; the mask unmasks END_AGENT for it
+        # (``_has_terminal_error_agent``). Target it directly and bypass the
+        # min-plays / two-agent precondition so the PPO's retire choice
+        # dispatches instead of resolving to no target (#20).
+        terminal_error = [
+            s
+            for s in state.agents
+            if s.status == AgentStatus.ERROR
+            and s.last_error_class not in RECOVERABLE_ERROR_CLASSES
+        ]
+        if terminal_error:
+            return PlayParams(agent_id=terminal_error[0].agent_id, bypass_preconditions=True)
 
         if state.session_state == SessionState.DRAINING:
             idle = [s for s in state.agents if s.status == AgentStatus.IDLE]
