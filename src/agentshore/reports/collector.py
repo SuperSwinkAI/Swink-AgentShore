@@ -551,16 +551,17 @@ class ReportDataCollector:
         for play in plays:
             if play.play_type in internal_play_values:
                 continue
+            # A gated/skipped play was PPO-selected then masked before dispatch —
+            # it never reached an agent (0ms, $0, agent_id=None). It is not an
+            # executed play, so it has no place in the play-log timeline. The
+            # per-play-type stats table still accounts for it via its ``skipped``
+            # bucket; here it is omitted entirely.
+            if _is_skip(play):
+                continue
             row_number += 1
             duration_s = (play.duration_ms / 1000.0) if play.duration_ms is not None else 0.0
-            # A gated/skipped play was never dispatched to an agent — show it as a
-            # neutral SKIP with a non-agent actor, not FAIL / "agentshore".
-            if _is_skip(play):
-                status = "skip"
-                agent_name = "— (gated)"
-            else:
-                status = "ok" if play.success else "fail"
-                agent_name = _format_agent_label(play.agent_id, agent_lookup)
+            status = "ok" if play.success else "fail"
+            agent_name = _format_agent_label(play.agent_id, agent_lookup)
             rows.append(
                 PlayLogRowEntry(
                     row_number=row_number,

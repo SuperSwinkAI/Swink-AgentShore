@@ -79,7 +79,7 @@ class PlayLogRowEntry(TypedDict):
     play_type: str
     agent_name: str
     success: bool
-    status: str  # "ok" | "fail" | "skip" (skip = PPO-selected then gated, no agent)
+    status: str  # "ok" | "fail" — gated skips are excluded from the play log entirely
     started_at: str
     duration_seconds: float
     dollar_cost: float
