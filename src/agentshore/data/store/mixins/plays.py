@@ -22,42 +22,32 @@ class _PlaysMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_play(self, play: PlayRecord) -> int:
         """Insert a play record and return the auto-assigned ``play_id``."""
-        async with self._conn.execute(
-            """
-            INSERT INTO plays
-                (session_id, play_type, agent_id, started_at, ended_at,
-                 duration_ms, success, partial, token_cost, dollar_cost,
-                 alignment_before, alignment_after, alignment_delta,
-                 reward, failure_category, error, artifacts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                play.session_id,
-                play.play_type,
-                play.agent_id,
-                play.started_at,
-                play.ended_at,
-                play.duration_ms,
-                int(play.success),
-                int(play.partial),
-                play.token_cost,
-                play.dollar_cost,
-                play.alignment_before,
-                play.alignment_after,
-                play.alignment_delta,
-                play.reward,
-                play.failure_category,
-                play.error,
-                json.dumps(play.artifacts) if play.artifacts else None,
-            ),
-        ) as cursor:
-            await self._conn.commit()
-            if cursor.lastrowid is None:
-                msg = "INSERT did not return a row ID"
-                raise RuntimeError(msg)
-            return cursor.lastrowid
+        return await self._insert(
+            "plays",
+            session_id=play.session_id,
+            play_type=play.play_type,
+            agent_id=play.agent_id,
+            started_at=play.started_at,
+            ended_at=play.ended_at,
+            duration_ms=play.duration_ms,
+            success=int(play.success),
+            partial=int(play.partial),
+            token_cost=play.token_cost,
+            dollar_cost=play.dollar_cost,
+            alignment_before=play.alignment_before,
+            alignment_after=play.alignment_after,
+            alignment_delta=play.alignment_delta,
+            reward=play.reward,
+            failure_category=play.failure_category,
+            error=play.error,
+            artifacts=json.dumps(play.artifacts) if play.artifacts else None,
+        )
 
     async def update_play(
         self,

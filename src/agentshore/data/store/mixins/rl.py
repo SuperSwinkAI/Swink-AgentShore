@@ -19,61 +19,41 @@ class _RLMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_experience(self, record: ExperienceRecord) -> int:
         """Insert a PPO experience row and return the auto-assigned experience_id."""
-        async with self._conn.execute(
-            """
-            INSERT INTO rl_experience
-                (session_id, play_id, state_vector, action, reward, next_state,
-                 done, old_log_prob, value_estimate, action_mask, mask_reason,
-                 policy_version, action_space_version, config_hash, step_index)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.play_id,
-                record.state_vector,
-                record.action,
-                record.reward,
-                record.next_state,
-                record.done,
-                record.old_log_prob,
-                record.value_estimate,
-                record.action_mask,
-                record.mask_reason,
-                record.policy_version,
-                record.action_space_version,
-                record.config_hash,
-                record.step_index,
-            ),
-        ) as cursor:
-            await self._conn.commit()
-            if cursor.lastrowid is None:
-                msg = "INSERT did not return a row ID"
-                raise RuntimeError(msg)
-            return cursor.lastrowid
+        return await self._insert(
+            "rl_experience",
+            session_id=record.session_id,
+            play_id=record.play_id,
+            state_vector=record.state_vector,
+            action=record.action,
+            reward=record.reward,
+            next_state=record.next_state,
+            done=record.done,
+            old_log_prob=record.old_log_prob,
+            value_estimate=record.value_estimate,
+            action_mask=record.action_mask,
+            mask_reason=record.mask_reason,
+            policy_version=record.policy_version,
+            action_space_version=record.action_space_version,
+            config_hash=record.config_hash,
+            step_index=record.step_index,
+        )
 
     async def save_checkpoint(self, record: CheckpointRecord) -> int:
         """Insert a policy checkpoint row and return the auto-assigned checkpoint_id."""
-        cursor = await self._conn.execute(
-            """
-            INSERT INTO policy_checkpoints
-                (session_id, created_at, play_count, weights_path, avg_reward)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.created_at,
-                record.play_count,
-                record.weights_path,
-                record.avg_reward,
-            ),
+        return await self._insert(
+            "policy_checkpoints",
+            session_id=record.session_id,
+            created_at=record.created_at,
+            play_count=record.play_count,
+            weights_path=record.weights_path,
+            avg_reward=record.avg_reward,
         )
-        await self._conn.commit()
-        if cursor.lastrowid is None:
-            msg = "INSERT did not return a row ID"
-            raise RuntimeError(msg)
-        return cursor.lastrowid
 
     async def load_latest_checkpoint(
         self, session_id: str | None = None
@@ -131,7 +111,7 @@ class _RLMixin:
                 """
                 SELECT experience_id, session_id, play_id, state_vector, action,
                        reward, next_state, done, old_log_prob, value_estimate,
-                       action_mask, policy_version, action_space_version,
+                       action_mask, mask_reason, policy_version, action_space_version,
                        config_hash, step_index
                 FROM rl_experience
                 WHERE session_id = ?
@@ -148,7 +128,7 @@ class _RLMixin:
                 """
                 SELECT experience_id, session_id, play_id, state_vector, action,
                        reward, next_state, done, old_log_prob, value_estimate,
-                       action_mask, policy_version, action_space_version,
+                       action_mask, mask_reason, policy_version, action_space_version,
                        config_hash, step_index
                 FROM rl_experience
                 WHERE session_id = ?

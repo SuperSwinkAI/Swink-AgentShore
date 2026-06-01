@@ -23,34 +23,27 @@ class _SessionsMixin:
     # what it returns.
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def create_session(self, session: SessionRecord) -> None:
         """Insert a new session row."""
-        async with self._conn.execute(
-            """
-            INSERT INTO sessions
-                (session_id, project_path, started_at, ended_at, status,
-                 seed_path, initial_issue_count,
-                 total_cost, total_plays, scope_estimate, scope_remaining,
-                 final_alignment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session.session_id,
-                session.project_path,
-                session.started_at,
-                session.ended_at,
-                session.status,
-                session.seed_path,
-                session.initial_issue_count,
-                session.total_cost,
-                session.total_plays,
-                session.scope_estimate,
-                session.scope_remaining,
-                session.final_alignment,
-            ),
-        ):
-            pass
-        await self._conn.commit()
+        await self._insert(
+            "sessions",
+            session_id=session.session_id,
+            project_path=session.project_path,
+            started_at=session.started_at,
+            ended_at=session.ended_at,
+            status=session.status,
+            seed_path=session.seed_path,
+            initial_issue_count=session.initial_issue_count,
+            total_cost=session.total_cost,
+            total_plays=session.total_plays,
+            scope_estimate=session.scope_estimate,
+            scope_remaining=session.scope_remaining,
+            final_alignment=session.final_alignment,
+        )
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         """Return a single session by ID, or ``None`` if not found."""

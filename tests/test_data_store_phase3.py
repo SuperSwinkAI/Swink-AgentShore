@@ -138,6 +138,35 @@ async def test_iter_experience_yields_in_step_index_order(store):
     assert rows[1].step_index == 1
 
 
+async def test_iter_experience_round_trips_mask_reason(store):
+    """Regression: ``mask_reason`` was written by ``record_experience`` but
+    dropped from both replay SELECTs and ``_row_to_experience``, so it always
+    read back ``None``. Persist a non-null value and assert it survives replay.
+    """
+    sid, play_id = await _seed(store)
+    await store.record_experience(
+        ExperienceRecord(
+            session_id=sid,
+            play_id=play_id,
+            state_vector=b"\x00" * 288,
+            action=0,
+            reward=0.0,
+            next_state=b"\x00" * 288,
+            done=0,
+            action_space_version=1,
+            config_hash="abc",
+            mask_reason="merge_pr: no approved PR",
+            step_index=0,
+        )
+    )
+    rows = [r async for r in store.iter_experience_for_replay(sid, 1, "abc")]
+    assert len(rows) == 1
+    assert rows[0].mask_reason == "merge_pr: no approved PR"
+    # The no-config-hash SELECT must agree.
+    rows_all = [r async for r in store.iter_experience_for_replay(sid, 1)]
+    assert rows_all[0].mask_reason == "merge_pr: no approved PR"
+
+
 async def test_iter_experience_version_mismatch_returns_empty(store):
     sid, play_id = await _seed(store)
     await store.record_experience(
