@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.errors import FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
     params_to_json_safe_dict,
@@ -415,7 +416,9 @@ class SkillBackedPlay(Play, ABC):
 
         self._last_skill_result = skill_result
 
+        failure_kind: FailureKind | None = None
         if not skill_result.success and _looks_like_auth_failure(skill_result.error):
+            failure_kind = FailureKind.AUTH
             await ctx.manager.mark_agent_error(
                 agent_id,
                 "auth",
@@ -433,6 +436,7 @@ class SkillBackedPlay(Play, ABC):
             artifacts=skill_result.artifacts,
             alignment_delta=0.0,
             error=skill_result.error,
+            failure_kind=failure_kind,
         )
 
 
