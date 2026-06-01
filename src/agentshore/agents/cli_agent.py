@@ -740,10 +740,9 @@ async def _read_output(
             chunks.append(line)
 
             if (
-                agent_type == AgentType.CLAUDE_CODE
-                and stdout_activity is not None
+                stdout_activity is not None
                 and not stdout_activity.response_complete
-                and _is_claude_result_event(line)
+                and _is_terminal_event(line, agent_type)
             ):
                 stdout_activity.mark_response_complete()
     except asyncio.LimitOverrunError as exc:
@@ -864,20 +863,38 @@ async def _watch_stream_idle(
 # ---------------------------------------------------------------------------
 
 
-def _is_claude_result_event(line: bytes) -> bool:
-    """Return True if *line* is a Claude Code ``type: "result"`` stream event.
+# The terminal stream event each CLI emits once its response is fully written.
+# Detecting it lets the idle watcher apply the short _POST_RESPONSE_GRACE_S
+# (60s) instead of waiting the full stream_idle_timeout (default 1800s) for a
+# finished-but-unexited subprocess. Previously only Claude was wired up, so a
+# finished gemini/codex lingered up to 30 min each — stacking memory across
+# plays toward OOM (#21). Codex emits ``turn.completed``; Gemini and Claude
+# emit ``type: "result"``.
+_TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
+    AgentType.CLAUDE_CODE: frozenset({"result"}),
+    AgentType.CODEX: frozenset({"turn.completed"}),
+    AgentType.GEMINI: frozenset({"result"}),
+}
 
-    This is the final event Claude Code emits after completing a response.
+
+def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
+    """Return True if *line* is *agent_type*'s response-complete stream event.
+
+    This is the final event the CLI emits after completing a response.
     Detecting it lets the idle watcher switch to a short grace period so
-    lingering background tasks don't block process exit for 30 minutes.
+    lingering background tasks don't block process exit for 30 minutes (#21).
     """
-    if b'"result"' not in line:
+    terminal_types = _TERMINAL_EVENT_TYPES.get(agent_type)
+    if not terminal_types:
+        return False
+    # Cheap pre-filter: skip json.loads unless a terminal type name appears.
+    if not any(t.encode() in line for t in terminal_types):
         return False
     try:
         event = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return False
-    return bool(event.get("type") == "result")
+    return isinstance(event, dict) and event.get("type") in terminal_types
 
 
 # ---------------------------------------------------------------------------
