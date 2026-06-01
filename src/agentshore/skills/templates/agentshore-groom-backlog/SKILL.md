@@ -44,6 +44,8 @@ Partial evidence → **keep**, not Shipped. Record per-item verdicts in `groomin
 
 **Reconcile both directions.** Open bead with no `external_ref`: `gh issue list --search "<title>" --state open --limit 5`; on exact case-insensitive single match (no other bead holds that ref) `bd update <id> --external-ref "gh-<N>"`, else `gh issue create … --label enhancement` and link the new number. Open GH issue with no bead: `bd create task "<title>" --description "Closes gh-<N>" --external-ref "gh-<N>"` and `bd link <task-id> <story-id> --type parent-child` to the most appropriate story (create one via Step 3 if none fits).
 
+**Mirror ordering dependencies to beads.** Ordering edges written as `depends on #N` / `blocked by #N` in an issue body must become real beads `blocks` edges — otherwise the cheap `issue_pickup` candidate mask can't see them and an agent is dispatched to a blocked issue only to be rejected agent-side (~$0.19 / 6.8 min wasted per hit — #14). For each open GH issue whose body declares `depends on #N` / `blocked by #N`: if **#N is still open** and both issues have beads tasks (`external_ref` `gh-<N>` and `gh-<this>`), ensure a blocks edge exists — `bd link <this-task-id> <dep-task-id> --type blocks` (second arg blocks first, so `<this>` becomes `blocked_by <dep>`; idempotent — read the snapshot's `dependencies`/`blocked_by` and skip if already present). Never self-link; skip when #N is already closed. Reserve `blocks` strictly for these ordering deps (containment stays `parent-child`). beads auto-clears the edge when the dependency task closes (its PR merges → issue closes → task closes), re-arming pickup with no extra work. Record in `dependency_edges_added` as `{"issue": N, "blocked_by": DEP}`.
+
 **Close shipped work.** For every verdict `stale_close`, close child tasks → stories → epics in that order. `bd close <ids…> --reason="shipped: <sha or PR #>"` and `gh issue close <N> --comment "Closed by groom-backlog: shipped in <sha or PR #>."`. Record in `beads_closed_stale` / `issues_closed_stale`. Shipped takes precedence over Stale/Duplicate/Orphaned so the evidence is the reason persisted.
 
 **Close completed trackers.** For each open GH issue labeled `agentshore/decomposed`, take the union of children from `gh issue list --search "Parent: #<N>" --state all` (also `"depends on #<N>"`) and parsed `- [ ] #<M>` / `- [x] #<M>` entries from the parent's `## Sub-tasks` checklist. If the union is non-empty and every child is `CLOSED`, close the parent with a sub-task list comment → `trackers_closed`. Skip parents labeled `agentshore/blocked` or `needs-human-review`; empty union is malformed — record in `verification_failures`. For each open epic, if every child story is `closed`, `bd close <epic_id> --reason "All child stories complete"` → `epics_closed`. Closed-as-wontfix children still count as closed.
@@ -80,6 +82,7 @@ Skip if already labeled `agentshore/needs-refinement`, body contains `Decomposed
   "trackers_closed": [],
   "epics_closed": [],
   "ambiguous_links_resolved": [],
+  "dependency_edges_added": [],
   "epics_before": [],
   "epics_after": [],
   "open_work_after": {"issues": 0, "prs": 0},
