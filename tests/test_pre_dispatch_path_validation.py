@@ -102,7 +102,6 @@ async def test_dispatch_refuses_backslash_space_working_dir(
             PlayType.CODE_REVIEW,
             params,
             state,
-            revalidate=False,
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
@@ -133,7 +132,6 @@ async def test_dispatch_refuses_backslash_space_in_extras_worktree(
             PlayType.ISSUE_PICKUP,
             params,
             state,
-            revalidate=False,
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
@@ -156,7 +154,7 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
     orch, state = _build_dispatch_harness(tmp_path)
     params = PlayParams()
 
-    # Stub minimum extras to fall through to revalidate=False path. We
+    # Stub minimum extras to fall through past the backslash-space guard. We
     # short-circuit by asserting the helper itself is NOT called.
     state.session_state = MagicMock()
     # _shutdown_allows_only_end_agent reads draining/stop_requested/state.session_state.
@@ -171,7 +169,6 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
             PlayType.ISSUE_PICKUP,
             params,
             state,
-            revalidate=False,
         )
 
     # Critical: the bad-path guard was NOT invoked.
