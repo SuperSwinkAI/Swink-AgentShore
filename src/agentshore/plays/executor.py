@@ -115,6 +115,17 @@ _PR_PUBLISH_ERROR_MARKERS = (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class _ExecutionSetup:
+    play_id: int
+    params: PlayParams
+    ctx: PlayExecutionContext
+    started_at: str
+    alignment_before: float | None
+    current_play_handle: AgentHandle | None
+    source_context_size: int
+
+
 def _claim_group_id(params: PlayParams | None) -> str | None:
     if params is None:
         return None
@@ -222,8 +233,45 @@ class PlayExecutor:
         PlayOutcome.
         """
         started_at = now_iso()
+        prepared = await self._prepare_dispatch(play_type, state, override, started_at)
+        if isinstance(prepared, PlayOutcome):
+            return prepared
+        play, params = prepared
 
-        # 1. Retrieve play --------------------------------------------------
+        # PR-base self-heal (#8) --------------------------------------------
+        # issue_pickup agents sometimes open PRs against the repo default
+        # instead of the configured target branch. Retarget before running any
+        # PR-scoped play so merge_pr can merge and code_review diffs the right
+        # base. Idempotent; a no-op when the base already matches.
+        if params.pr_number is not None and play_type in _PR_BASE_RECONCILE_PLAYS:
+            await self._maybe_retarget_pr_base(play_type, params, state)
+
+        selected = await self._select_skill_agent(play, play_type, params, started_at)
+        if isinstance(selected, PlayOutcome):
+            return selected
+
+        setup = await self._prepare_execution_context(
+            play,
+            play_type,
+            selected,
+            state,
+            started_at,
+        )
+        if isinstance(setup, PlayOutcome):
+            return setup
+        return await self._run_finalize_and_persist(play, play_type, state, setup)
+
+    # -------------------------------------------------------------------------
+    # Private helpers
+    # -------------------------------------------------------------------------
+
+    async def _prepare_dispatch(
+        self,
+        play_type: PlayType,
+        state: OrchestratorState,
+        override: PlayParams | None,
+        started_at: str,
+    ) -> tuple[Play, PlayParams] | PlayOutcome:
         try:
             play = self._registry.get(play_type)
         except KeyError:
@@ -235,7 +283,6 @@ class PlayExecutor:
             )
             return _failed(play_type, f"no play registered for {play_type!r}", "code_error")
 
-        # 2. Resolve params -------------------------------------------------
         params = await self._resolver.resolve(play_type, state, override=override)
         if params is None:
             await self._finish_claim_group(override, status="released")
@@ -251,7 +298,6 @@ class PlayExecutor:
                 error="unresolved parameters",
             )
 
-        # 3. Preconditions --------------------------------------------------
         # Trusted internal queueing (bootstrap fleet seeding) sets
         # params.bypass_preconditions so the cooldown/budget gates that protect
         # the RL policy don't block the boot-time fleet. The override-queue
@@ -277,142 +323,159 @@ class PlayExecutor:
                     "masked",
                     error=str(errors[0]),
                 )
+        return play, params
 
-        # 3b. PR-base self-heal (#8) ----------------------------------------
-        # issue_pickup agents sometimes open PRs against the repo default
-        # instead of the configured target branch. Retarget before running any
-        # PR-scoped play so merge_pr can merge and code_review diffs the right
-        # base. Idempotent; a no-op when the base already matches.
-        if params.pr_number is not None and play_type in _PR_BASE_RECONCILE_PLAYS:
-            await self._maybe_retarget_pr_base(play_type, params, state)
+    async def _select_skill_agent(
+        self,
+        play: Play,
+        play_type: PlayType,
+        params: PlayParams,
+        started_at: str,
+    ) -> PlayParams | PlayOutcome:
+        if play.skill_name is None:
+            return params
 
-        # 4. Agent selection for skill-backed plays -------------------------
-        if play.skill_name is not None:
-            # Look up the PR's GitHub author for the identity-based anti-confirmation
-            # filter. This consults the DB row populated by the GH cache refresh at
-            # bootstrap (and updated by record_pull_request). Falls back to None for
-            # PRs not yet cached, letting the executor's _anti_confirmation_check
-            # act as the backstop.
-            pr_github_author: str | None = None
-            if play_type == PlayType.CODE_REVIEW and params.pr_number is not None:
-                pr_github_author = await self._store.get_pr_github_author(
-                    params.pr_number, self._session_id
-                )
-            try:
-                handle = select_agent_for(
-                    play_type,
-                    self._manager.handles,
-                    pr_github_author=pr_github_author,
-                    branch_exposure=self._manager.branch_exposure,
-                    preferences=self._cfg.agent_preferences,
-                    branch=params.branch,
-                    required_agent_type=params.target_agent_type,
-                    required_agent_id=params.target_agent_id,
-                )
-            except AntiConfirmationViolation as exc:
-                # Read-only observation plays soft-mask when no agent qualifies
-                # rather than failing — the play didn't fail, the staffing did.
-                if play_type in _OBSERVATION_PLAYS:
-                    await self._finish_claim_group(params, status="released")
-                    await self._record_pre_dispatch_skip(
-                        play_type,
-                        started_at=started_at,
-                        skip_category="masked",
-                        error=f"masked: {exc}",
-                        agent_id=params.agent_id,
-                    )
-                    return PlayOutcome.skipped_outcome(
-                        play_type,
-                        "masked",
-                        error=f"masked: {exc}",
-                    )
-                # Requeueable plays defer to the next tick (up to a cap) rather
-                # than taking a failure penalty — the timing race is transient.
-                _raw_attempts = params.extras.get("requeue_attempts") or 0
-                attempt = (
-                    _raw_attempts if isinstance(_raw_attempts, int) else int(str(_raw_attempts))
-                )
-                if (
-                    play_type in _REQUEUEABLE_ON_VIOLATION
-                    and attempt < _MAX_REQUEUE_ATTEMPTS
-                    and self._requeue_callback is not None
-                ):
-                    requeue_extras = {
-                        k: v for k, v in params.extras.items() if k not in ("play_id", "started_at")
-                    }
-                    requeue_extras["requeue_attempts"] = attempt + 1
-                    # Clear target_agent_id on requeue: the previously chosen
-                    # agent may no longer be IDLE, and the resolver re-picks
-                    # against fresh state on the next dispatch.
-                    requeue_params = dataclasses.replace(
-                        params,
-                        agent_id=None,
-                        target_agent_id=None,
-                        extras=requeue_extras,
-                    )
-                    self._requeue_callback(play_type, requeue_params)
-                    _logger.info(
-                        "code_review_requeued",
-                        pr_number=params.pr_number,
-                        attempt=attempt + 1,
-                        target_agent_id=params.target_agent_id,
-                        target_agent_type=params.target_agent_type,
-                        reason=str(exc),
-                        session_id=self._session_id,
-                    )
-                    # Requeue isn't a no-op for the user — surface it in the
-                    # plays-table so a CR PR that keeps bouncing on
-                    # anti-confirmation doesn't look invisible in history.
-                    await self._record_pre_dispatch_skip(
-                        play_type,
-                        started_at=started_at,
-                        skip_category="staffing",
-                        error=f"requeued: {exc}",
-                        agent_id=params.agent_id,
-                    )
-                    return PlayOutcome.skipped_outcome(
-                        play_type,
-                        "staffing",
-                        error=f"requeued: {exc}",
-                    )
-                await self._finish_claim_group(params, status="released")
-                await self._record_pre_dispatch_skip(
-                    play_type,
-                    started_at=started_at,
-                    skip_category="staffing",
-                    error=str(exc),
-                    agent_id=params.agent_id,
-                )
-                return PlayOutcome.skipped_outcome(
-                    play_type,
-                    "staffing",
-                    error=str(exc),
-                )
+        # Look up the PR's GitHub author for the identity-based
+        # anti-confirmation filter. This consults the DB row populated by the
+        # GH cache refresh at bootstrap (and updated by record_pull_request).
+        # Falls back to None for PRs not yet cached, letting the executor's
+        # _anti_confirmation_check act as the backstop.
+        pr_github_author: str | None = None
+        if play_type == PlayType.CODE_REVIEW and params.pr_number is not None:
+            pr_github_author = await self._store.get_pr_github_author(
+                params.pr_number, self._session_id
+            )
+        try:
+            handle = select_agent_for(
+                play_type,
+                self._manager.handles,
+                pr_github_author=pr_github_author,
+                branch_exposure=self._manager.branch_exposure,
+                preferences=self._cfg.agent_preferences,
+                branch=params.branch,
+                required_agent_type=params.target_agent_type,
+                required_agent_id=params.target_agent_id,
+            )
+        except AntiConfirmationViolation as exc:
+            return await self._handle_selection_violation(play_type, params, started_at, exc)
 
-            # Anti-confirmation DB re-check (defense in depth)
-            anti_err = await self._anti_confirmation_check(play_type, params, handle.agent_id)
-            if anti_err:
-                await self._finish_claim_group(params, status="released")
-                await self._record_pre_dispatch_skip(
-                    play_type,
-                    started_at=started_at,
-                    skip_category="staffing",
-                    error=anti_err,
-                    agent_id=handle.agent_id,
-                )
-                return PlayOutcome.skipped_outcome(
-                    play_type,
-                    "staffing",
-                    error=anti_err,
-                    agent_id=handle.agent_id,
-                )
+        # Anti-confirmation DB re-check (defense in depth)
+        anti_err = await self._anti_confirmation_check(play_type, params, handle.agent_id)
+        if anti_err:
+            await self._finish_claim_group(params, status="released")
+            await self._record_pre_dispatch_skip(
+                play_type,
+                started_at=started_at,
+                skip_category="staffing",
+                error=anti_err,
+                agent_id=handle.agent_id,
+            )
+            return PlayOutcome.skipped_outcome(
+                play_type,
+                "staffing",
+                error=anti_err,
+                agent_id=handle.agent_id,
+            )
+        return dataclasses.replace(params, agent_id=handle.agent_id)
 
-            params = dataclasses.replace(params, agent_id=handle.agent_id)
+    async def _handle_selection_violation(
+        self,
+        play_type: PlayType,
+        params: PlayParams,
+        started_at: str,
+        exc: AntiConfirmationViolation,
+    ) -> PlayOutcome:
+        # Read-only observation plays soft-mask when no agent qualifies rather
+        # than failing — the play didn't fail, the staffing did.
+        if play_type in _OBSERVATION_PLAYS:
+            await self._finish_claim_group(params, status="released")
+            await self._record_pre_dispatch_skip(
+                play_type,
+                started_at=started_at,
+                skip_category="masked",
+                error=f"masked: {exc}",
+                agent_id=params.agent_id,
+            )
+            return PlayOutcome.skipped_outcome(
+                play_type,
+                "masked",
+                error=f"masked: {exc}",
+            )
 
+        # Requeueable plays defer to the next tick (up to a cap) rather than
+        # taking a failure penalty — the timing race is transient.
+        _raw_attempts = params.extras.get("requeue_attempts") or 0
+        attempt = _raw_attempts if isinstance(_raw_attempts, int) else int(str(_raw_attempts))
+        if (
+            play_type in _REQUEUEABLE_ON_VIOLATION
+            and attempt < _MAX_REQUEUE_ATTEMPTS
+            and self._requeue_callback is not None
+        ):
+            requeue_extras = {
+                k: v for k, v in params.extras.items() if k not in ("play_id", "started_at")
+            }
+            requeue_extras["requeue_attempts"] = attempt + 1
+            # Clear target_agent_id on requeue: the previously chosen agent
+            # may no longer be IDLE, and the resolver re-picks against fresh
+            # state on the next dispatch.
+            requeue_params = dataclasses.replace(
+                params,
+                agent_id=None,
+                target_agent_id=None,
+                extras=requeue_extras,
+            )
+            self._requeue_callback(play_type, requeue_params)
+            _logger.info(
+                "code_review_requeued",
+                pr_number=params.pr_number,
+                attempt=attempt + 1,
+                target_agent_id=params.target_agent_id,
+                target_agent_type=params.target_agent_type,
+                reason=str(exc),
+                session_id=self._session_id,
+            )
+            # Requeue isn't a no-op for the user — surface it in the
+            # plays-table so a CR PR that keeps bouncing on anti-confirmation
+            # doesn't look invisible in history.
+            await self._record_pre_dispatch_skip(
+                play_type,
+                started_at=started_at,
+                skip_category="staffing",
+                error=f"requeued: {exc}",
+                agent_id=params.agent_id,
+            )
+            return PlayOutcome.skipped_outcome(
+                play_type,
+                "staffing",
+                error=f"requeued: {exc}",
+            )
+
+        await self._finish_claim_group(params, status="released")
+        await self._record_pre_dispatch_skip(
+            play_type,
+            started_at=started_at,
+            skip_category="staffing",
+            error=str(exc),
+            agent_id=params.agent_id,
+        )
+        return PlayOutcome.skipped_outcome(
+            play_type,
+            "staffing",
+            error=str(exc),
+        )
+
+    async def _prepare_execution_context(
+        self,
+        play: Play,
+        play_type: PlayType,
+        params: PlayParams,
+        state: OrchestratorState,
+        started_at: str,
+    ) -> _ExecutionSetup | PlayOutcome:
         # Snapshot alignment_before from the dispatch-time beads graph.
         alignment_before = state.graph.global_closure_ratio if state.graph is not None else None
 
-        # 5. Insert placeholder play row (provides play_id for FK constraints)
+        # Insert placeholder play row (provides play_id for FK constraints).
         play_id = await self._store.record_play(
             PlayRecord(
                 session_id=self._session_id,
@@ -426,8 +489,6 @@ class PlayExecutor:
             params,
             extras={**params.extras, "play_id": play_id, "started_at": started_at},
         )
-
-        # 6. Build execution context ----------------------------------------
         ctx = PlayExecutionContext(
             session_id=self._session_id,
             play_id=play_id,
@@ -450,7 +511,28 @@ class PlayExecutor:
             )
             return _failed(play_type, "work claim inactive", "code_error", agent_id=params.agent_id)
 
-        # Notify that the agent is transitioning to BUSY before dispatch begins
+        current_play_handle = await self._notify_dispatch_started(
+            play, play_type, params, play_id, started_at
+        )
+        return _ExecutionSetup(
+            play_id=play_id,
+            params=params,
+            ctx=ctx,
+            started_at=started_at,
+            alignment_before=alignment_before,
+            current_play_handle=current_play_handle,
+            source_context_size=self._snapshot_context_size(play_type, params),
+        )
+
+    async def _notify_dispatch_started(
+        self,
+        play: Play,
+        play_type: PlayType,
+        params: PlayParams,
+        play_id: int,
+        started_at: str,
+    ) -> AgentHandle | None:
+        # Notify that the agent is transitioning to BUSY before dispatch begins.
         if (
             play.skill_name is not None
             and self._state_provider is not None
@@ -458,7 +540,7 @@ class PlayExecutor:
         ):
             await self._state_provider.on_agent_changed(params.agent_id, AgentStatus.BUSY)
 
-        # Track issue_pickup plays so the resolver can avoid double-claiming
+        # Track issue_pickup plays so the resolver can avoid double-claiming.
         if play_type == PlayType.ISSUE_PICKUP and params.issue_number is not None:
             self._inflight_issues.add(params.issue_number)
         # Track write_plan plays so concurrent and sequential re-plans on the
@@ -479,20 +561,28 @@ class PlayExecutor:
             play_id=play_id,
         )
 
-        # Notify that the play has started (with agent_id resolved)
+        # Notify that the play has started (with agent_id resolved).
         if self._state_provider is not None:
             await self._state_provider.on_play_started(play_type, params)
+        return current_play_handle
 
-        # Capture source context size BEFORE handoff plays execute
-        source_context_size = self._snapshot_context_size(play_type, params)
+    async def _run_finalize_and_persist(
+        self,
+        play: Play,
+        play_type: PlayType,
+        state: OrchestratorState,
+        setup: _ExecutionSetup,
+    ) -> PlayOutcome:
+        play_id = setup.play_id
+        params = setup.params
+        started_at = setup.started_at
 
-        # 7. Execute --------------------------------------------------------
         t0 = time.monotonic()
         try:
-            outcome = await self._run_play(play, play_type, state, params, ctx)
+            outcome = await self._run_play(play, play_type, state, params, setup.ctx)
         finally:
-            if current_play_handle is not None:
-                current_play_handle.clear_play(play_id)
+            if setup.current_play_handle is not None:
+                setup.current_play_handle.clear_play(play_id)
             if play_type == PlayType.ISSUE_PICKUP and params.issue_number is not None:
                 self._inflight_issues.discard(params.issue_number)
         elapsed_s = time.monotonic() - t0
@@ -521,9 +611,73 @@ class PlayExecutor:
         if discovered_branch and not params.branch:
             params = dataclasses.replace(params, branch=discovered_branch)
 
+        alignment_after, alignment_delta = await self._load_post_play_alignment(
+            play_id,
+            play_type,
+            setup.alignment_before,
+        )
+
+        inflation_raised = False
+        if play.skill_name is not None:
+            outcome, inflation_raised = await self._check_scope(outcome, play_id, play_type, state)
+
+        if outcome.success or outcome.partial:
+            await self._wire_deferrals(
+                play_type,
+                params,
+                outcome,
+                play_id,
+                setup.source_context_size,
+                elapsed_s,
+            )
+
+        if (
+            play_type == PlayType.WRITE_IMPLEMENTATION_PLAN
+            and params.issue_number is not None
+            and not outcome.success
+        ):
+            self._planned_issues.discard(params.issue_number)
+
+        if skill_result is not None and isinstance(skill_result, SkillResult):
+            await self._persist_mutations(play_id, params, skill_result)
+
+        await self._persist_completed_play(
+            play_id=play_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            elapsed_s=elapsed_s,
+            outcome=outcome,
+            params=params,
+            alignment_before=setup.alignment_before,
+            alignment_after=alignment_after,
+            alignment_delta=alignment_delta,
+        )
+        await self._finish_claim_group(
+            params,
+            status="retrying"
+            if outcome.retry_requested
+            else ("completed" if outcome.success else "released"),
+        )
+
+        # Stamp play_id, alignment_delta (live beads delta), and
+        # inflation_raised on outcome.
+        return dataclasses.replace(
+            outcome,
+            play_id=play_id,
+            alignment_delta=alignment_delta,
+            inflation_raised=inflation_raised,
+        )
+
+    async def _load_post_play_alignment(
+        self,
+        play_id: int,
+        play_type: PlayType,
+        alignment_before: float | None,
+    ) -> tuple[float | None, float | None]:
         # Reload beads after the play and any reconciliation side effects have
         # run. Calibration and merge plays can close beads, so the persisted
-        # play row must use the post-play graph rather than the dispatch snapshot.
+        # play row must use the post-play graph rather than the dispatch
+        # snapshot.
         try:
             post_graph = await load_graph(self._project_path)
         except Exception as exc:  # pragma: no cover - defensive logging path
@@ -542,35 +696,21 @@ class PlayExecutor:
             if alignment_before is not None and alignment_after is not None
             else None
         )
+        return alignment_after, alignment_delta
 
-        # 8. Scope validation (skill-backed only; runs on both success and failure) --
-        inflation_raised = False
-        if play.skill_name is not None:
-            outcome, inflation_raised = await self._check_scope(outcome, play_id, play_type, state)
-
-        # 9. Phase-1 deferral wiring ----------------------------------------
-        if outcome.success or outcome.partial:
-            await self._wire_deferrals(
-                play_type,
-                params,
-                outcome,
-                play_id,
-                source_context_size,
-                elapsed_s,
-            )
-
-        if (
-            play_type == PlayType.WRITE_IMPLEMENTATION_PLAN
-            and params.issue_number is not None
-            and not outcome.success
-        ):
-            self._planned_issues.discard(params.issue_number)
-
-        # 10. Persist requested_mutations from skill result (if available) ---
-        if skill_result is not None and isinstance(skill_result, SkillResult):
-            await self._persist_mutations(play_id, params, skill_result)
-
-        # 11. Update play row -----------------------------------------------
+    async def _persist_completed_play(
+        self,
+        *,
+        play_id: int,
+        started_at: str,
+        ended_at: str,
+        elapsed_s: float,
+        outcome: PlayOutcome,
+        params: PlayParams,
+        alignment_before: float | None,
+        alignment_after: float | None,
+        alignment_delta: float | None,
+    ) -> None:
         failure_category = _infer_failure_category(outcome) if not outcome.success else None
         await self._persist_play(
             play_id,
@@ -580,11 +720,12 @@ class PlayExecutor:
             duration_ms=int(elapsed_s * 1000),
             error=outcome.error,
             failure_category=failure_category,
-            # Failure outcomes often omit agent_id, but params.agent_id holds the
-            # agent this play was dispatched to (set at selection). Without the
-            # fallback, failed skill-backed plays persisted agent_id=None and the
-            # ESR Play Log rendered them as the literal "agentshore" instead of
-            # the agent that ran them. Internal (agentless) plays keep None.
+            # Failure outcomes often omit agent_id, but params.agent_id holds
+            # the agent this play was dispatched to (set at selection). Without
+            # the fallback, failed skill-backed plays persisted agent_id=None
+            # and the ESR Play Log rendered them as the literal "agentshore"
+            # instead of the agent that ran them. Internal (agentless) plays
+            # keep None.
             agent_id=outcome.agent_id or params.agent_id,
             token_cost=outcome.token_cost,
             dollar_cost=outcome.dollar_cost,
@@ -593,25 +734,6 @@ class PlayExecutor:
             alignment_after=alignment_after,
             alignment_delta=alignment_delta,
         )
-
-        await self._finish_claim_group(
-            params,
-            status="retrying"
-            if outcome.retry_requested
-            else ("completed" if outcome.success else "released"),
-        )
-
-        # Stamp play_id, alignment_delta (live beads delta), and inflation_raised on outcome
-        return dataclasses.replace(
-            outcome,
-            play_id=play_id,
-            alignment_delta=alignment_delta,
-            inflation_raised=inflation_raised,
-        )
-
-    # -------------------------------------------------------------------------
-    # Private helpers
-    # -------------------------------------------------------------------------
 
     async def _start_claim_group(self, params: PlayParams, play_id: int) -> bool:
         claim_group_id = _claim_group_id(params)
