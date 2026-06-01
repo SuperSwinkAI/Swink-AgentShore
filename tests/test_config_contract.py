@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from agentshore.cli import _generate_default_config
-from agentshore.config import ConfigError, PolicyMode, RunMode, load_config
+from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default_config, load_config
 
 
 def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
@@ -337,3 +337,20 @@ def test_config_nested_containers_are_immutable() -> None:
         config.agents["codex"].model_tiers["extra"] = config.agents["codex"].model_tiers["small"]  # type: ignore[index]
     with pytest.raises(AttributeError):
         config.browser.file_patterns.append("*.jsx")  # type: ignore[attr-defined]
+
+
+def test_generated_default_file_matches_runtime_defaults(tmp_path: Path) -> None:
+    """Drift guard for the single-sourced defaults (H3).
+
+    ``generate_default_config`` and ``load_config(None)`` must both derive
+    from the same canonical ``_DEFAULT_YAML``. Asserting the on-disk default
+    file round-trips to the exact config ``load_config(None)`` returns pins
+    them together so the written config can never silently disagree with
+    runtime behavior — even though the per-field parser fallbacks (the
+    "missing key" defaults) intentionally differ from a few YAML values.
+    """
+    written = generate_default_config(tmp_path)
+    from_file = load_config(written)
+    in_memory = load_config(None)
+
+    assert from_file == in_memory

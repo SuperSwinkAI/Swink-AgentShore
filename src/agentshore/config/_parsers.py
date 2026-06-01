@@ -77,6 +77,7 @@ class _RawBudget(TypedDict, total=False):
 
 class _RawTrustedIds(TypedDict, total=False):
     github_logins: list[object]
+    pr_allow_list: list[object]
 
 
 class _RawModelTier(TypedDict, total=False):
@@ -967,8 +968,7 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
     orphan_ttl = raw.get("orphan_retention_seconds", 604800)
     if not isinstance(orphan_ttl, int) or isinstance(orphan_ttl, bool) or orphan_ttl < 0:
         raise ConfigError(
-            "worktrees.orphan_retention_seconds must be a non-negative integer, "
-            f"got {orphan_ttl!r}"
+            f"worktrees.orphan_retention_seconds must be a non-negative integer, got {orphan_ttl!r}"
         )
     return WorktreeConfig(
         reap_ttl_seconds=ttl,

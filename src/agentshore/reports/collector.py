@@ -310,7 +310,6 @@ class ReportDataCollector:
         )
         agents = await self._store.get_agents(session_id)
         overview = self._compute_overview(session, plays)
-        overview["total_cost"] = sum(p.dollar_cost for p in plays)
 
         return EndSessionReportData(
             overview=overview,
@@ -394,7 +393,10 @@ class ReportDataCollector:
             successful_plays=successful,
             failed_plays=failed,
             skipped_plays=skipped,
-            total_cost=session.total_cost,
+            # Single, self-consistent definition: sum the per-play costs (the
+            # same rows the play log renders) rather than session.total_cost, so
+            # every report (session summary, end-of-session, comparison) agrees.
+            total_cost=sum(p.dollar_cost for p in plays),
             final_alignment=session.final_alignment,
             started_at=session.started_at,
             ended_at=session.ended_at,
