@@ -10,7 +10,7 @@ AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agen
 
 **Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from Claude Code.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and have cost hundreds of dollars in wasted spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
 
-**Single exception: the `/run_rl_loop` skill.** When the user directly invokes `/run_rl_loop` (and only then), the skill body is authorised to run `agentshore start`, `agentshore stop`, and `agentshore --version` as documented in its steps. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the commands the skill prescribes — every other AgentShore CLI invocation still falls under the rule above.
+**Single exception: the `/monitor_run` skill.** When the user directly invokes `/monitor_run` (and only then), the skill body is authorised to run `agentshore stop --project <DIR>` — and nothing else; `/monitor_run` attaches to an already-running session and never starts one. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the command it prescribes — every other AgentShore CLI invocation still falls under the rule above.
 
 This is the same rule as the skill-template direct-usage prohibition below — they cover the two ways an agent can accidentally diverge a live AgentShore from its source tree.
 
