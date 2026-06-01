@@ -13,6 +13,39 @@ class FailureCategory(StrEnum):
     gate_rejection = "gate_rejection"
 
 
+class FailureKind(StrEnum):
+    """Typed cause a play sets at the failure site, where the cause is known.
+
+    Distinct from :class:`FailureCategory`, the wire/string taxonomy persisted
+    to the plays table and consumed by reward filtering, dashboard styling, and
+    ESR rollups. ``failure_kind`` is the structured signal; ``failure_category``
+    is derived from it via :meth:`to_category` so those consumers keep working.
+    The substring inferer remains the fallback for legacy/uncaught paths that
+    never set a kind.
+    """
+
+    AUTH = "auth"
+    TEST = "test"
+    GATE = "gate"
+    SCOPE = "scope"
+    AGENT_ERROR = "agent_error"
+    CODE_ERROR = "code_error"
+
+    def to_category(self) -> FailureCategory:
+        """Map a typed failure kind to its persisted ``FailureCategory`` string."""
+        return _FAILURE_KIND_TO_CATEGORY[self]
+
+
+_FAILURE_KIND_TO_CATEGORY: dict[FailureKind, FailureCategory] = {
+    FailureKind.AUTH: FailureCategory.agent_error,
+    FailureKind.TEST: FailureCategory.test_failure,
+    FailureKind.GATE: FailureCategory.gate_rejection,
+    FailureKind.SCOPE: FailureCategory.alignment_drift,
+    FailureKind.AGENT_ERROR: FailureCategory.agent_error,
+    FailureKind.CODE_ERROR: FailureCategory.code_error,
+}
+
+
 class OrchestratorError(Exception):
     error_type: str = "agentshore_error"
     recoverable: bool = True
