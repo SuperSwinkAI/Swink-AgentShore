@@ -38,6 +38,19 @@ _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from 
 # `gh` call, so we bypass the per-tool permission gates the CLIs ship with.
 # The user can opt out by explicitly setting any non-empty extra_flags in
 # agentshore.yaml; that signals "I'm managing flags myself."
+# Each category carries two pattern sets (#19). The *stderr* set is the full
+# list: a CLI's own stderr is pure diagnostics, so matching anything there is
+# safe. The *stdout-safe* set is the subset of high-precision phrases that
+# effectively never appear in legitimate agent output. For a CLI **coding**
+# agent, stdout is the work PRODUCT — code, diffs, tool output, model
+# reasoning — and genuine quota/auth signals from `gh`/`git` tools are embedded
+# there too (tool_result JSONL), so we cannot ignore stdout entirely. But the
+# generic tokens ("429", "403", "forbidden", "timeout", "overloaded",
+# "capacity", "model not found", ...) routinely occur in code an agent edits;
+# matching those in stdout misclassified ordinary task failures as
+# rate_limit/auth, corrupting the RL reward signal, firing spurious take_break
+# recovery, and (for auth/invalid_model) tearing down a working agent. So the
+# stdout-safe sets drop every generic token and keep only distinctive phrases.
 _RATE_LIMIT_PATTERNS = (
     "rate limit",
     "rate_limit",
@@ -48,6 +61,7 @@ _RATE_LIMIT_PATTERNS = (
     "retry after",
     "throttl",
 )
+_RATE_LIMIT_STDOUT = ("rate limit", "rate_limit", "too many requests", "retry after")
 _AUTH_PATTERNS = (
     "unauthorized",
     "401",
@@ -68,7 +82,28 @@ _AUTH_PATTERNS = (
     "lacks access to repository",
     "cannot access repository metadata",
 )
+# Drops the short generic tokens ("401"/"403"/"unauthorized"/"forbidden"/
+# "authentication") that appear in code; keeps the distinctive gh/git access
+# strings an agent echoes from a real `gh` tool failure.
+_AUTH_STDOUT = (
+    "invalid api key",
+    "bad credentials",
+    "irrecoverable github access failure",
+    "github connector returned 404",
+    "connector repo 404",
+    "could not resolve to a repository with the name",
+    "could not resolve to a repository",
+    "repository/pr is not accessible",
+    "not found/could not resolve repository",
+    "repository is not resolvable to this token",
+    "not resolvable to this token/session",
+    "lacks access to repository",
+    "cannot access repository metadata",
+)
 _TIMEOUT_PATTERNS = ("timeout", "timed out", "deadline exceeded", "context deadline")
+# All timeout tokens are common in source code/test names — none are safe to
+# match against the work product.
+_TIMEOUT_STDOUT: tuple[str, ...] = ()
 _INVALID_MODEL_PATTERNS = (
     "modelnotfounderror",
     "model not found",
@@ -77,6 +112,13 @@ _INVALID_MODEL_PATTERNS = (
     "not found or is not supported",
     "not supported when using codex with a chatgpt account",
     "invalid_request_error",
+)
+# Keep only the distinctive Codex CLI phrasings it prints to stdout; drop the
+# generic "model not found"/"requested entity..."/"invalid_request_error" that
+# can appear in code an agent writes (invalid_model triggers agent teardown).
+_INVALID_MODEL_STDOUT = (
+    "not found or is not supported",
+    "not supported when using codex with a chatgpt account",
 )
 # Codex CLI internal error: its rollout-recording layer references a session
 # thread id it can't find on disk. desktop-yxlj observed one occurrence in
@@ -105,21 +147,34 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> str:
     Returns one of ``"rate_limit"``, ``"auth"``, ``"timeout"``,
     ``"invalid_model"``, ``"codex_rollout"``, ``"crash_oom"``,
     ``"crash_signal"``, or ``"unknown"``.
-    Inspects both *stderr* and the trailing 1 000 chars of *stdout* because some
-    CLIs (notably Claude Code) exit with code 1 on rate limits without writing
-    anything to stderr. ``rc`` is inspected for signal deaths last, after the
-    content classifiers, so an explicit rate-limit/auth/timeout message still
-    wins over the raw return code.
+
+    *stderr* is matched against the full pattern set; the trailing 1 000 chars
+    of *stdout* are matched only against each category's high-precision
+    stdout-safe subset (#19). stdout is inspected at all because some CLIs
+    (notably Claude Code) report quota exhaustion on stdout with nothing on
+    stderr, and `gh`/`git` tool failures surface in the agent's stdout JSONL —
+    but stdout is also the coding agent's work product, so matching generic
+    tokens there misclassified ordinary task failures (e.g. a failed file edit)
+    as rate_limit/auth. ``rc`` is inspected for signal deaths last, so an
+    explicit content message still wins over the raw return code.
     """
-    combined = (stderr + stdout[-1000:]).lower()
-    if any(p in combined for p in _RATE_LIMIT_PATTERNS):
+    err = stderr.lower()
+    out = stdout[-1000:].lower()
+
+    def hit(stderr_patterns: tuple[str, ...], stdout_patterns: tuple[str, ...]) -> bool:
+        return any(p in err for p in stderr_patterns) or any(p in out for p in stdout_patterns)
+
+    if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
         return "rate_limit"
-    if any(p in combined for p in _AUTH_PATTERNS):
+    if hit(_AUTH_PATTERNS, _AUTH_STDOUT):
         return "auth"
-    if any(p in combined for p in _TIMEOUT_PATTERNS):
+    if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
         return "timeout"
-    if any(p in combined for p in _INVALID_MODEL_PATTERNS):
+    if hit(_INVALID_MODEL_PATTERNS, _INVALID_MODEL_STDOUT):
         return "invalid_model"
+    # codex_rollout + OOM signatures are distinctive enough to match in either
+    # stream (an OOM "Out of memory" notice legitimately lands on stdout).
+    combined = err + out
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
         return "codex_rollout"
     if any(p in combined for p in _OOM_PATTERNS):
