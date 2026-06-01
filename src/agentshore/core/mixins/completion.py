@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import re
 from typing import TYPE_CHECKING
@@ -20,12 +19,9 @@ from agentshore.core.helpers import (
 )
 from agentshore.data.store import PlayRecord, PullRequestRecord
 from agentshore.github.labels import (
-    DEBUG_TRIGGER_LABELS,
-    ISSUE_PICKUP_SKIP_LABELS,
     MANUAL_REQUIRED_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
 )
-from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.state import AgentStatus, PlayType
@@ -49,17 +45,6 @@ if TYPE_CHECKING:
         StateProvider,
     )
 
-
-_PROMOTABLE_REQUEST_PLAYS: frozenset[str] = frozenset(
-    {
-        "code_review",
-        "run_qa",
-        "browser_verification",
-        "systematic_debugging",
-        "merge_pr",
-        "unblock_pr",
-    }
-)
 
 DEFAULT_LEARNING_CONFIDENCE = 0.5
 
@@ -457,9 +442,6 @@ class _CompletionMixin(_OrchestratorBase):
             # so the no-op-spin check is invoked HERE — this is the exact path the
             # write_impl↔reconcile spin lived on.
             self._recent_play_outcomes.append((True, completed_play_type.value))
-            await self._safe_call(
-                self._promote_request_play_mutations(), "promote_request_play_mutations"
-            )
             post_state = await self._build_state()
             await self._safe_call(
                 self._state_provider.on_state_update(post_state), "on_state_update_post"
@@ -746,11 +728,6 @@ class _CompletionMixin(_OrchestratorBase):
             await self._safe_call(
                 self._persist_alignment_scores(outcome), "persist_alignment_scores"
             )
-
-        # Promote any request_play mutations deposited by the completed play
-        await self._safe_call(
-            self._promote_request_play_mutations(), "promote_request_play_mutations"
-        )
 
         # Refresh issue cache after plays that modify issues. QA and design
         # audit can create follow-up issues even if their play result is
@@ -1096,128 +1073,6 @@ class _CompletionMixin(_OrchestratorBase):
         if changed:
             await asyncio.to_thread(save_atomic, learnings_path, entries)
 
-    async def _promote_request_play_mutations(self) -> None:
-        """Promote pending request_play mutations to the override queue.
-
-        After every play completes, agents may have deposited request_play
-        mutations in external_mutations. This method promotes eligible ones to
-        _override_queue so the requested play actually fires next tick.
-        """
-        pending = await self._store.list_pending_request_play_mutations(self._session_id)
-        for mutation in pending:
-            try:
-                request = json.loads(mutation.request_json or "{}")
-            except json.JSONDecodeError:
-                _logger.warning(
-                    "request_play_mutation_parse_error",
-                    idempotency_key=mutation.idempotency_key,
-                )
-                await self._store.update_external_mutation_status(
-                    self._session_id,
-                    mutation.idempotency_key,
-                    "invalid",
-                    json.dumps({"error": "invalid request_play JSON"}),
-                )
-                continue
-
-            play_name = request.get("play", "")
-            if play_name not in _PROMOTABLE_REQUEST_PLAYS:
-                _logger.debug(
-                    "request_play_mutation_not_promotable",
-                    play=play_name,
-                    idempotency_key=mutation.idempotency_key,
-                )
-                await self._store.update_external_mutation_status(
-                    self._session_id,
-                    mutation.idempotency_key,
-                    "ignored",
-                    json.dumps({"error": "play is not promotable", "play": play_name}),
-                )
-                continue
-
-            try:
-                play_type = PlayType(play_name)
-            except ValueError:
-                _logger.warning(
-                    "request_play_mutation_unknown_play",
-                    play=play_name,
-                    idempotency_key=mutation.idempotency_key,
-                )
-                await self._store.update_external_mutation_status(
-                    self._session_id,
-                    mutation.idempotency_key,
-                    "invalid",
-                    json.dumps({"error": "unknown play", "play": play_name}),
-                )
-                continue
-
-            params = PlayParams(
-                pr_number=request.get("pr"),
-                issue_number=request.get("issue"),
-                branch=request.get("branch") or "",
-            )
-            resource_keys = await self._resource_keys_for_request_play(play_type, params)
-            if not resource_keys:
-                await self._store.update_external_mutation_status(
-                    self._session_id,
-                    mutation.idempotency_key,
-                    "invalid",
-                    json.dumps({"error": "missing or stale request_play target"}),
-                )
-                continue
-
-            claim_group_id = await self._store.claim_request_play_mutation(
-                self._session_id,
-                mutation.idempotency_key,
-                play_type.value,
-                resource_keys,
-            )
-            if claim_group_id is None:
-                active = await self._store.find_active_work_claims(self._session_id, resource_keys)
-                await self._store.update_external_mutation_status(
-                    self._session_id,
-                    mutation.idempotency_key,
-                    "duplicate" if active else "blocked",
-                    json.dumps(
-                        {
-                            "resource_keys": resource_keys,
-                            "active_claims": [
-                                {
-                                    "claim_group_id": claim.claim_group_id,
-                                    "play_type": claim.play_type,
-                                    "resource_key": claim.resource_key,
-                                    "status": claim.status,
-                                }
-                                for claim in active
-                            ],
-                        }
-                    ),
-                )
-                continue
-
-            params = dataclasses.replace(
-                params,
-                extras={
-                    **params.extras,
-                    "claim_group_id": claim_group_id,
-                    "resource_keys": resource_keys,
-                    "request_mutation_key": mutation.idempotency_key,
-                },
-            )
-            self._override_queue.put_nowait(
-                OverrideEntry(
-                    play_type=play_type,
-                    params=params,
-                    kind=OverrideKind.USER_REQUEST,
-                )
-            )
-            _logger.info(
-                "request_play_mutation_promoted",
-                play=play_name,
-                pr=request.get("pr"),
-                idempotency_key=mutation.idempotency_key,
-            )
-
     async def _check_no_forward_progress(
         self, state: OrchestratorState, outcome: PlayOutcome
     ) -> None:
@@ -1267,73 +1122,6 @@ class _CompletionMixin(_OrchestratorBase):
         self._natural_exit_reason = "no_forward_progress"
         self._drain_reason = "no_forward_progress"
         await self.begin_drain("no_forward_progress")
-
-    async def _resource_keys_for_request_play(
-        self, play_type: PlayType, params: PlayParams
-    ) -> list[str]:
-        """Return canonical claim keys for a requested play, or [] for stale input."""
-        if play_type in {PlayType.CODE_REVIEW, PlayType.UNBLOCK_PR, PlayType.MERGE_PR}:
-            if not isinstance(params.pr_number, int):
-                return []
-            pr = await self._store.get_pull_request(self._session_id, params.pr_number)
-            if pr is not None and str(pr.state).lower() != "open":
-                return []
-            keys = [f"pr:{params.pr_number}"]
-            if pr is not None:
-                keys.extend(f"issue:{issue_number}" for issue_number in issue_numbers_for_pr(pr))
-            elif isinstance(params.issue_number, int):
-                keys.append(f"issue:{params.issue_number}")
-            return keys
-
-        if play_type in {
-            PlayType.ISSUE_PICKUP,
-            PlayType.WRITE_IMPLEMENTATION_PLAN,
-            PlayType.REFINE_TASK_BREAKDOWN,
-        }:
-            if not isinstance(params.issue_number, int):
-                return []
-            issue = await self._store.get_github_issue(params.issue_number, self._session_id)
-            if issue is not None and str(issue.state).upper() != "OPEN":
-                return []
-            return [f"issue:{params.issue_number}"]
-
-        if play_type == PlayType.SYSTEMATIC_DEBUGGING:
-            if isinstance(params.issue_number, int):
-                issue = await self._store.get_github_issue(params.issue_number, self._session_id)
-                if issue is None or str(issue.state).upper() != "OPEN":
-                    return []
-                prs = await self._store.list_active_pull_requests(self._session_id)
-                if any(
-                    params.issue_number in issue_numbers_for_pr(pr)
-                    and str(pr.state).upper() == "OPEN"
-                    for pr in prs
-                ):
-                    return []
-                labels = set(issue.labels)
-                # Overlay the label shadow (desktop-quv9): the cached issue
-                # may not yet reflect a freshly-applied root_cause label, so
-                # consult the in-memory shadow before deciding to claim.
-                for shadow_issue, shadow_label in self._recent_applied_labels:
-                    if shadow_issue == params.issue_number:
-                        labels.add(shadow_label)
-                if (
-                    not (DEBUG_TRIGGER_LABELS & labels)
-                    or ROOT_CAUSE_FOUND_LABEL in labels
-                    or ISSUE_PICKUP_SKIP_LABELS & labels
-                ):
-                    return []
-                return [f"issue:{params.issue_number}"]
-            if params.branch:
-                return [f"branch:{params.branch}"]
-            return [f"session:{play_type.value}"]
-
-        if play_type == PlayType.BROWSER_VERIFICATION:
-            return [f"branch:{params.branch}"] if params.branch else []
-
-        if play_type == PlayType.RUN_QA:
-            return [f"session:{play_type.value}"]
-
-        return []
 
     async def _refresh_issues(
         self,

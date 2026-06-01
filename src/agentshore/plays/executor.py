@@ -1123,6 +1123,12 @@ class PlayExecutor:
                 await self._apply_issue_labels(issue_number, labels, key)
                 applied_labels.update((issue_number, label) for label in labels)
                 continue
+            # ``request_play`` was an agent-driven "run this play next" directive
+            # that bypassed PPO selection; the mechanism has been removed, so any
+            # such emission is ignored (never recorded, never promoted). The PPO
+            # policy chooses the next play from the post-completion state instead.
+            if str(mut.get("type", "")) == "request_play":
+                continue
             await self._store.record_external_mutation(
                 ExternalMutationRecord(
                     session_id=self._session_id,
