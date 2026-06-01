@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from agentshore.plays.candidates import build_candidate_plan
 from agentshore.plays.skill_backed.base import SkillBackedPlay
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
+from agentshore.plays.skill_backed.gates import CapabilityGate
 from agentshore.state import PlayType
-
-if TYPE_CHECKING:
-    from agentshore.state import OrchestratorState
 
 
 class WriteImplementationPlanPlay(SkillBackedPlay):
-    """Write a concrete implementation plan for an issue before coding."""
+    """Write a concrete implementation plan for an issue before coding.
+
+    Candidate validity ("is there an open, uncovered issue to plan?") lives in
+    ``EligibilityAuthority._VALIDITY_FNS`` for ``WRITE_IMPLEMENTATION_PLAN`` and
+    is appended by the base ``preconditions`` adapter. This play only declares
+    the capability gate.
+    """
+
+    gates = (CapabilityGate("can_implement"),)
 
     @property
     def play_type(self) -> PlayType:
@@ -27,29 +29,3 @@ class WriteImplementationPlanPlay(SkillBackedPlay):
     @property
     def capability(self) -> str | None:
         return "can_implement"
-
-    def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        issues: list[MaskReason] = []
-        if not any(issue.state.upper() == "OPEN" for issue in state.open_issues):
-            issues.append(
-                MaskReason(
-                    text="no open issues available to plan",
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.PRECONDITION,
-                )
-            )
-        issues += self._capability_check(state)
-
-        if not build_candidate_plan(state).candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN):
-            issues.append(
-                MaskReason(
-                    text=(
-                        "no eligible issue for write_implementation_plan"
-                        " (all covered by open PR, in-flight, or labeled out)"
-                    ),
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
-            )
-
-        return issues

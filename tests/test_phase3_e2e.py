@@ -81,6 +81,15 @@ def _mock_metrics(store: object, session_id: str) -> MagicMock:
 def _mock_registry() -> MagicMock:
     reg = MagicMock()
     reg.preconditions_met.return_value = True
+    # Eligibility refactor: the EligibilityAuthority reads validity via
+    # registry.get(pt).preconditions(state) and play.capability, not via
+    # preconditions_met. Return a play stub with no unmet preconditions (empty
+    # list) and capability=None (internal play → agent-eligibility gate
+    # bypassed) so every action stays selectable.
+    play_stub = MagicMock()
+    play_stub.preconditions.return_value = []
+    play_stub.capability = None
+    reg.get.return_value = play_stub
     return reg
 
 

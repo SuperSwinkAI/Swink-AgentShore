@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.plays.candidates import pr_unblockable
 from agentshore.plays.skill_backed.base import SkillBackedPlay
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
+from agentshore.plays.skill_backed.gates import CapabilityGate
 from agentshore.state import PlayType
 
 if TYPE_CHECKING:
@@ -15,7 +14,15 @@ if TYPE_CHECKING:
 
 
 class UnblockPrPlay(SkillBackedPlay):
-    """Resolve merge conflicts, review feedback, CI failures, and block labels on an open PR."""
+    """Resolve merge conflicts, review feedback, CI failures, and block labels on an open PR.
+
+    Candidate validity ("is there a blocked, not-in-flight open PR to
+    unblock?") lives in ``EligibilityAuthority._VALIDITY_FNS`` for
+    ``UNBLOCK_PR`` and is appended by the base ``preconditions`` adapter. This
+    play only declares the capability gate.
+    """
+
+    gates = (CapabilityGate("can_implement"),)
 
     @property
     def play_type(self) -> PlayType:
@@ -28,42 +35,6 @@ class UnblockPrPlay(SkillBackedPlay):
     @property
     def capability(self) -> str | None:
         return "can_implement"
-
-    def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        issues = self._capability_check(state)
-        if issues:
-            return issues
-        in_flight_pr_numbers: set[int] = {
-            s.current_play_pr_number
-            for s in state.agents
-            if s.current_play_type == PlayType.UNBLOCK_PR and s.current_play_pr_number is not None
-        }
-        available_blocked = [
-            pr
-            for pr in state.pull_requests
-            if pr_unblockable(pr) and pr.pr_number not in in_flight_pr_numbers
-        ]
-        if not available_blocked:
-            in_flight_count = len(in_flight_pr_numbers)
-            if in_flight_count:
-                return [
-                    MaskReason(
-                        text=f"all blocked PRs already in flight ({in_flight_count} being worked)",
-                        classification=MaskClassification.TRANSIENT,
-                        source=MaskSource.PRECONDITION,
-                    )
-                ]
-            return [
-                MaskReason(
-                    text=(
-                        "no blocked PRs (no open PR with merge conflicts, "
-                        "CI failures, or block labels)"
-                    ),
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
-            ]
-        return []
 
     async def execute(
         self,

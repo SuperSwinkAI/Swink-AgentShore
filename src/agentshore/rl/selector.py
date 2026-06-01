@@ -18,12 +18,14 @@ from typing import TYPE_CHECKING, Protocol, cast
 import structlog
 import torch
 
+from agentshore.beads import load_graph
 from agentshore.config.models import PolicyMode
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, POLICY_VERSION, V1_ACTION_ORDER
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
+from agentshore.rl.eligibility import EligibilityAuthority
 from agentshore.rl.experience import RolloutBuffer, Step
 from agentshore.rl.mask import (
     TerminalNoWorkDecision,
@@ -35,6 +37,7 @@ from agentshore.rl.mask import (
     compute_terminal_no_work_decision,
     reverse_failsafe_should_unmask,
 )
+from agentshore.rl.mask_reason import MaskReason
 from agentshore.rl.observation import encode_observation
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.training import PPOUpdater, UpdateStats
@@ -47,12 +50,14 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
+    from agentshore.beads import ProjectGraph
     from agentshore.config import RLConfig
     from agentshore.config.models import RuntimeConfig
     from agentshore.data.store import DataStore
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.resolver import ParameterResolver
     from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import OrchestratorState
 
@@ -263,6 +268,12 @@ class PPOSelector:
         self._config_index = config_index
         self._pending: _PendingStep | None = None
         self._no_available_play_ticks: int = 0
+        # Confirm-repick telemetry. Counts the confirm-rejection clean re-picks
+        # that occurred during the most recent ``select()`` call. The orchestrator
+        # drains this via ``consume_repick_count()`` once per selection cycle and
+        # folds it into the rolling divergence window that feeds observation slot
+        # ``executor_skip_rate_recent_50``. Reset at the top of every ``select()``.
+        self._last_select_repick_count: int = 0
         # Snapshot of global weights at last reload — used to compute the
         # gradient delta for concurrent-safe global canonical updates.
         self._reload_base: dict[str, torch.Tensor] | None = None
@@ -272,6 +283,9 @@ class PPOSelector:
     # ------------------------------------------------------------------
 
     async def select(self, state: OrchestratorState) -> tuple[PlayType, PlayParams] | None:
+        # Fresh confirm-repick tally for this selection cycle (drained by the
+        # orchestrator into the executor_skip_rate_recent_50 window).
+        self._last_select_repick_count = 0
 
         ctx = await self._metrics.snapshot(state)
         obs = encode_observation(state, ctx, config_index=self._config_index)
@@ -319,11 +333,30 @@ class PPOSelector:
             self._log_all_masked(state)
             return None
 
+        # Single source of truth for play validity. Built from the snapshot-only
+        # candidate plan we already computed above; confirm() does the one live
+        # read (a fresh beads-graph reload) against the *resolved* target after
+        # the resolver has picked and claimed it.
+        live_loader = self._build_live_graph_loader()
+        authority = EligibilityAuthority(
+            state,
+            self._registry,
+            cfg=self._orchestrator_cfg,
+            config_index=self._config_index or None,
+            candidate_plan=candidate_plan,
+            live_graph_loader=live_loader,
+        )
+
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         remaining_mask = mask.copy()
-        max_attempts = NUM_ACTIONS if reverse_failsafe else 4
+        # Every non-returning iteration masks its sampled action (resolve-None,
+        # confirm-reject, failsafe-retry all set remaining_mask[action]=False), so
+        # the loop is self-bounded by the number of valid actions. Cap at
+        # NUM_ACTIONS so a run of clean re-picks keeps trying the remaining valid
+        # plays instead of idling early — it can never livelock.
+        max_attempts = NUM_ACTIONS
         attempted_plays: list[str] = []
-        for attempt in range(max_attempts):  # normal: 1 initial + 3 retries
+        for attempt in range(max_attempts):
             if not remaining_mask.any():
                 self._log_resolver_exhausted(
                     state,
@@ -389,55 +422,98 @@ class PPOSelector:
                         agents=len(state.agents),
                     )
 
+            # Resolve + claim FIRST: the resolver picks the concrete target and
+            # acquires its work-claim (the atomic CAS that detects a lost race).
             params = await self._resolver.resolve(
                 play_type, state, config_index_override=config_override
             )
             if params is None and reverse_failsafe and play_type == PlayType.END_AGENT:
                 params = self._resolve_reverse_failsafe_end_agent(state)
-            if params is not None:
-                if terminal_no_work is not None and play_type in (
-                    PlayType.INSTANTIATE_AGENT,
-                    PlayType.RUN_QA,
-                ):
-                    params = replace(
-                        params,
-                        bypass_preconditions=True,
-                        extras={
-                            **params.extras,
-                            "terminal_no_work": True,
-                            "terminal_no_work_mode": terminal_no_work.mode,
-                        },
-                    )
-                if reverse_failsafe:
-                    params = self._prepare_reverse_failsafe_params(play_type, params, state)
-                    if params is None:
-                        remaining_mask[action] = False
-                        _logger.debug(
-                            "ppo_selector.reverse_failsafe_precondition_retry",
-                            play_type=play_type.value,
-                            attempt=attempt,
-                        )
-                        continue
-                self._pending = _PendingStep(
-                    obs=obs,
-                    action=action,
-                    log_prob=log_prob,
-                    value=value,
-                    mask=mask,
-                    config_action=cfg_action,
-                    config_log_prob=cfg_log_prob,
-                    config_mask=cfg_mask_arr,
-                )
-                self._no_available_play_ticks = 0
-                return play_type, params
 
-            # Resolver failed — re-mask this action and retry
-            remaining_mask[action] = False
-            _logger.debug(
-                "ppo_selector.resolver_retry",
-                play_type=play_type.value,
-                attempt=attempt,
+            if params is None:
+                # No claimable target (pool drained or the claim CAS was lost to
+                # a sibling). Clean re-pick: re-mask + resample, no self._pending,
+                # no plays-table skip row, no RL experience sample. (The confirm-
+                # repick counter tracks live-confirm rejections specifically, so a
+                # lost CAS is logged but not counted there.)
+                remaining_mask[action] = False
+                self._log_clean_repick(
+                    "claim_lost_repick",
+                    play_type=play_type,
+                    attempt=attempt,
+                    reason=None,
+                )
+                # No early break: a clean re-pick masks this action, so the loop
+                # is bounded by remaining_mask / max_attempts. Breaking on a small
+                # budget could idle (None) while other valid actions remain.
+                continue
+
+            if terminal_no_work is not None and play_type in (
+                PlayType.INSTANTIATE_AGENT,
+                PlayType.RUN_QA,
+            ):
+                params = replace(
+                    params,
+                    bypass_preconditions=True,
+                    extras={
+                        **params.extras,
+                        "terminal_no_work": True,
+                        "terminal_no_work_mode": terminal_no_work.mode,
+                    },
+                )
+            if reverse_failsafe:
+                rf_params = self._prepare_reverse_failsafe_params(play_type, params, state)
+                if rf_params is None:
+                    # The failsafe-precondition retry discards this candidate, so
+                    # release the work-claim resolve() just acquired before we
+                    # drop the params handle — otherwise the resource leaks held.
+                    await self._resolver.release_claim(state, params)
+                    remaining_mask[action] = False
+                    _logger.debug(
+                        "ppo_selector.reverse_failsafe_precondition_retry",
+                        play_type=play_type.value,
+                        attempt=attempt,
+                    )
+                    continue
+                params = rf_params
+
+            # Live confirm the RESOLVED target before committing to dispatch. One
+            # live read (fresh beads-graph reload) decides whether the specific
+            # issue/PR we just claimed is still valid — catching a sibling that
+            # flipped its bead in_progress between selection and now. A rejection
+            # is pure drift: release the claim we took and cleanly re-pick (no
+            # self._pending, no skip row, no RL sample).
+            #
+            # Reverse failsafe is the explicit escape hatch that DELIBERATELY
+            # lifts the A-type validity gates to break an all-masked deadlock, so
+            # confirm is bypassed while it's active (the failsafe params already
+            # carry the precondition-bypass contract downstream).
+            if not reverse_failsafe and not params.bypass_preconditions:
+                decision = await authority.confirm(play_type, params, state)
+                if not decision.valid:
+                    await self._resolver.release_claim(state, params)
+                    remaining_mask[action] = False
+                    self._last_select_repick_count += 1
+                    self._log_clean_repick(
+                        "confirm_repick",
+                        play_type=play_type,
+                        attempt=attempt,
+                        reason=decision.reason,
+                    )
+                    continue
+
+            self._pending = _PendingStep(
+                obs=obs,
+                action=action,
+                log_prob=log_prob,
+                value=value,
+                mask=mask,
+                config_action=cfg_action,
+                config_log_prob=cfg_log_prob,
+                config_mask=cfg_mask_arr,
             )
+            self._no_available_play_ticks = 0
+            return play_type, params
 
         self._log_resolver_exhausted(
             state,
@@ -448,6 +524,51 @@ class PPOSelector:
             candidate_plan=candidate_plan,
         )
         return None
+
+    def _build_live_graph_loader(self) -> LiveGraphLoader | None:
+        """Build the one live read confirm() may perform: a beads-graph reload.
+
+        Bound to the resolver's repo path. Returns None when no path is
+        available (tests / non-beads sessions), in which case confirm() falls
+        back to the snapshot — still correct, just without fresh-beads drift
+        detection.
+        """
+        project_path = getattr(self._resolver, "project_path", None)
+        if project_path is None:
+            return None
+
+        async def _load() -> ProjectGraph | None:
+            return await load_graph(project_path)
+
+        return _load
+
+    def _log_clean_repick(
+        self,
+        event: str,
+        *,
+        play_type: PlayType,
+        attempt: int,
+        reason: MaskReason | None,
+    ) -> None:
+        """Structured log for a clean re-pick (confirm rejection or lost claim).
+
+        A clean re-pick re-masks the action and resamples; it contributes zero
+        RL steps (no self._pending) and is never a plays-table skip row.
+        """
+        # ``reason`` is typed ``MaskReason | None``; guard against a malformed
+        # non-typed reason leaking through so a clean re-pick can never crash the
+        # selector (the re-pick must stay a pure resample, not raise).
+        classification = (
+            reason.classification.value if isinstance(reason, MaskReason) else None
+        )
+        _logger.info(
+            f"ppo_selector.{event}",
+            play_type=play_type.value,
+            attempt=attempt,
+            reason=str(reason) if reason is not None else None,
+            reason_classification=classification,
+            repicks_this_cycle=self._last_select_repick_count,
+        )
 
     def _auto_reverse_failsafe_should_unmask(
         self,
@@ -744,6 +865,19 @@ class PPOSelector:
         p = self._pending
         self._pending = None
         return p
+
+    def consume_repick_count(self) -> int:
+        """Return and clear the confirm-repick count from the last ``select()`` call.
+
+        A confirm-repick is a clean re-pick triggered when the EligibilityAuthority's
+        one live ``confirm`` rejected a snapshot-eligible play (live drift). The
+        orchestrator drains this once per selection cycle and folds it into the
+        rolling window that feeds observation slot ``executor_skip_rate_recent_50``.
+        Read-and-clear so a cycle with no ``select()`` call reports zero.
+        """
+        n = self._last_select_repick_count
+        self._last_select_repick_count = 0
+        return n
 
     # ------------------------------------------------------------------
     # Update / checkpoint scheduling
