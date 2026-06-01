@@ -61,25 +61,24 @@ def identity(project: str, reconfigure: bool) -> None:
         )
         return
 
-    from agentshore.agents.identity import report_identities, report_identity_repo_access
-    from agentshore.cli_identity import echo_identity_report
+    from agentshore.agents.identity import (
+        bad_identity_rows,
+        report_identities,
+        report_identity_repo_access,
+    )
+    from agentshore.cli_identity import echo_identity_report, echo_repo_access_report
     from agentshore.config import load_config
 
     cfg = load_config(cfg_path)
     rows = report_identities(cfg)
     echo_identity_report(rows)
     # Exit 1 if any configured identity failed to resolve.
-    bad = [
-        r
-        for r in rows
-        if r.identity_name is not None
-        and r.token_source not in {"ambient", "none"}
-        and not r.token_valid
-    ]
-    if bad:
+    if bad_identity_rows(rows):
         raise SystemExit(1)
 
     repo_access_rows = report_identity_repo_access(cfg, project_path)
-    _cli_pkg._echo_repo_access_rows(repo_access_rows)
+    if repo_access_rows:
+        click.echo()
+        echo_repo_access_report(repo_access_rows)
     if any(not row.ok for row in repo_access_rows):
         raise SystemExit(1)

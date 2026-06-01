@@ -33,12 +33,19 @@ from agentshore.identity_names import (
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 
 _logger = get_logger(__name__)
 
 _SOURCE_NONE = "none"
 _SOURCE_ENV = "env"
+_SOURCE_AMBIENT = "ambient"
+_SOURCE_GH_LOGIN = "gh_login"
+# Token sources that carry no per-identity secret and therefore can never be
+# "configured but failed validation" — they inherit ambient gh auth instead.
+_NEUTRAL_TOKEN_SOURCES = frozenset({_SOURCE_AMBIENT, _SOURCE_NONE})
 _REPO_ACCESS_TIMEOUT_SECONDS = 10
 
 
@@ -692,6 +699,40 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
             )
         )
     return rows
+
+
+def bad_identity_rows(rows: Iterable[IdentityStatus]) -> list[IdentityStatus]:
+    """Return the rows whose configured identity token failed validation.
+
+    A row is "bad" when it binds an explicit identity (``identity_name`` is
+    set) backed by a real per-identity token source (i.e. not the neutral
+    ``ambient``/``none`` sources, which inherit ambient gh auth) yet the token
+    did not validate. This is the single canonical statement of the
+    identity-health rule shared by ``agentshore start``, ``agentshore
+    identity``, and the wizard post-report.
+    """
+    return [
+        r
+        for r in rows
+        if r.identity_name is not None
+        and r.token_source not in _NEUTRAL_TOKEN_SOURCES
+        and not r.token_valid
+    ]
+
+
+def missing_token_rows(rows: Iterable[IdentityStatus]) -> list[IdentityStatus]:
+    """Return the bad rows whose token simply never resolved (vs. invalid).
+
+    A subset of :func:`bad_identity_rows`: the identity is configured to read
+    its token from an env var or ``gh`` login but no token was produced at all,
+    so the fix is "set it up" rather than "rotate an invalid token". Used to
+    emit ``export``/``gh auth login`` hints in the wizard post-report.
+    """
+    return [
+        r
+        for r in bad_identity_rows(rows)
+        if not r.token_resolved and r.token_source in {_SOURCE_ENV, _SOURCE_GH_LOGIN}
+    ]
 
 
 def report_identity_repo_access(cfg: RuntimeConfig, project_path: Path) -> list[RepoAccessStatus]:
