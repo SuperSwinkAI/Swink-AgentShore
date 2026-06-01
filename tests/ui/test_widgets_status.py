@@ -384,7 +384,7 @@ async def test_alert_bar_show_loop_renders_escalation() -> None:
         w = pilot.app.query_one(AlertBar)
         w.show_loop("Issue Pickup", 7)
         await pilot.pause()
-        assert "LOOP DETECTED — Issue Pickup failed 7x — [R]evert [O]verride [Q]uit" in w.render()
+        assert "LOOP DETECTED — Issue Pickup failed 7x — [Q]uit or wait for auto-stop" in w.render()
         assert w.display is True
         assert w.has_class("alert--loop")
 

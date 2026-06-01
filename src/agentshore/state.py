@@ -448,6 +448,36 @@ class SessionStatsSnapshot:
     agent_specialization: list[AgentPlaySpecializationSnapshot] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkQueueItem:
+    """An issue together with the pull request (if any) representing its work."""
+
+    issue: IssueSnapshot
+    pr: PullRequestSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkQueueView:
+    """Lifecycle-grouped view of the issue/PR backlog.
+
+    Single source of truth for "what phase is each issue/PR in", computed once
+    per snapshot by :meth:`OrchestratorState.work_queue`. UI consumers (the
+    issue work-queue screen and the dashboard summary widget) are pure
+    formatters over this view rather than reimplementing the grouping.
+
+    ``orphan_review_prs`` holds open PRs with no matching open issue; each entry
+    pairs the PR with whether it is currently queued for review. They are
+    rendered alongside ``in_review`` issues by the work-queue screen.
+    """
+
+    todo: list[WorkQueueItem] = field(default_factory=list)
+    in_progress: list[WorkQueueItem] = field(default_factory=list)
+    in_review: list[WorkQueueItem] = field(default_factory=list)
+    done: list[WorkQueueItem] = field(default_factory=list)
+    orphan_review_prs: list[tuple[PullRequestSnapshot, bool]] = field(default_factory=list)
+    next_issue: IssueSnapshot | None = None
+
+
 @dataclass(slots=True)
 class OrchestratorState:
     """Complete snapshot of the AgentShore session pushed to UI/IPC consumers."""
@@ -544,6 +574,79 @@ class OrchestratorState:
     seed_freshness: int | None = None
     learnings_count: int = 0
     human_feedback_count: int = 0
+
+    def work_queue(self) -> WorkQueueView:
+        """Group issues and PRs into todo / in-progress / in-review / done.
+
+        Lifecycle classification is a property of orchestrator state, not of any
+        renderer; this is the single derivation both the issue work-queue screen
+        and the dashboard summary widget format over.
+        """
+        prs_by_issue: dict[int, PullRequestSnapshot] = {}
+        for pr in self.pull_requests:
+            for issue_number in issue_numbers_for_pr(pr):
+                existing = prs_by_issue.get(issue_number)
+                if existing is None or (existing.state != "open" and pr.state == "open"):
+                    prs_by_issue[issue_number] = pr
+
+        pending_review_prs = {item.pr_number for item in self.pending_review_queue}
+        reviewing_issues = {
+            issue_number
+            for pr in self.pull_requests
+            if pr.state == "open" or pr.pr_number in pending_review_prs
+            for issue_number in issue_numbers_for_pr(pr)
+        }
+        in_progress_issues = {
+            agent.current_play_issue_number
+            for agent in self.agents
+            if agent.current_play_issue_number is not None and agent.current_play_type is not None
+        }
+
+        todo: list[WorkQueueItem] = []
+        in_progress: list[WorkQueueItem] = []
+        in_review: list[WorkQueueItem] = []
+        done: list[WorkQueueItem] = []
+        for issue in self.open_issues:
+            item = WorkQueueItem(issue=issue, pr=prs_by_issue.get(issue.issue_number))
+            if issue.state.lower() == "closed":
+                done.append(item)
+            elif issue.issue_number in in_progress_issues:
+                in_progress.append(item)
+            elif issue.issue_number in reviewing_issues:
+                in_review.append(item)
+            else:
+                todo.append(item)
+
+        known_issue_numbers = {issue.issue_number for issue in self.open_issues}
+        orphan_review_prs: list[tuple[PullRequestSnapshot, bool]] = []
+        for pr in self.pull_requests:
+            if pr.state != "open":
+                continue
+            if known_issue_numbers.intersection(issue_numbers_for_pr(pr)):
+                continue
+            orphan_review_prs.append((pr, pr.pr_number in pending_review_prs))
+
+        open_issues = [issue for issue in self.open_issues if issue.state.lower() == "open"]
+        next_issue = (
+            min(
+                open_issues,
+                key=lambda issue: (
+                    issue.priority if issue.priority is not None else 999,
+                    issue.issue_number,
+                ),
+            )
+            if open_issues
+            else None
+        )
+
+        return WorkQueueView(
+            todo=todo,
+            in_progress=in_progress,
+            in_review=in_review,
+            done=done,
+            orphan_review_prs=orphan_review_prs,
+            next_issue=next_issue,
+        )
 
 
 # ---------------------------------------------------------------------------
