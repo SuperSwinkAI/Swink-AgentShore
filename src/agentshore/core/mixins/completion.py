@@ -446,12 +446,18 @@ class _CompletionMixin(_OrchestratorBase):
                 event_source="executor",
                 error=outcome.error,
             )
-            # Track executor-time masked skips so PPO's observation vector
-            # carries the rolling divergence rate. Other skip categories
-            # (no_target, staffing) don't indicate state divergence.
+            # Track executor-time masked skips as a one-shot diagnostic flag
+            # surfaced in state.recent_executor_skip. The rolling divergence
+            # window that feeds observation slot ``executor_skip_rate_recent_50``
+            # is NO LONGER fed here: post the eligibility refactor the authority
+            # masks invalid plays up front and confirms the selected play with a
+            # live read, so the executor masked-skip path is vestigial. The
+            # divergence signal now counts EligibilityAuthority confirm-repicks,
+            # drained from the selector once per selection cycle (see
+            # ``_record_selection_repicks``). Other skip categories (no_target,
+            # staffing) never indicated state divergence.
             is_masked_skip = outcome.skip_category == "masked"
             self._recent_executor_skip = is_masked_skip
-            self._executor_skip_window.append(is_masked_skip)
             # All-category no-op window for spin detection. The skip path returns
             # early (below) before the loop-detection/stagnation checks ever run,
             # so the no-op-spin check is invoked HERE — this is the exact path the
@@ -477,9 +483,11 @@ class _CompletionMixin(_OrchestratorBase):
         outcome: PlayOutcome,
         completed_play_type: PlayType,
     ) -> None:
-        # Any completed (non-skipped) play clears the executor-skip flag.
+        # Any completed (non-skipped) play clears the executor-skip flag. The
+        # divergence window is fed from selector confirm-repicks (see
+        # ``_record_selection_repicks``), not from play completions, so nothing
+        # is appended here anymore.
         self._recent_executor_skip = False
-        self._executor_skip_window.append(False)
         self._recent_play_outcomes.append((False, completed_play_type.value))
 
         _logger.info(

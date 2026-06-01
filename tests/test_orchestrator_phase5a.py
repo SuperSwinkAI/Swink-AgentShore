@@ -29,6 +29,10 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     mock_selector.should_update = MagicMock(return_value=False)
     mock_selector.should_checkpoint = MagicMock(return_value=False)
     mock_selector.on_play_completed = AsyncMock()
+    # Eligibility refactor: the loop drains confirm-repicks once per cycle via
+    # consume_repick_count(). Return a real int so _record_selection_repicks
+    # doesn't choke on a MagicMock in the ``repicks > 0`` comparison.
+    mock_selector.consume_repick_count = MagicMock(return_value=0)
 
     from types import SimpleNamespace
 

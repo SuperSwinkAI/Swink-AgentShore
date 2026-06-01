@@ -925,6 +925,11 @@ class _LoopMixin(_OrchestratorBase):
         from_override = override_play is not None
 
         selection = await self._select_play(state, override_play=override_play)
+        # Fold this cycle's EligibilityAuthority confirm-repicks into the rolling
+        # divergence window (observation slot executor_skip_rate_recent_50). Drain
+        # once per selection cycle whether or not a play was produced — an
+        # all-repick cycle that yields None is exactly the divergence signal.
+        self._record_selection_repicks()
         if selection is None:
             # Only log once per distinct digest. With the digest gate
             # above, this fires at most once per state transition rather
