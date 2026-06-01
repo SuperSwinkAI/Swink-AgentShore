@@ -24,10 +24,8 @@ from agentshore.agents.worktree import WorktreeManager
 from agentshore.config import AgentConfig
 from agentshore.data.store import AgentRecord
 from agentshore.errors import (
-    AgentAPIError,
     AgentAuthError,
     AgentOutputInvalid,
-    AgentRateLimitError,
     AgentTimeout,
     OrchestratorError,
     PreconditionFailed,
@@ -174,25 +172,12 @@ class AgentManager:
             github_identity=github_login,
         )
 
-        cb_cfg = self._cfg.circuit_breaker
-        self._circuit_breakers[agent_id] = CircuitBreaker(
-            failures=cb_cfg.failures,
-            window_seconds=cb_cfg.window_seconds,
-            cooldown_seconds=cb_cfg.cooldown_seconds,
-        )
-
-        await self._store.register_agent(
-            AgentRecord(
-                agent_id=agent_id,
-                session_id=self._session_id,
-                agent_type=agent_type.value,
-                created_at=datetime.now(UTC).isoformat(),
-                model_tier=handle.model_tier,
-                display_name=handle.display_name,
-            )
-        )
-
-        self._handles[agent_id] = handle
+        # Resolve the identity overlay exactly once and verify repo access
+        # *before* registering the handle into circuit breakers / DataStore /
+        # _handles. On preflight failure we mark the (unregistered) handle ERROR
+        # and return it without leaving a half-constructed agent live in the
+        # manager. On success the validated overlay is cached on the handle so
+        # dispatch() never re-resolves the token or re-runs `gh repo view`.
         if agent_type in _CLI_AGENT_TYPES and ident_name:
             try:
                 identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
@@ -212,6 +197,28 @@ class AgentManager:
                     github_identity=github_login,
                     error=str(exc),
                 )
+                return handle
+            handle.identity_env = identity_env
+
+        cb_cfg = self._cfg.circuit_breaker
+        self._circuit_breakers[agent_id] = CircuitBreaker(
+            failures=cb_cfg.failures,
+            window_seconds=cb_cfg.window_seconds,
+            cooldown_seconds=cb_cfg.cooldown_seconds,
+        )
+
+        await self._store.register_agent(
+            AgentRecord(
+                agent_id=agent_id,
+                session_id=self._session_id,
+                agent_type=agent_type.value,
+                created_at=datetime.now(UTC).isoformat(),
+                model_tier=handle.model_tier,
+                display_name=handle.display_name,
+            )
+        )
+
+        self._handles[agent_id] = handle
         _logger.info(
             "agent_instantiated",
             agent_id=agent_id,
@@ -281,19 +288,19 @@ class AgentManager:
         handle.dispatches += 1
         await self._store.increment_agent_dispatch_count(agent_id)
 
+        # The identity overlay was resolved and repo-access-verified once at
+        # instantiate(); reuse the cached copy rather than re-shelling `gh` on
+        # the dispatch hot path. Copy before adding the per-dispatch
+        # AGENTSHORE_PROJECT_PATH key so the handle's cached overlay stays pristine.
+        identity_env = dict(handle.identity_env)
+        # Inject the canonical absolute project root so skill agents can anchor
+        # `MAIN_REPO` against a value AgentShore controls instead of the
+        # subprocess's pwd (which can be a leftover worktree path). See
+        # agentshore-issue-pickup/SKILL.md and siblings for the
+        # `${AGENTSHORE_PROJECT_PATH:-$(pwd)}` consumer pattern.
+        identity_env["AGENTSHORE_PROJECT_PATH"] = str(self._working_dir.resolve())
+
         try:
-            identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
-            # Inject the canonical absolute project root so skill agents can
-            # anchor `MAIN_REPO` against a value AgentShore controls instead of
-            # the subprocess's pwd (which can be a leftover worktree path).
-            # See agentshore-issue-pickup/SKILL.md and siblings for the
-            # `${AGENTSHORE_PROJECT_PATH:-$(pwd)}` consumer pattern.
-            identity_env["AGENTSHORE_PROJECT_PATH"] = str(self._working_dir.resolve())
-            await asyncio.to_thread(
-                verify_identity_repo_access,
-                self._working_dir,
-                identity_env,
-            )
             on_spawned = None
             if self._on_subprocess_spawned is not None:
                 spawned_cb = self._on_subprocess_spawned
@@ -350,14 +357,8 @@ class AgentManager:
                     timeout_count=handle.timeout_count,
                 )
                 raise
-            if isinstance(exc, (IdentityResolutionError, AgentAuthError)):
-                handle.last_error_class = "auth"
-            elif isinstance(exc, AgentRateLimitError):
-                handle.last_error_class = "rate_limit"
-            elif isinstance(exc, AgentOutputInvalid):
+            if isinstance(exc, AgentOutputInvalid):
                 handle.last_error_class = "output_invalid"
-            elif isinstance(exc, AgentAPIError):
-                handle.last_error_class = "api"
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
