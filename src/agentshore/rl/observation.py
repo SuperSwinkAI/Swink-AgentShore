@@ -31,7 +31,7 @@ Slot layout (OBSERVATION_DIM=246, OBSERVATION_VERSION=13):
                           directly from this ratio rather than inferring it from
                           slot 56 (raw open-prs count).
   179-244 spec       (66)  3 tiers × 22 plays specialization success rates (0.5 default)
-  245     reserved   ( 1)  version marker = OBSERVATION_VERSION / 12.0
+  245     reserved   ( 1)  version marker = 1.0 (a stable per-version constant)
 
 Tier order is (small, medium, large) — index 0/1/2 — matching `cheapest-first`
 across the tier-fleet block (17-32) and the specialization block (179-244).
@@ -573,6 +573,9 @@ def encode_observation(
             obs[_S_SPEC_BLOCK_START + cell_tier * NUM_ACTIONS + action_idx] = _clamp(rate)
 
     # ---- RESERVED (245) — version marker ----
-    obs[_S_OBS_VERSION] = OBSERVATION_VERSION / 13.0
+    # A stable per-version constant in [0, 1]. Self-normalizing (always 1.0) so
+    # an OBSERVATION_VERSION bump can never feed the policy an out-of-range
+    # marker it never saw in training.
+    obs[_S_OBS_VERSION] = OBSERVATION_VERSION / float(OBSERVATION_VERSION)
 
     return obs
