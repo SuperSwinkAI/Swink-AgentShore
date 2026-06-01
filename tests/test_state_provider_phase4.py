@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +13,7 @@ from agentshore.state import (
     AgentType,
     NullStateProvider,
     OrchestratorState,
+    PlayOutcome,
     PlayType,
     StateProvider,
 )
@@ -95,15 +96,18 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
 
     provider = TrackingProvider()
 
-    mock_outcome = MagicMock()
-    mock_outcome.play_type = PlayType.ISSUE_PICKUP
-    mock_outcome.success = True
-    mock_outcome.partial = False
-    mock_outcome.dollar_cost = 0.01
-    mock_outcome.duration_seconds = 1.0
-    mock_outcome.alignment_delta = 0.1
-    mock_outcome.play_id = 1
-    mock_outcome.inflation_raised = False
+    mock_outcome = PlayOutcome(
+        play_type=PlayType.TAKE_BREAK,
+        agent_id=None,
+        success=True,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=0,
+        dollar_cost=0.01,
+        artifacts=[],
+        alignment_delta=0.1,
+        play_id=1,
+    )
 
     # Selector returns one play then None
     call_count = 0
@@ -122,53 +126,88 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return (PlayType.ISSUE_PICKUP, PlayParams())
+                return (PlayType.TAKE_BREAK, PlayParams())
             return None
 
         async def on_play_completed(self, **kwargs: object) -> None:
             pass
 
-    with (
-        patch("agentshore.core.DataStore") as mock_ds_cls,
-        patch("agentshore.core.AgentManager"),
-        patch("agentshore.core.PlayExecutor") as mock_exec_cls,
-        patch("agentshore.core.build_default_registry", return_value=MagicMock()),
-        patch("agentshore.core.ParameterResolver"),
-        patch("agentshore.skills.install_skills"),
-        patch("agentshore.core.setup_logging"),
-        patch("agentshore.github.adapter.GitHubAdapter"),
-    ):
-        mock_ds = AsyncMock()
-        mock_ds_cls.return_value = mock_ds
-        mock_ds.get_open_issues = AsyncMock(return_value=[])
-        mock_ds.get_play_history = AsyncMock(return_value=[])
-        mock_ds.get_latest_trajectory = AsyncMock(return_value=None)
-        mock_ds.create_session = AsyncMock()
-        mock_ds.complete_session = AsyncMock()
-        mock_ds.close = AsyncMock()
+    class StoreHarness:
+        async def get_open_issues(self, _session_id: str) -> list[object]:
+            return []
 
-        mock_executor = AsyncMock()
-        mock_executor.execute = AsyncMock(return_value=mock_outcome)
-        mock_exec_cls.return_value = mock_executor
+        async def list_recently_closed_issues(self, _session_id: str) -> list[object]:
+            return []
 
-        selector = OneShotSelector()
-        orch = await Orchestrator.bootstrap(
-            cfg=cfg,
-            repo_root=tmp_path,
-            selector=selector,
-            state_provider=provider,
-        )
-        # desktop-mr1i: dispatch reads `_manager.worktrees.main_repo`. The
-        # patched AgentManager leaves `.worktrees` as a MagicMock whose
-        # `main_repo` looks truthy to `_is_git_work_tree`, sending dispatch
-        # down the async allocate path. Wire the AgentManager mock to the
-        # real WorktreeManager bootstrap built (`orch._worktrees`) — its
-        # `main_repo` is the tmp_path which `_is_git_work_tree` correctly
-        # reports as not-a-work-tree, short-circuiting to TrunkAllocation.
-        orch._manager.worktrees = orch._worktrees
+        async def list_active_pull_requests(self, _session_id: str) -> list[object]:
+            return []
 
-        async with orch:
-            await orch.run_until_idle()
+        async def get_play_history(self, _session_id: str) -> list[object]:
+            return []
+
+        async def get_latest_trajectory(self, _session_id: str) -> None:
+            return None
+
+        async def list_pending_reviews(self, _session_id: str) -> list[object]:
+            return []
+
+        async def load_latest_checkpoint(self, _session_id: str) -> None:
+            return None
+
+        async def count_learnings(self, _session_id: str) -> int:
+            return 0
+
+        async def count_human_feedback(self, _session_id: str) -> int:
+            return 0
+
+        async def abandon_work_for_missing_agents(
+            self, _session_id: str, _agent_ids: frozenset[str], *, reason: str
+        ) -> tuple[int, int]:
+            return (0, 0)
+
+        async def find_active_work_claims_for_agents(
+            self, _session_id: str, _agent_ids: set[str]
+        ) -> list[object]:
+            return []
+
+        async def list_pending_request_play_mutations(self, _session_id: str) -> list[object]:
+            return []
+
+        async def record_trajectory_snapshot(self, _record: object) -> None:
+            return None
+
+    class ExecutorHarness:
+        emits_play_started = False
+        inflight_issues: frozenset[int] = frozenset()
+        planned_issues: frozenset[int] = frozenset()
+
+        async def execute(
+            self,
+            _play_type: PlayType,
+            _state: OrchestratorState,
+            *,
+            override: PlayParams,
+        ) -> PlayOutcome:
+            return mock_outcome
+
+    manager = SimpleNamespace(
+        handles={},
+        circuit_breakers={},
+        worktrees=SimpleNamespace(main_repo=tmp_path),
+        _working_dir=tmp_path,
+    )
+    selector = OneShotSelector()
+    orch = Orchestrator(
+        cfg=cfg,
+        repo_root=tmp_path,
+        session_id="state-provider-test",
+        store=StoreHarness(),
+        manager=manager,
+        executor=ExecutorHarness(),
+        selector=selector,
+        state_provider=provider,
+    )
+    await orch.run_until_idle()
 
     # Order: state_update (with current_play set), play_started, then after play:
     # play_completed, state_update (post-completion)

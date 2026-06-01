@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from agentshore.paths import project_db_path, project_dir
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -148,7 +150,7 @@ def collect_orphan_worktree_paths(
     if not listed:
         return []
     active: set[str] = set()
-    db_path = db_path or (project_path / ".agentshore" / "agentshore.db")
+    db_path = db_path or project_db_path(project_path)
     if session_id and db_path.exists():
         try:
             conn = sqlite3.connect(str(db_path))
@@ -181,7 +183,7 @@ def collect_recent_failed_plays(
     to timeout-classified rows. Returns ``[]`` on any error so the
     dispatch never blocks on a stale or missing DB.
     """
-    db_path = db_path or (project_path / ".agentshore" / "agentshore.db")
+    db_path = db_path or project_db_path(project_path)
     if not session_id or not db_path.exists():
         return []
     try:
@@ -268,7 +270,7 @@ def write_session_start_dirty_baseline(
     Errors are swallowed; a missing sidecar degrades RECONCILE_STATE to
     pre-sidecar log-scan behavior, not a startup failure.
     """
-    agentshore_dir = project_path / ".agentshore"
+    agentshore_dir = project_dir(project_path)
     if not agentshore_dir.is_dir():
         return None
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 
 from agentshore.data.models import SessionLearningRecord
 from agentshore.data.store import (
@@ -23,7 +24,7 @@ NOW = "2026-04-27T00:00:00+00:00"
 END = "2026-04-27T01:00:00+00:00"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path):
     db = DataStore(tmp_path / "cmp_test.db")
     await db.initialize()

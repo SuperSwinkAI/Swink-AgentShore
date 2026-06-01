@@ -7,13 +7,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from agentshore import __version__
 from agentshore.archive import Archiver
 from agentshore.data.store import DataStore, SessionRecord
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def setup(tmp_path: Path):
     """Provision a DataStore with a completed session and return test harness objects."""
     db_path = tmp_path / ".agentshore" / "agentshore.db"

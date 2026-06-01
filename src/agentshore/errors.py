@@ -10,6 +10,7 @@ class FailureCategory(StrEnum):
     test_failure = "test_failure"
     alignment_drift = "alignment_drift"
     agent_error = "agent_error"
+    gate_rejection = "gate_rejection"
 
 
 class OrchestratorError(Exception):

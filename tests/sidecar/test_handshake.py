@@ -635,25 +635,6 @@ def test_session_lifecycle_rejects_non_dict_params(method: str) -> None:
     assert notifications == []
 
 
-def test_cancel_request_cancels_inflight_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def slow_handler(_payload: dict[str, object]) -> dict[str, object]:
-        await asyncio.sleep(0.2)
-        return {"ok": True}
-
-    monkeypatch.setitem(METHOD_HANDLERS, "test.slow", slow_handler)
-    payloads = [
-        {"jsonrpc": "2.0", "id": "req-1", "method": "test.slow"},
-        {"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": "req-1"}},
-    ]
-    stdin = io.StringIO("\n".join(json.dumps(p) for p in payloads) + "\n")
-    stdout = io.StringIO()
-    serve(stdin, stdout)
-
-    [reply] = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
-    assert reply["id"] == "req-1"
-    assert reply["error"]["code"] == REQUEST_CANCELLED
-
-
 class _ThrottledStdin:
     """File-like stdin that sleeps before yielding each line after the first.
 
@@ -679,6 +660,29 @@ class _ThrottledStdin:
         line = self._lines[self._idx]
         self._idx += 1
         return line
+
+
+def _serve_payloads(payloads: list[dict[str, object]], *, gap: float = 0.05) -> list[dict]:
+    lines = [json.dumps(payload) + "\n" for payload in payloads]
+    stdin = cast("IO[str]", _ThrottledStdin(lines, gap=gap))
+    stdout = io.StringIO()
+    serve(stdin, stdout)
+    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+
+
+def test_cancel_request_cancels_inflight_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def slow_handler(_payload: dict[str, object]) -> dict[str, object]:
+        await asyncio.sleep(0.2)
+        return {"ok": True}
+
+    monkeypatch.setitem(METHOD_HANDLERS, "test.slow", slow_handler)
+    payloads = [
+        {"jsonrpc": "2.0", "id": "req-1", "method": "test.slow"},
+        {"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": "req-1"}},
+    ]
+    [reply] = _serve_payloads(payloads)
+    assert reply["id"] == "req-1"
+    assert reply["error"]["code"] == REQUEST_CANCELLED
 
 
 def test_cancel_request_of_completed_task_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -730,11 +734,7 @@ def test_cancel_targets_only_the_specified_request(monkeypatch: pytest.MonkeyPat
         {"jsonrpc": "2.0", "id": "drop", "method": "test.slow"},
         {"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": "drop"}},
     ]
-    stdin = io.StringIO("\n".join(json.dumps(p) for p in payloads) + "\n")
-    stdout = io.StringIO()
-    serve(stdin, stdout)
-
-    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    replies = _serve_payloads(payloads)
     by_id = {r["id"]: r for r in replies}
     assert set(by_id) == {"keep", "drop"}
     assert by_id["drop"]["error"]["code"] == REQUEST_CANCELLED
@@ -766,11 +766,7 @@ def test_cancel_request_shaped_with_outer_id_writes_no_response_for_itself(
             "params": {"id": "req-1"},
         },
     ]
-    stdin = io.StringIO("\n".join(json.dumps(p) for p in payloads) + "\n")
-    stdout = io.StringIO()
-    serve(stdin, stdout)
-
-    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    replies = _serve_payloads(payloads)
     assert len(replies) == 1
     assert replies[0]["id"] == "req-1"
     assert replies[0]["error"]["code"] == REQUEST_CANCELLED

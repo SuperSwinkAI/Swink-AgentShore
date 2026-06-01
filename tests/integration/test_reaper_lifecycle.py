@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 
 from agentshore.agents.worktree import WorktreeManager, default_worktree_root
 from agentshore.agents.worktree.registry import insert_worktree, lookup_by_id
@@ -66,7 +67,7 @@ def worktree_root(main_repo: Path) -> Path:
     return root
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path: Path) -> AsyncIterator[DataStore]:
     db_path = tmp_path / "lifecycle.db"
     s = DataStore(db_path)

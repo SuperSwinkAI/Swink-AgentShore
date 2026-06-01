@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 
 from agentshore.data import (
     CheckpointRecord,
@@ -25,7 +26,7 @@ def _ts(offset_seconds: float = 0.0) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path):
     db = DataStore(tmp_path / "test.db")
     await db.initialize()

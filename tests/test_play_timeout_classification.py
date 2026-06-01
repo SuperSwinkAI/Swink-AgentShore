@@ -23,6 +23,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, RuntimeConfig
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 SESSION_ID = "test-session-timeout"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path: Path) -> DataStore:
     s = DataStore(tmp_path / "agentshore.db")
     await s.initialize()

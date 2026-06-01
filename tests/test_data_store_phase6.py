@@ -8,6 +8,7 @@ create_archive, list_archives, get_archive.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 
 from agentshore.data import (
     AgentRecord,
@@ -26,7 +27,7 @@ from agentshore.data import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store(tmp_path):
     db = DataStore(tmp_path / "test.db")
     await db.initialize()
