@@ -129,17 +129,41 @@ class SkillBackedPlay(Play, ABC):
     def capability(self) -> str | None: ...
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        """Walk ``self.gates`` in order, collecting non-None mask reasons.
+        """Walk ``self.gates``, then append authority validity-fn reasons.
 
-        Subclasses with bespoke needs may override this; the recommended
-        pattern is to call ``super().preconditions(state)`` first, then
-        append additional ``MaskReason`` instances.
+        Two layers, in order:
+
+        1. The declarative gates in ``self.gates`` (capability, in-flight,
+           cooldown, warmup, beads-init, …) — policy-adjacent eligibility
+           checks that stay on the play.
+        2. The A-type candidate-validity function registered for this play
+           type in ``EligibilityAuthority`` (``_VALIDITY_FNS``), if any. This
+           is the single source of truth for "is there a concrete target this
+           play could act on right now" — consolidated out of the bespoke
+           ``preconditions()`` overrides that previously lived on each play.
+
+        The authority owns validity; the play owns its gates. Subclasses with
+        bespoke needs may still override this and call
+        ``super().preconditions(state)`` first.
+
+        Imports of ``build_candidate_plan`` / ``EligibilityAuthority`` are
+        lazy to avoid an import cycle (``eligibility`` → ``candidates`` →
+        plays).
         """
         reasons: list[MaskReason] = []
         for gate in self.gates:
             r = gate(state)
             if r is not None:
                 reasons.append(r)
+
+        from agentshore.rl.eligibility import EligibilityAuthority
+
+        validity_fn = EligibilityAuthority.validity_fn_for(self.play_type)
+        if validity_fn is not None:
+            from agentshore.plays.candidates import build_candidate_plan
+
+            reasons.extend(validity_fn(state, build_candidate_plan(state)))
+
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:

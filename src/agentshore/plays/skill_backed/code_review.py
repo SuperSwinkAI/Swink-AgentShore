@@ -8,10 +8,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agentshore.data.models import ReviewFeedbackPatternRecord
-from agentshore.play_rules import needs_review
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import CapabilityGate
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
 # Match the SHA inside a skill error like "already reviewed at <sha>".
@@ -68,6 +66,11 @@ class CodeReviewPlay(SkillBackedPlay):
     Anti-confirmation invariant (first check): the reviewing agent must not be
     the same agent that authored the PR.  A second check is enforced at the
     executor level (defense in depth).
+
+    Candidate validity ("is there a pending review or an unreviewed/stale-review
+    open PR?") lives in ``EligibilityAuthority._VALIDITY_FNS`` for
+    ``CODE_REVIEW`` and is appended by the base ``preconditions`` adapter. This
+    play only declares the capability gate.
     """
 
     gates = (CapabilityGate("can_review"),)
@@ -83,20 +86,6 @@ class CodeReviewPlay(SkillBackedPlay):
     @property
     def capability(self) -> str | None:
         return "can_review"
-
-    def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        has_work = bool(state.pending_review_queue) or any(
-            not pr.is_draft and needs_review(pr) for pr in state.pull_requests
-        )
-        if not has_work:
-            return [
-                MaskReason(
-                    text="no pending reviews and no unreviewed or stale-review open PRs",
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
-            ]
-        return super().preconditions(state)
 
     async def execute(
         self,

@@ -14,11 +14,9 @@ import structlog
 from agentshore.beads import BeadStatus, bd
 from agentshore.command import CommandTimeoutError, run_command
 from agentshore.github.pr_links import infer_pr_issue_links
-from agentshore.plays.candidates import pr_merge_ready
 from agentshore.plays.scope import _PR_BODY_ISSUE_RE
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import CapabilityGate
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayOutcome, PlayType
 
 if TYPE_CHECKING:
@@ -166,7 +164,14 @@ def _validated_issue_set(
 
 
 class MergePRPlay(SkillBackedPlay):
-    """Merge an approved PR through the standard GitHub merge gates."""
+    """Merge an approved PR through the standard GitHub merge gates.
+
+    Candidate validity ("is there a PR approved (GitHub or AgentShore-internal)
+    at the current head_sha, mergeable, and targeting the configured base?")
+    lives in ``EligibilityAuthority._VALIDITY_FNS`` for ``MERGE_PR`` and is
+    appended by the base ``preconditions`` adapter. This play only declares the
+    capability gate.
+    """
 
     gates = (CapabilityGate("can_merge"),)
 
@@ -181,58 +186,6 @@ class MergePRPlay(SkillBackedPlay):
     @property
     def capability(self) -> str | None:
         return "can_merge"
-
-    def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        reasons = super().preconditions(state)
-        if reasons:
-            return reasons
-        # The PR must be (a) approved AND (b) confirmed mergeable by GitHub.
-        # Two approval sources are accepted:
-        #   - GitHub-side: review_decision='APPROVED'
-        #   - AgentShore-internal: last_review_status='PASS' AND last_reviewed_sha == head_sha
-        # Mergeable=None or UNKNOWN means a refresh is pending — treat as not ready.
-        # The resolver uses the same filter so precondition and resolver cannot disagree.
-        mergeable_prs = [
-            pr
-            for pr in state.pull_requests
-            if pr_merge_ready(pr, target_branch=state.target_branch)
-        ]
-        if not mergeable_prs:
-            # Distinguish "base != target" from the generic not-ready case so the
-            # operator can see a wrong-base PR is being deterministically held
-            # back (it will re-qualify once create-side auto-correction retargets
-            # it to the configured target branch).
-            wrong_base = [
-                pr
-                for pr in state.pull_requests
-                if state.target_branch
-                and isinstance(getattr(pr, "base_ref", None), str)
-                and pr.base_ref
-                and pr.base_ref != state.target_branch
-            ]
-            if wrong_base:
-                nums = ", ".join(f"#{pr.pr_number}" for pr in wrong_base)
-                return [
-                    MaskReason(
-                        text=(
-                            f"PR(s) {nums} target a base other than '{state.target_branch}' "
-                            "— held until base is corrected"
-                        ),
-                        classification=MaskClassification.HARD,
-                        source=MaskSource.CANDIDATE,
-                    )
-                ]
-            return [
-                MaskReason(
-                    text=(
-                        "no PR with GitHub or AgentShore approval at current head_sha "
-                        "and mergeable=MERGEABLE (awaiting review or CI)"
-                    ),
-                    classification=MaskClassification.HARD,
-                    source=MaskSource.CANDIDATE,
-                )
-            ]
-        return []
 
     async def execute(
         self,
