@@ -12,14 +12,45 @@ from agentshore.github.pr_links import issue_numbers_for_pr
 if TYPE_CHECKING:
     from agentshore.data.models import PullRequestRecord
 
-_PULL_REQUEST_UPSERT_SQL = """
+# Canonical ordered column list for the ``pull_requests`` table. This is the
+# single source of truth: the upsert below, every SELECT (via ``_PR_SELECT``),
+# the value tuple in ``_pull_request_upsert_row``, and the row mapper
+# ``_row_to_pull_request`` all derive their column set from this tuple. Adding a
+# column is a one-line edit here — the writer/reader disagreement that left
+# ``base_ref`` write-only (missing from the SELECTs and the mapper) is
+# structurally impossible with a single owner.
+_PULL_REQUEST_COLUMNS: tuple[str, ...] = (
+    "pr_number",
+    "session_id",
+    "issue_number",
+    "linked_issue_numbers",
+    "branch",
+    "state",
+    "title",
+    "url",
+    "github_author",
+    "labels",
+    "review_decision",
+    "status_check_summary",
+    "is_draft",
+    "author_agent_id",
+    "author_agent_type",
+    "created_at",
+    "merged_at",
+    "head_sha",
+    "mergeable",
+    "base_ref",
+    "last_reviewed_sha",
+    "last_review_status",
+)
+
+# SELECT prefix shared by every PR read method — appended with WHERE/ORDER BY.
+_PR_SELECT = f"SELECT {', '.join(_PULL_REQUEST_COLUMNS)} FROM pull_requests"
+
+_PULL_REQUEST_UPSERT_SQL = f"""
     INSERT INTO pull_requests
-        (pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-         title, url, github_author, labels, review_decision,
-         status_check_summary, is_draft,
-         author_agent_id, author_agent_type, created_at, merged_at,
-         head_sha, mergeable, base_ref, last_reviewed_sha, last_review_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ({", ".join(_PULL_REQUEST_COLUMNS)})
+    VALUES ({", ".join("?" for _ in _PULL_REQUEST_COLUMNS)})
     ON CONFLICT(pr_number, session_id) DO UPDATE SET
         issue_number = COALESCE(excluded.issue_number, pull_requests.issue_number),
         linked_issue_numbers = COALESCE(

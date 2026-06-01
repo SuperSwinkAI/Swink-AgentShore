@@ -34,6 +34,7 @@ from agentshore.data.store.mixins.scope import _ScopeMixin
 from agentshore.data.store.mixins.sessions import _SessionsMixin
 from agentshore.data.store.mixins.trajectory import _TrajectoryMixin
 from agentshore.data.store.mixins.work_claims import _WorkClaimsMixin
+from agentshore.data.store.mixins.worktrees import _WorktreesMixin
 from agentshore.errors import DatabaseError
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class DataStore(
     _ReviewPatternsMixin,
     _ArchiveMixin,
     _RLMixin,
+    _WorktreesMixin,
     _DataStoreBase,
 ):
     """Async SQLite data store for all AgentShore persistence.

@@ -118,6 +118,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
 # Worktree exception names follow the same design-doc taxonomy
 # (WorktreeBranchGone, WorktreeAllocationConflict)
 "src/agentshore/agents/worktree/*.py" = ["N818"]
+# WorktreeAllocationConflict now lives with the worktrees table I/O mixin
+"src/agentshore/data/store/mixins/worktrees.py" = ["N818"]
 # Tests use Path/Play only as annotations but pytest fixtures need them at function-def time
 # E501: pre-existing long docstring/BudgetSnapshot lines in test helpers
 # TC002: pytest is a runtime dep in tests, not annotation-only

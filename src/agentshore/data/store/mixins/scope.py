@@ -18,23 +18,20 @@ class _ScopeMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def log_scope_drift(self, record: ScopeDriftRecord) -> None:
         """Insert a scope-drift log entry."""
-        await self._conn.execute(
-            """
-            INSERT INTO scope_drift_log
-                (session_id, play_id, artifact, reason, logged_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.play_id,
-                record.artifact,
-                record.reason,
-                record.logged_at,
-            ),
+        await self._insert(
+            "scope_drift_log",
+            session_id=record.session_id,
+            play_id=record.play_id,
+            artifact=record.artifact,
+            reason=record.reason,
+            logged_at=record.logged_at,
         )
-        await self._conn.commit()
 
     async def list_scope_drift(self, session_id: str) -> list[ScopeDriftRecord]:
         """Return all scope-drift entries for a session, ordered by ``logged_at`` ascending."""
