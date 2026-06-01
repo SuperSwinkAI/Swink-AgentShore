@@ -313,7 +313,6 @@ class _DispatchMixin(_OrchestratorBase):
             params.issue_number is not None
             or params.pr_number is not None
             or params.extras.get("claim_group_id")
-            or params.extras.get("request_mutation_key")
             or params.extras.get("resource_keys")
         )
 
@@ -389,8 +388,7 @@ class _DispatchMixin(_OrchestratorBase):
             return
 
         # 4. Everything else (HARD classifications, exhausted transient
-        #    budget, USER_REQUEST hitting a hard mask) drops with a surfaced
-        #    error.
+        #    budget) drops with a surfaced error.
         await self._release_masked_override(entry, reason=reason)
 
     async def _release_masked_override(
@@ -401,24 +399,6 @@ class _DispatchMixin(_OrchestratorBase):
         claim_group_id = params.extras.get("claim_group_id")
         if isinstance(claim_group_id, str) and claim_group_id:
             await self._store.release_work_claim_group(self._session_id, claim_group_id)
-
-        request_mutation_key = params.extras.get("request_mutation_key")
-        if isinstance(request_mutation_key, str) and request_mutation_key:
-            await self._store.update_external_mutation_status(
-                self._session_id,
-                request_mutation_key,
-                "blocked",
-                json.dumps(
-                    {
-                        "error": "promoted request_play became masked before dispatch",
-                        "play": play_type.value,
-                        "reason": str(reason),
-                        "pr": params.pr_number,
-                        "issue": params.issue_number,
-                        "resource_keys": params.extras.get("resource_keys", []),
-                    }
-                ),
-            )
 
         _logger.warning(
             "override_dropped_masked",
@@ -477,26 +457,6 @@ class _DispatchMixin(_OrchestratorBase):
             await self._safe_call(
                 self._store.release_work_claim_group(self._session_id, claim_group_id),
                 "release_dispatch_revalidation_claim",
-            )
-        request_mutation_key = params.extras.get("request_mutation_key")
-        if isinstance(request_mutation_key, str) and request_mutation_key:
-            await self._safe_call(
-                self._store.update_external_mutation_status(
-                    self._session_id,
-                    request_mutation_key,
-                    "blocked",
-                    json.dumps(
-                        {
-                            "error": "selected play became invalid before dispatch",
-                            "play": play_type.value,
-                            "reason": str(reason),
-                            "pr": params.pr_number,
-                            "issue": params.issue_number,
-                            "resource_keys": params.extras.get("resource_keys", []),
-                        }
-                    ),
-                ),
-                "update_dispatch_revalidation_request_mutation",
             )
         await self._record_control_rejection(
             kind="dispatch_revalidation_block",

@@ -6,12 +6,10 @@ typed record that carries enqueue-time intent. The consumer
 instead of substring-matching the mask reason at dequeue time — so an
 override's "why am I here" survives any number of mask cycles.
 
-Six producer kinds, six distinct retry/drop policies:
+Five producer kinds, distinct retry/drop policies:
 
 * ``BOOTSTRAP`` — sequencing-dependent bootstrap fleet entries. Never drop on
   mask; re-queue indefinitely until the awaited condition lifts.
-* ``USER_REQUEST`` — explicit user/IPC override. No retry budget; drop with a
-  surfaced error so the requester sees it.
 * ``EXECUTOR_REQUEUE`` — anti-confirmation or transient staffing race from
   the executor. Bounded retries; transient classification.
 * ``RETRY`` — automatic failure retry queued by the play-completion handler.
@@ -41,7 +39,6 @@ class OverrideKind(StrEnum):
     """Producer kind. Identifies why the entry was enqueued."""
 
     BOOTSTRAP = "bootstrap"
-    USER_REQUEST = "user_request"
     EXECUTOR_REQUEUE = "executor_requeue"
     RETRY = "retry"
     MASK_REQUEUE = "mask_requeue"
