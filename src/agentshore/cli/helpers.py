@@ -67,21 +67,20 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
 
 
 def _echo_repo_access_rows(repo_access_rows: Sequence[RepoAccessStatus]) -> None:
-    """Pretty-print repository access preflight rows."""
+    """Pretty-print repository access preflight rows with a leading blank line.
+
+    Thin adapter over the canonical renderer
+    :func:`agentshore.cli_identity.echo_repo_access_report` so there is exactly
+    one repo-access row formatter. This variant prepends a blank line (the
+    spacing its ``start``/``identity`` callers expect); the canonical renderer
+    leaves vertical spacing to the caller.
+    """
+    from agentshore.cli_identity import echo_repo_access_report
 
     if not repo_access_rows:
         return
     click.echo()
-    click.echo("Repository access")
-    click.echo("─────────────────")
-    width = max(len(row.agent_key) for row in repo_access_rows)
-    for row in repo_access_rows:
-        identity = row.identity_name or "(no identity)"
-        if row.ok:
-            click.echo(f"  {row.agent_key:<{width}}  →  {identity}  [repo: ok]")
-        else:
-            detail = " ".join(row.detail.split())
-            click.echo(f"  {row.agent_key:<{width}}  →  {identity}  [repo: BLOCKED — {detail}]")
+    echo_repo_access_report(list(repo_access_rows))
 
 
 def _drain_wait_timeout_label() -> str:
