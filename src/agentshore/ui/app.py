@@ -87,6 +87,8 @@ class OrchestratorApp(App[None]):
         ("g", "show_goals", "Epics"),
         ("d", "show_agent_detail", "Agent Detail"),
         ("i", "show_issues", "Issues"),
+        ("p", "toggle_pause", "Pause/Resume"),
+        ("l", "show_learnings", "Learnings"),
     ]
 
     # ---- Messages (provider -> app) ----

@@ -8,7 +8,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 
 if TYPE_CHECKING:
-    from agentshore.state import IssueSnapshot, OrchestratorState
+    from agentshore.state import OrchestratorState
 
 
 class WorkQueueSummary(Widget):
@@ -23,9 +23,10 @@ class WorkQueueSummary(Widget):
         if self.state is None:
             return "  Queue: waiting for state"
 
+        view = self.state.work_queue()
         issues = [issue for issue in self.state.open_issues if _is_open(issue.state)]
         ready = sum(1 for issue in issues if issue.bead_ready)
-        in_progress = sum(1 for issue in issues if _is_in_progress(issue.bead_status))
+        in_progress = len(view.in_progress)
         prs = [pr for pr in self.state.pull_requests if _is_open(pr.state)]
         blocked = sum(1 for pr in prs if pr.blocked)
         draft = sum(1 for pr in prs if pr.is_draft)
@@ -36,9 +37,10 @@ class WorkQueueSummary(Widget):
             f"  PRs    {len(prs):>2} open   {blocked:>2} blocked {draft:>2} draft",
             f"  Reviews queued {pending_review}",
         ]
-        next_issue = _next_issue(issues)
-        if next_issue is not None:
-            lines.append(f"  Next #{next_issue.issue_number}: {_truncate(next_issue.title, 42)}")
+        if view.next_issue is not None:
+            lines.append(
+                f"  Next #{view.next_issue.issue_number}: {_truncate(view.next_issue.title, 42)}"
+            )
         return "\n".join(lines)
 
     def update_state(self, state: OrchestratorState | None) -> None:
@@ -48,25 +50,6 @@ class WorkQueueSummary(Widget):
 
 def _is_open(state: str) -> bool:
     return state.lower() == "open"
-
-
-def _is_in_progress(status: str | None) -> bool:
-    if status is None:
-        return False
-    normalized = status.lower().replace("-", "_").replace(" ", "_")
-    return normalized in {"in_progress", "doing", "started", "active"}
-
-
-def _next_issue(issues: list[IssueSnapshot]) -> IssueSnapshot | None:
-    if not issues:
-        return None
-    return min(
-        issues,
-        key=lambda issue: (
-            issue.priority if issue.priority is not None else 999,
-            issue.issue_number,
-        ),
-    )
 
 
 def _truncate(value: str, limit: int) -> str:

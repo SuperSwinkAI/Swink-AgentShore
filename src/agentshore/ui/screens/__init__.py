@@ -7,7 +7,6 @@ from agentshore.ui.screens.dashboard import MainDashboard
 from agentshore.ui.screens.escalation import EscalationModal
 from agentshore.ui.screens.goals import GoalsScreen
 from agentshore.ui.screens.help import HelpOverlay
-from agentshore.ui.screens.revert import RevertConfirmModal
 from agentshore.ui.screens.shutdown import SessionEndScreen
 from agentshore.ui.screens.startup import SessionStartupScreen
 
@@ -17,7 +16,6 @@ __all__ = [
     "GoalsScreen",
     "HelpOverlay",
     "MainDashboard",
-    "RevertConfirmModal",
     "SessionEndScreen",
     "SessionStartupScreen",
 ]
