@@ -172,7 +172,9 @@ async def test_collect_session_summary_overview(store):
     assert ov["total_plays"] == 2
     assert ov["successful_plays"] == 1
     assert ov["failed_plays"] == 1
-    assert ov["total_cost"] == pytest.approx(5.0)
+    # total_cost is the play-sum (1.0 + 0.5), not session.total_cost (5.0), so
+    # every report agrees on a single self-consistent definition (H4).
+    assert ov["total_cost"] == pytest.approx(1.5)
     assert ov["final_alignment"] == pytest.approx(0.85)
     # 1 hour = 3600 seconds
     assert ov["duration_seconds"] == pytest.approx(3600.0)
@@ -800,8 +802,8 @@ async def test_collect_comparison(store):
 
     assert comparison["session_a"]["session_id"] == "s-a"
     assert comparison["session_b"]["session_id"] == "s-b"
-    # cost_diff = 5.0 - 3.0 = 2.0
-    assert comparison["cost_diff"] == pytest.approx(2.0)
+    # cost_diff uses the play-sum overview (H4): s-b 4×0.5=2.0 minus s-a 2×1.0=2.0.
+    assert comparison["cost_diff"] == pytest.approx(0.0)
     # alignment_diff = 0.9 - 0.7 = 0.2
     assert comparison["alignment_diff"] == pytest.approx(0.2)
     # play_count_diff = 4 - 2 = 2 (actual plays in DB)

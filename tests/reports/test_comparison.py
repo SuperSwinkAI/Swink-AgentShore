@@ -173,8 +173,9 @@ async def test_comparison_new_fields_populated(store):
     collector = ReportDataCollector(store)
     cmp = await collector.collect_comparison("s-a", "s-b")
 
-    # existing scalars still present
-    assert cmp["cost_diff"] == pytest.approx(2.0)
+    # existing scalars still present. cost_diff is the play-sum overview (H4):
+    # s-b (3×0.8 + 0.2 = 2.6) minus s-a (2×1.0 + 0.5 = 2.5).
+    assert cmp["cost_diff"] == pytest.approx(0.1)
     assert cmp["alignment_diff"] == pytest.approx(0.2)
     assert cmp["play_count_diff"] == 1  # 4 - 3
 
