@@ -164,11 +164,17 @@ _REQUIRED_GITIGNORE_ENTRIES: tuple[str, ...] = (
     ".agents/",
     ".beads/",
     "agentshore.yaml",
+    # Working-tree artifacts AgentShore (or its plays) drop at the repo root.
+    # Left untracked they dirty the trunk and block merge_pr / reconcile_state
+    # on the next run. Ignoring them on startup keeps `git status` clean.
+    "timelapse-runs/",
+    "closed_issue_refs.txt",
+    "open_bead_refs.txt",
 )
 
 
 def ensure_gitignore_entries(repo_root: Path) -> list[str]:
-    """Ensure artifact directories are listed in the project ``.gitignore``.
+    """Ensure artifact paths are listed in the project ``.gitignore``.
 
     Returns the list of entries that were appended (empty if all already
     present).  The function is idempotent and creates ``.gitignore`` if it
