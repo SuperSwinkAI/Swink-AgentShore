@@ -70,51 +70,65 @@ class IpcServer:
         Removes a stale Unix socket file if one already exists at the
         configured path before binding.
         """
-        # Unlink a stale entry at the bind path before binding. Path.exists()
-        # follows symlinks, so a dangling symlink reads as "missing" and used
-        # to slip through — bind() would then create the real socket inside
-        # whatever directory the symlink pointed at (e.g. a vanished pytest
-        # tmpdir). Check symlink status with lstat-aware probes first.
-        if self._endpoint.kind == "unix" and self._socket_path is not None:
-            if self._socket_path.is_symlink():
-                target = self._socket_path.readlink()
-                await _logger.awarning(
-                    "ipc.stale_symlink",
-                    path=str(self._socket_path),
-                    target=str(target),
-                )
-                self._socket_path.unlink()
-            elif self._socket_path.exists():
-                if not is_unix_socket_path(self._socket_path):
-                    raise RuntimeError(
-                        f"refusing to unlink non-socket IPC path: {self._socket_path}"
-                    )
-                await _logger.awarning(
-                    "ipc.stale_socket",
-                    path=str(self._socket_path),
-                )
-                unlink_socket_if_present(self._socket_path)
+        if self._endpoint.kind == "unix":
+            await self._prepare_unix_path()
+        self._server = await self._bind()
+        await _logger.ainfo("ipc.server_started", endpoint=self._endpoint.label)
 
+    async def _prepare_unix_path(self) -> None:
+        """Unlink a stale entry at the Unix bind path before binding.
+
+        ``Path.exists()`` follows symlinks, so a dangling symlink reads as
+        "missing" and used to slip through — ``bind()`` would then create the
+        real socket inside whatever directory the symlink pointed at (e.g. a
+        vanished pytest tmpdir). Check symlink status with lstat-aware probes
+        first.
+        """
+        if self._socket_path is None:
+            return
+        if self._socket_path.is_symlink():
+            target = self._socket_path.readlink()
+            await _logger.awarning(
+                "ipc.stale_symlink",
+                path=str(self._socket_path),
+                target=str(target),
+            )
+            self._socket_path.unlink()
+        elif self._socket_path.exists():
+            if not is_unix_socket_path(self._socket_path):
+                raise RuntimeError(f"refusing to unlink non-socket IPC path: {self._socket_path}")
+            await _logger.awarning(
+                "ipc.stale_socket",
+                path=str(self._socket_path),
+            )
+            unlink_socket_if_present(self._socket_path)
+
+    async def _bind(self) -> asyncio.AbstractServer:
+        """Bind the configured endpoint and return the listening server.
+
+        For TCP, ``self._endpoint`` is rewritten to the concrete bound
+        host/port (so an ephemeral ``port=0`` request resolves to the real
+        port).
+        """
         if self._endpoint.kind == "unix":
             if self._socket_path is None:
-                msg = "Unix IPC endpoint missing path"
-                raise RuntimeError(msg)
-            self._server = await asyncio.start_unix_server(
+                raise RuntimeError("Unix IPC endpoint missing path")
+            server = await asyncio.start_unix_server(
                 self._handle_client,
                 path=str(self._socket_path),
             )
             self._socket_path.chmod(0o600)
-        else:
-            self._server = await asyncio.start_server(
-                self._handle_client,
-                host=self._endpoint.host,
-                port=self._endpoint.port,
-            )
-            sock = self._server.sockets[0] if self._server.sockets else None
-            if sock is not None:
-                host, port = sock.getsockname()[:2]
-                self._endpoint = IpcEndpoint.tcp(str(host), int(port))
-        await _logger.ainfo("ipc.server_started", endpoint=self._endpoint.label)
+            return server
+        server = await asyncio.start_server(
+            self._handle_client,
+            host=self._endpoint.host,
+            port=self._endpoint.port,
+        )
+        sock = server.sockets[0] if server.sockets else None
+        if sock is not None:
+            host, port = sock.getsockname()[:2]
+            self._endpoint = IpcEndpoint.tcp(str(host), int(port))
+        return server
 
     async def stop(self) -> None:
         """Stop the server and remove the Unix socket file if present."""

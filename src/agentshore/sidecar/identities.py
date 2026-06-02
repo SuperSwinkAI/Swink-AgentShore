@@ -87,19 +87,26 @@ def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
             pass
 
 
-def _keychain_has_token(service: str) -> bool:
-    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+def _keyring_get(service: str) -> str | None:
+    """Read a Keychain token for *service*, returning ``None`` on any failure.
+
+    Swallows the keyring import (its macOS backend runs setup at import time)
+    and a get that raises ``KeyringError`` or any backend-specific error, so
+    callers never have to repeat the import + double-except dance.
+    """
     try:
         import keyring  # local import: keyring's macOS backend runs setup at import time
-        from keyring.errors import KeyringError
     except Exception:
-        return False
+        return None
     try:
-        token = keyring.get_password(service, service)
-    except KeyringError:
-        return False
+        return keyring.get_password(service, service)
     except Exception:
-        return False
+        return None
+
+
+def _keychain_has_token(service: str) -> bool:
+    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+    token = _keyring_get(service)
     return bool(token and token.strip())
 
 
@@ -149,17 +156,7 @@ def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
         return os.environ.get(str(raw["gh_token_env"])), "gh_token_env"
     if isinstance(raw.get("gh_token_keychain"), str) and raw["gh_token_keychain"]:
         service = str(raw["gh_token_keychain"])
-        try:
-            import keyring  # local import: keyring's macOS backend runs setup at import time
-            from keyring.errors import KeyringError
-        except Exception:
-            return None, "gh_token_keychain"
-        try:
-            keychain_token: str | None = keyring.get_password(service, service)
-        except KeyringError:
-            return None, "gh_token_keychain"
-        except Exception:
-            return None, "gh_token_keychain"
+        keychain_token = _keyring_get(service)
         return (keychain_token or None), "gh_token_keychain"
     return None, "ambient"
 

@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.state import PlayType
-from agentshore.ui.app import OrchestratorApp, _short_play_label
+from agentshore.ui.app import OrchestratorApp
+from agentshore.ui.play_labels import play_short_label
 
 
 @pytest.mark.asyncio()
@@ -64,20 +65,20 @@ async def test_action_show_learnings_no_orch() -> None:
 
 
 def test_short_play_label_known_values() -> None:
-    """_short_play_label returns expected short labels for key play types."""
-    assert _short_play_label(PlayType.ISSUE_PICKUP) == "Pickup"
-    assert _short_play_label(PlayType.CODE_REVIEW) == "Review"
-    assert _short_play_label(PlayType.RUN_QA) == "QA"
-    assert _short_play_label(PlayType.GROOM_BACKLOG) == "Groom"
-    assert _short_play_label(PlayType.SEED_PROJECT) == "Seed"
-    assert _short_play_label(PlayType.FUTURE_7) == "Reserved"
-    assert _short_play_label(PlayType.FUTURE_8) == "Reserved"
+    """play_short_label returns expected short labels for key play types."""
+    assert play_short_label(PlayType.ISSUE_PICKUP) == "Pickup"
+    assert play_short_label(PlayType.CODE_REVIEW) == "Review"
+    assert play_short_label(PlayType.RUN_QA) == "QA"
+    assert play_short_label(PlayType.GROOM_BACKLOG) == "Groom"
+    assert play_short_label(PlayType.SEED_PROJECT) == "Seed"
+    assert play_short_label(PlayType.FUTURE_7) == "Reserved"
+    assert play_short_label(PlayType.FUTURE_8) == "Reserved"
 
 
 def test_short_play_label_all_members_non_empty() -> None:
-    """Every PlayType member returns a non-empty string from _short_play_label."""
+    """Every PlayType member returns a non-empty string from play_short_label."""
     for pt in PlayType:
-        label = _short_play_label(pt)
+        label = play_short_label(pt)
         assert label, f"empty label for {pt}"
 
 

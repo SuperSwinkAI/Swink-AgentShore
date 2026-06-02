@@ -580,10 +580,10 @@ class _CompletionMixin(_OrchestratorBase):
                         play_id=outcome.play_id,
                     )
                     if replay is not None:
-                        params_payload = json.loads(str(replay["params_json"]))
+                        params_payload = json.loads(replay.params_json)
                         params_payload["extras"] = {
                             **dict(params_payload.get("extras") or {}),
-                            "__retry_prompt": replay["prompt"],
+                            "__retry_prompt": replay.prompt,
                         }
                         retry_params = PlayParams(**params_payload)
                         self._override_queue.put_nowait(
@@ -750,12 +750,6 @@ class _CompletionMixin(_OrchestratorBase):
         next_state: OrchestratorState,
         completed_play_type: PlayType,
     ) -> None:
-        # Persist alignment scores back to DB after calibrate_alignment plays
-        if completed_play_type == PlayType.CALIBRATE_ALIGNMENT and outcome.success:
-            await self._safe_call(
-                self._persist_alignment_scores(outcome), "persist_alignment_scores"
-            )
-
         # Refresh issue cache after plays that modify issues. QA and design
         # audit can create follow-up issues even if their play result is
         # partial, so they always trigger a post-play refresh.
@@ -1028,10 +1022,6 @@ class _CompletionMixin(_OrchestratorBase):
             self._state_provider.on_agent_changed(agent_id, AgentStatus.BUSY),
             "on_agent_changed",
         )
-
-    async def _persist_alignment_scores(self, outcome: PlayOutcome) -> None:
-        """No-op in v0.10.0: cluster alignment replaced by beads ProjectGraph
-        global_closure_ratio; no per-cluster DB rows to persist."""
 
     async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""

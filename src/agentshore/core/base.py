@@ -602,9 +602,6 @@ class _OrchestratorBase:
     ) -> None:
         raise NotImplementedError
 
-    async def _persist_alignment_scores(self, outcome: PlayOutcome) -> None:
-        raise NotImplementedError
-
     async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         raise NotImplementedError
 

@@ -243,6 +243,27 @@ def issue_pickup_sort_key(issue: IssueSnapshot) -> tuple[int, int, int, int]:
     return (is_bug, priority, size, issue.issue_number)
 
 
+def _pr_blocked_reasons(pr: object, *, labels: list[str] | None = None) -> list[str]:
+    """Gather the eight PR fields once and return the canonical blocked reasons.
+
+    Shared by :func:`pr_merge_ready` and :func:`pr_unblockable` so the two
+    predicates can never disagree on the underlying field reads. ``labels`` may
+    be passed when the caller has already computed them to avoid a second
+    ``_labels(pr)`` traversal.
+    """
+    return blocked_reasons(
+        state=str(getattr(pr, "state", "")),
+        labels=_labels(pr) if labels is None else labels,
+        review_decision=_string_or_none(getattr(pr, "review_decision", None)),
+        status_check_summary=_string_or_none(getattr(pr, "status_check_summary", None)),
+        is_draft=_bool_or_none(getattr(pr, "is_draft", None)),
+        mergeable=getattr(pr, "mergeable", None),
+        head_sha=_string_or_none(getattr(pr, "head_sha", None)),
+        last_reviewed_sha=_string_or_none(getattr(pr, "last_reviewed_sha", None)),
+        last_review_status=_string_or_none(getattr(pr, "last_review_status", None)),
+    )
+
+
 def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     """Return True for the one canonical merge-pr readiness predicate.
 
@@ -264,17 +285,7 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     they re-qualify here.
     """
 
-    reasons = blocked_reasons(
-        state=str(getattr(pr, "state", "")),
-        labels=_labels(pr),
-        review_decision=_string_or_none(getattr(pr, "review_decision", None)),
-        status_check_summary=_string_or_none(getattr(pr, "status_check_summary", None)),
-        is_draft=_bool_or_none(getattr(pr, "is_draft", None)),
-        mergeable=getattr(pr, "mergeable", None),
-        head_sha=_string_or_none(getattr(pr, "head_sha", None)),
-        last_reviewed_sha=_string_or_none(getattr(pr, "last_reviewed_sha", None)),
-        last_review_status=_string_or_none(getattr(pr, "last_review_status", None)),
-    )
+    reasons = _pr_blocked_reasons(pr)
     if reasons and reasons != ["draft"]:
         return False
 
@@ -316,17 +327,7 @@ def pr_unblockable(pr: object) -> bool:
         return True
     if getattr(pr, "mergeable", None) == "CONFLICTING":
         return True
-    reasons = blocked_reasons(
-        state=str(getattr(pr, "state", "")),
-        labels=labels,
-        review_decision=_string_or_none(getattr(pr, "review_decision", None)),
-        status_check_summary=_string_or_none(getattr(pr, "status_check_summary", None)),
-        is_draft=_bool_or_none(getattr(pr, "is_draft", None)),
-        mergeable=getattr(pr, "mergeable", None),
-        head_sha=_string_or_none(getattr(pr, "head_sha", None)),
-        last_reviewed_sha=_string_or_none(getattr(pr, "last_reviewed_sha", None)),
-        last_review_status=_string_or_none(getattr(pr, "last_review_status", None)),
-    )
+    reasons = _pr_blocked_reasons(pr, labels=labels)
     return bool(reasons and reasons != ["draft"])
 
 

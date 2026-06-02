@@ -26,7 +26,7 @@ Slot layout (OBSERVATION_DIM=246, OBSERVATION_VERSION=13):
   177     skip-rate  ( 1)  fraction of recent selection cycles that hit a clean
                           confirm/claim re-pick (live-drift signal; slot repointed
                           from the removed executor masked-skip path)
-  178     pr-pressure( 1)  desktop-8zzy — open_pr_count / _SAT_OPEN_PRS_COUNT, clamped
+  178     pr-pressure( 1)  desktop-8zzy — open_pr_count / SAT_OPEN_PRS_COUNT, clamped
                           to [0, 1]. PPO can learn "press harder near the cap"
                           directly from this ratio rather than inferring it from
                           slot 56 (raw open-prs count).
@@ -53,7 +53,7 @@ OBSERVATION_VERSION 10 → 11 (desktop-rni0):
 
 OBSERVATION_VERSION 11 → 12 (desktop-8zzy):
   - Added ``pr_pressure_ratio`` at slot 178: ``open_pr_count / max_open_prs``
-    (with ``max_open_prs == _SAT_OPEN_PRS_COUNT == 10.0``), clamped to [0, 1].
+    (with ``max_open_prs == SAT_OPEN_PRS_COUNT == 10.0``), clamped to [0, 1].
     Mirrors the ``_PR_PRESSURE_BONUS`` reward shaping in reward.py.
   - The specialization block slid one slot down (178→179..243→244) and the
     version marker moved 244→245. Spec block size and shape unchanged.
@@ -78,7 +78,8 @@ from agentshore.rl.action_space import (
     NUM_ACTIONS,
     PLAY_TO_INDEX,
 )
-from agentshore.state import PlayType
+from agentshore.rl.constants import SAT_OPEN_PRS_COUNT
+from agentshore.state import AgentStatus, PlayType
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -141,7 +142,6 @@ _SAT_CREATED_ISSUES: Final[float] = 50.0
 _SAT_MINUTES_ALIGNMENT: Final[float] = 60.0
 _SAT_MINUTES_INTAKE: Final[float] = 480.0
 _SAT_RAMPUP_MS: Final[float] = 10_000.0
-_SAT_OPEN_PRS_COUNT: Final[float] = 10.0
 _SAT_ISSUE_VELOCITY: Final[float] = 10.0
 _LOOP_LEVEL_MAX: Final[float] = 3.0
 _SAT_AGENTS_IN_ERROR: Final[float] = 5.0
@@ -212,7 +212,7 @@ _S_INFLIGHT_ISSUES: Final[int] = 176
 # work-claim CAS lost a race); no associated action. Repointed from the removed
 # executor masked-skip path — same slot, same [0, 1] range.
 _S_EXECUTOR_SKIP_RATE: Final[int] = 177
-# desktop-8zzy: open_pr_count / _SAT_OPEN_PRS_COUNT, clamped to [0, 1]. Mirrors
+# desktop-8zzy: open_pr_count / SAT_OPEN_PRS_COUNT, clamped to [0, 1]. Mirrors
 # the _PR_PRESSURE_BONUS reward shaping; lets PPO learn "drain harder near the
 # cap" from a normalised ratio rather than inferring it from slot 56.
 _S_PR_PRESSURE_RATIO: Final[int] = 178
@@ -359,8 +359,8 @@ def encode_observation(
             # idle=0, busy=0, success=0.5 (neutral), context=0, total=0
             obs[base + 2] = _SPEC_NEUTRAL
             continue
-        idle = sum(1 for a in agents_in_tier if a.status.value == "idle")
-        busy = sum(1 for a in agents_in_tier if a.status.value == "busy")
+        idle = sum(1 for a in agents_in_tier if a.status == AgentStatus.IDLE)
+        busy = sum(1 for a in agents_in_tier if a.status == AgentStatus.BUSY)
         completed = sum(a.tasks_completed for a in agents_in_tier)
         failed = sum(a.tasks_failed for a in agents_in_tier)
         total_tasks = completed + failed
@@ -416,15 +416,15 @@ def encode_observation(
     obs[_S_SINCE_INTAKE] = _norm(ctx.minutes_since_last_intake, _SAT_MINUTES_INTAKE)
 
     # ---- PR (56-58) ----
-    obs[_S_OPEN_PRS] = _norm(ctx.open_pr_count, _SAT_OPEN_PRS_COUNT)
-    obs[_S_PRS_AWAITING] = _norm(ctx.prs_awaiting_review, _SAT_OPEN_PRS_COUNT)
-    obs[_S_PRS_APPROVED] = _norm(ctx.prs_approved_unmerged, _SAT_OPEN_PRS_COUNT)
+    obs[_S_OPEN_PRS] = _norm(ctx.open_pr_count, SAT_OPEN_PRS_COUNT)
+    obs[_S_PRS_AWAITING] = _norm(ctx.prs_awaiting_review, SAT_OPEN_PRS_COUNT)
+    obs[_S_PRS_APPROVED] = _norm(ctx.prs_approved_unmerged, SAT_OPEN_PRS_COUNT)
 
     # ---- HEALTH (59-62) ----
     obs[_S_STAGNATION] = _norm(ctx.stagnation_counter, _SAT_STREAK)
     obs[_S_STREAK] = _norm(state.same_type_failure_streak, _SAT_STREAK)
     obs[_S_LOOP_LEVEL] = _loop_escalation(state.same_type_failure_streak) / _LOOP_LEVEL_MAX
-    agents_in_error = sum(1 for a in state.agents if a.status.value == "error")
+    agents_in_error = sum(1 for a in state.agents if a.status == AgentStatus.ERROR)
     obs[_S_AGENTS_IN_ERROR] = _norm(agents_in_error, _SAT_AGENTS_IN_ERROR)
 
     # ---- HANDOFF (63-64) ----
@@ -462,9 +462,9 @@ def encode_observation(
             tier = a.model_tier or "medium"
             if tier != model_tier:
                 continue
-            if a.status.value == "idle":
+            if a.status == AgentStatus.IDLE:
                 idle += 1
-            elif a.status.value == "busy":
+            elif a.status == AgentStatus.BUSY:
                 busy += 1
             completed += a.tasks_completed
             failed += a.tasks_failed
@@ -503,10 +503,10 @@ def encode_observation(
             codex_open += 1
             if not approved:
                 codex_awaiting += 1
-    obs[_S_PR_AUTHOR_CLAUDE_OPEN] = _norm(claude_open, _SAT_OPEN_PRS_COUNT)
-    obs[_S_PR_AUTHOR_CODEX_OPEN] = _norm(codex_open, _SAT_OPEN_PRS_COUNT)
-    obs[_S_PR_AUTHOR_CLAUDE_AWAITING] = _norm(claude_awaiting, _SAT_OPEN_PRS_COUNT)
-    obs[_S_PR_AUTHOR_CODEX_AWAITING] = _norm(codex_awaiting, _SAT_OPEN_PRS_COUNT)
+    obs[_S_PR_AUTHOR_CLAUDE_OPEN] = _norm(claude_open, SAT_OPEN_PRS_COUNT)
+    obs[_S_PR_AUTHOR_CODEX_OPEN] = _norm(codex_open, SAT_OPEN_PRS_COUNT)
+    obs[_S_PR_AUTHOR_CLAUDE_AWAITING] = _norm(claude_awaiting, SAT_OPEN_PRS_COUNT)
+    obs[_S_PR_AUTHOR_CODEX_AWAITING] = _norm(codex_awaiting, SAT_OPEN_PRS_COUNT)
 
     # ---- VELOCITY + BUSY-AGENTS (172-173) ----
     obs[_S_ROLLING_VELOCITY] = float(np.clip(ctx.rolling_velocity, 0.0, 1.0))
@@ -531,12 +531,12 @@ def encode_observation(
     obs[_S_EXECUTOR_SKIP_RATE] = _clamp(ctx.executor_skip_rate_recent_50)
 
     # ---- PR PRESSURE RATIO (178) ----
-    # desktop-8zzy: open_pr_count divided by _SAT_OPEN_PRS_COUNT (the same
+    # desktop-8zzy: open_pr_count divided by SAT_OPEN_PRS_COUNT (the same
     # saturation point used for the raw open-prs slot at 56). Lets PPO learn
     # "press harder near the cap" from a normalised ratio rather than
     # inferring it from the raw count. Mirrors the _PR_PRESSURE_BONUS shaping
     # in reward.py — both share max_open_prs = 10.0.
-    obs[_S_PR_PRESSURE_RATIO] = _norm(ctx.open_pr_count, _SAT_OPEN_PRS_COUNT)
+    obs[_S_PR_PRESSURE_RATIO] = _norm(ctx.open_pr_count, SAT_OPEN_PRS_COUNT)
 
     # ---- SPECIALIZATION (179-244 at NUM_ACTIONS=22) ----
     # Per-tier × per-play-type success rate. Cells aggregate every per-agent

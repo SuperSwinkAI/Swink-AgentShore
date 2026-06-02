@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from agentshore.data.store.helpers import (
@@ -241,8 +242,6 @@ class _PullRequestsMixin:
         projection as open review work. The issue-close mirror can arrive on a
         later refresh, so this keeps merge completions visible immediately.
         """
-        from datetime import UTC, datetime, timedelta
-
         cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         cursor = await self._conn.execute(
             f"""

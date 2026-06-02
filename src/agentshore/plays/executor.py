@@ -284,8 +284,10 @@ class PlayExecutor:
                 skip_category="code_error",
                 error=f"no play registered for {play_type!r}",
             )
-            return _failed(
-                play_type, f"no play registered for {play_type!r}", FailureKind.CODE_ERROR
+            return PlayOutcome.failed(
+                play_type,
+                f"no play registered for {play_type!r}",
+                failure_kind=FailureKind.CODE_ERROR,
             )
 
         # When override params are already populated, the EligibilityAuthority's
@@ -500,11 +502,11 @@ class PlayExecutor:
                 failure_category="code_error",
                 agent_id=params.agent_id,
             )
-            return _failed(
+            return PlayOutcome.failed(
                 play_type,
                 "work claim inactive",
-                FailureKind.CODE_ERROR,
                 agent_id=params.agent_id,
+                failure_kind=FailureKind.CODE_ERROR,
             )
 
         current_play_handle = await self._notify_dispatch_started(
@@ -1482,27 +1484,6 @@ def build_idempotency_key(session_id: str, mutation: dict[str, object]) -> str:
         raise ValueError("session_id must not be empty when building an idempotency key")
     key_payload = {"session": session_id, **mutation}
     return hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode()).hexdigest()[:16]
-
-
-def _failed(
-    play_type: PlayType,
-    error: str,
-    failure_kind: FailureKind,
-    agent_id: str | None = None,
-) -> PlayOutcome:
-    return PlayOutcome(
-        play_type=play_type,
-        agent_id=agent_id,
-        success=False,
-        partial=False,
-        duration_seconds=0.0,
-        token_cost=0,
-        dollar_cost=0.0,
-        artifacts=[],
-        alignment_delta=0.0,
-        error=error,
-        failure_kind=failure_kind,
-    )
 
 
 def _infer_failure_category(outcome: PlayOutcome) -> str:

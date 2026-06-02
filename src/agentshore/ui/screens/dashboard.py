@@ -8,6 +8,7 @@ from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Footer, Header
 
+from agentshore.ui.play_labels import play_label
 from agentshore.ui.widgets.agent_panel import AgentPanel
 from agentshore.ui.widgets.alert_bar import AlertBar
 from agentshore.ui.widgets.alignment import AlignmentBars
@@ -17,7 +18,7 @@ from agentshore.ui.widgets.play_history import (
     NARROW_VISIBLE_ROW_LIMIT,
     PlayHistoryTable,
 )
-from agentshore.ui.widgets.rl_state import RLStateBar, display_play, loop_level_for_streak
+from agentshore.ui.widgets.rl_state import RLStateBar, loop_level_for_streak
 from agentshore.ui.widgets.work_queue import WorkQueueSummary
 
 if TYPE_CHECKING:
@@ -74,7 +75,7 @@ class MainDashboard(Screen[None]):
         loop_level = loop_level_for_streak(event.state.same_type_failure_streak)
         if loop_level == 3 and event.state.last_play_type is not None:
             alert.show_loop(
-                display_play(event.state.last_play_type),
+                play_label(event.state.last_play_type),
                 event.state.same_type_failure_streak,
             )
             self._loop_alert_active = True

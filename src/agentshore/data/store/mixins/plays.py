@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _ACTIVE_WORK_CLAIM_STATUSES
+from agentshore.data.store.base import _ACTIVE_WORK_CLAIM_STATUSES, _status_in_clause
 from agentshore.data.store.rows import _row_to_play_record
 from agentshore.utils import now_iso
 
@@ -134,7 +134,7 @@ class _PlaysMixin:
         """Abandon active claims and open play rows owned by agents no longer present."""
         agent_ids = sorted({str(agent_id) for agent_id in active_agent_ids if agent_id})
         ended_at = now_iso()
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         if agent_ids:
             agent_placeholders = ",".join("?" for _ in agent_ids)
             agent_filter = f"AND agent_id NOT IN ({agent_placeholders})"
@@ -143,39 +143,33 @@ class _PlaysMixin:
             agent_filter = ""
             agent_params = ()
 
-        claim_sql = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'abandoned',",
-                "       finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                "   AND agent_id IS NOT NULL",
-                f"   AND status IN ({status_placeholders})",
-                f"   {agent_filter}",
-            )
-        )
         claim_cursor = await self._conn.execute(
-            claim_sql,
-            (ended_at, session_id, *_ACTIVE_WORK_CLAIM_STATUSES, *agent_params),
-        )
-        play_sql = "\n".join(
-            (
-                "UPDATE plays",
-                "   SET ended_at = ?,",
-                "       duration_ms = COALESCE(",
-                "           duration_ms,",
-                "           CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)",
-                "       ),",
-                "       failure_category = COALESCE(failure_category, 'abandoned'),",
-                "       error = COALESCE(error, ?)",
-                " WHERE session_id = ?",
-                "   AND ended_at IS NULL",
-                "   AND agent_id IS NOT NULL",
-                f"   {agent_filter}",
-            )
+            f"""
+            UPDATE work_claims
+               SET status = 'abandoned',
+                   finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND agent_id IS NOT NULL
+               AND {status_clause}
+               {agent_filter}
+            """,
+            (ended_at, session_id, *status_params, *agent_params),
         )
         play_cursor = await self._conn.execute(
-            play_sql,
+            f"""
+            UPDATE plays
+               SET ended_at = ?,
+                   duration_ms = COALESCE(
+                       duration_ms,
+                       CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)
+                   ),
+                   failure_category = COALESCE(failure_category, 'abandoned'),
+                   error = COALESCE(error, ?)
+             WHERE session_id = ?
+               AND ended_at IS NULL
+               AND agent_id IS NOT NULL
+               {agent_filter}
+            """,
             (ended_at, ended_at, reason, session_id, *agent_params),
         )
         await self._conn.commit()

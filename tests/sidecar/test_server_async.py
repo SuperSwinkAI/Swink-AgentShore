@@ -25,8 +25,6 @@ from agentshore.sidecar.server import (
     SessionContext,
     _reader_loop,
     _serve_async,
-    build_agent_subprocess_exited_notification,
-    build_agent_subprocess_spawned_notification,
     build_session_completed_notification,
     build_sidecar_health_notification,
     handle_request,
@@ -644,30 +642,6 @@ def test_build_sidecar_health_notification_shape() -> None:
     assert notification["method"] == "sidecar.health"
     assert notification["params"]["status"] == "ok"
     assert isinstance(notification["params"]["timestamp"], str)
-
-
-def test_build_agent_subprocess_notifications_shape() -> None:
-    spawned = build_agent_subprocess_spawned_notification(
-        agent_id="a1",
-        agent_type="codex",
-        pid=1234,
-    )
-    assert spawned["method"] == "agent.subprocess_spawned"
-    assert spawned["params"] == {"agent_id": "a1", "agent_type": "codex", "pid": 1234}
-
-    exited = build_agent_subprocess_exited_notification(
-        agent_id="a1",
-        agent_type="codex",
-        pid=1234,
-        exit_code=0,
-    )
-    assert exited["method"] == "agent.subprocess_exited"
-    assert exited["params"] == {
-        "agent_id": "a1",
-        "agent_type": "codex",
-        "pid": 1234,
-        "exit_code": 0,
-    }
 
 
 async def _drive(payload: dict[str, object], *, state: ServerState) -> dict[str, object]:

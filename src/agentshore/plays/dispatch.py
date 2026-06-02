@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -157,9 +159,9 @@ async def render_skill_prompt(
             )
         _logger.info("skill_template_auto_reinstalled", skill=skill_name)
 
-    skill_content = _strip_full_learnings_reads(skill_name, skill_content)
+    skill_content = _strip_full_learnings_reads(skill_content)
     header = f"$ARGUMENTS: {arg_str}" if arg_str else "$ARGUMENTS: (none)"
-    discipline = _context_discipline(skill_name, context_path=context_path)
+    discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path)
     return f"{header}\n\n{discipline}\n\n{skill_content}"
 
 
@@ -179,11 +181,7 @@ async def _read_skill_md(project_path: Path, skill_name: str) -> str | None:
     return text
 
 
-def _context_discipline(skill_name: str, *, context_path: str) -> str:
-    return _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path)
-
-
-def _strip_full_learnings_reads(skill_name: str, skill_content: str) -> str:
+def _strip_full_learnings_reads(skill_content: str) -> str:
     lines = [
         line for line in skill_content.splitlines() if ".agentshore/learnings.json" not in line
     ]
@@ -254,16 +252,14 @@ def _json_safe_extras(extras: dict[str, object]) -> dict[str, object]:
     actual write site (where the offending key is visible in the
     traceback), which is more debuggable than masking with ``str()``.
     """
-    import dataclasses as _dc
-    from enum import Enum
 
     def _convert(value: object) -> object:
         if isinstance(value, Path):
             return str(value)
         if isinstance(value, Enum):
             return value.value
-        if _dc.is_dataclass(value) and not isinstance(value, type):
-            return {f.name: _convert(getattr(value, f.name)) for f in _dc.fields(value)}
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return {f.name: _convert(getattr(value, f.name)) for f in dataclasses.fields(value)}
         if isinstance(value, dict):
             return {str(k): _convert(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):

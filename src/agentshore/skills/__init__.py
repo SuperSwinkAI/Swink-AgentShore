@@ -9,6 +9,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from packaging.version import InvalidVersion, Version
+
 from agentshore import __version__
 
 if TYPE_CHECKING:
@@ -69,18 +71,15 @@ def _should_overwrite(existing_text: str, source_text: str) -> bool:
         # Source has no version stamp; always overwrite.
         return True
 
-    # Compare as tuples of ints for a simple semver-ish comparison.
+    # Compare with PEP 440 semantics so pre-release/dev stamps (e.g. 1.2.0rc1,
+    # 1.2.0.dev3) order correctly. An unparseable version on either side falls
+    # back to overwriting only when the stamped text actually differs.
     try:
-        existing_parts = tuple(int(x) for x in existing_ver.split("."))
-        source_parts = tuple(int(x) for x in source_ver.split("."))
-        return source_parts > existing_parts or (
-            source_parts == existing_parts and source_text != existing_text
-        )
-    except ValueError:
-        # If either version string is non-numeric, fall back to string compare.
-        return source_ver > existing_ver or (
-            source_ver == existing_ver and source_text != existing_text
-        )
+        source = Version(source_ver)
+        existing = Version(existing_ver)
+    except InvalidVersion:
+        return source_text != existing_text
+    return source > existing or (source == existing and source_text != existing_text)
 
 
 def _stamp_version(text: str) -> str:

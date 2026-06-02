@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from textual.reactive import reactive
 from textual.widget import Widget
 
+from agentshore.ui.format import truncate
+
 if TYPE_CHECKING:
     from agentshore.state import OrchestratorState
 
@@ -39,7 +41,7 @@ class WorkQueueSummary(Widget):
         ]
         if view.next_issue is not None:
             lines.append(
-                f"  Next #{view.next_issue.issue_number}: {_truncate(view.next_issue.title, 42)}"
+                f"  Next #{view.next_issue.issue_number}: {truncate(view.next_issue.title, 42)}"
             )
         return "\n".join(lines)
 
@@ -50,9 +52,3 @@ class WorkQueueSummary(Widget):
 
 def _is_open(state: str) -> bool:
     return state.lower() == "open"
-
-
-def _truncate(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: limit - 1] + "…"

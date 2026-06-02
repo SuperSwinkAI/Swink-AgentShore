@@ -672,7 +672,7 @@ async def _start_orchestrator(
             except Exception:
                 _logger.exception("sidecar_fail_session_failed", session_id=session_id)
 
-        asyncio.get_event_loop().create_task(
+        asyncio.get_running_loop().create_task(
             _finalize_crashed_session(), name=f"fail-session-{session_id}"
         )
 

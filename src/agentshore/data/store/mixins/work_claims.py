@@ -9,15 +9,16 @@ from typing import TYPE_CHECKING
 from agentshore.data.store.base import (
     _ACTIVE_WORK_CLAIM_STATUSES,
     _TERMINAL_WORK_CLAIM_STATUSES,
+    _status_in_clause,
 )
 from agentshore.data.store.helpers import _dedupe_resource_keys
-from agentshore.data.store.rows import _row_to_work_claim
+from agentshore.data.store.rows import _row_to_dispatch_replay, _row_to_work_claim
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     import aiosqlite
 
-    from agentshore.data.models import WorkClaimRecord
+    from agentshore.data.models import DispatchReplayRecord, WorkClaimRecord
 
 
 class _WorkClaimsMixin:
@@ -180,19 +181,16 @@ class _WorkClaimsMixin:
 
     async def work_claim_group_is_active(self, session_id: str, claim_group_id: str) -> bool:
         """Return True when at least one row in the group is still active."""
-        placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "SELECT 1 FROM work_claims",
-                "WHERE session_id = ?",
-                "  AND claim_group_id = ?",
-                f"  AND status IN ({placeholders})",
-                "LIMIT 1",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         async with self._conn.execute(
-            query,
-            (session_id, claim_group_id, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            SELECT 1 FROM work_claims
+            WHERE session_id = ?
+              AND claim_group_id = ?
+              AND {status_clause}
+            LIMIT 1
+            """,
+            (session_id, claim_group_id, *status_params),
         ) as cursor:
             return await cursor.fetchone() is not None
 
@@ -204,22 +202,19 @@ class _WorkClaimsMixin:
         if not keys:
             return []
         key_placeholders = ",".join("?" for _ in keys)
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "SELECT claim_id, claim_group_id, session_id, play_type, resource_key,",
-                "       status, agent_id, play_id, request_mutation_key, review_queue_id,",
-                "       created_at, claimed_at, started_at, finished_at",
-                "FROM work_claims",
-                "WHERE session_id = ?",
-                f"  AND resource_key IN ({key_placeholders})",
-                f"  AND status IN ({status_placeholders})",
-                "ORDER BY claim_id ASC",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
-            query,
-            (session_id, *keys, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            SELECT claim_id, claim_group_id, session_id, play_type, resource_key,
+                   status, agent_id, play_id, request_mutation_key, review_queue_id,
+                   created_at, claimed_at, started_at, finished_at
+            FROM work_claims
+            WHERE session_id = ?
+              AND resource_key IN ({key_placeholders})
+              AND {status_clause}
+            ORDER BY claim_id ASC
+            """,
+            (session_id, *keys, *status_params),
         )
         rows = await cursor.fetchall()
         return [_row_to_work_claim(row) for row in rows]
@@ -234,22 +229,19 @@ class _WorkClaimsMixin:
         if not ids:
             return []
         agent_placeholders = ",".join("?" for _ in ids)
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "SELECT claim_id, claim_group_id, session_id, play_type, resource_key,",
-                "       status, agent_id, play_id, request_mutation_key, review_queue_id,",
-                "       created_at, claimed_at, started_at, finished_at",
-                "FROM work_claims",
-                "WHERE session_id = ?",
-                f"  AND agent_id IN ({agent_placeholders})",
-                f"  AND status IN ({status_placeholders})",
-                "ORDER BY claim_id ASC",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
-            query,
-            (session_id, *ids, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            SELECT claim_id, claim_group_id, session_id, play_type, resource_key,
+                   status, agent_id, play_id, request_mutation_key, review_queue_id,
+                   created_at, claimed_at, started_at, finished_at
+            FROM work_claims
+            WHERE session_id = ?
+              AND agent_id IN ({agent_placeholders})
+              AND {status_clause}
+            ORDER BY claim_id ASC
+            """,
+            (session_id, *ids, *status_params),
         )
         rows = await cursor.fetchall()
         return [_row_to_work_claim(row) for row in rows]
@@ -263,28 +255,25 @@ class _WorkClaimsMixin:
         agent_id: str | None,
     ) -> bool:
         """Transition queued/claimed rows to running for dispatch."""
-        placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'running',",
-                "       play_id = ?,",
-                "       agent_id = COALESCE(?, agent_id),",
-                "       started_at = COALESCE(started_at, ?)",
-                "WHERE session_id = ?",
-                "  AND claim_group_id = ?",
-                f"  AND status IN ({placeholders})",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         async with self._conn.execute(
-            query,
+            f"""
+            UPDATE work_claims
+               SET status = 'running',
+                   play_id = ?,
+                   agent_id = COALESCE(?, agent_id),
+                   started_at = COALESCE(started_at, ?)
+            WHERE session_id = ?
+              AND claim_group_id = ?
+              AND {status_clause}
+            """,
             (
                 play_id,
                 agent_id,
                 now_iso(),
                 session_id,
                 claim_group_id,
-                *_ACTIVE_WORK_CLAIM_STATUSES,
+                *status_params,
             ),
         ) as cursor:
             await self._conn.commit()
@@ -295,18 +284,16 @@ class _WorkClaimsMixin:
     ) -> None:
         """Finish active rows in a claim group with a terminal status."""
         if status == "retrying":
-            placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-            query = "\n".join(
-                (
-                    "UPDATE work_claims",
-                    "   SET status = 'retrying', finished_at = NULL",
-                    " WHERE session_id = ?",
-                    "   AND claim_group_id = ?",
-                    f"   AND status IN ({placeholders})",
-                )
-            )
+            status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
             await self._conn.execute(
-                query, (session_id, claim_group_id, *_ACTIVE_WORK_CLAIM_STATUSES)
+                f"""
+                UPDATE work_claims
+                   SET status = 'retrying', finished_at = NULL
+                 WHERE session_id = ?
+                   AND claim_group_id = ?
+                   AND {status_clause}
+                """,
+                (session_id, claim_group_id, *status_params),
             )
             await self._conn.commit()
             return
@@ -317,19 +304,16 @@ class _WorkClaimsMixin:
             if status == "completed"
             else _ACTIVE_WORK_CLAIM_STATUSES
         )
-        placeholders = ",".join("?" for _ in finishable_statuses)
-        query = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = ?, finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                "   AND claim_group_id = ?",
-                f"   AND status IN ({placeholders})",
-            )
-        )
+        status_clause, status_params = _status_in_clause(finishable_statuses)
         await self._conn.execute(
-            query,
-            (status, now_iso(), session_id, claim_group_id, *finishable_statuses),
+            f"""
+            UPDATE work_claims
+               SET status = ?, finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND claim_group_id = ?
+               AND {status_clause}
+            """,
+            (status, now_iso(), session_id, claim_group_id, *status_params),
         )
         await self._conn.commit()
 
@@ -369,7 +353,7 @@ class _WorkClaimsMixin:
 
     async def get_dispatch_replay(
         self, *, session_id: str, claim_group_id: str, play_id: int
-    ) -> dict[str, object] | None:
+    ) -> DispatchReplayRecord | None:
         """Load replay payload for a specific claim group + play."""
         async with self._conn.execute(
             """
@@ -384,8 +368,7 @@ class _WorkClaimsMixin:
             row = await cursor.fetchone()
         if row is None:
             return None
-        keys = row.keys()
-        return {k: row[k] for k in keys}
+        return _row_to_dispatch_replay(row)
 
     async def get_work_claim_retry_attempts(self, session_id: str, claim_group_id: str) -> int:
         """Return current retry attempt count for a claim group."""
@@ -427,19 +410,16 @@ class _WorkClaimsMixin:
         if not ids:
             return 0
         agent_placeholders = ",".join("?" for _ in ids)
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'released', finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                f"   AND agent_id IN ({agent_placeholders})",
-                f"   AND status IN ({status_placeholders})",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
-            query,
-            (now_iso(), session_id, *ids, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            UPDATE work_claims
+               SET status = 'released', finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND agent_id IN ({agent_placeholders})
+               AND {status_clause}
+            """,
+            (now_iso(), session_id, *ids, *status_params),
         )
         await self._conn.commit()
         return cursor.rowcount
@@ -454,35 +434,29 @@ class _WorkClaimsMixin:
         if not keys:
             return
         key_placeholders = ",".join("?" for _ in keys)
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'superseded', finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                f"   AND resource_key IN ({key_placeholders})",
-                f"   AND status IN ({status_placeholders})",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         await self._conn.execute(
-            query,
-            (now_iso(), session_id, *keys, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            UPDATE work_claims
+               SET status = 'superseded', finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND resource_key IN ({key_placeholders})
+               AND {status_clause}
+            """,
+            (now_iso(), session_id, *keys, *status_params),
         )
         await self._conn.commit()
 
     async def abandon_active_work_claims(self, session_id: str) -> None:
         """Mark leftover active claims abandoned during startup recovery."""
-        placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
-        query = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'abandoned', finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                f"   AND status IN ({placeholders})",
-            )
-        )
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         await self._conn.execute(
-            query,
-            (now_iso(), session_id, *_ACTIVE_WORK_CLAIM_STATUSES),
+            f"""
+            UPDATE work_claims
+               SET status = 'abandoned', finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND {status_clause}
+            """,
+            (now_iso(), session_id, *status_params),
         )
         await self._conn.commit()

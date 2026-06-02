@@ -42,6 +42,7 @@ dependencies = [
     "ruamel-yaml==0.19.1",
     "beaupy==3.11.0",
     "platformdirs==4.9.6",
+    "packaging==25.0",
 ]
 
 [dependency-groups]
