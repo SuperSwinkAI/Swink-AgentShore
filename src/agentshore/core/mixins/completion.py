@@ -25,7 +25,7 @@ from agentshore.github.labels import (
 )
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlaySkipReason, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
@@ -139,6 +139,24 @@ _ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
     "already CLOSED",
     "already closed",
 )
+
+
+def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
+    """Map an executor ``skip_category`` to the unified ``PlaySkipReason`` (TNQA 03 L1).
+
+    Single source for the executor-time skip translation. ``masked`` and
+    ``invalid_config`` both mean the action mask blocked the play
+    (``all_masked``); ``no_target`` / ``staffing`` mean no concrete candidate
+    resolved (``no_eligible_targets``); anything else falls back to
+    ``selector_returned_none``. The loop-tick selector-None path classifies from
+    tick state instead (``LoopRunner.classify_play_skipped_reason``); this table
+    covers only the executor's ``skip_category`` vocabulary.
+    """
+    if skip_category in {"masked", "invalid_config"}:
+        return "all_masked"
+    if skip_category in {"no_target", "staffing"}:
+        return "no_eligible_targets"
+    return "selector_returned_none"
 
 
 def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
@@ -482,15 +500,7 @@ class CompletionProcessor:
             # join them without grep-and-pray. ``skip_category`` is retained
             # for back-compat with existing dashboards.
             skip_category = outcome.skip_category
-            executor_reason: str
-            if skip_category == "masked":
-                executor_reason = "all_masked"
-            elif skip_category in {"no_target", "staffing"}:
-                executor_reason = "no_eligible_targets"
-            elif skip_category == "invalid_config":
-                executor_reason = "all_masked"
-            else:
-                executor_reason = "selector_returned_none"
+            executor_reason = skip_category_to_reason(skip_category)
             _logger.info(
                 "play_skipped",
                 session_id=self._session_id,
