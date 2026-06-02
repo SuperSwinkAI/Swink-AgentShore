@@ -11,7 +11,6 @@ project.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.core import Orchestrator
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import SessionState
 
 
@@ -53,8 +53,7 @@ class _StateStub:
 def _orch() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch._in_flight = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._idle_streak = 0
     orch._last_selection_digest = None
     orch._session_id = "sess-562"

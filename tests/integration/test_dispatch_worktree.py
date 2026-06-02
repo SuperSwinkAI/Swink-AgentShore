@@ -19,7 +19,6 @@ else — git, aiosqlite, subprocess — is real.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import stat
 import subprocess
@@ -35,6 +34,7 @@ from agentshore.agents.worktree import (
     WorktreeAllocationFailed,
 )
 from agentshore.config import AgentConfig, RuntimeConfig
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.base import PlayParams
 from agentshore.state import AgentType, PlayType
@@ -326,9 +326,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         orch._end_session_dispatch_started = False
         orch._in_flight = {}
         orch._dispatch_ctx = {}
-        orch._first_play_override = None
-        orch._override_queue = asyncio.Queue()
-        orch._pending_override_kind = None
+        orch._overrides = OverrideQueue()
         orch._registry = None
         orch._selector = None
         orch._last_selection_digest = None

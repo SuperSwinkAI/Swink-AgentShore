@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import FeedbackConfig, RuntimeConfig
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import AgentStatus, NullStateProvider, PlayOutcome, PlayType, SessionState
 
@@ -65,8 +66,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._policy_version = "test"
     orch._config_hash = "abc"
     orch._metrics = None
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._loop_started_at = 0.0
     orch._registry = None
     orch._pause_event = asyncio.Event()
@@ -95,8 +95,6 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     # selector tick sees them across the gh-CLI / SQLite WAL-flush lag window.
     orch._recent_applied_labels = _collections.deque(maxlen=64)
     # desktop-yrr: loop-detector filter — override-dispatched plays excluded.
-    orch._pending_override_kind = None
-    orch._override_dispatched_play_ids = set()
     # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
     from agentshore.core.recovery_tracker import RecoveryTracker
 

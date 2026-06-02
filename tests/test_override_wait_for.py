@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
@@ -64,8 +65,7 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._policy_version = "test"
     orch._config_hash = "abc"
     orch._metrics = None
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._loop_started_at = 0.0
     orch._registry = None
     orch._pause_event = asyncio.Event()
@@ -79,8 +79,6 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
-    orch._pending_override_kind = None
-    orch._override_dispatched_play_ids = set()
     return orch
 
 
@@ -130,16 +128,16 @@ async def test_override_masked_when_awaited_play_not_yet_completed(tmp_path: Pat
     re-evaluates.
     """
     orch = _make_orch(tmp_path)
-    orch._override_queue.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
+    orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
 
     state = _state({})  # cleanup hasn't completed yet
 
     result = await orch._consume_override(state)
 
     assert result is None, "entry should not dispatch while wait_for_play_type unmet"
-    assert not orch._override_queue.empty(), "BOOTSTRAP entry must re-queue, not drop"
+    assert not orch._overrides.empty(), "BOOTSTRAP entry must re-queue, not drop"
 
-    requeued = orch._override_queue.get_nowait()
+    requeued = orch._overrides.get_nowait()
     assert requeued.play_type == PlayType.INSTANTIATE_AGENT
     assert requeued.wait_for_play_type == PlayType.CLEANUP
     # BOOTSTRAP -> MASK_REQUEUE on re-queue (preserved across handle_masked_override).
@@ -152,7 +150,7 @@ async def test_override_masked_when_awaited_play_not_yet_completed(tmp_path: Pat
 async def test_override_released_once_awaited_play_completed(tmp_path: Path) -> None:
     """Case 2: cleanup present in plays_since_last_play_type -> entry dispatches."""
     orch = _make_orch(tmp_path)
-    orch._override_queue.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
+    orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
 
     # Mark cleanup as having completed at least once.
     state = _state({PlayType.CLEANUP: 0})
@@ -163,15 +161,15 @@ async def test_override_released_once_awaited_play_completed(tmp_path: Path) -> 
     play_type, params = result
     assert play_type == PlayType.INSTANTIATE_AGENT
     assert params.target_model_tier == "medium"
-    assert orch._override_queue.empty(), "entry consumed, queue drains"
-    assert orch._pending_override_kind == OverrideKind.BOOTSTRAP
+    assert orch._overrides.empty(), "entry consumed, queue drains"
+    assert orch._overrides.pending_override_kind == OverrideKind.BOOTSTRAP
 
 
 @pytest.mark.asyncio
 async def test_wait_for_seed_project_also_works(tmp_path: Path) -> None:
     """The gate is generic — also gates on seed_project when that is the first play."""
     orch = _make_orch(tmp_path)
-    orch._override_queue.put_nowait(_bootstrap_medium_entry(PlayType.SEED_PROJECT))
+    orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.SEED_PROJECT))
 
     # cleanup completed but the awaited play (seed_project) has not.
     state = _state({PlayType.CLEANUP: 5})
@@ -179,6 +177,6 @@ async def test_wait_for_seed_project_also_works(tmp_path: Path) -> None:
     result = await orch._consume_override(state)
 
     assert result is None
-    assert not orch._override_queue.empty()
-    requeued = orch._override_queue.get_nowait()
+    assert not orch._overrides.empty()
+    requeued = orch._overrides.get_nowait()
     assert requeued.wait_for_play_type == PlayType.SEED_PROJECT

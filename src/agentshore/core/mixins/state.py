@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import (
         CheckpointRecord,
@@ -136,7 +137,7 @@ class _StateMixin(_OrchestratorBase):
     _stop_requested: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
-    _override_dispatched_play_ids: set[int]
+    _overrides: OverrideQueue
     _pause_event: asyncio.Event
     _drain_reason: str | None
     _forced_mask_play_types: tuple[PlayType, ...]
@@ -396,7 +397,7 @@ class _StateMixin(_OrchestratorBase):
         total_cost = sum(p.dollar_cost for p in data.play_history)
         same_type_failure_streak, same_type_streak = self._compute_play_streaks(
             data.play_history,
-            override_play_ids=self._override_dispatched_play_ids,
+            override_play_ids=self._overrides.dispatched_play_ids,
         )
         (
             last_play_type,

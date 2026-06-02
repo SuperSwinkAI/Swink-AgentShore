@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.override_queue import OverrideQueue
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
@@ -83,9 +84,7 @@ class _DispatchMixin(_OrchestratorBase):
     _end_session_dispatch_started: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
-    _first_play_override: tuple[PlayType, PlayParams] | None
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _pending_override_kind: OverrideKind | None
+    _overrides: OverrideQueue
     _registry: object | None
 
     _last_selection_digest: bytes | None
@@ -165,16 +164,16 @@ class _DispatchMixin(_OrchestratorBase):
         Returns ``None`` if there is no override available or if the candidate
         is masked by the action mask.
 
-        Side-effect: sets ``self._pending_override_kind`` to the OverrideKind
+        Side-effect: sets ``self._overrides.pending_override_kind`` to the OverrideKind
         of the consumed entry so ``_dispatch_play`` can mark the resulting
         ``_DispatchContext`` for the loop detector to skip. Reset to None at
         the top of every consume so a stale value can't leak through.
         """
-        self._pending_override_kind = None
+        self._overrides.pending_override_kind = None
         shutdown_only = self._shutdown_allows_only_end_agent(state)
-        if self._first_play_override is not None:
-            override_play: tuple[PlayType, PlayParams] = self._first_play_override
-            self._first_play_override = None
+        if self._overrides.first_play_override is not None:
+            override_play: tuple[PlayType, PlayParams] = self._overrides.first_play_override
+            self._overrides.first_play_override = None
             if shutdown_only and override_play[0] != PlayType.END_AGENT:
                 _logger.warning(
                     "override_dropped_during_shutdown",
@@ -183,7 +182,7 @@ class _DispatchMixin(_OrchestratorBase):
                 )
                 return None
             # first_play_override is set during seed/bootstrap — treat as bootstrap kind.
-            self._pending_override_kind = OverrideKind.BOOTSTRAP
+            self._overrides.pending_override_kind = OverrideKind.BOOTSTRAP
             _logger.info(
                 "first_play_override",
                 play_type=override_play[0].value,
@@ -191,10 +190,10 @@ class _DispatchMixin(_OrchestratorBase):
             )
             return override_play
 
-        if self._override_queue.empty():
+        if self._overrides.empty():
             return None
 
-        entry: OverrideEntry | None = self._override_queue.get_nowait()
+        entry: OverrideEntry | None = self._overrides.get_nowait()
         while shutdown_only and entry is not None and entry.play_type != PlayType.END_AGENT:
             _logger.warning(
                 "override_dropped_during_shutdown",
@@ -202,7 +201,7 @@ class _DispatchMixin(_OrchestratorBase):
                 kind=entry.kind.value,
                 session_id=self._session_id,
             )
-            entry = None if self._override_queue.empty() else self._override_queue.get_nowait()
+            entry = None if self._overrides.empty() else self._overrides.get_nowait()
 
         # issue #569: targeted sequencing gate that survives bypass_preconditions.
         # When wait_for_play_type is set, hold the entry until that play type has
@@ -282,7 +281,7 @@ class _DispatchMixin(_OrchestratorBase):
                 kind=entry.kind.value,
                 session_id=self._session_id,
             )
-            self._pending_override_kind = entry.kind
+            self._overrides.pending_override_kind = entry.kind
             return entry.play_type, entry.params
         return None
 
@@ -328,7 +327,7 @@ class _DispatchMixin(_OrchestratorBase):
         #    must survive arbitrary cooldown / wait masks until the awaited
         #    condition lifts.
         if entry.kind == OverrideKind.BOOTSTRAP:
-            self._override_queue.put_nowait(
+            self._overrides.put_nowait(
                 dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
             )
             return
@@ -340,7 +339,7 @@ class _DispatchMixin(_OrchestratorBase):
             self._mask_reason_is_indefinite_wait(reason)
             or entry.enqueue_classification == MaskClassification.INDEFINITE_WAIT
         ):
-            self._override_queue.put_nowait(
+            self._overrides.put_nowait(
                 dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
             )
             return
@@ -350,7 +349,7 @@ class _DispatchMixin(_OrchestratorBase):
             self._mask_reason_is_transient(reason)
             and entry.requeue_attempts < _MAX_MASKED_OVERRIDE_REQUEUES
         ):
-            self._override_queue.put_nowait(
+            self._overrides.put_nowait(
                 dataclasses.replace(
                     entry.with_bumped_attempts(),
                     kind=OverrideKind.MASK_REQUEUE,
@@ -722,8 +721,8 @@ class _DispatchMixin(_OrchestratorBase):
         # Read-and-clear: the very next dispatch consumes whatever
         # _consume_override left behind. Any subsequent dispatch (e.g. PPO-
         # selected following an override miss) defaults to None.
-        override_kind = self._pending_override_kind
-        self._pending_override_kind = None
+        override_kind = self._overrides.pending_override_kind
+        self._overrides.pending_override_kind = None
 
         ctx = _DispatchContext(
             dispatch_id=dispatch_id,

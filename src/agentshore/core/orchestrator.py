@@ -161,8 +161,8 @@ class Orchestrator(
             orch._embedded_mode = embedded_mode
             orch._log_path = log_path
 
-            # Wire the requeue callback now that orch owns _override_queue.
-            executor._requeue_callback = lambda pt, p: orch._override_queue.put_nowait(
+            # Wire the requeue callback now that orch owns the override queue.
+            executor._requeue_callback = lambda pt, p: orch._overrides.put_nowait(
                 OverrideEntry(
                     play_type=pt,
                     params=p,
