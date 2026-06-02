@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import (
         CheckpointRecord,
         DataStore,
@@ -141,7 +142,7 @@ class _StateMixin(_OrchestratorBase):
     _drain_reason: str | None
     _forced_mask_play_types: tuple[PlayType, ...]
     _policy_version: str
-    _recent_executor_skip: bool
+    _velocity: VelocityTracker
     _idle_agent_claim_ticks: dict[str, int]
     _registry: object | None
 
@@ -441,7 +442,7 @@ class _StateMixin(_OrchestratorBase):
             same_type_failure_streak=same_type_failure_streak,
             same_type_streak=same_type_streak,
             last_play_type=last_play_type,
-            recent_executor_skip=self._recent_executor_skip,
+            recent_executor_skip=self._velocity.recent_executor_skip,
             in_flight_plays=in_flight_plays,
             in_flight_issues=list(self._executor.inflight_issues),
             planned_issues=self._executor.planned_issues,

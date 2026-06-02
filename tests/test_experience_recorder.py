@@ -8,13 +8,13 @@ sub-step degrades to a skipped record / skipped update, never a raise.
 
 from __future__ import annotations
 
-import collections
 import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agentshore.core.experience_recorder import ExperienceRecorder
+from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
@@ -69,9 +69,9 @@ def _make_recorder(monkeypatch, *, store=None, selector=None):
         _config_hash="abc",
         _repo_root=__import__("pathlib").Path("/tmp/proj"),
         _step_index=7,
-        _recent_agent_types=collections.deque(["claude_code"]),
-        _compute_rolling_velocity=lambda _pid: 0.0,
     )
+    velocity = VelocityTracker(velocity_window_size=50)
+    velocity.record_agent_type("claude_code")
     metrics = MagicMock()
     metrics.snapshot = AsyncMock(return_value=MagicMock())
     sel = selector or MagicMock()
@@ -87,6 +87,7 @@ def _make_recorder(monkeypatch, *, store=None, selector=None):
             selector=sel,
             cfg=cfg,
             host=host,
+            velocity=velocity,
         ),
         host,
         sel,

@@ -85,8 +85,9 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     # v0.15 Phase 5: state-divergence signals consumed by _assemble_state.
     import collections as _collections
 
-    orch._recent_executor_skip = False
-    orch._executor_skip_window = _collections.deque(maxlen=50)
+    from agentshore.core.velocity_tracker import VelocityTracker
+
+    orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = _collections.deque(maxlen=50)
     # desktop-65bg: in-memory shadow of just-completed plays.
     orch._recent_play_completions = _collections.deque(maxlen=64)

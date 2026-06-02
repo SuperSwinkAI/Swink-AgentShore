@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.paths import project_weights_dir
 from agentshore.state import NullStateProvider
 
@@ -188,8 +189,8 @@ class _OrchestratorBase:
     # feedback.unanswered_timeout_seconds is configured; cleared on resume().
     _pause_deadline: float | None
     _last_play_id: int | None
-    _recent_executor_skip: bool
-    _executor_skip_window: collections.deque[bool]
+    # Rolling-velocity / executor-skip-divergence / recent-agent-type windows.
+    _velocity: VelocityTracker
     # All-category no-op window for spin detection: (was_skip, play_type_value)
     # per completed play. Unlike _executor_skip_window (masked-only), this counts
     # every skip category (masked + no_target + staffing) so the LoopProgressMonitor
@@ -198,9 +199,6 @@ class _OrchestratorBase:
     _budget_override: bool
     _stop_done: asyncio.Event
     _config_path: Path | None
-    _velocity_window_start_play_id: int | None
-    _velocity_events: collections.deque[tuple[int, str]]
-    _recent_agent_types: collections.deque[str]
     # In-memory snapshot of recently-completed plays, used to bridge the SQLite
     # WAL-flush lag window. After ``_process_completion`` records a play, the
     # row is in the DB but may not be visible to a subsequent ``get_play_history``
@@ -318,23 +316,11 @@ class _OrchestratorBase:
         self._pause_reason = None
         self._pause_deadline = None
         self._last_play_id = None
-        # True when the most recent play returned ``skipped_outcome("masked")``
-        # from the executor's preconditions safety net — i.e. state shifted
-        # between selection and execution. Surfaced via
-        # ``state.recent_executor_skip`` as a diagnostic; cleared by the next
-        # non-skipped play completion.
-        self._recent_executor_skip = False
-        # Rolling 50-cycle window of EligibilityAuthority confirm-repick
-        # occurrences. Each entry is True iff that selection cycle hit at least
-        # one confirm-repick — the authority's live ``confirm`` rejected a
-        # snapshot-eligible play (live drift → clean re-pick). Fed once per
-        # selection cycle by ``_record_selection_repicks`` (draining the
-        # selector's per-select repick tally), NOT per play completion. Exposed
-        # via ``MetricsEngine.executor_skip_rate_provider`` so PPO's observation
-        # vector carries the same rolling divergence signal (slot 177) it always
-        # did — same slot, same [0,1] range. Repicks are not persisted to
-        # DataStore, so this state lives on the orchestrator.
-        self._executor_skip_window = collections.deque(maxlen=50)
+        # Rolling-velocity / executor-skip-divergence / recent-agent-type
+        # collaborator. Owns the windows the completion path writes and the
+        # observation/state path reads (slot 177 divergence rate,
+        # ``state.recent_executor_skip``, reward velocity + type diversity).
+        self._velocity = VelocityTracker(velocity_window_size=cfg.rl.velocity_window_size)
         # All-category no-op window for the LoopProgressMonitor (see annotation).
         self._recent_play_outcomes = collections.deque(maxlen=50)
         # Retained for IPC compatibility with older feedback responses. Budget
@@ -343,9 +329,6 @@ class _OrchestratorBase:
         # Concurrent stop() callers wait on this event; first caller does the cleanup
         self._stop_done = asyncio.Event()
         self._config_path = None
-        self._velocity_window_start_play_id = None
-        self._velocity_events = collections.deque(maxlen=self._cfg.rl.velocity_window_size)
-        self._recent_agent_types = collections.deque(maxlen=self._cfg.rl.velocity_window_size)
         # Bounded recent-completions cache (see annotation above for rationale).
         # 64 is large enough to span a few seconds of WAL lag at peak dispatch
         # rate; older entries either appear in the DB read or are no longer
@@ -423,49 +406,6 @@ class _OrchestratorBase:
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None:
         raw = getattr(self._selector, "_config_index", None)
         return raw if isinstance(raw, tuple) and raw else None
-
-    def _compute_rolling_velocity(self, current_play_id: int) -> float:
-        """Rolling velocity: (issues_closed + prs_merged) / plays_in_window."""
-        if not self._velocity_events:
-            return 0.0
-        watermark = (
-            self._velocity_window_start_play_id
-            if self._velocity_window_start_play_id is not None
-            else 1
-        )
-        denom = max(1, current_play_id - watermark + 1)
-        return min(1.0, len(self._velocity_events) / denom)
-
-    def _executor_skip_rate_recent_50(self) -> float:
-        """Fraction of the last 50 selection cycles that hit a confirm-repick.
-
-        Post the eligibility refactor this is the live-drift rate: how often the
-        EligibilityAuthority's one live ``confirm`` rejected a snapshot-eligible
-        play, forcing a clean re-pick. Empty window returns 0.0 — a fresh session
-        hasn't run the selector yet, the same observable signal as "no recent
-        divergence." Feeds ``ObservationContext.executor_skip_rate_recent_50`` and
-        ultimately observation slot 177 (unchanged slot and [0,1] range).
-        """
-        if not self._executor_skip_window:
-            return 0.0
-        return sum(self._executor_skip_window) / len(self._executor_skip_window)
-
-    def _record_selection_repicks(self) -> None:
-        """Drain the selector's confirm-repick tally into the divergence window.
-
-        Called once per selection cycle, right after ``_select_play`` returns.
-        Appends a single bool to ``_executor_skip_window`` — True iff the cycle
-        hit at least one confirm-repick (the EligibilityAuthority's live confirm
-        rejected a snapshot-eligible play). Non-PPO selectors have no repick
-        notion and contribute nothing, so the window stays empty (rate 0.0) on
-        the FixedPlanSelector path.
-        """
-        selector = self._selector
-        consume = getattr(selector, "consume_repick_count", None)
-        if consume is None:
-            return
-        repicks = consume()
-        self._executor_skip_window.append(repicks > 0)
 
     # ------------------------------------------------------------------
     # Abstract method declarations — supplied by mixins via MRO.

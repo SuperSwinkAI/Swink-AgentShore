@@ -29,13 +29,13 @@ from agentshore.state import AgentStatus, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import collections
     from collections.abc import Awaitable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
@@ -175,12 +175,9 @@ class _CompletionMixin(_OrchestratorBase):
     _config_hash: str
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
-    _recent_executor_skip: bool
-    _executor_skip_window: collections.deque[bool]
+    _velocity: VelocityTracker
     _break_recovery_failures: dict[str, int]
     _rate_limit_recovery_enqueued: set[str]
-    _velocity_events: collections.deque[tuple[int, str]]
-    _recent_agent_types: collections.deque[str]
     _last_refresh_time: float
     _end_session_dispatch_started: bool
     context_pressure_hints: dict[str, float]
@@ -461,7 +458,7 @@ class _CompletionMixin(_OrchestratorBase):
             # ``_record_selection_repicks``). Other skip categories (no_target,
             # staffing) never indicated state divergence.
             is_masked_skip = outcome.skip_category == "masked"
-            self._recent_executor_skip = is_masked_skip
+            self._velocity.set_recent_executor_skip(is_masked_skip)
             # All-category no-op window for spin detection. The skip path returns
             # early (below) before the loop-detection/stagnation checks ever run,
             # so the no-op-spin check is invoked HERE — this is the exact path the
@@ -488,7 +485,7 @@ class _CompletionMixin(_OrchestratorBase):
         # divergence window is fed from selector confirm-repicks (see
         # ``_record_selection_repicks``), not from play completions, so nothing
         # is appended here anymore.
-        self._recent_executor_skip = False
+        self._velocity.set_recent_executor_skip(False)
         self._recent_play_outcomes.append((False, completed_play_type.value))
 
         _logger.info(
@@ -715,13 +712,13 @@ class _CompletionMixin(_OrchestratorBase):
             play_id_for_velocity = next_state.total_plays
             if outcome.success:
                 if completed_play_type == PlayType.MERGE_PR:
-                    self._velocity_events.append((play_id_for_velocity, "pr_merged"))
+                    self._velocity.record_velocity_event(play_id_for_velocity, "pr_merged")
                 elif completed_play_type == PlayType.ISSUE_PICKUP:
                     closed_issue = isinstance(outcome.artifacts, list) and any(
                         isinstance(a, dict) and a.get("closed_issue") for a in outcome.artifacts
                     )
                     if closed_issue:
-                        self._velocity_events.append((play_id_for_velocity, "issue_closed"))
+                        self._velocity.record_velocity_event(play_id_for_velocity, "issue_closed")
                 elif completed_play_type == PlayType.CLEANUP:
                     pass  # cleanup does not reset velocity
             if outcome.agent_id is not None:
@@ -729,7 +726,7 @@ class _CompletionMixin(_OrchestratorBase):
                     (a for a in next_state.agents if a.agent_id == outcome.agent_id), None
                 )
                 if agent_snap is not None:
-                    self._recent_agent_types.append(agent_snap.agent_type.value)
+                    self._velocity.record_agent_type(agent_snap.agent_type.value)
 
             raw_pending = ctx.pending_step
             pending_step: _PendingStep | None = (

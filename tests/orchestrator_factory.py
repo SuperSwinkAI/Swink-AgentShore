@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.state import NullStateProvider
 
 
@@ -102,15 +103,11 @@ def make_test_orchestrator(
     orch._pause_event.set()
     orch._pause_reason = None
     orch._last_play_id = None
-    orch._recent_executor_skip = False
-    orch._executor_skip_window = collections.deque(maxlen=50)
+    orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._budget_override = False
     orch._stop_done = asyncio.Event()
     orch._config_path = None
-    orch._velocity_window_start_play_id = None
-    orch._velocity_events = collections.deque(maxlen=50)
-    orch._recent_agent_types = collections.deque(maxlen=50)
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
     orch._break_recovery_failures = {}

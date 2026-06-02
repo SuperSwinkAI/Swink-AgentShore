@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.plays.candidates import PlayCandidatePlan
     from agentshore.plays.override import OverrideEntry
@@ -112,6 +113,7 @@ class _LoopMixin(_OrchestratorBase):
     _registry: object | None
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
+    _velocity: VelocityTracker
     _last_play_id: int | None
     _last_warned_failure_streak: int | None
     _last_warned_any_streak: int | None
@@ -984,7 +986,7 @@ class _LoopMixin(_OrchestratorBase):
         # divergence window (observation slot executor_skip_rate_recent_50). Drain
         # once per selection cycle whether or not a play was produced — an
         # all-repick cycle that yields None is exactly the divergence signal.
-        self._record_selection_repicks()
+        self._velocity.record_selection_repicks(self._selector)
         if selection is None:
             # Only log once per distinct digest. With the digest gate
             # above, this fires at most once per state transition rather

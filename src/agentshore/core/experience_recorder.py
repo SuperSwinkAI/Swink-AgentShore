@@ -29,10 +29,10 @@ from agentshore.rl.observation import encode_observation
 from agentshore.rl.reward import compute_reward
 
 if TYPE_CHECKING:
-    import collections
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.rl.observation import ObservationContext
@@ -56,9 +56,6 @@ class _RLStateHost(Protocol):
     _config_hash: str
     _repo_root: Path
     _step_index: int
-    _recent_agent_types: collections.deque[str]
-
-    def _compute_rolling_velocity(self, current_play_id: int) -> float: ...
 
 
 class ExperienceRecorder:
@@ -72,12 +69,14 @@ class ExperienceRecorder:
         selector: PPOSelector,
         cfg: RuntimeConfig,
         host: _RLStateHost,
+        velocity: VelocityTracker,
     ) -> None:
         self._store = store
         self._metrics = metrics
         self._selector = selector
         self._cfg = cfg
         self._host = host
+        self._velocity = velocity
 
     @staticmethod
     def mask_reason_summary(state: object) -> str | None:
@@ -132,8 +131,8 @@ class ExperienceRecorder:
                     outcome,
                     next_state,
                     ctx_after,
-                    rolling_velocity=self._host._compute_rolling_velocity(next_state.total_plays),
-                    type_diversity_in_window=len(set(self._host._recent_agent_types)),
+                    rolling_velocity=self._velocity.compute_rolling_velocity(next_state.total_plays),
+                    type_diversity_in_window=self._velocity.recent_agent_type_diversity(),
                 ),
                 self._cfg.rl.reward,
                 reward_clip_low=self._cfg.rl.ppo.reward_clip_low,

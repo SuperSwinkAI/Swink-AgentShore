@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import MaskClassification
@@ -74,8 +75,7 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._forced_mask_play_types = ()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
-    orch._recent_executor_skip = False
-    orch._executor_skip_window = collections.deque(maxlen=50)
+    orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
