@@ -231,15 +231,15 @@ class _LifecycleMixin(_OrchestratorBase):
         except Exception as exc:
             _logger.warning("default_branch_refresh_failed", error=str(exc))
         else:
-            if new_default != self._default_branch:
+            if new_default != self._main_repo.default_branch:
                 _logger.info(
                     "default_branch_refreshed",
                     session_id=self._session_id,
-                    previous=self._default_branch,
+                    previous=self._main_repo.default_branch,
                     current=new_default,
                     assumed=assumed,
                 )
-                self._default_branch = new_default
+                self._main_repo.default_branch = new_default
         _logger.info("config_reloaded", changed_fields=changed)
 
     async def _pause_with_reason(self, reason: str) -> None:

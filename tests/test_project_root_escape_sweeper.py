@@ -15,6 +15,7 @@ import pytest
 import structlog
 
 from agentshore.core.git_safety import find_path_escape_siblings
+from agentshore.core.main_repo_guard import MainRepoGuard
 
 
 def _events_from_caplog(records: list[logging.LogRecord]) -> list[dict[str, object]]:
@@ -104,7 +105,7 @@ async def test_phase_git_safety_sweep_emits_warning_and_preserves_dir(
     _git(["remote", "set-head", "origin", "main"], project)
 
     orch = Orchestrator.__new__(Orchestrator)
-    orch._default_branch = "main"
+    orch._main_repo = MainRepoGuard()
 
     with (
         structlog.testing.capture_logs() as captured_raw,
@@ -153,7 +154,7 @@ async def test_phase_git_safety_sweep_restores_poisoned_head(
     # a poisoned session start.
 
     orch = Orchestrator.__new__(Orchestrator)
-    orch._default_branch = "main"
+    orch._main_repo = MainRepoGuard()
 
     with (
         structlog.testing.capture_logs() as captured_raw,
@@ -168,4 +169,4 @@ async def test_phase_git_safety_sweep_restores_poisoned_head(
     # And HEAD restored back to main.
     assert current_head_ref(repo) == "refs/heads/main"
     # Default branch resolved into the orchestrator cache.
-    assert orch._default_branch == "main"
+    assert orch._main_repo.default_branch == "main"

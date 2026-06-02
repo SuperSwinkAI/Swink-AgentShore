@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
@@ -119,7 +120,7 @@ class _LoopMixin(_OrchestratorBase):
     _last_stagnation_stage: int
     _last_selection_digest: bytes | None
     _idle_streak: int
-    _main_repo_dispatch_paused: bool
+    _main_repo: MainRepoGuard
     _wedged_idle_ticks: int
     _auto_stop_reprieves_used: int
     _last_refresh_time: float
@@ -504,7 +505,7 @@ class _LoopMixin(_OrchestratorBase):
         # flight, pause persists across the grace window), escalate to a clean
         # drain-based stop rather than idling forever. Gated strictly on the
         # latched pause + no in-flight, so healthy capacity-idle never trips it.
-        if self._main_repo_dispatch_paused and not self._in_flight:
+        if self._main_repo.dispatch_paused and not self._in_flight:
             self._wedged_idle_ticks += 1
             if self._wedged_idle_ticks >= _WEDGED_IDLE_STOP_TICKS:
                 _logger.error(

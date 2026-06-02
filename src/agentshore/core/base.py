@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
@@ -103,16 +104,10 @@ class _OrchestratorBase:
     # stamps it to time.monotonic() right after the session-start fetch, ensuring
     # the first loop tick doesn't re-fetch immediately in production.
     _last_refresh_time: float = float("inf")
-    # desktop-kqo5: cached default branch resolved from origin/HEAD at session
-    # start, refreshed on SIGHUP. ``_pre_play_branches`` maps dispatch_id ->
-    # the symbolic ref (e.g. "refs/heads/main") captured before play_started,
-    # consumed at play_completed for the branch-mutation guard.
-    _default_branch: str = "main"
-    # Class-level mutable default empty dict so tests bypassing __init__
-    # (Orchestrator.__new__) still hit a working attribute. Real instances
-    # bind a fresh dict in __init__.
-    _pre_play_branches: dict[str, str | None] = {}
-    _main_repo_dispatch_paused: bool = False
+    # desktop-kqo5: main-repo branch guard (default branch + pre-play handshake
+    # + dispatch-pause latch). Constructed in __init__; __new__-bypass tests
+    # construct their own.
+    _main_repo: MainRepoGuard
     # Loop-liveness heartbeat (#9): monotonic timestamp stamped at the top of
     # every run_until_idle iteration. An independent watchdog task reads it to
     # detect a hard-frozen loop and force-drain. Class-level default is
@@ -353,19 +348,10 @@ class _OrchestratorBase:
         # and monotonic time of that acknowledgement. Both reset in resume().
         self._feedback_cadence_plays_since_ack = 0
         self._feedback_cadence_last_ack_monotonic = time.monotonic()
-        # desktop-kqo5: default branch defaults to "main" until the session-start
-        # sweeper resolves it via git symbolic-ref refs/remotes/origin/HEAD.
-        self._default_branch = "main"
-        # desktop-kqo5: per-dispatch pre-play symbolic ref shadow. Keyed by
-        # dispatch_id; populated in _dispatch_play, consumed in
-        # _process_completion. Entries are popped on consumption so the dict
-        # never grows past the in-flight set.
-        self._pre_play_branches = {}
-        # desktop-kqo5: latched on main_repo_auto_restore_failed. _dispatch_play
-        # consults this before launching a task. Now cleared by a successful
-        # RECONCILE_STATE (which is exempt from the pause so it can heal the
-        # trunk); if it persists, the idle-with-work watchdog auto-stops.
-        self._main_repo_dispatch_paused = False
+        # desktop-kqo5: main-repo branch guard — default branch (resolved by the
+        # session-start sweeper / SIGHUP), the per-dispatch pre-play ref
+        # handshake, and the auto-restore-failed dispatch-pause latch.
+        self._main_repo = MainRepoGuard()
         # Consecutive idle-with-work ticks spent under a latched trunk pause with
         # nothing in flight — the wedge signature. Drives the auto-stop in
         # _continue_if_selector_idle_work_remains; reset on any dispatch.

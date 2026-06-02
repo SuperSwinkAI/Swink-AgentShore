@@ -96,9 +96,11 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._recent_applied_labels = _collections.deque(maxlen=64)
     # desktop-yrr: loop-detector filter — override-dispatched plays excluded.
     # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
+    from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.recovery_tracker import RecoveryTracker
 
     orch._recovery = RecoveryTracker()
+    orch._main_repo = MainRepoGuard()
     return orch
 
 

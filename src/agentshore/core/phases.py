@@ -504,7 +504,7 @@ async def _phase_git_safety_sweep(
             )
 
         default_branch, assumed = await asyncio.to_thread(resolve_default_branch, repo_root)
-        orch._default_branch = default_branch
+        orch._main_repo.default_branch = default_branch
         if assumed:
             _logger.warning(
                 "default_branch_assumed",

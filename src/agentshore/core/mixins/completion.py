@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.recovery_tracker import RecoveryTracker
     from agentshore.core.velocity_tracker import VelocityTracker
@@ -178,14 +179,10 @@ class _CompletionMixin(_OrchestratorBase):
 
     _feedback_cadence_plays_since_ack: int
     _repo_root: Path  # supplied by _OrchestratorBase
-    # desktop-kqo5: shared with _DispatchMixin via the base class. Pre-play
-    # symbolic refs are popped here at play_completed.
-    _pre_play_branches: dict[str, str | None]
-    _default_branch: str
-    # desktop-kqo5: latched True when auto-restore failed for the main repo.
-    # Future dispatches are blocked until an operator intervenes. Surfaced via
-    # ``main_repo_auto_restore_failed`` log events.
-    _main_repo_dispatch_paused: bool
+    # desktop-kqo5: main-repo branch guard, shared with _DispatchMixin via the
+    # base class. Pre-play refs are popped here at play_completed; the
+    # dispatch-pause latch flips on auto-restore failure.
+    _main_repo: MainRepoGuard
 
     # ------------------------------------------------------------------
 
@@ -250,7 +247,7 @@ class _CompletionMixin(_OrchestratorBase):
         push`` but leaves the symbolic ref unchanged, so it produces zero
         false positives here (see tests/test_merge_pr_no_false_positive.py).
         """
-        pre_play_ref = self._pre_play_branches.pop(dispatch_id, None)
+        pre_play_ref = self._main_repo.pop_pre_play_branch(dispatch_id)
         if pre_play_ref is None:
             # No snapshot recorded (or already detached pre-play). Tracking
             # the post-only state offers no signal — silent return.
@@ -260,7 +257,7 @@ class _CompletionMixin(_OrchestratorBase):
                 check_main_repo_branch_mutated,
                 self._repo_root,
                 pre_ref=pre_play_ref,
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
             )
         except Exception as exc:
             _logger.warning(
@@ -282,7 +279,7 @@ class _CompletionMixin(_OrchestratorBase):
             agent_type=agent_type,
             pre_play_branch=pre_play_ref,
             post_play_branch=post_ref,
-            default_branch=self._default_branch,
+            default_branch=self._main_repo.default_branch,
         )
         if not restored:
             _logger.error(
@@ -291,10 +288,10 @@ class _CompletionMixin(_OrchestratorBase):
                 play_type=play_type.value,
                 agent_id=agent_id,
                 agent_type=agent_type,
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
                 post_play_branch=post_ref,
             )
-            self._main_repo_dispatch_paused = True
+            self._main_repo.dispatch_paused = True
             return
         _logger.info(
             "main_repo_branch_restored",
@@ -302,7 +299,7 @@ class _CompletionMixin(_OrchestratorBase):
             play_type=play_type.value,
             agent_id=agent_id,
             agent_type=agent_type,
-            default_branch=self._default_branch,
+            default_branch=self._main_repo.default_branch,
         )
 
     async def _process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
@@ -347,7 +344,7 @@ class _CompletionMixin(_OrchestratorBase):
         if ctx is None:
             # Still drop the pre-play snapshot if we somehow have one without
             # matching dispatch context. Prevents the dict from leaking.
-            self._pre_play_branches.pop(dispatch_id, None)
+            self._main_repo.pop_pre_play_branch(dispatch_id)
             return None
 
         try:
@@ -398,19 +395,19 @@ class _CompletionMixin(_OrchestratorBase):
         if (
             completed_play_type == PlayType.RECONCILE_STATE
             and outcome.success
-            and self._main_repo_dispatch_paused
+            and self._main_repo.dispatch_paused
         ):
             restored = await asyncio.to_thread(
-                restore_default_branch, self._repo_root, self._default_branch
+                restore_default_branch, self._repo_root, self._main_repo.default_branch
             )
-            self._main_repo_dispatch_paused = not restored
+            self._main_repo.dispatch_paused = not restored
             _logger.info(
                 "main_repo_dispatch_pause_cleared"
                 if restored
                 else "main_repo_dispatch_pause_persists",
                 session_id=self._session_id,
                 via="reconcile_state",
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
             )
 
     async def _handle_skipped_completion(self, outcome: PlayOutcome) -> _CompletionVerdict:
