@@ -26,6 +26,7 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-6",
         "claude-opus-4-5",
         "claude-opus-4-7",
+        "claude-opus-4-8",
     ],
     "codex": [
         # ChatGPT-account-compatible line (also works with API-key auth).
