@@ -39,7 +39,7 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["codex"].binary == "codex"
     assert config.agents["gemini"].binary == "gemini"
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.3-codex"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["codex"].max_context == 400_000
     assert config.agents["codex"].cost_per_1k_input == 0.00175
@@ -259,7 +259,7 @@ def test_default_config_has_two_model_tiers() -> None:
     assert set(config.agents["gemini"].model_tiers) == {"small", "medium", "large"}
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.3-codex"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["gemini"].model_tiers["small"].enabled is True
     assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"

@@ -144,7 +144,7 @@ agents:
   codex:
     enabled: true
     binary: codex
-    model: gpt-5.3-codex
+    model: gpt-5.4
     reasoning_effort: medium
     model_tiers:
       small:
@@ -153,7 +153,7 @@ agents:
         reasoning_effort: low
       medium:
         enabled: true
-        model: gpt-5.3-codex
+        model: gpt-5.4
         reasoning_effort: medium
     max_context: 400000
     cost_per_1k_input: 0.00175

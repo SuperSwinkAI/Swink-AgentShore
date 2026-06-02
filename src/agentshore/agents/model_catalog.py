@@ -28,11 +28,17 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-opus-4-7",
     ],
     "codex": [
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
+        # ChatGPT-account-compatible line (also works with API-key auth).
+        # gpt-5.5 first: OpenAI's recommended default workhorse.
         "gpt-5.5",
         "gpt-5.4",
-        "gpt-5.4-nano",
+        "gpt-5.4-mini",
+        "gpt-5.2",
+        # API-key-only coding model. Kept selectable for users on API-key
+        # auth, but it is NOT a default tier — ChatGPT-account sign-in rejects
+        # it with HTTP 400 ("not supported when using Codex with a ChatGPT
+        # account").
+        "gpt-5.3-codex",
     ],
     "gemini": [
         # Gemini CLI aliases. Keep these first so the setup wizard can use
