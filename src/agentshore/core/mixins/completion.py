@@ -18,6 +18,7 @@ from agentshore.core.helpers import (
     _ppo_selector_cls,
     _str_extra,
 )
+from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT
 from agentshore.data.store import PlayRecord, PullRequestRecord
 from agentshore.github.labels import (
     MANUAL_REQUIRED_LABEL,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.recovery_tracker import RecoveryTracker
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.plays.executor import PlayExecutor
@@ -65,13 +67,6 @@ class _CompletionVerdict(enum.Enum):
     RETRIED = "retried"
 
 
-# Consecutive take_break failures (attempt_recovery returned False) on the same
-# agent before it is considered recovery-exhausted. At/above this count the
-# agent's id is surfaced in OrchestratorState.recovery_exhausted_agent_ids,
-# which the mask uses to re-enable END_AGENT so the PPO — not a forced override
-# — decides whether to retire the wedged agent. The counter stays elevated
-# until the agent is actually ended (cleared in _harvest_completed).
-BREAK_RECOVERY_FAILURE_LIMIT = 2
 
 # Error classes that trigger a system-side take_break override. Same membership
 # the take_break play uses for its preconditions — kept here so the loop's
@@ -176,8 +171,7 @@ class _CompletionMixin(_OrchestratorBase):
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
     _velocity: VelocityTracker
-    _break_recovery_failures: dict[str, int]
-    _rate_limit_recovery_enqueued: set[str]
+    _recovery: RecoveryTracker
     _last_refresh_time: float
     _end_session_dispatch_started: bool
     context_pressure_hints: dict[str, float]
@@ -836,7 +830,7 @@ class _CompletionMixin(_OrchestratorBase):
             # The agent slot was cleared by the END_AGENT play. Drop any stale
             # break-recovery count so a re-instantiated agent reusing the id
             # doesn't inherit an elevated (recovery-exhausted) counter.
-            self._break_recovery_failures.pop(outcome.agent_id, None)
+            self._recovery.clear_break_failures(outcome.agent_id)
         # Second state_update after play completes so consumers see the fresh result
         post_state = await self._build_state()
         await self._safe_call(
@@ -914,7 +908,7 @@ class _CompletionMixin(_OrchestratorBase):
         """
 
         if final_status != AgentStatus.ERROR:
-            self._rate_limit_recovery_enqueued.discard(agent_id)
+            self._recovery.clear_rate_limit_enqueued(agent_id)
             return
         handle = self._manager.handles.get(agent_id)
         if handle is None:
@@ -922,7 +916,7 @@ class _CompletionMixin(_OrchestratorBase):
         error_class = getattr(handle, "last_error_class", None)
         if error_class not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
             return
-        if agent_id in self._rate_limit_recovery_enqueued:
+        if self._recovery.is_rate_limit_enqueued(agent_id):
             return
         params = PlayParams(
             agent_id=agent_id,
@@ -938,7 +932,7 @@ class _CompletionMixin(_OrchestratorBase):
                 kind=OverrideKind.RATE_LIMIT_RECOVERY,
             )
         )
-        self._rate_limit_recovery_enqueued.add(agent_id)
+        self._recovery.mark_rate_limit_enqueued(agent_id)
         _logger.info(
             "rate_limit_recovery_enqueued",
             session_id=self._session_id,
@@ -964,12 +958,11 @@ class _CompletionMixin(_OrchestratorBase):
             return
         # Clear the rate-limit-recovery latch on any take_break completion so
         # the next ERROR transition for this agent can re-arm the override.
-        self._rate_limit_recovery_enqueued.discard(agent_id)
+        self._recovery.clear_rate_limit_enqueued(agent_id)
         if outcome.success:
-            self._break_recovery_failures.pop(agent_id, None)
+            self._recovery.clear_break_failures(agent_id)
             return
-        failures = self._break_recovery_failures.get(agent_id, 0) + 1
-        self._break_recovery_failures[agent_id] = failures
+        failures = self._recovery.record_break_failure(agent_id)
         if failures < BREAK_RECOVERY_FAILURE_LIMIT:
             _logger.info(
                 "break_recovery_failed",

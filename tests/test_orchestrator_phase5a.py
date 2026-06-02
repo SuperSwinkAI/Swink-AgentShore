@@ -98,8 +98,9 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._pending_override_kind = None
     orch._override_dispatched_play_ids = set()
     # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
-    orch._break_recovery_failures = {}
-    orch._rate_limit_recovery_enqueued = set()
+    from agentshore.core.recovery_tracker import RecoveryTracker
+
+    orch._recovery = RecoveryTracker()
     return orch
 
 

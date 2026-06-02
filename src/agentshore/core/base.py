@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.paths import project_weights_dir
 from agentshore.state import NullStateProvider
@@ -217,8 +218,8 @@ class _OrchestratorBase:
     # — session 2b8729bf re-selected the same issue at the very next tick
     # before the label landed). Other label flows do not need this hop.
     _recent_applied_labels: collections.deque[tuple[int, str]]
-    _break_recovery_failures: dict[str, int]
-    _rate_limit_recovery_enqueued: set[str]
+    # take_break-failure + rate-limit-recovery latches.
+    _recovery: RecoveryTracker
     _feedback_cadence_plays_since_ack: int
     _feedback_cadence_last_ack_monotonic: float
 
@@ -340,15 +341,9 @@ class _OrchestratorBase:
         # are ``(issue_number, label)`` tuples; the merge helper is keyed
         # on issue_number.
         self._recent_applied_labels = collections.deque(maxlen=64)
-        # Consecutive take_break failures per agent. Resets to 0 on a successful
-        # break or any other terminal transition. When the count crosses
-        # ``BREAK_RECOVERY_FAILURE_LIMIT``, the loop enqueues an end_agent
-        # override with bypass_preconditions=True (desktop-s1u7).
-        self._break_recovery_failures: dict[str, int] = {}
-        # Agents the loop has already enqueued a RATE_LIMIT_RECOVERY override
-        # for. Cleared once that agent recovers (status != ERROR) so the next
-        # rate_limit event re-arms the override.
-        self._rate_limit_recovery_enqueued: set[str] = set()
+        # take_break-failure + rate-limit-recovery latches (desktop-s1u7). The
+        # completion path mutates them; state.py reads recovery_exhausted_agent_ids.
+        self._recovery = RecoveryTracker()
         # Selection-state digest gate: skip the selector + storm-prone log line
         # when nothing the selector cares about changed since the last attempt.
         # Pairs with ``_IDLE_BACKOFF_SECONDS`` to stretch the loop's idle wait

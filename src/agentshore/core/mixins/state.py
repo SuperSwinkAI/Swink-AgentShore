@@ -11,7 +11,6 @@ import aiosqlite
 from agentshore.core.base import _OrchestratorBase
 from agentshore.core.context import _StateData
 from agentshore.core.helpers import _logger
-from agentshore.core.mixins.completion import BREAK_RECOVERY_FAILURE_LIMIT
 from agentshore.rl.action_space import ACTION_SPACE_VERSION
 from agentshore.state import (
     INTERNAL_PLAY_TYPES,
@@ -452,11 +451,7 @@ class _StateMixin(_OrchestratorBase):
             last_play_skipped_by_type=last_play_skipped_by_type,
             consecutive_nonproductive_by_type=consecutive_nonproductive_by_type,
             forced_mask_zeros=self._forced_mask_play_types,
-            recovery_exhausted_agent_ids=frozenset(
-                a.agent_id
-                for a in agents
-                if self._break_recovery_failures.get(a.agent_id, 0) >= BREAK_RECOVERY_FAILURE_LIMIT
-            ),
+            recovery_exhausted_agent_ids=self._recovery.recovery_exhausted_agent_ids(agents),
             drain_reason=self._drain_reason if self._draining else None,
             graph=data.graph,
             stats=stats,
