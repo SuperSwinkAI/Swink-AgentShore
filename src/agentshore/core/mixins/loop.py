@@ -8,9 +8,18 @@ import dataclasses
 import hashlib
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, assert_never, cast
 
 from agentshore.core.helpers import _logger, _ppo_selector_cls
+from agentshore.core.tick_action import (
+    Break,
+    Continue,
+    Dispatch,
+    Pause,
+    TickAction,
+    WaitIdle,
+    WaitInFlight,
+)
 from agentshore.plays.base import PlayParams
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.state import AgentStatus, PlaySkipReason, PlayType, SessionState
@@ -943,9 +952,24 @@ class LoopRunner:
         """Run one RL-loop iteration. Returns True if the loop should break.
 
         Extracted from ``run_until_idle`` so each tick runs behind the per-tick
-        guard there. Control flow that previously ``break``-ed the while loop
-        returns True; everything that previously ``continue``-d (or fell off the
-        end) returns False so the loop re-iterates.
+        guard there. The tick is split in two (03 H2): :meth:`_resolve_tick`
+        performs the reads/harvests it needs and decides *what* the tick should
+        do, returning a :class:`TickAction`; :meth:`_apply_tick_action` performs
+        the single terminal effect and collapses it back to the break/continue
+        ``bool`` (True breaks the loop, False re-iterates). Behavior is
+        identical to the old monolithic body.
+        """
+        action = await self._resolve_tick()
+        return await self._apply_tick_action(action)
+
+    async def _resolve_tick(self) -> TickAction:
+        """Decide what one RL-loop iteration should do.
+
+        Performs the harvest/refresh/state-build/selection reads the decision
+        needs and returns the terminal :class:`TickAction`. Every old
+        ``return True`` becomes :class:`Break`, every ``return False`` becomes
+        :class:`Continue`/:class:`WaitInFlight`/:class:`WaitIdle`/:class:`Pause`,
+        and the dispatch tail becomes :class:`Dispatch`.
         """
         # Pause blocks new selection/dispatch, but completed in-flight plays
         # still need to be harvested so agent completions, costs, and rewards
@@ -971,7 +995,7 @@ class LoopRunner:
                     with suppress(asyncio.CancelledError):
                         await pause_wait
             if self._host._stop_requested:
-                return True
+                return Break()
             if self._host._in_flight:
                 # Harvest completions so they aren't stranded behind the gate.
                 await self._completion.harvest_completed()
@@ -983,10 +1007,10 @@ class LoopRunner:
                 # Unanswered feedback pause past its deadline → clean drain.
                 await self.auto_stop_unanswered_pause()
             elif not self._host._pause_event.is_set():
-                return False
+                return Continue()
 
         if self._host._stop_requested:
-            return True
+            return Break()
 
         # Drain requested from sync context (e.g. signal handler) — initialize fully.
         if self._host._draining and not self._host._drain_initialized:
@@ -1019,11 +1043,10 @@ class LoopRunner:
             )
             if reason is not None and reason != "stop_requested":
                 self._host._natural_exit_reason = reason
-            return True
+            return Break()
         if reason is not None:
             # reason set but should_stop False → pause; loop blocks at wait() next iteration
-            await self._lifecycle.pause_with_reason(reason)
-            return False
+            return Pause(reason)
 
         # PPO sees the full mask every tick — the eligibility mask
         # (``compute_agent_eligibility_mask``) already zeros out worker
@@ -1043,15 +1066,14 @@ class LoopRunner:
         digest = self.selection_state_digest(state, idle_agents)
         ceiling_tick = self._host._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
         if digest == self._host._last_selection_digest and not ceiling_tick:
-            self._host._idle_streak += 1
-            if self._host._in_flight:
-                await self._completion.wait_for_in_flight(
-                    timeout=self.idle_backoff("waiting_for_in_flight_resource")
-                )
-                return False
-            # truly idle, nothing changed → break unless idle-work remains
-            return not await self.continue_if_selector_idle_work_remains(
-                state, reason="unchanged_digest"
+            # Nothing changed since the last attempt — idle without re-running
+            # the selector (and without its log line, hence log_selector_idle
+            # False and no structured play_skipped emit).
+            return self._resolve_idle_tick(
+                state,
+                reason="unchanged_digest",
+                log_selector_idle=False,
+                emit_skipped=False,
             )
 
         self._host._last_selection_digest = digest
@@ -1066,25 +1088,14 @@ class LoopRunner:
         # all-repick cycle that yields None is exactly the divergence signal.
         self._velocity.record_selection_repicks(self._host._selector)
         if selection is None:
-            # Only log once per distinct digest. With the digest gate
-            # above, this fires at most once per state transition rather
-            # than once per loop tick.
-            self._host._idle_streak += 1
-            _idle_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
-            _idle_log(
-                "selector_idle",
-                session_id=self._session_id,
-                idle_streak=self._host._idle_streak,
-            )
-            if self._host._in_flight:
-                await self.emit_structured_play_skipped_for_current_tick(state)
-                await self._completion.wait_for_in_flight(
-                    timeout=self.idle_backoff("waiting_for_in_flight_resource")
-                )
-                return False
-            # truly idle → break unless idle-work remains
-            return not await self.continue_if_selector_idle_work_remains(
-                state, reason="selector_none"
+            # Selector idled with a fresh digest: log ``selector_idle`` (once
+            # per distinct digest, thanks to the gate above) and, when work is
+            # in flight, emit a structured play_skipped before backing off.
+            return self._resolve_idle_tick(
+                state,
+                reason="selector_none",
+                log_selector_idle=True,
+                emit_skipped=True,
             )
 
         # Selector picked a play — reset the streak so the next idle window
@@ -1133,11 +1144,8 @@ class LoopRunner:
                 play_type, params = PlayType.END_AGENT, PlayParams()
             else:
                 if self._host._in_flight:
-                    await self._completion.wait_for_in_flight(
-                        timeout=self.idle_backoff("waiting_for_in_flight_resource")
-                    )
-                    return False
-                return True
+                    return WaitInFlight("waiting_for_in_flight_resource")
+                return Break()
         end_session_blocked = (
             play_type == PlayType.END_SESSION
             and not await self._dispatcher.revalidate_end_session_before_dispatch()
@@ -1145,17 +1153,74 @@ class LoopRunner:
         if end_session_blocked:
             if isinstance(self._host._selector, _ppo_selector_cls()):
                 self._host._selector.consume_pending()
-            return False
-        dispatched = await self._dispatcher.dispatch_play(play_type, params, state)
-        if not dispatched:
-            return False
-        # NO await — continue loop
+            return Continue()
+        return Dispatch(play_type, params, state)
 
-        # Efficient wait if tasks in flight. Tests patch the module-local
-        # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS`` constant.
+    def _resolve_idle_tick(
+        self,
+        state: OrchestratorState,
+        *,
+        reason: str,
+        log_selector_idle: bool,
+        emit_skipped: bool,
+    ) -> TickAction:
+        """Collapse the two near-identical idle paths into one decision.
+
+        Both the unchanged-digest and selector-returned-None paths increment the
+        idle streak and then either back off on in-flight work or resolve the
+        truly-idle case. They differ only in their telemetry: selector-None logs
+        ``selector_idle`` and emits a structured play_skipped before waiting;
+        unchanged-digest does neither. Those distinctions ride the
+        ``log_selector_idle`` / ``emit_skipped`` flags and the ``reason`` string
+        so each path keeps its exact log line and idle reason.
+        """
+        self._host._idle_streak += 1
+        if log_selector_idle:
+            _idle_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
+            _idle_log(
+                "selector_idle",
+                session_id=self._session_id,
+                idle_streak=self._host._idle_streak,
+            )
         if self._host._in_flight:
-            await self._completion.wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
-        elif not self._host._in_flight:
-            return True  # truly idle
+            return WaitInFlight(
+                "waiting_for_in_flight_resource",
+                emit_skipped_state=state if emit_skipped else None,
+            )
+        # truly idle → break unless idle-work remains
+        return WaitIdle(state, reason)
 
-        return False
+    async def _apply_tick_action(self, action: TickAction) -> bool:
+        """Perform a resolved tick's single terminal effect.
+
+        Returns True when the loop should break, False to re-iterate — the same
+        contract the old monolithic ``_run_loop_body`` returned inline.
+        """
+        match action:
+            case Break():
+                return True
+            case Continue():
+                return False
+            case Pause(reason=reason):
+                await self._lifecycle.pause_with_reason(reason)
+                return False
+            case WaitInFlight(wait_class=wait_class, emit_skipped_state=emit_state):
+                if emit_state is not None:
+                    await self.emit_structured_play_skipped_for_current_tick(emit_state)
+                await self._completion.wait_for_in_flight(timeout=self.idle_backoff(wait_class))
+                return False
+            case WaitIdle(state=state, reason=reason):
+                return not await self.continue_if_selector_idle_work_remains(state, reason=reason)
+            case Dispatch(play_type=play_type, params=params, state=state):
+                dispatched = await self._dispatcher.dispatch_play(play_type, params, state)
+                if not dispatched:
+                    return False
+                # NO await on dispatch itself — wait only on resulting in-flight
+                # work. Tests patch the module-local
+                # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS``.
+                if self._host._in_flight:
+                    await self._completion.wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
+                    return False
+                return True  # truly idle
+            case _:
+                assert_never(action)
