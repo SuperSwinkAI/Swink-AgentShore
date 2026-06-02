@@ -100,7 +100,6 @@ def make_test_orchestrator(
     orch._config_hash = "abc"
     orch._metrics = None
     orch._overrides = OverrideQueue()
-    orch._forced_mask_play_types = ()
     orch._loop_started_at = 0.0
     orch._registry = None
     orch._pause_event = asyncio.Event()

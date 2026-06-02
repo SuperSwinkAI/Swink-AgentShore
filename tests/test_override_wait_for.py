@@ -72,7 +72,6 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._registry = None
     orch._pause_event = asyncio.Event()
     orch._pause_event.set()
-    orch._forced_mask_play_types = ()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
     orch._velocity = VelocityTracker(velocity_window_size=50)

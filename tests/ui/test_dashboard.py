@@ -16,6 +16,7 @@ from agentshore.state import (
     PlayOutcome,
     PlayType,
     SessionState,
+    loop_level_for_streak,
 )
 from agentshore.ui.app import OrchestratorApp
 from agentshore.ui.screens.dashboard import MainDashboard
@@ -60,6 +61,7 @@ def _make_state(
         graph=graph,
         budget=budget,
         same_type_failure_streak=streak,
+        loop_level=loop_level_for_streak(streak),
     )
     state.last_play_type = last_play_type
     return state
