@@ -13,6 +13,8 @@ import pytest
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
 from agentshore.config.models import ModelTierConfig
 from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
+from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.phases import (
     _author_labels_for_config,
@@ -165,7 +167,7 @@ def test_compute_play_streaks_ignores_unfinished_rows() -> None:
         ),
     ]
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(history)
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(history)
 
     assert fail_streak == 0
     assert any_streak == 1
@@ -214,7 +216,7 @@ def test_compute_play_streaks_ignores_override_dispatched_plays() -> None:
     ]
     override_ids = {10, 11, 12, 13}
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(
         history, override_play_ids=override_ids
     )
 
@@ -268,7 +270,7 @@ def test_compute_play_streaks_real_streak_after_override_burst() -> None:
         ),
     ]
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(
         history, override_play_ids={10, 11}
     )
 
@@ -394,7 +396,9 @@ async def test_run_until_idle_terminates_on_none_selector(tmp_path: Path) -> Non
     selector = FixedPlanSelector([])  # immediately returns None
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     async with orch:
-        with patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())):
+        with patch.object(
+            orch._state_builder, "build_state", new=AsyncMock(return_value=_idle_state_no_work())
+        ):
             await orch.run_until_idle()  # should return without hanging
 
 
@@ -411,7 +415,7 @@ async def test_run_until_idle_retries_selector_none_when_work_remains(tmp_path: 
 
     async with orch:
         with (
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
+            patch.object(orch._state_builder, "build_state", new=AsyncMock(return_value=state)),
             patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
             patch("agentshore.core.helpers._logger.warning") as warning,
         ):
@@ -426,7 +430,7 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
     selector = FixedPlanSelector([])
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     state = _idle_state_with_issue()
-    orch._last_selection_digest = orch._selection_state_digest(state, list(state.agents))
+    orch._last_selection_digest = orch._loop.selection_state_digest(state, list(state.agents))
     sleep_calls: list[float] = []
 
     async def _sleep(delay: float) -> None:
@@ -437,7 +441,7 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
         select = AsyncMock(return_value=None)
         with (
             patch.object(selector, "select", new=select),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
+            patch.object(orch._state_builder, "build_state", new=AsyncMock(return_value=state)),
             patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
             patch("agentshore.core.helpers._logger.warning") as warning,
         ):
@@ -453,12 +457,23 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     orch = Orchestrator.__new__(Orchestrator)
     orch._cfg = _cfg()
     orch._session_id = "s1"
-    orch._idle_agent_claim_ticks = {}
     claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g1", resource_key="issue:42")
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
     orch._store = store
+    orch._state_builder = StateBuilder(
+        host=orch,
+        store=store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id="s1",
+        repo_root=Path("/tmp"),
+        snapshots=MagicMock(),
+        velocity=MagicMock(),
+        recovery=MagicMock(),
+        overrides=MagicMock(),
+    )
     state = OrchestratorState(
         session_id="s1",
         session_state=SessionState.RUNNING,
@@ -467,15 +482,15 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
         agents=[_idle_agent("agent-1")],
     )
 
-    await orch._release_claims_for_prolonged_idle_agents(state)
-    await orch._release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_not_awaited()
 
-    await orch._release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_awaited_once_with("s1", ["agent-1"])
-    assert orch._idle_agent_claim_ticks == {}
+    assert orch._state_builder._idle_agent_claim_ticks == {}
 
 
 @pytest.mark.asyncio
@@ -491,8 +506,12 @@ async def test_audit_play_completion_forces_issue_refresh(
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=refresh_issues),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._completion, "refresh_issues", new=refresh_issues),
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
             patch.object(orch._executor, "execute", new=AsyncMock(return_value=outcome)),
         ):
             await orch.run_until_idle()
@@ -509,13 +528,15 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
 
     async with orch:
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()) as refresh_issues,
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()) as refresh_issues,
             patch.object(
-                orch, "_build_state", new=AsyncMock(return_value=_idle_state_with_issue())
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_with_issue()),
             ),
             patch("agentshore.core.helpers._logger.warning") as warning,
         ):
-            allowed = await orch._revalidate_end_session_before_dispatch()
+            allowed = await orch._dispatcher.revalidate_end_session_before_dispatch()
 
     assert allowed is False
     refresh_issues.assert_awaited_once()
@@ -548,11 +569,17 @@ async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
             patch.object(
-                orch, "_revalidate_end_session_before_dispatch", new=AsyncMock(return_value=False)
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
+            patch.object(
+                orch._dispatcher,
+                "revalidate_end_session_before_dispatch",
+                new=AsyncMock(return_value=False),
             ) as revalidate,
-            patch.object(orch, "_dispatch_play", new=AsyncMock()) as dispatch,
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock()) as dispatch,
         ):
             await orch.run_until_idle()
 
@@ -592,10 +619,10 @@ async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> N
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch,
-                "_build_state",
+                orch._state_builder,
+                "build_state",
                 new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
             ),
             patch.object(orch._executor, "execute", new=AsyncMock(side_effect=_execute)) as execute,
@@ -623,10 +650,10 @@ async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch,
-                "_build_state",
+                orch._state_builder,
+                "build_state",
                 new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
             ),
             patch.object(orch._executor, "execute", new=AsyncMock(return_value=end_outcome)),
@@ -672,10 +699,10 @@ async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -
             plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
         )
 
-    orch._build_state = AsyncMock(side_effect=_fake_state)
-    orch._refresh_issues = AsyncMock()
-    orch._generate_end_session_report = AsyncMock(return_value=tmp_path / "esr.html")
-    orch._idle_backoff = MagicMock(return_value=0.0)
+    orch._state_builder.build_state = AsyncMock(side_effect=_fake_state)
+    orch._completion.refresh_issues = AsyncMock()
+    orch._drain.generate_end_session_report = AsyncMock(return_value=tmp_path / "esr.html")
+    orch._loop.idle_backoff = MagicMock(return_value=0.0)
 
     await orch.__aenter__()
     try:
@@ -705,7 +732,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
     cfg = _cfg()
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, selector=selector)
 
-    # Override _build_state to return a state inside the final $5 budget reserve.
+    # Override build_state to return a state inside the final $5 budget reserve.
     from agentshore.state import BudgetSnapshot
 
     reserve_budget = BudgetSnapshot(
@@ -722,7 +749,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
         )
 
     async with orch:
-        with patch.object(orch, "_build_state", new=_fake_state):
+        with patch.object(orch._state_builder, "build_state", new=_fake_state):
             await orch.run_until_idle()
 
     assert orch._draining is True
@@ -783,12 +810,18 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
             orch._in_flight.clear()
 
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
-            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
-            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+                orch._state_builder, "build_state", new=AsyncMock(return_value=busy_state)
+            ),
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(
+                orch._completion, "wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)
+            ),
+            patch.object(
+                orch._loop,
+                "continue_if_selector_idle_work_remains",
+                new=AsyncMock(return_value=False),
             ),
             patch("agentshore.core.helpers._logger.info") as info_log,
         ):
@@ -847,12 +880,18 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
             orch._in_flight.clear()
 
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
-            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
-            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+                orch._state_builder, "build_state", new=AsyncMock(return_value=busy_state)
+            ),
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(
+                orch._completion, "wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)
+            ),
+            patch.object(
+                orch._loop,
+                "continue_if_selector_idle_work_remains",
+                new=AsyncMock(return_value=False),
             ),
             patch("agentshore.core.helpers._logger.info") as info_log,
         ):
@@ -872,7 +911,7 @@ async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
         # Should not raise; should just log
-        await orch._on_crash("agent-123", 1)
+        await orch._completion.on_crash("agent-123", 1)
         # No handles were created so there's nothing to verify beyond no exception
 
 
@@ -885,7 +924,7 @@ async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
 async def test_on_context_pressure_annotates_hints(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
-        await orch._on_context_pressure("agent-42", 0.87)
+        await orch._completion.on_context_pressure("agent-42", 0.87)
         assert orch.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
 
 
@@ -994,8 +1033,12 @@ async def test_executor_exception_does_not_crash_loop(tmp_path: Path) -> None:
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
             patch.object(orch._executor, "execute", new=mock_execute),
         ):
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
@@ -1029,7 +1072,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
             await task
 
         # Should not raise even with cancelled task and missing dispatch context
-        await orch._process_completion("nonexistent-dispatch-id", task)
+        await orch._completion.process_completion("nonexistent-dispatch-id", task)
 
 
 # ---------------------------------------------------------------------------
@@ -1165,25 +1208,25 @@ async def test_stagnation_escalation_ladder_and_reset(tmp_path: Path) -> None:
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
         )
         assert await orch._check_stagnation_escalation(state) is False
-        assert orch._last_stagnation_stage == 1
+        assert orch._loop._last_stagnation_stage == 1
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=3))
         )
         assert await orch._check_stagnation_escalation(state) is True
-        assert orch._last_stagnation_stage == 2
+        assert orch._loop._last_stagnation_stage == 2
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=5))
         )
         assert await orch._check_stagnation_escalation(state) is True
-        assert orch._last_stagnation_stage == 3
+        assert orch._loop._last_stagnation_stage == 3
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
         )
         assert await orch._check_stagnation_escalation(state) is False
-        assert orch._last_stagnation_stage == 0
+        assert orch._loop._last_stagnation_stage == 0
 
 
 @pytest.mark.asyncio

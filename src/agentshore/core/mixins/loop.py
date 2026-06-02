@@ -8,9 +8,8 @@ import dataclasses
 import hashlib
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.helpers import _logger, _ppo_selector_cls
 from agentshore.plays.base import PlayParams
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
@@ -21,18 +20,22 @@ if TYPE_CHECKING:
 
     from agentshore.config import RuntimeConfig
     from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.completion import CompletionProcessor
+    from agentshore.core.mixins.dispatch import Dispatcher
+    from agentshore.core.mixins.drain import DrainController
+    from agentshore.core.mixins.lifecycle import LifecycleController
+    from agentshore.core.mixins.state import StateBuilder
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.velocity_tracker import VelocityTracker
-    from agentshore.data.store import DataStore
     from agentshore.plays.candidates import PlayCandidatePlan
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.selector import PlaySelector
+    from agentshore.rl.action_space import ConfigKey
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
         AgentSnapshot,
         OrchestratorState,
         PlayOutcome,
-        StateProvider,
     )
 
     NaturalExitCallback = Callable[[str], Awaitable[None]]
@@ -42,9 +45,9 @@ if TYPE_CHECKING:
 class SkipDiagnosis:
     """Why nothing was dispatched this tick — the shared skip-classification.
 
-    Built once by ``_compute_skip_diagnosis`` and consumed by every site that
+    Built once by ``compute_skip_diagnosis`` and consumed by every site that
     needs to emit ``play_skipped`` / decide an idle wait: the in-flight
-    selector-None path, the truly-idle ``_continue_if_selector_idle_work_remains``
+    selector-None path, the truly-idle ``continue_if_selector_idle_work_remains``
     path, and any future autonomous-stop classifier. Bundles the candidate plan
     (so callers can read ``work_availability`` / ``has_remaining_work`` without
     rebuilding it), the top mask reasons, and the resolved ``PlaySkipReason``.
@@ -96,60 +99,136 @@ _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS = 15.0
 _MAX_CONSECUTIVE_TICK_FAILURES = 10
 
 
-class _LoopMixin(_OrchestratorBase):
-    """The main orchestration loop plus loop-detection and stagnation laddering."""
+class _LoopHost(Protocol):
+    """Orchestrator runtime/control state read OR written live by :class:`LoopRunner`.
 
-    _cfg: RuntimeConfig
-    _session_id: str
-    _store: DataStore
-    _selector: PlaySelector | None
-    _state_provider: StateProvider
-    _stop_requested: bool
+    These members are accessed fresh via ``self._host.<attr>`` on every call so
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight map, idle
+    streak, selection digest, pause/drain latches, natural-exit hooks,
+    bootstrap-assigned selector/registry/metrics) are always current — never
+    captured at construction. Fields the loop *writes* (``_idle_streak``,
+    ``_last_selection_digest``, ``_natural_exit_reason``, ``_draining``,
+    ``_drain_reason``, ``_pause_deadline``, ``_loop_started_at``) are declared as
+    plain annotated attributes (not read-only ``@property``) so the assignments
+    type-check. ``_in_flight`` is mutated in place by other components.
+    ``_OrchestratorBase`` structurally satisfies this Protocol; the
+    cross-component methods (``_safe_call``, ``_selector_config_index``) are
+    resolved live on the composition root.
+    """
+
+    # --- written by the loop ------------------------------------------------
+    _idle_streak: int
+    _last_selection_digest: bytes | None
+    _natural_exit_reason: str | None
     _draining: bool
     _drain_reason: str | None
+    _pause_deadline: float | None
+    _loop_started_at: float
+    # --- read by the loop (and the in-flight map mutated in place) ----------
+    _cfg: RuntimeConfig
+    _session_id: str
+    _selector: PlaySelector | None
+    _stop_requested: bool
+    _stopped: bool
     _drain_initialized: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _overrides: OverrideQueue
     _registry: object | None
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
-    _velocity: VelocityTracker
-    _last_play_id: int | None
-    _last_warned_failure_streak: int | None
-    _last_warned_any_streak: int | None
-    _last_stagnation_stage: int
-    _last_selection_digest: bytes | None
-    _idle_streak: int
-    _main_repo: MainRepoGuard
-    _wedged_idle_ticks: int
-    _auto_stop_reprieves_used: int
+    _pause_reason: str | None
     _last_refresh_time: float
-    _last_loop_iteration_at: float
-    _loop_liveness_task: asyncio.Task[None] | None
-    _loop_started_at: float
-    _natural_exit_reason: str | None
     _natural_exit_callback: NaturalExitCallback | None
-    _forced_mask_play_types: tuple[PlayType, ...]
-    _fleet_idle_persistent_active: bool
+
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+    def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
+
+
+class LoopRunner:
+    """The main orchestration loop plus loop-detection and stagnation laddering.
+
+    The loop is the conductor: ``run_until_idle`` / ``_run_loop_body`` drive
+    every other component, so it holds references to all of them. Stable
+    services / collaborators (the ``session_id``, the sibling components
+    ``state_builder``/``dispatcher``/``completion``/``lifecycle``/``drain``, and
+    the 1a collaborators ``main_repo``/``overrides``/``velocity``) are captured
+    via the constructor; all orchestrator runtime/control state (read or
+    written) flows through the :class:`_LoopHost` Protocol so SIGHUP and per-tick
+    mutation never goes stale. Loop-only counters (tick-failure streak, wedge
+    counter, watchdog handle, heartbeat, fleet-idle latch, warning memos,
+    stagnation stage) are owned here.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _LoopHost,
+        session_id: str,
+        main_repo: MainRepoGuard,
+        overrides: OverrideQueue,
+        velocity: VelocityTracker,
+        state_builder: StateBuilder,
+        dispatcher: Dispatcher,
+        completion: CompletionProcessor,
+        lifecycle: LifecycleController,
+        drain: DrainController,
+    ) -> None:
+        self._host = host
+        self._session_id = session_id
+        self._main_repo = main_repo
+        self._overrides = overrides
+        self._velocity = velocity
+        self._state_builder = state_builder
+        self._dispatcher = dispatcher
+        self._completion = completion
+        self._lifecycle = lifecycle
+        self._drain = drain
+        # Loop-only counters/latches (only read inside loop methods). Defaults
+        # match the prior _OrchestratorBase class-level/__init__ values.
+        self._last_warned_failure_streak: int | None = None
+        self._last_warned_any_streak: int | None = None
+        self._last_stagnation_stage: int = 0
+        # desktop-85ex: True iff the loop is currently inside a fleet-idle
+        # persistent window (idle streak ≥ fleet_idle_threshold + no in-flight
+        # plays). Flipped to True the first tick the threshold is crossed (emit
+        # one info event), to False the first tick anything dispatches again.
+        self._fleet_idle_persistent_active: bool = False
+        # Consecutive idle-with-work ticks spent under a latched trunk pause with
+        # nothing in flight — the wedge signature. Drives the auto-stop in
+        # continue_if_selector_idle_work_remains; reset on any dispatch.
+        self._wedged_idle_ticks: int = 0
+        # Bounded reprieves granted to an unanswered loop-detection auto-stop
+        # while actionable work remains, so the session is not torn down on top
+        # of finished work. Resets per loop.
+        self._auto_stop_reprieves_used: int = 0
+        # Loop-liveness watchdog task handle (#9).
+        self._loop_liveness_task: asyncio.Task[None] | None = None
+        # Loop-liveness heartbeat (#9): monotonic timestamp stamped at the top of
+        # every run_until_idle iteration. The watchdog reads it to detect a
+        # hard-frozen loop. float('inf') until run_until_idle stamps the first
+        # iteration so a never-started loop never looks stale to the watchdog.
+        self._last_loop_iteration_at: float = float("inf")
+        # Per-tick guard circuit-breaker counter (see _MAX_CONSECUTIVE_TICK_FAILURES).
+        self._tick_failure_streak: int = 0
 
     # ------------------------------------------------------------------
 
-    async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:
+    async def check_stagnation_escalation(self, state: OrchestratorState) -> bool:
         """Stagnation ladder (warn+entropy at 5, surface at 10, pause at 15)."""
         if (
-            getattr(self, "_draining", False)
-            or getattr(self, "_stop_requested", False)
+            getattr(self._host, "_draining", False)
+            or getattr(self._host, "_stop_requested", False)
             or state.session_state in {SessionState.DRAINING, SessionState.SHUTTING_DOWN}
         ):
             return False
 
-        warn_after = self._cfg.rl.stagnation.warn_after
-        alert_after = self._cfg.rl.stagnation.alert_after
-        pause_after = self._cfg.rl.stagnation.pause_after
+        warn_after = self._host._cfg.rl.stagnation.warn_after
+        alert_after = self._host._cfg.rl.stagnation.alert_after
+        pause_after = self._host._cfg.rl.stagnation.pause_after
 
         stagnation = 0
-        if self._metrics is not None:
-            ctx = await self._metrics.snapshot(state)
+        if self._host._metrics is not None:
+            ctx = await self._host._metrics.snapshot(state)
             stagnation = int(ctx.stagnation_counter)
 
         if stagnation >= pause_after:
@@ -163,8 +242,8 @@ class _LoopMixin(_OrchestratorBase):
 
         if stage == 0:
             self._last_stagnation_stage = 0
-            if isinstance(self._selector, _ppo_selector_cls()):
-                self._selector.set_entropy_coef(self._cfg.rl.entropy_coef)
+            if isinstance(self._host._selector, _ppo_selector_cls()):
+                self._host._selector.set_entropy_coef(self._host._cfg.rl.entropy_coef)
             return False
 
         if stage > self._last_stagnation_stage:
@@ -176,9 +255,9 @@ class _LoopMixin(_OrchestratorBase):
                     "session_id": self._session_id,
                 }
                 if next_stage == 1:
-                    if isinstance(self._selector, _ppo_selector_cls()):
-                        boosted = self._cfg.rl.entropy_coef * STAGNATION_ENTROPY_MULTIPLIER
-                        self._selector.set_entropy_coef(boosted)
+                    if isinstance(self._host._selector, _ppo_selector_cls()):
+                        boosted = self._host._cfg.rl.entropy_coef * STAGNATION_ENTROPY_MULTIPLIER
+                        self._host._selector.set_entropy_coef(boosted)
                         payload["entropy_coef"] = boosted
                         payload["entropy_boost_multiplier"] = STAGNATION_ENTROPY_MULTIPLIER
                     payload["action"] = "boost_exploration"
@@ -194,17 +273,17 @@ class _LoopMixin(_OrchestratorBase):
         self._last_stagnation_stage = stage
         return stage >= 2
 
-    def _idle_backoff(self, wait_class: str = "default") -> float:
+    def idle_backoff(self, wait_class: str = "default") -> float:
         """Current backoff seconds, indexed by ``_idle_streak``."""
         backoff = (
             _WAITING_BACKOFF_SECONDS
             if wait_class in {"waiting_for_capacity", "waiting_for_in_flight_resource"}
             else _IDLE_BACKOFF_SECONDS
         )
-        idx = min(self._idle_streak, len(backoff) - 1)
+        idx = min(self._host._idle_streak, len(backoff) - 1)
         return backoff[idx]
 
-    def _classify_selector_idle(
+    def classify_selector_idle(
         self,
         state: OrchestratorState,
         reason_counts: list[dict[str, object]],
@@ -213,7 +292,7 @@ class _LoopMixin(_OrchestratorBase):
 
         from agentshore.rl.selector import _only_capacity_waiting
 
-        if not self._in_flight and not state.in_flight_plays:
+        if not self._host._in_flight and not state.in_flight_plays:
             if _only_capacity_waiting(reason_counts):
                 return "waiting_for_capacity"
             return "resolver_exhausted"
@@ -222,7 +301,7 @@ class _LoopMixin(_OrchestratorBase):
         return "waiting_for_in_flight_resource"
 
     @staticmethod
-    def _classify_play_skipped_reason(
+    def classify_play_skipped_reason(
         state: OrchestratorState,
         reason_counts: list[dict[str, object]],
         *,
@@ -230,7 +309,7 @@ class _LoopMixin(_OrchestratorBase):
     ) -> PlaySkipReason:
         """Pick a structured ``PlaySkipReason`` for the current tick.
 
-        Called when ``_select_play`` returned ``None`` (post-rni0 the loop's
+        Called when ``select_play`` returned ``None`` (post-rni0 the loop's
         only "wait" path). The ordering is deliberate:
 
         1. ``engine_paused``       — session is in a non-running state.
@@ -283,7 +362,7 @@ class _LoopMixin(_OrchestratorBase):
 
         return "selector_returned_none"
 
-    async def _emit_play_skipped(
+    async def emit_play_skipped(
         self,
         state: OrchestratorState,
         *,
@@ -318,21 +397,21 @@ class _LoopMixin(_OrchestratorBase):
             "reason": reason,
             "event_source": "loop_idle",
             "session_id": self._session_id,
-            "idle_streak": self._idle_streak,
+            "idle_streak": self._host._idle_streak,
             "has_remaining_work": candidate_plan_has_work,
         }
         if reason in {"all_masked", "cooldown_active"} and mask_reasons:
             payload["mask_reasons"] = mask_reasons
-        _skip_log = _logger.debug if self._idle_streak > 1 else _logger.info
+        _skip_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
         _skip_log("play_skipped", **payload)
 
-    def _compute_skip_diagnosis(self, state: OrchestratorState) -> SkipDiagnosis:
+    def compute_skip_diagnosis(self, state: OrchestratorState) -> SkipDiagnosis:
         """Build the candidate plan + top mask reasons + ``PlaySkipReason`` once.
 
         Single source of truth for the "why was nothing dispatched" computation
         that was previously inlined verbatim at every selector-idle site (the
         in-flight selector-None path and the truly-idle
-        ``_continue_if_selector_idle_work_remains`` path). Pure: builds state-
+        ``continue_if_selector_idle_work_remains`` path). Pure: builds state-
         derived structures only, mutating nothing.
         """
         from agentshore.plays.candidates import build_candidate_plan
@@ -340,14 +419,14 @@ class _LoopMixin(_OrchestratorBase):
 
         candidate_plan = build_candidate_plan(state)
         reason_counts: list[dict[str, object]] = []
-        if self._registry is not None:
+        if self._host._registry is not None:
             counts = collections.Counter(
                 compute_mask_reasons(
                     state,
-                    cast("PlayRegistry", self._registry),
-                    cfg=self._cfg,
-                    config_index=self._selector_config_index(),
-                    apply_reverse_failsafe=self._cfg.rl.reverse_failsafe_enabled,
+                    cast("PlayRegistry", self._host._registry),
+                    cfg=self._host._cfg,
+                    config_index=self._host._selector_config_index(),
+                    apply_reverse_failsafe=self._host._cfg.rl.reverse_failsafe_enabled,
                     candidate_plan=candidate_plan,
                 ).values()
             )
@@ -355,7 +434,7 @@ class _LoopMixin(_OrchestratorBase):
                 {"reason": mask_reason, "count": count}
                 for mask_reason, count in counts.most_common(5)
             ]
-        skip_reason = self._classify_play_skipped_reason(
+        skip_reason = self.classify_play_skipped_reason(
             state,
             reason_counts,
             candidate_plan_has_work=candidate_plan.has_remaining_work,
@@ -366,26 +445,26 @@ class _LoopMixin(_OrchestratorBase):
             skip_reason=skip_reason,
         )
 
-    async def _emit_structured_play_skipped_for_current_tick(
+    async def emit_structured_play_skipped_for_current_tick(
         self,
         state: OrchestratorState,
     ) -> None:
         """Compute mask reasons + classify + emit ``play_skipped`` once.
 
         Convenience wrapper for the in-flight selector-None branch so it
-        doesn't have to duplicate ``_continue_if_selector_idle_work_remains``
+        doesn't have to duplicate ``continue_if_selector_idle_work_remains``
         plumbing. Skips the ``fleet_idle_persistent`` check because the loop
         is not actually idle — work is still in flight.
         """
-        diagnosis = self._compute_skip_diagnosis(state)
-        await self._emit_play_skipped(
+        diagnosis = self.compute_skip_diagnosis(state)
+        await self.emit_play_skipped(
             state,
             reason=diagnosis.skip_reason,
             mask_reasons=diagnosis.reason_counts,
             candidate_plan_has_work=diagnosis.candidate_plan.has_remaining_work,
         )
 
-    async def _check_fleet_idle_persistent(
+    async def check_fleet_idle_persistent(
         self,
         state: OrchestratorState,
         *,
@@ -407,14 +486,14 @@ class _LoopMixin(_OrchestratorBase):
         Both transitions emit exactly one ``fleet_idle_persistent`` info
         event. Steady-state ticks inside the window emit nothing.
         """
-        threshold = self._cfg.rl.loop_detection.fleet_idle_threshold
-        in_flight_empty = not self._in_flight and not state.in_flight_plays
-        should_be_active = self._idle_streak >= threshold and in_flight_empty
+        threshold = self._host._cfg.rl.loop_detection.fleet_idle_threshold
+        in_flight_empty = not self._host._in_flight and not state.in_flight_plays
+        should_be_active = self._host._idle_streak >= threshold and in_flight_empty
 
         if should_be_active and not self._fleet_idle_persistent_active:
             payload: dict[str, object] = {
                 "session_id": self._session_id,
-                "idle_streak": self._idle_streak,
+                "idle_streak": self._host._idle_streak,
                 "threshold": threshold,
                 "dominant_reason": reason,
                 "transition": "entered",
@@ -427,26 +506,26 @@ class _LoopMixin(_OrchestratorBase):
             _logger.info(
                 "fleet_idle_persistent",
                 session_id=self._session_id,
-                idle_streak=self._idle_streak,
+                idle_streak=self._host._idle_streak,
                 threshold=threshold,
                 transition="exited",
             )
             self._fleet_idle_persistent_active = False
 
-    def _selection_state_digest(
+    def selection_state_digest(
         self,
         state: OrchestratorState,
         idle_agents: list[AgentSnapshot],
     ) -> bytes:
         """Compact hash of the inputs the selector / override resolver would see.
 
-        Skipping ``_select_play`` when this is unchanged eliminates the
+        Skipping ``select_play`` when this is unchanged eliminates the
         ``selector_idle`` storm during long-running plays, where the loop
         would otherwise re-run the selector once per second against an
         identical state. Inputs:
 
         - Set of idle agent ids (selector only dispatches to idle agents).
-        - ``len(self._in_flight)`` (a play completion changes this and is
+        - ``len(self._host._in_flight)`` (a play completion changes this and is
           worth re-selecting on).
         - ``state.total_plays`` ensures every completed play bumps the digest,
           even when in_flight cycles back to the same count between iterations.
@@ -461,7 +540,7 @@ class _LoopMixin(_OrchestratorBase):
             h.update(agent_id.encode())
             h.update(b"|")
         h.update(b";")
-        h.update(len(self._in_flight).to_bytes(4, "little"))
+        h.update(len(self._host._in_flight).to_bytes(4, "little"))
         h.update(b";")
         h.update(state.total_plays.to_bytes(4, "little"))
         h.update(b";")
@@ -480,7 +559,7 @@ class _LoopMixin(_OrchestratorBase):
         h.update(len(state.pull_requests).to_bytes(4, "little"))
         return h.digest()
 
-    async def _continue_if_selector_idle_work_remains(
+    async def continue_if_selector_idle_work_remains(
         self,
         state: OrchestratorState,
         *,
@@ -505,7 +584,7 @@ class _LoopMixin(_OrchestratorBase):
         # flight, pause persists across the grace window), escalate to a clean
         # drain-based stop rather than idling forever. Gated strictly on the
         # latched pause + no in-flight, so healthy capacity-idle never trips it.
-        if self._main_repo.dispatch_paused and not self._in_flight:
+        if self._main_repo.dispatch_paused and not self._host._in_flight:
             self._wedged_idle_ticks += 1
             if self._wedged_idle_ticks >= _WEDGED_IDLE_STOP_TICKS:
                 _logger.error(
@@ -517,24 +596,24 @@ class _LoopMixin(_OrchestratorBase):
                         "heal the main checkout); auto-stopping via drain"
                     ),
                 )
-                await self._initiate_autonomous_stop("main_repo_wedged", arm_gate_only=True)
+                await self.initiate_autonomous_stop("main_repo_wedged", arm_gate_only=True)
                 return False
         else:
             self._wedged_idle_ticks = 0
 
-        diagnosis = self._compute_skip_diagnosis(state)
+        diagnosis = self.compute_skip_diagnosis(state)
         candidate_plan = diagnosis.candidate_plan
         availability = candidate_plan.work_availability
         candidate_plan_has_work = candidate_plan.has_remaining_work
         reason_counts = diagnosis.reason_counts
         skip_reason = diagnosis.skip_reason
-        await self._emit_play_skipped(
+        await self.emit_play_skipped(
             state,
             reason=skip_reason,
             mask_reasons=reason_counts,
             candidate_plan_has_work=candidate_plan_has_work,
         )
-        await self._check_fleet_idle_persistent(
+        await self.check_fleet_idle_persistent(
             state,
             reason=skip_reason,
             mask_reasons=reason_counts,
@@ -554,14 +633,14 @@ class _LoopMixin(_OrchestratorBase):
                     "selector_idle_mask_has_plays",
                     reason=reason,
                     session_id=self._session_id,
-                    idle_streak=self._idle_streak,
+                    idle_streak=self._host._idle_streak,
                     mask_true_count=sum(1 for slot in state.action_mask if slot),
                     top_mask_reasons=reason_counts,
                 )
-                await asyncio.sleep(self._idle_backoff("waiting_for_capacity"))
+                await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
                 return True
             return False
-        wait_class = self._classify_selector_idle(state, reason_counts)
+        wait_class = self.classify_selector_idle(state, reason_counts)
 
         log = (
             _logger.debug
@@ -573,7 +652,7 @@ class _LoopMixin(_OrchestratorBase):
             reason=reason,
             wait_class=wait_class,
             session_id=self._session_id,
-            idle_streak=self._idle_streak,
+            idle_streak=self._host._idle_streak,
             tracked_issues=availability.tracked_issue_count,
             github_open_issues=availability.github_open_issue_count,
             workable_issues=availability.workable_issue_count,
@@ -585,18 +664,10 @@ class _LoopMixin(_OrchestratorBase):
             beads_blocks_issue_pickup=availability.beads_blocks_issue_pickup,
             top_mask_reasons=reason_counts,
         )
-        await asyncio.sleep(self._idle_backoff(wait_class))
+        await asyncio.sleep(self.idle_backoff(wait_class))
         return True
 
-    async def _wait_for_in_flight(self, *, timeout: float) -> None:
-        """``asyncio.wait`` with first-completed semantics on the in-flight set."""
-        await asyncio.wait(
-            self._in_flight.values(),
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-    async def _actionable_work_remains(self) -> tuple[bool, int, int]:
+    async def actionable_work_remains(self) -> tuple[bool, int, int]:
         """Return (has_actionable_work, mergeable_pr_count, workable_issue_count).
 
         ``actionable work`` = a merge-ready PR (finished, approved, reviewed
@@ -609,7 +680,7 @@ class _LoopMixin(_OrchestratorBase):
         # not crash the loop, and must not wrongly grant a reprieve. Fail closed —
         # report no work so a genuinely stuck session still drains.
         try:
-            state = await self._build_state()
+            state = await self._state_builder.build_state()
             wa = build_candidate_plan(state).work_availability
         except Exception as exc:
             _logger.error(
@@ -624,7 +695,7 @@ class _LoopMixin(_OrchestratorBase):
         has_work = mergeable > 0 or wa.actionable_pr_work_count > 0 or workable > 0
         return has_work, mergeable, workable
 
-    async def _initiate_autonomous_stop(
+    async def initiate_autonomous_stop(
         self,
         reason: str,
         *,
@@ -655,19 +726,19 @@ class _LoopMixin(_OrchestratorBase):
         callback fires on loop exit. ``clear_pause_deadline`` resets the
         unanswered-pause deadline.
         """
-        self._drain_reason = reason
+        self._host._drain_reason = reason
         if fire_natural_exit:
-            self._natural_exit_reason = reason
+            self._host._natural_exit_reason = reason
         if clear_pause_deadline:
-            self._pause_deadline = None
+            self._host._pause_deadline = None
         if arm_gate_only:
-            self._draining = True
+            self._host._draining = True
             # Unblock the gate so the loop proceeds to begin_drain next iteration.
-            self._pause_event.set()
+            self._host._pause_event.set()
             return
-        await self.begin_drain(reason)
+        await self._drain.begin_drain(reason)
 
-    async def _auto_stop_unanswered_pause(self) -> None:
+    async def auto_stop_unanswered_pause(self) -> None:
         """Auto-stop a feedback pause that went unanswered past its deadline (#9).
 
         Lifts the pause so the loop can reach the drain path, and requests a
@@ -686,19 +757,19 @@ class _LoopMixin(_OrchestratorBase):
         _logger.warning(
             "loop_detection_prompt_timeout",
             session_id=self._session_id,
-            pause_reason=self._pause_reason,
-            timeout_seconds=self._cfg.feedback.unanswered_timeout_seconds,
+            pause_reason=self._host._pause_reason,
+            timeout_seconds=self._host._cfg.feedback.unanswered_timeout_seconds,
             note="no human response within feedback.unanswered_timeout_seconds; auto-stopping",
         )
-        await self._initiate_autonomous_stop(
+        await self.initiate_autonomous_stop(
             "loop_detection_prompt_timeout",
             arm_gate_only=True,
             clear_pause_deadline=True,
         )
 
-    def _loop_liveness_timeout_seconds(self) -> float | None:
+    def loop_liveness_timeout_seconds(self) -> float | None:
         """Resolve the configured loop-liveness watchdog timeout (None disables)."""
-        return self._cfg.feedback.loop_liveness_timeout_seconds
+        return self._host._cfg.feedback.loop_liveness_timeout_seconds
 
     def start_loop_liveness_watchdog(self) -> None:
         """Launch the independent loop-liveness watchdog task (#9).
@@ -710,7 +781,7 @@ class _LoopMixin(_OrchestratorBase):
         backstop the idle/unanswered-pause auto-stops cannot provide: those
         require the loop to keep ticking, which a true freeze does not.
         """
-        if self._loop_liveness_timeout_seconds() is None:
+        if self.loop_liveness_timeout_seconds() is None:
             return
         existing = self._loop_liveness_task
         if existing is not None and not existing.done():
@@ -739,12 +810,12 @@ class _LoopMixin(_OrchestratorBase):
         the shutdown body (``stop`` is re-entrancy safe regardless).
         """
         interval = _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS
-        while not self._stop_requested and not self._stopped:
+        while not self._host._stop_requested and not self._host._stopped:
             await asyncio.sleep(interval)
-            timeout = self._loop_liveness_timeout_seconds()
+            timeout = self.loop_liveness_timeout_seconds()
             if timeout is None:
                 continue
-            if self._stop_requested or self._stopped:
+            if self._host._stop_requested or self._host._stopped:
                 return
             last = self._last_loop_iteration_at
             # 0.0 = loop has not begun iterating yet (not armed); inf = a
@@ -759,7 +830,7 @@ class _LoopMixin(_OrchestratorBase):
                 session_id=self._session_id,
                 stalled_for_seconds=round(stalled_for, 1),
                 timeout_seconds=timeout,
-                in_flight=len(self._in_flight),
+                in_flight=len(self._host._in_flight),
                 note=(
                     "core loop heartbeat did not advance within "
                     "feedback.loop_liveness_timeout_seconds; loop presumed "
@@ -771,11 +842,11 @@ class _LoopMixin(_OrchestratorBase):
             # full graceful shutdown (end agents, checkpoint, beads clear, store
             # close) and is re-entrancy safe. Guarded because the watchdog runs
             # off the (dead) loop — a begin_drain failure must not kill it.
-            await self._safe_call(
-                self._initiate_autonomous_stop("loop_liveness_timeout"),
+            await self._host._safe_call(
+                self.initiate_autonomous_stop("loop_liveness_timeout"),
                 "loop_liveness_begin_drain",
             )
-            await self.stop()
+            await self._drain.stop()
             return
 
     async def run_until_idle(self) -> None:
@@ -787,12 +858,12 @@ class _LoopMixin(_OrchestratorBase):
         loop (the ``sidecar_orchestrator_run_failed`` silent-hang class). A
         permanently-throwing tick trips the circuit breaker and drains cleanly.
         """
-        self._loop_started_at = time.monotonic()
+        self._host._loop_started_at = time.monotonic()
         # Arm the loop-liveness heartbeat before the first iteration so the
         # watchdog (#9) has a fresh baseline and never sees a stale 0.0.
         self._last_loop_iteration_at = time.monotonic()
 
-        while not self._stop_requested:
+        while not self._host._stop_requested:
             # Loop-liveness heartbeat (#9): stamp every iteration so the
             # independent watchdog can detect a hard-frozen loop. Stays OUTSIDE
             # the per-tick guard so it advances even on a throwing tick — a
@@ -805,7 +876,7 @@ class _LoopMixin(_OrchestratorBase):
                 # Per-tick guard: contain the failure, never let one tick kill
                 # the loop. The breaker drains gracefully once failures persist.
                 tick_raised = True
-                if await self._handle_tick_failure(exc):
+                if await self.handle_tick_failure(exc):
                     break
                 continue
             finally:
@@ -820,13 +891,16 @@ class _LoopMixin(_OrchestratorBase):
         # _should_terminate (drain_complete, max_plays, timeout, shutting_down),
         # not from an external request_stop()/stop() call. The sidecar boot
         # wrapper uses this to fire session.completed (DESIGN §5.2).
-        if self._natural_exit_reason is not None and self._natural_exit_callback is not None:
-            await self._safe_call(
-                self._natural_exit_callback(self._natural_exit_reason),
+        if (
+            self._host._natural_exit_reason is not None
+            and self._host._natural_exit_callback is not None
+        ):
+            await self._host._safe_call(
+                self._host._natural_exit_callback(self._host._natural_exit_reason),
                 "on_natural_exit_callback",
             )
 
-    async def _handle_tick_failure(self, exc: Exception) -> bool:
+    async def handle_tick_failure(self, exc: Exception) -> bool:
         """Handle an exception raised by one ``_run_loop_body`` tick.
 
         Returns True when the loop should stop (circuit breaker tripped → a
@@ -840,8 +914,8 @@ class _LoopMixin(_OrchestratorBase):
             session_id=self._session_id,
             error=str(exc),
             consecutive_failures=self._tick_failure_streak,
-            in_flight=len(self._in_flight),
-            idle_streak=self._idle_streak,
+            in_flight=len(self._host._in_flight),
+            idle_streak=self._host._idle_streak,
             exc_info=True,
         )
         if self._tick_failure_streak >= _MAX_CONSECUTIVE_TICK_FAILURES:
@@ -855,8 +929,8 @@ class _LoopMixin(_OrchestratorBase):
                     "failure or hanging silently"
                 ),
             )
-            await self._safe_call(
-                self._initiate_autonomous_stop(
+            await self._host._safe_call(
+                self.initiate_autonomous_stop(
                     "tick_failure_circuit_breaker", fire_natural_exit=True
                 ),
                 "circuit_breaker_begin_drain",
@@ -876,18 +950,18 @@ class _LoopMixin(_OrchestratorBase):
         # Pause blocks new selection/dispatch, but completed in-flight plays
         # still need to be harvested so agent completions, costs, and rewards
         # do not get stranded behind the pause gate.
-        if not self._pause_event.is_set():
+        if not self._host._pause_event.is_set():
             # Bound the wait by the unanswered-pause deadline (#9) so a
             # feedback pause nobody answers auto-stops instead of wedging the
             # loop indefinitely. ``remaining`` is None when no deadline is
             # armed (manual pause), making this a plain block-until-resume.
             remaining: float | None = None
-            if self._pause_deadline is not None:
-                remaining = max(0.0, self._pause_deadline - time.monotonic())
-            pause_wait = asyncio.create_task(self._pause_event.wait())
+            if self._host._pause_deadline is not None:
+                remaining = max(0.0, self._host._pause_deadline - time.monotonic())
+            pause_wait = asyncio.create_task(self._host._pause_event.wait())
             try:
                 await asyncio.wait(
-                    [pause_wait, *self._in_flight.values()],
+                    [pause_wait, *self._host._in_flight.values()],
                     timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
@@ -896,29 +970,29 @@ class _LoopMixin(_OrchestratorBase):
                     pause_wait.cancel()
                     with suppress(asyncio.CancelledError):
                         await pause_wait
-            if self._stop_requested:
+            if self._host._stop_requested:
                 return True
-            if self._in_flight:
+            if self._host._in_flight:
                 # Harvest completions so they aren't stranded behind the gate.
-                await self._harvest_completed()
+                await self._completion.harvest_completed()
             if (
-                not self._pause_event.is_set()
-                and self._pause_deadline is not None
-                and time.monotonic() >= self._pause_deadline
+                not self._host._pause_event.is_set()
+                and self._host._pause_deadline is not None
+                and time.monotonic() >= self._host._pause_deadline
             ):
                 # Unanswered feedback pause past its deadline → clean drain.
-                await self._auto_stop_unanswered_pause()
-            elif not self._pause_event.is_set():
+                await self.auto_stop_unanswered_pause()
+            elif not self._host._pause_event.is_set():
                 return False
 
-        if self._stop_requested:
+        if self._host._stop_requested:
             return True
 
         # Drain requested from sync context (e.g. signal handler) — initialize fully.
-        if self._draining and not self._drain_initialized:
-            await self.begin_drain(self._drain_reason or "signal_sigterm")
+        if self._host._draining and not self._host._drain_initialized:
+            await self._drain.begin_drain(self._host._drain_reason or "signal_sigterm")
 
-        await self._harvest_completed()
+        await self._completion.harvest_completed()
 
         # Periodic GitHub refresh fallback: fires when no refresh-triggering
         # play has completed recently, keeping cache fresh across long runs of
@@ -926,15 +1000,17 @@ class _LoopMixin(_OrchestratorBase):
         # so the next tick re-runs the selector; does NOT reset the idle
         # streak — a fleet sitting idle through a refresh has not become
         # less idle (desktop-mib1).
-        if time.monotonic() - self._last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
-            await self._safe_call(self._refresh_issues(), "refresh_issues_periodic")
-            self._last_selection_digest = None
+        if time.monotonic() - self._host._last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
+            await self._host._safe_call(
+                self._completion.refresh_issues(), "refresh_issues_periodic"
+            )
+            self._host._last_selection_digest = None
 
-        state = await self._build_state()
+        state = await self._state_builder.build_state()
 
-        state = await self._begin_budget_reserve_drain_if_needed(state)
+        state = await self._lifecycle.begin_budget_reserve_drain_if_needed(state)
 
-        should_stop, reason = self._should_terminate(state)
+        should_stop, reason = self._lifecycle.should_terminate(state)
         if should_stop:
             _logger.info(
                 "loop_terminating",
@@ -942,11 +1018,11 @@ class _LoopMixin(_OrchestratorBase):
                 session_id=self._session_id,
             )
             if reason is not None and reason != "stop_requested":
-                self._natural_exit_reason = reason
+                self._host._natural_exit_reason = reason
             return True
         if reason is not None:
             # reason set but should_stop False → pause; loop blocks at wait() next iteration
-            await self._pause_with_reason(reason)
+            await self._lifecycle.pause_with_reason(reason)
             return False
 
         # PPO sees the full mask every tick — the eligibility mask
@@ -960,50 +1036,54 @@ class _LoopMixin(_OrchestratorBase):
         # falls through to ``_wait_for_in_flight`` as before.
         idle_agents = [a for a in state.agents if a.status == AgentStatus.IDLE]
 
-        # Skip ``_select_play`` (and its log line) when nothing the selector
+        # Skip ``select_play`` (and its log line) when nothing the selector
         # cares about has changed since the last attempt. The watchdog at
         # the ceiling tick still re-evaluates regardless, so a missed
-        # signal recovers within ~21s. See ``_selection_state_digest``.
-        digest = self._selection_state_digest(state, idle_agents)
-        ceiling_tick = self._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
-        if digest == self._last_selection_digest and not ceiling_tick:
-            self._idle_streak += 1
-            if self._in_flight:
-                await self._wait_for_in_flight(
-                    timeout=self._idle_backoff("waiting_for_in_flight_resource")
+        # signal recovers within ~21s. See ``selection_state_digest``.
+        digest = self.selection_state_digest(state, idle_agents)
+        ceiling_tick = self._host._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
+        if digest == self._host._last_selection_digest and not ceiling_tick:
+            self._host._idle_streak += 1
+            if self._host._in_flight:
+                await self._completion.wait_for_in_flight(
+                    timeout=self.idle_backoff("waiting_for_in_flight_resource")
                 )
                 return False
             # truly idle, nothing changed → break unless idle-work remains
-            return not await self._continue_if_selector_idle_work_remains(
+            return not await self.continue_if_selector_idle_work_remains(
                 state, reason="unchanged_digest"
             )
 
-        self._last_selection_digest = digest
+        self._host._last_selection_digest = digest
 
-        override_play = await self._consume_override(state)
+        override_play = await self._dispatcher.consume_override(state)
         from_override = override_play is not None
 
-        selection = await self._select_play(state, override_play=override_play)
+        selection = await self._dispatcher.select_play(state, override_play=override_play)
         # Fold this cycle's EligibilityAuthority confirm-repicks into the rolling
         # divergence window (observation slot executor_skip_rate_recent_50). Drain
         # once per selection cycle whether or not a play was produced — an
         # all-repick cycle that yields None is exactly the divergence signal.
-        self._velocity.record_selection_repicks(self._selector)
+        self._velocity.record_selection_repicks(self._host._selector)
         if selection is None:
             # Only log once per distinct digest. With the digest gate
             # above, this fires at most once per state transition rather
             # than once per loop tick.
-            self._idle_streak += 1
-            _idle_log = _logger.debug if self._idle_streak > 1 else _logger.info
-            _idle_log("selector_idle", session_id=self._session_id, idle_streak=self._idle_streak)
-            if self._in_flight:
-                await self._emit_structured_play_skipped_for_current_tick(state)
-                await self._wait_for_in_flight(
-                    timeout=self._idle_backoff("waiting_for_in_flight_resource")
+            self._host._idle_streak += 1
+            _idle_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
+            _idle_log(
+                "selector_idle",
+                session_id=self._session_id,
+                idle_streak=self._host._idle_streak,
+            )
+            if self._host._in_flight:
+                await self.emit_structured_play_skipped_for_current_tick(state)
+                await self._completion.wait_for_in_flight(
+                    timeout=self.idle_backoff("waiting_for_in_flight_resource")
                 )
                 return False
             # truly idle → break unless idle-work remains
-            return not await self._continue_if_selector_idle_work_remains(
+            return not await self.continue_if_selector_idle_work_remains(
                 state, reason="selector_none"
             )
 
@@ -1017,12 +1097,12 @@ class _LoopMixin(_OrchestratorBase):
             _logger.info(
                 "fleet_idle_persistent",
                 session_id=self._session_id,
-                idle_streak=self._idle_streak,
-                threshold=self._cfg.rl.loop_detection.fleet_idle_threshold,
+                idle_streak=self._host._idle_streak,
+                threshold=self._host._cfg.rl.loop_detection.fleet_idle_threshold,
                 transition="exited",
             )
             self._fleet_idle_persistent_active = False
-        self._idle_streak = 0
+        self._host._idle_streak = 0
         self._wedged_idle_ticks = 0
 
         play_type, params = selection
@@ -1031,16 +1111,19 @@ class _LoopMixin(_OrchestratorBase):
             not from_override
             and play_type == PlayType.INSTANTIATE_AGENT
             and not idle_agents
-            and self._in_flight
+            and self._host._in_flight
         ):
             _logger.info(
                 "ppo_instantiate_under_pressure",
                 session_id=self._session_id,
-                in_flight=len(self._in_flight),
+                in_flight=len(self._host._in_flight),
                 live_agents=len(state.agents),
                 open_issues=len(state.open_issues),
             )
-        if self._shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
+        if (
+            self._dispatcher.shutdown_allows_only_end_agent(state)
+            and play_type != PlayType.END_AGENT
+        ):
             _logger.warning(
                 "selection_blocked_during_shutdown",
                 play_type=play_type.value,
@@ -1049,30 +1132,30 @@ class _LoopMixin(_OrchestratorBase):
             if idle_agents:
                 play_type, params = PlayType.END_AGENT, PlayParams()
             else:
-                if self._in_flight:
-                    await self._wait_for_in_flight(
-                        timeout=self._idle_backoff("waiting_for_in_flight_resource")
+                if self._host._in_flight:
+                    await self._completion.wait_for_in_flight(
+                        timeout=self.idle_backoff("waiting_for_in_flight_resource")
                     )
                     return False
                 return True
         end_session_blocked = (
             play_type == PlayType.END_SESSION
-            and not await self._revalidate_end_session_before_dispatch()
+            and not await self._dispatcher.revalidate_end_session_before_dispatch()
         )
         if end_session_blocked:
-            if isinstance(self._selector, _ppo_selector_cls()):
-                self._selector.consume_pending()
+            if isinstance(self._host._selector, _ppo_selector_cls()):
+                self._host._selector.consume_pending()
             return False
-        dispatched = await self._dispatch_play(play_type, params, state)
+        dispatched = await self._dispatcher.dispatch_play(play_type, params, state)
         if not dispatched:
             return False
         # NO await — continue loop
 
         # Efficient wait if tasks in flight. Tests patch the module-local
         # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS`` constant.
-        if self._in_flight:
-            await self._wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
-        elif not self._in_flight:
+        if self._host._in_flight:
+            await self._completion.wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
+        elif not self._host._in_flight:
             return True  # truly idle
 
         return False

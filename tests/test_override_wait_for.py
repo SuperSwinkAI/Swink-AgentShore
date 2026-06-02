@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.dispatch import Dispatcher
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.plays.base import PlayParams
@@ -70,8 +72,6 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._registry = None
     orch._pause_event = asyncio.Event()
     orch._pause_event.set()
-    orch._last_warned_failure_streak = None
-    orch._last_warned_any_streak = None
     orch._forced_mask_play_types = ()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
@@ -79,6 +79,19 @@ def _make_orch(tmp_path: Path) -> Any:
     orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
+    orch._main_repo = MainRepoGuard()
+    orch._dispatcher = Dispatcher(
+        host=orch,
+        store=mock_store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=tmp_path,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        state_builder=MagicMock(),
+        completion=MagicMock(),
+    )
     return orch
 
 
@@ -132,7 +145,7 @@ async def test_override_masked_when_awaited_play_not_yet_completed(tmp_path: Pat
 
     state = _state({})  # cleanup hasn't completed yet
 
-    result = await orch._consume_override(state)
+    result = await orch._dispatcher.consume_override(state)
 
     assert result is None, "entry should not dispatch while wait_for_play_type unmet"
     assert not orch._overrides.empty(), "BOOTSTRAP entry must re-queue, not drop"
@@ -155,7 +168,7 @@ async def test_override_released_once_awaited_play_completed(tmp_path: Path) -> 
     # Mark cleanup as having completed at least once.
     state = _state({PlayType.CLEANUP: 0})
 
-    result = await orch._consume_override(state)
+    result = await orch._dispatcher.consume_override(state)
 
     assert result is not None, "entry should dispatch once wait_for_play_type is satisfied"
     play_type, params = result
@@ -174,7 +187,7 @@ async def test_wait_for_seed_project_also_works(tmp_path: Path) -> None:
     # cleanup completed but the awaited play (seed_project) has not.
     state = _state({PlayType.CLEANUP: 5})
 
-    result = await orch._consume_override(state)
+    result = await orch._dispatcher.consume_override(state)
 
     assert result is None
     assert not orch._overrides.empty()

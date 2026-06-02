@@ -1,7 +1,7 @@
 """Shared GitHub fetch/cache primitive for bootstrap and post-play refresh.
 
 Both the bootstrap phase (``phases._phase_fetch_github``) and the post-play
-refresh (``mixins.completion._CompletionMixin._refresh_issues``) used to inline
+refresh (``mixins.completion.CompletionProcessor.refresh_issues``) used to inline
 the same GitHub-cache write path: construct a ``GitHubAdapter``, probe, fetch
 issues, ``cache_github_issues`` + ``set_last_issue_sync_at``, fetch open PRs,
 ``filter_trusted_pull_requests``, ``cache_pull_requests``. Two copies of that

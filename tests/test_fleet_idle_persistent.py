@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agentshore.core import Orchestrator
+from agentshore.core.mixins.loop import LoopRunner
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import SessionState
 
@@ -62,8 +63,19 @@ def _orch() -> Orchestrator:
     orch._idle_streak = 0
     orch._last_selection_digest = None
     orch._session_id = "sess-test-85ex"
-    orch._fleet_idle_persistent_active = False
     orch._cfg = _Cfg()  # type: ignore[assignment]
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=MagicMock(),
+        overrides=orch._overrides,
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
     return orch
 
 
@@ -90,7 +102,7 @@ def _events_named(info_mock: MagicMock, name: str) -> list[dict[str, Any]]:
 
 
 async def _run_check(orch: Orchestrator, state: _StateStub, *, reason: str) -> None:
-    await orch._check_fleet_idle_persistent(  # type: ignore[arg-type]
+    await orch._loop.check_fleet_idle_persistent(  # type: ignore[arg-type]
         state, reason=reason, mask_reasons=[]
     )
 
@@ -106,7 +118,7 @@ async def test_threshold_crossing_emits_one_entered_event(info_calls: MagicMock)
         orch._idle_streak = streak
         await _run_check(orch, state, reason="selector_returned_none")
     assert _events_named(info_calls, "fleet_idle_persistent") == []
-    assert orch._fleet_idle_persistent_active is False
+    assert orch._loop._fleet_idle_persistent_active is False
 
     # First tick at threshold — exactly one event, then activated.
     orch._idle_streak = orch._cfg.rl.loop_detection.fleet_idle_threshold
@@ -115,7 +127,7 @@ async def test_threshold_crossing_emits_one_entered_event(info_calls: MagicMock)
     assert len(events) == 1
     assert events[0]["transition"] == "entered"
     assert events[0]["dominant_reason"] == "selector_returned_none"
-    assert orch._fleet_idle_persistent_active is True
+    assert orch._loop._fleet_idle_persistent_active is True
 
 
 @pytest.mark.asyncio
@@ -144,7 +156,7 @@ async def test_exit_transition_emits_one_event_when_in_flight_appears(
 
     # Enter the window.
     await _run_check(orch, state, reason="selector_returned_none")
-    assert orch._fleet_idle_persistent_active is True
+    assert orch._loop._fleet_idle_persistent_active is True
 
     # Simulate in-flight work arriving.
     orch._in_flight = {"dispatch-1": asyncio.Future()}  # type: ignore[dict-item]
@@ -155,7 +167,7 @@ async def test_exit_transition_emits_one_event_when_in_flight_appears(
     assert len(events) == 2
     assert events[0]["transition"] == "entered"
     assert events[1]["transition"] == "exited"
-    assert orch._fleet_idle_persistent_active is False
+    assert orch._loop._fleet_idle_persistent_active is False
 
 
 @pytest.mark.asyncio
@@ -168,12 +180,12 @@ async def test_exit_transition_emits_one_event_when_streak_collapses(
     orch._idle_streak = orch._cfg.rl.loop_detection.fleet_idle_threshold
 
     await _run_check(orch, state, reason="selector_returned_none")
-    assert orch._fleet_idle_persistent_active is True
+    assert orch._loop._fleet_idle_persistent_active is True
 
     # Selector picked a play → streak resets to 0.
     orch._idle_streak = 0
     await _run_check(orch, state, reason="selector_returned_none")
-    assert orch._fleet_idle_persistent_active is False
+    assert orch._loop._fleet_idle_persistent_active is False
     events = _events_named(info_calls, "fleet_idle_persistent")
     assert len(events) == 2
     assert [e["transition"] for e in events] == ["entered", "exited"]
@@ -201,7 +213,7 @@ async def test_window_can_rearm_after_exit(info_calls: MagicMock) -> None:
     events = _events_named(info_calls, "fleet_idle_persistent")
     assert len(events) == 3
     assert [e["transition"] for e in events] == ["entered", "exited", "entered"]
-    assert orch._fleet_idle_persistent_active is True
+    assert orch._loop._fleet_idle_persistent_active is True
 
 
 def test_default_fleet_idle_threshold_is_30() -> None:

@@ -6,12 +6,11 @@ import asyncio
 import enum
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import aiosqlite
 
 from agentshore.budget import budget_reserve_reached
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.git_safety import check_main_repo_branch_mutated, restore_default_branch
 from agentshore.core.helpers import (
     _logger,
@@ -30,14 +29,22 @@ from agentshore.state import AgentStatus, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    import collections
     from collections.abc import Awaitable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
+    from agentshore.agents.worktree import WorktreeManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.experience_recorder import ExperienceRecorder
     from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.drain import DrainController
+    from agentshore.core.mixins.lifecycle import LifecycleController
+    from agentshore.core.mixins.snapshots import SnapshotProjector
+    from agentshore.core.mixins.state import StateBuilder
     from agentshore.core.override_queue import OverrideQueue
+    from agentshore.core.progress_monitor import ForwardProgressMonitor
     from agentshore.core.recovery_tracker import RecoveryTracker
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
@@ -59,7 +66,7 @@ class _CompletionVerdict(enum.Enum):
 
     Replaces the prior ``return True means abort`` bool convention scattered
     across the skip and retry helpers: each early step now returns a typed
-    verdict, and one ``match`` in ``_process_completion`` decides whether to
+    verdict, and one ``match`` in ``process_completion`` decides whether to
     abort (``SKIPPED`` / ``RETRIED``) or run the remaining pipeline
     (``CONTINUE``).
     """
@@ -101,7 +108,7 @@ _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "ci config or infrastructure",
 )
 
-# Used by ``_refresh_issues`` — declared module-level so renaming inside the
+# Used by ``refresh_issues`` — declared module-level so renaming inside the
 # function body doesn't drift them away from the constants the original
 # monolithic ``core.py`` referenced.
 _DUPLICATE_BEAD_TITLE_RE = re.compile(r"^Duplicate bead", re.IGNORECASE)
@@ -145,90 +152,146 @@ def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     return any(sig in serialised for sig in _ALREADY_CLOSED_SIGNATURES)
 
 
-class _CompletionMixin(_OrchestratorBase):
-    """Process completed play tasks, update RL state, persist learnings."""
+class _CompletionHost(Protocol):
+    """Orchestrator runtime/control state read OR written live by :class:`CompletionProcessor`.
 
+    These members are accessed fresh via ``self._host.<attr>`` on every call so
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight maps,
+    completion-processing latches, pause event, recent-completion shadows,
+    bootstrap-assigned collaborators) are always current — never captured at
+    construction. Fields the processor *writes* (``_completion_processing_count``,
+    ``_last_selection_digest``, ``_idle_streak``, ``_last_play_id``,
+    ``_natural_exit_reason``, ``_stop_requested``,
+    ``_feedback_cadence_plays_since_ack``) are declared as plain annotated
+    attributes (not read-only ``@property``) so the assignments type-check.
+    ``_OrchestratorBase`` structurally satisfies this Protocol; the cross-component
+    methods (``_safe_call``, ``_initiate_autonomous_stop``,
+    ``_check_stagnation_escalation``) are resolved live on the composition root.
+    """
+
+    # --- written by the processor ------------------------------------------
+    _completion_processing_count: int
+    _last_selection_digest: bytes | None
+    _idle_streak: int
+    _last_play_id: int | None
+    _natural_exit_reason: str | None
+    _stop_requested: bool
+    _feedback_cadence_plays_since_ack: int
+    # --- read by the processor ---------------------------------------------
     _cfg: RuntimeConfig
-    _session_id: str
-    _store: DataStore
-    _manager: AgentManager
-    _executor: PlayExecutor
     _selector: PlaySelector | None
     _state_provider: StateProvider
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
-    _completion_processing_count: int
     _completion_processing_idle: asyncio.Event
-    _overrides: OverrideQueue
-    _stop_requested: bool
-    _last_play_id: int | None
-    _last_selection_digest: bytes | None
-    _idle_streak: int
-    _natural_exit_reason: str | None
-    _step_index: int
-    _policy_version: str
-    _config_hash: str
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
-    _velocity: VelocityTracker
-    _recovery: RecoveryTracker
     _last_refresh_time: float
     _end_session_dispatch_started: bool
     context_pressure_hints: dict[str, float]
+    _recent_play_outcomes: collections.deque[tuple[bool, str]]
+    _recent_play_completions: collections.deque[PlayRecord]
+    _recent_applied_labels: collections.deque[tuple[int, str]]
+    _experience_recorder: ExperienceRecorder | None
+    _progress_monitor: ForwardProgressMonitor | None
+    _worktrees: WorktreeManager | None
 
-    _feedback_cadence_plays_since_ack: int
-    _repo_root: Path  # supplied by _OrchestratorBase
-    # desktop-kqo5: main-repo branch guard, shared with _DispatchMixin via the
-    # base class. Pre-play refs are popped here at play_completed; the
-    # dispatch-pause latch flips on auto-restore failure.
-    _main_repo: MainRepoGuard
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+    async def _initiate_autonomous_stop(
+        self,
+        reason: str,
+        *,
+        arm_gate_only: bool = False,
+        fire_natural_exit: bool = False,
+        clear_pause_deadline: bool = False,
+    ) -> None: ...
+
+    async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool: ...
+
+
+class CompletionProcessor:
+    """Process completed play tasks, update RL state, persist learnings.
+
+    Stable services / collaborators (store, manager, executor, the 1a state
+    collaborators, and the sibling components) are captured via the constructor;
+    all orchestrator runtime/control state (read or written) flows through the
+    :class:`_CompletionHost` Protocol so SIGHUP and per-tick mutation never goes
+    stale.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _CompletionHost,
+        store: DataStore,
+        manager: AgentManager,
+        executor: PlayExecutor,
+        session_id: str,
+        repo_root: Path,
+        main_repo: MainRepoGuard,
+        velocity: VelocityTracker,
+        recovery: RecoveryTracker,
+        overrides: OverrideQueue,
+        snapshots: SnapshotProjector,
+        state_builder: StateBuilder,
+        lifecycle: LifecycleController,
+        drain: DrainController,
+    ) -> None:
+        self._host = host
+        self._store = store
+        self._manager = manager
+        self._executor = executor
+        self._session_id = session_id
+        self._repo_root = repo_root
+        self._main_repo = main_repo
+        self._velocity = velocity
+        self._recovery = recovery
+        self._overrides = overrides
+        self._snapshots = snapshots
+        self._state_builder = state_builder
+        self._lifecycle = lifecycle
+        self._drain = drain
 
     # ------------------------------------------------------------------
 
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None:
-        """Await *coro* and log ERROR if it raises; never propagates."""
-        try:
-            await coro
-        except Exception as exc:
-            _logger.error("safe_call_failed", label=label, error=str(exc), exc_info=True)
-
-    async def _harvest_completed(self) -> None:
-        """Drain finished play tasks and process each via ``_process_completion``.
+    async def harvest_completed(self) -> None:
+        """Drain finished play tasks and process each via ``process_completion``.
 
         Invalidates the selection-digest cache when any task is harvested:
         a play completion (success or unhandled exception) is always worth a
         fresh selector pass, even when ``state.total_plays`` doesn't reflect
         it (e.g. tasks that raised before recording a row).
         """
-        if not hasattr(self, "_completion_processing_idle"):
-            self._completion_processing_count = 0
-            self._completion_processing_idle = asyncio.Event()
-            self._completion_processing_idle.set()
-        completed = [did for did, t in self._in_flight.items() if t.done()]
+        if not hasattr(self._host, "_completion_processing_idle"):
+            self._host._completion_processing_count = 0
+            self._host._completion_processing_idle = asyncio.Event()
+            self._host._completion_processing_idle.set()
+        completed = [did for did, t in self._host._in_flight.items() if t.done()]
         for did in completed:
-            task = self._in_flight.pop(did)
-            self._completion_processing_count += 1
-            self._completion_processing_idle.clear()
+            task = self._host._in_flight.pop(did)
+            self._host._completion_processing_count += 1
+            self._host._completion_processing_idle.clear()
             try:
-                await self._process_completion(did, task)
+                await self.process_completion(did, task)
             finally:
-                self._completion_processing_count -= 1
-                if self._completion_processing_count <= 0:
-                    self._completion_processing_count = 0
-                    self._completion_processing_idle.set()
+                self._host._completion_processing_count -= 1
+                if self._host._completion_processing_count <= 0:
+                    self._host._completion_processing_count = 0
+                    self._host._completion_processing_idle.set()
         if completed:
-            self._last_selection_digest = None
-            self._idle_streak = 0
+            self._host._last_selection_digest = None
+            self._host._idle_streak = 0
 
-    async def _wait_for_in_flight(self, *, timeout: float) -> None:
+    async def wait_for_in_flight(self, *, timeout: float) -> None:
         """``asyncio.wait`` with first-completed semantics on the in-flight set."""
         await asyncio.wait(
-            self._in_flight.values(),
+            self._host._in_flight.values(),
             timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-    async def _check_main_repo_invariant(
+    async def check_main_repo_invariant(
         self,
         *,
         dispatch_id: str,
@@ -239,7 +302,7 @@ class _CompletionMixin(_OrchestratorBase):
         """Compare pre/post symbolic-ref for the main repo; warn + auto-restore.
 
         Runs at every play_completed boundary (success and failure). Reads
-        the dispatch-time snapshot stored by ``_DispatchMixin._dispatch_play``
+        the dispatch-time snapshot stored by ``Dispatcher._dispatch_play``
         and the current HEAD via ``check_main_repo_branch_mutated``.
 
         ``merge_pr`` advances the commit SHA via ``git merge --no-ff`` + ``git
@@ -301,7 +364,7 @@ class _CompletionMixin(_OrchestratorBase):
             default_branch=self._main_repo.default_branch,
         )
 
-    async def _process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
+    async def process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
         """Process a completed play task — RL experience, learnings, and state."""
         loaded = self._pop_completed_dispatch(dispatch_id, task)
         if loaded is None:
@@ -339,7 +402,7 @@ class _CompletionMixin(_OrchestratorBase):
     def _pop_completed_dispatch(
         self, dispatch_id: str, task: asyncio.Task[PlayOutcome]
     ) -> tuple[_DispatchContext, PlayOutcome] | None:
-        ctx = self._dispatch_ctx.pop(dispatch_id, None)
+        ctx = self._host._dispatch_ctx.pop(dispatch_id, None)
         if ctx is None:
             # Still drop the pre-play snapshot if we somehow have one without
             # matching dispatch context. Prevents the dict from leaking.
@@ -378,7 +441,7 @@ class _CompletionMixin(_OrchestratorBase):
             handle = self._manager.handles.get(outcome.agent_id)
             if handle is not None:
                 agent_type_str = handle.agent_type.value
-        await self._check_main_repo_invariant(
+        await self.check_main_repo_invariant(
             dispatch_id=dispatch_id,
             play_type=completed_play_type,
             agent_id=outcome.agent_id,
@@ -387,7 +450,7 @@ class _CompletionMixin(_OrchestratorBase):
 
         # desktop-kqo5 catch-22 fix: a successful RECONCILE_STATE is the loop's
         # path out of a latched trunk-dispatch pause (RECONCILE_STATE is now
-        # exempt from the pause in _DispatchMixin so it can run while wedged).
+        # exempt from the pause in Dispatcher so it can run while wedged).
         # Re-verify the main checkout is back on a clean default branch (the
         # restore is idempotent and conflict-aware) and, only if so, lift the
         # pause so normal dispatch resumes.
@@ -453,15 +516,15 @@ class _CompletionMixin(_OrchestratorBase):
             # early (below) before the loop-detection/stagnation checks ever run,
             # so the no-op-spin check is invoked HERE — this is the exact path the
             # write_impl↔reconcile spin lived on.
-            self._recent_play_outcomes.append((True, completed_play_type.value))
-            post_state = await self._build_state()
-            await self._safe_call(
-                self._state_provider.on_state_update(post_state), "on_state_update_post"
+            self._host._recent_play_outcomes.append((True, completed_play_type.value))
+            post_state = await self._state_builder.build_state()
+            await self._host._safe_call(
+                self._host._state_provider.on_state_update(post_state), "on_state_update_post"
             )
             # A skip is the canonical no-forward-progress tick (no agent
             # dispatched) — feed the forward-progress monitor here, on the skip
             # path that returns early before the main checks below.
-            await self._check_no_forward_progress(post_state, outcome)
+            await self.check_no_forward_progress(post_state, outcome)
             return _CompletionVerdict.SKIPPED
         return _CompletionVerdict.CONTINUE
 
@@ -476,7 +539,7 @@ class _CompletionMixin(_OrchestratorBase):
         # ``_record_selection_repicks``), not from play completions, so nothing
         # is appended here anymore.
         self._velocity.set_recent_executor_skip(False)
-        self._recent_play_outcomes.append((False, completed_play_type.value))
+        self._host._recent_play_outcomes.append((False, completed_play_type.value))
 
         _logger.info(
             "play_completed",
@@ -499,9 +562,9 @@ class _CompletionMixin(_OrchestratorBase):
                 error=outcome.error,
             )
         if outcome.play_id is not None:
-            self._last_play_id = outcome.play_id
+            self._host._last_play_id = outcome.play_id
             # If this play was dispatched from the override queue, record the
-            # play_id so _compute_play_streaks can ignore it. Override-dispatched
+            # play_id so compute_play_streaks can ignore it. Override-dispatched
             # plays (bootstrap recipe, user request, retry) are not PPO-collapse,
             # so a burst of them must not trigger loop_detected.
             if ctx.override_kind is not None:
@@ -513,7 +576,7 @@ class _CompletionMixin(_OrchestratorBase):
             # cooldown mask (desktop-65bg).
             started_at_raw = ctx.params.extras.get("started_at")
             started_at = started_at_raw if isinstance(started_at_raw, str) else ""
-            self._recent_play_completions.append(
+            self._host._recent_play_completions.append(
                 PlayRecord(
                     play_id=outcome.play_id,
                     session_id=self._session_id,
@@ -530,7 +593,7 @@ class _CompletionMixin(_OrchestratorBase):
             # the skill template applies ``agentshore/root-cause-found`` to the
             # issue via gh CLI from inside the agent subprocess. The label
             # lands on GitHub immediately, but AgentShore's cached issue snapshot
-            # only learns about it on the next ``_refresh_issues`` poll —
+            # only learns about it on the next ``refresh_issues`` poll —
             # which can be many seconds out. The next selector tick fires
             # well before that, so PPO can re-select (issue, systematic_debugging)
             # against the stale snapshot (observed in session 2b8729bf:
@@ -544,7 +607,7 @@ class _CompletionMixin(_OrchestratorBase):
                 and completed_play_type == PlayType.SYSTEMATIC_DEBUGGING
                 and isinstance(ctx.params.issue_number, int)
             ):
-                self._recent_applied_labels.append(
+                self._host._recent_applied_labels.append(
                     (ctx.params.issue_number, ROOT_CAUSE_FOUND_LABEL)
                 )
 
@@ -631,16 +694,18 @@ class _CompletionMixin(_OrchestratorBase):
             error_text = (outcome.error or "").lower()
             terminal = any(m in error_text for m in _UNBLOCK_MANUAL_REQUIRED_MARKERS)
             if exhausted or terminal:
-                await self._safe_call(
-                    self._mark_pr_manual_required(ctx.params.pr_number),
+                await self._host._safe_call(
+                    self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
 
     async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
-        next_state = await self._build_state()
-        await self._record_trajectory_snapshot(outcome, next_state)
-        next_state = await self._begin_budget_reserve_drain_if_needed(next_state)
-        should_stop, reason = self._should_terminate(next_state)
+        next_state = await self._state_builder.build_state()
+        await self._snapshots.record_trajectory_snapshot(
+            outcome, next_state, safe_call=self._host._safe_call
+        )
+        next_state = await self._lifecycle.begin_budget_reserve_drain_if_needed(next_state)
+        should_stop, reason = self._lifecycle.should_terminate(next_state)
         if should_stop:
             _logger.info(
                 "loop_terminating",
@@ -648,16 +713,19 @@ class _CompletionMixin(_OrchestratorBase):
                 session_id=self._session_id,
             )
             if reason is not None and reason != "stop_requested":
-                self._natural_exit_reason = reason
-            self._stop_requested = True
-        elif reason is not None and self._pause_event.is_set():
-            await self._pause_with_reason(reason)
+                self._host._natural_exit_reason = reason
+            self._host._stop_requested = True
+        elif reason is not None and self._host._pause_event.is_set():
+            await self._lifecycle.pause_with_reason(reason)
 
-        await self._check_no_forward_progress(next_state, outcome)
-        if await self._check_stagnation_escalation(next_state) and self._pause_event.is_set():
-            await self._pause_with_reason("stagnation")
-        self._feedback_cadence_plays_since_ack += 1
-        await self._pause_for_feedback_cadence_if_due()
+        await self.check_no_forward_progress(next_state, outcome)
+        if (
+            await self._host._check_stagnation_escalation(next_state)
+            and self._host._pause_event.is_set()
+        ):
+            await self._lifecycle.pause_with_reason("stagnation")
+        self._host._feedback_cadence_plays_since_ack += 1
+        await self._lifecycle.pause_for_feedback_cadence_if_due()
         return next_state
 
     async def _record_completion_experience(
@@ -678,15 +746,15 @@ class _CompletionMixin(_OrchestratorBase):
         # ``sidecar_orchestrator_run_failed`` crash). Only the cheap, safe
         # bookkeeping (velocity events, ``done``) stays inline here.
         if (
-            self._experience_recorder is not None
-            and isinstance(self._selector, _ppo_selector_cls())
-            and self._metrics is not None
+            self._host._experience_recorder is not None
+            and isinstance(self._host._selector, _ppo_selector_cls())
+            and self._host._metrics is not None
         ):
             from agentshore.rl.selector import _PendingStep
 
             done = (
                 completed_play_type == PlayType.END_SESSION
-                or self._stop_requested
+                or self._host._stop_requested
                 or (
                     next_state.budget is not None
                     and next_state.budget.enabled
@@ -723,7 +791,7 @@ class _CompletionMixin(_OrchestratorBase):
                 raw_pending if isinstance(raw_pending, _PendingStep) else None
             )
 
-            await self._experience_recorder.record_and_update(
+            await self._host._experience_recorder.record_and_update(
                 state_before=state_before,
                 next_state=next_state,
                 outcome=outcome,
@@ -779,8 +847,8 @@ class _CompletionMixin(_OrchestratorBase):
                     play_id=outcome.play_id,
                     session_id=self._session_id,
                 )
-            await self._safe_call(
-                self._refresh_issues(
+            await self._host._safe_call(
+                self.refresh_issues(
                     completing_play=completed_play_type,
                     force_full_sync=force_full_sync,
                 ),
@@ -788,13 +856,15 @@ class _CompletionMixin(_OrchestratorBase):
             )
 
         # Learnings: reinforce on success; harvest new entries after consolidation
-        if self._cfg.learnings.enabled and outcome.play_id is not None:
-            await self._safe_call(
-                self._update_learnings(outcome, completed_play_type),
+        if self._host._cfg.learnings.enabled and outcome.play_id is not None:
+            await self._host._safe_call(
+                self.update_learnings(outcome, completed_play_type),
                 "update_learnings",
             )
 
-        await self._safe_call(self._state_provider.on_play_completed(outcome), "on_play_completed")
+        await self._host._safe_call(
+            self._host._state_provider.on_play_completed(outcome), "on_play_completed"
+        )
         # The orchestrator owns final lifecycle publication. The executor may
         # update handles, but consumers get the terminal status event here
         # after persistence/reward side effects complete.
@@ -811,8 +881,8 @@ class _CompletionMixin(_OrchestratorBase):
                 if outcome.success
                 else AgentStatus.ERROR
             )
-            await self._safe_call(
-                self._state_provider.on_agent_changed(outcome.agent_id, final_status),
+            await self._host._safe_call(
+                self._host._state_provider.on_agent_changed(outcome.agent_id, final_status),
                 "on_agent_changed_final",
             )
             self._maybe_enqueue_rate_limit_recovery(outcome.agent_id, final_status)
@@ -828,9 +898,9 @@ class _CompletionMixin(_OrchestratorBase):
             # doesn't inherit an elevated (recovery-exhausted) counter.
             self._recovery.clear_break_failures(outcome.agent_id)
         # Second state_update after play completes so consumers see the fresh result
-        post_state = await self._build_state()
-        await self._safe_call(
-            self._state_provider.on_state_update(post_state), "on_state_update_post"
+        post_state = await self._state_builder.build_state()
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(post_state), "on_state_update_post"
         )
 
     async def _handle_end_session_completion(
@@ -842,7 +912,7 @@ class _CompletionMixin(_OrchestratorBase):
     ) -> None:
         if completed_play_type == PlayType.END_SESSION:
             if not outcome.success:
-                self._end_session_dispatch_started = False
+                self._host._end_session_dispatch_started = False
                 _logger.warning(
                     "end_session_play_failed_before_drain",
                     play_id=outcome.play_id,
@@ -853,11 +923,14 @@ class _CompletionMixin(_OrchestratorBase):
             drain_reason = ctx.params.reason or _str_extra(ctx.params, "drain_reason")
             if drain_reason is None:
                 drain_reason = "ppo_selected"
-            if isinstance(self._selector, _ppo_selector_cls()) and len(self._selector.buffer) > 0:
-                await self._selector.update_policy(next_state_value=0.0)
-                final_state = await self._build_state()
+            if (
+                isinstance(self._host._selector, _ppo_selector_cls())
+                and len(self._host._selector.buffer) > 0
+            ):
+                await self._host._selector.update_policy(next_state_value=0.0)
+                final_state = await self._state_builder.build_state()
                 weights_dir = self._repo_root / ".agentshore" / "weights"
-                await self._selector.save_checkpoint(
+                await self._host._selector.save_checkpoint(
                     self._store, self._session_id, weights_dir, final_state.total_plays
                 )
             _logger.info(
@@ -867,9 +940,9 @@ class _CompletionMixin(_OrchestratorBase):
                 play_id=outcome.play_id,
                 session_id=self._session_id,
             )
-            await self.begin_drain(drain_reason)
+            await self._drain.begin_drain(drain_reason)
 
-    async def _mark_pr_manual_required(self, pr_number: int) -> None:
+    async def mark_pr_manual_required(self, pr_number: int) -> None:
         """Persist a terminal manual gate after repeated unblock_pr failures."""
         await self._store.add_pull_request_labels(
             self._session_id,
@@ -946,7 +1019,7 @@ class _CompletionMixin(_OrchestratorBase):
         ``_break_recovery_failures[agent_id] >= BREAK_RECOVERY_FAILURE_LIMIT``
         to unmask END_AGENT and let the PPO decide to retire the agent. The
         counter is cleared on a successful recovery (below) and when the agent
-        is actually ended (see END_AGENT cleanup in ``_harvest_completed``).
+        is actually ended (see END_AGENT cleanup in ``harvest_completed``).
         """
 
         agent_id = outcome.agent_id
@@ -980,7 +1053,7 @@ class _CompletionMixin(_OrchestratorBase):
             limit=BREAK_RECOVERY_FAILURE_LIMIT,
         )
 
-    async def _on_crash(self, agent_id: str, return_code: int) -> None:
+    async def on_crash(self, agent_id: str, return_code: int) -> None:
         """Log crash; leave handle in ERROR state. No auto-recovery in Phase 2."""
         _logger.error(
             "agent_crashed",
@@ -989,12 +1062,12 @@ class _CompletionMixin(_OrchestratorBase):
             return_code=return_code,
         )
 
-        await self._safe_call(
-            self._state_provider.on_agent_changed(agent_id, AgentStatus.ERROR),
+        await self._host._safe_call(
+            self._host._state_provider.on_agent_changed(agent_id, AgentStatus.ERROR),
             "on_agent_changed",
         )
 
-    async def _on_context_pressure(self, agent_id: str, ratio: float) -> None:
+    async def on_context_pressure(self, agent_id: str, ratio: float) -> None:
         """Annotate pressure hint; do not auto-trigger COMPACT/FRESH_START in Phase 2."""
         _logger.info(
             "context_pressure",
@@ -1002,18 +1075,18 @@ class _CompletionMixin(_OrchestratorBase):
             agent_id=agent_id,
             ratio=ratio,
         )
-        self.context_pressure_hints[agent_id] = ratio
+        self._host.context_pressure_hints[agent_id] = ratio
 
-        await self._safe_call(
-            self._state_provider.on_agent_changed(agent_id, AgentStatus.BUSY),
+        await self._host._safe_call(
+            self._host._state_provider.on_agent_changed(agent_id, AgentStatus.BUSY),
             "on_agent_changed",
         )
 
-    async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
+    async def update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""
         from agentshore.learnings import Learning, load, reinforce, save_atomic, top_k
 
-        learnings_path = self._repo_root / self._cfg.learnings.file
+        learnings_path = self._repo_root / self._host._cfg.learnings.file
         entries = await asyncio.to_thread(load, learnings_path)
         changed = False
 
@@ -1069,14 +1142,14 @@ class _CompletionMixin(_OrchestratorBase):
                 changed = True
 
         # Trim to max_entries keeping highest confidence
-        if len(entries) > self._cfg.learnings.max_entries:
-            entries = top_k(entries, k=self._cfg.learnings.max_entries)
+        if len(entries) > self._host._cfg.learnings.max_entries:
+            entries = top_k(entries, k=self._host._cfg.learnings.max_entries)
             changed = True
 
         if changed:
             await asyncio.to_thread(save_atomic, learnings_path, entries)
 
-    async def _check_no_forward_progress(
+    async def check_no_forward_progress(
         self, state: OrchestratorState, outcome: PlayOutcome
     ) -> None:
         """Forward-progress backstop: drain after N consecutive dead ticks.
@@ -1090,10 +1163,10 @@ class _CompletionMixin(_OrchestratorBase):
         and so missed an interleaved write_impl↔refine churn. Pure backstop: it
         never influences which play the policy selects.
         """
-        monitor = self._progress_monitor
+        monitor = self._host._progress_monitor
         if monitor is None:
             return
-        if getattr(self, "_draining", False) or getattr(self, "_stop_requested", False):
+        if getattr(self._host, "_draining", False) or getattr(self._host, "_stop_requested", False):
             return
         graph = state.graph
         fingerprint = (
@@ -1122,9 +1195,9 @@ class _CompletionMixin(_OrchestratorBase):
                 f"for {monitor.limit} consecutive ticks — draining the stalled session"
             ),
         )
-        await self._initiate_autonomous_stop("no_forward_progress", fire_natural_exit=True)
+        await self._host._initiate_autonomous_stop("no_forward_progress", fire_natural_exit=True)
 
-    async def _refresh_issues(
+    async def refresh_issues(
         self,
         completing_play: PlayType | None = None,
         *,
@@ -1158,10 +1231,10 @@ class _CompletionMixin(_OrchestratorBase):
         try:
             from agentshore.github.adapter import GitHubAdapter
 
-            gh = GitHubAdapter(store=self._store, session_id=self._session_id, cfg=self._cfg)
+            gh = GitHubAdapter(store=self._store, session_id=self._session_id, cfg=self._host._cfg)
             await gh.probe()
             syncer = GitHubSyncer(
-                gh=gh, store=self._store, cfg=self._cfg, session_id=self._session_id
+                gh=gh, store=self._store, cfg=self._host._cfg, session_id=self._session_id
             )
             if gh.available:
                 last_sync = await self._store.get_last_issue_sync_at(self._session_id)
@@ -1261,7 +1334,7 @@ class _CompletionMixin(_OrchestratorBase):
         except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
             _logger.warning("github_refresh_failed", error=str(exc))
         finally:
-            self._last_refresh_time = _time.monotonic()
+            self._host._last_refresh_time = _time.monotonic()
             await self._ensure_ssh_key_fresh()
 
     async def _ensure_ssh_key_fresh(self) -> None:
@@ -1281,12 +1354,12 @@ class _CompletionMixin(_OrchestratorBase):
     ) -> None:
         """Transition worktree rows to ``stale`` for PRs that just closed/merged.
 
-        Called from ``_refresh_issues`` with the PRs we re-pulled at
+        Called from ``refresh_issues`` with the PRs we re-pulled at
         ``state='all'`` to confirm their new state. A PR whose new state is
         anything other than ``"open"`` no longer needs an active worktree;
         the closed-PR TTL reaper will sweep it after the grace period.
         """
-        if self._worktrees is None or not refetched_prs:
+        if self._host._worktrees is None or not refetched_prs:
             return
         from agentshore.agents.worktree.registry import lookup_by_branch, mark_status
 
@@ -1329,11 +1402,11 @@ class _CompletionMixin(_OrchestratorBase):
 
     async def _sweep_closed_pr_worktrees(self) -> None:
         """Run the TTL reaper for ``stale`` worktree rows in the current session."""
-        if self._worktrees is None:
+        if self._host._worktrees is None:
             return
         try:
-            report = await self._worktrees.reap_closed_prs(
-                ttl_seconds=self._cfg.worktrees.reap_ttl_seconds,
+            report = await self._host._worktrees.reap_closed_prs(
+                ttl_seconds=self._host._cfg.worktrees.reap_ttl_seconds,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
@@ -1343,5 +1416,5 @@ class _CompletionMixin(_OrchestratorBase):
                 "worktree_pr_ttl_reap",
                 reaped=len(report.removed),
                 failed=len(report.failed),
-                ttl_seconds=self._cfg.worktrees.reap_ttl_seconds,
+                ttl_seconds=self._host._cfg.worktrees.reap_ttl_seconds,
             )

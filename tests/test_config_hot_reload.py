@@ -47,7 +47,7 @@ async def test_reload_config_swaps_cfg(tmp_path: Path) -> None:
 
         # Modify config file — change budget total
         _write_config(config_path, {"budget": {"enabled": True, "total": 25.0}})
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
 
         assert orch._cfg.budget.total == 25.0
 
@@ -59,7 +59,7 @@ async def test_reload_config_no_path(tmp_path: Path) -> None:
     async with orch:
         original_cfg = orch._cfg
         # Should not raise
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
         # _cfg should be unchanged
         assert orch._cfg is original_cfg
 
@@ -75,7 +75,7 @@ async def test_reload_config_invalid_yaml(tmp_path: Path) -> None:
     async with orch:
         original_cfg = orch._cfg
         config_path.write_text("invalid: yaml: {{{", encoding="utf-8")
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
         assert orch._cfg is original_cfg  # unchanged
 
 
@@ -90,7 +90,7 @@ async def test_reload_config_no_changes(tmp_path: Path) -> None:
     async with orch:
         original_cfg = orch._cfg
         # Reload without modifying the file — content still matches
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
         # Config should not have been swapped (no changes detected)
         assert orch._cfg is original_cfg
 
@@ -115,7 +115,7 @@ async def test_reload_config_logs_changed_fields(tmp_path: Path) -> None:
             ),
             encoding="utf-8",
         )
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
 
         assert orch._cfg.budget.total == 99.0
         assert orch._cfg.scope.strict_mode is True
@@ -133,7 +133,7 @@ async def test_reload_config_rejects_budget_below_floor(tmp_path: Path) -> None:
         original_cfg = orch._cfg
         _write_config(config_path, {"budget": {"enabled": True, "total": 19.99}})
 
-        await orch._reload_config()
+        await orch._lifecycle.reload_config()
 
         assert orch._cfg is original_cfg
         assert orch._cfg.budget.total == 20.0

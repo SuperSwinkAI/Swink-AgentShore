@@ -9,8 +9,10 @@ stretches the watchdog wait progressively the longer the digest stays put.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from agentshore.core import Orchestrator
-from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS
+from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS, LoopRunner
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import (
     AgentSnapshot,
@@ -61,6 +63,18 @@ def _orch() -> Orchestrator:
     orch._overrides = OverrideQueue()
     orch._idle_streak = 0
     orch._last_selection_digest = None
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id="s",
+        main_repo=MagicMock(),
+        overrides=orch._overrides,
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
     return orch
 
 
@@ -71,14 +85,14 @@ def _orch() -> Orchestrator:
 
 def test_idle_backoff_starts_at_one_second() -> None:
     orch = _orch()
-    assert orch._idle_backoff() == 1.0
+    assert orch._loop.idle_backoff() == 1.0
 
 
 def test_idle_backoff_advances_through_fibonacci() -> None:
     orch = _orch()
     observed = []
     for _ in _IDLE_BACKOFF_SECONDS:
-        observed.append(orch._idle_backoff())
+        observed.append(orch._loop.idle_backoff())
         orch._idle_streak += 1
     assert tuple(observed) == _IDLE_BACKOFF_SECONDS
 
@@ -86,7 +100,7 @@ def test_idle_backoff_advances_through_fibonacci() -> None:
 def test_idle_backoff_clamps_at_ceiling() -> None:
     orch = _orch()
     orch._idle_streak = 999
-    assert orch._idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
+    assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +112,8 @@ def test_digest_is_stable_for_equivalent_state() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"), _agent("b")), action_mask=(True, False, True))
     idle = list(state.agents)
-    d1 = orch._selection_state_digest(state, idle)
-    d2 = orch._selection_state_digest(state, idle)
+    d1 = orch._loop.selection_state_digest(state, idle)
+    d2 = orch._loop.selection_state_digest(state, idle)
     assert d1 == d2
     assert isinstance(d1, bytes)
     assert len(d1) == 16
@@ -108,25 +122,25 @@ def test_digest_is_stable_for_equivalent_state() -> None:
 def test_digest_changes_when_idle_agent_set_changes() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"), _agent("b")), action_mask=(True,))
-    d_both = orch._selection_state_digest(state, list(state.agents))
-    d_one = orch._selection_state_digest(state, [state.agents[0]])
+    d_both = orch._loop.selection_state_digest(state, list(state.agents))
+    d_one = orch._loop.selection_state_digest(state, [state.agents[0]])
     assert d_both != d_one
 
 
 def test_digest_is_order_independent_for_idle_agents() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"), _agent("b")), action_mask=(True,))
-    d_ab = orch._selection_state_digest(state, [state.agents[0], state.agents[1]])
-    d_ba = orch._selection_state_digest(state, [state.agents[1], state.agents[0]])
+    d_ab = orch._loop.selection_state_digest(state, [state.agents[0], state.agents[1]])
+    d_ba = orch._loop.selection_state_digest(state, [state.agents[1], state.agents[0]])
     assert d_ab == d_ba
 
 
 def test_digest_changes_when_in_flight_count_changes() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"),), action_mask=(True,))
-    d_empty = orch._selection_state_digest(state, list(state.agents))
+    d_empty = orch._loop.selection_state_digest(state, list(state.agents))
     orch._in_flight["d1"] = object()  # type: ignore[assignment]
-    d_one = orch._selection_state_digest(state, list(state.agents))
+    d_one = orch._loop.selection_state_digest(state, list(state.agents))
     assert d_empty != d_one
 
 
@@ -135,18 +149,18 @@ def test_digest_changes_when_action_mask_changes() -> None:
     a = _agent("a")
     s1 = _state(agents=(a,), action_mask=(True, False, True))
     s2 = _state(agents=(a,), action_mask=(False, False, True))
-    d1 = orch._selection_state_digest(s1, list(s1.agents))
-    d2 = orch._selection_state_digest(s2, list(s2.agents))
+    d1 = orch._loop.selection_state_digest(s1, list(s1.agents))
+    d2 = orch._loop.selection_state_digest(s2, list(s2.agents))
     assert d1 != d2
 
 
 def test_digest_changes_when_override_queued() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"),), action_mask=(True,))
-    d_no = orch._selection_state_digest(state, list(state.agents))
+    d_no = orch._loop.selection_state_digest(state, list(state.agents))
 
     orch._overrides.put_nowait(("dummy", "params"))  # type: ignore[arg-type]
-    d_yes = orch._selection_state_digest(state, list(state.agents))
+    d_yes = orch._loop.selection_state_digest(state, list(state.agents))
     assert d_no != d_yes
 
 
@@ -155,8 +169,8 @@ def test_digest_changes_when_session_state_changes() -> None:
     a = _agent("a")
     s_run = _state(agents=(a,), action_mask=(True,), session_state=SessionState.RUNNING)
     s_pause = _state(agents=(a,), action_mask=(True,), session_state=SessionState.PAUSED)
-    d_run = orch._selection_state_digest(s_run, list(s_run.agents))
-    d_pause = orch._selection_state_digest(s_pause, list(s_pause.agents))
+    d_run = orch._loop.selection_state_digest(s_run, list(s_run.agents))
+    d_pause = orch._loop.selection_state_digest(s_pause, list(s_pause.agents))
     assert d_run != d_pause
 
 
@@ -186,8 +200,8 @@ def test_digest_changes_with_total_plays() -> None:
         agents=[a],
         action_mask=(True,),
     )
-    d_before = orch._selection_state_digest(s_before, list(s_before.agents))
-    d_after = orch._selection_state_digest(s_after, list(s_after.agents))
+    d_before = orch._loop.selection_state_digest(s_before, list(s_before.agents))
+    d_after = orch._loop.selection_state_digest(s_after, list(s_after.agents))
     assert d_before != d_after
 
 
@@ -197,6 +211,6 @@ def test_digest_changes_with_github_state() -> None:
     a = _agent("a")
     s_before = _state(agents=(a,), action_mask=(True,), open_issues=2, pull_requests=1)
     s_after = _state(agents=(a,), action_mask=(True,), open_issues=3, pull_requests=1)
-    d_before = orch._selection_state_digest(s_before, list(s_before.agents))
-    d_after = orch._selection_state_digest(s_after, list(s_after.agents))
+    d_before = orch._loop.selection_state_digest(s_before, list(s_before.agents))
+    d_after = orch._loop.selection_state_digest(s_after, list(s_after.agents))
     assert d_before != d_after

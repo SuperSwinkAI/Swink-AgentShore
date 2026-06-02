@@ -16,6 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from agentshore.config import RuntimeConfig
 from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.completion import CompletionProcessor
+from agentshore.core.mixins.dispatch import Dispatcher
+from agentshore.core.mixins.drain import DrainController
+from agentshore.core.mixins.lifecycle import LifecycleController
+from agentshore.core.mixins.loop import LoopRunner
+from agentshore.core.mixins.snapshots import SnapshotProjector
+from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
@@ -76,7 +83,6 @@ def make_test_orchestrator(
     orch._embedded_mode = False
     orch._esr_ready_callback = None
     orch._extra_budget = 0.0
-    orch._last_stagnation_stage = 0
     orch._stop_reason = "unknown"
     orch._exit_stack = MagicMock()
     orch._health = None
@@ -94,8 +100,6 @@ def make_test_orchestrator(
     orch._config_hash = "abc"
     orch._metrics = None
     orch._overrides = OverrideQueue()
-    orch._last_warned_failure_streak = None
-    orch._last_warned_any_streak = None
     orch._forced_mask_play_types = ()
     orch._loop_started_at = 0.0
     orch._registry = None
@@ -111,13 +115,86 @@ def make_test_orchestrator(
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
     orch._recovery = RecoveryTracker()
+    orch._snapshots = SnapshotProjector(
+        manager=orch._manager, store=store, session_id=orch._session_id
+    )
+    orch._state_builder = StateBuilder(
+        host=orch,
+        store=store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        snapshots=orch._snapshots,
+        velocity=orch._velocity,
+        recovery=orch._recovery,
+        overrides=orch._overrides,
+    )
     orch._last_selection_digest = None
     orch._idle_streak = 0
-    orch._fleet_idle_persistent_active = False
-    orch._idle_agent_claim_ticks = {}
     orch._last_refresh_time = float("inf")
     orch._main_repo = MainRepoGuard()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
-    orch._refresh_issues = AsyncMock()
+    orch._lifecycle = LifecycleController(
+        host=orch,
+        store=store,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+    )
+    orch._drain = DrainController(
+        host=orch,
+        store=store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
+    orch._completion = CompletionProcessor(
+        host=orch,
+        store=store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+        velocity=orch._velocity,
+        recovery=orch._recovery,
+        overrides=orch._overrides,
+        snapshots=orch._snapshots,
+        state_builder=orch._state_builder,
+        lifecycle=orch._lifecycle,
+        drain=orch._drain,
+    )
+    orch._completion.refresh_issues = AsyncMock()
+    orch._dispatcher = Dispatcher(
+        host=orch,
+        store=store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        state_builder=orch._state_builder,
+        completion=orch._completion,
+    )
+    # The conductor — constructed last; references every sibling component +
+    # the 1a collaborators. Owns the loop-only counters (tick-failure streak,
+    # wedge counter, watchdog handle, heartbeat, fleet-idle latch, warning memos,
+    # stagnation stage). On this __new__-bypass stub the heartbeat keeps its
+    # float('inf') default (loop never started → not stale to the watchdog).
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        velocity=orch._velocity,
+        state_builder=orch._state_builder,
+        dispatcher=orch._dispatcher,
+        completion=orch._completion,
+        lifecycle=orch._lifecycle,
+        drain=orch._drain,
+    )
     return orch

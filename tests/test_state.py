@@ -232,7 +232,7 @@ def test_agentshore_state_v1_contract_fields_round_trip_through_serializer() -> 
 def test_session_stats_aggregate_play_history() -> None:
     from pytest import approx
 
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.data.models import PlayRecord
 
     history = [
@@ -268,7 +268,7 @@ def test_session_stats_aggregate_play_history() -> None:
         ),
     ]
 
-    stats = Orchestrator._compute_session_stats(history)
+    stats = SnapshotProjector.compute_session_stats(history)
 
     assert stats.total_plays == 3
     assert stats.successful_plays == 2
@@ -324,7 +324,7 @@ def test_agentshore_state_open_issues_isolated() -> None:
 
 def test_project_open_issues_enriches_beads_linkage() -> None:
     from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.data.models import GitHubIssueRecord
 
     graph = ProjectGraph(
@@ -359,7 +359,7 @@ def test_project_open_issues_enriches_beads_linkage() -> None:
         ),
     ]
 
-    mirrored, missing = Orchestrator._project_open_issues(records, graph)
+    mirrored, missing = SnapshotProjector.project_open_issues(records, graph)
 
     assert mirrored.bead_id == "task-42"
     assert mirrored.bead_epic_id == "epic-1"
@@ -371,7 +371,7 @@ def test_project_open_issues_enriches_beads_linkage() -> None:
 
 def test_project_open_issues_mirrors_closed_graph_tasks() -> None:
     from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.data.models import GitHubIssueRecord
 
     graph = ProjectGraph(
@@ -400,7 +400,7 @@ def test_project_open_issues_mirrors_closed_graph_tasks() -> None:
         )
     ]
 
-    (snapshot,) = Orchestrator._project_open_issues(records, graph)
+    (snapshot,) = SnapshotProjector.project_open_issues(records, graph)
 
     assert snapshot.bead_id == "task-17"
     assert snapshot.bead_status == "closed"

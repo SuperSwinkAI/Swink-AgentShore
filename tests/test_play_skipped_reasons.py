@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from agentshore.core.mixins.loop import _LoopMixin
+from agentshore.core.mixins.loop import LoopRunner
 from agentshore.state import SessionState
 
 
@@ -47,7 +47,7 @@ def _classify(
     candidate_plan_has_work: bool,
 ) -> str:
     """Wrapper to call the staticmethod with the right typing for stubs."""
-    return _LoopMixin._classify_play_skipped_reason(  # type: ignore[arg-type]
+    return LoopRunner.classify_play_skipped_reason(  # type: ignore[arg-type]
         state,
         reason_counts,
         candidate_plan_has_work=candidate_plan_has_work,

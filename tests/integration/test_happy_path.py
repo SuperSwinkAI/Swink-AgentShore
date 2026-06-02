@@ -54,7 +54,7 @@ async def test_happy_path_runs_three_plays(tmp_path: Path) -> None:
     await _clear_cached_github_work(orch)
 
     with (
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
         patch.object(orch._executor, "execute", side_effect=mock_exec),
     ):
         async with orch:
@@ -85,7 +85,7 @@ async def test_happy_path_records_plays_in_db(tmp_path: Path) -> None:
     await _clear_cached_github_work(orch)
 
     with (
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
         patch.object(orch._executor, "execute", side_effect=mock_exec),
     ):
         async with orch:
@@ -117,7 +117,7 @@ async def test_happy_path_session_completes(tmp_path: Path) -> None:
     await _clear_cached_github_work(orch)
 
     with (
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
         patch.object(orch._executor, "execute", side_effect=mock_exec),
     ):
         async with orch:

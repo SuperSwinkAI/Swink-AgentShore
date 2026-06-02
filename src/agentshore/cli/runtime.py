@@ -66,7 +66,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         if orch.adjust_budget(delta):
             await orch.resume()
     elif command == "rescan_issues":
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
     elif command == "feedback_response":
         action = cmd.get("action")
         if action == "continue":
@@ -82,7 +82,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         elif action in {"stop", "end_session", "drain"}:
             await orch.begin_drain("user_request")
         elif action == "rescan_issues":
-            await orch._refresh_issues()
+            await orch._completion.refresh_issues()
             await orch.resume()
     elif command == "abort_play":
         # Cancel all in-flight play tasks.  The orchestrator loop will pick up

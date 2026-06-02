@@ -1,7 +1,8 @@
-"""Integration test for _check_no_forward_progress (completion-mixin wiring).
+"""Integration test for CompletionProcessor.check_no_forward_progress.
 
-Verifies the orchestrator hook computes the per-tick inputs from state/outcome,
-feeds the ForwardProgressMonitor, and drains directly once the threshold trips.
+Verifies the completion-component hook computes the per-tick inputs from
+state/outcome, feeds the ForwardProgressMonitor, and drains directly once the
+threshold trips.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agentshore.core import Orchestrator
+from agentshore.core.mixins.completion import CompletionProcessor
+from agentshore.core.mixins.loop import LoopRunner
 from agentshore.core.progress_monitor import ForwardProgressMonitor
 from agentshore.state import (
     OrchestratorState,
@@ -21,7 +24,7 @@ from agentshore.state import (
 )
 
 
-def _host(limit: int = 2) -> types.SimpleNamespace:
+def _completion(limit: int = 2) -> types.SimpleNamespace:
     host = types.SimpleNamespace(
         _progress_monitor=ForwardProgressMonitor(no_progress_ticks=limit),
         _draining=False,
@@ -31,12 +34,18 @@ def _host(limit: int = 2) -> types.SimpleNamespace:
         _drain_reason=None,
         _pause_deadline=None,
         _pause_event=None,
-        begin_drain=AsyncMock(),
+        _drain=types.SimpleNamespace(begin_drain=AsyncMock()),
     )
-    # _check_no_forward_progress routes the stop through the real
-    # _initiate_autonomous_stop collaborator, which delegates to begin_drain.
+    # check_no_forward_progress routes the stop through the host
+    # _initiate_autonomous_stop delegator, which forwards to
+    # self._loop.initiate_autonomous_stop → self._drain.begin_drain.
+    loop = types.SimpleNamespace(_host=host, _drain=host._drain)
+    loop.initiate_autonomous_stop = types.MethodType(LoopRunner.initiate_autonomous_stop, loop)
+    host._loop = loop
     host._initiate_autonomous_stop = types.MethodType(Orchestrator._initiate_autonomous_stop, host)
-    return host
+    # The processor reads runtime state via self._host and its own _session_id
+    # (a constructor dep). Build a stand-in with just those two surfaces.
+    return types.SimpleNamespace(_host=host, _session_id="s1")
 
 
 def _state() -> OrchestratorState:
@@ -71,32 +80,32 @@ def _dispatched() -> PlayOutcome:
 
 @pytest.mark.asyncio
 async def test_drains_after_threshold_dead_ticks() -> None:
-    host = _host(limit=2)
+    completion = _completion(limit=2)
     state, outcome = _state(), _skip()
     # baseline tick (no trip), then two dead ticks → trip on the second.
     for _ in range(3):
-        await Orchestrator._check_no_forward_progress(host, state, outcome)
-    host.begin_drain.assert_awaited_once_with("no_forward_progress")
-    assert host._drain_reason == "no_forward_progress"
-    assert host._natural_exit_reason == "no_forward_progress"
+        await CompletionProcessor.check_no_forward_progress(completion, state, outcome)
+    completion._host._drain.begin_drain.assert_awaited_once_with("no_forward_progress")
+    assert completion._host._drain_reason == "no_forward_progress"
+    assert completion._host._natural_exit_reason == "no_forward_progress"
 
 
 @pytest.mark.asyncio
 async def test_agent_dispatch_resets_and_prevents_drain() -> None:
-    host = _host(limit=2)
+    completion = _completion(limit=2)
     state = _state()
-    await Orchestrator._check_no_forward_progress(host, state, _skip())  # baseline
-    await Orchestrator._check_no_forward_progress(host, state, _skip())  # dead 1
+    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())  # baseline
+    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())  # dead 1
     # A real dispatch resets the counter, so the next skip is only dead-tick #1.
-    await Orchestrator._check_no_forward_progress(host, state, _dispatched())
-    await Orchestrator._check_no_forward_progress(host, state, _skip())
-    host.begin_drain.assert_not_awaited()
+    await CompletionProcessor.check_no_forward_progress(completion, state, _dispatched())
+    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())
+    completion._host._drain.begin_drain.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_no_op_when_already_draining() -> None:
-    host = _host(limit=1)
-    host._draining = True
-    await Orchestrator._check_no_forward_progress(host, _state(), _skip())
-    await Orchestrator._check_no_forward_progress(host, _state(), _skip())
-    host.begin_drain.assert_not_awaited()
+    completion = _completion(limit=1)
+    completion._host._draining = True
+    await CompletionProcessor.check_no_forward_progress(completion, _state(), _skip())
+    await CompletionProcessor.check_no_forward_progress(completion, _state(), _skip())
+    completion._host._drain.begin_drain.assert_not_awaited()

@@ -42,7 +42,7 @@ class OverrideQueue:
         # the next dispatch is PPO-selected (not an override).
         self.pending_override_kind: OverrideKind | None = None
         # play_id values dispatched from the override queue (bootstrap recipe,
-        # user request, retry). ``_compute_play_streaks`` skips them — they are
+        # user request, retry). ``compute_play_streaks`` skips them — they are
         # not PPO-collapse, so they should not contribute to same_type_streak /
         # same_type_failure_streak. Unbounded; sessions have <10k plays.
         self.dispatched_play_ids: set[int] = set()

@@ -2,20 +2,21 @@
 
 When the main-repo dispatch pause latches and RECONCILE_STATE cannot clear it,
 the loop would idle-with-work forever. The watchdog in
-``_continue_if_selector_idle_work_remains`` escalates to a clean drain-based
-stop after a grace window — gated strictly on (pause latched + nothing in
-flight) so healthy capacity-idle never trips it.
+``LoopRunner.continue_if_selector_idle_work_remains`` escalates to a clean
+drain-based stop after a grace window — gated strictly on (pause latched +
+nothing in flight) so healthy capacity-idle never trips it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from unittest.mock import MagicMock
 
 import pytest
 
 from agentshore.core.main_repo_guard import MainRepoGuard
-from agentshore.core.mixins.loop import _WEDGED_IDLE_STOP_TICKS
+from agentshore.core.mixins.loop import _WEDGED_IDLE_STOP_TICKS, LoopRunner
 from agentshore.core.orchestrator import Orchestrator
 from agentshore.state import OrchestratorState, SessionState
 
@@ -26,10 +27,24 @@ def _harness(*, paused: bool, in_flight: bool, ticks: int) -> Orchestrator:
     orch._main_repo = MainRepoGuard()
     orch._main_repo.dispatch_paused = paused
     orch._in_flight = {"a": object()} if in_flight else {}  # type: ignore[dict-item]
-    orch._wedged_idle_ticks = ticks
     orch._draining = False
     orch._drain_reason = None
+    orch._natural_exit_reason = None
+    orch._pause_deadline = None
     orch._pause_event = asyncio.Event()
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=orch._main_repo,
+        overrides=MagicMock(),
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
+    orch._loop._wedged_idle_ticks = ticks
     return orch
 
 
@@ -45,7 +60,9 @@ def _state() -> OrchestratorState:
 @pytest.mark.asyncio
 async def test_latched_pause_auto_stops_after_grace() -> None:
     orch = _harness(paused=True, in_flight=False, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
-    cont = await orch._continue_if_selector_idle_work_remains(_state(), reason="unchanged_digest")
+    cont = await orch._loop.continue_if_selector_idle_work_remains(
+        _state(), reason="unchanged_digest"
+    )
     assert cont is False
     assert orch._draining is True
     assert orch._drain_reason == "main_repo_wedged"
@@ -63,6 +80,6 @@ async def test_in_flight_work_does_not_trip_watchdog() -> None:
     # downstream candidate-plan path may need more wiring; we only assert the
     # watchdog guard branch did not fire.
     with contextlib.suppress(Exception):
-        await orch._continue_if_selector_idle_work_remains(_state(), reason="x")
+        await orch._loop.continue_if_selector_idle_work_remains(_state(), reason="x")
     assert orch._draining is False
-    assert orch._wedged_idle_ticks == 0
+    assert orch._loop._wedged_idle_ticks == 0

@@ -110,7 +110,7 @@ async def test_deterministic_replay(tmp_path: Path) -> None:
         )
         await _clear_cached_github_work(orch)
 
-        with patch.object(orch, "_refresh_issues", new=AsyncMock()):
+        with patch.object(orch._completion, "refresh_issues", new=AsyncMock()):
             async with orch:
                 await orch.run_until_idle()
 
@@ -140,7 +140,7 @@ async def test_fixed_plan_exhaustion_stops_loop(tmp_path: Path) -> None:
     )
     await _clear_cached_github_work(orch)
 
-    with patch.object(orch, "_refresh_issues", new=AsyncMock()):
+    with patch.object(orch._completion, "refresh_issues", new=AsyncMock()):
         async with orch:
             await orch.run_until_idle()
 

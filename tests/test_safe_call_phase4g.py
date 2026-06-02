@@ -207,7 +207,7 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
         pull_requests=[],
     )
 
-    assert await orch._consume_override(state) is None
+    assert await orch._dispatcher.consume_override(state) is None
     assert orch._overrides.empty()
     orch._store.release_work_claim_group.assert_awaited_once_with(orch._session_id, "claim-210")
 
@@ -246,7 +246,7 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
         pull_requests=[],
     )
 
-    assert await orch._consume_override(state) is None
+    assert await orch._dispatcher.consume_override(state) is None
     assert not orch._overrides.empty()
     requeued_entry = orch._overrides.get_nowait()
     assert requeued_entry.params.extras["mask_requeue_attempts"] == 1
@@ -271,9 +271,9 @@ def _mask(text: str, classification: MaskClassification) -> MaskReason:
 
 
 def test_mask_reason_is_indefinite_wait_matches_waiting_for() -> None:
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.dispatch import Dispatcher
 
-    assert Orchestrator._mask_reason_is_indefinite_wait(
+    assert Dispatcher.mask_reason_is_indefinite_wait(
         _mask(
             "waiting for seed_project to complete before expanding the fleet",
             MaskClassification.INDEFINITE_WAIT,
@@ -288,24 +288,24 @@ def test_mask_reason_is_indefinite_wait_matches_instantiate_cooldown() -> None:
     instantiate cooldown. The cooldown is a deterministic-clear wait
     (INDEFINITE_WAIT), so the override should survive without counter bump.
     """
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.dispatch import Dispatcher
 
-    assert Orchestrator._mask_reason_is_indefinite_wait(
+    assert Dispatcher.mask_reason_is_indefinite_wait(
         _mask("instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT)
     )
-    assert Orchestrator._mask_reason_is_indefinite_wait(
+    assert Dispatcher.mask_reason_is_indefinite_wait(
         _mask("cooldown active for write_plan", MaskClassification.INDEFINITE_WAIT)
     )
 
 
 def test_mask_reason_is_indefinite_wait_does_not_match_transient_staffing() -> None:
     """Staffing gaps go through the transient retry path (counter bumps), not here."""
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.dispatch import Dispatcher
 
-    assert not Orchestrator._mask_reason_is_indefinite_wait(
+    assert not Dispatcher.mask_reason_is_indefinite_wait(
         _mask("no idle agents", MaskClassification.TRANSIENT)
     )
-    assert not Orchestrator._mask_reason_is_indefinite_wait(
+    assert not Dispatcher.mask_reason_is_indefinite_wait(
         _mask("rate_limit", MaskClassification.TRANSIENT)
     )
 
@@ -330,7 +330,7 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
         kind=OverrideKind.EXECUTOR_REQUEUE,
     )
 
-    await orch._handle_masked_override(
+    await orch._dispatcher.handle_masked_override(
         entry,
         reason=_mask(
             "instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT
@@ -362,7 +362,7 @@ async def test_override_confirm_reuses_selector_live_loader(
     orch = _make_orch(tmp_path)
 
     # Default test selector is a MagicMock (not a real PPO selector) -> no loader.
-    assert orch._override_confirm_live_loader() is None
+    assert orch._dispatcher._override_confirm_live_loader() is None
 
     # A real PPO selector -> reuse its loader verbatim (single source of truth).
     sentinel_loader = AsyncMock()
@@ -374,5 +374,5 @@ async def test_override_confirm_reuses_selector_live_loader(
         lambda: type(ppo_selector),
     )
 
-    assert orch._override_confirm_live_loader() is sentinel_loader
+    assert orch._dispatcher._override_confirm_live_loader() is sentinel_loader
     ppo_selector._build_live_graph_loader.assert_called_once_with()
