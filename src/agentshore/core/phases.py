@@ -164,8 +164,8 @@ async def _phase_init_metrics(
             store=store,
             session_id=sid,
             stagnation_warn_after=cfg.rl.stagnation.warn_after,
-            velocity_provider=orch._compute_rolling_velocity,
-            executor_skip_rate_provider=orch._executor_skip_rate_recent_50,
+            velocity_provider=orch._velocity.compute_rolling_velocity,
+            executor_skip_rate_provider=orch._velocity.executor_skip_rate_recent_50,
         )
         orch._config_hash = _compute_config_hash(cfg)
         orch._policy_version = f"ppo-v1-{orch._config_hash[:8]}"
@@ -312,6 +312,7 @@ async def _phase_init_ppo_selector(
             selector=ppo,
             cfg=cfg,
             host=orch,
+            velocity=orch._velocity,
         )
 
         # Single autonomous-stop signal: drain after N consecutive ticks with no
