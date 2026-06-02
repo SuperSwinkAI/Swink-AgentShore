@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from agentshore.plays.selector import PlaySelector
     from agentshore.power import PowerAssertion
     from agentshore.state import (
+        OrchestratorState,
         PlayOutcome,
         StateProvider,
     )
@@ -111,8 +112,38 @@ class DrainController:
         self._session_id = session_id
         self._repo_root = repo_root
         self._state_builder = state_builder
+        # One-shot guard for the drain-complete defensive-visibility warning
+        # (``_on_drain_complete``) so it can never double-emit within a session.
+        self._drain_complete_warned = False
 
     # ------------------------------------------------------------------
+
+    def _on_drain_complete(self, state: OrchestratorState) -> None:
+        """Emit the drain-complete defensive-visibility warning at most once.
+
+        Drain should not have been entered with merge-ready PRs outstanding
+        (the auto-stop guard in loop.py defers that). If we still reach
+        drain completion with mergeable PRs, surface it loudly — finished work
+        is being abandoned and the entry guard did not hold. Idempotent via
+        ``_drain_complete_warned`` so it cannot double-emit within a session.
+        """
+        if self._drain_complete_warned:
+            return
+        self._drain_complete_warned = True
+        from agentshore.plays.candidates import build_candidate_plan
+
+        mergeable = build_candidate_plan(state).work_availability.mergeable_pr_count
+        if mergeable > 0:
+            _logger.error(
+                "drain_complete_with_mergeable_prs",
+                session_id=self._session_id,
+                mergeable_pr_count=mergeable,
+                note=(
+                    "session draining to completion while merge-ready PRs remain "
+                    "unmerged — finished work abandoned; the auto-stop entry guard "
+                    "should have prevented this drain"
+                ),
+            )
 
     def request_stop(self, reason: str = "stop_requested") -> None:
         """Signal the orchestrator to stop at the next loop iteration.

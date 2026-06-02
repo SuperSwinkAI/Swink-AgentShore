@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
-    from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
     from agentshore.core.mixins.snapshots import SnapshotProjector
@@ -33,12 +32,9 @@ if TYPE_CHECKING:
     from agentshore.core.recovery_tracker import RecoveryTracker
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import (
-        CheckpointRecord,
         DataStore,
         GitHubIssueRecord,
         PlayRecord,
-        PullRequestRecord,
-        ReviewQueueRecord,
         TrajectorySnapshotRecord,
     )
     from agentshore.plays.executor import PlayExecutor
@@ -192,66 +188,54 @@ class StateBuilder:
     async def fetch_state_data(self) -> _StateData:
         """Fan out independent DB reads concurrently and return a ``_StateData``.
 
-        ``build_state`` consumes this snapshot. Reads are independent so all
-        seven are launched in a single ``asyncio.gather`` call to maximise
-        parallelism and avoid sequential round-trips.
-
-        Because ``asyncio.gather`` stubs only carry typed overloads for up to
-        five arguments, the gather is split across two coroutines that execute
-        concurrently inside an outer two-way ``gather`` — preserving full
-        parallelism while keeping mypy happy.
+        ``build_state`` consumes this snapshot. The ten reads are independent,
+        so each is launched as its own task inside a single ``asyncio.TaskGroup``
+        to maximise parallelism and avoid sequential round-trips; the typed
+        ``asyncio.Task[T]`` handles keep mypy strict happy without the 5-arg
+        ``asyncio.gather`` overload limit that previously forced a two-group
+        split. Error handling is unchanged in practice: a failing read still
+        aborts the fan-out, and every caller wraps ``build_state`` in
+        ``except Exception`` (the loop per-tick guard, the drain checkpoint
+        blocks), which catches the TaskGroup's ``ExceptionGroup`` just as it did
+        the old raw exception.
 
         Trajectory fetch is the only one that historically swallowed errors;
-        that behaviour is preserved in ``SnapshotProjector.extract_trajectory``.
+        that behaviour is preserved in ``safe_get_latest_trajectory``.
         """
         from agentshore.beads import load_graph
 
-        async def _fetch_group1() -> tuple[
-            list[GitHubIssueRecord],
-            list[GitHubIssueRecord],
-            list[PullRequestRecord],
-            list[PlayRecord],
-            TrajectorySnapshotRecord | None,
-        ]:
-            return await asyncio.gather(
-                self._store.get_open_issues(self._session_id),
-                self._store.list_recently_closed_issues(self._session_id),
-                self._store.list_active_pull_requests(self._session_id),
-                self._store.get_play_history(self._session_id),
-                self.safe_get_latest_trajectory(),
+        async with asyncio.TaskGroup() as tg:
+            open_issues_task = tg.create_task(self._store.get_open_issues(self._session_id))
+            recently_closed_issues_task = tg.create_task(
+                self._store.list_recently_closed_issues(self._session_id)
+            )
+            pr_records_task = tg.create_task(
+                self._store.list_active_pull_requests(self._session_id)
+            )
+            play_history_task = tg.create_task(self._store.get_play_history(self._session_id))
+            trajectory_task = tg.create_task(self.safe_get_latest_trajectory())
+            pending_reviews_task = tg.create_task(
+                self._store.list_pending_reviews(self._session_id)
+            )
+            graph_task = tg.create_task(load_graph(self._repo_root))
+            latest_checkpoint_task = tg.create_task(
+                self._store.load_latest_checkpoint(self._session_id)
+            )
+            learnings_count_task = tg.create_task(self._store.count_learnings(self._session_id))
+            human_feedback_count_task = tg.create_task(
+                self._store.count_human_feedback(self._session_id)
             )
 
-        async def _fetch_group2() -> tuple[
-            list[ReviewQueueRecord],
-            ProjectGraph | None,
-            CheckpointRecord | None,
-            int,
-            int,
-        ]:
-            return await asyncio.gather(
-                self._store.list_pending_reviews(self._session_id),
-                load_graph(self._repo_root),
-                self._store.load_latest_checkpoint(self._session_id),
-                self._store.count_learnings(self._session_id),
-                self._store.count_human_feedback(self._session_id),
-            )
-
-        (
-            (
-                open_issues,
-                recently_closed_issues,
-                pr_records,
-                play_history,
-                trajectory_record,
-            ),
-            (
-                pending_reviews,
-                graph,
-                latest_checkpoint,
-                learnings_count,
-                human_feedback_count,
-            ),
-        ) = await asyncio.gather(_fetch_group1(), _fetch_group2())
+        open_issues = open_issues_task.result()
+        recently_closed_issues = recently_closed_issues_task.result()
+        pr_records = pr_records_task.result()
+        play_history = play_history_task.result()
+        trajectory_record = trajectory_task.result()
+        pending_reviews = pending_reviews_task.result()
+        graph = graph_task.result()
+        latest_checkpoint = latest_checkpoint_task.result()
+        learnings_count = learnings_count_task.result()
+        human_feedback_count = human_feedback_count_task.result()
 
         # Merge in-memory recent completions with the DB read. SQLite WAL flush
         # is async, so freshly-recorded plays may not appear in get_play_history

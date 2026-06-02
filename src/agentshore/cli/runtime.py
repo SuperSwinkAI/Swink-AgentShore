@@ -24,7 +24,6 @@ from agentshore.cli.helpers import (
     _track_background_task,
 )
 from agentshore.config.models import PolicyMode, RunMode
-from agentshore.paths import project_archive_dir, project_db_path, project_reports_dir
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,7 +65,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         if orch.adjust_budget(delta):
             await orch.resume()
     elif command == "rescan_issues":
-        await orch._completion.refresh_issues()
+        await orch.refresh_issues()
     elif command == "feedback_response":
         action = cmd.get("action")
         if action == "continue":
@@ -82,14 +81,13 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         elif action in {"stop", "end_session", "drain"}:
             await orch.begin_drain("user_request")
         elif action == "rescan_issues":
-            await orch._completion.refresh_issues()
+            await orch.refresh_issues()
             await orch.resume()
     elif command == "abort_play":
         # Cancel all in-flight play tasks.  The orchestrator loop will pick up
         # new work on the next iteration.
-        _cli_pkg._logger.warning("ipc.abort_play_received", in_flight=list(orch._in_flight.keys()))
-        for task in list(orch._in_flight.values()):
-            task.cancel()
+        _cli_pkg._logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
+        await orch.abort_in_flight()
     elif command == "verification_response":
         # A human has responded to a verification_checkpoint.  If the checkpoint
         # passed, resume the paused orchestrator; otherwise keep it paused and log
@@ -113,23 +111,11 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             )
     elif command == "generate_report":
         report_type = str(cmd.get("report_type", "summary"))
-        from agentshore.reports.generator import ReportGenerator
-
-        gen = ReportGenerator(orch._store)
-        output_dir = project_reports_dir(orch._repo_root)
-        if report_type == "progress":
-            await gen.generate_progress_report(orch._session_id, output_dir)
-        else:
-            await gen.generate_session_summary(orch._session_id, output_dir)
+        await orch.generate_report(report_type)
     elif command == "archive_session":
-        from agentshore.archive import Archiver
-
-        archive_dir = project_archive_dir(orch._repo_root)
-        db_path = project_db_path(orch._repo_root)
-        archiver = Archiver(orch._store, archive_dir)
-        await archiver.create_archive(orch._session_id, db_path=db_path)
+        await orch.archive_session()
     elif command == "list_archives":
-        archives = await orch._store.list_archives()
+        archives = await orch.list_archives()
         _cli_pkg._logger.info("ipc.archives_listed", count=len(archives))
     # "start" is accepted by the validator (so connecting clients can send it)
     # but is a no-op at dispatch time — the orchestrator is already running by

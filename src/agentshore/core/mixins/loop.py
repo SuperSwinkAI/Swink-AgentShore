@@ -1036,6 +1036,13 @@ class LoopRunner:
 
         should_stop, reason = self._lifecycle.should_terminate(state)
         if should_stop:
+            if reason == "drain_complete":
+                # Defensive-visibility warning (was inline in should_terminate
+                # before 03 M5, hence emitted before the loop_terminating log):
+                # fire the one-shot drain-complete hook only on the genuine
+                # drain-completion path, with this tick's state — not from
+                # stop_inner, which also runs for hard_stop.
+                self._drain._on_drain_complete(state)
             _logger.info(
                 "loop_terminating",
                 reason=reason,
