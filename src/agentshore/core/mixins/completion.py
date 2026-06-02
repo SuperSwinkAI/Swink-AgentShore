@@ -69,7 +69,6 @@ class _CompletionVerdict(enum.Enum):
     RETRIED = "retried"
 
 
-
 # Error classes that trigger a system-side take_break override. Same membership
 # the take_break play uses for its preconditions — kept here so the loop's
 # override producer doesn't have to import from the play.

@@ -131,7 +131,9 @@ class ExperienceRecorder:
                     outcome,
                     next_state,
                     ctx_after,
-                    rolling_velocity=self._velocity.compute_rolling_velocity(next_state.total_plays),
+                    rolling_velocity=self._velocity.compute_rolling_velocity(
+                        next_state.total_plays
+                    ),
                     type_diversity_in_window=self._velocity.recent_agent_type_diversity(),
                 ),
                 self._cfg.rl.reward,

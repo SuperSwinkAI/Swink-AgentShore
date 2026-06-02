@@ -325,9 +325,7 @@ class _DispatchMixin(_OrchestratorBase):
         #    must survive arbitrary cooldown / wait masks until the awaited
         #    condition lifts.
         if entry.kind == OverrideKind.BOOTSTRAP:
-            self._overrides.put_nowait(
-                dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
-            )
+            self._overrides.put_nowait(dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE))
             return
 
         # 2. INDEFINITE_WAIT classifications (typed at the mask source or
@@ -337,9 +335,7 @@ class _DispatchMixin(_OrchestratorBase):
             self._mask_reason_is_indefinite_wait(reason)
             or entry.enqueue_classification == MaskClassification.INDEFINITE_WAIT
         ):
-            self._overrides.put_nowait(
-                dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
-            )
+            self._overrides.put_nowait(dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE))
             return
 
         # 3. TRANSIENT classifications re-queue with a bounded retry counter.
