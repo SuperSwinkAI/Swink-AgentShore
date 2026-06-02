@@ -23,10 +23,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentshore.core.mixins.completion import (
-    BREAK_RECOVERY_FAILURE_LIMIT,
-    _CompletionMixin,
-)
+from agentshore.core.mixins.completion import _CompletionMixin
+from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT, RecoveryTracker
 from agentshore.plays.base import PlayExecutionContext, PlayParams
 from agentshore.plays.internal.take_break import TakeBreakPlay
 from agentshore.state import (
@@ -129,8 +127,7 @@ class _Harness(_CompletionMixin):
     def __init__(self) -> None:
         self._session_id = "s1"
         self._override_queue = asyncio.Queue()
-        self._break_recovery_failures = {}
-        self._rate_limit_recovery_enqueued = set()
+        self._recovery = RecoveryTracker()
 
 
 def _outcome(*, agent_id: str, success: bool) -> PlayOutcome:
@@ -157,7 +154,7 @@ def test_two_consecutive_break_failures_do_not_enqueue_end_agent_override() -> N
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
     assert h._override_queue.empty()
-    assert h._break_recovery_failures["a1"] == 1
+    assert h._recovery._break_recovery_failures["a1"] == 1
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
 
@@ -177,12 +174,12 @@ def test_break_recovery_counter_persists_at_limit() -> None:
     for _ in range(BREAK_RECOVERY_FAILURE_LIMIT):
         h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
 
-    assert h._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT
-    assert h._break_recovery_failures["a1"] >= BREAK_RECOVERY_FAILURE_LIMIT
+    assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT
+    assert h._recovery._break_recovery_failures["a1"] >= BREAK_RECOVERY_FAILURE_LIMIT
 
     # Further failures keep the counter at/above the limit (never reset here).
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
-    assert h._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT + 1
+    assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT + 1
     assert h._override_queue.empty()
 
 
@@ -195,10 +192,10 @@ def test_successful_break_clears_failure_counter() -> None:
     """A recovered break resets the per-agent counter so the next failure starts fresh."""
     h = _Harness()
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
-    assert h._break_recovery_failures["a1"] == 1
+    assert h._recovery._break_recovery_failures["a1"] == 1
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=True))
-    assert "a1" not in h._break_recovery_failures
+    assert "a1" not in h._recovery._break_recovery_failures
 
 
 def test_failures_on_different_agents_do_not_share_a_counter() -> None:
@@ -206,7 +203,7 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
     h._handle_take_break_outcome(_outcome(agent_id="a2", success=False))
 
-    assert h._break_recovery_failures == {"a1": 1, "a2": 1}
+    assert h._recovery._break_recovery_failures == {"a1": 1, "a2": 1}
     assert h._override_queue.empty()
 
 
@@ -239,7 +236,7 @@ def test_crash_exit_does_not_enqueue_rate_limit_recovery(error_class: str) -> No
     h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
 
     assert h._override_queue.empty()
-    assert "err1" not in h._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
 
 
 @pytest.mark.parametrize("error_class", ["rate_limit", "unknown", "codex_rollout"])
@@ -250,6 +247,6 @@ def test_rate_limit_eligible_classes_still_enqueue_recovery(error_class: str) ->
     h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
 
     assert not h._override_queue.empty()
-    assert "err1" in h._rate_limit_recovery_enqueued
+    assert "err1" in h._recovery._rate_limit_recovery_enqueued
     entry = h._override_queue.get_nowait()
     assert entry.play_type == PlayType.TAKE_BREAK

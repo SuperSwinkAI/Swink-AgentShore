@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.state import NullStateProvider
 
@@ -110,8 +111,7 @@ def make_test_orchestrator(
     orch._config_path = None
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
-    orch._break_recovery_failures = {}
-    orch._rate_limit_recovery_enqueued = set()
+    orch._recovery = RecoveryTracker()
     orch._last_selection_digest = None
     orch._idle_streak = 0
     orch._fleet_idle_persistent_active = False
