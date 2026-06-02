@@ -17,6 +17,7 @@ from agentshore.state import (
     PendingReviewSnapshot,
     PlayType,
     SessionState,
+    loop_level_for_streak,
 )
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.recovery_tracker import RecoveryTracker
@@ -142,7 +144,11 @@ class _StateBuilderHost(Protocol):
     _stop_requested: bool
     _draining: bool
     _drain_reason: str | None
-    _forced_mask_play_types: tuple[PlayType, ...]
+    # Live main-repo dispatch-pause latch + END_SESSION-in-flight flag, snapshot
+    # each tick into OrchestratorState so the action mask can hide the
+    # corresponding plays from PPO (dispatch.py gates 1-2 remain the backstop).
+    _main_repo: MainRepoGuard
+    _end_session_dispatch_started: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
     _pause_event: asyncio.Event
@@ -460,6 +466,16 @@ class StateBuilder:
             if dispatch_id in in_flight and not in_flight[dispatch_id].done()
         ]
 
+        # Snapshot orchestrator runtime latches so the mask can hide the
+        # corresponding plays from PPO. dispatch_play gates 1-2 keep the live
+        # recheck as a backstop because state can flip between selection and
+        # dispatch. end_session_in_flight mirrors dispatch_play gate 2's
+        # condition (started latch OR any in-flight END_SESSION dispatch).
+        main_repo_dispatch_paused = self._host._main_repo.dispatch_paused
+        end_session_in_flight = self._host._end_session_dispatch_started or (
+            PlayType.END_SESSION in in_flight_plays
+        )
+
         state = OrchestratorState(
             session_id=self._session_id,
             session_state=session_state,
@@ -485,7 +501,9 @@ class StateBuilder:
             last_play_success_by_type=last_play_success_by_type,
             last_play_skipped_by_type=last_play_skipped_by_type,
             consecutive_nonproductive_by_type=consecutive_nonproductive_by_type,
-            forced_mask_zeros=self._host._forced_mask_play_types,
+            loop_level=loop_level_for_streak(same_type_failure_streak),
+            main_repo_dispatch_paused=main_repo_dispatch_paused,
+            end_session_in_flight=end_session_in_flight,
             recovery_exhausted_agent_ids=self._recovery.recovery_exhausted_agent_ids(agents),
             drain_reason=self._host._drain_reason if self._host._draining else None,
             graph=data.graph,

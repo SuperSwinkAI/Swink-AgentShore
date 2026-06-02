@@ -75,7 +75,6 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._last_play_id = None
     orch._draining = False
     orch._drain_reason = None
-    orch._forced_mask_play_types = ()
     orch._executor.inflight_issues = set()
     orch._executor.planned_issues = frozenset()
     orch._feedback_cadence_plays_since_ack = 0

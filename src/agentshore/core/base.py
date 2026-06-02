@@ -58,7 +58,6 @@ if TYPE_CHECKING:
     from agentshore.state import (
         OrchestratorState,
         PlayOutcome,
-        PlayType,
         StateProvider,
     )
 
@@ -143,7 +142,6 @@ class _OrchestratorBase:
     _metrics: MetricsEngine | None
     # Override FIFO + first-play / pending-kind / dispatched-id latches.
     _overrides: OverrideQueue
-    _forced_mask_play_types: tuple[PlayType, ...]
     _loop_started_at: float
     _registry: object | None
     _pause_event: asyncio.Event
@@ -290,11 +288,6 @@ class _OrchestratorBase:
         # streak holds at the same value across orchestrator iterations.
         self._last_warned_failure_streak = None
         self._last_warned_any_streak = None
-        # Retained for state/IPC compatibility but always empty: loop detection
-        # no longer force-masks the repeating play type (collapse is handled by
-        # the stagnation entropy boost). Kept so _assemble_state and the IPC
-        # serializer have a stable field to read.
-        self._forced_mask_play_types = ()
         self._loop_started_at = 0.0
         self._registry = None  # PlayRegistry, set in bootstrap
         # Pause/resume: cleared by pause(), set by resume(); loop awaits this each iteration

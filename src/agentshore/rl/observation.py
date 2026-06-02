@@ -79,7 +79,7 @@ from agentshore.rl.action_space import (
     PLAY_TO_INDEX,
 )
 from agentshore.rl.constants import SAT_OPEN_PRS_COUNT
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlayType, loop_level_for_streak
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -286,16 +286,6 @@ def _agent_status_float(status_value: str) -> float:
     return 1.0  # error or terminated
 
 
-def _loop_escalation(streak: int) -> int:
-    if streak >= 7:
-        return 3
-    if streak >= 5:
-        return 2
-    if streak >= 3:
-        return 1
-    return 0
-
-
 def encode_observation(
     state: OrchestratorState,
     ctx: ObservationContext,
@@ -423,7 +413,7 @@ def encode_observation(
     # ---- HEALTH (59-62) ----
     obs[_S_STAGNATION] = _norm(ctx.stagnation_counter, _SAT_STREAK)
     obs[_S_STREAK] = _norm(state.same_type_failure_streak, _SAT_STREAK)
-    obs[_S_LOOP_LEVEL] = _loop_escalation(state.same_type_failure_streak) / _LOOP_LEVEL_MAX
+    obs[_S_LOOP_LEVEL] = loop_level_for_streak(state.same_type_failure_streak) / _LOOP_LEVEL_MAX
     agents_in_error = sum(1 for a in state.agents if a.status == AgentStatus.ERROR)
     obs[_S_AGENTS_IN_ERROR] = _norm(agents_in_error, _SAT_AGENTS_IN_ERROR)
 

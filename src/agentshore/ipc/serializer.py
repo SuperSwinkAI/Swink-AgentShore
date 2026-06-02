@@ -280,7 +280,9 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
         "last_play_type": (
             state.last_play_type.value if state.last_play_type is not None else None
         ),
-        "forced_mask_zeros": [p.value for p in state.forced_mask_zeros],
+        "loop_level": state.loop_level,
+        "main_repo_dispatch_paused": state.main_repo_dispatch_paused,
+        "end_session_in_flight": state.end_session_in_flight,
         "plays_since_last_instantiate": state.plays_since_last_instantiate,
         "last_play_success_by_type": {
             play_type.value: success

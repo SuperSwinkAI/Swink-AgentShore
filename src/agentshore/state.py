@@ -488,6 +488,22 @@ class WorkQueueView:
     next_issue: IssueSnapshot | None = None
 
 
+def loop_level_for_streak(streak: int) -> int:
+    """Map failure streak to escalation level: 0 (none), 1 (warn), 2 (force), 3 (escalation).
+
+    Single source of truth for the loop-escalation ladder. Lives here (core,
+    UI-free) so ``StateBuilder`` can precompute ``OrchestratorState.loop_level``
+    without a core->ui import inversion; the TUI widgets import it from here too.
+    """
+    if streak >= 7:
+        return 3
+    if streak >= 5:
+        return 2
+    if streak >= 3:
+        return 1
+    return 0
+
+
 @dataclass(slots=True)
 class OrchestratorState:
     """Complete snapshot of the AgentShore session pushed to UI/IPC consumers."""
@@ -516,7 +532,21 @@ class OrchestratorState:
     active_play: ActivePlay | None = None
     same_type_failure_streak: int = 0
     last_play_type: PlayType | None = None
-    forced_mask_zeros: tuple[PlayType, ...] = field(default_factory=tuple)
+    # Precomputed loop-escalation level for ``same_type_failure_streak`` via
+    # :func:`loop_level_for_streak` (0 none, 1 warn, 2 force, 3 escalation).
+    # Computed once in StateBuilder so UI/IPC consumers read it directly instead
+    # of each re-applying the ladder.
+    loop_level: int = 0
+    # Snapshot of the main-repo dispatch-pause latch
+    # (``MainRepoGuard.dispatch_paused``). When True the mask hides every play
+    # except END_AGENT and RECONCILE_STATE from PPO; ``dispatch_play`` gate 1
+    # keeps the live recheck as a backstop since state can flip between
+    # selection and dispatch.
+    main_repo_dispatch_paused: bool = False
+    # Snapshot of whether END_SESSION is already started or in-flight. When True
+    # the mask hides END_SESSION from PPO; ``dispatch_play`` gate 2 keeps the
+    # live recheck as a backstop.
+    end_session_in_flight: bool = False
     # Agent IDs whose break-recovery counter has reached
     # ``BREAK_RECOVERY_FAILURE_LIMIT``. END_AGENT is unmasked for these agents
     # even when the normal min-plays / two-agent gate would block it, so the

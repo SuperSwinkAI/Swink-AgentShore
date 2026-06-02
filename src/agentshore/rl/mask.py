@@ -24,6 +24,8 @@ from agentshore.rl.eligibility import (
     compute_config_mask as compute_config_mask,
 )
 from agentshore.rl.mask_reason import (
+    END_SESSION_IN_FLIGHT,
+    MAIN_REPO_DISPATCH_PAUSED,
     NOT_AVAILABLE,
     RESERVED_SLOT,
     SESSION_DRAINING,
@@ -362,7 +364,16 @@ class ActionMaskBuilder:
             if reserved in V1_ACTION_ORDER:
                 self._mask[V1_ACTION_ORDER.index(reserved)] = False
 
-    # -- short-circuit stages (replace mask entirely when they fire) ----------
+    def _stage_end_session_in_flight(self) -> None:
+        """Hide END_SESSION when one is already started / in-flight.
+
+        Mirrors ``dispatch_play`` gate 2. Option-removal overlay; gate 2 remains
+        the dispatch-time backstop.
+        """
+        if self._state.end_session_in_flight and PlayType.END_SESSION in V1_ACTION_ORDER:
+            self._mask[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
+
+    # -- short-circuit stages (finalize the mask and skip reverse-failsafe) ----
 
     def _stage_drain_mode(self) -> bool:
         if (
@@ -373,6 +384,25 @@ class ActionMaskBuilder:
             self._mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = True
             return True
         return False
+
+    def _stage_main_repo_paused(self) -> bool:
+        """Hide every play but END_AGENT / RECONCILE_STATE when dispatch is paused.
+
+        Mirrors ``dispatch_play`` gate 1's allow-list exactly. This is a
+        SHORT-CIRCUIT stage (returns True when it fires) so the reverse-failsafe
+        below cannot re-enable a work play the trunk pause just removed — during
+        a main-repo pause the whole point is to withhold work until the trunk
+        heals (via RECONCILE_STATE) or an agent retires (END_AGENT). Unlike drain
+        mode it does not force-enable the allow-list; it only removes the rest,
+        matching gate 1 (which drops disallowed plays but never forces one). The
+        live dispatch-time recheck (gate 1) remains the backstop.
+        """
+        if not self._state.main_repo_dispatch_paused:
+            return False
+        for i, pt in enumerate(V1_ACTION_ORDER):
+            if pt not in (PlayType.END_AGENT, PlayType.RECONCILE_STATE):
+                self._mask[i] = False
+        return True
 
     # -- pipeline entry points -----------------------------------------------
 
@@ -399,8 +429,15 @@ class ActionMaskBuilder:
 
         self._stage_consecutive_failure_breaker()
         self._stage_reserved_slots()
+        self._stage_end_session_in_flight()
 
+        # Short-circuit stages run before the reverse-failsafe so the failsafe
+        # can never re-enable a play they removed. Drain takes precedence over a
+        # main-repo pause (mirrors dispatch: a draining session winds down even
+        # with a paused trunk).
         if self._stage_drain_mode():
+            return self._mask
+        if self._stage_main_repo_paused():
             return self._mask
 
         if (
@@ -461,6 +498,20 @@ class ActionMaskBuilder:
             # Reserved tensor slots (B-type overlay).
             if pt in (PlayType.FUTURE_7, PlayType.FUTURE_8):
                 reasons[pt] = RESERVED_SLOT
+                continue
+
+            # Main-repo dispatch paused (B-type overlay): every play but
+            # END_AGENT / RECONCILE_STATE is masked while the latch is set.
+            if state.main_repo_dispatch_paused and pt not in (
+                PlayType.END_AGENT,
+                PlayType.RECONCILE_STATE,
+            ):
+                reasons[pt] = MAIN_REPO_DISPATCH_PAUSED
+                continue
+
+            # END_SESSION already in-flight (B-type overlay).
+            if pt == PlayType.END_SESSION and state.end_session_in_flight:
+                reasons[pt] = END_SESSION_IN_FLIGHT
                 continue
 
             # A-type validity reason from the single authority computation.

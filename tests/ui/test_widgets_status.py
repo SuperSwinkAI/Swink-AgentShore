@@ -14,6 +14,7 @@ from agentshore.state import (
     PullRequestSnapshot,
     SessionState,
     TrajectorySnapshot,
+    loop_level_for_streak,
 )
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ def _make_state(
         total_plays=total_plays,
         total_cost=total_cost,
         same_type_failure_streak=streak,
+        loop_level=loop_level_for_streak(streak),
     )
 
 

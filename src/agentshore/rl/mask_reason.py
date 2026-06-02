@@ -131,3 +131,17 @@ SELECTED_CANDIDATE_NO_LONGER_AVAILABLE: Final = MaskReason(
     classification=MaskClassification.HARD,
     source=MaskSource.CANDIDATE,
 )
+# Main-repo dispatch-pause latch is set: only end_agent / reconcile_state are
+# permitted until the trunk is healed. Transient — clears when the pause lifts.
+MAIN_REPO_DISPATCH_PAUSED: Final = MaskReason(
+    text="main repo dispatch paused: only end_agent / reconcile_state permitted",
+    classification=MaskClassification.TRANSIENT,
+    source=MaskSource.CONTROL,
+)
+# END_SESSION is already started or in-flight. Transient — clears when that
+# dispatch resolves.
+END_SESSION_IN_FLIGHT: Final = MaskReason(
+    text="end_session already in flight",
+    classification=MaskClassification.TRANSIENT,
+    source=MaskSource.CONTROL,
+)
