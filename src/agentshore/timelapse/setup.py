@@ -5,8 +5,8 @@ macOS-only (the desktop build target), and uses Homebrew for system deps:
 
   1. ``ffmpeg`` / ``ffprobe`` — ``brew install ffmpeg`` if missing.
   2. Node.js 24+ — ``brew install node`` if missing or too old.
-  3. ``timelapse-capture`` — ``npm install -g`` the release tarball (which
-     auto-provisions the Playwright Chromium browser).
+  3. ``timelapse-capture`` — ``npm install -g`` a pinned npm-registry version
+     (which auto-provisions the Playwright Chromium browser).
   4. Verify with ``timelapse-capture doctor --json``.
 
 Each step logs and raises :class:`agentshore.timelapse.TimelapseError` with an
@@ -33,11 +33,15 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-#: Release tarball installed globally via npm (auto-provisions Playwright).
-_RELEASE_TGZ = (
-    "https://github.com/Open-Agent-Tools/timelapse-capture/releases/latest/"
-    "download/timelapse-capture.tgz"
-)
+#: Pinned npm-registry spec installed globally (auto-provisions the Playwright
+#: Chromium browser via the package's postinstall). Pinned for reproducible
+#: installs and to avoid a transient bad release: 0.3.1 is the first version that
+#: restores the no-``--duration`` indefinite capture mode the driver relies on
+#: (0.3.0 erroneously required ``--duration`` and is what the desktop install
+#: shipped). Earlier code installed the GitHub ``releases/latest`` tarball, but
+#: that lagged at the broken 0.3.0; the npm registry carries 0.3.1. Bump
+#: deliberately when adopting a newer CLI.
+_CLI_PACKAGE = "timelapse-capture@0.3.1"
 _MIN_NODE_MAJOR = 24
 _HOMEBREW_URL = "https://brew.sh"
 
@@ -116,9 +120,9 @@ async def _ensure_node(cwd: Path) -> None:
 async def _install_cli(cwd: Path) -> None:
     if shutil.which("npm") is None:
         raise TimelapseError("npm not found on PATH (expected alongside Node.js)")
-    _logger.info("timelapse_install_cli", source=_RELEASE_TGZ)
+    _logger.info("timelapse_install_cli", source=_CLI_PACKAGE)
     result = await _run(
-        ["npm", "install", "-g", _RELEASE_TGZ], cwd=cwd, timeout=_NPM_TIMEOUT_SECONDS
+        ["npm", "install", "-g", _CLI_PACKAGE], cwd=cwd, timeout=_NPM_TIMEOUT_SECONDS
     )
     if result.returncode != 0:
         raise TimelapseError(f"`npm install -g timelapse-capture` failed: {result.stderr.strip()}")
