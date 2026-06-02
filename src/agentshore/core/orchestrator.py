@@ -1,14 +1,20 @@
-"""``Orchestrator`` — the AgentShore RL loop composed from mixins.
+"""``Orchestrator`` — the AgentShore RL loop, a composition root.
 
-The class declaration is intentionally minimal: it inherits each mixin
-(roughly grouped by responsibility) and the ``_OrchestratorBase`` class that
-provides ``__init__`` and the shared attributes.  Mixins access these via
-``self._*`` and rely on Python's MRO to resolve cross-mixin method calls at
-runtime.
+The class declaration is intentionally minimal: it inherits only
+``_OrchestratorBase`` (which provides ``__init__`` and constructs every owned
+component/collaborator) and delegates each public method to the component that
+owns the behaviour. The 7-mixin MRO has been fully dissolved into composition
+(TNQA 03 C2): the orchestrator now *owns* its components as ``self._loop``,
+``self._dispatcher``, ``self._completion``, ``self._drain``, ``self._lifecycle``,
+``self._state_builder``, ``self._snapshots`` and forwards to them.
 
-Behavioural code lives in the mixins so each file stays under the LOC budget;
-the public-API methods that are short and not naturally grouped with a single
-responsibility live here.
+Behavioural code lives in the components so each file stays under the LOC
+budget; the public-API methods that are short and not naturally grouped with a
+single responsibility live here, plus the thin delegators that keep the host
+Protocols' cross-component method references (``run_until_idle``,
+``_initiate_autonomous_stop``, ``_check_stagnation_escalation``,
+``start_loop_liveness_watchdog``, ``stop_loop_liveness_watchdog``) resolving on
+the composition root.
 """
 
 from __future__ import annotations
@@ -25,13 +31,7 @@ from agentshore.core.helpers import (
     _bootstrap_phase_publisher,
     _emit_weights_dir_inventory,
 )
-from agentshore.core.mixins.completion import _CompletionMixin
-from agentshore.core.mixins.dispatch import _DispatchMixin
-from agentshore.core.mixins.drain import _DrainMixin
-from agentshore.core.mixins.lifecycle import _LifecycleMixin
-from agentshore.core.mixins.loop import _LoopMixin
-from agentshore.core.mixins.snapshots import _SnapshotsMixin
-from agentshore.core.mixins.state import _StateMixin
+from agentshore.core.mixins.drain import SHUTDOWN_GRACE_PERIOD_SECONDS
 
 # NOTE: bootstrap calls phase functions via the ``phases`` module object
 # (imported lazily inside ``bootstrap``) so tests patch them at their binding
@@ -64,16 +64,7 @@ if TYPE_CHECKING:
     NaturalExitCallback = Callable[[str], Awaitable[None]]
 
 
-class Orchestrator(
-    _LifecycleMixin,
-    _DispatchMixin,
-    _CompletionMixin,
-    _LoopMixin,
-    _DrainMixin,
-    _StateMixin,
-    _SnapshotsMixin,
-    _OrchestratorBase,
-):
+class Orchestrator(_OrchestratorBase):
     """The AgentShore RL loop: observe → select → execute → repeat.
 
     Usage::
@@ -257,8 +248,8 @@ class Orchestrator(
         self._health = HealthMonitor(
             handles=self._manager.handles,
             circuit_breakers=self._manager.circuit_breakers,
-            on_crash=self._on_crash,
-            on_context_pressure=self._on_context_pressure,
+            on_crash=self._completion.on_crash,
+            on_context_pressure=self._completion.on_context_pressure,
         )
         self._health.start()
 
@@ -314,20 +305,62 @@ class Orchestrator(
         params: PlayParams | None = None,
     ) -> PlayOutcome:
         """Execute a single play synchronously (for tests and direct invocation)."""
-        state = await self._build_state()
+        state = await self._state_builder.build_state()
         return await self._executor.execute(
             play_type,
             state,
             override=params or PlayParams(),
         )
 
+    async def pause(self, reason: str = "user_request") -> None:
+        """Pause the orchestrator loop after the current play completes."""
+        await self._lifecycle.pause(reason)
+
+    async def resume(self, override_budget: bool = False) -> None:
+        """Resume the orchestrator loop after a pause."""
+        await self._lifecycle.resume(override_budget)
+
     async def reload_config(self) -> None:
         """Reload configuration from the configured path."""
-        await self._reload_config()
+        await self._lifecycle.reload_config()
+
+    def request_stop(self, reason: str = "stop_requested") -> None:
+        """Signal the orchestrator to stop at the next loop iteration."""
+        self._drain.request_stop(reason)
+
+    def request_drain(self, reason: str = "signal_sigterm") -> None:
+        """Schedule a graceful drain from a sync context (e.g. signal handler)."""
+        self._drain.request_drain(reason)
+
+    def request_end_session_report(self, *, open_browser: bool = True) -> None:
+        """Request a shutdown-time end-of-session report for this session."""
+        self._drain.request_end_session_report(open_browser=open_browser)
+
+    def register_esr_ready_callback(
+        self, callback: Callable[[str, str, str | None], None] | None
+    ) -> None:
+        """Wire a callback fired when the in-shutdown ESR file becomes available."""
+        self._drain.register_esr_ready_callback(callback)
+
+    async def begin_drain(self, reason: str) -> None:
+        """Start graceful drain: only end_agent is dispatched until agents stop."""
+        await self._drain.begin_drain(reason)
+
+    async def hard_stop(self) -> None:
+        """Immediate forced shutdown — cancels in-flight plays and kills agents."""
+        await self._drain.hard_stop()
+
+    def adjust_budget(self, delta_usd: float) -> bool:
+        """Increase session budget; return True when a budget pause should resume."""
+        return self._drain.adjust_budget(delta_usd)
+
+    async def stop(self, grace_period_s: float = SHUTDOWN_GRACE_PERIOD_SECONDS) -> None:
+        """Gracefully shut down the orchestrator."""
+        await self._drain.stop(grace_period_s)
 
     async def publish_initial_state(self) -> OrchestratorState:
         """Publish and return the current state snapshot."""
-        state = await self._build_state()
+        state = await self._state_builder.build_state()
         await self._safe_call(
             self._state_provider.on_state_update(state),
             "on_state_update_initial",
@@ -345,3 +378,11 @@ class Orchestrator(
         ``session.completed`` over the JSON-RPC stdio transport (DESIGN §5.2).
         """
         self._natural_exit_callback = callback
+
+    async def run_until_idle(self) -> None:
+        """Drive the RL loop until selector returns None or a stop is requested.
+
+        The public entry point (``async with ... as orch: await
+        orch.run_until_idle()``); forwards to the owned :class:`LoopRunner`.
+        """
+        await self._loop.run_until_idle()

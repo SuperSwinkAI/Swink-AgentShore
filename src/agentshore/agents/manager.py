@@ -281,7 +281,7 @@ class AgentManager:
         # per-agent `dispatch_share` reflects work attempts, not just
         # completions. ``increment_agent_tasks`` (further down) still tracks
         # the verdict-based counters separately. The handle's ``dispatches``
-        # counter is also bumped here so ``_build_agent_snapshots`` can read
+        # counter is also bumped here so ``build_agent_snapshots`` can read
         # the live value without a per-tick DB round-trip (cli_agent.py used
         # to bump this only on CLI dispatches; centralising it in the
         # manager makes API agents tracked too).

@@ -25,6 +25,7 @@ from agentshore.core.git_safety import (
     restore_default_branch,
 )
 from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.completion import CompletionProcessor
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -236,7 +237,8 @@ async def test_code_review_mutating_main_triggers_warning_and_restore(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await harness.orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            harness.orch,
             dispatch_id=dispatch_id,
             play_type=PlayType.CODE_REVIEW,
             agent_id="claude-1",
@@ -277,7 +279,8 @@ async def test_no_snapshot_no_check(main_repo: Path, caplog: pytest.LogCaptureFi
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await harness.orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            harness.orch,
             dispatch_id="nonexistent",
             play_type=PlayType.CODE_REVIEW,
             agent_id=None,
@@ -304,7 +307,8 @@ async def test_detached_head_post_play_is_treated_as_mutation(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await harness.orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            harness.orch,
             dispatch_id=dispatch_id,
             play_type=PlayType.RUN_QA,
             agent_id="claude-1",
@@ -342,7 +346,8 @@ async def test_auto_restore_failure_pauses_dispatch(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await harness.orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            harness.orch,
             dispatch_id=dispatch_id,
             play_type=PlayType.CODE_REVIEW,
             agent_id="claude-1",

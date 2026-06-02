@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agentshore.core.mixins.drain import DrainController
 from agentshore.core.orchestrator import Orchestrator
 from agentshore.state import OrchestratorState, SessionState
 
@@ -50,15 +51,26 @@ def _minimal_orch(tmp_path: Path) -> Orchestrator:
     orch._health = None
     orch._integrity = None
     orch._power_assertion = None
+    orch._loop = MagicMock()
     orch._end_session_report_requested = True
     orch._end_session_report_open_browser = True
-    orch._build_state = AsyncMock(return_value=_state(SessionState.DRAINING))
-    orch._refresh_issues = AsyncMock()
+    orch._state_builder = MagicMock()
+    orch._state_builder.build_state = AsyncMock(return_value=_state(SessionState.DRAINING))
+    orch._completion = MagicMock()
+    orch._completion.refresh_issues = AsyncMock()
     orch._store = AsyncMock()
     orch._store.complete_session = AsyncMock()
     orch._store.close = AsyncMock()
     orch._state_provider = MagicMock()
     orch._state_provider.on_session_ended = AsyncMock()
+    orch._drain = DrainController(
+        host=orch,
+        store=orch._store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
     return orch
 
 
@@ -75,10 +87,10 @@ async def test_non_embedded_mode_opens_browser(tmp_path: Path) -> None:
     orch._esr_ready_callback = lambda sid, path, log_path: callback_calls.append(
         (sid, path, log_path)
     )
-    orch._generate_end_session_report = AsyncMock(return_value=report_path)
+    orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
-        await orch._stop_inner(0.0)
+        await orch._drain.stop_inner(0.0)
 
     mock_open.assert_called_once_with(report_path.resolve().as_uri())
     # The callback is only fired in embedded mode — keeps the CLI path
@@ -99,10 +111,10 @@ async def test_embedded_mode_skips_browser_and_emits_callback(tmp_path: Path) ->
     orch._log_path = log_path
     callback_calls: list[tuple[str, str, str | None]] = []
     orch._esr_ready_callback = lambda sid, path, log: callback_calls.append((sid, path, log))
-    orch._generate_end_session_report = AsyncMock(return_value=report_path)
+    orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
-        await orch._stop_inner(0.0)
+        await orch._drain.stop_inner(0.0)
 
     mock_open.assert_not_called()
     assert callback_calls == [("sess-test", str(report_path.resolve()), str(log_path.resolve()))]
@@ -123,10 +135,10 @@ async def test_embedded_mode_without_callback_is_no_op(tmp_path: Path) -> None:
     orch = _minimal_orch(tmp_path)
     orch._embedded_mode = True
     orch._esr_ready_callback = None
-    orch._generate_end_session_report = AsyncMock(return_value=report_path)
+    orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
-        await orch._stop_inner(0.0)
+        await orch._drain.stop_inner(0.0)
 
     mock_open.assert_not_called()
 
@@ -145,10 +157,10 @@ async def test_embedded_callback_exception_does_not_fail_drain(tmp_path: Path) -
         raise RuntimeError("notify pipe closed")
 
     orch._esr_ready_callback = _boom
-    orch._generate_end_session_report = AsyncMock(return_value=report_path)
+    orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
-        await orch._stop_inner(0.0)
+        await orch._drain.stop_inner(0.0)
 
     mock_open.assert_not_called()
 

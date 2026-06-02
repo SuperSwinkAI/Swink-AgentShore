@@ -74,7 +74,7 @@ async def test_budget_reserve_allows_work_below_threshold(tmp_path: Path) -> Non
 
     with (
         patch.object(orch._executor, "execute", side_effect=mock_execute),
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
     ):
         async with orch:
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
@@ -124,7 +124,7 @@ async def test_budget_reserve_starts_drain_at_threshold(tmp_path: Path) -> None:
 
     with (
         patch.object(orch._executor, "execute", side_effect=mock_execute),
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
     ):
         async with orch:
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)

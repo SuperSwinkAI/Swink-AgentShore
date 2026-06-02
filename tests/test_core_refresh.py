@@ -14,6 +14,7 @@ import pytest
 from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
 from agentshore.config import RuntimeConfig, TrustedIdsConfig
 from agentshore.core import Orchestrator
+from agentshore.core.mixins.completion import CompletionProcessor
 from agentshore.data.store import GitHubIssueRecord, PullRequestRecord
 
 
@@ -40,6 +41,28 @@ def _make_orchestrator() -> Orchestrator:
     orch._store.get_last_issue_sync_at = AsyncMock(return_value=None)
     orch._store.set_last_issue_sync_at = AsyncMock()
     orch._repo_root = Path(".")
+    orch._worktrees = None
+    orch._last_refresh_time = 0.0
+    # refresh_issues lives on the CompletionProcessor component now; build one
+    # that reads _cfg/_worktrees/_last_refresh_time off this orch (the host) and
+    # holds store/session_id/repo_root as its constructor deps. The remaining
+    # constructor deps are unused by refresh_issues, so MagicMocks suffice.
+    orch._completion = CompletionProcessor(
+        host=orch,
+        store=orch._store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=MagicMock(),
+        velocity=MagicMock(),
+        recovery=MagicMock(),
+        overrides=MagicMock(),
+        snapshots=MagicMock(),
+        state_builder=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
     return orch
 
 
@@ -109,7 +132,7 @@ async def test_refresh_resyncs_pr_dropped_from_open_fetch() -> None:
     )
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     # cache_pull_requests was invoked with the re-fetched MERGED record.
     orch._store.cache_pull_requests.assert_awaited_once()
@@ -138,7 +161,7 @@ async def test_refresh_no_resync_when_open_fetch_is_complete() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[_pr_record(20)])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     # Only one list_pull_requests call (state="open"); no state="all" follow-up.
     assert gh.list_pull_requests.await_count == 1
@@ -162,7 +185,7 @@ async def test_refresh_filters_untrusted_prs_before_cache() -> None:
     )
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     orch._store.cache_pull_requests.assert_awaited_once()
     cached_prs = orch._store.cache_pull_requests.await_args.args[1]
@@ -184,7 +207,7 @@ async def test_refresh_handles_pr_dropped_and_not_in_state_all() -> None:
     gh.list_pull_requests = AsyncMock(side_effect=[[], []])  # both empty
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     # cache_pull_requests not called (nothing to cache).
     orch._store.cache_pull_requests.assert_not_awaited()
@@ -211,7 +234,7 @@ async def test_refresh_closes_externally_closed_issue_via_state_all() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     # Exactly one list_issues call with state="all"; cache_github_issues
     # receives the closed record and the upsert handles state transition.
@@ -238,7 +261,7 @@ async def test_refresh_incremental_uses_since_when_cursor_set() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues(completing_play=PlayType.ISSUE_PICKUP)
+        await orch._completion.refresh_issues(completing_play=PlayType.ISSUE_PICKUP)
 
     assert gh.list_issues.await_count == 1
     assert gh.list_issues.await_args.kwargs.get("since") == "2026-05-23T22:00:00+00:00"
@@ -261,7 +284,7 @@ async def test_refresh_full_sync_on_cleanup_ignores_cursor() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues(completing_play=PlayType.CLEANUP)
+        await orch._completion.refresh_issues(completing_play=PlayType.CLEANUP)
 
     assert gh.list_issues.await_args.kwargs.get("since") is None
 
@@ -286,7 +309,7 @@ async def test_refresh_force_full_sync_overrides_cursor() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues(
+        await orch._completion.refresh_issues(
             completing_play=PlayType.ISSUE_PICKUP,
             force_full_sync=True,
         )
@@ -347,7 +370,7 @@ async def test_refresh_cursor_not_advanced_on_fetch_error() -> None:
     gh.list_pull_requests = AsyncMock(return_value=[])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     orch._store.set_last_issue_sync_at.assert_not_awaited()
     orch._store.cache_github_issues.assert_not_awaited()
@@ -380,7 +403,7 @@ async def test_refresh_closes_open_issue_when_only_duplicate_closed_beads_exist(
         patch("agentshore.github.adapter.GitHubAdapter", return_value=gh),
         patch("agentshore.beads.load_graph", new=AsyncMock(return_value=graph)),
     ):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     gh.close_issue.assert_awaited_once()
     orch._store.update_issue_state.assert_any_await(345, "s1", "closed")
@@ -419,7 +442,7 @@ async def test_refresh_does_not_close_issue_when_live_bead_exists() -> None:
         patch("agentshore.github.adapter.GitHubAdapter", return_value=gh),
         patch("agentshore.beads.load_graph", new=AsyncMock(return_value=graph)),
     ):
-        await orch._refresh_issues()
+        await orch._completion.refresh_issues()
 
     gh.close_issue.assert_not_awaited()
 

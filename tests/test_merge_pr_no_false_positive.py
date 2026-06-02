@@ -116,6 +116,7 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
     merge_repo: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """End-to-end through ``_check_main_repo_invariant``: no warning, no restore."""
+    from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.orchestrator import Orchestrator
     from agentshore.state import PlayType
 
@@ -138,7 +139,8 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            orch,
             dispatch_id="d-merge",
             play_type=PlayType.MERGE_PR,
             agent_id="claude-merge",

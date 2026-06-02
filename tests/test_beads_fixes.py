@@ -627,7 +627,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
 
 def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
     """state.open_issues must reflect the OPEN duplicate, not whichever bead sorts last."""
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.data.models import GitHubIssueRecord
 
     closed_dup = _make_graph_task(
@@ -650,7 +650,7 @@ def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
         closed_at=None,
     )
 
-    snapshots = Orchestrator._project_open_issues([record], graph)
+    snapshots = SnapshotProjector.project_open_issues([record], graph)
 
     assert len(snapshots) == 1
     snap = snapshots[0]

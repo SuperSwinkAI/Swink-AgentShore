@@ -246,7 +246,7 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
     # ------------------------------------------------------------------
     await _clear_cached_github_work(orch)
     with (
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
         patch.object(orch._executor, "execute", side_effect=_fake_execute),
     ):
         async with orch:

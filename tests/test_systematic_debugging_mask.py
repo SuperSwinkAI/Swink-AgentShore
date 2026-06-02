@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import collections
 
-from agentshore.core.mixins.snapshots import _SnapshotsMixin
+from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.core.mixins.state import _merge_recent_applied_labels
 from agentshore.data.models import GitHubIssueRecord
 from agentshore.github.labels import DEBUG_TRIGGER_LABEL, ROOT_CAUSE_FOUND_LABEL
@@ -46,7 +46,7 @@ def _record(labels: list[str]) -> GitHubIssueRecord:
 
 
 def _state_from_records(records: list[GitHubIssueRecord]) -> OrchestratorState:
-    open_issues = _SnapshotsMixin._project_open_issues(records, None)
+    open_issues = SnapshotProjector.project_open_issues(records, None)
     return OrchestratorState(
         session_id="s-test",
         session_state=SessionState.RUNNING,

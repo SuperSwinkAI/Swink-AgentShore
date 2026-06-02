@@ -35,6 +35,7 @@ from agentshore.agents.worktree import (
 )
 from agentshore.config import AgentConfig, RuntimeConfig
 from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.dispatch import Dispatcher
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.base import PlayParams
@@ -332,17 +333,30 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         orch._manager = manager  # real manager — its worktrees is patched above
         orch._state_provider = MagicMock()
 
+        orch._dispatcher = Dispatcher(
+            host=orch,
+            store=store,
+            manager=manager,
+            executor=MagicMock(),
+            session_id=orch._session_id,
+            repo_root=main_repo,
+            main_repo=orch._main_repo,
+            overrides=orch._overrides,
+            state_builder=MagicMock(),
+            completion=MagicMock(),
+        )
+
         # Capture the drop call without exercising the rest of the drop helper
         # (which writes to several DB tables we don't need exercised here).
         drop_mock = AsyncMock()
-        orch._drop_selected_play_before_dispatch = drop_mock  # type: ignore[method-assign]
+        orch._dispatcher.drop_selected_play_before_dispatch = drop_mock  # type: ignore[method-assign]
 
         state_mock = MagicMock()
         state_mock.session_state = MagicMock()
         state_mock.agents = []
 
         params = PlayParams(branch=branch, pr_number=99)
-        result = await orch._dispatch_play(
+        result = await orch._dispatcher.dispatch_play(
             PlayType.CODE_REVIEW,
             params,
             state_mock,

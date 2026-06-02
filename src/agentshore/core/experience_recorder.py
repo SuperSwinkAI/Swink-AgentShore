@@ -1,6 +1,6 @@
 """Guarded RL experience recording + policy-update tail.
 
-Extracted from ``_CompletionMixin._process_completion``'s "Phase 3" block so a
+Extracted from ``CompletionProcessor.process_completion``'s "Phase 3" block so a
 failure in any per-play bookkeeping or diagnostics step degrades to a skipped
 record / skipped update with a structured ERROR log, instead of propagating out
 of ``run_until_idle`` and killing the orchestrator loop.

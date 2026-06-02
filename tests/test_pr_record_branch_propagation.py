@@ -15,7 +15,7 @@ The three construction sites audited here are:
 2. ``agentshore.data.store.rows._row_to_pull_request`` — DB row -> record
    (exercised end-to-end via ``DataStore.record_pull_request`` +
    ``DataStore.get_pull_request``).
-3. ``agentshore.core.mixins.snapshots._project_pull_requests`` — record ->
+3. ``agentshore.core.mixins.snapshots.SnapshotProjector.project_pull_requests`` — record ->
    snapshot, the path that feeds ``state.pull_requests``.
 
 A fourth case covers the defensive ``pr_snapshot_missing_branch`` log emitted
@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.data.models import PullRequestRecord
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.github.adapter import GitHubAdapter
@@ -254,7 +254,7 @@ def test_project_pull_requests_propagates_branch() -> None:
             branch=_BRANCH,
         )
     ]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch == _BRANCH
     assert snapshots[0].pr_number == 507
@@ -283,7 +283,7 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
     ]
     mock_logger = MagicMock()
     with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
-        snapshots = Orchestrator._project_pull_requests(records)
+        snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch is None
     # Walk every warning() call and confirm one matches our event name +
@@ -314,7 +314,7 @@ def test_project_pull_requests_no_warning_for_merged_branch_none() -> None:
     ]
     mock_logger = MagicMock()
     with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
-        Orchestrator._project_pull_requests(records)
+        SnapshotProjector.project_pull_requests(records)
     matching = [
         call
         for call in mock_logger.warning.call_args_list

@@ -98,9 +98,9 @@ async def test_dispatch_unknown_command_ignored() -> None:
 async def test_dispatch_rescan_issues() -> None:
     """rescan_issues calls _refresh_issues on the orchestrator."""
     orch = MagicMock()
-    orch._refresh_issues = AsyncMock()
+    orch._completion.refresh_issues = AsyncMock()
     await _dispatch_command({"command": "rescan_issues"}, orch)
-    orch._refresh_issues.assert_awaited_once()
+    orch._completion.refresh_issues.assert_awaited_once()
 
 
 @pytest.mark.asyncio()
@@ -163,8 +163,8 @@ async def test_dispatch_start_is_noop() -> None:
 async def test_dispatch_feedback_response_rescan_issues() -> None:
     """feedback_response with action=rescan_issues refreshes issues and resumes."""
     orch = MagicMock()
-    orch._refresh_issues = AsyncMock()
+    orch._completion.refresh_issues = AsyncMock()
     orch.resume = AsyncMock()
     await _dispatch_command({"command": "feedback_response", "action": "rescan_issues"}, orch)
-    orch._refresh_issues.assert_awaited_once()
+    orch._completion.refresh_issues.assert_awaited_once()
     orch.resume.assert_awaited_once()

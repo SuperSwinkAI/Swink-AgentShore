@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentshore.core.mixins.completion import _CompletionMixin
+from agentshore.core.mixins.completion import CompletionProcessor
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT, RecoveryTracker
 from agentshore.plays.base import PlayExecutionContext, PlayParams
@@ -121,8 +121,8 @@ async def test_take_break_returns_success_when_recovery_succeeds() -> None:
     assert outcome.artifacts[0]["recovered_agents"] == ["err1"]
 
 
-class _Harness(_CompletionMixin):
-    """Minimal completion mixin stand-in for testing _handle_take_break_outcome."""
+class _Harness(CompletionProcessor):
+    """Minimal CompletionProcessor stand-in for testing _handle_take_break_outcome."""
 
     def __init__(self) -> None:
         self._session_id = "s1"

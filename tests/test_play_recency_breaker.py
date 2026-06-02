@@ -8,7 +8,7 @@ the signal the 3-strikes circuit breaker masks on.
 
 from __future__ import annotations
 
-from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.data.models import PlayRecord
 from agentshore.state import PlayType
 
@@ -25,7 +25,7 @@ def _rec(play_type: str, success: bool, failure_category: str | None = None) -> 
 
 
 def _consecutive(history: list[PlayRecord]) -> dict[PlayType, int]:
-    return Orchestrator._compute_play_recency(history)[6]
+    return SnapshotProjector.compute_play_recency(history)[6]
 
 
 def test_skips_and_fails_accumulate_across_interleaving() -> None:

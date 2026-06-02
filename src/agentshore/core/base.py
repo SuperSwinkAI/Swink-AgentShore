@@ -19,7 +19,15 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.core.helpers import _logger
 from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.completion import CompletionProcessor
+from agentshore.core.mixins.dispatch import Dispatcher
+from agentshore.core.mixins.drain import DrainController
+from agentshore.core.mixins.lifecycle import LifecycleController
+from agentshore.core.mixins.loop import LoopRunner
+from agentshore.core.mixins.snapshots import SnapshotProjector
+from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
@@ -33,38 +41,25 @@ if TYPE_CHECKING:
     from agentshore.agents.health import HealthMonitor
     from agentshore.agents.manager import AgentManager
     from agentshore.agents.worktree import WorktreeManager
-    from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
-    from agentshore.core.context import _DispatchContext, _StateData
+    from agentshore.core.context import _DispatchContext
     from agentshore.core.experience_recorder import ExperienceRecorder
     from agentshore.core.progress_monitor import ForwardProgressMonitor
     from agentshore.data.integrity import IntegrityMonitor
     from agentshore.data.store import (
         DataStore,
-        GitHubIssueRecord,
         PlayRecord,
-        PullRequestRecord,
-        TrajectorySnapshotRecord,
     )
-    from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
-    from agentshore.plays.override import OverrideEntry
     from agentshore.plays.selector import PlaySelector
     from agentshore.power import PowerAssertion
     from agentshore.rl.action_space import ConfigKey
-    from agentshore.rl.mask_reason import MaskReason
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
-        AgentSnapshot,
-        BudgetSnapshot,
-        IssueSnapshot,
         OrchestratorState,
         PlayOutcome,
         PlayType,
-        PullRequestSnapshot,
-        SessionStatsSnapshot,
         StateProvider,
-        TrajectorySnapshot,
     )
 
     NaturalExitCallback = Callable[[str], Awaitable[None]]
@@ -79,16 +74,8 @@ class _OrchestratorBase:
 
     # Class-level defaults so tests that bypass __init__ via Orchestrator.__new__
     # still get sensible values. Real instances overwrite these in __init__.
-    _last_warned_failure_streak: int | None = None
-    _last_warned_any_streak: int | None = None
     _last_selection_digest: bytes | None = None
     _idle_streak: int = 0
-    # desktop-85ex: True iff the loop is currently inside a fleet-idle persistent
-    # window (idle streak ≥ fleet_idle_threshold + no in-flight plays). Flipped
-    # to True the first tick the threshold is crossed (emit one info event),
-    # flipped to False the first tick anything starts dispatching again (emit
-    # one info event to mark exit). No per-tick emission.
-    _fleet_idle_persistent_active: bool = False
     _draining: bool = False
     _drain_reason: str | None = None
     _drain_initialized: bool = False
@@ -96,8 +83,6 @@ class _OrchestratorBase:
     _natural_exit_reason: str | None = None
     _natural_exit_callback: NaturalExitCallback | None = None
     _extra_budget: float = 0.0
-    _last_stagnation_stage: int = 0
-    _idle_agent_claim_ticks: dict[str, int] = {}
     # Monotonic timestamp of the most recent _refresh_issues call.  Class-level
     # default is float('inf') so tests that bypass __init__ via Orchestrator.__new__
     # never trigger a periodic refresh.  __init__ resets it to 0.0 and bootstrap
@@ -108,22 +93,11 @@ class _OrchestratorBase:
     # + dispatch-pause latch). Constructed in __init__; __new__-bypass tests
     # construct their own.
     _main_repo: MainRepoGuard
-    # Loop-liveness heartbeat (#9): monotonic timestamp stamped at the top of
-    # every run_until_idle iteration. An independent watchdog task reads it to
-    # detect a hard-frozen loop and force-drain. Class-level default is
-    # float('inf') so tests that bypass __init__ (Orchestrator.__new__) never
-    # look stale to a watchdog they didn't arm; __init__ resets it to 0.0 and
-    # the loop stamps it to time.monotonic() on entry.
-    _last_loop_iteration_at: float = float("inf")
     # desktop-12g9: AgentShore-managed worktree lifecycle owner. Assigned by
     # ``_phase_init_worktree_manager`` during bootstrap. Stays None for
     # tests that bypass bootstrap (Orchestrator.__new__); reaper hooks
     # short-circuit on None so those callers remain no-ops.
     _worktrees: WorktreeManager | None = None
-    # Loop-liveness watchdog task handle (#9). Class-level default so tests that
-    # bypass __init__ (Orchestrator.__new__) can call stop_loop_liveness_watchdog
-    # during a partial-stop without first wiring the attribute.
-    _loop_liveness_task: asyncio.Task[None] | None = None
     # Guarded RL experience-recording collaborator (crash hardening). Class-level
     # default None so tests that bypass __init__ (Orchestrator.__new__) and the
     # non-PPO/headless paths are safe; constructed in phases.py once the PPO
@@ -133,11 +107,6 @@ class _OrchestratorBase:
     # Pure progress assessor (no-op-spin detection + WS3 reprieve gating).
     # Class-level default None; constructed in phases.py. Callers guard on None.
     _progress_monitor: ForwardProgressMonitor | None = None
-    # Consecutive run_until_idle ticks whose body raised. The per-tick guard
-    # increments this and resets it on any clean tick; at
-    # _MAX_CONSECUTIVE_TICK_FAILURES the loop drains gracefully rather than
-    # spinning on a permanently-throwing tick. Class-level default for __new__.
-    _tick_failure_streak: int = 0
 
     # Type annotations for instance attributes set in __init__ — mixins access
     # these via self.* and rely on these annotations for mypy resolution.
@@ -214,6 +183,43 @@ class _OrchestratorBase:
     _recent_applied_labels: collections.deque[tuple[int, str]]
     # take_break-failure + rate-limit-recovery latches.
     _recovery: RecoveryTracker
+    # Record/history → snapshot projection + trajectory math (composed component).
+    _snapshots: SnapshotProjector
+    # DB reads + live handles → OrchestratorState (composed component). Reads
+    # orchestrator runtime/control state live via the _StateBuilderHost Protocol.
+    _state_builder: StateBuilder
+    # Pause/resume, SIGHUP config reload, feedback cadence, budget-drain
+    # initiation (composed component). Reads+writes orchestrator runtime/control
+    # state (incl. the _cfg SIGHUP swap) live via the _LifecycleHost Protocol.
+    _lifecycle: LifecycleController
+    # Graceful drain, stop/hard_stop, budget adjust, end-session report (composed
+    # component). Reads+writes orchestrator runtime/control state (stop/drain
+    # latches, budget override, ESR request flags, in-flight maps) live via the
+    # _DrainHost Protocol; teardown order in stop/stop_inner is preserved exactly.
+    _drain: DrainController
+    # Play-completion harvesting, RL experience persistence, learnings, GitHub
+    # refresh, health callbacks (composed component). Reads+writes orchestrator
+    # runtime/control state (in-flight maps, completion-processing latches,
+    # recent-completion shadows, pause/stop latches) live via the _CompletionHost
+    # Protocol; the _process_completion pipeline order is preserved exactly.
+    _completion: CompletionProcessor
+    # Override resolution, selector calls, dispatch, and mask handling (composed
+    # component). Reads+writes orchestrator runtime/control state (in-flight maps,
+    # dispatch-context map, selection digest, idle streak, end-session latch) live
+    # via the _DispatcherHost Protocol; the _dispatch_play gate order and the
+    # OverrideQueue single-consume protocol are preserved exactly (no gate-move —
+    # that is Phase 2).
+    _dispatcher: Dispatcher
+    # The main orchestration loop, loop-detection ladder, stagnation escalation,
+    # and idle backoff (composed component, the conductor). Holds references to
+    # every sibling component + the 1a collaborators via its constructor;
+    # orchestrator runtime/control state (read or written) flows through the
+    # _LoopHost Protocol so SIGHUP/per-tick mutation never goes stale. The
+    # _run_loop_body tick order and the loop-liveness heartbeat are preserved
+    # exactly. Loop-only counters (tick-failure streak, wedge counter, watchdog
+    # handle, heartbeat, fleet-idle latch, warning memos, stagnation stage) are
+    # owned by the LoopRunner, not the host.
+    _loop: LoopRunner
     _feedback_cadence_plays_since_ack: int
     _feedback_cadence_last_ack_monotonic: float
 
@@ -259,14 +265,8 @@ class _OrchestratorBase:
         self._esr_ready_callback = None
         self._log_path = None
         self._extra_budget = 0.0
-        self._last_stagnation_stage = 0
         self._stop_reason = "unknown"
         self._health = None
-        self._loop_liveness_task = None
-        # Loop-liveness heartbeat (#9). 0.0 until run_until_idle stamps the
-        # first iteration; the watchdog treats "loop never started" (0.0) as
-        # not-yet-armed so it cannot fire before the loop has begun.
-        self._last_loop_iteration_at = 0.0
         self._integrity: IntegrityMonitor | None = None
         self._power_assertion: PowerAssertion | None = None
         self._in_flight = {}
@@ -330,6 +330,28 @@ class _OrchestratorBase:
         # take_break-failure + rate-limit-recovery latches (desktop-s1u7). The
         # completion path mutates them; state.py reads recovery_exhausted_agent_ids.
         self._recovery = RecoveryTracker()
+        # Record/history → snapshot projection + trajectory math. Holds stable
+        # refs (manager/store/session_id); reload-mutable cfg/extra_budget are
+        # passed per-call to build_budget_snapshot and safe_call is passed
+        # per-call to record_trajectory_snapshot (Lesson L2a).
+        self._snapshots = SnapshotProjector(manager=manager, store=store, session_id=session_id)
+        # DB reads + live handles → OrchestratorState. Stable services/
+        # collaborators captured via the constructor; orchestrator runtime/
+        # control state (cfg, in-flight maps, pause/drain latches, recent-
+        # completion shadows) is read live via the _StateBuilderHost Protocol so
+        # SIGHUP/per-tick mutation never goes stale. Owns its stale-idle counter.
+        self._state_builder = StateBuilder(
+            host=self,
+            store=store,
+            manager=manager,
+            executor=executor,
+            session_id=session_id,
+            repo_root=repo_root,
+            snapshots=self._snapshots,
+            velocity=self._velocity,
+            recovery=self._recovery,
+            overrides=self._overrides,
+        )
         # Selection-state digest gate: skip the selector + storm-prone log line
         # when nothing the selector cares about changed since the last attempt.
         # Pairs with ``_IDLE_BACKOFF_SECONDS`` to stretch the loop's idle wait
@@ -340,7 +362,6 @@ class _OrchestratorBase:
         # ``fleet_idle_persistent`` event. Re-set on every Orchestrator
         # instantiation so a re-used object starts cleanly.
         self._fleet_idle_persistent_active = False
-        self._idle_agent_claim_ticks = {}
         # Monotonic wall-clock time of last _refresh_issues call; 0.0 means
         # "never refreshed" so the first eligible tick always fires.
         self._last_refresh_time = 0.0
@@ -352,20 +373,109 @@ class _OrchestratorBase:
         # session-start sweeper / SIGHUP), the per-dispatch pre-play ref
         # handshake, and the auto-restore-failed dispatch-pause latch.
         self._main_repo = MainRepoGuard()
-        # Consecutive idle-with-work ticks spent under a latched trunk pause with
-        # nothing in flight — the wedge signature. Drives the auto-stop in
-        # _continue_if_selector_idle_work_remains; reset on any dispatch.
-        self._wedged_idle_ticks = 0
-        # Bounded reprieves granted to an unanswered loop-detection auto-stop
-        # while actionable work (merge-ready PRs / workable issues) remains, so
-        # the session is not torn down on top of finished work. Resets per loop.
-        self._auto_stop_reprieves_used = 0
+        # Pause/resume, SIGHUP config reload, feedback cadence, budget-drain
+        # initiation. Stable services/collaborators (store, session_id,
+        # repo_root, main_repo) captured via the constructor; orchestrator
+        # runtime/control state is read+written live via the _LifecycleHost
+        # Protocol so SIGHUP config swaps and per-tick mutation never go stale.
+        self._lifecycle = LifecycleController(
+            host=self,
+            store=store,
+            session_id=session_id,
+            repo_root=repo_root,
+            main_repo=self._main_repo,
+        )
+        # Graceful drain, stop/hard_stop, budget adjust, end-session report
+        # generation. Stable services/collaborators (store, manager, session_id,
+        # repo_root, state_builder) captured via the constructor; orchestrator
+        # runtime/control state (stop/drain latches, budget override, ESR request
+        # flags, in-flight maps) is read+written live via the _DrainHost Protocol
+        # so per-tick mutation never goes stale. Teardown order in stop/stop_inner
+        # is preserved exactly.
+        self._drain = DrainController(
+            host=self,
+            store=store,
+            manager=manager,
+            session_id=session_id,
+            repo_root=repo_root,
+            state_builder=self._state_builder,
+        )
+        # Play-completion harvesting, RL experience persistence, learnings update,
+        # GitHub issue refresh, and the agent health callbacks. Stable services/
+        # collaborators (store, manager, executor, session_id, repo_root, the 1a
+        # collaborators, and the sibling components) captured via the constructor;
+        # orchestrator runtime/control state (in-flight maps, completion-processing
+        # latches, recent-completion shadows, pause/stop latches) is read+written
+        # live via the _CompletionHost Protocol so per-tick mutation never goes
+        # stale. The _process_completion pipeline order is preserved exactly.
+        self._completion = CompletionProcessor(
+            host=self,
+            store=store,
+            manager=manager,
+            executor=executor,
+            session_id=session_id,
+            repo_root=repo_root,
+            main_repo=self._main_repo,
+            velocity=self._velocity,
+            recovery=self._recovery,
+            overrides=self._overrides,
+            snapshots=self._snapshots,
+            state_builder=self._state_builder,
+            lifecycle=self._lifecycle,
+            drain=self._drain,
+        )
+        # Override resolution, selector calls, dispatch, and mask handling. Stable
+        # services/collaborators (store, manager, executor, session_id, repo_root,
+        # the main_repo + overrides collaborators, and the state_builder/completion
+        # sibling components) captured via the constructor; orchestrator runtime/
+        # control state (in-flight maps, dispatch-context map, selection digest,
+        # idle streak, end-session latch) is read+written live via the
+        # _DispatcherHost Protocol so per-tick mutation never goes stale. The
+        # _dispatch_play gate order and the OverrideQueue single-consume protocol
+        # are preserved exactly (no gate-move — that is Phase 2).
+        self._dispatcher = Dispatcher(
+            host=self,
+            store=store,
+            manager=manager,
+            executor=executor,
+            session_id=session_id,
+            repo_root=repo_root,
+            main_repo=self._main_repo,
+            overrides=self._overrides,
+            state_builder=self._state_builder,
+            completion=self._completion,
+        )
+        # The main orchestration loop, loop-detection ladder, stagnation
+        # escalation, and idle backoff — the conductor. Constructed LAST because
+        # it references every sibling component (state_builder, dispatcher,
+        # completion, lifecycle, drain) plus the 1a collaborators (main_repo,
+        # overrides, velocity). Orchestrator runtime/control state (in-flight
+        # map, idle streak, selection digest, pause/drain latches, natural-exit
+        # hooks) is read+written live via the _LoopHost Protocol so SIGHUP/
+        # per-tick mutation never goes stale. The _run_loop_body tick order and
+        # the loop-liveness heartbeat are preserved exactly. The LoopRunner owns
+        # its own loop-only counters (tick-failure streak, wedge counter, watchdog
+        # task, heartbeat, fleet-idle latch, warning memos, stagnation stage).
+        self._loop = LoopRunner(
+            host=self,
+            session_id=session_id,
+            main_repo=self._main_repo,
+            overrides=self._overrides,
+            velocity=self._velocity,
+            state_builder=self._state_builder,
+            dispatcher=self._dispatcher,
+            completion=self._completion,
+            lifecycle=self._lifecycle,
+            drain=self._drain,
+        )
+        # Loop-liveness heartbeat (#9): 0.0 (not float('inf')) on a real
+        # instance so the watchdog treats "loop never started" as not-yet-armed;
+        # run_until_idle stamps the first iteration before the loop body runs.
+        self._loop._last_loop_iteration_at = 0.0
         # Crash-hardening collaborators (constructed in phases.py once the PPO
         # selector / metrics / versions are wired). None on the non-PPO path.
         self._experience_recorder = None
         self._progress_monitor = None
-        # Per-tick guard circuit-breaker counter (see class annotation).
-        self._tick_failure_streak = 0
 
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
@@ -380,25 +490,33 @@ class _OrchestratorBase:
         return raw if isinstance(raw, tuple) and raw else None
 
     # ------------------------------------------------------------------
-    # Abstract method declarations — supplied by mixins via MRO.
+    # Shared infrastructure + host-Protocol loop delegators on the composition
+    # root.
     #
-    # These stubs exist so cross-mixin calls (``self._safe_call(...)``,
-    # ``self._build_state()``) type-check.  Subclasses must override them;
-    # a direct instantiation of ``_OrchestratorBase`` would raise at
-    # runtime, but Orchestrator inherits the concrete implementations.
+    # The 7-mixin teardown is complete: ``_OrchestratorBase`` no longer carries a
+    # not-implemented stub wall. Every behaviour lives in an owned
+    # component. ``_safe_call`` is stateless infra reached via
+    # ``self._host._safe_call`` from every component. The four loop methods other
+    # components reference through their host Protocols
+    # (``_CompletionHost._initiate_autonomous_stop`` /
+    # ``_check_stagnation_escalation`` and ``_DrainHost.stop_loop_liveness_watchdog``,
+    # plus ``__aenter__``'s ``start_loop_liveness_watchdog``) resolve here as thin
+    # delegators forwarding to ``self._loop`` — so ``self._host.<method>`` (and
+    # the public ``orch.<method>``) keep resolving on the composition root now
+    # that the loop is an owned component rather than an inherited mixin.
     # ------------------------------------------------------------------
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None:
-        raise NotImplementedError
+        """Await *coro* and log ERROR if it raises; never propagates.
 
-    async def _build_state(self) -> OrchestratorState:
-        raise NotImplementedError
-
-    async def _refresh_issues(self) -> None:
-        raise NotImplementedError
-
-    async def begin_drain(self, reason: str) -> None:
-        raise NotImplementedError
+        Stateless shared infrastructure: every composed component reaches it via
+        ``self._host._safe_call``, so it lives on the composition root rather
+        than inside any one component.
+        """
+        try:
+            await coro
+        except Exception as exc:
+            _logger.error("safe_call_failed", label=label, error=str(exc), exc_info=True)
 
     async def _initiate_autonomous_stop(
         self,
@@ -408,196 +526,35 @@ class _OrchestratorBase:
         fire_natural_exit: bool = False,
         clear_pause_deadline: bool = False,
     ) -> None:
-        raise NotImplementedError
+        """Forward to :meth:`LoopRunner.initiate_autonomous_stop`.
 
-    def start_loop_liveness_watchdog(self) -> None:
-        raise NotImplementedError
-
-    def stop_loop_liveness_watchdog(self) -> None:
-        raise NotImplementedError
-
-    async def stop(self, grace_period_s: float = 5.0) -> None:
-        raise NotImplementedError
-
-    async def _harvest_completed(self) -> None:
-        raise NotImplementedError
-
-    async def _wait_for_in_flight(self, *, timeout: float) -> None:
-        raise NotImplementedError
-
-    async def _process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
-        raise NotImplementedError
-
-    async def _pause_with_reason(self, reason: str) -> None:
-        raise NotImplementedError
-
-    async def _pause_for_feedback_cadence_if_due(self) -> bool:
-        raise NotImplementedError
-
-    def _feedback_enabled_for_reason(self, reason: str) -> bool:
-        raise NotImplementedError
-
-    async def _begin_budget_reserve_drain_if_needed(
-        self, state: OrchestratorState
-    ) -> OrchestratorState:
-        raise NotImplementedError
-
-    def _should_terminate(self, state: OrchestratorState) -> tuple[bool, str | None]:
-        raise NotImplementedError
-
-    async def _check_no_forward_progress(
-        self, state: OrchestratorState, outcome: PlayOutcome
-    ) -> None:
-        raise NotImplementedError
+        Referenced by ``CompletionProcessor`` (no-forward-progress monitor) and
+        the loop's own autonomous-stop paths via the ``_CompletionHost`` Protocol.
+        """
+        await self._loop.initiate_autonomous_stop(
+            reason,
+            arm_gate_only=arm_gate_only,
+            fire_natural_exit=fire_natural_exit,
+            clear_pause_deadline=clear_pause_deadline,
+        )
 
     async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool:
-        raise NotImplementedError
+        """Forward to :meth:`LoopRunner.check_stagnation_escalation`.
 
-    async def _consume_override(
-        self, state: OrchestratorState
-    ) -> tuple[PlayType, PlayParams] | None:
-        raise NotImplementedError
+        Referenced by ``CompletionProcessor`` via the ``_CompletionHost`` Protocol.
+        """
+        return await self._loop.check_stagnation_escalation(state)
 
-    async def _select_play(
-        self,
-        state: OrchestratorState,
-        *,
-        override_play: tuple[PlayType, PlayParams] | None,
-    ) -> tuple[PlayType, PlayParams] | None:
-        raise NotImplementedError
+    def start_loop_liveness_watchdog(self) -> None:
+        """Forward to :meth:`LoopRunner.start_loop_liveness_watchdog`.
 
-    async def _dispatch_play(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        state: OrchestratorState,
-    ) -> bool:
-        raise NotImplementedError
+        Called from ``Orchestrator.__aenter__`` before the loop runs.
+        """
+        self._loop.start_loop_liveness_watchdog()
 
-    def _shutdown_allows_only_end_agent(self, state: OrchestratorState) -> bool:
-        raise NotImplementedError
+    def stop_loop_liveness_watchdog(self) -> None:
+        """Forward to :meth:`LoopRunner.stop_loop_liveness_watchdog`.
 
-    async def _revalidate_end_session_before_dispatch(self) -> bool:
-        raise NotImplementedError
-
-    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason) -> None:
-        raise NotImplementedError
-
-    async def _release_masked_override(self, entry: OverrideEntry, *, reason: MaskReason) -> None:
-        raise NotImplementedError
-
-    async def _record_control_rejection(
-        self,
-        *,
-        kind: str,
-        play_type: PlayType,
-        params: PlayParams,
-        reason: MaskReason | str,
-    ) -> None:
-        raise NotImplementedError
-
-    async def _drop_selected_play_before_dispatch(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        *,
-        reason: MaskReason | str,
-        event: str,
-    ) -> None:
-        raise NotImplementedError
-
-    async def _mark_pr_manual_required(self, pr_number: int) -> None:
-        raise NotImplementedError
-
-    async def _record_trajectory_snapshot(
-        self, outcome: PlayOutcome, next_state: OrchestratorState
-    ) -> None:
-        raise NotImplementedError
-
-    async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
-        raise NotImplementedError
-
-    async def _on_crash(self, agent_id: str, return_code: int) -> None:
-        raise NotImplementedError
-
-    async def _on_context_pressure(self, agent_id: str, ratio: float) -> None:
-        raise NotImplementedError
-
-    async def _fetch_state_data(self) -> _StateData:
-        raise NotImplementedError
-
-    async def _safe_get_latest_trajectory(self) -> object:
-        raise NotImplementedError
-
-    async def _abandon_work_for_missing_agents(self) -> None:
-        raise NotImplementedError
-
-    async def _release_claims_for_prolonged_idle_agents(self, state: OrchestratorState) -> None:
-        raise NotImplementedError
-
-    def _annotate_action_mask(self, state: OrchestratorState) -> None:
-        raise NotImplementedError
-
-    def _assemble_state(self, data: _StateData) -> OrchestratorState:
-        raise NotImplementedError
-
-    # Snapshot projection helpers (supplied by _SnapshotsMixin)
-    def _build_agent_snapshots(self, play_history: list[PlayRecord]) -> list[AgentSnapshot]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _project_open_issues(
-        records: list[GitHubIssueRecord], graph: ProjectGraph | None
-    ) -> list[IssueSnapshot]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _project_pull_requests(
-        records: list[PullRequestRecord],
-    ) -> list[PullRequestSnapshot]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _compute_play_streaks(
-        play_history: list[PlayRecord],
-        *,
-        override_play_ids: set[int] | None = None,
-    ) -> tuple[int, int]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _compute_play_recency(
-        play_history: list[PlayRecord],
-    ) -> tuple[
-        PlayType | None,
-        int | None,
-        dict[PlayType, int],
-        dict[PlayType, bool],
-        dict[PlayType, bool],
-        int | None,
-        dict[PlayType, int],
-    ]:
-        raise NotImplementedError
-
-    def _build_budget_snapshot(self, total_plays: int, total_cost: float) -> BudgetSnapshot:
-        raise NotImplementedError
-
-    @staticmethod
-    def _extract_trajectory(
-        record: TrajectorySnapshotRecord | None,
-    ) -> TrajectorySnapshot | None:
-        raise NotImplementedError
-
-    def _compute_trajectory_record(
-        self,
-        outcome: PlayOutcome,
-        next_state: OrchestratorState,
-        history: list[PlayRecord],
-    ) -> TrajectorySnapshotRecord | None:
-        raise NotImplementedError
-
-    @staticmethod
-    def _compute_session_stats(
-        play_history: list[PlayRecord],
-    ) -> SessionStatsSnapshot:
-        raise NotImplementedError
+        Referenced by ``DrainController`` teardown via the ``_DrainHost`` Protocol.
+        """
+        self._loop.stop_loop_liveness_watchdog()

@@ -120,20 +120,20 @@ def test_project_pull_requests_conflicting_sets_blocked() -> None:
     mergeable= argument, so merge conflicts never surfaced as blocked PRs and
     unblock_pr's precondition always saw an empty available_blocked list.
     """
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
 
     records = [_make_pr_record(42, mergeable="CONFLICTING")]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].blocked is True
     assert "merge_conflicts" in snapshots[0].blocked_reasons
 
 
 def test_project_pull_requests_mergeable_pr_not_blocked() -> None:
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
 
     records = [_make_pr_record(43, mergeable="MERGEABLE")]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert snapshots[0].blocked is False
     assert "merge_conflicts" not in snapshots[0].blocked_reasons
 

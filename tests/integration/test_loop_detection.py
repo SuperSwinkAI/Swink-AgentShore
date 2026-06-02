@@ -153,7 +153,7 @@ async def test_loop_detection_does_not_trigger_on_mixed_types(tmp_path: Path) ->
 
     await _clear_cached_github_work(orch)
     with (
-        patch.object(orch, "_refresh_issues", new=AsyncMock()),
+        patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
         patch.object(orch._executor, "execute", side_effect=mock_execute),
     ):
         async with orch:
