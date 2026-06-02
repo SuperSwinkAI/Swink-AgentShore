@@ -16,7 +16,7 @@ import json
 import time
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -37,38 +37,12 @@ if TYPE_CHECKING:
     from agentshore.state import OrchestratorState, PlayOutcome
 
 
-class _LoggerProxy:
-    """Proxy that defers every attribute lookup to ``agentshore.core._logger``.
-
-    This indirection exists so that ``monkeypatch.setattr(agentshore.core,
-    "_logger", mock)`` immediately propagates to every call site in this
-    package — including mixin/phase modules that imported the proxy at module
-    load time.  The proxy holds the real structlog logger in ``_target`` and
-    consults ``agentshore.core._logger`` on each access so tests that rebind
-    that attribute see their mock invoked instead.
-    """
-
-    # No __slots__: tests use ``patch("agentshore.core._logger.info", ...)`` which
-    # needs to set arbitrary attributes on the proxy.
-
-    def __init__(self) -> None:
-        # The bound structlog logger that emits the actual log event when
-        # nothing has replaced ``agentshore.core._logger``.
-        self._target = structlog.get_logger("agentshore.core")
-
-    def __getattr__(self, name: str) -> object:
-        # Avoid infinite recursion on internal slot access during init.
-        if name == "_target":
-            raise AttributeError(name)
-        from agentshore import core as _core_pkg
-
-        live = getattr(_core_pkg, "_logger", None)
-        if live is not None and live is not self:
-            return getattr(live, name)
-        return getattr(self._target, name)
-
-
-_logger: Any = _LoggerProxy()
+# Single package-wide logger shared by every core module via
+# ``from agentshore.core.helpers import _logger``. Tests that assert on log
+# events patch it at the call-site module (whole-object replacement) or via
+# ``agentshore.core.helpers._logger.<method>`` (the shared object's attribute,
+# which every module's binding observes).
+_logger = structlog.get_logger("agentshore.core")
 
 MIN_COST_PER_PLAY = 0.05
 MIN_DURATION_SECONDS = 1.0
@@ -86,30 +60,16 @@ def _is_loop_bucket(streak: int, threshold: int) -> bool:
     return any(streak == m * threshold for m in _LOOP_DETECTED_MULTIPLIERS)
 
 
-def _ppo_selector_cls_impl() -> type[PPOSelector]:
-    """Resolve the real PPOSelector class lazily so cold-start stays torch-free."""
+def _ppo_selector_cls() -> type[PPOSelector]:
+    """Resolve the real PPOSelector class lazily so cold-start stays torch-free.
+
+    Tests that need ``isinstance(selector, _ppo_selector_cls())`` to accept a
+    stub patch this function at the call-site module (e.g.
+    ``patch("agentshore.core.mixins.loop._ppo_selector_cls", ...)``).
+    """
     from agentshore.rl.selector import PPOSelector
 
     return PPOSelector
-
-
-def _ppo_selector_cls() -> type[PPOSelector]:
-    """Return the PPOSelector class, deferring to ``agentshore.core._ppo_selector_cls``.
-
-    The indirection exists so that tests which
-    ``patch("agentshore.core._ppo_selector_cls", return_value=...)`` propagate
-    to every call site — including mixin/phase modules that captured a
-    reference to the original function at import time.  When nothing has
-    rebound the package attribute, we fall through to the real
-    implementation in :func:`_ppo_selector_cls_impl`.
-    """
-    from agentshore import core as _core_pkg
-
-    live = getattr(_core_pkg, "_ppo_selector_cls", None)
-    # Avoid infinite recursion when the package's attribute IS this function.
-    if live is not None and live is not _ppo_selector_cls:
-        return live()  # type: ignore[no-any-return]
-    return _ppo_selector_cls_impl()
 
 
 def _str_extra(params: PlayParams, key: str) -> str | None:

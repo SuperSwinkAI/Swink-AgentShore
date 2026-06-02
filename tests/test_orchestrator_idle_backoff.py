@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
-from agentshore.core import _IDLE_BACKOFF_SECONDS, Orchestrator
+from agentshore.core import Orchestrator
+from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,

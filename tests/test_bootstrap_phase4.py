@@ -56,14 +56,14 @@ async def test_bootstrap_default_state_provider_is_null(tmp_path: Path) -> None:
     cfg = RuntimeConfig()
 
     with (
-        patch("agentshore.core.DataStore") as mock_ds_cls,
-        patch("agentshore.core.AgentManager"),
-        patch("agentshore.core.PlayExecutor"),
-        patch("agentshore.core.build_default_registry", return_value=MagicMock()),
-        patch("agentshore.core.ParameterResolver"),
+        patch("agentshore.core.phases.DataStore") as mock_ds_cls,
+        patch("agentshore.core.phases.AgentManager"),
+        patch("agentshore.core.phases.PlayExecutor"),
+        patch("agentshore.core.phases.build_default_registry", return_value=MagicMock()),
+        patch("agentshore.core.phases.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
-        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
-        patch("agentshore.core.setup_logging"),
+        patch("agentshore.core.phases._phase_session_start_worktree_sweep", new_callable=AsyncMock),
+        patch("agentshore.core.orchestrator.setup_logging"),
     ):
         mock_ds = AsyncMock()
         mock_ds_cls.return_value = mock_ds
@@ -91,14 +91,14 @@ async def test_bootstrap_calls_setup_logging(tmp_path: Path) -> None:
         log_calls.append(kwargs)
 
     with (
-        patch("agentshore.core.DataStore") as mock_ds_cls,
-        patch("agentshore.core.AgentManager"),
-        patch("agentshore.core.PlayExecutor"),
-        patch("agentshore.core.build_default_registry", return_value=MagicMock()),
-        patch("agentshore.core.ParameterResolver"),
+        patch("agentshore.core.phases.DataStore") as mock_ds_cls,
+        patch("agentshore.core.phases.AgentManager"),
+        patch("agentshore.core.phases.PlayExecutor"),
+        patch("agentshore.core.phases.build_default_registry", return_value=MagicMock()),
+        patch("agentshore.core.phases.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
-        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
-        patch("agentshore.core.setup_logging", side_effect=capture_setup_logging),
+        patch("agentshore.core.phases._phase_session_start_worktree_sweep", new_callable=AsyncMock),
+        patch("agentshore.core.orchestrator.setup_logging", side_effect=capture_setup_logging),
     ):
         mock_ds = AsyncMock()
         mock_ds_cls.return_value = mock_ds
@@ -128,14 +128,14 @@ async def test_bootstrap_logs_each_step_with_timing(
 
     with (
         caplog.at_level(logging.DEBUG),
-        patch("agentshore.core.DataStore") as mock_ds_cls,
-        patch("agentshore.core.AgentManager"),
-        patch("agentshore.core.PlayExecutor"),
-        patch("agentshore.core.build_default_registry", return_value=MagicMock()),
-        patch("agentshore.core.ParameterResolver"),
+        patch("agentshore.core.phases.DataStore") as mock_ds_cls,
+        patch("agentshore.core.phases.AgentManager"),
+        patch("agentshore.core.phases.PlayExecutor"),
+        patch("agentshore.core.phases.build_default_registry", return_value=MagicMock()),
+        patch("agentshore.core.phases.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
-        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
-        patch("agentshore.core.setup_logging"),
+        patch("agentshore.core.phases._phase_session_start_worktree_sweep", new_callable=AsyncMock),
+        patch("agentshore.core.orchestrator.setup_logging"),
     ):
         mock_ds = AsyncMock()
         mock_ds_cls.return_value = mock_ds
@@ -165,7 +165,7 @@ async def test_bootstrap_logs_each_step_with_timing(
 @pytest.mark.asyncio
 async def test_step_fires_publisher_on_started_and_completed() -> None:
     """Inside a bootstrap publisher context, _step emits started + completed."""
-    from agentshore.core import _bootstrap_phase_publisher, _step
+    from agentshore.core.helpers import _bootstrap_phase_publisher, _step
 
     events: list[tuple[str, str, float]] = []
 
@@ -190,7 +190,7 @@ async def test_step_fires_publisher_on_started_and_completed() -> None:
 @pytest.mark.asyncio
 async def test_step_is_silent_without_publisher() -> None:
     """Without a publisher set, _step does no extra work — calling it must not crash."""
-    from agentshore.core import _bootstrap_phase_publisher, _step
+    from agentshore.core.helpers import _bootstrap_phase_publisher, _step
 
     assert _bootstrap_phase_publisher.get() is None
     async with _step("silent_phase"):
@@ -200,7 +200,7 @@ async def test_step_is_silent_without_publisher() -> None:
 @pytest.mark.asyncio
 async def test_step_swallows_publisher_failures() -> None:
     """A broken publisher (e.g. dashboard disconnected) must not break bootstrap."""
-    from agentshore.core import _bootstrap_phase_publisher, _step
+    from agentshore.core.helpers import _bootstrap_phase_publisher, _step
 
     async def broken_publisher(phase: str, status: str, elapsed_ms: float) -> None:
         raise RuntimeError("dashboard went away")
@@ -226,14 +226,14 @@ async def test_bootstrap_forwards_phases_to_state_provider(tmp_path: Path) -> No
     provider = RecordingProvider()
 
     with (
-        patch("agentshore.core.DataStore") as mock_ds_cls,
-        patch("agentshore.core.AgentManager"),
-        patch("agentshore.core.PlayExecutor"),
-        patch("agentshore.core.build_default_registry", return_value=MagicMock()),
-        patch("agentshore.core.ParameterResolver"),
+        patch("agentshore.core.phases.DataStore") as mock_ds_cls,
+        patch("agentshore.core.phases.AgentManager"),
+        patch("agentshore.core.phases.PlayExecutor"),
+        patch("agentshore.core.phases.build_default_registry", return_value=MagicMock()),
+        patch("agentshore.core.phases.ParameterResolver"),
         patch("agentshore.skills.install_skills"),
-        patch("agentshore.core._phase_session_start_worktree_sweep", new_callable=AsyncMock),
-        patch("agentshore.core.setup_logging"),
+        patch("agentshore.core.phases._phase_session_start_worktree_sweep", new_callable=AsyncMock),
+        patch("agentshore.core.orchestrator.setup_logging"),
     ):
         mock_ds = AsyncMock()
         mock_ds_cls.return_value = mock_ds

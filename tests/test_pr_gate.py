@@ -146,7 +146,7 @@ def test_project_pull_requests_mergeable_pr_not_blocked() -> None:
 @pytest.mark.asyncio
 async def test_phase_ensure_labels_includes_required_workflow_labels() -> None:
     from agentshore.config import RuntimeConfig
-    from agentshore.core import _phase_ensure_labels
+    from agentshore.core.phases import _phase_ensure_labels
 
     mock_gh = AsyncMock()
     mock_gh.available = True
@@ -169,7 +169,7 @@ async def test_phase_ensure_labels_includes_required_workflow_labels() -> None:
 @pytest.mark.asyncio
 async def test_phase_ensure_labels_skipped_when_gh_unavailable() -> None:
     from agentshore.config import RuntimeConfig
-    from agentshore.core import _phase_ensure_labels
+    from agentshore.core.phases import _phase_ensure_labels
 
     mock_gh = AsyncMock()
     mock_gh.available = False

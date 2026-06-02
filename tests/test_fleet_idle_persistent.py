@@ -24,7 +24,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import agentshore.core
 from agentshore.core import Orchestrator
 from agentshore.state import SessionState
 
@@ -70,15 +69,13 @@ def _orch() -> Orchestrator:
 
 @pytest.fixture
 def info_calls(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Patch ``agentshore.core._logger`` and yield the info() mock.
+    """Patch ``loop.py``'s ``_logger`` and yield the info() mock.
 
-    The ``_LoggerProxy`` in ``agentshore.core.helpers`` defers every
-    attribute lookup to ``agentshore.core._logger``, so swapping that one
-    object propagates to ``loop.py``'s ``_logger`` automatically. Same
-    pattern as ``tests/test_loop_detection_warning_dedup.py``.
+    ``fleet_idle_persistent`` is emitted from ``agentshore.core.mixins.loop``,
+    so replacing that module's ``_logger`` binding captures the calls.
     """
     mock_logger = MagicMock()
-    monkeypatch.setattr(agentshore.core, "_logger", mock_logger)
+    monkeypatch.setattr("agentshore.core.mixins.loop._logger", mock_logger)
     return mock_logger.info
 
 

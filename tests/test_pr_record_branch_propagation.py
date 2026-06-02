@@ -282,7 +282,7 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
         )
     ]
     mock_logger = MagicMock()
-    with patch("agentshore.core._logger", mock_logger):
+    with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
         snapshots = Orchestrator._project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch is None
@@ -313,7 +313,7 @@ def test_project_pull_requests_no_warning_for_merged_branch_none() -> None:
         )
     ]
     mock_logger = MagicMock()
-    with patch("agentshore.core._logger", mock_logger):
+    with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
         Orchestrator._project_pull_requests(records)
     matching = [
         call

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
-from agentshore.core import _mirror_issues_to_beads
+from agentshore.core.phases import _mirror_issues_to_beads
 from agentshore.data.models import GitHubIssueRecord
 
 # ---------------------------------------------------------------------------

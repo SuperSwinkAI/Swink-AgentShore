@@ -12,8 +12,8 @@ import pytest
 
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
 from agentshore.config.models import ModelTierConfig
-from agentshore.core import (
-    Orchestrator,
+from agentshore.core import Orchestrator
+from agentshore.core.phases import (
     _author_labels_for_config,
     _phase_queue_agent_instantiation,
 )
@@ -351,8 +351,8 @@ async def test_bootstrap_clears_in_progress_beads_before_github_fetch(tmp_path: 
         return frozenset()
 
     with (
-        patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear),
-        patch("agentshore.core._phase_fetch_github", new=_fake_fetch_github),
+        patch("agentshore.core.phases._clear_session_scoped_bead_progress", new=_fake_clear),
+        patch("agentshore.core.phases._phase_fetch_github", new=_fake_fetch_github),
     ):
         await Orchestrator.bootstrap(
             cfg=_cfg(),
@@ -376,7 +376,7 @@ async def test_stop_clears_in_progress_beads_during_shutdown(tmp_path: Path) -> 
         phases.append(phase)
         return 1
 
-    with patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear):
+    with patch("agentshore.core.phases._clear_session_scoped_bead_progress", new=_fake_clear):
         async with orch:
             pass
 
@@ -411,8 +411,8 @@ async def test_run_until_idle_retries_selector_none_when_work_remains(tmp_path: 
     async with orch:
         with (
             patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
-            patch("agentshore.core.asyncio.sleep", new=_sleep),
-            patch("agentshore.core._logger.warning") as warning,
+            patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
             await orch.run_until_idle()
 
@@ -437,8 +437,8 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
         with (
             patch.object(selector, "select", new=select),
             patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
-            patch("agentshore.core.asyncio.sleep", new=_sleep),
-            patch("agentshore.core._logger.warning") as warning,
+            patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
             await orch.run_until_idle()
 
@@ -512,7 +512,7 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
             patch.object(
                 orch, "_build_state", new=AsyncMock(return_value=_idle_state_with_issue())
             ),
-            patch("agentshore.core._logger.warning") as warning,
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
             allowed = await orch._revalidate_end_session_before_dispatch()
 
@@ -598,7 +598,7 @@ async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> N
                 new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
             ),
             patch.object(orch._executor, "execute", new=AsyncMock(side_effect=_execute)) as execute,
-            patch("agentshore.core.AGENT_PING_TIMEOUT_SECONDS", 0.001),
+            patch("agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS", 0.001),
         ):
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
@@ -789,7 +789,7 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
             patch.object(
                 orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
             ),
-            patch("agentshore.core._logger.info") as info_log,
+            patch("agentshore.core.helpers._logger.info") as info_log,
         ):
             await orch.run_until_idle()
 
@@ -853,7 +853,7 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
             patch.object(
                 orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
             ),
-            patch("agentshore.core._logger.info") as info_log,
+            patch("agentshore.core.helpers._logger.info") as info_log,
         ):
             await orch.run_until_idle()
 
@@ -1209,7 +1209,7 @@ async def test_stagnation_stage_one_boosts_entropy_coef(tmp_path: Path) -> None:
 
         dummy = _DummySelector()
         orch._selector = dummy  # type: ignore[assignment]
-        with patch("agentshore.core._ppo_selector_cls", return_value=_DummySelector):
+        with patch("agentshore.core.mixins.loop._ppo_selector_cls", return_value=_DummySelector):
             await orch._check_stagnation_escalation(state)
             orch._metrics = SimpleNamespace(
                 snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))

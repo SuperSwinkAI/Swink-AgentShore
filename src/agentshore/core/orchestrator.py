@@ -33,11 +33,12 @@ from agentshore.core.mixins.loop import _LoopMixin
 from agentshore.core.mixins.snapshots import _SnapshotsMixin
 from agentshore.core.mixins.state import _StateMixin
 
-# NOTE: bootstrap calls phase functions via ``agentshore.core._phase_X`` (looked
-# up at runtime through the ``_core_pkg`` indirection) so tests can patch
-# them on the package. We deliberately do NOT import the phase functions
-# here at module load — those imports would shadow the patchable surface.
+# NOTE: bootstrap calls phase functions via the ``phases`` module object
+# (imported lazily inside ``bootstrap``) so tests patch them at their binding
+# home, ``agentshore.core.phases._phase_X``. ``setup_logging`` is patched at
+# ``agentshore.core.orchestrator.setup_logging``.
 from agentshore.data.store import SessionRecord
+from agentshore.logging import setup_logging
 from agentshore.paths import project_db_path, project_dir
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
@@ -109,13 +110,14 @@ class Orchestrator(
         sid = session_id or str(uuid.uuid4())
 
         # Setup logging first so all subsequent steps emit structured logs.
-        # Dispatch via agentshore.core so tests that patch the symbol intercept it.
-        from agentshore import core as _core_pkg
+        # Phase functions are reached via the ``phases`` module object so tests
+        # patch them at ``agentshore.core.phases._phase_X``.
+        from agentshore.core import phases
 
         log_path = (
             repo_root / cfg.logging.log_dir / f"agentshore-{sid}.log" if cfg.logging.file else None
         )
-        _core_pkg.setup_logging(
+        setup_logging(
             level=cfg.logging.level,
             log_dir=log_path.parent if log_path is not None else None,
             session_id=sid,
@@ -126,7 +128,7 @@ class Orchestrator(
         # every start path (CLI, sidecar, desktop Quick Start, TUI) honors a
         # configured seed. (policy_path has the analogous fallback inside
         # ``_resolve_policy_path``.) Resolved once and threaded everywhere.
-        effective_seed = _core_pkg._resolve_seed_path(cfg, seed_path, repo_root)
+        effective_seed = phases._resolve_seed_path(cfg, seed_path, repo_root)
 
         provider: StateProvider = state_provider or NullStateProvider()
 
@@ -135,9 +137,9 @@ class Orchestrator(
 
         token = _bootstrap_phase_publisher.set(_publish_bootstrap_phase)
         try:
-            store = await _core_pkg._phase_init_datastore(repo_root)
-            await _core_pkg._phase_reset_session_scoped_tables(store)
-            manager, gh, executor, registry = await _core_pkg._phase_init_executor(
+            store = await phases._phase_init_datastore(repo_root)
+            await phases._phase_reset_session_scoped_tables(store)
+            manager, gh, executor, registry = await phases._phase_init_executor(
                 cfg=cfg, repo_root=repo_root, sid=sid, store=store, provider=provider
             )
 
@@ -169,11 +171,11 @@ class Orchestrator(
                 )
             )
 
-            await _core_pkg._phase_init_metrics(orch=orch, cfg=cfg, store=store, sid=sid)
+            await phases._phase_init_metrics(orch=orch, cfg=cfg, store=store, sid=sid)
             _emit_weights_dir_inventory(orch._weights_dir(), phase="session_start")
-            _core_pkg._phase_cleanup_stale_weights(repo_root)
+            phases._phase_cleanup_stale_weights(repo_root)
             if selector is None:
-                await _core_pkg._phase_init_ppo_selector(
+                await phases._phase_init_ppo_selector(
                     orch=orch,
                     cfg=cfg,
                     executor=executor,
@@ -182,7 +184,7 @@ class Orchestrator(
                     policy_mode=policy_mode,
                 )
 
-            await _core_pkg._phase_create_session_row(
+            await phases._phase_create_session_row(
                 store=store, sid=sid, repo_root=repo_root, seed_path=effective_seed
             )
             # desktop-12g9: instantiate the worktree manager and reap any
@@ -190,32 +192,32 @@ class Orchestrator(
             # must be in place before any FK-referencing worktree row inserts
             # (A2's dispatch wiring), and the sweep must happen after the
             # current session row exists so list_orphans correctly excludes it.
-            await _core_pkg._phase_init_worktree_manager(
+            await phases._phase_init_worktree_manager(
                 orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
             )
-            await _core_pkg._phase_session_start_worktree_sweep(orch=orch, sid=sid)
-            await _core_pkg._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
+            await phases._phase_session_start_worktree_sweep(orch=orch, sid=sid)
+            await phases._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
             # Snapshot pre-session dirty trunk state before _phase_git_safety_sweep
             # restores any branch state — RECONCILE_STATE uses this sidecar to
             # attribute dirty paths to prior sessions even when the DB/log was
             # recovered or rotated.
-            await _core_pkg._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
+            await phases._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
             # desktop-kqo5: cache default branch + sweep main-repo HEAD before
             # opening dispatch. Must run before _phase_install_skills so the
             # cached value is available to any phase that needs it.
-            await _core_pkg._phase_git_safety_sweep(orch=orch, repo_root=repo_root, sid=sid)
-            _core_pkg._phase_install_skills(repo_root)
-            await _core_pkg._phase_fetch_github(
+            await phases._phase_git_safety_sweep(orch=orch, repo_root=repo_root, sid=sid)
+            phases._phase_install_skills(repo_root)
+            await phases._phase_fetch_github(
                 gh=gh, store=store, sid=sid, cfg=cfg, repo_root=repo_root
             )
             # Stamp the refresh clock so the first _build_state tick doesn't
             # immediately re-run _refresh_issues (bootstrap already fetched).
             orch._last_refresh_time = time.monotonic()
-            await _core_pkg._phase_ensure_labels(gh=gh, cfg=cfg)
-            await _core_pkg._phase_load_learnings(cfg=cfg, repo_root=repo_root)
+            await phases._phase_ensure_labels(gh=gh, cfg=cfg)
+            await phases._phase_load_learnings(cfg=cfg, repo_root=repo_root)
             if selector is None:
                 open_issues_at_bootstrap = await store.get_open_issues(sid)
-                _core_pkg._phase_queue_agent_instantiation(
+                phases._phase_queue_agent_instantiation(
                     orch=orch,
                     cfg=cfg,
                     seed_path=effective_seed,

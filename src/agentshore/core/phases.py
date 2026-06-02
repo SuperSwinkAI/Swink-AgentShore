@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from agentshore.agents.manager import AgentManager
 from agentshore.agents.model_tiers import enabled_model_tiers
 from agentshore.core.git_safety import (
     commit_gitignore_if_dirty,
@@ -34,26 +35,27 @@ from agentshore.core.helpers import (
     _ppo_selector_cls,
     _step,
 )
-from agentshore.data.store import SessionRecord
+from agentshore.data.store import DataStore, SessionRecord
 from agentshore.github.labels import AGENTSHORE_WORKFLOW_LABELS
 from agentshore.paths import GLOBAL_CONFIG_DIR as _GLOBAL_CONFIG_DIR
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.paths import project_db_path, project_dir, project_weights_dir
 from agentshore.plays.base import PlayParams
+from agentshore.plays.executor import PlayExecutor
 from agentshore.plays.override import OverrideEntry, OverrideKind
+from agentshore.plays.registry import build_default_registry
+from agentshore.plays.resolver import ParameterResolver
 from agentshore.rl.mask_reason import MaskClassification
 from agentshore.state import AgentType, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from agentshore.agents.manager import AgentManager
     from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.config.models import PolicyMode
     from agentshore.core.orchestrator import Orchestrator
-    from agentshore.data.store import DataStore, GitHubIssueRecord
+    from agentshore.data.store import GitHubIssueRecord
     from agentshore.github.adapter import GitHubAdapter
-    from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.registry import PlayRegistry
     from agentshore.rl.selector import PPOSelector
     from agentshore.state import StateProvider
@@ -84,11 +86,8 @@ async def _phase_init_datastore(repo_root: Path) -> DataStore:
         from agentshore.data.integrity import restore_from_snapshot_ring
 
         restore_from_snapshot_ring(db_path, db_dir)
-        # Look up DataStore via the package so tests that
-        # ``patch("agentshore.core.DataStore", ...)`` intercept construction.
-        from agentshore import core as _core_pkg
-
-        store: DataStore = _core_pkg.DataStore(db_path)
+        # Tests patch ``agentshore.core.phases.DataStore`` to intercept construction.
+        store: DataStore = DataStore(db_path)
         await store.initialize()
         return store
 
@@ -117,12 +116,10 @@ async def _phase_init_executor(
 
     Returns ``(manager, gh, executor, registry)``.
     """
-    # Look up patchable symbols via the agentshore.core package so tests that
-    # ``patch("agentshore.core.AgentManager", ...)`` etc. intercept them.
-    from agentshore import core as _core_pkg
-
+    # Tests patch these symbols on ``agentshore.core.phases`` (their binding
+    # home) to intercept construction.
     async with _step("init_manager"):
-        manager = _core_pkg.AgentManager(
+        manager = AgentManager(
             session_id=sid,
             store=store,
             cfg=cfg,
@@ -137,11 +134,11 @@ async def _phase_init_executor(
         gh = GitHubAdapter(store=store, session_id=sid, cfg=cfg)
 
     async with _step("init_executor"):
-        registry = _core_pkg.build_default_registry(cfg)
-        resolver = _core_pkg.ParameterResolver(
+        registry = build_default_registry(cfg)
+        resolver = ParameterResolver(
             store=store, manager=manager, cfg=cfg, github=gh, project_path=repo_root
         )
-        executor = _core_pkg.PlayExecutor(
+        executor = PlayExecutor(
             registry=registry,
             resolver=resolver,
             store=store,
@@ -624,12 +621,9 @@ async def _clear_session_scoped_bead_progress(
 async def _phase_clear_beads_in_progress(*, repo_root: Path, sid: str) -> None:
     """Clear stale beads progress before the first session state snapshot."""
     async with _step("clear_beads_in_progress"):
-        # Dispatch via the package attribute so tests that
-        # ``patch("agentshore.core._clear_session_scoped_bead_progress", ...)``
-        # intercept the call.
-        from agentshore import core as _core_pkg
-
-        await _core_pkg._clear_session_scoped_bead_progress(
+        # Tests patch ``agentshore.core.phases._clear_session_scoped_bead_progress``
+        # (this module's binding) to intercept the call.
+        await _clear_session_scoped_bead_progress(
             repo_root=repo_root,
             sid=sid,
             phase="session_start",

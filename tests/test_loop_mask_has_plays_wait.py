@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agentshore.core
 from agentshore.core import Orchestrator
 from agentshore.state import SessionState
 
@@ -68,7 +67,7 @@ def _orch() -> Orchestrator:
 @pytest.fixture
 def info_calls(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_logger = MagicMock()
-    monkeypatch.setattr(agentshore.core, "_logger", mock_logger)
+    monkeypatch.setattr("agentshore.core.mixins.loop._logger", mock_logger)
     return mock_logger.info
 
 
