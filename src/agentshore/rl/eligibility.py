@@ -578,8 +578,7 @@ class EligibilityAuthority:
         END_AGENT hands the retire decision to the PPO — it does not force one.
         """
         return any(
-            a.status == AgentStatus.ERROR
-            and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
+            a.status == AgentStatus.ERROR and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
             for a in state.agents
         )
 
@@ -905,19 +904,19 @@ def compute_config_mask(
     blocked_auth_configs: set[tuple[str, str, str | None]] = set()
     blocked_model_configs: set[tuple[str, str, str | None]] = set()
     for a in state.agents:
-        if a.status.value == "terminated":
+        if a.status == AgentStatus.TERMINATED:
             continue
         tier = a.model_tier or "medium"
         key = (a.agent_type.value, tier)
         if a.status == AgentStatus.IDLE:
             idle_configs.add(key)
-        if a.status.value == "error" and a.last_error_class == "auth":
+        if a.status == AgentStatus.ERROR and a.last_error_class == "auth":
             blocked_auth_configs.add((a.agent_type.value, tier, a.github_identity))
             continue
-        if a.status.value == "error" and a.last_error_class == "invalid_model":
+        if a.status == AgentStatus.ERROR and a.last_error_class == "invalid_model":
             blocked_model_configs.add((a.agent_type.value, tier, a.model))
             continue
-        if a.status.value == "error" and a.last_error_class != "rate_limit":
+        if a.status == AgentStatus.ERROR and a.last_error_class != "rate_limit":
             continue
         counts[key] = counts.get(key, 0) + 1
 

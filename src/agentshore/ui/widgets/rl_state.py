@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING
 from textual.reactive import reactive
 from textual.widget import Widget
 
+from agentshore.ui.play_labels import play_label
+
 if TYPE_CHECKING:
-    from agentshore.state import OrchestratorState, PlayType
+    from agentshore.state import OrchestratorState
 
 
 class RLStateBar(Widget):
@@ -36,10 +38,10 @@ class RLStateBar(Widget):
         loop_level = loop_level_for_streak(s.same_type_failure_streak)
         loop_line = ""
         if loop_level == 1 and s.last_play_type is not None:
-            play_name = display_play(s.last_play_type)
+            play_name = play_label(s.last_play_type)
             loop_line = f"\n  ⚠ Loop: {play_name} failed {s.same_type_failure_streak}x"
         elif loop_level == 2 and s.last_play_type is not None:
-            play_name = display_play(s.last_play_type)
+            play_name = play_label(s.last_play_type)
             loop_line = f"\n  ⚠ Loop: {play_name} blocked ({s.same_type_failure_streak}x fail)"
         return (
             f"  state={s.session_state.value}  policy={s.policy_mode.value}  "
@@ -71,7 +73,3 @@ def loop_level_for_streak(streak: int) -> int:
     if streak >= 3:
         return 1
     return 0
-
-
-def display_play(play_type: PlayType) -> str:
-    return play_type.value.replace("_", " ").title()

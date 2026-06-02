@@ -1,23 +1,11 @@
 """Adapter functions that translate AgentShore engine events into JSON-RPC
 notifications on the sidecar stdio transport.
 
-Three notification builders live in ``server.py``:
-
-* :func:`build_session_completed_notification`
-* :func:`build_agent_subprocess_spawned_notification`
-* :func:`build_agent_subprocess_exited_notification`
-
-The Orchestrator and ``AgentManager`` produce events with a different
-shape (e.g. ``AgentManager`` exposes ``on_subprocess_spawned`` as an
-async callback taking ``agent_id``, ``AgentType``, ``pid``). This module
-sits between them, turning each engine-side event into the JSON-RPC
-payload shape so the Rust supervisor can react.
-
-Currently the connectors are not invoked anywhere — the orchestrator
-boot path that constructs an ``AgentManager`` inside the sidecar process
-is still deferred (DESIGN §5.1 / desktop-0vc.11.2). They live here as
-self-contained adapters with tests so that wiring is straightforward
-once the orchestrator boot lands.
+The Orchestrator's natural-exit hook fires the emitters built here so the
+sidecar can fan the result out over its stdio JSON-RPC transport. Both
+emitters in this module are live: :func:`build_session_completed_emitter`
+and :func:`build_esr_ready_emitter` are wired into
+``session_lifecycle._start_orchestrator``.
 """
 
 from __future__ import annotations
@@ -25,53 +13,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.sidecar.server import (
-    build_agent_subprocess_exited_notification,
-    build_agent_subprocess_spawned_notification,
     build_esr_ready_notification,
     build_session_completed_notification,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from agentshore.sidecar.server import JsonRpcNotification
-    from agentshore.state import AgentType
-
-
-def build_agent_subprocess_callbacks(
-    notify: Callable[[JsonRpcNotification], None],
-) -> tuple[
-    Callable[[str, AgentType, int], Awaitable[None]],
-    Callable[[str, AgentType, int, int | None], Awaitable[None]],
-]:
-    """Return ``(on_spawned, on_exited)`` callbacks for ``AgentManager``.
-
-    Each callback receives the AgentManager-side event signature and
-    forwards it through ``notify`` as the JSON-RPC notification shape
-    documented in DESIGN §5.1. ``agent_type.value`` is the wire format
-    (a stable string like ``"claude_code"``, ``"codex"``, etc.).
-    """
-
-    async def on_spawned(agent_id: str, agent_type: AgentType, pid: int) -> None:
-        notify(
-            build_agent_subprocess_spawned_notification(
-                agent_id=agent_id, agent_type=agent_type.value, pid=pid
-            )
-        )
-
-    async def on_exited(
-        agent_id: str, agent_type: AgentType, pid: int, exit_code: int | None
-    ) -> None:
-        notify(
-            build_agent_subprocess_exited_notification(
-                agent_id=agent_id,
-                agent_type=agent_type.value,
-                pid=pid,
-                exit_code=exit_code,
-            )
-        )
-
-    return on_spawned, on_exited
 
 
 def build_session_completed_emitter(

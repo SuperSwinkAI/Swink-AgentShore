@@ -174,6 +174,20 @@ class WorkClaimRecord:
 
 
 @dataclass(slots=True)
+class DispatchReplayRecord:
+    """Row in the ``dispatch_replay`` table — a deterministic retry payload."""
+
+    session_id: str
+    claim_group_id: str
+    play_id: int
+    skill_name: str
+    params_json: str
+    prompt: str
+    created_at: str
+    branch: str | None = None
+
+
+@dataclass(slots=True)
 class ScopeDriftRecord:
     """Row in the ``scope_drift_log`` table."""
 

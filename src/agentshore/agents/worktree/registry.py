@@ -93,11 +93,6 @@ async def list_orphans(store: DataStore, *, current_session_id: str) -> list[Wor
     return await store.list_orphan_worktrees(current_session_id=current_session_id)
 
 
-async def all_known_worktree_paths(store: DataStore) -> set[str]:
-    """Every ``worktree_path`` recorded in any row, any status, any session."""
-    return await store.all_known_worktree_paths()
-
-
 async def live_worktree_paths(store: DataStore) -> set[str]:
     """Worktree paths from rows in non-terminal status across all sessions."""
     return await store.live_worktree_paths()
@@ -149,7 +144,6 @@ __all__ = [
     "WorktreeAllocationConflict",
     "WorktreeRow",
     "WorktreeStatus",
-    "all_known_worktree_paths",
     "insert_worktree",
     "list_active",
     "list_orphans",

@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING
 from agentshore.data.models import (
     AgentRecord,
     ArchiveRecord,
+    CheckpointRecord,
+    DispatchReplayRecord,
     ExperienceRecord,
+    ExternalMutationRecord,
     GitHubIssueRecord,
     HandoffRecord,
     HumanFeedbackRecord,
@@ -343,6 +346,44 @@ def _row_to_work_claim(row: aiosqlite.Row) -> WorkClaimRecord:
         claimed_at=row["claimed_at"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+    )
+
+
+def _row_to_external_mutation(row: aiosqlite.Row) -> ExternalMutationRecord:
+    return ExternalMutationRecord(
+        session_id=row["session_id"],
+        idempotency_key=row["idempotency_key"],
+        mutation_type=row["mutation_type"],
+        target=row["target"],
+        status=row["status"],
+        created_at=row["created_at"],
+        play_id=row["play_id"],
+        request_json=row["request_json"],
+        response_json=row["response_json"],
+    )
+
+
+def _row_to_checkpoint(row: aiosqlite.Row) -> CheckpointRecord:
+    return CheckpointRecord(
+        checkpoint_id=row["checkpoint_id"],
+        session_id=row["session_id"],
+        created_at=row["created_at"],
+        play_count=row["play_count"],
+        weights_path=row["weights_path"],
+        avg_reward=row["avg_reward"],
+    )
+
+
+def _row_to_dispatch_replay(row: aiosqlite.Row) -> DispatchReplayRecord:
+    return DispatchReplayRecord(
+        session_id=row["session_id"],
+        claim_group_id=row["claim_group_id"],
+        play_id=row["play_id"],
+        skill_name=row["skill_name"],
+        params_json=row["params_json"],
+        prompt=row["prompt"],
+        branch=row["branch"],
+        created_at=row["created_at"],
     )
 
 

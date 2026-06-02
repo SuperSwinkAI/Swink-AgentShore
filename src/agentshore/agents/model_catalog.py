@@ -193,5 +193,5 @@ def models_for_agent(agent_key: str, *, timeout: float = 5.0) -> list[str]:
     except RuntimeError:
         return asyncio.run(models_for_agent_async(agent_key, timeout=timeout))
 
-    _logger.debug("model_catalog.sync_call_inside_event_loop", agent_key=agent_key)
+    _logger.info("model_catalog.sync_call_inside_event_loop", agent_key=agent_key)
     return list(KNOWN_MODELS.get(agent_key, []))

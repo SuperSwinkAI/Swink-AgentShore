@@ -37,10 +37,10 @@ if TYPE_CHECKING:
 
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
-    from agentshore.data.models import ReviewQueueRecord
+    from agentshore.data.models import PullRequestRecord, ReviewQueueRecord
     from agentshore.data.store import DataStore
     from agentshore.github.adapter import GitHubAdapter
-    from agentshore.state import AgentSnapshot
+    from agentshore.state import AgentSnapshot, PullRequestSnapshot
 
 _logger = get_logger(__name__)
 
@@ -339,8 +339,7 @@ class ParameterResolver:
         terminal_error = [
             s
             for s in state.agents
-            if s.status == AgentStatus.ERROR
-            and s.last_error_class not in RECOVERABLE_ERROR_CLASSES
+            if s.status == AgentStatus.ERROR and s.last_error_class not in RECOVERABLE_ERROR_CLASSES
         ]
         if terminal_error:
             return PlayParams(agent_id=terminal_error[0].agent_id, bypass_preconditions=True)
@@ -447,11 +446,7 @@ class ParameterResolver:
             # the anti-confirmation backstop. Returning None on no idle reviewer
             # is a clean re-pick, not an eligibility rejection.
             idle_reviewers = idle_can_review_agents(state)
-            author = getattr(pr, "github_author", None)
-            reviewer = pick_reviewer_for_pr(
-                author if isinstance(author, str) else None,
-                idle_reviewers,
-            )
+            reviewer = pick_reviewer_for_pr(pr.github_author, idle_reviewers)
             if reviewer is None:
                 return None
             params = dataclasses.replace(params, target_agent_id=reviewer.agent_id)
@@ -580,7 +575,9 @@ class ParameterResolver:
             keys.append(_TRUNK_RESOURCE_KEY)
         return keys
 
-    async def _find_pr(self, state: OrchestratorState, pr_number: int) -> object | None:
+    async def _find_pr(
+        self, state: OrchestratorState, pr_number: int
+    ) -> PullRequestSnapshot | PullRequestRecord | None:
         for pr in state.pull_requests:
             if pr.pr_number == pr_number:
                 return pr

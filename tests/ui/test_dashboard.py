@@ -205,9 +205,7 @@ async def test_play_started_routes_to_active_play() -> None:
     async with app.run_test() as pilot:
         app.push_screen(MainDashboard())
         await pilot.pause()
-        app.screen.post_message(
-            OrchestratorApp.PlayStarted(PlayType.ISSUE_PICKUP, PlayParams.empty())
-        )
+        app.screen.post_message(OrchestratorApp.PlayStarted(PlayType.ISSUE_PICKUP, PlayParams()))
         await pilot.pause()
         widget = app.screen.query_one("#agent-panel", AgentPanel)
         assert widget.active_play is not None
@@ -223,7 +221,7 @@ async def test_play_completed_clears_active_and_adds_history() -> None:
         panel = app.screen.query_one("#agent-panel", AgentPanel)
         from agentshore.plays.base import PlayParams
 
-        panel.set_play_started(PlayType.ISSUE_PICKUP, PlayParams.empty())
+        panel.set_play_started(PlayType.ISSUE_PICKUP, PlayParams())
         outcome = _make_outcome()
         app.screen.post_message(OrchestratorApp.PlayCompleted(outcome))
         await pilot.pause()

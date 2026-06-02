@@ -309,9 +309,7 @@ async def test_issue_pickup_publish_reconcile_tolerates_torn_down_agent() -> Non
         tests_passed=True,
     )
     params = PlayParams(issue_number=225)
-    executor = _make_executor(
-        play=play, params=params, store=store, manager=manager, github=github
-    )
+    executor = _make_executor(play=play, params=params, store=store, manager=manager, github=github)
 
     with patch("agentshore.plays.executor.validate_scope", new_callable=AsyncMock):
         outcome = await executor.execute(

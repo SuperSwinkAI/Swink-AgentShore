@@ -15,6 +15,7 @@ from textual.widgets import Static
 
 from agentshore.config.models import PolicyMode
 from agentshore.state import PlayType
+from agentshore.ui.play_labels import play_short_label
 
 _logger = structlog.get_logger()
 
@@ -26,35 +27,6 @@ if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.state import AgentStatus, AgentType, OrchestratorState, PlayOutcome
     from agentshore.ui.screens.startup import SessionStartupScreen
-
-_PLAY_SHORT_LABEL: dict[PlayType, str] = {
-    PlayType.INSTANTIATE_AGENT: "Instantiate",
-    PlayType.UNBLOCK_PR: "Unblock",
-    PlayType.WRITE_IMPLEMENTATION_PLAN: "Plan",
-    PlayType.END_AGENT: "EndAgent",
-    PlayType.ISSUE_PICKUP: "Pickup",
-    PlayType.CODE_REVIEW: "Review",
-    PlayType.MERGE_PR: "Merge",
-    PlayType.RUN_QA: "QA",
-    PlayType.SYSTEMATIC_DEBUGGING: "Debug",
-    PlayType.DESIGN_AUDIT: "Audit",
-    PlayType.END_SESSION: "EndSession",
-    PlayType.RECONCILE_STATE: "Reconcile",
-    PlayType.REFINE_TASK_BREAKDOWN: "Refine",
-    PlayType.CLEANUP: "Cleanup",
-    PlayType.BROWSER_VERIFICATION: "Browser",
-    PlayType.TAKE_BREAK: "Break",
-    PlayType.GROOM_BACKLOG: "Groom",
-    PlayType.SEED_PROJECT: "Seed",
-    PlayType.CALIBRATE_ALIGNMENT: "Calibrate",
-    PlayType.PRUNE: "Prune",
-    PlayType.FUTURE_7: "Reserved",
-    PlayType.FUTURE_8: "Reserved",
-}
-
-
-def _short_play_label(pt: PlayType) -> str:
-    return _PLAY_SHORT_LABEL.get(pt, pt.value.title())
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +438,7 @@ class OrchestratorApp(App[None]):
             )
             if play_type_str is not None:
                 try:
-                    source = f"{_short_play_label(PlayType(play_type_str))} #{e.source_play_id}"
+                    source = f"{play_short_label(PlayType(play_type_str))} #{e.source_play_id}"
                 except ValueError:
                     source = f"#{e.source_play_id}"
             else:

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.models import CheckpointRecord, ExperienceRecord
-from agentshore.data.store.rows import _row_to_experience
+from agentshore.data.store.rows import _row_to_checkpoint, _row_to_experience
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     import aiosqlite
+
+    from agentshore.data.models import CheckpointRecord, ExperienceRecord
 
 
 class _RLMixin:
@@ -85,14 +86,7 @@ class _RLMixin:
                 row = await cursor.fetchone()
         if row is None:
             return None
-        return CheckpointRecord(
-            checkpoint_id=row["checkpoint_id"],
-            session_id=row["session_id"],
-            created_at=row["created_at"],
-            play_count=row["play_count"],
-            weights_path=row["weights_path"],
-            avg_reward=row["avg_reward"],
-        )
+        return _row_to_checkpoint(row)
 
     async def iter_experience_for_replay(
         self,
@@ -139,3 +133,20 @@ class _RLMixin:
             ) as cursor:
                 async for row in cursor:
                     yield _row_to_experience(row)
+
+    async def distinct_experience_session_ids(self, action_space_version: int) -> list[str]:
+        """Return session IDs with at least one experience row at this version.
+
+        Ordered by session_id so replay enumeration is deterministic.
+        """
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT session_id
+            FROM rl_experience
+            WHERE action_space_version = ?
+            ORDER BY session_id
+            """,
+            (action_space_version,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row[0] for row in rows]

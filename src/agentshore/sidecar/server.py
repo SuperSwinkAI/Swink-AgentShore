@@ -478,29 +478,6 @@ def build_sidecar_health_notification() -> JsonRpcNotification:
     )
 
 
-def build_agent_subprocess_spawned_notification(
-    *, agent_id: str, agent_type: str, pid: int
-) -> JsonRpcNotification:
-    return notification(
-        "agent.subprocess_spawned",
-        {"agent_id": agent_id, "agent_type": agent_type, "pid": pid},
-    )
-
-
-def build_agent_subprocess_exited_notification(
-    *, agent_id: str, agent_type: str, pid: int, exit_code: int | None
-) -> JsonRpcNotification:
-    return notification(
-        "agent.subprocess_exited",
-        {
-            "agent_id": agent_id,
-            "agent_type": agent_type,
-            "pid": pid,
-            "exit_code": exit_code,
-        },
-    )
-
-
 async def _build_session_stop_response(
     req_id: int | str | None,
     raw_params: object,

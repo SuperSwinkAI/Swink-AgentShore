@@ -5,13 +5,15 @@ Full recomputation per snapshot call. Designed to complete in <50ms.
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
 
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.rl.observation import ObservationContext
-from agentshore.state import AgentPlaySpecializationSnapshot, PlayType
+from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -202,8 +204,6 @@ class MetricsEngine:
             if self._velocity_provider is not None
             else 0.0
         )
-        from agentshore.state import AgentStatus
-
         busy_count = sum(1 for a in state.agents if a.status == AgentStatus.BUSY)
 
         # Emit epic-level metrics from beads graph (Track 5).
@@ -288,12 +288,11 @@ def _build_context(
         if _play_closed_issue(p):
             issues_closed += 1
 
-    # Issue churn rate over last 10 plays
-    recent = history[-10:] if len(history) > 10 else history
-    recent_closed = sum(1 for p in recent if _play_closed_issue(p))
-    recent_created = 0  # same conservative heuristic as above
+    # Issue churn rate over the same rolling window.
+    churn_recent = history[-_ROLLING_WINDOW:] if n > _ROLLING_WINDOW else history
+    recent_closed = sum(1 for p in churn_recent if _play_closed_issue(p))
     total_issues = len(state.open_issues)
-    issue_churn_rate = (recent_closed + recent_created) / max(1, total_issues)
+    issue_churn_rate = recent_closed / max(1, total_issues)
 
     # Time-since metrics (seconds from last matching play)
     last = history[-1] if history else None
@@ -305,21 +304,17 @@ def _build_context(
     # Any BUSY agent resets to 0 — work in progress is not stagnation.
     # With no agents the session can't make progress either, so the same
     # wall-clock-since-last-play rule applies.
-    from agentshore.state import AgentStatus as _AgentStatus
-
-    any_busy = any(a.status == _AgentStatus.BUSY for a in state.agents)
+    any_busy = any(a.status == AgentStatus.BUSY for a in state.agents)
     if any_busy:
         stagnation = 0
     else:
-        import time as _time
-
         latest_end = 0.0
         for p in history:
             if p.ended_at:
                 ts = _parse_iso_seconds(p.ended_at)
                 if ts > latest_end:
                     latest_end = ts
-        stagnation = max(0, int((_time.time() - latest_end) // 60)) if latest_end > 0.0 else 0
+        stagnation = max(0, int((time.time() - latest_end) // 60)) if latest_end > 0.0 else 0
 
     # Cluster drift: per-epic imbalance (std-dev of closure ratios across epics).
     # High drift means uneven progress — one epic racing ahead while others stall.
@@ -413,8 +408,6 @@ def _parse_iso_seconds(ts: str | None) -> float:
     if not ts:
         return 0.0
     try:
-        from datetime import UTC, datetime
-
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)

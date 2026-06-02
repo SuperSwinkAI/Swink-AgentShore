@@ -513,24 +513,10 @@ class _SnapshotsMixin(_OrchestratorBase):
             successful = int(bucket["successful"])
             failed = int(bucket["failed"])
             play_type: PlayType | str
-            with suppress(ValueError):
+            try:
                 play_type = PlayType(raw_play_type)
-                rows.append(
-                    PlayTypeStatsSnapshot(
-                        play_type=play_type,
-                        total=total,
-                        successful=successful,
-                        failed=failed,
-                        success_rate=successful / total if total else 0.0,
-                        total_cost=float(bucket["total_cost"]),
-                        avg_duration_seconds=(
-                            float(bucket["total_duration_seconds"]) / total if total else 0.0
-                        ),
-                    )
-                )
-                continue
-
-            play_type = raw_play_type
+            except ValueError:
+                play_type = raw_play_type
             rows.append(
                 PlayTypeStatsSnapshot(
                     play_type=play_type,

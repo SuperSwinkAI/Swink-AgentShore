@@ -72,11 +72,6 @@ class OverrideEntry:
     requeue_attempts: int = 0
     wait_for_play_type: PlayType | None = field(default=None)
 
-    @property
-    def as_tuple(self) -> tuple[PlayType, PlayParams]:
-        """Legacy 2-tuple view for code paths not yet migrated."""
-        return self.play_type, self.params
-
     def with_bumped_attempts(self) -> OverrideEntry:
         """Return a copy with ``requeue_attempts`` incremented by 1.
 

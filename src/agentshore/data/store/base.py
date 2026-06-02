@@ -18,6 +18,23 @@ _TERMINAL_WORK_CLAIM_STATUSES = frozenset(
 )
 
 
+def _status_in_clause(
+    statuses: frozenset[str], *, column: str = "status"
+) -> tuple[str, tuple[str, ...]]:
+    """Build a ``status IN (?, ?, …)`` fragment and its ordered bind params.
+
+    Returns ``(clause, params)`` so callers splice the fragment into an
+    f-string and pass ``*params`` in the same position — collapsing the
+    hand-rolled ``",".join("?" for _ in …)`` placeholder builders repeated
+    across the work-claims mixin. ``statuses`` is a frozenset, so the
+    placeholder count and the param tuple are derived from one ordering and
+    cannot drift apart.
+    """
+    ordered = tuple(statuses)
+    placeholders = ", ".join("?" for _ in ordered)
+    return f"{column} IN ({placeholders})", ordered
+
+
 class _DataStoreBase:
     """Holds the aiosqlite connection plus the ``_conn`` accessor.
 

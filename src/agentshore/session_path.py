@@ -162,14 +162,19 @@ def _project_hash(project_path: Path) -> str:
 
 
 def session_dir(project_path: Path) -> Path:
-    """Return ``~/.config/swink/agentshore/sessions/<hash>/`` for the given project."""
+    """Return ``<GLOBAL_SESSIONS_DIR>/<hash>/`` for the given project.
+
+    ``GLOBAL_SESSIONS_DIR`` is the platformdirs user-config sessions directory
+    (e.g. ``~/Library/Application Support/agentshore/sessions`` on macOS), so the
+    concrete prefix is platform-dependent and not hardcoded here.
+    """
     return _SESSIONS_DIR / _project_hash(project_path.resolve())
 
 
 def session_socket_path(project_path: Path) -> Path:
     """Return the well-known socket path for a project.
 
-    ``~/.config/swink/agentshore/sessions/<hash>/socket.sock``
+    ``<GLOBAL_SESSIONS_DIR>/<hash>/socket.sock`` (see ``session_dir``).
     """
     return session_dir(project_path) / "socket.sock"
 
@@ -620,11 +625,3 @@ def cleanup_session(project_path: Path) -> None:
 
 def _process_alive(pid: int) -> bool:
     return SessionProcessController._process_alive(pid)
-
-
-def _signal_group(pid: int, sig: int) -> None:
-    SessionProcessController._signal_group(pid, sig)
-
-
-def _terminate_process_tree(pid: int, *, force: bool) -> None:
-    SessionProcessController._terminate_process_tree(pid, force=force)

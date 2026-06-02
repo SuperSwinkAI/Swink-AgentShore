@@ -61,10 +61,6 @@ class PlayParams:
     extras: dict[str, object] = field(default_factory=dict)
     _runtime_allocation: _RuntimeAllocation = field(default=None, repr=False, compare=False)
 
-    @classmethod
-    def empty(cls) -> PlayParams:
-        return cls()
-
 
 @dataclass(slots=True)
 class PlayExecutionContext:

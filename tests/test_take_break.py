@@ -140,7 +140,7 @@ async def test_execute_returns_success():
     ctx = _make_ctx(break_duration_minutes=1)
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        outcome = await play.execute(state, PlayParams.empty(), ctx=ctx)
+        outcome = await play.execute(state, PlayParams(), ctx=ctx)
 
     mock_sleep.assert_awaited_once_with(60)
     assert outcome.success is True
@@ -231,7 +231,7 @@ async def test_execute_uses_configured_duration():
     ctx = _make_ctx(break_duration_minutes=45)
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        await play.execute(state, PlayParams.empty(), ctx=ctx)
+        await play.execute(state, PlayParams(), ctx=ctx)
 
     mock_sleep.assert_awaited_once_with(45 * 60)
 
@@ -243,7 +243,7 @@ async def test_execute_artifact_contains_duration():
     ctx = _make_ctx(break_duration_minutes=1)
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
-        outcome = await play.execute(state, PlayParams.empty(), ctx=ctx)
+        outcome = await play.execute(state, PlayParams(), ctx=ctx)
 
     assert len(outcome.artifacts) == 1
     artifact = outcome.artifacts[0]

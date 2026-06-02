@@ -183,7 +183,7 @@ class IdentityResolver:
         self._token_cache[cache_key] = token
         return token
 
-    def read_keychain_token(self, service: str, *, warn_missing: bool = True) -> str | None:
+    def read_keychain_token(self, service: str) -> str | None:
         if service in self._keychain_cache:
             return self._keychain_cache[service]
 
@@ -205,9 +205,6 @@ class IdentityResolver:
             return None
 
         if not token:
-            if not warn_missing:
-                return None
-            _logger.warning("identity_keychain_token_empty", service=service)
             return None
 
         self._keychain_cache[service] = token
@@ -365,7 +362,7 @@ class IdentityResolver:
             configured_service = ident.gh_token_keychain
             first_failure: str | None = None
             for service in _keychain_services(configured_service):
-                token = self.read_keychain_token(service, warn_missing=False)
+                token = self.read_keychain_token(service)
                 if token is None:
                     first_failure = first_failure or f"keychain {service} has no entry"
                     continue
@@ -446,8 +443,9 @@ class IdentityResolver:
             overlay["GH_TOKEN"] = resolution.token
             overlay["GITHUB_TOKEN"] = resolution.token
 
-        if ident.gh_config_dir:
-            overlay["GH_CONFIG_DIR"] = _expanded_gh_config_dir(ident.gh_config_dir) or ""
+        expanded_config_dir = _expanded_gh_config_dir(ident.gh_config_dir)
+        if expanded_config_dir:
+            overlay["GH_CONFIG_DIR"] = expanded_config_dir
         else:
             overlay["GH_CONFIG_DIR"] = str(_isolated_gh_config_dir(name))
 

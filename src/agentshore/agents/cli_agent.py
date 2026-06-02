@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-type _ReadOutputResult = tuple[str, int, int, int, int, int, int, str | None]
 
 _DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
@@ -255,6 +254,13 @@ class _UsageTotals:
     cache_write_tokens_in: int = 0
     turn_count: int = 0
     max_turn_input_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadOutput:
+    raw: str
+    usage: _UsageTotals
+    session_id: str | None
 
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
@@ -532,16 +538,11 @@ async def dispatch_cli(
             read_result = await read_task
             if isinstance(read_result, _ReadOutputFailed):
                 raise read_result.exc
-            (
-                raw_output,
-                tokens_in,
-                tokens_out,
-                cached_tokens_in,
-                cache_write_tokens_in,
-                turn_count,
-                max_turn_input_tokens,
-                observed_session_id,
-            ) = read_result
+            raw_output, usage, observed_session_id = (
+                read_result.raw,
+                read_result.usage,
+                read_result.session_id,
+            )
         else:
             idle_exc = idle_task.exception()
             if idle_exc is None:
@@ -575,16 +576,11 @@ async def dispatch_cli(
 
             if isinstance(read_result, _ReadOutputFailed):
                 raise read_result.exc
-            (
-                raw_output,
-                tokens_in,
-                tokens_out,
-                cached_tokens_in,
-                cache_write_tokens_in,
-                turn_count,
-                max_turn_input_tokens,
-                observed_session_id,
-            ) = read_result
+            raw_output, usage, observed_session_id = (
+                read_result.raw,
+                read_result.usage,
+                read_result.session_id,
+            )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
         _observed_session_id = observed_session_id
@@ -654,22 +650,22 @@ async def dispatch_cli(
         )
 
     dollar_cost = estimate_cost(
-        tokens_in,
-        tokens_out,
+        usage.tokens_in,
+        usage.tokens_out,
         cfg,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
     )
     _logger.info(
         "cli_dispatch_done",
         agent_id=handle.agent_id,
         duration_ms=duration_ms,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
-        turn_count=turn_count,
-        max_turn_input_tokens=max_turn_input_tokens,
+        tokens_in=usage.tokens_in,
+        tokens_out=usage.tokens_out,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
+        turn_count=usage.turn_count,
+        max_turn_input_tokens=usage.max_turn_input_tokens,
         dollar_cost=dollar_cost,
         prompt_bytes=prompt_bytes,
         output_length=len(raw_output),
@@ -678,12 +674,12 @@ async def dispatch_cli(
     _close_process_transport(proc)
     return AgentInvocationResult(
         raw_output=raw_output,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
-        turn_count=turn_count,
-        max_turn_input_tokens=max_turn_input_tokens,
+        tokens_in=usage.tokens_in,
+        tokens_out=usage.tokens_out,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
+        turn_count=usage.turn_count,
+        max_turn_input_tokens=usage.max_turn_input_tokens,
         dollar_cost=dollar_cost,
         duration_ms=duration_ms,
         exit_code=rc or 0,
@@ -704,7 +700,7 @@ async def _read_output(
     line_limit: int,
     agent_id: str,
     stdout_activity: _StdoutActivity | None = None,
-) -> _ReadOutputResult:
+) -> _ReadOutput:
     """Stream stdout, accumulate output, extract token metadata.
 
     Returns raw text, billable token buckets, lightweight turn metrics, and
@@ -773,16 +769,7 @@ async def _read_output(
         session_id = None
 
     await proc.wait()
-    return (
-        raw,
-        usage.tokens_in,
-        usage.tokens_out,
-        usage.cached_tokens_in,
-        usage.cache_write_tokens_in,
-        usage.turn_count,
-        usage.max_turn_input_tokens,
-        session_id,
-    )
+    return _ReadOutput(raw=raw, usage=usage, session_id=session_id)
 
 
 async def _read_output_guarded(
@@ -793,7 +780,7 @@ async def _read_output_guarded(
     line_limit: int,
     agent_id: str,
     stdout_activity: _StdoutActivity,
-) -> _ReadOutputResult | _ReadOutputFailed:
+) -> _ReadOutput | _ReadOutputFailed:
     try:
         return await _read_output(
             proc,
@@ -1226,7 +1213,7 @@ def _first_int(values: dict[str, object], *keys: str) -> int:
 def _safe_int(value: object) -> int:
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, int | float | str | bytes | bytearray):
+    if isinstance(value, int | float | str):
         try:
             return int(value)
         except ValueError:
