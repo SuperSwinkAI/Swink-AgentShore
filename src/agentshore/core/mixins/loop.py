@@ -1064,12 +1064,10 @@ class _LoopMixin(_OrchestratorBase):
             return False
         # NO await — continue loop
 
-        # Efficient wait if tasks in flight. Look up the timeout via
-        # agentshore.core so tests that patch the constant take effect.
+        # Efficient wait if tasks in flight. Tests patch the module-local
+        # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS`` constant.
         if self._in_flight:
-            from agentshore import core as _core_pkg
-
-            await self._wait_for_in_flight(timeout=_core_pkg.AGENT_PING_TIMEOUT_SECONDS)
+            await self._wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
         elif not self._in_flight:
             return True  # truly idle
 

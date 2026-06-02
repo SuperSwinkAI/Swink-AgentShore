@@ -142,7 +142,7 @@ async def test_pause_clears_event(tmp_path: Path) -> None:
 
 def test_assemble_state_reports_paused_when_pause_event_cleared(tmp_path: Path) -> None:
     """Authoritative snapshots reflect pause state even before the next play."""
-    from agentshore.core import _StateData
+    from agentshore.core.context import _StateData
 
     orch = _make_orch(tmp_path)
     orch._manager.handles = {}

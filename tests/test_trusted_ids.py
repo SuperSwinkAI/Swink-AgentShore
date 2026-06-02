@@ -17,7 +17,7 @@ from agentshore.config import (
     TrustedIdsConfig,
     load_config,
 )
-from agentshore.core import _phase_fetch_github
+from agentshore.core.phases import _phase_fetch_github
 from agentshore.data.models import PullRequestRecord
 from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
 from agentshore.plays.resolver import ParameterResolver

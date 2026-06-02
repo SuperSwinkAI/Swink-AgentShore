@@ -57,7 +57,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig) -> Any:
 async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
@@ -438,7 +438,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
     """Skipped plays are observability events, not completed agent plays or PPO samples."""
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     class Provider:
         def __init__(self) -> None:
@@ -489,7 +489,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
 async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
@@ -533,7 +533,7 @@ async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Pat
 async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)

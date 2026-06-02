@@ -297,11 +297,11 @@ class _DrainMixin(_OrchestratorBase):
         _logger.info("shutdown_step", step="abandon_orphaned_work", elapsed_ms=_ms(t))
 
         t = time.perf_counter()
-        # Look up via the package so tests that ``patch("agentshore.core.
-        # _clear_session_scoped_bead_progress", ...)`` intercept it.
-        from agentshore import core as _core_pkg
+        # Tests patch ``agentshore.core.phases._clear_session_scoped_bead_progress``
+        # (its binding home) to intercept this.
+        from agentshore.core import phases
 
-        reset_count = await _core_pkg._clear_session_scoped_bead_progress(
+        reset_count = await phases._clear_session_scoped_bead_progress(
             repo_root=self._repo_root,
             sid=self._session_id,
             phase="session_shutdown",

@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator, _DispatchContext
+from agentshore.core import Orchestrator
+from agentshore.core.context import _DispatchContext
 from agentshore.plays.base import PlayParams
 from agentshore.state import (
     AgentStatus,
