@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
@@ -88,12 +89,9 @@ class _DispatchMixin(_OrchestratorBase):
     _registry: object | None
 
     _last_selection_digest: bytes | None
-    # desktop-kqo5: shared with _CompletionMixin via the base class. Pre-play
-    # symbolic ref snapshot keyed by dispatch_id, plus the cached default
-    # branch resolved at session start.
-    _pre_play_branches: dict[str, str | None]
-    _default_branch: str
-    _main_repo_dispatch_paused: bool
+    # desktop-kqo5: main-repo branch guard (default branch + pre-play handshake
+    # + dispatch-pause latch), shared with _CompletionMixin via the base class.
+    _main_repo: MainRepoGuard
 
     # ------------------------------------------------------------------
 
@@ -496,7 +494,7 @@ class _DispatchMixin(_OrchestratorBase):
         # catch-22 that wedged the loop. Letting it through lets the session
         # self-heal a conflicted trunk; a successful reconcile clears the latch
         # (see _check_main_repo_invariant).
-        if self._main_repo_dispatch_paused and play_type not in (
+        if self._main_repo.dispatch_paused and play_type not in (
             PlayType.END_AGENT,
             PlayType.RECONCILE_STATE,
         ):
@@ -712,7 +710,7 @@ class _DispatchMixin(_OrchestratorBase):
                 error=str(exc),
             )
             pre_play_ref = None
-        self._pre_play_branches[dispatch_id] = pre_play_ref
+        self._main_repo.record_pre_play_branch(dispatch_id, pre_play_ref)
 
         pending: object | None = None
         if isinstance(self._selector, _ppo_selector_cls()):

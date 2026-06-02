@@ -34,6 +34,7 @@ from agentshore.agents.worktree import (
     WorktreeAllocationFailed,
 )
 from agentshore.config import AgentConfig, RuntimeConfig
+from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.base import PlayParams
@@ -318,9 +319,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         orch._store = store
         orch._cfg = cfg
         orch._repo_root = main_repo
-        orch._default_branch = "main"
-        orch._pre_play_branches = {}
-        orch._main_repo_dispatch_paused = False
+        orch._main_repo = MainRepoGuard()
         orch._draining = False
         orch._stop_requested = False
         orch._end_session_dispatch_started = False

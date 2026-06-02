@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
@@ -115,9 +116,7 @@ def make_test_orchestrator(
     orch._fleet_idle_persistent_active = False
     orch._idle_agent_claim_ticks = {}
     orch._last_refresh_time = float("inf")
-    orch._default_branch = "main"
-    orch._pre_play_branches = {}
-    orch._main_repo_dispatch_paused = False
+    orch._main_repo = MainRepoGuard()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
     orch._refresh_issues = AsyncMock()

@@ -14,6 +14,7 @@ import contextlib
 
 import pytest
 
+from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.mixins.loop import _WEDGED_IDLE_STOP_TICKS
 from agentshore.core.orchestrator import Orchestrator
 from agentshore.state import OrchestratorState, SessionState
@@ -22,7 +23,8 @@ from agentshore.state import OrchestratorState, SessionState
 def _harness(*, paused: bool, in_flight: bool, ticks: int) -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch._session_id = "t"
-    orch._main_repo_dispatch_paused = paused
+    orch._main_repo = MainRepoGuard()
+    orch._main_repo.dispatch_paused = paused
     orch._in_flight = {"a": object()} if in_flight else {}  # type: ignore[dict-item]
     orch._wedged_idle_ticks = ticks
     orch._draining = False

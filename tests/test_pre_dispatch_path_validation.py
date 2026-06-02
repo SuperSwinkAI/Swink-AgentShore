@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 
+from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import PlayType
@@ -55,9 +56,7 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     orch = Orchestrator.__new__(Orchestrator)
     orch._session_id = "test-pre-dispatch"
     orch._repo_root = Path("/tmp/fake-repo")
-    orch._default_branch = "main"
-    orch._pre_play_branches = {}
-    orch._main_repo_dispatch_paused = False
+    orch._main_repo = MainRepoGuard()
     orch._draining = False
     orch._stop_requested = False
     orch._end_session_dispatch_started = False

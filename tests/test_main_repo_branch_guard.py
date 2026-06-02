@@ -24,6 +24,7 @@ from agentshore.core.git_safety import (
     resolve_default_branch,
     restore_default_branch,
 )
+from agentshore.core.main_repo_guard import MainRepoGuard
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -181,9 +182,7 @@ class _CompletionGuardHarness:
         orch = Orchestrator.__new__(Orchestrator)
         orch._repo_root = repo_root
         orch._session_id = "test-session"
-        orch._default_branch = default_branch
-        orch._pre_play_branches = {}
-        orch._main_repo_dispatch_paused = False
+        orch._main_repo = MainRepoGuard(default_branch=default_branch)
         orch._manager = _StubManager()  # type: ignore[assignment]
         self.orch = orch
 
@@ -225,7 +224,7 @@ async def test_code_review_mutating_main_triggers_warning_and_restore(
 
     harness = _CompletionGuardHarness(repo_root=main_repo)
     dispatch_id = "d-code-review-mutates"
-    harness.orch._pre_play_branches[dispatch_id] = "refs/heads/main"
+    harness.orch._main_repo.record_pre_play_branch(dispatch_id, "refs/heads/main")
 
     # Agent mutated the repo during the play.
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
@@ -248,13 +247,13 @@ async def test_code_review_mutating_main_triggers_warning_and_restore(
     # Auto-restore happened.
     assert current_head_ref(main_repo) == "refs/heads/main"
     # Snapshot consumed.
-    assert dispatch_id not in harness.orch._pre_play_branches
+    assert dispatch_id not in harness.orch._main_repo._pre_play_branches
     event_names = _event_names(captured)
     assert "main_repo_branch_mutated" in event_names
     assert "main_repo_branch_restored" in event_names
     assert "main_repo_auto_restore_failed" not in event_names
     # Dispatch should NOT be paused on a successful restore.
-    assert harness.orch._main_repo_dispatch_paused is False
+    assert harness.orch._main_repo.dispatch_paused is False
     # The mutated event carries identity for the operator.
     mutated_event = next(e for e in captured if e.get("event") == "main_repo_branch_mutated")
     assert mutated_event["play_type"] == "code_review"
@@ -296,7 +295,7 @@ async def test_detached_head_post_play_is_treated_as_mutation(
 
     harness = _CompletionGuardHarness(repo_root=main_repo)
     dispatch_id = "d-detached"
-    harness.orch._pre_play_branches[dispatch_id] = "refs/heads/main"
+    harness.orch._main_repo.record_pre_play_branch(dispatch_id, "refs/heads/main")
 
     _git(["checkout", "--detach", "HEAD"], main_repo)
     assert current_head_ref(main_repo) is None
@@ -331,7 +330,7 @@ async def test_auto_restore_failure_pauses_dispatch(
 
     harness = _CompletionGuardHarness(repo_root=main_repo)
     dispatch_id = "d-restore-fails"
-    harness.orch._pre_play_branches[dispatch_id] = "refs/heads/main"
+    harness.orch._main_repo.record_pre_play_branch(dispatch_id, "refs/heads/main")
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
 
     def _broken_check(*_a: object, **_kw: object) -> tuple[bool, str | None, bool]:
@@ -351,5 +350,5 @@ async def test_auto_restore_failure_pauses_dispatch(
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
-    assert harness.orch._main_repo_dispatch_paused is True
+    assert harness.orch._main_repo.dispatch_paused is True
     assert "main_repo_auto_restore_failed" in _event_names(captured)
