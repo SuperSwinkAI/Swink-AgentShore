@@ -920,6 +920,26 @@ def _phase_queue_agent_instantiation(
     first-play-completion gates that PPO selections still see.
     """
 
+    def _enqueue_instantiate(
+        agent_type: AgentType,
+        tier: str,
+        *,
+        wait_for_play_type: PlayType | None = None,
+    ) -> None:
+        orch._overrides.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.INSTANTIATE_AGENT,
+                params=PlayParams(
+                    target_agent_type=agent_type.value,
+                    target_model_tier=tier,
+                    bypass_preconditions=True,
+                ),
+                kind=OverrideKind.BOOTSTRAP,
+                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+                wait_for_play_type=wait_for_play_type,
+            )
+        )
+
     def _first_enabled_for_tier(
         tier: str,
         *,
@@ -961,18 +981,7 @@ def _phase_queue_agent_instantiation(
             large_agent_type=large_agent_type.value if large_agent_type is not None else None,
         )
         if large_agent_type is not None:
-            orch._overrides.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=large_agent_type.value,
-                        target_model_tier="large",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                )
-            )
+            _enqueue_instantiate(large_agent_type, "large")
         return
 
     first_play_type = PlayType.SEED_PROJECT
@@ -988,18 +997,7 @@ def _phase_queue_agent_instantiation(
     try:
         large_agent_type = _first_enabled_for_tier("large")
         if large_agent_type is not None:
-            orch._overrides.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=large_agent_type.value,
-                        target_model_tier="large",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                )
-            )
+            _enqueue_instantiate(large_agent_type, "large")
 
         first_play_params = PlayParams(
             seed_path=str(seed_path),
@@ -1023,19 +1021,7 @@ def _phase_queue_agent_instantiation(
             # issue #569: gate the medium spawn behind the first-play (cleanup
             # or seed_project) completing — both touch trunk and need exclusive
             # access. bypass_preconditions still skips the instantiate cooldown.
-            orch._overrides.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=medium_agent_type.value,
-                        target_model_tier="medium",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                    wait_for_play_type=first_play_type,
-                )
-            )
+            _enqueue_instantiate(medium_agent_type, "medium", wait_for_play_type=first_play_type)
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         _logger.info(

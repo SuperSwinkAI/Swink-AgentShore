@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.data.store import ArchiveRecord
     from agentshore.plays.selector import PlaySelector
     from agentshore.state import (
         PlayOutcome,
@@ -386,3 +387,45 @@ class Orchestrator(_OrchestratorBase):
         orch.run_until_idle()``); forwards to the owned :class:`LoopRunner`.
         """
         await self._loop.run_until_idle()
+
+    async def refresh_issues(self) -> None:
+        """Re-fetch GitHub issues and update the completion cache."""
+        await self._completion.refresh_issues()
+
+    def in_flight_ids(self) -> list[str]:
+        """Return the dispatch ids of currently in-flight play tasks."""
+        return list(self._in_flight.keys())
+
+    async def abort_in_flight(self) -> None:
+        """Cancel all in-flight play tasks.
+
+        The orchestrator loop picks up new work on the next iteration.
+        """
+        for task in list(self._in_flight.values()):
+            task.cancel()
+
+    async def generate_report(self, report_type: str) -> None:
+        """Generate a progress or session-summary report for this session."""
+        from agentshore.paths import project_reports_dir
+        from agentshore.reports.generator import ReportGenerator
+
+        gen = ReportGenerator(self._store)
+        output_dir = project_reports_dir(self._repo_root)
+        if report_type == "progress":
+            await gen.generate_progress_report(self._session_id, output_dir)
+        else:
+            await gen.generate_session_summary(self._session_id, output_dir)
+
+    async def archive_session(self) -> None:
+        """Create an archive of this session's database state."""
+        from agentshore.archive import Archiver
+        from agentshore.paths import project_archive_dir
+
+        archive_dir = project_archive_dir(self._repo_root)
+        db_path = project_db_path(self._repo_root)
+        archiver = Archiver(self._store, archive_dir)
+        await archiver.create_archive(self._session_id, db_path=db_path)
+
+    async def list_archives(self) -> list[ArchiveRecord]:
+        """Return all archive records recorded for this project."""
+        return await self._store.list_archives()

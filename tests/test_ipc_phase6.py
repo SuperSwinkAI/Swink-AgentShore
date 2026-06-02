@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,72 +11,40 @@ from agentshore.cli import _dispatch_command
 
 @pytest.mark.asyncio()
 async def test_dispatch_generate_report_summary() -> None:
-    """generate_report with default type calls generate_session_summary."""
+    """generate_report with default type routes to Orchestrator.generate_report('summary')."""
     orch = MagicMock()
-    orch._store = MagicMock()
-    orch._repo_root = Path("/tmp/test")
-    orch._session_id = "test-session"
-
-    with patch("agentshore.reports.generator.ReportGenerator") as mock_gen_cls:
-        mock_gen = AsyncMock()
-        mock_gen_cls.return_value = mock_gen
-        await _dispatch_command({"command": "generate_report"}, orch)
-        mock_gen.generate_session_summary.assert_called_once_with(
-            "test-session",
-            Path("/tmp/test/.agentshore/reports"),
-        )
+    orch.generate_report = AsyncMock()
+    await _dispatch_command({"command": "generate_report"}, orch)
+    orch.generate_report.assert_awaited_once_with("summary")
 
 
 @pytest.mark.asyncio()
 async def test_dispatch_generate_report_progress() -> None:
-    """generate_report with report_type=progress calls generate_progress_report."""
+    """generate_report with report_type=progress routes the type through to the orchestrator."""
     orch = MagicMock()
-    orch._store = MagicMock()
-    orch._repo_root = Path("/tmp/test")
-    orch._session_id = "test-session"
-
-    with patch("agentshore.reports.generator.ReportGenerator") as mock_gen_cls:
-        mock_gen = AsyncMock()
-        mock_gen_cls.return_value = mock_gen
-        await _dispatch_command({"command": "generate_report", "report_type": "progress"}, orch)
-        mock_gen.generate_progress_report.assert_called_once_with(
-            "test-session",
-            Path("/tmp/test/.agentshore/reports"),
-        )
+    orch.generate_report = AsyncMock()
+    await _dispatch_command({"command": "generate_report", "report_type": "progress"}, orch)
+    orch.generate_report.assert_awaited_once_with("progress")
 
 
 @pytest.mark.asyncio()
 async def test_dispatch_archive_session() -> None:
-    """archive_session creates an Archiver and calls create_archive."""
+    """archive_session routes to Orchestrator.archive_session()."""
     orch = MagicMock()
-    orch._store = MagicMock()
-    orch._repo_root = Path("/tmp/test")
-    orch._session_id = "test-session"
-
-    with patch("agentshore.archive.Archiver") as mock_archiver_cls:
-        mock_archiver = AsyncMock()
-        mock_archiver_cls.return_value = mock_archiver
-        await _dispatch_command({"command": "archive_session"}, orch)
-        mock_archiver_cls.assert_called_once_with(
-            orch._store,
-            Path("/tmp/test/.agentshore/archives"),
-        )
-        mock_archiver.create_archive.assert_called_once_with(
-            "test-session",
-            db_path=Path("/tmp/test/.agentshore/agentshore.db"),
-        )
+    orch.archive_session = AsyncMock()
+    await _dispatch_command({"command": "archive_session"}, orch)
+    orch.archive_session.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio()
 async def test_dispatch_list_archives() -> None:
-    """list_archives calls store.list_archives and logs the count."""
+    """list_archives routes to Orchestrator.list_archives and logs the count."""
     orch = MagicMock()
-    orch._store = MagicMock()
-    orch._store.list_archives = AsyncMock(return_value=["a1", "a2"])
+    orch.list_archives = AsyncMock(return_value=["a1", "a2"])
 
     with patch("agentshore.cli._logger") as mock_logger:
         await _dispatch_command({"command": "list_archives"}, orch)
-        orch._store.list_archives.assert_awaited_once()
+        orch.list_archives.assert_awaited_once()
         mock_logger.info.assert_called_once_with("ipc.archives_listed", count=2)
 
 
@@ -96,21 +63,33 @@ async def test_dispatch_unknown_command_ignored() -> None:
 
 @pytest.mark.asyncio()
 async def test_dispatch_rescan_issues() -> None:
-    """rescan_issues calls _refresh_issues on the orchestrator."""
+    """rescan_issues routes to Orchestrator.refresh_issues()."""
     orch = MagicMock()
-    orch._completion.refresh_issues = AsyncMock()
+    orch.refresh_issues = AsyncMock()
     await _dispatch_command({"command": "rescan_issues"}, orch)
-    orch._completion.refresh_issues.assert_awaited_once()
+    orch.refresh_issues.assert_awaited_once()
 
 
 @pytest.mark.asyncio()
-async def test_dispatch_abort_play_cancels_in_flight() -> None:
-    """abort_play cancels all in-flight play tasks."""
+async def test_dispatch_abort_play_routes_to_abort_in_flight() -> None:
+    """abort_play logs the in-flight ids and routes to Orchestrator.abort_in_flight()."""
+    orch = MagicMock()
+    orch.in_flight_ids = MagicMock(return_value=["d1", "d2"])
+    orch.abort_in_flight = AsyncMock()
+    await _dispatch_command({"command": "abort_play"}, orch)
+    orch.abort_in_flight.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio()
+async def test_abort_in_flight_cancels_tasks() -> None:
+    """Orchestrator.abort_in_flight cancels every in-flight play task."""
+    from agentshore.core.orchestrator import Orchestrator
+
     task1 = MagicMock()
     task2 = MagicMock()
-    orch = MagicMock()
+    orch = Orchestrator.__new__(Orchestrator)
     orch._in_flight = {"d1": task1, "d2": task2}
-    await _dispatch_command({"command": "abort_play"}, orch)
+    await orch.abort_in_flight()
     task1.cancel.assert_called_once()
     task2.cancel.assert_called_once()
 
@@ -163,8 +142,8 @@ async def test_dispatch_start_is_noop() -> None:
 async def test_dispatch_feedback_response_rescan_issues() -> None:
     """feedback_response with action=rescan_issues refreshes issues and resumes."""
     orch = MagicMock()
-    orch._completion.refresh_issues = AsyncMock()
+    orch.refresh_issues = AsyncMock()
     orch.resume = AsyncMock()
     await _dispatch_command({"command": "feedback_response", "action": "rescan_issues"}, orch)
-    orch._completion.refresh_issues.assert_awaited_once()
+    orch.refresh_issues.assert_awaited_once()
     orch.resume.assert_awaited_once()
