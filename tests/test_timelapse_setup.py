@@ -26,7 +26,8 @@ async def test_install_cli_uses_pinned_npm_package(
 ) -> None:
     # The installer must pull a pinned npm-registry version, not the GitHub
     # ``releases/latest`` tarball (which lagged at the broken 0.3.0 that
-    # erroneously required ``--duration``). 0.3.1 restores indefinite mode.
+    # erroneously required ``--duration``). 0.3.1+ restores indefinite mode;
+    # the pin tracks the deliberately-adopted CLI version (currently 0.4.0).
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(setup.shutil, "which", lambda _name: "/usr/bin/npm")
@@ -39,7 +40,7 @@ async def test_install_cli_uses_pinned_npm_package(
 
     await setup._install_cli(tmp_path)  # type: ignore[arg-type]
 
-    assert seen["cmd"] == ["npm", "install", "-g", "timelapse-capture@0.3.1"]
+    assert seen["cmd"] == ["npm", "install", "-g", "timelapse-capture@0.4.0"]
 
 
 async def test_install_timelapse_non_macos_returns_failure(
