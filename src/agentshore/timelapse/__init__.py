@@ -177,7 +177,13 @@ async def await_output(
                 data = json.loads(result.stdout)
             except json.JSONDecodeError:
                 data = {}
-            output_path = data.get("outputPath")
+            # timelapse-capture >=0.3.1 nests the run state under a top-level
+            # ``status`` key, so ``outputPath`` lives at ``data["status"]
+            # ["outputPath"]``. Fall back to the flat top-level key for older
+            # builds that emitted the status object directly.
+            status = data.get("status")
+            status_obj = status if isinstance(status, dict) else data
+            output_path = status_obj.get("outputPath")
             if isinstance(output_path, str) and output_path:
                 _logger.info("timelapse_rendered", run_id=run_id, output_path=output_path)
                 return output_path

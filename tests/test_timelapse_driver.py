@@ -114,6 +114,37 @@ async def test_await_output_returns_path_once_rendered(
     assert calls["n"] == 2
 
 
+async def test_await_output_reads_nested_status_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """timelapse-capture >=0.3.1 nests the run state under a ``status`` key.
+
+    Regression: the driver read a flat top-level ``outputPath`` that 0.3.1 no
+    longer emits, so await_output polled to timeout and the ESR opened nothing.
+    """
+    calls = {"n": 0}
+
+    async def fake_run(*args: str, **kwargs: object) -> CommandResult:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return _result(args, stdout=json.dumps({"status": {"state": "rendering"}}))
+        return _result(
+            args,
+            stdout=json.dumps(
+                {"status": {"state": "rendered", "outputPath": "/runs/x/output.mp4"}}
+            ),
+        )
+
+    monkeypatch.setattr(timelapse, "run_command", fake_run)
+
+    out = await timelapse.await_output(
+        "plucky-sparrow-523", tmp_path, max_polls=5, poll_interval_seconds=0
+    )
+
+    assert out == "/runs/x/output.mp4"
+    assert calls["n"] == 2
+
+
 async def test_await_output_returns_none_on_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
