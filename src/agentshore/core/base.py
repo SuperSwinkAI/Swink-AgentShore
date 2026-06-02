@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.paths import project_weights_dir
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     )
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
-    from agentshore.plays.override import OverrideEntry, OverrideKind
+    from agentshore.plays.override import OverrideEntry
     from agentshore.plays.selector import PlaySelector
     from agentshore.power import PowerAssertion
     from agentshore.rl.action_space import ConfigKey
@@ -176,10 +177,8 @@ class _OrchestratorBase:
     _policy_version: str
     _config_hash: str
     _metrics: MetricsEngine | None
-    _first_play_override: tuple[PlayType, PlayParams] | None
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _pending_override_kind: OverrideKind | None
-    _override_dispatched_play_ids: set[int]
+    # Override FIFO + first-play / pending-kind / dispatched-id latches.
+    _overrides: OverrideQueue
     _forced_mask_play_types: tuple[PlayType, ...]
     _loop_started_at: float
     _registry: object | None
@@ -286,18 +285,10 @@ class _OrchestratorBase:
         self._policy_version = "ppo-v1"
         self._config_hash = ""
         self._metrics = None
-        self._first_play_override = None
-        self._override_queue = asyncio.Queue()
-        # OverrideKind of the most-recently consumed override, set by
-        # _consume_override and read once by _dispatch_play. None means the
-        # next dispatch is PPO-selected (not an override).
-        self._pending_override_kind = None
-        # play_id values of plays that were dispatched from the override queue
-        # (bootstrap recipe, user request, retry). Used by _compute_play_streaks
-        # to skip them — they are not PPO-collapse, so they should not
-        # contribute to same_type_streak / same_type_failure_streak.
-        # Set is unbounded; in practice sessions have <10k plays.
-        self._override_dispatched_play_ids = set()
+        # Override FIFO + single-consume latches (first-play override, pending
+        # override kind, dispatched play-ids). The completion/dispatch paths
+        # write; loop/state read.
+        self._overrides = OverrideQueue()
         # Loop-detection warning memo: highest streak value already logged for each
         # kind. Reset to None when the streak drops below the warn threshold so a
         # fresh streak gets a fresh warning. Prevents per-tick log storms while the

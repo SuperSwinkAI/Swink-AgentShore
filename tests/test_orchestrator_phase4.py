@@ -605,7 +605,7 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
     for pt in (PlayType.CODE_REVIEW, PlayType.RUN_QA):
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=pt,
                 params=PlayParams(bypass_preconditions=True),

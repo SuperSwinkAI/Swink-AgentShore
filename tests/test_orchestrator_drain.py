@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agentshore.core import Orchestrator
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import (
     AgentSnapshot,
@@ -222,11 +222,10 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
     """Drain mode drops queued bootstrap/override plays except end_agent."""
     orch = _make_orch()
     orch._draining = True
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.INSTANTIATE_AGENT,
             params=PlayParams(bypass_preconditions=True),
@@ -236,7 +235,7 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.IDLE)])
 
     assert await orch._consume_override(state) is None
-    assert orch._override_queue.empty()
+    assert orch._overrides.empty()
 
 
 # ---------------------------------------------------------------------------

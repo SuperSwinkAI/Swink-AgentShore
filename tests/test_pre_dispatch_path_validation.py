@@ -8,7 +8,6 @@ worktree pointer into the prompt.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import PlayType
 
@@ -63,9 +63,7 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     orch._end_session_dispatch_started = False
     orch._in_flight = {}
     orch._dispatch_ctx = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
-    orch._pending_override_kind = None
+    orch._overrides = OverrideQueue()
     orch._registry = None
     orch._selector = None
     orch._last_selection_digest = None

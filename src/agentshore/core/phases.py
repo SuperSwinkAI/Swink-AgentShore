@@ -961,7 +961,7 @@ def _phase_queue_agent_instantiation(
             large_agent_type=large_agent_type.value if large_agent_type is not None else None,
         )
         if large_agent_type is not None:
-            orch._override_queue.put_nowait(
+            orch._overrides.put_nowait(
                 OverrideEntry(
                     play_type=PlayType.INSTANTIATE_AGENT,
                     params=PlayParams(
@@ -988,7 +988,7 @@ def _phase_queue_agent_instantiation(
     try:
         large_agent_type = _first_enabled_for_tier("large")
         if large_agent_type is not None:
-            orch._override_queue.put_nowait(
+            orch._overrides.put_nowait(
                 OverrideEntry(
                     play_type=PlayType.INSTANTIATE_AGENT,
                     params=PlayParams(
@@ -1005,7 +1005,7 @@ def _phase_queue_agent_instantiation(
             seed_path=str(seed_path),
             bypass_preconditions=True,
         )
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=first_play_type,
                 params=first_play_params,
@@ -1023,7 +1023,7 @@ def _phase_queue_agent_instantiation(
             # issue #569: gate the medium spawn behind the first-play (cleanup
             # or seed_project) completing — both touch trunk and need exclusive
             # access. bypass_preconditions still skips the instantiate cooldown.
-            orch._override_queue.put_nowait(
+            orch._overrides.put_nowait(
                 OverrideEntry(
                     play_type=PlayType.INSTANTIATE_AGENT,
                     params=PlayParams(

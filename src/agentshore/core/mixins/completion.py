@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.recovery_tracker import RecoveryTracker
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
@@ -158,8 +159,7 @@ class _CompletionMixin(_OrchestratorBase):
     _dispatch_ctx: dict[str, _DispatchContext]
     _completion_processing_count: int
     _completion_processing_idle: asyncio.Event
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _override_dispatched_play_ids: set[int]
+    _overrides: OverrideQueue
     _stop_requested: bool
     _last_play_id: int | None
     _last_selection_digest: bytes | None
@@ -509,7 +509,7 @@ class _CompletionMixin(_OrchestratorBase):
             # plays (bootstrap recipe, user request, retry) are not PPO-collapse,
             # so a burst of them must not trigger loop_detected.
             if ctx.override_kind is not None:
-                self._override_dispatched_play_ids.add(outcome.play_id)
+                self._overrides.dispatched_play_ids.add(outcome.play_id)
             # Capture the just-completed play in memory so the next
             # _build_state tick sees it even if the SQLite WAL write hasn't
             # been visible to a fresh `get_play_history` read yet. Without
@@ -577,7 +577,7 @@ class _CompletionMixin(_OrchestratorBase):
                             "__retry_prompt": replay.prompt,
                         }
                         retry_params = PlayParams(**params_payload)
-                        self._override_queue.put_nowait(
+                        self._overrides.put_nowait(
                             OverrideEntry(
                                 play_type=completed_play_type,
                                 params=retry_params,
@@ -925,7 +925,7 @@ class _CompletionMixin(_OrchestratorBase):
                 "trigger_error_class": error_class,
             },
         )
-        self._override_queue.put_nowait(
+        self._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.TAKE_BREAK,
                 params=params,

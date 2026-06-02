@@ -20,10 +20,10 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.plays.candidates import PlayCandidatePlan
-    from agentshore.plays.override import OverrideEntry
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.selector import PlaySelector
     from agentshore.rl.metrics import MetricsEngine
@@ -108,8 +108,7 @@ class _LoopMixin(_OrchestratorBase):
     _drain_reason: str | None
     _drain_initialized: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _first_play_override: tuple[PlayType, PlayParams] | None
+    _overrides: OverrideQueue
     _registry: object | None
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
@@ -468,7 +467,9 @@ class _LoopMixin(_OrchestratorBase):
         if state.action_mask:
             h.update(bytes(state.action_mask))
         h.update(b";")
-        override_pending = self._first_play_override is not None or not self._override_queue.empty()
+        override_pending = (
+            self._overrides.first_play_override is not None or not self._overrides.empty()
+        )
         h.update(b"o" if override_pending else b".")
         h.update(b";")
         h.update(state.session_state.value.encode())

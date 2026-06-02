@@ -9,10 +9,9 @@ stretches the watchdog wait progressively the longer the digest stays put.
 
 from __future__ import annotations
 
-import asyncio
-
 from agentshore.core import Orchestrator
 from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
@@ -59,8 +58,7 @@ def _orch() -> Orchestrator:
     """Bare Orchestrator with just the fields the digest + backoff logic needs."""
     orch = Orchestrator.__new__(Orchestrator)
     orch._in_flight = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._idle_streak = 0
     orch._last_selection_digest = None
     return orch
@@ -147,7 +145,7 @@ def test_digest_changes_when_override_queued() -> None:
     state = _state(agents=(_agent("a"),), action_mask=(True,))
     d_no = orch._selection_state_digest(state, list(state.agents))
 
-    orch._override_queue.put_nowait(("dummy", "params"))  # type: ignore[arg-type]
+    orch._overrides.put_nowait(("dummy", "params"))  # type: ignore[arg-type]
     d_yes = orch._selection_state_digest(state, list(state.agents))
     assert d_no != d_yes
 

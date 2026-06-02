@@ -107,8 +107,8 @@ async def test_orchestrator_uses_config_budget(tmp_path: Path) -> None:
     orch._executor.execute = mock_execute  # type: ignore[assignment]
 
     # Clear bootstrap override queue so only the FixedPlanSelector drives plays
-    while not orch._override_queue.empty():
-        orch._override_queue.get_nowait()
+    while not orch._overrides.empty():
+        orch._overrides.get_nowait()
 
     async with orch:
         await asyncio.wait_for(orch.run_until_idle(), timeout=10.0)

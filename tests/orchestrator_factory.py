@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from agentshore.config import RuntimeConfig
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.state import NullStateProvider
@@ -91,10 +92,7 @@ def make_test_orchestrator(
     orch._policy_version = "test"
     orch._config_hash = "abc"
     orch._metrics = None
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
-    orch._pending_override_kind = None
-    orch._override_dispatched_play_ids = set()
+    orch._overrides = OverrideQueue()
     orch._last_warned_failure_streak = None
     orch._last_warned_any_streak = None
     orch._forced_mask_play_types = ()

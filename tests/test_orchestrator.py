@@ -13,6 +13,7 @@ import pytest
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
 from agentshore.config.models import ModelTierConfig
 from agentshore.core import Orchestrator
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.phases import (
     _author_labels_for_config,
     _phase_queue_agent_instantiation,
@@ -768,7 +769,7 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
         orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.INSTANTIATE_AGENT,
                 params=PlayParams(bypass_preconditions=True),
@@ -1039,7 +1040,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
 def _make_mock_orch() -> MagicMock:
     """Minimal mock Orchestrator with an _override_queue."""
     orch = MagicMock()
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     return orch
 
 
@@ -1054,8 +1055,8 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [(e.play_type, e.params) for e in entries] == [
         (
@@ -1095,8 +1096,8 @@ def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert (entries[0].play_type, entries[0].params) == (
         PlayType.INSTANTIATE_AGENT,
@@ -1133,8 +1134,8 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [(e.play_type, e.params) for e in entries] == [
         (
@@ -1234,8 +1235,8 @@ def test_bootstrap_recipe_order() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     play_types = [e.play_type for e in entries]
     assert play_types[0] == PlayType.INSTANTIATE_AGENT
@@ -1274,8 +1275,8 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500)
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [e.play_type for e in entries] == [
         PlayType.INSTANTIATE_AGENT,
@@ -1300,8 +1301,8 @@ def test_bootstrap_open_start_queues_single_instantiate_without_seed() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=120)
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert len(entries) == 1
     assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
@@ -1321,8 +1322,8 @@ def test_bootstrap_open_start_ignores_backlog_size() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=10)
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert len(entries) == 1
     assert entries[0].play_type == PlayType.INSTANTIATE_AGENT

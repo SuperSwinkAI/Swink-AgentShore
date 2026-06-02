@@ -142,7 +142,7 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
     if PlayType.CODE_REVIEW in V1_ACTION_ORDER:
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.CODE_REVIEW,
                 params=PlayParams(),
@@ -179,7 +179,7 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
     )
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
@@ -208,7 +208,7 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
     )
 
     assert await orch._consume_override(state) is None
-    assert orch._override_queue.empty()
+    assert orch._overrides.empty()
     orch._store.release_work_claim_group.assert_awaited_once_with(orch._session_id, "claim-210")
 
 
@@ -230,7 +230,7 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
     )
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
@@ -247,8 +247,8 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
     )
 
     assert await orch._consume_override(state) is None
-    assert not orch._override_queue.empty()
-    requeued_entry = orch._override_queue.get_nowait()
+    assert not orch._overrides.empty()
+    requeued_entry = orch._overrides.get_nowait()
     assert requeued_entry.params.extras["mask_requeue_attempts"] == 1
     assert requeued_entry.requeue_attempts == 1
     orch._store.release_work_claim_group.assert_not_awaited()
@@ -337,8 +337,8 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
         ),
     )
 
-    assert not orch._override_queue.empty()
-    requeued_entry = orch._override_queue.get_nowait()
+    assert not orch._overrides.empty()
+    requeued_entry = orch._overrides.get_nowait()
     assert requeued_entry.params.extras["mask_requeue_attempts"] == 0
     assert requeued_entry.requeue_attempts == 0
     assert requeued_entry.kind == OverrideKind.MASK_REQUEUE
