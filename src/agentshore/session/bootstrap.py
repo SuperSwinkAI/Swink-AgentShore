@@ -43,13 +43,14 @@ class StartOptions:
     project_path: Path
     run_session_id: str
     seed: str | None
-    effective_budget: float | None
+    budget_override: float | None
+    no_budget: bool
     policy_mode_override: PolicyMode | None
     run_mode: RunMode
     socket: str | None
     ipc_host: str
     ipc_port: int
-    strict: bool
+    strict: bool | None
     config_path: str | None
 
 
@@ -75,15 +76,18 @@ class ResolvedSession:
     run_session_id: str
 
 
-def resolve_effective_budget(budget: float, *, no_budget: bool) -> float | None:
-    """Resolve ``--budget``/``--no-budget`` to an enforced cap or ``None``.
+def validate_budget_flag(budget: float | None) -> None:
+    """Validate an explicit ``--budget`` value at CLI parse time.
 
-    ``--no-budget`` wins over a ``--budget`` value. Raises
-    :class:`click.BadParameter` for non-positive or below-floor caps so the
-    error surfaces at the CLI layer with the usual usage hint.
+    Only an explicitly-provided value is checked; ``None`` (flag omitted) defers
+    to the config and is always valid here. Raises :class:`click.BadParameter`
+    for non-positive or below-floor caps so the error surfaces at the CLI layer
+    with the usual usage hint. The actual budget resolution (config vs override
+    vs ``--no-budget``) happens in :func:`_load_config_with_overrides`, which has
+    the loaded config in hand.
     """
-    if no_budget:
-        return None
+    if budget is None:
+        return
     if budget <= 0:
         raise click.BadParameter("Budget must be positive. Use --no-budget to disable budgeting.")
     if budget < MIN_ENABLED_BUDGET_USD:
@@ -91,15 +95,15 @@ def resolve_effective_budget(budget: float, *, no_budget: bool) -> float | None:
             f"Budget must be at least ${MIN_ENABLED_BUDGET_USD:.2f}. "
             "Use --no-budget to disable budgeting."
         )
-    return budget
 
 
 def _load_config_with_overrides(
     cfg_path: Path,
     *,
-    effective_budget: float | None,
+    budget_override: float | None,
+    no_budget: bool,
     policy_mode_override: PolicyMode | None,
-    strict: bool,
+    strict: bool | None,
 ) -> tuple[RuntimeConfig, PolicyMode]:
     """Load *cfg_path* and apply CLI overrides, returning (cfg, effective_policy_mode).
 
@@ -107,6 +111,7 @@ def _load_config_with_overrides(
     and exits 1. Other load failures fall back to defaults with a warning.
     """
     from agentshore.config import load_config
+    from agentshore.config.models import BudgetConfig
     from agentshore.errors import ConfigError
 
     try:
@@ -131,15 +136,31 @@ def _load_config_with_overrides(
         click.echo(f"Warning: config load failed ({exc}), using defaults.", err=True)
 
     effective_policy_mode = policy_mode_override or cfg.rl.policy_mode
+
+    # Budget: only override the loaded config when the user actually asked.
+    #   --no-budget        -> disable enforcement
+    #   --budget X         -> enable with total X
+    #   (neither) + config -> respect agentshore.yaml as-is
+    #   (neither) + no cfg -> keep a $200 safety cap (config defines no budget)
+    if no_budget:
+        budget_cfg = dataclasses.replace(cfg.budget, enabled=False)
+    elif budget_override is not None:
+        budget_cfg = dataclasses.replace(cfg.budget, enabled=True, total=budget_override)
+    elif cfg.budget == BudgetConfig():
+        budget_cfg = dataclasses.replace(
+            cfg.budget, enabled=True, total=cli_helpers._DEFAULT_BUDGET
+        )
+    else:
+        budget_cfg = cfg.budget
+
+    # Scope strict mode: only override when --strict/--no-strict was given.
+    scope_cfg = cfg.scope if strict is None else dataclasses.replace(cfg.scope, strict_mode=strict)
+
     cfg = dataclasses.replace(
         cfg,
-        budget=(
-            dataclasses.replace(cfg.budget, enabled=True, total=effective_budget)
-            if effective_budget is not None
-            else dataclasses.replace(cfg.budget, enabled=False)
-        ),
+        budget=budget_cfg,
         rl=dataclasses.replace(cfg.rl, policy_mode=effective_policy_mode),
-        scope=dataclasses.replace(cfg.scope, strict_mode=strict),
+        scope=scope_cfg,
     )
     return cfg, effective_policy_mode
 
@@ -213,12 +234,19 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     agentshore_dir = repo_root / _PROJECT_DIR
     agentshore_dir.mkdir(exist_ok=True)
 
-    # Ensure agentshore.yaml exists.
+    # Ensure agentshore.yaml exists. Seed a fresh config from the resolved CLI
+    # intent: an explicit --budget, None for --no-budget, else the $200 default.
     default_config_path = repo_root / "agentshore.yaml"
     if not default_config_path.exists():
         name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
+        if opts.no_budget:
+            seed_budget: float | None = None
+        elif opts.budget_override is not None:
+            seed_budget = opts.budget_override
+        else:
+            seed_budget = cli_helpers._DEFAULT_BUDGET
         config_text = cli_helpers._generate_default_config(
-            name_with_owner, agents, opts.effective_budget, opts.strict
+            name_with_owner, agents, seed_budget, bool(opts.strict)
         )
         default_config_path.write_text(config_text)
         click.echo(f"Generated {default_config_path}")
@@ -227,10 +255,14 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     cfg_path = Path(opts.config_path) if opts.config_path else repo_root / "agentshore.yaml"
     cfg, effective_policy_mode = _load_config_with_overrides(
         cfg_path,
-        effective_budget=opts.effective_budget,
+        budget_override=opts.budget_override,
+        no_budget=opts.no_budget,
         policy_mode_override=opts.policy_mode_override,
         strict=opts.strict,
     )
+    # The merged config is the source of truth for the effective budget shown in
+    # the banner and propagated to detached subprocesses.
+    effective_budget = cfg.budget.total if cfg.budget.enabled else None
 
     return ResolvedSession(
         cfg=cfg,
@@ -241,7 +273,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         agents=agents,
         api_keys=api_keys,
         run_mode=opts.run_mode,
-        effective_budget=opts.effective_budget,
+        effective_budget=effective_budget,
         effective_policy_mode=effective_policy_mode,
         ipc_endpoint=ipc_endpoint,
         resolved_socket=resolved_socket,
