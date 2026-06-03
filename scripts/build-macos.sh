@@ -290,8 +290,44 @@ if [[ "$BUILD_PKG" -eq 1 ]]; then
 
   # — Desktop component —
   APP_COMPONENT_PKG="$COMPONENT_PKG_DIR/agentshore-desktop-component.pkg"
+  # Bundle relocation MUST be disabled. The bare `pkgbuild --component <app>`
+  # form defaults BundleIsRelocatable=true, which emits a <relocate> directive
+  # in PackageInfo. At install time the Installer then asks LaunchServices
+  # "where does ai.agentshore.desktop already live?" and, if any stale copy is
+  # registered (an old build-output path, a mounted-then-unmounted .dmg, a
+  # translocated launch), installs the payload OVER that path instead of
+  # /Applications. The receipt still records a successful install to
+  # /Applications, but the .app lands nowhere reachable — "the installer
+  # completes but the app is gone." Pinning BundleIsRelocatable=false via an
+  # explicit component plist removes the <relocate> block so the app always
+  # installs to /Applications. This requires --root (+ --component-plist)
+  # instead of the --component shorthand; the bundle/macos dir holds only the
+  # .app, so use it as the payload root directly (preserves its ownership).
+  APP_ROOT_DIR="$(dirname "$BUILT_APP")"
+  APP_COMPONENT_PLIST="$COMPONENT_PKG_DIR/agentshore-desktop-component.plist"
+  cat >"$APP_COMPONENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+    <dict>
+        <key>BundleHasStrictIdentifier</key>
+        <true/>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleIsVersionChecked</key>
+        <true/>
+        <key>BundleOverwriteAction</key>
+        <string>upgrade</string>
+        <key>RootRelativeBundlePath</key>
+        <string>$APP_NAME.app</string>
+    </dict>
+</array>
+</plist>
+PLIST
   APP_PKG_ARGS=(
-    --component "$BUILT_APP"
+    --root "$APP_ROOT_DIR"
+    --component-plist "$APP_COMPONENT_PLIST"
     --install-location "/Applications"
     --identifier "$APP_BUNDLE_ID"
     --version "$APP_VERSION"
