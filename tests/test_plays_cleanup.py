@@ -115,15 +115,14 @@ def test_cleanup_allowed_after_cooldown() -> None:
     )
 
 
-def test_cleanup_blocked_when_open_issues_high() -> None:
-    many_issues = [_issue(num=i) for i in range(1, 16)]
-    errors = CleanupPlay().preconditions(_state(issues=many_issues))
-    assert errors == ["too many open issues (15/15)"]
+def test_cleanup_not_blocked_by_large_open_issue_backlog() -> None:
+    """The open-issue ceiling was removed: a big backlog must not mask cleanup.
 
-
-def test_cleanup_allowed_just_below_open_issues_ceiling() -> None:
-    just_under = [_issue(num=i) for i in range(1, 15)]
-    assert CleanupPlay().preconditions(_state(issues=just_under)) == []
+    Trunk quality debt accumulates precisely when there's a large backlog, so
+    cleanup stays reachable (rate-limited only by the 20-play cooldown).
+    """
+    many_issues = [_issue(num=i) for i in range(1, 60)]
+    assert CleanupPlay().preconditions(_state(issues=many_issues)) == []
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ from agentshore.plays.skill_backed.gates import (
     CooldownGate,
     FirstRunWarmupGate,
     InFlightGate,
-    OpenIssueCeilingGate,
 )
 from agentshore.state import PlayType
 
@@ -17,8 +16,10 @@ class CleanupPlay(SkillBackedPlay):
     """Run a language-agnostic code-quality sweep: lint, format, typecheck, test.
 
     Auto-fixes are pushed as a PR; unfixable failures are filed as issues.
-    Cost/time penalties are not waived — the 50-play cooldown and open-issues
-    ceiling prevent PPO from spamming this play for its small success bonus.
+    Cost/time penalties are not waived — the 20-play cooldown prevents PPO from
+    spamming this play for its small success bonus. There is intentionally no
+    open-issue ceiling: a large backlog is exactly when trunk quality debt tends
+    to accumulate, so cleanup must stay reachable on busy projects.
     """
 
     gates = (
@@ -26,7 +27,6 @@ class CleanupPlay(SkillBackedPlay):
         InFlightGate(PlayType.CLEANUP),
         FirstRunWarmupGate(PlayType.CLEANUP, threshold=20, prerequisite=PlayType.SEED_PROJECT),
         CooldownGate(PlayType.CLEANUP, plays=20),
-        OpenIssueCeilingGate(ceiling=15),
     )
 
     @property

@@ -215,29 +215,6 @@ class BeadsInitializedGate:
         return None
 
 
-class OpenIssueCeilingGate:
-    """Mask when the count of OPEN issues reaches or exceeds ``ceiling``.
-
-    Prevents plays from firing when the issue queue is already saturated.
-    Used by cleanup (15).
-    """
-
-    __slots__ = ("ceiling",)
-
-    def __init__(self, ceiling: int) -> None:
-        self.ceiling = ceiling
-
-    def __call__(self, state: OrchestratorState) -> MaskReason | None:
-        open_count = sum(1 for iss in state.open_issues if iss.state.upper() == "OPEN")
-        if open_count < self.ceiling:
-            return None
-        return MaskReason(
-            text=f"too many open issues ({open_count}/{self.ceiling})",
-            classification=MaskClassification.HARD,
-            source=MaskSource.PRECONDITION,
-        )
-
-
 class FirstRunWarmupGate:
     """Mask on the play type's first run until ``total_plays`` reaches ``threshold``.
 
