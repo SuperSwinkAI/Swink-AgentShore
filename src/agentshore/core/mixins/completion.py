@@ -990,9 +990,7 @@ class CompletionProcessor:
             self._host, "_stop_requested", False
         )
         if draining and final_status == AgentStatus.ERROR:
-            await self._host._safe_call(
-                self._manager.clear(agent_id), "drain_clear_errored_agent"
-            )
+            await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
             return
         self._maybe_enqueue_rate_limit_recovery(agent_id, final_status)
 
