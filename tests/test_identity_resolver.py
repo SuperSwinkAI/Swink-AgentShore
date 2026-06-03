@@ -22,7 +22,7 @@ def _cfg(
     if identities is None:
         identities = {
             "example-user": GitHubIdentity(
-                git_user_name="Wes Eyer",
+                git_user_name="Example User",
                 git_user_email="user@example.com",
                 gh_token_login="example-user",
             )
@@ -46,15 +46,15 @@ def test_authorship_env_always_present() -> None:
     fc, ac = _cfg(
         identities={
             "example-user": GitHubIdentity(
-                git_user_name="Wes Eyer",
+                git_user_name="Example User",
                 git_user_email="user@example.com",
             )
         }
     )
     env = resolve_identity_env(fc, ac)
-    assert env["GIT_AUTHOR_NAME"] == "Wes Eyer"
+    assert env["GIT_AUTHOR_NAME"] == "Example User"
     assert env["GIT_AUTHOR_EMAIL"] == "user@example.com"
-    assert env["GIT_COMMITTER_NAME"] == "Wes Eyer"
+    assert env["GIT_COMMITTER_NAME"] == "Example User"
     assert env["GIT_COMMITTER_EMAIL"] == "user@example.com"
     # No token configured -> nothing injected.
     assert "GH_TOKEN" not in env
@@ -271,7 +271,7 @@ def test_token_login_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> No
     env = resolve_identity_env(fc, ac)
     assert "GH_TOKEN" not in env
     # Authorship still set.
-    assert env["GIT_AUTHOR_NAME"] == "Wes Eyer"
+    assert env["GIT_AUTHOR_NAME"] == "Example User"
 
 
 def test_gh_cli_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
