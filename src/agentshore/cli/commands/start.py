@@ -17,6 +17,7 @@ from agentshore.cli.helpers import (
     _resolve_start_run_mode,
 )
 from agentshore.cli.runtime import (
+    _finalize_cli_timelapse,
     _launch_dashboard_background,
     _run_agent_mode,
     _run_headless_mode,
@@ -249,6 +250,7 @@ def start(
             policy=policy,
             strict=strict,
             config_path=str(_cfg_path) if _cfg_path else None,
+            timelapse_enabled=cfg.timelapse.enabled,
         )
         return
 
@@ -311,5 +313,9 @@ def start(
                 session_id=run_session_id,
             )
     finally:
+        # Finalise any CLI-started dashboard timelapse before cleanup removes the
+        # sidecar — covers a natural session end and a graceful drain. No-op when
+        # no capture was started (e.g. headless/solo).
+        _finalize_cli_timelapse(project_path)
         stop_dashboard_process(project_path)
         cleanup_session(project_path)
