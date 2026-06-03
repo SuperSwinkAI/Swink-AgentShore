@@ -975,6 +975,7 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
 
     # Mock executor so plays don't actually run
     end_outcome = _idle_outcome(PlayType.ISSUE_PICKUP)
+    paused = asyncio.Event()
 
     async def mock_execute(
         pt: PlayType,
@@ -983,17 +984,20 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
     ) -> PlayOutcome:
         # Pause after first play
         await orch.pause("test")
+        paused.set()
         return end_outcome
 
     async with orch:
         with patch.object(orch._executor, "execute", new=mock_execute):
             task = asyncio.create_task(orch.run_until_idle())
-            await asyncio.sleep(0.1)
-            # Loop should be paused now
+            # Wait deterministically until the loop has actually paused rather
+            # than sleeping a fixed interval (the prior wall-clock wait raced
+            # under xdist load, #13).
+            await asyncio.wait_for(paused.wait(), timeout=5.0)
             assert not orch._pause_event.is_set()
             # stop() should wake it
             await orch.stop()
-            await asyncio.wait_for(task, timeout=2.0)
+            await asyncio.wait_for(task, timeout=5.0)
             # Should have exited cleanly
             assert task.done()
 
