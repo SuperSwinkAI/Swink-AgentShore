@@ -467,14 +467,25 @@ class SessionProcessController:
         self,
         project_path: Path,
         *,
-        stop_grace_seconds: float = _STOP_GRACE_SECONDS,
-        stop_poll_interval: float = _STOP_POLL_INTERVAL,
-        dashboard_stop_grace_seconds: float = _DASHBOARD_STOP_GRACE_SECONDS,
+        stop_grace_seconds: float | None = None,
+        stop_poll_interval: float | None = None,
+        dashboard_stop_grace_seconds: float | None = None,
     ) -> None:
+        # Resolve unset grace periods from the module globals at construction
+        # time (not as default-param values, which bind at def-time and so
+        # can't be monkeypatched in tests).
         self._project_path = project_path
-        self._stop_grace_seconds = stop_grace_seconds
-        self._stop_poll_interval = stop_poll_interval
-        self._dashboard_stop_grace_seconds = dashboard_stop_grace_seconds
+        self._stop_grace_seconds = (
+            _STOP_GRACE_SECONDS if stop_grace_seconds is None else stop_grace_seconds
+        )
+        self._stop_poll_interval = (
+            _STOP_POLL_INTERVAL if stop_poll_interval is None else stop_poll_interval
+        )
+        self._dashboard_stop_grace_seconds = (
+            _DASHBOARD_STOP_GRACE_SECONDS
+            if dashboard_stop_grace_seconds is None
+            else dashboard_stop_grace_seconds
+        )
 
     # -- low-level process utilities -----------------------------------------
 
@@ -488,22 +499,27 @@ class SessionProcessController:
 
     @staticmethod
     def _signal_group(pid: int, sig: int) -> None:
-        try:
-            killpg = os.killpg
-        except AttributeError:
-            killpg = None
+        """Signal the process's group, falling back to the bare PID.
 
-        try:
-            if killpg is None:
-                raise OSError
-            killpg(pid, sig)
-        except ProcessLookupError:
-            return
-        except OSError:
+        A desktop-spawned sidecar may not be a process-group leader (the
+        launcher didn't call setsid / start_new_session), so ``killpg(pid)``
+        raises ``ProcessLookupError`` even though the process is alive.
+        Previously that early-returned and the sidecar was never signalled —
+        ``agentshore stop`` reported success while the orchestrator kept
+        running (#31). Fall back to ``os.kill(pid)`` whenever the group signal
+        doesn't land.
+        """
+        killpg = getattr(os, "killpg", None)
+        if killpg is not None:
             try:
-                os.kill(pid, sig)
-            except OSError:
+                killpg(pid, sig)
                 return
+            except OSError:
+                # No group with this pgid (non-leader pid) or not permitted —
+                # signal the individual process instead.
+                pass
+        with contextlib.suppress(OSError):
+            os.kill(pid, sig)
 
     @staticmethod
     def _terminate_process_tree(pid: int, *, force: bool) -> None:
@@ -585,7 +601,11 @@ class SessionProcessController:
 
         Sends SIGTERM to each recorded PID's process group, waits up to the
         grace period, then escalates to SIGKILL. Cleans up PID and IPC files.
-        Returns True if at least one PID was found and signalled.
+
+        Returns True only when every recorded PID is confirmed gone (or there
+        were none to stop-and-stop succeeded). Returns False if a process is
+        still alive after the SIGKILL escalation, so callers never report a
+        clean stop while the orchestrator keeps running (#31).
         """
         pids = [
             ("orchestrator", read_pid(self._project_path)),
@@ -608,8 +628,16 @@ class SessionProcessController:
         for pid in survivors:
             self._terminate_process_tree(pid, force=True)
 
+        # SIGKILL is delivered asynchronously — poll briefly to confirm the
+        # process actually exited before claiming success (#31).
+        kill_deadline = time.monotonic() + self._dashboard_stop_grace_seconds
+        survivors = [pid for _label, pid in live if self._process_alive(pid)]
+        while survivors and time.monotonic() < kill_deadline:
+            time.sleep(self._stop_poll_interval)
+            survivors = [pid for pid in survivors if self._process_alive(pid)]
+
         self.cleanup()
-        return True
+        return not survivors
 
     def cleanup(self) -> None:
         """Remove stale PID, dashboard PID, info, and Unix socket files."""

@@ -101,9 +101,17 @@ def stop(project: str, hard: bool, esr: bool) -> None:
                 f"(Press Ctrl+C to force-stop sooner; "
                 f"auto hard stop after {_drain_wait_timeout_label()})"
             )
-            clean_exit = _wait_for_session_exit(project_path)
+            outcome = _wait_for_session_exit(project_path)
+            if outcome is None:
+                # Escalated to hard stop but the process is still alive (#31) —
+                # don't claim a clean stop.
+                click.echo(
+                    "Error: AgentShore session is still running after hard stop.",
+                    err=True,
+                )
+                raise SystemExit(1)
             click.echo("AgentShore session stopped.")
-            if not clean_exit:
+            if outcome is False:
                 click.echo("End session report skipped because the session did not stop cleanly.")
         elif result == "fallback_hard":
             click.echo("No IPC endpoint found — falling back to hard stop.")
@@ -127,8 +135,13 @@ def stop(project: str, hard: bool, esr: bool) -> None:
         _finalize_cli_timelapse(project_path, info=timelapse_info, echo=True)
 
 
-def _wait_for_session_exit(project_path: Path) -> bool:
-    """Poll until the orchestrator PID is gone. Return False if escalated."""
+def _wait_for_session_exit(project_path: Path) -> bool | None:
+    """Poll until the orchestrator PID is gone.
+
+    Returns ``True`` for a clean drain (process exited on its own), ``False``
+    when it escalated to a hard stop that succeeded, and ``None`` when the hard
+    stop ran but the process is still alive (#31).
+    """
     import os
     import time
 
@@ -165,4 +178,5 @@ def _wait_for_session_exit(project_path: Path) -> bool:
         )
     if not hard_stop_session(project_path):
         click.echo("Error: hard stop failed.", err=True)
+        return None
     return False
