@@ -235,7 +235,7 @@ class ParameterResolver:
             agent
             for agent in state.agents
             if agent.status == AgentStatus.ERROR
-            and agent.last_error_class in {"rate_limit", "unknown"}
+            and agent.last_error_class in RECOVERABLE_ERROR_CLASSES
             and agent.current_play_type != PlayType.TAKE_BREAK
         ]
         if not triggers:

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
 
 if TYPE_CHECKING:
     from agentshore.state import OrchestratorState
@@ -56,6 +56,14 @@ class CapabilityGate:
             for a in state.agents
             if a.status == AgentStatus.IDLE
             and a.agent_type.value not in rate_limited
+            # Circuit breaker (#22): a known-dead agent (0 successes + a timeout
+            # or repeated failures) is masked from work selection until it
+            # succeeds, so plays aren't routed to it.
+            and not is_agent_circuit_broken(
+                tasks_completed=a.tasks_completed,
+                tasks_failed=a.tasks_failed,
+                timeout_count=a.timeout_count,
+            )
             and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(self.capability, False))
         ]
         if capable:
