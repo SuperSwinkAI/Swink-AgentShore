@@ -10,12 +10,30 @@ import yaml
 if TYPE_CHECKING:
     from pathlib import Path
 
+from agentshore.identity_wizard import yaml_patch as yaml_patch_mod
 from agentshore.identity_wizard.gh_accounts import GhAccount, parse_gh_auth_status
 from agentshore.identity_wizard.wizard import IdentityBinding, WizardResult, run_wizard
 from agentshore.identity_wizard.yaml_patch import (
     normalize_trusted_ids_for_bound_agents,
     patch_yaml_with_bindings,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_token_login_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the patcher hermetic under xdist (#13).
+
+    ``patch_yaml_with_bindings`` calls ``_warn_if_token_login_mismatch`` for
+    every identity, which resolves a real token from the OS keychain and shells
+    out to ``gh`` to look up its login. Those external calls behave
+    non-deterministically under parallel load (the root cause of the flaky
+    ``test_patcher_*`` cases). No test asserts the warning, so stub it to a
+    no-op — the patcher's YAML output is unaffected.
+    """
+    monkeypatch.setattr(
+        yaml_patch_mod, "_warn_if_token_login_mismatch", lambda name, yaml_dict: None
+    )
+
 
 # ---------------------------------------------------------------------------
 # gh auth status parser
