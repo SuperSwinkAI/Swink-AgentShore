@@ -534,6 +534,43 @@ def test_wait_for_session_exit_escalates_after_fifteen_min_default(
     )
 
 
+def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the escalated hard stop can't kill the process, return None (#31)."""
+    with (
+        patch("agentshore.session_path.read_pid", return_value=1234),
+        patch("os.kill"),
+        patch("time.sleep"),
+        patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
+    ):
+        outcome = _wait_for_session_exit(tmp_path)
+
+    assert outcome is None
+    hard_stop.assert_called_once_with(tmp_path)
+    assert "hard stop failed" in capsys.readouterr().err
+
+
+def test_stop_reports_failure_when_session_survives_hard_stop(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The graceful stop path must exit non-zero — not print 'stopped' — when the
+    process is still alive after the hard-stop escalation (#31)."""
+    project = _make_git_repo(tmp_path)
+
+    with (
+        patch("agentshore.session_path.is_session_running", return_value=True),
+        patch("agentshore.session_path.request_drain", return_value="sent"),
+        patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=None),
+    ):
+        result = runner.invoke(main, ["stop", "--project", str(project)])
+
+    assert result.exit_code == 1, result.output
+    assert "still running after hard stop" in result.output
+    assert "AgentShore session stopped." not in result.output
+
+
 def test_stop_hard_esr_is_ignored(runner: CliRunner, tmp_path: Path) -> None:
     project = _make_git_repo(tmp_path)
 
