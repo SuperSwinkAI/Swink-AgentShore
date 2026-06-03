@@ -226,6 +226,29 @@ def test_should_terminate_drain_complete_with_no_agents() -> None:
     assert reason == "drain_complete"
 
 
+def test_should_terminate_drain_blocked_by_errored_agent() -> None:
+    """An ERROR agent blocks drain_complete — the wedge that motivated #30.
+
+    should_terminate requires every agent TERMINATED. A lingering ERROR agent
+    keeps drain open, which is why the resolver/completion fixes must retire
+    ERROR agents during drain (see test_parameter_resolver +
+    test_take_break_escalation). Documents the precondition this fix relies on.
+    """
+    orch = _make_orch()
+    orch._in_flight = {}
+    state = _state(SessionState.DRAINING, agents=[_snap("err1", AgentStatus.ERROR)])
+    result, reason = orch._lifecycle.should_terminate(state)
+    assert result is False
+    assert reason is None
+    # ...and once that agent is retired (cleared -> removed from the live list),
+    # drain completes immediately.
+    completed, completed_reason = orch._lifecycle.should_terminate(
+        _state(SessionState.DRAINING, agents=[])
+    )
+    assert completed is True
+    assert completed_reason == "drain_complete"
+
+
 def test_should_terminate_stop_requested_overrides_drain() -> None:
     """When _stop_requested is True, terminate immediately regardless of drain state."""
     orch = _make_orch()

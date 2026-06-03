@@ -895,7 +895,7 @@ class CompletionProcessor:
                 self._host._state_provider.on_agent_changed(outcome.agent_id, final_status),
                 "on_agent_changed_final",
             )
-            self._maybe_enqueue_rate_limit_recovery(outcome.agent_id, final_status)
+            await self._retire_or_recover_errored_agent(outcome.agent_id, final_status)
         if completed_play_type == PlayType.TAKE_BREAK:
             self._handle_take_break_outcome(outcome)
         if (
@@ -972,6 +972,29 @@ class CompletionProcessor:
             pr_number=pr_number,
             label=MANUAL_REQUIRED_LABEL,
         )
+
+    async def _retire_or_recover_errored_agent(
+        self,
+        agent_id: str,
+        final_status: AgentStatus,
+    ) -> None:
+        """On play completion, recover an errored agent — unless we're draining.
+
+        During wind-down recovery (take_break) is masked, so a recoverable-ERROR
+        agent would never reach IDLE/TERMINATED and would wedge ``drain_complete``
+        (#30). Retire it immediately instead, and skip the doomed rate-limit
+        recovery enqueue (also kills the misleading ``rate_limit_recovery_enqueued``
+        telemetry, #23). Outside drain, fall back to the normal recovery path.
+        """
+        draining = getattr(self._host, "_draining", False) or getattr(
+            self._host, "_stop_requested", False
+        )
+        if draining and final_status == AgentStatus.ERROR:
+            await self._host._safe_call(
+                self._manager.clear(agent_id), "drain_clear_errored_agent"
+            )
+            return
+        self._maybe_enqueue_rate_limit_recovery(agent_id, final_status)
 
     def _maybe_enqueue_rate_limit_recovery(
         self,

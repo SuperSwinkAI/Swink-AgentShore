@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2079,3 +2080,66 @@ async def test_resolve_code_review_pr_106_pattern() -> None:
     # Sorted by (agent_type, agent_id): "claude_code:a-claude" sorts first.
     assert result.target_agent_id == "a-claude"
     assert result.target_agent_type is None
+
+
+# ---------------------------------------------------------------------------
+# END_AGENT resolution during drain (#30)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_end_agent_during_drain_retires_recoverable_error_agent() -> None:
+    """During drain, a recoverable-ERROR agent must be targeted for end_agent.
+
+    Recovery (take_break) is masked during drain, so a recoverable-ERROR agent
+    (e.g. a BUSY agent reaped mid-play -> exit 143 -> ERROR/"unknown") never
+    reaches IDLE or recovery_exhausted. Without this it wedges drain forever
+    (#30). The resolver must retire it directly, bypassing preconditions.
+    """
+    resolver = _make_resolver()
+    errored = _make_snapshot(
+        "wedged",
+        status=AgentStatus.ERROR,
+        last_error_class="unknown",  # IS in RECOVERABLE_ERROR_CLASSES
+    )
+    state = dataclasses.replace(_make_state(agents=[errored]), session_state=SessionState.DRAINING)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "wedged"
+    assert result.bypass_preconditions is True
+
+
+async def test_resolve_end_agent_outside_drain_leaves_recoverable_error_for_take_break() -> None:
+    """Outside drain, a recoverable-ERROR agent is NOT auto-ended.
+
+    The drain ERROR-sweep is deliberately drain-scoped: when the session is
+    RUNNING the agent should still go through take_break recovery, so
+    _resolve_end_agent must not select it (no IDLE agent => None).
+    """
+    resolver = _make_resolver()
+    errored = _make_snapshot(
+        "recovering",
+        status=AgentStatus.ERROR,
+        last_error_class="unknown",
+    )
+    state = _make_state(agents=[errored])  # session_state defaults to RUNNING
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is None
+
+
+async def test_resolve_end_agent_during_drain_prefers_error_over_idle() -> None:
+    """A wedged ERROR agent is retired before idle agents during drain."""
+    resolver = _make_resolver()
+    idle = _make_snapshot("healthy", status=AgentStatus.IDLE)
+    errored = _make_snapshot("wedged", status=AgentStatus.ERROR, last_error_class="unknown")
+    state = dataclasses.replace(
+        _make_state(agents=[idle, errored]), session_state=SessionState.DRAINING
+    )
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "wedged"
