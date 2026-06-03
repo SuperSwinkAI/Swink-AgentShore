@@ -115,7 +115,7 @@ test("top bar omits inactive pause and override controls", async ({ page }) => {
   }
 });
 
-test("top bar shows open and workable issue counts when available", async ({
+test("top bar shows open issue count when available", async ({
   page,
 }) => {
   await page.goto("/?demo=1&scenario=empty&freeze=1");
@@ -166,7 +166,7 @@ test("top bar shows open and workable issue counts when available", async ({
   });
 
   await expect(page.locator("#plays-count")).toContainText(
-    "Plays: 42 · Issues: 1/0",
+    "Plays: 42 · Open Issues : 1",
   );
 });
 

@@ -1,39 +1,28 @@
 import React, { useEffect, useState } from "react";
 import type { StateUpdate } from "../types";
-import { formatPolicyMode } from "../format";
 
 interface TopBarHudState {
   sessionState: StateUpdate["session_state"];
   totalPlays: number;
-  policyMode: StateUpdate["policy_mode"];
-  issueSummary: string;
+  openIssueCount: number;
 }
 
 const listeners = new Set<(s: TopBarHudState) => void>();
 let latestState: TopBarHudState | null = null;
 
 export function notifyTopBarHud(state: StateUpdate): void {
-  // Prefer the server's work_availability summary when it carries real
-  // counts. The bridge has historically populated 0/0 even with hundreds
+  // Prefer the server's open-issue count when available. The bridge has
+  // historically populated 0/0 availability summaries even with hundreds
   // of issues in state.open_issues; fall back to the raw issue list size
-  // in that case so the chip reflects what the user sees on the KANBAN
-  // tab. KanbanStage's deriveColumns uses state.open_issues, so this
-  // matches the same source of truth.
+  // when the server did not report any open issues.
   const availability = state.work_availability ?? state.issue_availability;
   const openFromState = state.open_issues?.length ?? 0;
   const totalReported = availability?.github_open_issue_count ?? 0;
-  const workableReported = availability?.workable_issue_count ?? 0;
-  let issueSummary = "";
-  if (totalReported > 0 || workableReported > 0) {
-    issueSummary = ` · Issues: ${totalReported}/${workableReported}`;
-  } else if (openFromState > 0) {
-    issueSummary = ` · Issues: ${openFromState} open`;
-  }
+  const openIssueCount = totalReported > 0 ? totalReported : openFromState;
   const next: TopBarHudState = {
     sessionState: state.session_state,
     totalPlays: state.total_plays,
-    policyMode: state.policy_mode,
-    issueSummary,
+    openIssueCount,
   };
   latestState = next;
   listeners.forEach((fn) => fn(next));
@@ -55,10 +44,9 @@ export function TopBarHud(): React.ReactElement {
   const state = useTopBarHudState();
   const sessionState = state?.sessionState ?? "initializing";
   const totalPlays = state?.totalPlays ?? 0;
-  const policyMode = state?.policyMode ?? "learning";
-  const issueSummary = state?.issueSummary ?? "";
+  const openIssueCount = state?.openIssueCount ?? 0;
 
-  const playsText = `Plays: ${totalPlays}${issueSummary} · Policy: ${formatPolicyMode(policyMode)}`;
+  const playsText = `Plays: ${totalPlays} · Open Issues : ${openIssueCount}`;
 
   return (
     <>
