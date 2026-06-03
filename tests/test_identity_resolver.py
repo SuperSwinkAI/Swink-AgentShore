@@ -890,9 +890,17 @@ def test_require_two_identities_rejects_missing_token_source() -> None:
         require_two_distinct_gh_identities(fc)
 
 
-def test_require_two_identities_accepts_keychain_token() -> None:
+def test_require_two_identities_accepts_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """AgentShore-managed gh_token_keychain services encode the login."""
-    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.agents.identity import IdentityResolver, require_two_distinct_gh_identities
+
+    # Pin the external resolution surfaces so the check is hermetic under xdist:
+    # without this the resolver shells out to the OS keychain (keyring) and `gh`,
+    # whose timing under parallel load made this flaky (#13). With both inert the
+    # resolver falls back to config-derived logins — exactly the path under test
+    # (a gh_token_keychain service name encodes its login).
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: None)
+    monkeypatch.setattr(IdentityResolver, "read_keychain_token", lambda self, service: None)
 
     fc = RuntimeConfig(
         identities={
