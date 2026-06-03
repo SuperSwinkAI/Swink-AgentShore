@@ -80,15 +80,27 @@ class _CompletionVerdict(enum.Enum):
 # the take_break play uses for its preconditions — kept here so the loop's
 # override producer doesn't have to import from the play.
 #
+# Recovery-eligible ERROR classes, split into two paths (#23/#24):
+#   * rate_limit → RATE_LIMIT_RECOVERY + rate_limit_recovery_enqueued
+#   * unknown / codex_rollout → UNKNOWN_ERROR_RECOVERY + unknown_error_recovery_enqueued
+# Both enqueue a take_break (the backoff behavior is the same for now), but under
+# distinct kinds/telemetry so a genuine rate limit is never conflated with an
+# unclassified failure. Before this split, "unknown"/"codex_rollout" rode the
+# rate-limit path and logged rate_limit_recovery_enqueued — which read as "the
+# agent was rate-limited" when no rate limit occurred and caused a live
+# misdiagnosis.
+#
 # "codex_rollout" carved out of "unknown" by desktop-yxlj — same recovery path
-# (fresh codex exec gets a new rollout thread), just under a typed name now.
+# (fresh codex exec gets a new rollout thread), just under a typed name.
 # NOTE (#7): the crash classes "crash_signal" (SIGKILL/-9, e.g. OS OOM kill) and
-# "crash_oom" are deliberately NOT here — a crashed/OOM-killed agent is not rate
-# limited, so it must not get take_break backoff (which previously misfired when
-# such exits fell into the generic "unknown" bucket). "unknown" stays for
-# genuinely transient unclassified errors.
-_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset(
-    {"rate_limit", "unknown", "codex_rollout"}
+# "crash_oom" are deliberately in NEITHER set — a crashed/OOM-killed agent is not
+# recoverable via take_break backoff, so it must not get one.
+_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset({"rate_limit"})
+# Non-rate-limit recoverable classes. "transient_network" is a precise carve-out
+# of the old "unknown" bucket (socket close / connection reset) — still transient,
+# still gets the take_break, just under an honest name.
+_UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset(
+    {"unknown", "codex_rollout", "transient_network"}
 )
 
 # Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an
@@ -992,31 +1004,53 @@ class CompletionProcessor:
         if draining and final_status == AgentStatus.ERROR:
             await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
             return
-        self._maybe_enqueue_rate_limit_recovery(agent_id, final_status)
+        self._maybe_enqueue_error_recovery(agent_id, final_status)
 
-    def _maybe_enqueue_rate_limit_recovery(
+    def _maybe_enqueue_error_recovery(
         self,
         agent_id: str,
         final_status: AgentStatus,
     ) -> None:
-        """Enqueue a take_break override when an agent enters rate_limit ERROR.
+        """Enqueue a take_break override when an agent enters a recoverable ERROR.
 
-        The override bypasses PPO entirely (desktop-ctnl): if PPO learned to
-        prefer idle plays under rate_limit, the work plays for healthy agents
-        could never get dispatched. With idle_tick / recover gone from the
+        Two distinct paths (#23/#24), each with its own kind, telemetry event,
+        and enqueue latch so a true rate limit is never conflated with an
+        unclassified failure:
+          * ``rate_limit`` → RATE_LIMIT_RECOVERY / ``rate_limit_recovery_enqueued``
+          * ``unknown`` / ``codex_rollout`` → UNKNOWN_ERROR_RECOVERY /
+            ``unknown_error_recovery_enqueued``
+
+        Either way the override bypasses PPO entirely (desktop-ctnl): if PPO
+        learned to prefer idle plays under rate_limit, the work plays for healthy
+        agents could never get dispatched. With idle_tick / recover gone from the
         policy head, the loop is the only producer of take_break.
         """
 
         if final_status != AgentStatus.ERROR:
             self._recovery.clear_rate_limit_enqueued(agent_id)
+            self._recovery.clear_unknown_error_enqueued(agent_id)
             return
         handle = self._manager.handles.get(agent_id)
         if handle is None:
             return
         error_class = getattr(handle, "last_error_class", None)
-        if error_class not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
+
+        if error_class in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
+            kind = OverrideKind.RATE_LIMIT_RECOVERY
+            event = "rate_limit_recovery_enqueued"
+            already = self._recovery.is_rate_limit_enqueued(agent_id)
+            mark = self._recovery.mark_rate_limit_enqueued
+        elif error_class in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES:
+            kind = OverrideKind.UNKNOWN_ERROR_RECOVERY
+            event = "unknown_error_recovery_enqueued"
+            already = self._recovery.is_unknown_error_enqueued(agent_id)
+            mark = self._recovery.mark_unknown_error_enqueued
+        else:
+            # Not a recovery-eligible class (auth, invalid_model, crash_*,
+            # timeout*) — leave it for the END_AGENT path, no take_break.
             return
-        if self._recovery.is_rate_limit_enqueued(agent_id):
+
+        if already:
             return
         params = PlayParams(
             agent_id=agent_id,
@@ -1029,12 +1063,12 @@ class CompletionProcessor:
             OverrideEntry(
                 play_type=PlayType.TAKE_BREAK,
                 params=params,
-                kind=OverrideKind.RATE_LIMIT_RECOVERY,
+                kind=kind,
             )
         )
-        self._recovery.mark_rate_limit_enqueued(agent_id)
+        mark(agent_id)
         _logger.info(
-            "rate_limit_recovery_enqueued",
+            event,
             session_id=self._session_id,
             agent_id=agent_id,
             error_class=error_class,
@@ -1056,9 +1090,11 @@ class CompletionProcessor:
         agent_id = outcome.agent_id
         if agent_id is None:
             return
-        # Clear the rate-limit-recovery latch on any take_break completion so
-        # the next ERROR transition for this agent can re-arm the override.
+        # Clear both recovery latches on any take_break completion so the next
+        # ERROR transition for this agent can re-arm the appropriate override
+        # (the break could have been triggered by either path).
         self._recovery.clear_rate_limit_enqueued(agent_id)
+        self._recovery.clear_unknown_error_enqueued(agent_id)
         if outcome.success:
             self._recovery.clear_break_failures(agent_id)
             return

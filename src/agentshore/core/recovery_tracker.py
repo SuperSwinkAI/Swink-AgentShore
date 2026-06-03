@@ -10,6 +10,10 @@ completion path maintains and the state/observation path reads:
 * ``_rate_limit_recovery_enqueued`` — agents the loop has already enqueued a
   RATE_LIMIT_RECOVERY override for; cleared once the agent recovers so the next
   rate_limit event re-arms the override.
+* ``_unknown_error_recovery_enqueued`` — the same latch for the distinct
+  UNKNOWN_ERROR_RECOVERY path (``unknown``/``codex_rollout`` errors). Kept
+  separate from the rate-limit latch so the two recovery types never clobber
+  each other's arm/clear state (#23/#24).
 
 It is a thin collaborator (mirroring :class:`agentshore.core.github_syncer.GitHubSyncer`):
 constructed in ``phases.py`` and held on the orchestrator as ``_recovery``.
@@ -39,6 +43,7 @@ class RecoveryTracker:
     def __init__(self) -> None:
         self._break_recovery_failures: dict[str, int] = {}
         self._rate_limit_recovery_enqueued: set[str] = set()
+        self._unknown_error_recovery_enqueued: set[str] = set()
 
     # ------------------------------------------------------------------
     # Rate-limit-recovery latch
@@ -52,6 +57,19 @@ class RecoveryTracker:
 
     def clear_rate_limit_enqueued(self, agent_id: str) -> None:
         self._rate_limit_recovery_enqueued.discard(agent_id)
+
+    # ------------------------------------------------------------------
+    # Unknown-error-recovery latch (distinct path from rate-limit, #23/#24)
+    # ------------------------------------------------------------------
+
+    def is_unknown_error_enqueued(self, agent_id: str) -> bool:
+        return agent_id in self._unknown_error_recovery_enqueued
+
+    def mark_unknown_error_enqueued(self, agent_id: str) -> None:
+        self._unknown_error_recovery_enqueued.add(agent_id)
+
+    def clear_unknown_error_enqueued(self, agent_id: str) -> None:
+        self._unknown_error_recovery_enqueued.discard(agent_id)
 
     # ------------------------------------------------------------------
     # take_break consecutive-failure counter

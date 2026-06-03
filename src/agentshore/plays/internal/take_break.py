@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING
 
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayOutcome, PlayType
+from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, PlayOutcome, PlayType
 
 if TYPE_CHECKING:
     from agentshore.plays.base import PlayExecutionContext, PlayParams
@@ -39,7 +39,7 @@ class TakeBreakPlay:
             a
             for a in state.agents
             if a.status == AgentStatus.ERROR
-            and a.last_error_class in ("rate_limit", "unknown")
+            and a.last_error_class in RECOVERABLE_ERROR_CLASSES
             and a.current_play_type != PlayType.TAKE_BREAK
         ]
         if cooldown_targets:
@@ -103,7 +103,7 @@ class TakeBreakPlay:
                     a
                     for a in state.agents
                     if a.status == AgentStatus.ERROR
-                    and a.last_error_class in ("rate_limit", "unknown")
+                    and a.last_error_class in RECOVERABLE_ERROR_CLASSES
                     and a.current_play_type != PlayType.TAKE_BREAK
                 ),
                 None,

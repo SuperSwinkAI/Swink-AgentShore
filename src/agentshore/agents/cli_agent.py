@@ -138,14 +138,26 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
+# Transient network/socket failures. desktop/agentic_jane observed claude_code
+# exits with "API Error: The socket connection was closed unexpectedly" falling
+# into the generic "unknown" bucket (#23). These are distinctive enough to match
+# in either stream and are genuinely transient (a retry/take_break recovers), so
+# pulling them out of "unknown" gives operators an accurate signal instead of a
+# catch-all while keeping the same recovery treatment.
+_TRANSIENT_NETWORK_PATTERNS = (
+    "socket connection was closed unexpectedly",
+    "connection reset by peer",
+    "econnreset",
+    "socket hang up",
+)
 
 
 def _classify_error(rc: int, stderr: str, stdout: str) -> str:
     """Classify a non-zero CLI exit into a semantic error bucket.
 
     Returns one of ``"rate_limit"``, ``"auth"``, ``"timeout"``,
-    ``"invalid_model"``, ``"codex_rollout"``, ``"crash_oom"``,
-    ``"crash_signal"``, or ``"unknown"``.
+    ``"invalid_model"``, ``"codex_rollout"``, ``"transient_network"``,
+    ``"crash_oom"``, ``"crash_signal"``, or ``"unknown"``.
 
     *stderr* is matched against the full pattern set; the trailing 1 000 chars
     of *stdout* are matched only against each category's high-precision
@@ -176,6 +188,8 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> str:
     combined = err + out
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
         return "codex_rollout"
+    if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
+        return "transient_network"
     if any(p in combined for p in _OOM_PATTERNS):
         return "crash_oom"
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS
