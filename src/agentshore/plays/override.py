@@ -18,8 +18,13 @@ Five producer kinds, distinct retry/drop policies:
   Preserves the original producer's classification so the chain doesn't
   flatten back to substring matching.
 * ``RATE_LIMIT_RECOVERY`` — loop-side ``take_break`` enqueued when an agent
-  enters ``AgentStatus.ERROR`` with ``last_error_class in {rate_limit,
-  unknown}``. Bypasses PPO entirely; PPO never picks ``take_break`` itself.
+  enters ``AgentStatus.ERROR`` with ``last_error_class == "rate_limit"``.
+  Bypasses PPO entirely; PPO never picks ``take_break`` itself.
+* ``UNKNOWN_ERROR_RECOVERY`` — loop-side ``take_break`` for a genuinely
+  unclassified ERROR (``last_error_class in {unknown, codex_rollout}``). Same
+  bypass-PPO take-a-break behavior as rate-limit recovery, but a distinct kind
+  + telemetry so a true rate limit is never conflated with an unknown failure
+  (#23/#24). Carries its own enqueue latch so the two paths don't clobber.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ class OverrideKind(StrEnum):
     RETRY = "retry"
     MASK_REQUEUE = "mask_requeue"
     RATE_LIMIT_RECOVERY = "rate_limit_recovery"
+    UNKNOWN_ERROR_RECOVERY = "unknown_error_recovery"
 
 
 @dataclass(frozen=True, slots=True)

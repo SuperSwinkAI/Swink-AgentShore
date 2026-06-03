@@ -27,6 +27,7 @@ from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT, RecoveryTracker
 from agentshore.plays.base import PlayExecutionContext, PlayParams
 from agentshore.plays.internal.take_break import TakeBreakPlay
+from agentshore.plays.override import OverrideKind
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
@@ -224,32 +225,49 @@ def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harnes
 
 
 @pytest.mark.parametrize("error_class", ["crash_signal", "crash_oom"])
-def test_crash_exit_does_not_enqueue_rate_limit_recovery(error_class: str) -> None:
-    """A crash/OOM/external-SIGKILL exit must not be treated as a rate limit (#7).
+def test_crash_exit_does_not_enqueue_recovery(error_class: str) -> None:
+    """A crash/OOM/external-SIGKILL exit must not get a take_break recovery (#7).
 
     The mass -9 burst landed in ``unknown`` and got ``take_break`` backoff. The
-    crash classes are now carved out of ``_RATE_LIMIT_RECOVERY_ERROR_CLASSES`` so
-    no override is enqueued.
+    crash classes are in neither recovery set, so no override is enqueued.
     """
     h = _enqueue_harness(error_class)
 
-    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
 
     assert h._overrides.empty()
     assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._unknown_error_recovery_enqueued
 
 
-@pytest.mark.parametrize("error_class", ["rate_limit", "unknown", "codex_rollout"])
-def test_rate_limit_eligible_classes_still_enqueue_recovery(error_class: str) -> None:
-    """The legitimate rate-limit-recovery path must be preserved (#7 regression guard)."""
-    h = _enqueue_harness(error_class)
+def test_rate_limit_class_enqueues_rate_limit_recovery() -> None:
+    """A true rate_limit error → RATE_LIMIT_RECOVERY + its own latch (#23/#24)."""
+    h = _enqueue_harness("rate_limit")
 
-    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
 
     assert not h._overrides.empty()
     assert "err1" in h._recovery._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._unknown_error_recovery_enqueued
     entry = h._overrides.get_nowait()
     assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.RATE_LIMIT_RECOVERY
+
+
+@pytest.mark.parametrize("error_class", ["unknown", "codex_rollout", "transient_network"])
+def test_unknown_classes_enqueue_unknown_recovery(error_class: str) -> None:
+    """unknown/codex_rollout/transient_network → the distinct UNKNOWN_ERROR_RECOVERY
+    path + its own latch, never the rate-limit one (#23/#24)."""
+    h = _enqueue_harness(error_class)
+
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
+
+    assert not h._overrides.empty()
+    assert "err1" in h._recovery._unknown_error_recovery_enqueued
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.UNKNOWN_ERROR_RECOVERY
 
 
 # ---------------------------------------------------------------------------
