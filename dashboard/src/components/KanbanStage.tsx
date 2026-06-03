@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   AgentSnapshot,
   IssueSnapshot,
@@ -553,6 +554,17 @@ function IssueDetailModal({
   );
 }
 
+function IssueDetailModalPortal({
+  detail,
+  onClose,
+}: IssueDetailModalProps): React.ReactElement | null {
+  if (typeof document === "undefined" || !document.body) return null;
+  return createPortal(
+    <IssueDetailModal detail={detail} onClose={onClose} />,
+    document.body,
+  );
+}
+
 // --- Main component ---
 
 function buildColumns(
@@ -625,71 +637,73 @@ export default function KanbanStage(): React.ReactElement | null {
   // whose `hidden` flag controls visibility. We reproduce that with a wrapping
   // div + `hidden` attribute so the same CSS rules apply.
   return (
-    <div hidden={!internal.visible}>
-      <div
-        className="km-board"
-        style={boardStyle}
-        data-focused-agent={internal.focusedAgent ?? undefined}
-      >
-        <div className="km-hdr">
-          <span className="km-hdr-label">Issues</span>
-          <div className="km-legend">
-            {Array.from(seenEpics.entries()).map(([id, { title, hue }]) => (
-              <span key={id} className="km-legend-item">
-                <span
-                  className="km-legend-swatch"
-                  style={{
-                    background: `oklch(var(--c-mark-l) var(--c-mark-c) ${hue})`,
-                  }}
-                />
-                <span>{title}</span>
-              </span>
-            ))}
+    <>
+      <div hidden={!internal.visible}>
+        <div
+          className="km-board"
+          style={boardStyle}
+          data-focused-agent={internal.focusedAgent ?? undefined}
+        >
+          <div className="km-hdr">
+            <span className="km-hdr-label">Issues</span>
+            <div className="km-legend">
+              {Array.from(seenEpics.entries()).map(([id, { title, hue }]) => (
+                <span key={id} className="km-legend-item">
+                  <span
+                    className="km-legend-swatch"
+                    style={{
+                      background: `oklch(var(--c-mark-l) var(--c-mark-c) ${hue})`,
+                    }}
+                  />
+                  <span>{title}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="km-cols">
+            {PHASES.map((phase) => {
+              const cards = columns[phase];
+              const countStr =
+                cards.length < 10 ? `0${cards.length}` : String(cards.length);
+              const resolved = resolveCardsForPhase(
+                cards,
+                phase,
+                epicIds,
+                internal.focusedAgent,
+              );
+              return (
+                <div key={phase} className="km-col" data-phase={phase}>
+                  <div className="km-col-hdr">
+                    <span
+                      className="km-bullet"
+                      style={{ color: PHASE_BULLET_COLOR[phase] }}
+                    >
+                      ●
+                    </span>
+                    <span className="km-col-name">{PHASE_LABEL[phase]}</span>
+                    <span className="km-col-count">{countStr}</span>
+                  </div>
+                  <div className="km-col-body">
+                    {resolved.length === 0 ? (
+                      <div className="km-empty">—</div>
+                    ) : (
+                      resolved.map((r) => (
+                        <KanbanCardButton
+                          key={r.cardId}
+                          resolved={r}
+                          onOpen={handleOpen}
+                        />
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
-        <div className="km-cols">
-          {PHASES.map((phase) => {
-            const cards = columns[phase];
-            const countStr =
-              cards.length < 10 ? `0${cards.length}` : String(cards.length);
-            const resolved = resolveCardsForPhase(
-              cards,
-              phase,
-              epicIds,
-              internal.focusedAgent,
-            );
-            return (
-              <div key={phase} className="km-col" data-phase={phase}>
-                <div className="km-col-hdr">
-                  <span
-                    className="km-bullet"
-                    style={{ color: PHASE_BULLET_COLOR[phase] }}
-                  >
-                    ●
-                  </span>
-                  <span className="km-col-name">{PHASE_LABEL[phase]}</span>
-                  <span className="km-col-count">{countStr}</span>
-                </div>
-                <div className="km-col-body">
-                  {resolved.length === 0 ? (
-                    <div className="km-empty">—</div>
-                  ) : (
-                    resolved.map((r) => (
-                      <KanbanCardButton
-                        key={r.cardId}
-                        resolved={r}
-                        onOpen={handleOpen}
-                      />
-                    ))
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </div>
-      <IssueDetailModal detail={detail} onClose={handleClose} />
-    </div>
+      <IssueDetailModalPortal detail={detail} onClose={handleClose} />
+    </>
   );
 }
 

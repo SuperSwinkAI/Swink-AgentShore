@@ -936,7 +936,7 @@
         position: fixed;
         inset: 0;
         background: var(--fm-overlay);
-        z-index: 11;
+        z-index: 50;
         justify-content: center;
         align-items: center;
         padding: 24px;
@@ -945,8 +945,8 @@
         display: flex;
       }
       #issue-detail-modal .issue-detail-box {
-        width: min(680px, calc(100vw - 32px));
-        max-height: min(760px, calc(100vh - 48px));
+        width: min(1180px, calc(100vw - 48px));
+        height: min(820px, calc(100vh - 48px));
         overflow: hidden;
         display: flex;
         flex-direction: column;
