@@ -2,7 +2,7 @@
 name: agentshore-reconcile-state
 description: "Action slot 11 — Reconcile State. Reads AgentShore's structured logs + worktree/plays DB + live git state to identify wedged session pathologies (dirty trunk from a killed mutator, orphan worktrees, zombie subprocesses, stuck lockfiles) and remediate locally. Never touches GitHub state."
 disable-model-invocation: true
-allowed-tools: Read, Grep, Glob, Bash(git status:*, git worktree list:*, git checkout:*, git merge --abort:*, git diff:*, git log:*, ps:*, lsof:*, kill:*, find:*, stat:*, jq:*, sqlite3:*, ls:*, tail:*, head:*, awk:*, xargs:*)
+allowed-tools: Read, Grep, Glob, Bash(git status:*, git worktree list:*, git worktree remove --force:*, git worktree prune:*, git checkout:*, git merge --abort:*, git diff:*, git log:*, ps:*, lsof:*, kill:*, find:*, stat:*, jq:*, sqlite3:*, ls:*, tail:*, head:*, awk:*, xargs:*)
 ---
 
 # agentshore-reconcile-state
@@ -40,11 +40,13 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
 **Remediate.** Only act on classifications from above.
 - **Conflicted merge in progress:** `git merge --abort` (the only merge operation this skill may run; it unwinds the in-progress merge and restores the pre-merge worktree — the conflicting work lives on the PR branch, not trunk). Verify `.git/MERGE_HEAD` is gone and `git status --porcelain` has no unmerged (`UU`/etc.) entries → `remediation.merge_aborted: true`. Do this BEFORE any per-path dirty-trunk restore, since unmerged paths can't be `git checkout -- `'d while the merge is live. Failure → `remediation.merge_aborted: false`, `success: false`.
 - **Dirty trunk:** `git checkout -- <path>` per attributed path. Never `--force`/`--theirs`. Verify `git status --porcelain` clears the path → `remediation.trunk_paths_restored`. Failures → `trunk_paths_failed`, continue.
-- **Orphan worktrees:** **do NOT** call `git worktree remove`. Mark stale in the DB so the next session's reconcile sweep handles it: `sqlite3 .agentshore/agentshore.db "UPDATE worktrees SET status='stale', failure_reason='reconcile_state: orphan with no active session' WHERE worktree_path=? AND status='active'" <path>` → `remediation.worktrees_marked_stale`.
+- **Orphan worktrees:** these are **registered** in git metadata, so a DB-only mark-stale leaves the registration behind and Verify can never pass. Remove the registration for real, preserving genuinely-uncommitted work. Per orphan path: check dirtiness with `git -C <path> status --porcelain` (best-effort).
+  - **Clean** (empty porcelain, or git can't introspect the de-registered dir): `git worktree remove --force <path>` then `git worktree prune`. Verify the path is gone from `git worktree list --porcelain`, then mark the DB row stale: `sqlite3 .agentshore/agentshore.db "UPDATE worktrees SET status='stale', failure_reason='reconcile_state: orphan removed' WHERE worktree_path=? AND status='active'" <path>` → `remediation.worktrees_removed`.
+  - **Dirty** (porcelain shows uncommitted changes): do **not** destroy unsaved work. Leave the worktree in place, mark the DB row stale (`failure_reason='reconcile_state: orphan preserved (uncommitted changes)'`), and record the path under `remediation.worktrees_preserved_dirty`. A preserved-dirty orphan makes that category `partial`, not `success: false`.
 - **Zombies:** `kill -9 <pid>` only for provably AgentShore-owned processes; verify gone with `ps -p`. Record PID + 80-char command excerpt + the log line proving ownership → `remediation.processes_killed`.
 - **Stale lockfile:** confirm holder is AgentShore-spawned, kill (zombie rules), wait ≤ 5s for auto-clear. Only `rm` the lockfile if it's in `.agentshore/`, `.cache/uv/`, or a named AgentShore-managed path → `remediation.lockfiles_cleared`.
 
-**Verify.** Re-run ground-truth checks; each remediated category must come back clean (or be reported `partial`). `git status --porcelain` (after filtering AgentShore sidecars) empty; every `git worktree list` entry beyond main matches an active DB row; no zombie children of dispatch parents; no AgentShore-owned process holding a lock past its timeout. Record each check command + exit_code + summary in `verification_evidence`. Failure here → `success: false` with explanation in `error`.
+**Verify.** Re-run ground-truth checks; each remediated category must come back clean (or be reported `partial`). `git status --porcelain` (after filtering AgentShore sidecars) empty; every `git worktree list` entry beyond main matches an active DB row **or** is a preserved-dirty orphan you recorded above (those leave the worktree category `partial`); no zombie children of dispatch parents; no AgentShore-owned process holding a lock past its timeout. Record each check command + exit_code + summary in `verification_evidence`. Failure here → `success: false` with explanation in `error`.
 
 **Unrecognized pattern.** If diagnosis saw a pathology outside the known set above, **do not file anything** — record it in the result block under `unrecognized_pathologies` (a one-line summary plus the supporting log/git/ps/lsof excerpts and `session_id`) so an operator can review it. No GitHub calls.
 
@@ -52,7 +54,7 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
 - Never create/edit/restore/delete `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. Any such remediation → `success: false`, `error: "ci-change requested but forbidden by skill policy"`, files untouched.
 - Never `git push`, and never `gh pr/issue create/close/edit/comment/merge` — this skill makes no GitHub mutations at all.
 - Never `git stash` (entries leak across branches/sessions).
-- Never `git worktree add/remove/prune` — read-only `git worktree list` only.
+- Never `git worktree add` — the skill never creates worktrees. `git worktree remove --force` + `git worktree prune` are permitted **only** for orphan-worktree remediation (a registered worktree with no active session row), and only after the dirty-check above; otherwise `git worktree list` is read-only.
 - Never `git reset --hard`, `git clean -f`, or `git checkout` with branch switching. Working-tree restore is `git checkout -- <path>` on **specific paths attributed to a killed prior play**.
 - Never `kill -9` a process you cannot prove (via the log) is a defunct child of a timed-out dispatch.
 
@@ -76,7 +78,8 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
   "remediation": {
     "trunk_paths_restored": ["src/foo.py", "tests/test_foo.py"],
     "trunk_paths_failed": [],
-    "worktrees_marked_stale": [],
+    "worktrees_removed": [],
+    "worktrees_preserved_dirty": [],
     "processes_killed": [],
     "lockfiles_cleared": []
   },
