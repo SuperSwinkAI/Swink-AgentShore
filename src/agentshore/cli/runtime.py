@@ -125,7 +125,7 @@ def _launch_dashboard_background(
     budget: float | None,
     policy_mode: PolicyMode,
     policy: str | None,
-    strict: bool,
+    strict: bool | None,
     config_path: str | None,
 ) -> None:
     """Launch AgentShore + dashboard as two detached background processes and return.
@@ -172,8 +172,13 @@ def _launch_dashboard_background(
     cmd.extend(["--policy-mode", policy_mode.value])
     if policy:
         cmd.extend(["--policy", policy])
-    if strict:
+    # Propagate the parent's tri-state --strict/--no-strict to the detached
+    # orchestrator so it resolves scope.strict_mode identically. When omitted
+    # (None) the subprocess defers to agentshore.yaml, just as the parent did.
+    if strict is True:
         cmd.append("--strict")
+    elif strict is False:
+        cmd.append("--no-strict")
     if config_path:
         cmd.extend(["--config", config_path])
 
