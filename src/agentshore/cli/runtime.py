@@ -125,8 +125,9 @@ def _launch_dashboard_background(
     budget: float | None,
     policy_mode: PolicyMode,
     policy: str | None,
-    strict: bool,
+    strict: bool | None,
     config_path: str | None,
+    timelapse_enabled: bool = False,
 ) -> None:
     """Launch AgentShore + dashboard as two detached background processes and return.
 
@@ -172,8 +173,13 @@ def _launch_dashboard_background(
     cmd.extend(["--policy-mode", policy_mode.value])
     if policy:
         cmd.extend(["--policy", policy])
-    if strict:
+    # Propagate the parent's tri-state --strict/--no-strict to the detached
+    # orchestrator so it resolves scope.strict_mode identically. When omitted
+    # (None) the subprocess defers to agentshore.yaml, just as the parent did.
+    if strict is True:
         cmd.append("--strict")
+    elif strict is False:
+        cmd.append("--no-strict")
     if config_path:
         cmd.extend(["--config", config_path])
 
@@ -238,7 +244,87 @@ def _launch_dashboard_background(
     url = f"http://localhost:{port}"
     webbrowser.open(url)
     click.echo(f"Dashboard: {url}")
+
+    if timelapse_enabled:
+        _maybe_start_cli_timelapse(project_path, url)
+
     click.echo("Stop with: agentshore stop")
+
+
+def _maybe_start_cli_timelapse(project_path: Path, dashboard_url: str) -> None:
+    """Start a best-effort dashboard timelapse and persist its run-id.
+
+    Mirrors the desktop sidecar's ``_maybe_start_timelapse`` for the CLI's
+    detached ``--dashboard`` path: the capture process is spawned detached (it
+    survives this launcher exiting) and its run-id is stashed in the session dir
+    so the separate ``agentshore stop`` can finalise the render. Any failure is
+    logged and swallowed — a missing binary or capture error must never block
+    session start.
+    """
+    import asyncio
+
+    from agentshore.session_path import write_timelapse_info
+    from agentshore.timelapse import TimelapseError, resolve_timelapse_binary, start_capture
+
+    if resolve_timelapse_binary() is None:
+        _logger.warning("timelapse_start_skipped", reason="binary_not_found")
+        return
+    runs_cwd = project_path / ".agentshore"
+    try:
+        run = asyncio.run(start_capture(dashboard_url, runs_cwd))
+    except TimelapseError as exc:
+        _logger.warning("timelapse_start_failed", error=str(exc))
+        return
+    write_timelapse_info(project_path, run_id=run.run_id, runs_cwd=runs_cwd)
+    click.echo(f"Timelapse capture started (run {run.run_id}).")
+
+
+def _finalize_cli_timelapse(
+    project_path: Path,
+    *,
+    info: dict[str, object] | None = None,
+    echo: bool = False,
+) -> str | None:
+    """Stop and render a CLI-started dashboard timelapse (best-effort).
+
+    Reads the recorded run-id (from *info* when supplied, else the session
+    ``timelapse.json``), stops the detached capture, waits for the render, and
+    clears the sidecar. Idempotent — safe to call from both the orchestrator's
+    own shutdown (covering a natural session end) and ``agentshore stop`` (a
+    backstop for hard stops, where the orchestrator is killed before it can run
+    its shutdown). Never raises: a missing/failed capture must not block
+    shutdown. Returns the rendered MP4 path when available.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from agentshore.session_path import clear_timelapse_info, read_timelapse_info
+
+    info = info if info is not None else read_timelapse_info(project_path)
+    if info is None:
+        return None
+    run_id = info.get("run_id")
+    runs_cwd_raw = info.get("runs_cwd")
+    if not isinstance(run_id, str) or not isinstance(runs_cwd_raw, str):
+        clear_timelapse_info(project_path)
+        return None
+
+    async def _run() -> str | None:
+        from agentshore.timelapse import TimelapseError, await_output, stop_capture
+
+        try:
+            await stop_capture(run_id, Path(runs_cwd_raw))
+        except TimelapseError as exc:
+            # Already stopped (e.g. the orchestrator finalised first) or a real
+            # failure — either way, still try to fetch the rendered output.
+            _logger.warning("timelapse_stop_failed", run_id=run_id, error=str(exc))
+        return await await_output(run_id, Path(runs_cwd_raw))
+
+    output_path = asyncio.run(_run())
+    clear_timelapse_info(project_path)
+    if echo and output_path:
+        click.echo(f"Timelapse saved: {output_path}")
+    return output_path
 
 
 async def _run_agent_mode(
