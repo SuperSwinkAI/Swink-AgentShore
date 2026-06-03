@@ -692,6 +692,13 @@ function SetupLayout({
               }}
               selection={setup.startSelection}
               timelapseAvailable={setup.timelapseInstalled}
+              onTimelapseInstalled={() => {
+                setSetup((prev) => {
+                  const merged = { ...prev, timelapseInstalled: true };
+                  persistSetup(merged);
+                  return merged;
+                });
+              }}
               onChange={(next) => {
                 setSetup((prev) => {
                   const merged = { ...prev, startSelection: next };
