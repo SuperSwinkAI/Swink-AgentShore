@@ -123,6 +123,66 @@ async def test_sweep_session_start_reaps_other_sessions(
     assert mine_path.exists()
 
 
+async def test_reap_exception_marks_row_failed_freeing_unique_index(
+    store: DataStore,
+    main_repo: Path,
+    worktree_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reap that raises must drive the row to terminal ``failed`` (#32).
+
+    ``_reap_one`` first flips the row to ``reaping`` and then removes the
+    worktree. If removal raises, the row used to be left in ``reaping`` —
+    inside the partial unique index ``(session_id, branch_name) WHERE status IN
+    ('active','reaping')`` — so every subsequent reap/allocate for the same pair
+    hit ``UNIQUE constraint failed: worktrees.session_id, branch_name`` forever.
+    The handler now transitions the row to ``failed`` (outside the index).
+    """
+    from agentshore.agents.worktree import reaper as reaper_mod
+    from agentshore.agents.worktree.reaper import ReapReport, _reap_one
+
+    wt_id, _path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-other",
+        branch_name="boom-branch",
+        pre_branch_key=None,
+        dir_name="boom-wt",
+    )
+    row = await lookup_by_id(store, worktree_id=wt_id)
+    assert row is not None
+
+    async def _raise(**_kwargs: object) -> bool:
+        raise RuntimeError("UNIQUE constraint failed: worktrees.session_id, branch_name")
+
+    monkeypatch.setattr(reaper_mod, "remove_worktree", _raise)
+
+    report = ReapReport()
+    await _reap_one(store, row=row, main_repo=main_repo, reason="test", report=report)
+
+    # Recorded as failed, and the row is in a terminal status (not 'reaping').
+    assert len(report.failed) == 1
+    persisted = await lookup_by_id(store, worktree_id=wt_id)
+    assert persisted is not None
+    assert persisted.status == "failed"
+
+    # Regression: the (session_id, branch_name) partial unique index is now
+    # free — a fresh allocation for the same pair no longer collides. Before the
+    # fix the stuck 'reaping' row made this insert raise.
+    new_row = await insert_worktree(
+        store,
+        session_id="sess-other",
+        branch_name="boom-branch",
+        pre_branch_key=None,
+        worktree_path=str(worktree_root / "boom-wt-reattempt"),
+        original_play_type="code_review",
+        base_ref="origin/HEAD",
+        head_sha=None,
+    )
+    assert new_row.worktree_id != wt_id
+
+
 async def test_sweep_session_start_handles_missing_directory(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:

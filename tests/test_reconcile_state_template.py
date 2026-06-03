@@ -61,21 +61,31 @@ def test_forbidden_no_git_stash(template_text: str) -> None:
     assert "Never `git stash`" in template_text
 
 
-def test_forbidden_worktree_lifecycle_mutations(template_text: str) -> None:
-    """AgentShore owns worktree lifecycle; only read-only ``git worktree list`` allowed.
+def test_forbidden_worktree_add(template_text: str) -> None:
+    """The skill never creates worktrees — ``git worktree add`` stays forbidden.
 
-    Accepts either the comma-separated form or the ``add/remove/prune`` slash form —
-    the intent (all three forbidden in one clause) is what matters.
+    ``git worktree remove --force`` + ``prune`` are now permitted, but ONLY for
+    orphan-worktree remediation (#33): a registered worktree with no active
+    session row otherwise leaves a leak that DB-only remediation can't clear and
+    that fails Verify forever. The add ban is what remains load-bearing.
     """
-    long_form = re.search(
-        r"`git worktree add`.*`git worktree remove`.*`git worktree prune`",
-        template_text,
-        re.DOTALL,
+    assert re.search(r"Never `git worktree add`", template_text), (
+        "reconcile-state: missing the forbidden `git worktree add` clause"
     )
-    short_form = re.search(r"`?git worktree add/remove/prune`?", template_text)
-    assert long_form or short_form, (
-        "reconcile-state: missing the forbidden git worktree add/remove/prune clause"
-    )
+
+
+def test_orphan_remediation_removes_registration(template_text: str) -> None:
+    """Orphan remediation must actually de-register the worktree, not just mark stale.
+
+    A git-registered orphan can only be cleared with ``git worktree remove
+    --force`` + ``git worktree prune``; a DB UPDATE alone leaves the
+    registration and Verify can never pass (#33).
+    """
+    assert "git worktree remove --force" in template_text
+    assert "git worktree prune" in template_text
+    # The old DB-only-and-defer instruction must be gone.
+    assert "do NOT** call `git worktree remove`" not in template_text
+    assert "worktree remove --force:*" in template_text  # allow-listed in frontmatter
 
 
 def test_forbidden_ci_configs(template_text: str) -> None:
