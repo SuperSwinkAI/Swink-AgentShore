@@ -17,19 +17,19 @@ from agentshore.cli.helpers import (
     _resolve_start_run_mode,
 )
 from agentshore.cli.runtime import (
+    _finalize_cli_timelapse,
     _launch_dashboard_background,
     _run_agent_mode,
     _run_headless_mode,
     _run_solo_mode,
 )
-from agentshore.cli_helpers import _DEFAULT_BUDGET
 from agentshore.config.models import PolicyMode, RunMode
 from agentshore.session.bootstrap import (
     StartOptions,
     bootstrap_session,
     echo_bootstrap_summary,
     preflight_identities,
-    resolve_effective_budget,
+    validate_budget_flag,
 )
 
 
@@ -46,9 +46,12 @@ from agentshore.session.bootstrap import (
 @click.option(
     "--budget",
     type=float,
-    default=_DEFAULT_BUDGET,
-    show_default=True,
-    help="Total dollar budget for this session",
+    default=None,
+    help=(
+        "Total dollar budget for this session. When omitted, the budget from "
+        "agentshore.yaml is used (falling back to a $200 default only when the "
+        "config defines no budget)."
+    ),
 )
 @click.option(
     "--no-budget",
@@ -110,9 +113,13 @@ from agentshore.session.bootstrap import (
     help="Path to a saved policy checkpoint (.pt)",
 )
 @click.option(
-    "--strict",
-    is_flag=True,
-    help="Enable scope.strict_mode (stricter scope-drift logging)",
+    "--strict/--no-strict",
+    "strict",
+    default=None,
+    help=(
+        "Enable/disable scope.strict_mode (stricter scope-drift logging). "
+        "When omitted, the value from agentshore.yaml is used."
+    ),
 )
 @click.option(
     "--project",
@@ -130,7 +137,7 @@ from agentshore.session.bootstrap import (
 @click.option("--session-id", hidden=True, default=None)
 def start(
     seed: str | None,
-    budget: float,
+    budget: float | None,
     no_budget: bool,
     mode: str,
     tui: bool,
@@ -142,7 +149,7 @@ def start(
     policy_mode: str | None,
     legacy_deterministic: bool,
     policy: str | None,
-    strict: bool,
+    strict: bool | None,
     project: str,
     config_path: str | None,
     session_id: str | None,
@@ -169,8 +176,11 @@ def start(
     # desktop-n7ci). No-op on Linux/Windows and inside pytest.
     maybe_re_exec_under_caffeinate()
 
-    # Parse: resolve flag-level options the bootstrap needs.
-    effective_budget = resolve_effective_budget(budget, no_budget=no_budget)
+    # Parse: validate flag-level options the bootstrap needs. Budget itself is
+    # resolved against the loaded config inside bootstrap (so an omitted
+    # --budget can defer to agentshore.yaml); validate the explicit value here
+    # so a bad --budget surfaces as a usage error before any work happens.
+    validate_budget_flag(budget)
     policy_mode_override = _resolve_policy_mode_override(
         policy_mode=policy_mode,
         legacy_deterministic=legacy_deterministic,
@@ -188,7 +198,8 @@ def start(
             project_path=Path(project).resolve(),
             run_session_id=session_id or str(uuid.uuid4()),
             seed=seed,
-            effective_budget=effective_budget,
+            budget_override=budget,
+            no_budget=no_budget,
             policy_mode_override=policy_mode_override,
             run_mode=run_mode,
             socket=socket,
@@ -234,11 +245,12 @@ def start(
             ipc_endpoint=ipc_endpoint,
             session_id=run_session_id,
             seed=seed,
-            budget=effective_budget,
+            budget=resolved.effective_budget,
             policy_mode=effective_policy_mode,
             policy=policy,
             strict=strict,
             config_path=str(_cfg_path) if _cfg_path else None,
+            timelapse_enabled=cfg.timelapse.enabled,
         )
         return
 
@@ -301,5 +313,9 @@ def start(
                 session_id=run_session_id,
             )
     finally:
+        # Finalise any CLI-started dashboard timelapse before cleanup removes the
+        # sidecar — covers a natural session end and a graceful drain. No-op when
+        # no capture was started (e.g. headless/solo).
+        _finalize_cli_timelapse(project_path)
         stop_dashboard_process(project_path)
         cleanup_session(project_path)
