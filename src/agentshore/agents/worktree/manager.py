@@ -40,7 +40,6 @@ from agentshore.agents.worktree.allocator import (
 from agentshore.agents.worktree.reaper import (
     ReapReport,
     reap_for_closed_prs,
-    sweep_orphans,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -362,8 +361,9 @@ class WorktreeManager:
              ``worktree_root`` vs ``git worktree list`` — one filesystem
              traversal, one git invocation, so the reconcile and DB-sweep
              stages can't disagree about which paths are registered.
-          2. ``reconcile_worktrees`` consumes the scan to quarantine
-             unregistered on-disk dirs (closes #570).
+          2. ``reconcile_worktrees`` consumes the scan to delete
+             unregistered on-disk dirs (preserving any with uncommitted
+             work) (closes #570).
           3. ``sweep_session_start`` reaps DB rows from prior sessions
              (existing behaviour).
         """
@@ -375,25 +375,39 @@ class WorktreeManager:
             worktree_root=self._worktree_root,
             scan=scan,
         )
-        if reconcile.quarantined:
+        if reconcile.deleted or reconcile.preserved_dirty:
             log.info(
                 "worktree_reconcile_summary",
-                quarantined_count=len(reconcile.quarantined),
-                quarantined_paths=[str(p) for p in reconcile.quarantined],
+                deleted_count=len(reconcile.deleted),
+                deleted_paths=[str(p) for p in reconcile.deleted],
+                preserved_dirty_count=len(reconcile.preserved_dirty),
+                preserved_dirty_paths=[str(p) for p in reconcile.preserved_dirty],
             )
         report = await sweep_session_start(
             self._store,
             current_session_id=self._session_id,
             main_repo=self._main_repo,
         )
-        # Bound the orphan quarantine: delete aged-out orphan worktrees so the
-        # ``-orphan`` dir can't grow unbounded (it never auto-cleaned before).
-        retention = getattr(getattr(self._cfg, "worktrees", None), "orphan_retention_seconds", 0)
-        await sweep_orphans(self._worktree_root, retention_seconds=retention)
+        # One-shot migration: AgentShore used to quarantine orphans into a
+        # ``<root>-orphan`` sibling that was never reliably reaped (a monitored
+        # machine accumulated 116 GB of Rust build caches there). Orphans are
+        # now deleted in reconcile, so remove any pre-existing quarantine dir.
+        await self._remove_legacy_orphan_dir()
         # Prune locks whose (scope, key) no longer maps to a live row in
         # the current session (desktop-kdl5).
         await self._prune_locks()
         return report
+
+    async def _remove_legacy_orphan_dir(self) -> None:
+        """Delete a pre-existing ``<worktree_root>-orphan`` quarantine dir (best-effort)."""
+        import asyncio
+        import shutil
+
+        legacy = self._worktree_root.with_name(self._worktree_root.name + "-orphan")
+        if not legacy.exists():
+            return
+        await asyncio.to_thread(shutil.rmtree, legacy, ignore_errors=True)
+        log.info("worktree_legacy_orphan_dir_removed", path=str(legacy))
 
     async def reap_closed_prs(self, *, ttl_seconds: int) -> ReapReport:
         """Reap ``stale`` rows older than ``ttl_seconds`` in this session."""

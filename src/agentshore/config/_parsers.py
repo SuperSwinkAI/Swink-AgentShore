@@ -312,7 +312,6 @@ class _RawSkills(TypedDict, total=False):
 class _RawWorktrees(TypedDict, total=False):
     reap_ttl_seconds: int
     root: str | None
-    orphan_retention_seconds: int
 
 
 class _RawConfig(TypedDict, total=False):
@@ -979,15 +978,9 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
     root = raw.get("root")
     if root is not None and not (isinstance(root, str) and root.strip()):
         raise ConfigError(f"worktrees.root must be a non-empty string or omitted, got {root!r}")
-    orphan_ttl = raw.get("orphan_retention_seconds", 604800)
-    if not isinstance(orphan_ttl, int) or isinstance(orphan_ttl, bool) or orphan_ttl < 0:
-        raise ConfigError(
-            f"worktrees.orphan_retention_seconds must be a non-negative integer, got {orphan_ttl!r}"
-        )
     return WorktreeConfig(
         reap_ttl_seconds=ttl,
         root=root.strip() if isinstance(root, str) else None,
-        orphan_retention_seconds=orphan_ttl,
     )
 
 

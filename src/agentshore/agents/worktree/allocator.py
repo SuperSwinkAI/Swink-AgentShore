@@ -11,7 +11,6 @@ import asyncio
 import re
 import shutil
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -381,31 +380,21 @@ async def ensure_worktree(
 
     if worktree_path.exists():
         # Orphan directory: path exists but git doesn't know it as a worktree.
-        # Common causes: a prior session was force-killed mid-allocate, or
-        # the skill exited without ``git worktree remove`` cleanup. Raising
-        # here used to permanently block any future play that needed the same
-        # branch — 93 consecutive code_review dispatches can fail against orphan dirs.
-        # Quarantine the orphan so the allocate can proceed; the moved
-        # content is preserved under ``agentshore-worktrees-orphan/`` for the
-        # user to inspect (no automatic cleanup).
-        try:
-            destination = await quarantine_orphan(
-                orphan_path=worktree_path, worktree_root=worktree_path.parent
-            )
-        except (OSError, shutil.Error) as exc:
-            # ``quarantine_orphan`` already logged structured context; surface
-            # a typed allocator failure so downstream play-verdict mapping
-            # and metrics categorise this as a quarantine issue rather than
-            # a generic OSError. Next dispatch retries the same path.
+        # Common causes: a prior session was force-killed mid-allocate, or the
+        # skill exited without ``git worktree remove`` cleanup. A clean orphan
+        # is rebuildable debris (committed work is already in git, and orphans
+        # are never re-adopted), so delete it and proceed — raising here used to
+        # permanently block any future play that needed the same branch (93
+        # consecutive code_review dispatches failed against orphan dirs). A
+        # dirty orphan holds uncommitted work, so we refuse to destroy it and
+        # surface it for manual resolution instead.
+        disposition = await _dispose_orphan(main_repo=main_repo, path=worktree_path)
+        if disposition == "preserved":
             raise WorktreeAllocationFailed(
-                f"quarantine of orphan {worktree_path} failed: {exc}",
-                reason="quarantine_orphan_failed",
-            ) from exc
-        log.warning(
-            "worktree_orphan_quarantined_on_allocate",
-            orphan_path=str(worktree_path),
-            quarantine_path=str(destination),
-        )
+                f"orphan worktree at {worktree_path} has uncommitted changes; "
+                "resolve it manually (commit or remove) before this play can run",
+                reason="orphan_dirty_uncommitted",
+            )
 
     args: list[str] = ["worktree", "add"]
     if branch_name is not None:
@@ -465,7 +454,7 @@ async def remove_worktree(
     return not worktree_path.exists()
 
 
-# --- Orphan quarantine + on-disk reconciliation -----------------------------
+# --- Orphan deletion + on-disk reconciliation -------------------------------
 #
 # The worktree allocator and ``git worktree list`` are the source of truth for
 # "this path is a valid worktree". Reality can diverge: a prior session may
@@ -475,10 +464,13 @@ async def remove_worktree(
 # at the same path (``git worktree add`` refuses to overwrite).
 #
 # The functions below converge from any starting state to a clean one:
-#   - ``quarantine_orphan``      : atomically move one orphan dir aside
+#   - ``_dispose_orphan``        : delete one orphan dir (preserve if dirty)
 #   - ``reconcile_worktrees``    : sweep the whole worktree_root + prune
-# ``ensure_worktree`` calls ``quarantine_orphan`` inline whenever it hits a
-# target_path_dirty case; the manager's ``reap_session_start`` calls
+# Orphans are never re-adopted and their (gitignored) build caches are never
+# reused, so a clean orphan is deleted outright rather than quarantined; only a
+# dirty orphan (uncommitted work) is left in place for manual recovery.
+# ``ensure_worktree`` calls ``_dispose_orphan`` inline whenever it hits an
+# orphan at the target path; the manager's ``reap_session_start`` calls
 # ``reconcile_worktrees`` once at session boot for the big-picture sweep.
 
 
@@ -486,65 +478,43 @@ async def remove_worktree(
 class ReconcileReport:
     """Outcome of ``reconcile_worktrees``.
 
-    ``quarantined`` paths are the new locations of dirs that were on disk
-    but not registered with git. Empty list = nothing diverged.
+    ``deleted`` are orphan dirs (on disk, not registered with git) that were
+    removed. ``preserved_dirty`` are orphans left in place because they held
+    uncommitted work. Both empty = nothing diverged.
     """
 
-    quarantined: list[Path] = field(default_factory=list)
+    deleted: list[Path] = field(default_factory=list)
+    preserved_dirty: list[Path] = field(default_factory=list)
 
 
-def _quarantine_root(worktree_root: Path) -> Path:
-    """Quarantine dir: an ``-orphan`` sibling of the worktree root.
+async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
+    """Delete an orphan worktree dir, preserving only genuinely-uncommitted work.
 
-    For ``worktree_root`` = ``<base>/worktrees`` this returns
-    ``<base>/worktrees-orphan`` (same parent), so the orphan dir tracks
-    whatever base the worktree root uses (project-local ``.agentshore/`` by
-    default, or a configured central root).
+    Orphans are on-disk worktree dirs git no longer tracks (a prior session was
+    force-killed mid-allocate, or ``git worktree prune`` dropped the
+    registration). They are never re-adopted and their gitignored build caches
+    are never reused, so a *clean* orphan is rebuildable debris (committed work
+    is already in git) and is deleted. An orphan with *uncommitted* changes is
+    left in place — preserved for manual recovery rather than destroyed.
+
+    Returns ``"deleted"`` or ``"preserved"``. Best-effort; never raises.
     """
-    return worktree_root.with_name(worktree_root.name + "-orphan")
-
-
-async def quarantine_orphan(*, orphan_path: Path, worktree_root: Path) -> Path:
-    """Atomically move an orphan worktree directory into the quarantine sibling.
-
-    Used when the allocator finds a non-registered directory at the target
-    path, or when reconciliation finds an on-disk dir without a registered
-    worktree. The orphan content is preserved (not deleted) so any
-    uncommitted agent work survives — the user sweeps the quarantine
-    manually when ready.
-
-    Returns the quarantine destination path. Falls back to copy+remove if
-    the move crosses filesystems (``shutil.move`` behaviour); on the same
-    filesystem the move is atomic at the directory level.
-    """
-    quarantine_dir = _quarantine_root(worktree_root)
-    quarantine_dir.mkdir(parents=True, exist_ok=True)
-    # ISO8601 suffix avoids collisions when the same orphan name is
-    # quarantined multiple times in quick succession.
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    destination = quarantine_dir / f"{orphan_path.name}-{timestamp}"
-    # Bump the suffix if (improbably) two quarantines collide in the same second.
-    counter = 1
-    while destination.exists():
-        destination = quarantine_dir / f"{orphan_path.name}-{timestamp}-{counter}"
-        counter += 1
-    try:
-        await asyncio.to_thread(shutil.move, str(orphan_path), str(destination))
-    except (OSError, shutil.Error) as exc:
-        # ``shutil.move`` can fail when crossing filesystems with read-only
-        # files, when the destination is unwritable, or when a parallel run
-        # collided on the same destination after our existence check. Surface
-        # the failure with structured context so the operator can intervene;
-        # re-raise so the caller (``ensure_worktree`` or
-        # ``reconcile_worktrees``) decides whether to abort or skip.
+    # Orphans are de-registered, so ``git status`` inside them fails until the
+    # admin link is repaired. Re-link best-effort so we can inspect for
+    # uncommitted work; if repair/status still can't introspect the dir, treat
+    # it as detached debris and delete (committed work is safe in git).
+    await _run_git("worktree", "repair", str(path), cwd=main_repo, check=False)
+    rc, out, _ = await _run_git("status", "--porcelain", cwd=path, check=False)
+    if rc == 0 and out.strip():
         log.warning(
-            "quarantine_orphan_failed",
-            orphan_path=str(orphan_path),
-            destination=str(destination),
-            error=str(exc),
+            "worktree_orphan_preserved_dirty",
+            orphan_path=str(path),
+            dirty_summary=out.strip()[:500],
         )
-        raise
-    return destination
+        return "preserved"
+    await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
+    log.info("worktree_orphan_deleted", orphan_path=str(path))
+    return "deleted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,7 +522,7 @@ class WorktreeRootScan:
     """Single-pass classification of ``worktree_root`` against ``git worktree list``.
 
     Produced by ``_walk_worktree_root_once`` so that reconciliation (orphan
-    quarantine) and session-start sweep (DB-row reap) can share one
+    deletion) and session-start sweep (DB-row reap) can share one
     filesystem traversal and one git-registry snapshot. Coalescing the two
     used-to-be-separate passes removes the window where they could disagree
     about which paths are registered vs orphaned.
@@ -567,7 +537,7 @@ async def _walk_worktree_root_once(*, main_repo: Path, worktree_root: Path) -> W
     """Single filesystem + ``git worktree list`` pass over ``worktree_root``.
 
     Returns the resolved registered-paths set and the list of on-disk dirs
-    that are not registered with git (candidates for quarantine). Both
+    that are not registered with git (candidates for deletion). Both
     ``reconcile_worktrees`` and the session-start coalesced flow consume
     this — guarantees neither sees a different git registry view than the
     other.
@@ -621,17 +591,19 @@ async def reconcile_worktrees(
     worktree_root: Path,
     scan: WorktreeRootScan | None = None,
 ) -> ReconcileReport:
-    """Sweep ``worktree_root`` against ``git worktree list``; quarantine divergence.
+    """Sweep ``worktree_root`` against ``git worktree list``; delete divergence.
 
     Three on-disk vs git states:
       1. Dir exists + registered with git → leave it alone (healthy)
-      2. Dir exists + NOT registered → quarantine to the sibling root
+      2. Dir exists + NOT registered → delete (clean) or preserve (dirty)
       3. Registered with git + dir absent → ``git worktree prune`` cleans the
          registration (no on-disk action needed)
 
-    Idempotent: a second consecutive call should produce
-    ``ReconcileReport(quarantined=[])``. Safe to call from session bootstrap
-    on a fresh machine (no worktree_root yet) — returns an empty report.
+    Idempotent for clean orphans: a second consecutive call produces
+    ``ReconcileReport()`` once the clean orphans are gone. A dirty orphan is
+    left in place and will be re-reported as ``preserved_dirty`` until a human
+    resolves it. Safe to call from session bootstrap on a fresh machine (no
+    worktree_root yet) — returns an empty report.
 
     Pass ``scan`` to share a single ``_walk_worktree_root_once`` result with
     other session-start work (e.g. the reaper's sweep) so both stages see
@@ -641,28 +613,18 @@ async def reconcile_worktrees(
         scan = await _walk_worktree_root_once(main_repo=main_repo, worktree_root=worktree_root)
     if not scan.git_list_ok:
         # Cannot enumerate git's view → can't safely identify orphans.
-        return ReconcileReport(quarantined=[])
+        return ReconcileReport()
 
-    quarantined: list[Path] = []
+    deleted: list[Path] = []
+    preserved_dirty: list[Path] = []
     for entry in scan.orphan_dirs:
-        try:
-            destination = await quarantine_orphan(orphan_path=entry, worktree_root=worktree_root)
-        except (OSError, shutil.Error) as exc:
-            log.warning(
-                "worktree_orphan_quarantine_failed",
-                orphan_path=str(entry),
-                error=str(exc),
-            )
-            continue
-        log.info(
-            "worktree_orphan_quarantined",
-            orphan_path=str(entry),
-            quarantine_path=str(destination),
-        )
-        quarantined.append(destination)
+        if await _dispose_orphan(main_repo=main_repo, path=entry) == "deleted":
+            deleted.append(entry)
+        else:
+            preserved_dirty.append(entry)
 
     # Prune any stale registrations whose on-disk dir is gone.
     if main_repo.exists():
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
 
-    return ReconcileReport(quarantined=quarantined)
+    return ReconcileReport(deleted=deleted, preserved_dirty=preserved_dirty)

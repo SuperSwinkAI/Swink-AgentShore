@@ -471,12 +471,6 @@ class WorktreeConfig:
     # centralize worktrees elsewhere; per-repo subdirs disambiguate by name.
     root: str | None = None
 
-    # Seconds an orphaned (quarantined) worktree is retained before the
-    # session-start sweep deletes it. Orphans are full repo checkouts that
-    # otherwise accumulate unbounded (only uncommitted agent work is unique —
-    # committed work is already in git). Default 7 days.
-    orphan_retention_seconds: int = 604800
-
 
 # ---------------------------------------------------------------------------
 # Master availability record (~/.config/swink/agentshore/availability.yaml)
