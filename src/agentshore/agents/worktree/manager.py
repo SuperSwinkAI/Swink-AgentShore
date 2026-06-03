@@ -297,11 +297,18 @@ class WorktreeManager:
           worktree.
         - **Branch-creating success with ``result.branch``:** rekey to the
           real branch + rename directory.
-        - **Branch-creating success without a branch:** mark ``stale`` —
-          the play "succeeded" without producing a branch (rare; usually
-          means SkillResult dropped the field). Reaper picks it up later.
-        - **Branch-creating failure:** mark ``stale`` so the reaper drops
-          the on-disk worktree after the TTL.
+        - **Branch-creating success without a branch:** remove the
+          worktree and mark ``stale`` — the play "succeeded" without
+          producing a branch (e.g. issue_pickup declined a non-actionable
+          issue), so the ``pickup-<N>`` checkout has nothing worth keeping.
+        - **Branch-creating failure:** remove the worktree and mark
+          ``stale``.
+
+        Branch-creating worktrees that produced no branch are removed inline
+        (``git worktree remove --force`` + prune) rather than left for the
+        TTL reaper: a declined/failed pickup otherwise leaks a git-registered
+        ``pickup-<N>`` worktree that ``reconcile_state`` can't clear and that
+        accumulates disk across short sessions (#33).
         """
         if allocation.scope == "pr":
             await touch(self._store, worktree_id=allocation.worktree_id)
@@ -341,6 +348,10 @@ class WorktreeManager:
         # prebranch lock; the row is on its way out (desktop-kdl5).
         if allocation.pre_branch_key is not None:
             await self._evict_lock("prebranch", allocation.pre_branch_key)
+        # Remove the leaked checkout now (git + disk + prune) so a declined or
+        # failed pickup doesn't leave a git-registered pickup-<N> worktree
+        # behind (#33). Never raises.
+        await _best_effort_remove(self._main_repo, allocation.path)
         await mark_status(
             self._store,
             worktree_id=allocation.worktree_id,

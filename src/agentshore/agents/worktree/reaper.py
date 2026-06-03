@@ -115,6 +115,26 @@ async def _reap_one(
             path=str(path),
             error=str(exc),
         )
+        # Drive the row to a terminal status so it leaves the
+        # (session_id, branch_name) partial unique index (which covers only
+        # 'active'/'reaping'). Left in 'reaping' it collides on every later
+        # reap or allocate for the same pair — the recurring
+        # "UNIQUE constraint failed: worktrees.session_id, branch_name" (#32).
+        # 'failed' is outside the index, so this also resolves a duplicate-key
+        # collision that may itself have raised here. Never let cleanup raise.
+        try:
+            await mark_status(
+                store,
+                worktree_id=row.worktree_id,
+                status="failed",
+                failure_reason=f"reap_exception: {exc}",
+            )
+        except Exception as mark_exc:
+            log.warning(
+                "worktree_reap_status_update_failed",
+                worktree_id=row.worktree_id,
+                error=str(mark_exc),
+            )
         report.failed.append(
             OrphanRecord(
                 worktree_id=row.worktree_id,
