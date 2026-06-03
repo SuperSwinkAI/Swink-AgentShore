@@ -9,6 +9,7 @@ from agentshore.rl.mask_reason import MaskReason
 from agentshore.state import OrchestratorState, PlayOutcome, PlayType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
@@ -78,6 +79,10 @@ class PlayExecutionContext:
     cfg: RuntimeConfig
     project_path: Path
     state_provider: StateProvider | None = None
+    # True while the session is winding down (budget drain / stop). Plays that
+    # sleep (e.g. take_break) poll this so a drain that begins mid-play aborts
+    # promptly instead of holding an agent for the full duration (#30).
+    is_draining: Callable[[], bool] | None = None
 
 
 @runtime_checkable

@@ -345,6 +345,15 @@ class ParameterResolver:
             return PlayParams(agent_id=terminal_error[0].agent_id, bypass_preconditions=True)
 
         if state.session_state == SessionState.DRAINING:
+            # During drain, recovery (take_break) is masked, so a recoverable-
+            # ERROR agent (e.g. a BUSY agent reaped mid-play -> exit 143 ->
+            # ERROR/"unknown") never reaches IDLE or recovery_exhausted. Left
+            # alone it wedges drain forever, since should_terminate requires all
+            # agents TERMINATED (#30). Retire any ERROR agent immediately —
+            # clear() tears it down whatever status it is in.
+            errored = [s for s in state.agents if s.status == AgentStatus.ERROR]
+            if errored:
+                return PlayParams(agent_id=errored[0].agent_id, bypass_preconditions=True)
             idle = [s for s in state.agents if s.status == AgentStatus.IDLE]
         else:
             idle = [

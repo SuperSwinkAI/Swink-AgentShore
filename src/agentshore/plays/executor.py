@@ -195,6 +195,7 @@ class PlayExecutor:
         state_provider: StateProvider | None = None,
         github: GitHubAdapter | None = None,
         requeue_callback: Callable[[PlayType, PlayParams], None] | None = None,
+        is_draining: Callable[[], bool] | None = None,
     ) -> None:
         self._registry = registry
         self._resolver = resolver
@@ -206,6 +207,10 @@ class PlayExecutor:
         self._state_provider = state_provider
         self._github = github
         self._requeue_callback = requeue_callback
+        # Lets sleeping plays (take_break) observe a wind-down and abort early
+        # (#30). Wired post-construction by the orchestrator once it owns the
+        # drain flag (mirrors ``_requeue_callback``).
+        self._is_draining = is_draining
         self.emits_play_started = True
         self._inflight_issues: set[int] = set()
         # Session-scoped set of issues that have had a WRITE_IMPLEMENTATION_PLAN
@@ -490,6 +495,7 @@ class PlayExecutor:
             cfg=self._cfg,
             project_path=self._project_path,
             state_provider=self._state_provider,
+            is_draining=self._is_draining,
         )
 
         if not await self._start_claim_group(params, play_id):

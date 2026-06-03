@@ -250,3 +250,66 @@ def test_rate_limit_eligible_classes_still_enqueue_recovery(error_class: str) ->
     assert "err1" in h._recovery._rate_limit_recovery_enqueued
     entry = h._overrides.get_nowait()
     assert entry.play_type == PlayType.TAKE_BREAK
+
+
+# ---------------------------------------------------------------------------
+# Drain wind-down: retire an errored agent instead of recovering it (#30/#23)
+# ---------------------------------------------------------------------------
+
+
+class _DrainHarness(CompletionProcessor):
+    """CompletionProcessor stand-in for _retire_or_recover_errored_agent."""
+
+    def __init__(self, *, draining: bool) -> None:
+        self._session_id = "s1"
+        self._overrides = OverrideQueue()
+        self._recovery = RecoveryTracker()
+        self._manager = MagicMock()
+        self._manager.clear = AsyncMock()
+        handle = MagicMock()
+        handle.last_error_class = "unknown"  # recoverable class
+        self._manager.handles = {"err1": handle}
+        self._host = MagicMock()
+        self._host._draining = draining
+        self._host._stop_requested = False
+
+        async def _safe_call(coro: object, _name: str) -> None:
+            await coro  # actually run manager.clear() so the assertion is real
+
+        self._host._safe_call = _safe_call
+
+
+@pytest.mark.asyncio
+async def test_drain_retires_errored_agent_without_enqueuing_recovery() -> None:
+    """During drain, a completing ERROR agent is cleared, not recovered (#30)."""
+    h = _DrainHarness(draining=True)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
+
+    h._manager.clear.assert_awaited_once_with("err1")
+    assert h._overrides.empty()  # no doomed rate-limit recovery enqueued (#23)
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+
+
+@pytest.mark.asyncio
+async def test_non_drain_completion_still_enqueues_recovery() -> None:
+    """Outside drain, the normal rate-limit recovery path is preserved."""
+    h = _DrainHarness(draining=False)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
+
+    h._manager.clear.assert_not_awaited()
+    assert not h._overrides.empty()
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+
+
+@pytest.mark.asyncio
+async def test_drain_does_not_clear_a_non_errored_agent() -> None:
+    """A healthy (IDLE) agent completing during drain is left alone."""
+    h = _DrainHarness(draining=True)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.IDLE)
+
+    h._manager.clear.assert_not_awaited()
+    assert h._overrides.empty()

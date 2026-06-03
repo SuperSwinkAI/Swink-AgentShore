@@ -162,6 +162,8 @@ class Orchestrator(_OrchestratorBase):
                     enqueue_classification=MaskClassification.TRANSIENT,
                 )
             )
+            # Let sleeping plays (take_break) abort promptly once drain begins (#30).
+            executor._is_draining = lambda: orch._draining
 
             await phases._phase_init_metrics(orch=orch, cfg=cfg, store=store, sid=sid)
             _emit_weights_dir_inventory(orch._weights_dir(), phase="session_start")
