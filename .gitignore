@@ -220,6 +220,11 @@ packaging/desktop/.build/
 packaging/desktop/dist/
 packaging/desktop/src-tauri/binaries/
 
+# ── Internal review / QA working notes ───────────────────────────────────────
+TNQA.md
+.tnqa/
+pii-replacements.txt
+
 # ── Ad-hoc screenshots ────────────────────────────────────────────────────────
 /dashboard-*.png
 
