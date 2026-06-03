@@ -1,23 +1,27 @@
-"""``agentshore start`` subcommand.
-
-The helpers used here (``_find_repo_root``, ``_detect_agents``, …) are
-intentionally looked up through ``agentshore.cli`` (the package namespace) at
-call time rather than imported as local names.  This preserves the legacy
-``patch("agentshore.cli._find_repo_root", …)`` test contract from before the
-CLI was split into a package: tests patch attributes on the ``agentshore.cli``
-module, and ``start()`` resolves them at call time so the patch is seen.
-"""
+"""``agentshore start`` subcommand."""
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
 from agentshore.cli.caffeinate import maybe_re_exec_under_caffeinate
 from agentshore.cli.constants import _START_MODE_AGENT, _START_MODE_TUI
+from agentshore.cli.helpers import (
+    _display_run_mode,
+    _prepare_session_discovery_paths,
+    _resolve_policy_mode_override,
+    _resolve_start_run_mode,
+)
+from agentshore.cli.runtime import (
+    _launch_dashboard_background,
+    _run_agent_mode,
+    _run_headless_mode,
+    _run_solo_mode,
+)
 from agentshore.cli_helpers import _DEFAULT_BUDGET
 from agentshore.config.models import PolicyMode, RunMode
 from agentshore.session.bootstrap import (
@@ -167,11 +171,11 @@ def start(
 
     # Parse: resolve flag-level options the bootstrap needs.
     effective_budget = resolve_effective_budget(budget, no_budget=no_budget)
-    policy_mode_override = _cli_pkg._resolve_policy_mode_override(
+    policy_mode_override = _resolve_policy_mode_override(
         policy_mode=policy_mode,
         legacy_deterministic=legacy_deterministic,
     )
-    run_mode = _cli_pkg._resolve_start_run_mode(
+    run_mode = _resolve_start_run_mode(
         mode,
         tui=tui,
         dashboard=dashboard,
@@ -182,7 +186,7 @@ def start(
     resolved = bootstrap_session(
         StartOptions(
             project_path=Path(project).resolve(),
-            run_session_id=session_id or str(_cli_pkg.uuid.uuid4()),
+            run_session_id=session_id or str(uuid.uuid4()),
             seed=seed,
             effective_budget=effective_budget,
             policy_mode_override=policy_mode_override,
@@ -220,12 +224,12 @@ def start(
     policy_path_obj = Path(policy) if policy else None
 
     if dashboard:
-        _cli_pkg._prepare_session_discovery_paths(
+        _prepare_session_discovery_paths(
             well_known_socket=well_known_socket,
             ipc_endpoint=ipc_endpoint,
             allow_metadata_failure=ipc_endpoint.kind == "tcp",
         )
-        _cli_pkg._launch_dashboard_background(
+        _launch_dashboard_background(
             project_path=project_path,
             ipc_endpoint=ipc_endpoint,
             session_id=run_session_id,
@@ -238,7 +242,7 @@ def start(
         )
         return
 
-    metadata_available = _cli_pkg._prepare_session_discovery_paths(
+    metadata_available = _prepare_session_discovery_paths(
         well_known_socket=well_known_socket,
         ipc_endpoint=ipc_endpoint,
         allow_metadata_failure=ipc_endpoint.kind == "tcp",
@@ -251,7 +255,7 @@ def start(
                 socket_path=socket,
                 ipc_endpoint=ipc_endpoint,
                 extra={
-                    "mode": _cli_pkg._display_run_mode(run_mode),
+                    "mode": _display_run_mode(run_mode),
                     "headless": headless,
                     "session_id": run_session_id,
                     "project_key": well_known_socket.parent.name,
@@ -262,7 +266,7 @@ def start(
     try:
         if run_mode == RunMode.AGENT:
             asyncio.run(
-                _cli_pkg._run_agent_mode(
+                _run_agent_mode(
                     cfg=cfg,
                     repo_root=repo_root,
                     socket_path=socket,
@@ -277,7 +281,7 @@ def start(
             )
         elif headless:
             asyncio.run(
-                _cli_pkg._run_headless_mode(
+                _run_headless_mode(
                     cfg=cfg,
                     repo_root=repo_root,
                     seed_path=seed_path_obj,
@@ -288,7 +292,7 @@ def start(
                 )
             )
         else:
-            _cli_pkg._run_solo_mode(
+            _run_solo_mode(
                 cfg=cfg,
                 repo_root=repo_root,
                 seed_path=seed_path_obj,

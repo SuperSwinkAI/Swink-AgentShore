@@ -8,12 +8,10 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from agentshore.cli import (
-    _agent_keys_from_yaml,
-    _interactive_agent_select,
-    _resolve_policy_mode_override,
-    main,
-)
+from agentshore.cli import main
+from agentshore.cli.agent_select import _interactive_agent_select
+from agentshore.cli.helpers import _resolve_policy_mode_override
+from agentshore.cli.identity_helpers import _agent_keys_from_yaml
 from agentshore.config.models import AgentConfig, PolicyMode, RuntimeConfig
 
 # ---------------------------------------------------------------------------
@@ -104,11 +102,11 @@ def test_init_target_branch_flag_writes_value_and_skips_prompt(tmp_path: Path) -
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
-        patch("agentshore.cli._interactive_agent_select"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
+        patch("agentshore.cli.commands.init._interactive_agent_select"),
         patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         result = runner.invoke(
@@ -128,11 +126,11 @@ def test_init_target_branch_flag_rejects_empty(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
-        patch("agentshore.cli._interactive_agent_select"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
+        patch("agentshore.cli.commands.init._interactive_agent_select"),
         patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         result = runner.invoke(
@@ -154,11 +152,11 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
     repo = _make_git_repo(tmp_path)
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
-        patch("agentshore.cli._interactive_agent_select"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
+        patch("agentshore.cli.commands.init._interactive_agent_select"),
         patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
         # CliRunner.invoke without input keeps stdin non-TTY.
@@ -226,10 +224,10 @@ def test_init_force_merges_config_preserving_user_keys(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -262,15 +260,15 @@ def test_init_passes_force_run_to_agent_setup_wizard(tmp_path: Path, monkeypatch
         captured["force_run"] = force_run
         return cfg
 
-    monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
+    monkeypatch.setattr("agentshore.cli.commands.init._interactive_agent_select", fake_agent_select)
     monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", lambda *_a, **_k: None)
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude", "codex"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
@@ -303,15 +301,15 @@ def test_init_does_not_assume_cli_agents_when_none_detected(tmp_path: Path, monk
     def fake_identity_wizard(*_args: object, **_kwargs: object) -> None:
         captured["identity_wizard_called"] = True
 
-    monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
+    monkeypatch.setattr("agentshore.cli.commands.init._interactive_agent_select", fake_agent_select)
     monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", fake_identity_wizard)
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=[]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=[]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
@@ -365,15 +363,15 @@ identities:
         captured["force_run"] = force_run
         return cfg
 
-    monkeypatch.setattr("agentshore.cli._interactive_agent_select", fake_agent_select)
+    monkeypatch.setattr("agentshore.cli.commands.init._interactive_agent_select", fake_agent_select)
     monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", lambda *_a, **_k: None)
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude", "codex", "gemini"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex", "gemini"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -514,10 +512,10 @@ def test_init_force_resets_database_files_only(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -538,7 +536,7 @@ def test_init_without_force_preserves_database(tmp_path: Path) -> None:
     runner = CliRunner()
     with (
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
@@ -563,7 +561,7 @@ def test_init_without_force_directs_user_to_configure(tmp_path: Path) -> None:
     runner = CliRunner()
     with (
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
@@ -619,10 +617,10 @@ def test_init_creates_gitignore_when_missing(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -640,10 +638,10 @@ def test_init_appends_to_existing_gitignore(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -661,10 +659,10 @@ def test_init_idempotent_when_agentshore_already_ignored(tmp_path: Path) -> None
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -679,10 +677,10 @@ def test_init_recognises_agentshore_without_trailing_slash(tmp_path: Path) -> No
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -701,10 +699,10 @@ def test_init_handles_gitignore_without_trailing_newline(tmp_path: Path) -> None
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
@@ -722,10 +720,10 @@ def test_init_skips_gitignore_when_not_a_git_repo(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.skills.install_skills", return_value=[]),
-        patch("agentshore.cli._run_beads_init"),
+        patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(tmp_path), "--force"])
 
@@ -742,10 +740,10 @@ def test_no_agents_error_message(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     runner = CliRunner()
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=[]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=[]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
     ):
         result = runner.invoke(main, ["start", "--project", str(repo)])
 
@@ -769,11 +767,11 @@ def test_invalid_yaml_error_message(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
-        patch("agentshore.cli._run_solo_mode"),  # prevent TUI launch on fallback
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
+        patch("agentshore.cli.commands.start._run_solo_mode"),  # prevent TUI launch on fallback
     ):
         result = runner.invoke(main, ["start", "--project", str(repo)])
 
@@ -792,10 +790,10 @@ def test_errors_on_stderr(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     runner = CliRunner()
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=[]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=[]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
     ):
         result = runner.invoke(main, ["start", "--project", str(repo)])
 

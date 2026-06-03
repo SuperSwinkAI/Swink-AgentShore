@@ -9,7 +9,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from agentshore.cli import _generate_default_config
+from agentshore.cli_helpers import _generate_default_config
 from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default_config, load_config
 
 

@@ -212,7 +212,10 @@ identities:
 def test_identity_prefill_uses_configured_login_not_git_user_name(
     tmp_path: Path,
 ) -> None:
-    from agentshore.cli import _existing_identities_from_yaml, _identity_defaults_from_yaml
+    from agentshore.cli.identity_helpers import (
+        _existing_identities_from_yaml,
+        _identity_defaults_from_yaml,
+    )
 
     config_path = tmp_path / "agentshore.yaml"
     config_path.write_text(
@@ -1436,7 +1439,7 @@ def test_run_identity_wizard_force_run_non_tty(
 def test_agent_keys_from_yaml_filters_disabled_and_api(tmp_path: Path) -> None:
     """``enabled: false`` agents and ``api_*`` agents are filtered out;
     missing ``enabled`` defaults to enabled."""
-    from agentshore.cli import _agent_keys_from_yaml
+    from agentshore.cli.identity_helpers import _agent_keys_from_yaml
 
     yaml_text = """\
 agents:
@@ -1503,7 +1506,7 @@ def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(
 
     monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", fake_run_wizard)
     monkeypatch.setattr(
-        "agentshore.cli._detect_gh_remote",
+        "agentshore.cli_helpers._detect_gh_remote",
         lambda _project: {"nameWithOwner": "example-user/example-repo"},
     )
 

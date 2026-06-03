@@ -5,11 +5,6 @@ resolution between argument parsing and orchestrator dispatch. That logic is
 session-bootstrap policy, not CLI plumbing: it is the same work the desktop
 sidecar performs before launching a run. This module owns it so ``start()``
 reduces to *parse → bootstrap → summary → dispatch*.
-
-Detection helpers (``_find_repo_root``, ``_detect_agents``, …) are still
-resolved through the ``agentshore.cli`` package namespace at call time so the
-legacy ``patch("agentshore.cli._find_repo_root", …)`` test contract keeps
-intercepting them after the bootstrap moved out of the command body.
 """
 
 from __future__ import annotations
@@ -21,8 +16,13 @@ from typing import TYPE_CHECKING
 
 import click
 
-from agentshore import cli as _cli_pkg
+from agentshore import cli_helpers
 from agentshore.budget import MIN_ENABLED_BUDGET_USD
+from agentshore.cli.helpers import (
+    _check_ssh_signing_key_loaded,
+    _display_run_mode,
+    _resolve_seed_input_path,
+)
 from agentshore.cli_helpers import _PROJECT_DIR
 from agentshore.errors import OrchestratorError
 from agentshore.session_path import (
@@ -173,7 +173,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
 
     # Detect git repo root.
     try:
-        repo_root = _cli_pkg._find_repo_root(opts.project_path)
+        repo_root = cli_helpers._find_repo_root(opts.project_path)
     except OrchestratorError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
@@ -182,18 +182,18 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     seed_path: Path | None = None
     seed_kind: str | None = None
     if opts.seed is not None:
-        seed_path, seed_kind = _cli_pkg._resolve_seed_input_path(opts.seed, repo_root)
+        seed_path, seed_kind = _resolve_seed_input_path(opts.seed, repo_root)
 
     # Detect GitHub remote.
     try:
-        gh_info = _cli_pkg._detect_gh_remote(repo_root)
+        gh_info = cli_helpers._detect_gh_remote(repo_root)
     except OrchestratorError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
     # Detect agents on PATH and API keys.
-    agents = _cli_pkg._detect_agents()
-    api_keys = _cli_pkg._detect_api_keys()
+    agents = cli_helpers._detect_agents()
+    api_keys = cli_helpers._detect_api_keys()
 
     # Hard-fail only if NEITHER a CLI agent is present NOR any API key is set.
     if not agents and not api_keys:
@@ -217,7 +217,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     default_config_path = repo_root / "agentshore.yaml"
     if not default_config_path.exists():
         name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
-        config_text = _cli_pkg._generate_default_config(
+        config_text = cli_helpers._generate_default_config(
             name_with_owner, agents, opts.effective_budget, opts.strict
         )
         default_config_path.write_text(config_text)
@@ -265,7 +265,7 @@ def echo_bootstrap_summary(resolved: ResolvedSession) -> None:
         click.echo(f"  API keys       : {', '.join(resolved.api_keys)}")
     else:
         click.echo("  API keys       : (none detected)")
-    click.echo(f"  Mode           : {_cli_pkg._display_run_mode(resolved.run_mode)}")
+    click.echo(f"  Mode           : {_display_run_mode(resolved.run_mode)}")
     budget_display = (
         "disabled" if resolved.effective_budget is None else f"${resolved.effective_budget:.2f}"
     )
@@ -332,7 +332,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     # ssh-agent means merge_pr plays will fail mid-session with
     # 'ssh-signing-key-not-loaded' (observed as 3 failures + 1 false-positive
     # loop_detected).
-    ssh_loaded, ssh_detail = _cli_pkg._check_ssh_signing_key_loaded()
+    ssh_loaded, ssh_detail = _check_ssh_signing_key_loaded()
     if ssh_loaded:
         click.echo(f"SSH signing key: ok ({ssh_detail})")
     else:

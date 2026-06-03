@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentshore.cli import _dispatch_command
+from agentshore.cli.runtime import _dispatch_command
 
 
 @pytest.mark.asyncio()
@@ -42,7 +42,7 @@ async def test_dispatch_list_archives() -> None:
     orch = MagicMock()
     orch.list_archives = AsyncMock(return_value=["a1", "a2"])
 
-    with patch("agentshore.cli._logger") as mock_logger:
+    with patch("agentshore.cli.runtime._logger") as mock_logger:
         await _dispatch_command({"command": "list_archives"}, orch)
         orch.list_archives.assert_awaited_once()
         mock_logger.info.assert_called_once_with("ipc.archives_listed", count=2)
@@ -116,7 +116,7 @@ async def test_dispatch_verification_response_failed_stays_paused() -> None:
     """verification_response with passed=False does NOT resume the orchestrator."""
     orch = MagicMock()
     orch.resume = AsyncMock()
-    with patch("agentshore.cli._logger"):
+    with patch("agentshore.cli.runtime._logger"):
         await _dispatch_command(
             {
                 "command": "verification_response",

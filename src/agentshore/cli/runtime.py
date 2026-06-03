@@ -1,11 +1,4 @@
-"""Run modes for the orchestrator (agent / headless / solo / dashboard launch).
-
-The module-level ``_logger`` is re-exported as ``agentshore.cli._logger`` so
-``patch("agentshore.cli._logger", …)`` in legacy tests still affects the
-logger used by ``_dispatch_command``.  All logger access inside this
-module goes through ``agentshore.cli`` (the package) at call time so the
-patch is observed.
-"""
+"""Run modes for the orchestrator (agent / headless / solo / dashboard launch)."""
 
 from __future__ import annotations
 
@@ -17,7 +10,6 @@ from typing import TYPE_CHECKING
 import click
 import structlog
 
-from agentshore import cli as _cli_pkg
 from agentshore.cli.constants import _SOCKET_POLL_INTERVAL_S, _SOCKET_WAIT_RETRIES
 from agentshore.cli.helpers import (
     _install_loop_signal_handler,
@@ -60,7 +52,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         try:
             delta = float(delta_raw if isinstance(delta_raw, (int, float, str)) else 0)
         except ValueError:
-            _cli_pkg._logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
+            _logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
             return
         if orch.adjust_budget(delta):
             await orch.resume()
@@ -77,7 +69,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         elif action == "pause":
             # Pause is the modal's default state once feedback fires; an
             # explicit Pause click is informational only.
-            _cli_pkg._logger.info("ipc.feedback_response_pause_acknowledged")
+            _logger.info("ipc.feedback_response_pause_acknowledged")
         elif action in {"stop", "end_session", "drain"}:
             await orch.begin_drain("user_request")
         elif action == "rescan_issues":
@@ -86,7 +78,7 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
     elif command == "abort_play":
         # Cancel all in-flight play tasks.  The orchestrator loop will pick up
         # new work on the next iteration.
-        _cli_pkg._logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
+        _logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
         await orch.abort_in_flight()
     elif command == "verification_response":
         # A human has responded to a verification_checkpoint.  If the checkpoint
@@ -96,14 +88,14 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         checkpoint_id = cmd.get("checkpoint_id")
         notes = cmd.get("notes")
         if passed:
-            _cli_pkg._logger.info(
+            _logger.info(
                 "ipc.verification_response_passed",
                 checkpoint_id=checkpoint_id,
                 notes=notes,
             )
             await orch.resume()
         else:
-            _cli_pkg._logger.warning(
+            _logger.warning(
                 "ipc.verification_response_failed",
                 checkpoint_id=checkpoint_id,
                 notes=notes,
@@ -116,12 +108,12 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         await orch.archive_session()
     elif command == "list_archives":
         archives = await orch.list_archives()
-        _cli_pkg._logger.info("ipc.archives_listed", count=len(archives))
+        _logger.info("ipc.archives_listed", count=len(archives))
     # "start" is accepted by the validator (so connecting clients can send it)
     # but is a no-op at dispatch time — the orchestrator is already running by
     # the time IPC commands are processed.
     elif command == "start":
-        _cli_pkg._logger.info("ipc.start_received_noop", message="Orchestrator already running")
+        _logger.info("ipc.start_received_noop", message="Orchestrator already running")
 
 
 def _launch_dashboard_background(
@@ -148,7 +140,7 @@ def _launch_dashboard_background(
     import time
     import webbrowser
 
-    from agentshore.session_path import IpcEndpoint, session_dir
+    from agentshore.session_path import IpcEndpoint, find_dashboard_port, session_dir
 
     endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else IpcEndpoint.unix("")
     log_dir = session_dir(project_path)
@@ -209,7 +201,7 @@ def _launch_dashboard_background(
         click.echo("Warning: timed out waiting for IPC socket — check the log.", err=True)
         return
 
-    port = _find_free_dashboard_port()
+    port = find_dashboard_port()
     dashboard_cmd: list[str] = [
         sys.executable,
         "-m",
@@ -345,9 +337,7 @@ async def _run_agent_mode(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _cli_pkg._logger.warning(
-                    "ipc.dispatch_error", command=cmd.get("command"), error=str(exc)
-                )
+                _logger.warning("ipc.dispatch_error", command=cmd.get("command"), error=str(exc))
 
     cmd_task = asyncio.create_task(_drain_commands())
 
@@ -367,20 +357,6 @@ async def _run_agent_mode(
         await server.stop()
 
 
-def _find_free_dashboard_port(start: int = 9400, end: int = 9410) -> int:
-    """Return the first free TCP port in [start, end), or start if all busy."""
-    import socket as _socket
-
-    for port in range(start, end):
-        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    return start
-
-
 async def _start_dashboard_bridge(
     socket_path: str | None = None,
     *,
@@ -392,9 +368,9 @@ async def _start_dashboard_bridge(
     import webbrowser
 
     from agentshore.dashboard import DashboardBridge
-    from agentshore.session_path import IpcEndpoint
+    from agentshore.session_path import IpcEndpoint, find_dashboard_port
 
-    port = port or _find_free_dashboard_port()
+    port = port or find_dashboard_port()
     url = f"http://localhost:{port}"
 
     def _on_ready() -> None:

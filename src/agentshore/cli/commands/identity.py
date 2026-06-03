@@ -1,8 +1,4 @@
-"""``agentshore identity`` subcommand.
-
-Helpers go through ``agentshore.cli`` so tests can patch them via
-``agentshore.cli._agent_keys_from_yaml`` and friends after the package split.
-"""
+"""``agentshore identity`` subcommand."""
 
 from __future__ import annotations
 
@@ -10,7 +6,12 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
+from agentshore.cli.identity_helpers import (
+    _agent_keys_from_yaml,
+    _existing_identities_from_yaml,
+    _identity_defaults_from_yaml,
+    _identity_repo_name_with_owner,
+)
 
 
 @click.command()
@@ -44,20 +45,20 @@ def identity(project: str, reconfigure: bool) -> None:
         from agentshore.availability import refresh as refresh_availability
         from agentshore.identity_wizard import run_identity_wizard
 
-        agent_keys = _cli_pkg._agent_keys_from_yaml(cfg_path)
+        agent_keys = _agent_keys_from_yaml(cfg_path)
         if not agent_keys:
             click.echo("No CLI agents in agentshore.yaml; nothing to bind.", err=True)
             return
         refresh_availability()
-        defaults = _cli_pkg._identity_defaults_from_yaml(cfg_path)
-        existing = _cli_pkg._existing_identities_from_yaml(cfg_path)
+        defaults = _identity_defaults_from_yaml(cfg_path)
+        existing = _existing_identities_from_yaml(cfg_path)
         run_identity_wizard(
             cfg_path,
             agent_keys,
             force_run=True,
             defaults=defaults,
             existing_identities=existing,
-            repo_name_with_owner=_cli_pkg._identity_repo_name_with_owner(project_path),
+            repo_name_with_owner=_identity_repo_name_with_owner(project_path),
         )
         return
 
