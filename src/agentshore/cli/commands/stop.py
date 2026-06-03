@@ -1,10 +1,4 @@
-"""``agentshore stop`` subcommand.
-
-``_wait_for_session_exit`` and ``_generate_end_session_report_cli`` are
-referenced through ``agentshore.cli`` (the package) so that legacy
-``patch("agentshore.cli._wait_for_session_exit", …)`` tests still intercept
-the call after the CLI was split into a package.
-"""
+"""``agentshore stop`` subcommand."""
 
 from __future__ import annotations
 
@@ -12,7 +6,6 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
 from agentshore.cli.constants import (
     _DRAIN_WAIT_POLL_INTERVAL_S,
     _DRAIN_WAIT_RETRIES,
@@ -97,7 +90,7 @@ def stop(project: str, hard: bool, esr: bool) -> None:
                 f"(Press Ctrl+C to force-stop sooner; "
                 f"auto hard stop after {_drain_wait_timeout_label()})"
             )
-            clean_exit = _cli_pkg._wait_for_session_exit(project_path)
+            clean_exit = _wait_for_session_exit(project_path)
             click.echo("AgentShore session stopped.")
             if not clean_exit:
                 click.echo("End session report skipped because the session did not stop cleanly.")

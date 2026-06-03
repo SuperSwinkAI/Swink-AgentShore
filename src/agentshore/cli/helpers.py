@@ -24,6 +24,7 @@ from agentshore.cli.constants import (
     _START_MODE_TUI,
 )
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.seed_input import SeedInputError, resolve_seed_input
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
@@ -111,36 +112,6 @@ def _drain_wait_timeout_label() -> str:
     return f"{_DRAIN_WAIT_TIMEOUT_S:.0f}s"
 
 
-def _str_or_none(d: dict[str, object], key: str) -> str | None:
-    """Narrow ``d.get(key)`` to ``str | None``.
-
-    Returns ``None`` when the key is absent or the value is ``None``; otherwise
-    coerces the value to ``str``. Centralises the ``Any``-coercion at a single,
-    testable boundary so callers stay free of ``# type: ignore`` suppressions.
-    """
-    value = d.get(key)
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
-
-
-def _int_or_none(d: dict[str, object], key: str) -> int | None:
-    """Narrow ``d.get(key)`` to ``int | None``.
-
-    Returns ``None`` when the key is absent or the value is ``None``. Accepts
-    ``int`` values as-is and attempts to coerce other values via ``int(...)``;
-    a ``ValueError`` or ``TypeError`` from coercion is propagated to the caller.
-    """
-    value = d.get(key)
-    if value is None:
-        return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return int(value)
-    raise TypeError(f"Cannot coerce value of type {type(value).__name__} for key {key!r} to int")
-
-
 def _resolve_policy_mode_override(
     *, policy_mode: str | None, legacy_deterministic: bool
 ) -> PolicyMode | None:
@@ -186,6 +157,19 @@ def _resolve_start_run_mode(
 def _display_run_mode(run_mode: RunMode) -> str:
     """Return the user-facing label for a resolved start mode."""
     return _START_MODE_TUI if run_mode == RunMode.SOLO else run_mode.value
+
+
+def _resolve_seed_input_path(seed: str, repo_root: Path) -> tuple[Path, str]:
+    """Resolve --seed to a file path, expanding directories into a capped bundle.
+
+    Thin CLI wrapper over :func:`agentshore.seed_input.resolve_seed_input`;
+    converts :class:`SeedInputError` to ``click.BadParameter`` so usage errors
+    surface with the ``--seed`` hint.
+    """
+    try:
+        return resolve_seed_input(seed, repo_root)
+    except SeedInputError as exc:
+        raise click.BadParameter(str(exc), param_hint="--seed") from exc
 
 
 def _track_background_task(

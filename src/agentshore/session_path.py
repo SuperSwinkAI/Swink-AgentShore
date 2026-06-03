@@ -115,6 +115,23 @@ def find_free_tcp_port(host: str = "127.0.0.1") -> int:
         return int(sock.getsockname()[1])
 
 
+def find_dashboard_port(start: int = 9400, end: int = 9410) -> int:
+    """Return the first free TCP port in ``[start, end)``, or *start* if all busy.
+
+    The dashboard bridge prefers the stable 9400-range so users get a
+    predictable ``localhost:<port>`` across runs, unlike the OS-assigned port
+    from :func:`find_free_tcp_port`.
+    """
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return start
+
+
 def resolve_start_ipc_endpoint(
     project_path: Path,
     *,

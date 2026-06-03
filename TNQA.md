@@ -1,17 +1,19 @@
 # AgentShore — Remaining TNQA Findings (open backlog)
 
 This file tracks the **still-open** findings from the thermo-nuclear code-quality
-review. The review found 146 findings across 10 buckets; **105 are resolved** (all
-Critical, 37 of 40 High, 30 Medium, 20 Low) across the original 12-agent
-remediation, the `08 C1` cli_identity split, a later cheap-findings pass, and the
-core-consolidation wave (the `03 C2` god-object teardown + its `core/` cluster).
+review. The review found 146 findings across 10 buckets; **110 are resolved** (all
+Critical, 38 of 40 High, 32 Medium, 22 Low) across the original 12-agent
+remediation, the `08 C1` cli_identity split, a later cheap-findings pass, the
+core-consolidation wave (the `03 C2` god-object teardown + its `core/` cluster),
+and the cli patch-contract teardown (`08 H5`/`M2`/`M3`/`L1`/`L4`).
 **Zero confirmed live defects remain.** What's left below is deferred *by design*:
 re-architectures, perf-sensitive hot-path changes, behavior-divergent fixes, or
 items gated on the remaining large Highs. Full rationale + exact line ranges live in
 `.tnqa/01..10_*.md`.
 
-Last verified suite (post core-consolidation wave, on `tnqa/staging`): **3150 passed /
-0 failed / 2 skipped**, coverage above the 80% gate, ruff + mypy strict clean.
+Last verified suite (post cli patch-contract teardown, on `tnqa/kill-cli-patch-contract`):
+**3154 passed / 0 failed / 2 skipped**, coverage 84% (above the 80% gate), ruff + mypy
+strict clean.
 
 ---
 
@@ -20,25 +22,24 @@ Last verified suite (post core-consolidation wave, on `tnqa/staging`): **3150 pa
 | Severity | Open |
 |---|---|
 | **Critical** | **0** |
-| **High** | **3** |
-| Medium | 19 |
-| Low | 19 |
-| **Total** | **41** |
+| **High** | **2** |
+| Medium | 17 |
+| Low | 17 |
+| **Total** | **36** |
 
 A few items are the unfinished half of a partially-completed finding (noted inline).
 
 ---
 
-## The big 3 — the only remaining Highs
+## The big 2 — the only remaining Highs
 
 These are the deliberate large-scope deferrals; they want their own scoped effort,
 not a fan-out cleanup. (The lone Critical `03 C2` and `03 H2` were landed by the
-core-consolidation wave.)
+core-consolidation wave; `08 H5` was landed by the cli patch-contract teardown.)
 
 | Finding | Location | What | Why open |
 |---|---|---|---|
 | **04 H2** | `rl/observation.py:90-578` | imperative feature-packing → declarative `FeatureBlock` registry | Large rewrite; observation version is wire-pinned |
-| **08 H5** | `cli/__init__.py:1-237` | re-export module + `_cli_pkg._foo` indirection → delete, repoint **122 test patches** | Test-shaped-architecture migration (see T1) |
 | **10 H1** | `reports/collector.py` | ~1300-line static-helper god-class → decompose | Large; only the `total_cost` fix landed here |
 
 One cross-domain follow-up also remains: the `work_availability.py` re-export shim
@@ -56,11 +57,14 @@ Only the cross-cutting patterns with open instances remain here.
 ### T1. Test-shaped architecture (shadow layers / re-export indirection for monkeypatching)
 Production code contorted to preserve `patch("module._foo")` targets, violating the
 project's no-backward-compat rule. Open instances:
-- `cli/__init__.py` re-export god-module + `_cli_pkg._foo` (08 H5).
 - `core/` `_ppo_selector_cls` selector-class indirection for `isinstance` test patches
   (03 M3 remainder; the `_LoggerProxy` half was already deleted in the consolidation wave).
 - `session_path.py` public free-function shims (10 M2).
 Remedy across the board: migrate tests to patch symbols at their real homes, delete the shims.
+(The `cli/__init__.py` re-export god-module + `_cli_pkg._foo` indirection — 08 H5 — was
+deleted by the cli patch-contract teardown: `__init__.py` is now a 48-line `main`-group
+module, command bodies import helpers from their real homes, and the heavily-shared
+`cli_helpers` detection family is patched at `agentshore.cli_helpers.*`.)
 
 ### T4. God-objects sharded to a per-file LOC budget
 - `reports/collector.py` — namespace-class of static helpers (10 H1).
@@ -133,11 +137,15 @@ was found half-invalid.)
 - **L3** — `os.chdir` cwd anchor → explicit `cwd=`. *(behavior-divergent process supervision.)*
 
 ### Bucket 08 — `cli/` · `.tnqa/08_cli.md`
-- **H5** — `cli/__init__.py:1-237` re-export module + `_cli_pkg._foo` indirection (122 test patches) → delete + repoint. *(see T1.)*
 - **M1** — `init()` 5-phase inline wizard with repeated `if not install_skills_only`. *(large.)*
-- **M2** — two incompatible `_str_or_none`. *(clean fix lands in `config/` or is H5 territory.)*
-- **M3** — `_find_free_dashboard_port` reinvents `find_free_tcp_port`. *(re-export-coupled; the 9400-range affinity may be intentional for the dashboard.)*
-- **L1-L4** — all gated on the H5 `cli/__init__` re-export slimming.
+- **L2** — `start.py` stale/misnumbered phase comments (`-- 0.`, `-- 2.`, `-- 11a.`). *(resolved for free by the deferred H1 start()-decomposition; not worth touching in isolation.)*
+
+(H5 — re-export god-module + `_cli_pkg._foo` — closed by the cli patch-contract teardown.
+M2 — two incompatible `_str_or_none` — closed: unified to one value-form `str_or_none` in
+`config/coerce.py`. M3 — `_find_free_dashboard_port` — closed: moved to
+`session_path.find_dashboard_port()` next to `find_free_tcp_port`. L1 — seed wrapper — closed:
+folded into `cli/helpers.py`, `cli/seed.py` deleted. L4 — dead `_int_or_none` — closed:
+deleted. L3 — `train.py` double `load_config` import — already single-import; no change needed.)
 
 (M4 — `_dispatch_command`'s elif reach-ins — was closed by the consolidation wave: the
 orchestrator now exposes `refresh_issues`/`abort_in_flight`/`generate_report`/`archive_session`

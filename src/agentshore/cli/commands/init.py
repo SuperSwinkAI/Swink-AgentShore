@@ -1,10 +1,4 @@
-"""``agentshore init`` subcommand.
-
-Helpers are accessed through ``agentshore.cli`` (the package) so that tests'
-``patch("agentshore.cli._detect_agents", …)`` calls remain effective after the
-CLI was split into a package.  See ``commands/start.py`` for the full
-rationale.
-"""
+"""``agentshore init`` subcommand."""
 
 from __future__ import annotations
 
@@ -14,7 +8,17 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
+from agentshore import cli_helpers
+from agentshore.cli.agent_select import (
+    _interactive_agent_select,
+    _load_config_for_agent_setup,
+)
+from agentshore.cli.identity_helpers import (
+    _agent_keys_from_yaml,
+    _existing_identities_from_yaml,
+    _identity_defaults_from_yaml,
+    _identity_repo_name_with_owner,
+)
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _PROJECT_DIR
 from agentshore.config.models import AgentConfig
 from agentshore.config.yaml_io import ruamel_get_nested, ruamel_set_nested
@@ -274,9 +278,7 @@ def init(
     # -- 1. Generate or merge agentshore.yaml (unless --install-skills) ----
     if not install_skills_only:
         if force:
-            # Route through the package so test patches on
-            # ``agentshore.cli._reset_agentshore_database`` still intercept here.
-            removed = _cli_pkg._reset_agentshore_database(project_path)
+            removed = _reset_agentshore_database(project_path)
             if removed:
                 click.echo("Reset AgentShore database: " + ", ".join(str(path) for path in removed))
 
@@ -297,13 +299,13 @@ def init(
             # Detect project metadata for the template. Agent detection is
             # authoritative: init should not invent unavailable CLI agents.
             try:
-                gh_info = _cli_pkg._detect_gh_remote(project_path)
+                gh_info = cli_helpers._detect_gh_remote(project_path)
                 name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
             except OrchestratorError:
                 name_with_owner = "owner/repo"
 
-            agents = _cli_pkg._detect_agents()
-            written = _cli_pkg._render_or_merge_agentshore_yaml(
+            agents = cli_helpers._detect_agents()
+            written = cli_helpers._render_or_merge_agentshore_yaml(
                 config_path,
                 name_with_owner=name_with_owner,
                 agents=agents,
@@ -352,12 +354,12 @@ def init(
         config_path = project_path / "agentshore.yaml"
         if config_path.exists():
             refresh_availability()
-            _init_agents = _cli_pkg._detect_agents()
+            _init_agents = cli_helpers._detect_agents()
 
             # -- 3a. Agent / tier / model wizard --------------------------
             try:
-                _init_cfg = _cli_pkg._load_config_for_agent_setup(config_path)
-                _cli_pkg._interactive_agent_select(
+                _init_cfg = _load_config_for_agent_setup(config_path)
+                _interactive_agent_select(
                     _init_cfg,
                     _init_agents,
                     config_path,
@@ -367,17 +369,17 @@ def init(
                 pass  # unparseable YAML — skip; `agentshore configure` can fix
 
             # -- 3b. Identity wizard --------------------------------------
-            agent_keys = _cli_pkg._agent_keys_from_yaml(config_path, detected_agents=_init_agents)
+            agent_keys = _agent_keys_from_yaml(config_path, detected_agents=_init_agents)
             if agent_keys:
-                defaults = _cli_pkg._identity_defaults_from_yaml(config_path)
-                existing = _cli_pkg._existing_identities_from_yaml(config_path)
+                defaults = _identity_defaults_from_yaml(config_path)
+                existing = _existing_identities_from_yaml(config_path)
                 run_identity_wizard(
                     config_path,
                     agent_keys,
                     force_run=True,
                     defaults=defaults,
                     existing_identities=existing,
-                    repo_name_with_owner=_cli_pkg._identity_repo_name_with_owner(project_path),
+                    repo_name_with_owner=_identity_repo_name_with_owner(project_path),
                 )
 
     # -- 4. Ensure artifact dirs are gitignored --------------------------
@@ -385,7 +387,7 @@ def init(
         gitignore = project_path / ".gitignore"
         existed = gitignore.exists()
         for _entry in (".agentshore/", ".agents/", ".beads/"):
-            if _cli_pkg._ensure_gitignore_entry(project_path, _entry):
+            if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                 verb = "Added" if existed else "Created"
                 click.echo(f"{verb} {_entry} to {gitignore}")
                 existed = True
@@ -393,4 +395,4 @@ def init(
     # -- 5. Beads project-graph initialisation --------------------------
     if not install_skills_only:
         _yaml_path = project_path / "agentshore.yaml"
-        _cli_pkg._run_beads_init(project_path, _yaml_path if _yaml_path.exists() else None)
+        _run_beads_init(project_path, _yaml_path if _yaml_path.exists() else None)
