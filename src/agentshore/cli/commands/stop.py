@@ -62,13 +62,24 @@ def stop(project: str, hard: bool, esr: bool) -> None:
 
     Use --hard to request immediate platform-specific process-tree termination.
     """
-    from agentshore.session_path import hard_stop_session, is_session_running, request_drain
+    from agentshore.session_path import (
+        hard_stop_session,
+        is_session_running,
+        read_timelapse_info,
+        request_drain,
+    )
 
     project_path = Path(project).resolve()
 
     if not is_session_running(project_path):
         click.echo("No running AgentShore session found for this project.")
         raise SystemExit(0)
+
+    # Capture the timelapse handle before stopping: a graceful drain lets the
+    # orchestrator finalise and clear the sidecar on its way out, so read it now
+    # and finalise as a backstop (mainly for --hard, where the orchestrator is
+    # killed before it can run its own shutdown).
+    timelapse_info = read_timelapse_info(project_path)
 
     if hard:
         if esr:
@@ -109,6 +120,11 @@ def stop(project: str, hard: bool, esr: bool) -> None:
         else:
             click.echo("Error: Failed to request drain.", err=True)
             raise SystemExit(1)
+
+    if timelapse_info is not None:
+        from agentshore.cli.runtime import _finalize_cli_timelapse
+
+        _finalize_cli_timelapse(project_path, info=timelapse_info, echo=True)
 
 
 def _wait_for_session_exit(project_path: Path) -> bool:

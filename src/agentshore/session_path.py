@@ -372,6 +372,45 @@ def read_session_info(project_path: Path) -> dict[str, object] | None:
     return data
 
 
+def timelapse_info_path(project_path: Path) -> Path:
+    """Return the ``timelapse.json`` sidecar path for a project session.
+
+    Records the active dashboard timelapse capture's run-id and working dir so
+    the detached ``agentshore start --dashboard`` launcher (which starts the
+    capture) and the separate ``agentshore stop`` command (which finalises the
+    render) can coordinate across processes.
+    """
+    return session_dir(project_path) / "timelapse.json"
+
+
+def write_timelapse_info(project_path: Path, *, run_id: str, runs_cwd: Path | str) -> Path:
+    """Persist the active timelapse capture handle. Returns the path written."""
+    info_path = timelapse_info_path(project_path)
+    info_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"run_id": run_id, "runs_cwd": str(runs_cwd)}
+    info_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return info_path
+
+
+def read_timelapse_info(project_path: Path) -> dict[str, object] | None:
+    """Read the ``timelapse.json`` sidecar, or None if absent or unreadable."""
+    info_path = timelapse_info_path(project_path)
+    if not info_path.exists():
+        return None
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def clear_timelapse_info(project_path: Path) -> None:
+    """Remove the ``timelapse.json`` sidecar (best-effort)."""
+    timelapse_info_path(project_path).unlink(missing_ok=True)
+
+
 def read_pid(project_path: Path) -> int | None:
     """Read the PID from the session directory, or None if not found."""
     return _read_pid_file(session_pid_path(project_path))
@@ -581,6 +620,7 @@ class SessionProcessController:
             session_pid_path(project_path),
             dashboard_pid_path(project_path),
             session_info_path(project_path),
+            timelapse_info_path(project_path),
         ):
             if path.exists() or path.is_symlink():
                 path.unlink(missing_ok=True)
