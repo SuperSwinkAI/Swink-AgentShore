@@ -264,55 +264,10 @@ async def reap_for_closed_prs(
     return report
 
 
-async def sweep_orphans(worktree_root: Path, *, retention_seconds: int) -> list[str]:
-    """Delete quarantined orphan worktrees older than ``retention_seconds``.
-
-    Orphans are full repo checkouts moved aside by ``quarantine_orphan`` and
-    were historically NEVER auto-deleted, so they accumulated unbounded (a
-    monitored machine had ~70 GB of them). This bounds the quarantine: any
-    orphan dir under the ``-orphan`` sibling of ``worktree_root`` whose mtime is
-    older than the retention window is removed. Committed agent work is already
-    in git; only uncommitted changes in an aged-out orphan are lost — the point
-    of the retention window. A non-positive ``retention_seconds`` disables the
-    sweep (keep forever). Returns the removed paths.
-    """
-    import asyncio
-    import shutil
-
-    from agentshore.agents.worktree.allocator import _quarantine_root
-
-    orphan_root = _quarantine_root(worktree_root)
-    if retention_seconds <= 0 or not orphan_root.exists():
-        return []
-    cutoff = datetime.now(UTC) - timedelta(seconds=retention_seconds)
-    removed: list[str] = []
-    try:
-        entries = sorted(p for p in orphan_root.iterdir() if p.is_dir())
-    except OSError as exc:
-        log.warning("sweep_orphans_list_failed", orphan_root=str(orphan_root), error=str(exc))
-        return []
-    for entry in entries:
-        try:
-            mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=UTC)
-        except OSError:
-            continue
-        if mtime >= cutoff:
-            continue
-        try:
-            await asyncio.to_thread(shutil.rmtree, entry, ignore_errors=True)
-            removed.append(str(entry))
-        except OSError as exc:
-            log.warning("sweep_orphans_remove_failed", path=str(entry), error=str(exc))
-    if removed:
-        log.info("worktree_orphans_swept", count=len(removed), retention_seconds=retention_seconds)
-    return removed
-
-
 __all__ = [
     "OrphanRecord",
     "ReapReport",
     "reap_for_closed_prs",
     "reap_git_orphans",
-    "sweep_orphans",
     "sweep_session_start",
 ]
