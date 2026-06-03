@@ -97,6 +97,30 @@ describe("office furniture layout", () => {
     }
   });
 
+  it("keeps agent destinations separated for sprite clearance", () => {
+    const separationFailures: string[] = [];
+
+    for (const zone of ZONES) {
+      for (let i = 0; i < zone.seats.length; i += 1) {
+        for (let j = i + 1; j < zone.seats.length; j += 1) {
+          const a = zone.seats[i];
+          const b = zone.seats[j];
+          const tileDistance = Math.max(
+            Math.abs(a.x - b.x),
+            Math.abs(a.y - b.y),
+          );
+          if (tileDistance <= 2) {
+            separationFailures.push(
+              `${zone.name || ZoneId[zone.id]}:${a.x},${a.y}<->${b.x},${b.y}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(separationFailures).toEqual([]);
+  });
+
   it("keeps destinations and walk lanes off furniture side buffers", () => {
     buildWalkableGrid();
 
