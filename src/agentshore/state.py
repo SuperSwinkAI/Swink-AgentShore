@@ -129,7 +129,32 @@ class AgentStatus(enum.Enum):
 # codex_rollout, or None) is terminal: no recovery path exists, so END_AGENT is
 # unmasked for it immediately rather than leaving it leaked until end_session
 # (#20). Kept here so the eligibility mask and the END_AGENT resolver agree.
-RECOVERABLE_ERROR_CLASSES: frozenset[str] = frozenset({"rate_limit", "unknown"})
+# "transient_network" (socket close / connection reset, #23) is recoverable —
+# it is a precise carve-out of the old "unknown" bucket, which was recoverable.
+RECOVERABLE_ERROR_CLASSES: frozenset[str] = frozenset(
+    {"rate_limit", "unknown", "transient_network"}
+)
+
+# Per-agent circuit breaker (#22): an agent that has produced ZERO successful
+# plays this session and has either hit a dispatch timeout or accumulated
+# repeated failures is treated as non-functional and masked/deprioritized from
+# work selection until it succeeds. Guards against routing critical plays
+# (e.g. code_review) to a known-dead agent (the gemini-ETIMEDOUT case, where a
+# single failed dispatch burned a full ~30-min idle timeout). The mask lifts
+# automatically the moment the agent completes any play (``tasks_completed > 0``).
+CIRCUIT_BREAKER_FAILURE_LIMIT = 2
+
+
+def is_agent_circuit_broken(
+    *,
+    tasks_completed: int,
+    tasks_failed: int,
+    timeout_count: int,
+) -> bool:
+    """Return True when an agent should be benched as non-functional (#22)."""
+    if tasks_completed > 0:
+        return False
+    return timeout_count >= 1 or tasks_failed >= CIRCUIT_BREAKER_FAILURE_LIMIT
 
 
 class SessionState(enum.Enum):

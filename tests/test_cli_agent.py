@@ -1172,13 +1172,41 @@ def test_classify_error_codex_rollout_thread_missing() -> None:
     assert _classify_error(1, stderr, "") == "codex_rollout"
 
 
+def test_socket_close_classifies_as_transient_network() -> None:
+    # claude_code's "socket connection was closed unexpectedly" used to fall
+    # into the generic "unknown" bucket and log a misleading rate-limit recovery
+    # (#23). It is now its own transient_network class.
+    stderr = "API Error: The socket connection was closed unexpectedly"
+    assert _classify_error(1, stderr, "") == "transient_network"
+
+
+def test_connection_reset_classifies_as_transient_network() -> None:
+    assert _classify_error(1, "read ECONNRESET", "") == "transient_network"
+
+
+def test_transient_network_is_recoverable_and_in_unknown_path() -> None:
+    """transient_network keeps the recoverable take_break treatment of the old
+    "unknown" classification, via the distinct unknown-error path (#23/#24)."""
+    from agentshore.core.mixins.completion import _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    from agentshore.state import RECOVERABLE_ERROR_CLASSES
+
+    assert "transient_network" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    assert "transient_network" in RECOVERABLE_ERROR_CLASSES
+
+
 def test_codex_rollout_is_in_take_break_recovery_set() -> None:
     # If this assertion ever fails, the classifier name changed but the
     # recovery set did not — the agent will skip the take_break override and
     # surface a permanent ERROR instead of rotating to a fresh codex process.
-    from agentshore.core.mixins.completion import _RATE_LIMIT_RECOVERY_ERROR_CLASSES
+    # codex_rollout now lives in the unknown-error recovery path (split from
+    # rate-limit recovery in #23/#24), not the rate-limit set.
+    from agentshore.core.mixins.completion import (
+        _RATE_LIMIT_RECOVERY_ERROR_CLASSES,
+        _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES,
+    )
 
-    assert "codex_rollout" in _RATE_LIMIT_RECOVERY_ERROR_CLASSES
+    assert "codex_rollout" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    assert "codex_rollout" not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES
 
 
 def test_extract_session_id_from_jsonl_handles_whitespace_lines() -> None:

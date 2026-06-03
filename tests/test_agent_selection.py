@@ -57,6 +57,49 @@ def test_no_idle_agents_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Circuit breaker (#22): deprioritize a known-dead agent
+# ---------------------------------------------------------------------------
+
+
+def test_is_agent_circuit_broken_predicate() -> None:
+    from agentshore.state import is_agent_circuit_broken
+
+    # Healthy: any success clears it, regardless of failures/timeouts.
+    assert not is_agent_circuit_broken(tasks_completed=1, tasks_failed=5, timeout_count=9)
+    # Fresh agent with no history is not broken.
+    assert not is_agent_circuit_broken(tasks_completed=0, tasks_failed=0, timeout_count=0)
+    # One non-timeout failure is below the limit.
+    assert not is_agent_circuit_broken(tasks_completed=0, tasks_failed=1, timeout_count=0)
+    # A single timeout with 0 successes trips it.
+    assert is_agent_circuit_broken(tasks_completed=0, tasks_failed=0, timeout_count=1)
+    # Two failures with 0 successes trips it.
+    assert is_agent_circuit_broken(tasks_completed=0, tasks_failed=2, timeout_count=0)
+
+
+def _broken_handle(agent_id: str) -> AgentHandle:
+    """A handle with 0 successful tasks and a dispatch timeout — circuit-broken."""
+    h = _make_handle(agent_id, tasks=0)
+    h.timeout_count = 1
+    h.add_task(TaskRecord(play_id="p0", play_type=PlayType.ISSUE_PICKUP, success=False))
+    return h
+
+
+def test_circuit_broken_agent_deprioritized_in_favor_of_healthy() -> None:
+    broken = _broken_handle("dead")
+    healthy = _make_handle("ok", tasks=1)  # one successful task → healthy
+    result = select_agent_for(PlayType.ISSUE_PICKUP, _handles(broken, healthy))
+    assert result.agent_id == "ok"
+
+
+def test_circuit_broken_agent_still_selected_when_only_option() -> None:
+    """Soft, not hard: if every IDLE candidate is broken we still pick one
+    rather than wedge — the play-availability gate is the hard mask."""
+    broken = _broken_handle("dead")
+    result = select_agent_for(PlayType.ISSUE_PICKUP, _handles(broken))
+    assert result.agent_id == "dead"
+
+
+# ---------------------------------------------------------------------------
 # Anti-confirmation: CodeReview ≠ PR author
 # ---------------------------------------------------------------------------
 

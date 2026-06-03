@@ -33,7 +33,7 @@ import structlog
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
 from agentshore.errors import AntiConfirmationViolation
 from agentshore.identity_names import same_identity
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
 
 if TYPE_CHECKING:
     from agentshore.agents.handle import AgentHandle
@@ -214,7 +214,27 @@ def select_agent_for(
 
     tier_rank = {"small": 0, "medium": 1, "large": 2}
 
-    def _score(h: AgentHandle) -> tuple[int, int, int, int]:
+    def _score(h: AgentHandle) -> tuple[int, int, int, int, int]:
+        # Circuit breaker (#22): strongly deprioritize a known-dead agent (0
+        # successes + a timeout or repeated failures) so a healthy peer always
+        # wins. Soft, not a hard filter — if every IDLE candidate is broken we
+        # still pick one rather than wedge (the play-availability gate already
+        # masks the play when no healthy capable agent exists).
+        # getattr-guarded so minimal handle stubs in tests (which omit
+        # task_history/timeout_count) still sort — mirrors the defensive reads
+        # elsewhere in the selection/snapshot path.
+        task_history = getattr(h, "task_history", None) or []
+        successes = sum(1 for t in task_history if t.success)
+        failures = len(task_history) - successes
+        circuit_broken_score = (
+            1
+            if is_agent_circuit_broken(
+                tasks_completed=successes,
+                tasks_failed=failures,
+                timeout_count=int(getattr(h, "timeout_count", 0) or 0),
+            )
+            else 0
+        )
         # Branch exposure affinity: 0 if exposed to this branch, 1 otherwise
         branch_exposure_score = 0 if h.agent_id in branch_exposed_ids else 1
         # Type affinity: 0 if preferred type matches, 1 otherwise
@@ -224,7 +244,7 @@ def select_agent_for(
         tier_score = tier_rank.get(h.model_tier or DEFAULT_MODEL_TIER, tier_rank["medium"])
         # Least busy: ascending task count
         busy_score = len(h.task_history)
-        return (branch_exposure_score, type_score, tier_score, busy_score)
+        return (circuit_broken_score, branch_exposure_score, type_score, tier_score, busy_score)
 
     candidates.sort(key=_score)
     return candidates[0]

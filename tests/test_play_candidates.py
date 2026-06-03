@@ -91,6 +91,42 @@ def _agent_busy_on_pr(play_type: PlayType, pr_number: int) -> AgentSnapshot:
     )
 
 
+def _reviewer(
+    agent_id: str,
+    agent_type: AgentType,
+    *,
+    tasks_completed: int = 1,
+    tasks_failed: int = 0,
+    timeout_count: int = 0,
+) -> AgentSnapshot:
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=agent_type,
+        status=AgentStatus.IDLE,
+        context_size=10_000,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=tasks_completed,
+        tasks_failed=tasks_failed,
+        timeout_count=timeout_count,
+        model_tier="medium",
+    )
+
+
+def test_idle_can_review_excludes_circuit_broken_reviewer() -> None:
+    """A dead reviewer (0 successes + timeout) is dropped from the review pool (#22).
+
+    Mirrors the live gemini-ETIMEDOUT case: a configured reviewer that produced
+    0 successful calls and timed out must not be pinned for code_review.
+    """
+    from agentshore.plays.candidates import idle_can_review_agents
+
+    dead_gemini = _reviewer("g1", AgentType.GEMINI, tasks_completed=0, timeout_count=1)
+    healthy_claude = _reviewer("c1", AgentType.CLAUDE_CODE, tasks_completed=2)
+    pool = idle_can_review_agents(_state(agents=[dead_gemini, healthy_claude]))
+    assert [a.agent_id for a in pool] == ["c1"]
+
+
 def _seeded_graph(
     *,
     has_ready_tasks: bool = False,
