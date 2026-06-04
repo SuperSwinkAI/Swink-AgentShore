@@ -34,6 +34,7 @@ from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
     effective_model_tier_config,
 )
+from agentshore.errors import ErrorClass
 from agentshore.identity_names import canonical_identity_name, same_identity
 from agentshore.play_rules import (
     CANDIDATE_REQUIRED_PLAY_TYPES,
@@ -798,7 +799,7 @@ def compute_agent_eligibility_mask(
     rate_limited_types: set[str] = {
         a.agent_type.value
         for a in state.agents
-        if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
     }
 
     for i, pt in enumerate(V1_ACTION_ORDER):
@@ -910,13 +911,13 @@ def compute_config_mask(
         key = (a.agent_type.value, tier)
         if a.status == AgentStatus.IDLE:
             idle_configs.add(key)
-        if a.status == AgentStatus.ERROR and a.last_error_class == "auth":
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.AUTH:
             blocked_auth_configs.add((a.agent_type.value, tier, a.github_identity))
             continue
-        if a.status == AgentStatus.ERROR and a.last_error_class == "invalid_model":
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.INVALID_MODEL:
             blocked_model_configs.add((a.agent_type.value, tier, a.model))
             continue
-        if a.status == AgentStatus.ERROR and a.last_error_class != "rate_limit":
+        if a.status == AgentStatus.ERROR and a.last_error_class != ErrorClass.RATE_LIMIT:
             continue
         counts[key] = counts.get(key, 0) + 1
 

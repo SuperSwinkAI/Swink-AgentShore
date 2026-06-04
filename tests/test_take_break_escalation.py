@@ -25,6 +25,7 @@ import pytest
 from agentshore.core.mixins.completion import CompletionProcessor
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT, RecoveryTracker
+from agentshore.errors import ErrorClass
 from agentshore.plays.base import PlayExecutionContext, PlayParams
 from agentshore.plays.internal.take_break import TakeBreakPlay
 from agentshore.plays.override import OverrideKind
@@ -49,7 +50,7 @@ def _error_agent(agent_id: str = "err1") -> AgentSnapshot:
         total_tokens=0,
         tasks_completed=0,
         tasks_failed=1,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
     )
 
 
@@ -215,7 +216,7 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harness:
+def _enqueue_harness(error_class: ErrorClass | None, agent_id: str = "err1") -> _Harness:
     h = _Harness()
     handle = MagicMock()
     handle.last_error_class = error_class
@@ -224,8 +225,8 @@ def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harnes
     return h
 
 
-@pytest.mark.parametrize("error_class", ["crash_signal", "crash_oom"])
-def test_crash_exit_does_not_enqueue_recovery(error_class: str) -> None:
+@pytest.mark.parametrize("error_class", [ErrorClass.CRASH_SIGNAL, ErrorClass.CRASH_OOM])
+def test_crash_exit_does_not_enqueue_recovery(error_class: ErrorClass) -> None:
     """A crash/OOM/external-SIGKILL exit must not get a take_break recovery (#7).
 
     The mass -9 burst landed in ``unknown`` and got ``take_break`` backoff. The
@@ -242,7 +243,7 @@ def test_crash_exit_does_not_enqueue_recovery(error_class: str) -> None:
 
 def test_rate_limit_class_enqueues_rate_limit_recovery() -> None:
     """A true rate_limit error → RATE_LIMIT_RECOVERY + its own latch (#23/#24)."""
-    h = _enqueue_harness("rate_limit")
+    h = _enqueue_harness(ErrorClass.RATE_LIMIT)
 
     h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
 
@@ -254,8 +255,11 @@ def test_rate_limit_class_enqueues_rate_limit_recovery() -> None:
     assert entry.kind is OverrideKind.RATE_LIMIT_RECOVERY
 
 
-@pytest.mark.parametrize("error_class", ["unknown", "codex_rollout", "transient_network"])
-def test_unknown_classes_enqueue_unknown_recovery(error_class: str) -> None:
+@pytest.mark.parametrize(
+    "error_class",
+    [ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK],
+)
+def test_unknown_classes_enqueue_unknown_recovery(error_class: ErrorClass) -> None:
     """unknown/codex_rollout/transient_network → the distinct UNKNOWN_ERROR_RECOVERY
     path + its own latch, never the rate-limit one (#23/#24)."""
     h = _enqueue_harness(error_class)
@@ -285,7 +289,7 @@ class _DrainHarness(CompletionProcessor):
         self._manager = MagicMock()
         self._manager.clear = AsyncMock()
         handle = MagicMock()
-        handle.last_error_class = "unknown"  # recoverable class
+        handle.last_error_class = ErrorClass.UNKNOWN  # recoverable class
         self._manager.handles = {"err1": handle}
         self._host = MagicMock()
         self._host._draining = draining

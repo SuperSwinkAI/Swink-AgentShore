@@ -9,6 +9,7 @@ OrchestratorState fixtures and assert on the returned MaskReason | None.
 
 from __future__ import annotations
 
+from agentshore.errors import ErrorClass
 from agentshore.plays.skill_backed.gates import (
     ArmedByFailureGate,
     CapabilityGate,
@@ -33,7 +34,7 @@ def _agent(
     agent_id: str = "a1",
     status: AgentStatus = AgentStatus.IDLE,
     agent_type: AgentType = AgentType.CLAUDE_CODE,
-    last_error_class: str | None = None,
+    last_error_class: ErrorClass | None = None,
     tasks_completed: int = 1,
     tasks_failed: int = 0,
     timeout_count: int = 0,
@@ -100,7 +101,7 @@ def test_capability_gate_excludes_rate_limited_agent_type() -> None:
     idle = _agent()
     rate_limited = _agent(
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
     )
     reason = gate(_state(agents=[idle, rate_limited]))
     # idle is the same agent_type as rate_limited; entire type is excluded.

@@ -361,7 +361,9 @@ def encode_observation(
         obs[base + 2] = _clamp(avg_success)
         obs[base + 3] = _norm(avg_context, _SAT_CONTEXT_TOKENS)
         obs[base + 4] = _norm(len(agents_in_tier), float(_MAX_TOTAL_AGENTS))
-    active = sum(1 for a in state.agents if a.status.value not in ("error", "terminated"))
+    active = sum(
+        1 for a in state.agents if a.status not in (AgentStatus.ERROR, AgentStatus.TERMINATED)
+    )
     obs[_S_ACTIVE_AGENTS] = _norm(active, float(_MAX_TOTAL_AGENTS))
 
     # ---- BUDGET (33-36) ----

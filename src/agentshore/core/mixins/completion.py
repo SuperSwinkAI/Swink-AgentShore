@@ -19,6 +19,7 @@ from agentshore.core.helpers import (
 )
 from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT
 from agentshore.data.store import PlayRecord, PullRequestRecord
+from agentshore.errors import ErrorClass
 from agentshore.github.labels import (
     MANUAL_REQUIRED_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
@@ -95,12 +96,12 @@ class _CompletionVerdict(enum.Enum):
 # NOTE (#7): the crash classes "crash_signal" (SIGKILL/-9, e.g. OS OOM kill) and
 # "crash_oom" are deliberately in NEITHER set — a crashed/OOM-killed agent is not
 # recoverable via take_break backoff, so it must not get one.
-_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset({"rate_limit"})
+_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMIT})
 # Non-rate-limit recoverable classes. "transient_network" is a precise carve-out
 # of the old "unknown" bucket (socket close / connection reset) — still transient,
 # still gets the take_break, just under an honest name.
-_UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset(
-    {"unknown", "codex_rollout", "transient_network"}
+_UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
+    {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
 )
 
 # Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an

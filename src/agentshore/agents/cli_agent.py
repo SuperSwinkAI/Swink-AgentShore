@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
-from agentshore.errors import AgentOutputInvalid, AgentProcessError, PlayTimeoutError
+from agentshore.errors import (
+    AgentOutputInvalid,
+    AgentProcessError,
+    ErrorClass,
+    PlayTimeoutError,
+)
 from agentshore.logging import get_logger
 from agentshore.state import AgentType
 
@@ -152,12 +157,15 @@ _TRANSIENT_NETWORK_PATTERNS = (
 )
 
 
-def _classify_error(rc: int, stderr: str, stdout: str) -> str:
+def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     """Classify a non-zero CLI exit into a semantic error bucket.
 
-    Returns one of ``"rate_limit"``, ``"auth"``, ``"timeout"``,
-    ``"invalid_model"``, ``"codex_rollout"``, ``"transient_network"``,
-    ``"crash_oom"``, ``"crash_signal"``, or ``"unknown"``.
+    Returns one of ``ErrorClass.RATE_LIMIT``, ``ErrorClass.AUTH``,
+    ``ErrorClass.TIMEOUT``, ``ErrorClass.INVALID_MODEL``,
+    ``ErrorClass.CODEX_ROLLOUT``, ``ErrorClass.TRANSIENT_NETWORK``,
+    ``ErrorClass.CRASH_OOM``, ``ErrorClass.CRASH_SIGNAL``, or
+    ``ErrorClass.UNKNOWN`` (each a ``str`` subclass, so callers comparing
+    against the bare strings keep working).
 
     *stderr* is matched against the full pattern set; the trailing 1 000 chars
     of *stdout* are matched only against each category's high-precision
@@ -176,42 +184,42 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> str:
         return any(p in err for p in stderr_patterns) or any(p in out for p in stdout_patterns)
 
     if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
-        return "rate_limit"
+        return ErrorClass.RATE_LIMIT
     if hit(_AUTH_PATTERNS, _AUTH_STDOUT):
-        return "auth"
+        return ErrorClass.AUTH
     if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
-        return "timeout"
+        return ErrorClass.TIMEOUT
     if hit(_INVALID_MODEL_PATTERNS, _INVALID_MODEL_STDOUT):
-        return "invalid_model"
+        return ErrorClass.INVALID_MODEL
     # codex_rollout + OOM signatures are distinctive enough to match in either
     # stream (an OOM "Out of memory" notice legitimately lands on stdout).
     combined = err + out
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
-        return "codex_rollout"
+        return ErrorClass.CODEX_ROLLOUT
     if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
-        return "transient_network"
+        return ErrorClass.TRANSIENT_NETWORK
     if any(p in combined for p in _OOM_PATTERNS):
-        return "crash_oom"
+        return ErrorClass.CRASH_OOM
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS
     # OOM killer or an external kill is a crash, NOT a rate limit — bucketing it
     # as "unknown" routed it into rate-limit take_break recovery (#7). SIGTERM
     # (-15) and SIGINT (-2) are graceful AgentShore/OS-initiated stops and keep
     # falling through to "unknown".
     if rc < 0 and rc not in (-2, -15):
-        return "crash_signal"
-    return "unknown"
+        return ErrorClass.CRASH_SIGNAL
+    return ErrorClass.UNKNOWN
 
 
 def _process_error_detail(
     *,
     agent_type: AgentType,
     model: str | None,
-    error_class: str,
+    error_class: ErrorClass,
     stderr: str,
     stdout: str,
 ) -> str:
     """Return a concise user-facing subprocess error detail."""
-    if error_class == "invalid_model":
+    if error_class == ErrorClass.INVALID_MODEL:
         model_text = f" model {model!r}" if model else ""
         report = _extract_cli_report_path(stderr)
         suffix = f" Full report: {report}" if report else ""
@@ -544,7 +552,7 @@ async def dispatch_cli(
                     f"{handle.model_tier or '?'}) timed out after {timeout}s "
                     f"(prompt_bytes={prompt_bytes})"
                 ),
-                error_class="timeout_wallclock",
+                error_class=ErrorClass.TIMEOUT_WALLCLOCK,
             ) from None
         if read_task in done:
             idle_task.cancel()
@@ -563,7 +571,7 @@ async def dispatch_cli(
                 read_result = await read_task
             elif (
                 isinstance(idle_exc, PlayTimeoutError)
-                and getattr(idle_exc, "error_class", None) == "timeout_post_response"
+                and getattr(idle_exc, "error_class", None) == ErrorClass.TIMEOUT_POST_RESPONSE
             ):
                 post_response_killed = True
                 _logger.info(
@@ -604,7 +612,7 @@ async def dispatch_cli(
         _close_process_transport(proc)
         raise PlayTimeoutError(
             f"agent {handle.agent_id!r} timed out after {timeout}s",
-            error_class="timeout_wallclock",
+            error_class=ErrorClass.TIMEOUT_WALLCLOCK,
         ) from None
     except asyncio.CancelledError:
         # Task cancellation — clean up the child process before propagating.
@@ -846,7 +854,7 @@ async def _watch_stream_idle(
                 raise PlayTimeoutError(
                     f"agent {agent_id!r}{extra} response complete but process "
                     f"did not exit within {_POST_RESPONSE_GRACE_S:g}s grace period",
-                    error_class="timeout_post_response",
+                    error_class=ErrorClass.TIMEOUT_POST_RESPONSE,
                 )
             silence_qualifier = (
                 "produced no stdout"
@@ -855,7 +863,7 @@ async def _watch_stream_idle(
             )
             raise PlayTimeoutError(
                 f"agent {agent_id!r}{extra} {silence_qualifier} for {timeout:g}s",
-                error_class="timeout_stream_idle",
+                error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
             )
 
 

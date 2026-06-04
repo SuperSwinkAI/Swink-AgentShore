@@ -12,7 +12,13 @@ import pytest_asyncio
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
-from agentshore.errors import AgentAuthError, AgentTimeout, PlayTimeoutError, PreconditionFailed
+from agentshore.errors import (
+    AgentAuthError,
+    AgentTimeout,
+    ErrorClass,
+    PlayTimeoutError,
+    PreconditionFailed,
+)
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
 
@@ -625,7 +631,7 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
     handle.transition_to(AgentStatus.ERROR)
-    handle.last_error_class = "auth"
+    handle.last_error_class = ErrorClass.AUTH
 
     result = await mgr.attempt_recovery(handle.agent_id)
 

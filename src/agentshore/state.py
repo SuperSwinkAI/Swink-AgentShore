@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.errors import ErrorClass
 from agentshore.github.pr_links import issue_numbers_for_pr
 
 if TYPE_CHECKING:
@@ -131,8 +132,8 @@ class AgentStatus(enum.Enum):
 # (#20). Kept here so the eligibility mask and the END_AGENT resolver agree.
 # "transient_network" (socket close / connection reset, #23) is recoverable —
 # it is a precise carve-out of the old "unknown" bucket, which was recoverable.
-RECOVERABLE_ERROR_CLASSES: frozenset[str] = frozenset(
-    {"rate_limit", "unknown", "transient_network"}
+RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
+    {ErrorClass.RATE_LIMIT, ErrorClass.UNKNOWN, ErrorClass.TRANSIENT_NETWORK}
 )
 
 # Per-agent circuit breaker (#22): an agent that has produced ZERO successful
@@ -317,7 +318,7 @@ class AgentSnapshot:
     current_play_issue_number: int | None = None
     current_play_pr_number: int | None = None
     current_play_branch: str | None = None
-    last_error_class: str | None = None
+    last_error_class: ErrorClass | None = None
     timeout_count: int = 0
     github_identity: str | None = None
     # desktop-31h2: cumulative dispatch count and the agent's share of the

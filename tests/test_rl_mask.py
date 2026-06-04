@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from agentshore.errors import ErrorClass
 from agentshore.plays.registry import build_default_registry
 from agentshore.rl.action_space import NUM_ACTIONS, PLAY_TO_INDEX, V1_ACTION_ORDER
 from agentshore.rl.mask import (
@@ -698,7 +699,7 @@ def test_reverse_failsafe_dead_end_controls_can_be_opened():
     assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
-def _error_agent_snapshot(agent_id: str, error_class: str | None):
+def _error_agent_snapshot(agent_id: str, error_class: ErrorClass | None):
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
     return AgentSnapshot(
@@ -719,7 +720,7 @@ def test_end_agent_unmasked_for_terminal_error_agent():
     """#20: a non-recoverable ERROR agent (auth) makes END_AGENT valid even when
     its registry precondition would mask it — the PPO gets the retire option so
     the agent isn't leaked until end_session."""
-    state = _state(agents=[_error_agent_snapshot("broken", "auth")])
+    state = _state(agents=[_error_agent_snapshot("broken", ErrorClass.AUTH)])
     mask = compute_action_mask(state, _registry_all_false())
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
@@ -727,7 +728,7 @@ def test_end_agent_unmasked_for_terminal_error_agent():
 def test_end_agent_stays_masked_for_recoverable_error_agent():
     """A rate_limit ERROR agent still has the TAKE_BREAK recovery path and isn't
     recovery-exhausted yet, so END_AGENT stays masked (recovery-first)."""
-    state = _state(agents=[_error_agent_snapshot("throttled", "rate_limit")])
+    state = _state(agents=[_error_agent_snapshot("throttled", ErrorClass.RATE_LIMIT)])
     mask = compute_action_mask(state, _registry_all_false())
     assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
@@ -1094,7 +1095,7 @@ def test_compute_config_mask_rate_limit_error_blocks_repsawn():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1118,7 +1119,7 @@ def test_compute_config_mask_non_rate_limit_error_does_not_block():
         agent_id="cc-1",
         agent_type=AgentType.CLAUDE_CODE,
         status=AgentStatus.ERROR,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1141,7 +1142,7 @@ def test_compute_config_mask_invalid_model_blocks_same_config():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="invalid_model",
+        last_error_class=ErrorClass.INVALID_MODEL,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1556,7 +1557,7 @@ def test_take_break_enabled_for_rate_limit_error():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1575,7 +1576,7 @@ def test_take_break_enabled_for_unknown_error():
         agent_id="cc-1",
         agent_type=AgentType.CLAUDE_CODE,
         status=AgentStatus.ERROR,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1590,7 +1591,7 @@ def test_take_break_masked_for_other_error_classes():
     """auth/timeout errors do NOT trigger TAKE_BREAK."""
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
-    for ec in ("auth", "timeout", "context_limit", "invalid_model"):
+    for ec in (ErrorClass.AUTH, ErrorClass.TIMEOUT, ErrorClass.INVALID_MODEL):
         agent = AgentSnapshot(
             agent_id="cc-1",
             agent_type=AgentType.CLAUDE_CODE,
@@ -1614,7 +1615,7 @@ def test_take_break_does_not_force_global_session_pause_when_available():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1649,7 +1650,7 @@ def test_take_break_masked_when_trigger_agent_already_cooling_down():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         current_play_type=PlayType.TAKE_BREAK,
         context_size=0,
         total_cost=0.0,
@@ -1669,7 +1670,7 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,

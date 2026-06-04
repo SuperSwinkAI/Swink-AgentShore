@@ -23,7 +23,12 @@ from agentshore.agents.cli_agent import (
 )
 from agentshore.agents.handle import AgentHandle
 from agentshore.config import AgentConfig
-from agentshore.errors import AgentOutputInvalid, AgentProcessError, PlayTimeoutError
+from agentshore.errors import (
+    AgentOutputInvalid,
+    AgentProcessError,
+    ErrorClass,
+    PlayTimeoutError,
+)
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
 
@@ -1025,6 +1030,23 @@ def test_classify_error_github_repo_access_as_auth() -> None:
 
 def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
+
+
+def test_classify_error_returns_error_class_members() -> None:
+    """The classifier returns typed ErrorClass members, not bare strings.
+
+    ErrorClass is a StrEnum, so ``== "rate_limit"`` keeps working; this guards
+    the stronger property that the *type* is the enum so downstream typed
+    comparisons (eligibility, gates) are exhaustive and typo-proof.
+    """
+    rl = _classify_error(1, "429 Too Many Requests", "")
+    assert rl is ErrorClass.RATE_LIMIT
+    assert isinstance(rl, ErrorClass)
+    assert _classify_error(1, "HTTP 403 Forbidden", "") is ErrorClass.AUTH
+    assert _classify_error(1, "context deadline exceeded", "") is ErrorClass.TIMEOUT
+    assert _classify_error(1, "model not found", "") is ErrorClass.INVALID_MODEL
+    assert _classify_error(-9, "", "") is ErrorClass.CRASH_SIGNAL
+    assert _classify_error(1, "something nobody matches", "") is ErrorClass.UNKNOWN
 
 
 def test_classify_error_invalid_model() -> None:
