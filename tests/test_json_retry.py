@@ -147,15 +147,21 @@ async def test_no_retry_when_session_id_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_retry_on_nonzero_exit() -> None:
-    """No retry when agent exited non-zero."""
+async def test_retry_on_killed_exit_with_session() -> None:
+    """A post-response idle kill (non-zero / None exit) still retries via --resume.
+
+    exit_code no longer gates the JSON retry: a resumable session id plus a
+    salvaged non-empty output are the only prerequisites, so the common
+    "agent emitted a partial line then stalled and got killed" case recovers.
+    """
     play = IssuePickupPlay()
     ctx = _ctx()
     state = _state()
     params = PlayParams(issue_number=42, agent_id="claude-1")
 
-    result = _invocation(raw_output=NO_JSON, session_id="sess-abc", exit_code=1)
-    ctx.manager.dispatch = AsyncMock(return_value=result)
+    first_result = _invocation(raw_output=NO_JSON, session_id="sess-abc", exit_code=1)
+    retry_result = _invocation(raw_output=VALID_JSON, session_id="sess-abc", exit_code=1)
+    ctx.manager.dispatch = AsyncMock(side_effect=[first_result, retry_result])
 
     with (
         patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
@@ -163,5 +169,6 @@ async def test_no_retry_on_nonzero_exit() -> None:
     ):
         outcome = await play.execute(state, params, ctx=ctx)
 
-    assert outcome.success is False
-    assert ctx.manager.dispatch.await_count == 1
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == "sess-abc"
