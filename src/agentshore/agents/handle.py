@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import asyncio
     from pathlib import Path
 
+    from agentshore.errors import ErrorClass
     from agentshore.state import AgentStatus, AgentType, PlayType
 
 _logger = get_logger(__name__)
@@ -196,7 +197,7 @@ class AgentHandle:
     current_play_issue_number: int | None = None
     current_play_pr_number: int | None = None
     current_play_branch: str | None = None
-    last_error_class: str | None = None
+    last_error_class: ErrorClass | None = None
     timeout_count: int = 0
     github_identity: str | None = None
     # Identity env overlay resolved once at instantiate() and reused by every

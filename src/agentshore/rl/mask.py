@@ -14,7 +14,13 @@ from agentshore.play_rules import (
     CANDIDATE_REQUIRED_PLAY_TYPES,
     TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
 )
-from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
+from agentshore.plays.candidates import (
+    PlayCandidatePlan,
+    WorkAvailability,
+    build_candidate_plan,
+    qa_ran_within_terminal_window,
+    terminal_audits_are_fresh,
+)
 from agentshore.rl.action_space import NUM_ACTIONS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
 from agentshore.rl.eligibility import (
@@ -34,11 +40,6 @@ from agentshore.rl.mask_reason import (
     MaskSource,
 )
 from agentshore.state import AgentStatus, AgentType, PlayType, SessionState
-from agentshore.work_availability import (
-    WorkAvailability,
-    qa_ran_within_terminal_window,
-    terminal_audits_are_fresh,
-)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray

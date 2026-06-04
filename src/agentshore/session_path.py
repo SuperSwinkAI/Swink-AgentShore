@@ -451,231 +451,64 @@ def is_session_running(project_path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SessionProcessController — process lifecycle management
+# Process lifecycle management
 # ---------------------------------------------------------------------------
 
 
-class SessionProcessController:
-    """Manages process lifecycle (stop, signal, cleanup) for an AgentShore session.
+# -- low-level process utilities --------------------------------------------
 
-    Encapsulates the SIGTERM→poll→SIGKILL pattern with configurable grace
-    periods. Path resolution functions remain module-level; this class handles
-    the mutable, side-effecting process control operations.
-    """
 
-    def __init__(
-        self,
-        project_path: Path,
-        *,
-        stop_grace_seconds: float | None = None,
-        stop_poll_interval: float | None = None,
-        dashboard_stop_grace_seconds: float | None = None,
-    ) -> None:
-        # Resolve unset grace periods from the module globals at construction
-        # time (not as default-param values, which bind at def-time and so
-        # can't be monkeypatched in tests).
-        self._project_path = project_path
-        self._stop_grace_seconds = (
-            _STOP_GRACE_SECONDS if stop_grace_seconds is None else stop_grace_seconds
-        )
-        self._stop_poll_interval = (
-            _STOP_POLL_INTERVAL if stop_poll_interval is None else stop_poll_interval
-        )
-        self._dashboard_stop_grace_seconds = (
-            _DASHBOARD_STOP_GRACE_SECONDS
-            if dashboard_stop_grace_seconds is None
-            else dashboard_stop_grace_seconds
-        )
-
-    # -- low-level process utilities -----------------------------------------
-
-    @staticmethod
-    def _process_alive(pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-
-    @staticmethod
-    def _signal_group(pid: int, sig: int) -> None:
-        """Signal the process's group, falling back to the bare PID.
-
-        A desktop-spawned sidecar may not be a process-group leader (the
-        launcher didn't call setsid / start_new_session), so ``killpg(pid)``
-        raises ``ProcessLookupError`` even though the process is alive.
-        Previously that early-returned and the sidecar was never signalled —
-        ``agentshore stop`` reported success while the orchestrator kept
-        running (#31). Fall back to ``os.kill(pid)`` whenever the group signal
-        doesn't land.
-        """
-        killpg = getattr(os, "killpg", None)
-        if killpg is not None:
-            try:
-                killpg(pid, sig)
-                return
-            except OSError:
-                # No group with this pgid (non-leader pid) or not permitted —
-                # signal the individual process instead.
-                pass
-        with contextlib.suppress(OSError):
-            os.kill(pid, sig)
-
-    @staticmethod
-    def _terminate_process_tree(pid: int, *, force: bool) -> None:
-        if sys.platform.startswith("win"):
-            args = ["taskkill", "/PID", str(pid), "/T"]
-            if force:
-                args.append("/F")
-            with contextlib.suppress(OSError, subprocess.SubprocessError):
-                subprocess.run(  # nosec B603
-                    args,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            return
-
-        sig = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM
-        SessionProcessController._signal_group(pid, sig)
-
-    # -- high-level operations -----------------------------------------------
-
-    def request_drain(
-        self,
-        *,
-        end_session_report: bool = False,
-        open_report: bool = True,
-    ) -> str:
-        """Send a graceful drain request over IPC. Returns status string."""
-        import json as _json
-        import socket as _socket
-
-        endpoint = discover_ipc_endpoint(self._project_path)
-        if endpoint is None:
-            return "fallback_hard"
-
-        try:
-            family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
-            with _socket.socket(family, _socket.SOCK_STREAM) as sock:
-                sock.settimeout(5.0)
-                if endpoint.kind == "unix":
-                    if endpoint.path is None:
-                        return "fallback_hard"
-                    sock.connect(str(endpoint.path))
-                else:
-                    sock.connect((endpoint.host, endpoint.port))
-                cmd = {
-                    "command": "drain",
-                    "reason": "cli_request",
-                    "end_session_report": end_session_report,
-                    "open_report": open_report,
-                }
-                encoded = _json.dumps(cmd) + "\n"
-                sock.sendall(encoded.encode())
-            return "sent"
-        except TimeoutError:
-            return "timeout"
-        except (AttributeError, OSError):
-            return "error"
-
-    def stop_dashboard(self) -> bool:
-        """Terminate the recorded dashboard bridge process, if one exists."""
-        pid = read_dashboard_pid(self._project_path)
-        if pid is None:
-            return False
-
-        self._terminate_process_tree(pid, force=False)
-
-        deadline = time.monotonic() + self._dashboard_stop_grace_seconds
-        while self._process_alive(pid) and time.monotonic() < deadline:
-            time.sleep(self._stop_poll_interval)
-
-        if self._process_alive(pid):
-            self._terminate_process_tree(pid, force=True)
-
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
         return True
-
-    def hard_stop(self) -> bool:
-        """Forcibly stop the orchestrator and dashboard subprocesses.
-
-        Sends SIGTERM to each recorded PID's process group, waits up to the
-        grace period, then escalates to SIGKILL. Cleans up PID and IPC files.
-
-        Returns True only when every recorded PID is confirmed gone (or there
-        were none to stop-and-stop succeeded). Returns False if a process is
-        still alive after the SIGKILL escalation, so callers never report a
-        clean stop while the orchestrator keeps running (#31).
-        """
-        pids = [
-            ("orchestrator", read_pid(self._project_path)),
-            ("dashboard", read_dashboard_pid(self._project_path)),
-        ]
-        live = [(label, pid) for label, pid in pids if pid is not None]
-        if not live:
-            self.cleanup()
-            return False
-
-        for _label, pid in live:
-            self._terminate_process_tree(pid, force=False)
-
-        deadline = time.monotonic() + self._stop_grace_seconds
-        survivors = [pid for _label, pid in live if self._process_alive(pid)]
-        while survivors and time.monotonic() < deadline:
-            time.sleep(self._stop_poll_interval)
-            survivors = [pid for pid in survivors if self._process_alive(pid)]
-
-        for pid in survivors:
-            self._terminate_process_tree(pid, force=True)
-
-        # SIGKILL is delivered asynchronously — poll briefly to confirm the
-        # process actually exited before claiming success (#31).
-        kill_deadline = time.monotonic() + self._dashboard_stop_grace_seconds
-        survivors = [pid for _label, pid in live if self._process_alive(pid)]
-        while survivors and time.monotonic() < kill_deadline:
-            time.sleep(self._stop_poll_interval)
-            survivors = [pid for pid in survivors if self._process_alive(pid)]
-
-        self.cleanup()
-        return not survivors
-
-    def cleanup(self) -> None:
-        """Remove stale PID, dashboard PID, info, and Unix socket files."""
-        project_path = self._project_path
-        info = read_session_info(project_path)
-
-        for path in (
-            session_pid_path(project_path),
-            dashboard_pid_path(project_path),
-            session_info_path(project_path),
-            timelapse_info_path(project_path),
-        ):
-            if path.exists() or path.is_symlink():
-                path.unlink(missing_ok=True)
-        well_known_socket = session_socket_path(project_path)
-        if not _has_live_unix_socket_listener(well_known_socket):
-            unlink_socket_if_present(well_known_socket)
-
-        if info is not None:
-            recorded = info.get("socket")
-            if isinstance(recorded, str):
-                external = Path(recorded)
-                with contextlib.suppress(OSError):
-                    if not _has_live_unix_socket_listener(external):
-                        unlink_socket_if_present(external)
-
-        sd = session_dir(project_path)
-        if sd.exists():
-            try:
-                next(sd.iterdir())
-            except StopIteration:
-                with contextlib.suppress(OSError):
-                    sd.rmdir()
+    except OSError:
+        return False
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatible free functions
-# ---------------------------------------------------------------------------
+def _signal_group(pid: int, sig: int) -> None:
+    """Signal the process's group, falling back to the bare PID.
+
+    A desktop-spawned sidecar may not be a process-group leader (the
+    launcher didn't call setsid / start_new_session), so ``killpg(pid)``
+    raises ``ProcessLookupError`` even though the process is alive.
+    Previously that early-returned and the sidecar was never signalled —
+    ``agentshore stop`` reported success while the orchestrator kept
+    running (#31). Fall back to ``os.kill(pid)`` whenever the group signal
+    doesn't land.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None:
+        try:
+            killpg(pid, sig)
+            return
+        except OSError:
+            # No group with this pgid (non-leader pid) or not permitted —
+            # signal the individual process instead.
+            pass
+    with contextlib.suppress(OSError):
+        os.kill(pid, sig)
+
+
+def _terminate_process_tree(pid: int, *, force: bool) -> None:
+    if sys.platform.startswith("win"):
+        args = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            args.append("/F")
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(  # nosec B603
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        return
+
+    sig = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM
+    _signal_group(pid, sig)
+
+
+# -- high-level operations --------------------------------------------------
 
 
 def request_drain(
@@ -684,29 +517,132 @@ def request_drain(
     end_session_report: bool = False,
     open_report: bool = True,
 ) -> str:
-    """Send a graceful drain request to the running orchestrator over IPC."""
-    return SessionProcessController(project_path).request_drain(
-        end_session_report=end_session_report, open_report=open_report
-    )
+    """Send a graceful drain request to the running orchestrator over IPC.
+
+    Returns a status string.
+    """
+    import json as _json
+    import socket as _socket
+
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return "fallback_hard"
+
+    try:
+        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            if endpoint.kind == "unix":
+                if endpoint.path is None:
+                    return "fallback_hard"
+                sock.connect(str(endpoint.path))
+            else:
+                sock.connect((endpoint.host, endpoint.port))
+            cmd = {
+                "command": "drain",
+                "reason": "cli_request",
+                "end_session_report": end_session_report,
+                "open_report": open_report,
+            }
+            encoded = _json.dumps(cmd) + "\n"
+            sock.sendall(encoded.encode())
+        return "sent"
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
 
 
 def stop_dashboard_process(project_path: Path) -> bool:
     """Terminate the recorded dashboard bridge process, if one exists."""
-    return SessionProcessController(project_path).stop_dashboard()
+    pid = read_dashboard_pid(project_path)
+    if pid is None:
+        return False
+
+    _terminate_process_tree(pid, force=False)
+
+    deadline = time.monotonic() + _DASHBOARD_STOP_GRACE_SECONDS
+    while _process_alive(pid) and time.monotonic() < deadline:
+        time.sleep(_STOP_POLL_INTERVAL)
+
+    if _process_alive(pid):
+        _terminate_process_tree(pid, force=True)
+
+    return True
 
 
 def hard_stop_session(project_path: Path) -> bool:
-    """Forcibly stop the orchestrator and dashboard subprocesses for a project session."""
-    return SessionProcessController(project_path).hard_stop()
+    """Forcibly stop the orchestrator and dashboard subprocesses for a project session.
 
+    Sends SIGTERM to each recorded PID's process group, waits up to the
+    grace period, then escalates to SIGKILL. Cleans up PID and IPC files.
 
-stop_session = hard_stop_session
+    Returns True only when every recorded PID is confirmed gone (or there
+    were none to stop-and-stop succeeded). Returns False if a process is
+    still alive after the SIGKILL escalation, so callers never report a
+    clean stop while the orchestrator keeps running (#31).
+    """
+    pids = [
+        ("orchestrator", read_pid(project_path)),
+        ("dashboard", read_dashboard_pid(project_path)),
+    ]
+    live = [(label, pid) for label, pid in pids if pid is not None]
+    if not live:
+        cleanup_session(project_path)
+        return False
+
+    for _label, pid in live:
+        _terminate_process_tree(pid, force=False)
+
+    deadline = time.monotonic() + _STOP_GRACE_SECONDS
+    survivors = [pid for _label, pid in live if _process_alive(pid)]
+    while survivors and time.monotonic() < deadline:
+        time.sleep(_STOP_POLL_INTERVAL)
+        survivors = [pid for pid in survivors if _process_alive(pid)]
+
+    for pid in survivors:
+        _terminate_process_tree(pid, force=True)
+
+    # SIGKILL is delivered asynchronously — poll briefly to confirm the
+    # process actually exited before claiming success (#31).
+    kill_deadline = time.monotonic() + _DASHBOARD_STOP_GRACE_SECONDS
+    survivors = [pid for _label, pid in live if _process_alive(pid)]
+    while survivors and time.monotonic() < kill_deadline:
+        time.sleep(_STOP_POLL_INTERVAL)
+        survivors = [pid for pid in survivors if _process_alive(pid)]
+
+    cleanup_session(project_path)
+    return not survivors
 
 
 def cleanup_session(project_path: Path) -> None:
     """Remove stale PID, dashboard PID, info, and Unix socket files."""
-    SessionProcessController(project_path).cleanup()
+    info = read_session_info(project_path)
 
+    for path in (
+        session_pid_path(project_path),
+        dashboard_pid_path(project_path),
+        session_info_path(project_path),
+        timelapse_info_path(project_path),
+    ):
+        if path.exists() or path.is_symlink():
+            path.unlink(missing_ok=True)
+    well_known_socket = session_socket_path(project_path)
+    if not _has_live_unix_socket_listener(well_known_socket):
+        unlink_socket_if_present(well_known_socket)
 
-def _process_alive(pid: int) -> bool:
-    return SessionProcessController._process_alive(pid)
+    if info is not None:
+        recorded = info.get("socket")
+        if isinstance(recorded, str):
+            external = Path(recorded)
+            with contextlib.suppress(OSError):
+                if not _has_live_unix_socket_listener(external):
+                    unlink_socket_if_present(external)
+
+    sd = session_dir(project_path)
+    if sd.exists():
+        try:
+            next(sd.iterdir())
+        except StopIteration:
+            with contextlib.suppress(OSError):
+                sd.rmdir()

@@ -16,6 +16,7 @@ from agentshore.config import (
     TrustedIdsConfig,
 )
 from agentshore.data.models import PullRequestRecord
+from agentshore.errors import ErrorClass
 from agentshore.plays.base import PlayParams
 from agentshore.plays.resolver import ParameterResolver
 from agentshore.state import (
@@ -45,7 +46,7 @@ def _make_snapshot(
     tasks_failed: int = 0,
     total_cost: float = 0.1,
     github_identity: str | None = None,
-    last_error_class: str | None = None,
+    last_error_class: ErrorClass | None = None,
     current_play_type: PlayType | None = None,
     current_play_pr_number: int | None = None,
 ) -> AgentSnapshot:
@@ -1551,7 +1552,7 @@ async def test_resolve_end_agent_targets_terminal_error_agent() -> None:
         _make_snapshot(
             "broken",
             status=AgentStatus.ERROR,
-            last_error_class="auth",
+            last_error_class=ErrorClass.AUTH,
             tasks_completed=0,
             tasks_failed=1,
         ),
@@ -1575,7 +1576,7 @@ async def test_resolve_end_agent_skips_recoverable_error_agent() -> None:
         _make_snapshot(
             "throttled",
             status=AgentStatus.ERROR,
-            last_error_class="rate_limit",
+            last_error_class=ErrorClass.RATE_LIMIT,
             tasks_completed=0,
             tasks_failed=1,
         ),
@@ -1723,13 +1724,13 @@ async def test_resolve_take_break_attributes_rate_limit_trigger() -> None:
             _make_snapshot(
                 "claude-unknown",
                 status=AgentStatus.ERROR,
-                last_error_class="unknown",
+                last_error_class=ErrorClass.UNKNOWN,
             ),
             _make_snapshot(
                 "gemini-rate-limit",
                 agent_type=AgentType.GEMINI,
                 status=AgentStatus.ERROR,
-                last_error_class="rate_limit",
+                last_error_class=ErrorClass.RATE_LIMIT,
             ),
         ]
     )
@@ -1765,14 +1766,14 @@ async def test_resolve_take_break_skips_agent_already_cooling_down() -> None:
                 "gemini-cooling",
                 agent_type=AgentType.GEMINI,
                 status=AgentStatus.ERROR,
-                last_error_class="rate_limit",
+                last_error_class=ErrorClass.RATE_LIMIT,
                 current_play_type=PlayType.TAKE_BREAK,
             ),
             _make_snapshot(
                 "codex-unknown",
                 agent_type=AgentType.CODEX,
                 status=AgentStatus.ERROR,
-                last_error_class="unknown",
+                last_error_class=ErrorClass.UNKNOWN,
             ),
         ]
     )
@@ -2099,7 +2100,7 @@ async def test_resolve_end_agent_during_drain_retires_recoverable_error_agent() 
     errored = _make_snapshot(
         "wedged",
         status=AgentStatus.ERROR,
-        last_error_class="unknown",  # IS in RECOVERABLE_ERROR_CLASSES
+        last_error_class=ErrorClass.UNKNOWN,  # IS in RECOVERABLE_ERROR_CLASSES
     )
     state = dataclasses.replace(_make_state(agents=[errored]), session_state=SessionState.DRAINING)
 
@@ -2121,7 +2122,7 @@ async def test_resolve_end_agent_outside_drain_leaves_recoverable_error_for_take
     errored = _make_snapshot(
         "recovering",
         status=AgentStatus.ERROR,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
     )
     state = _make_state(agents=[errored])  # session_state defaults to RUNNING
 
@@ -2134,7 +2135,9 @@ async def test_resolve_end_agent_during_drain_prefers_error_over_idle() -> None:
     """A wedged ERROR agent is retired before idle agents during drain."""
     resolver = _make_resolver()
     idle = _make_snapshot("healthy", status=AgentStatus.IDLE)
-    errored = _make_snapshot("wedged", status=AgentStatus.ERROR, last_error_class="unknown")
+    errored = _make_snapshot(
+        "wedged", status=AgentStatus.ERROR, last_error_class=ErrorClass.UNKNOWN
+    )
     state = dataclasses.replace(
         _make_state(agents=[idle, errored]), session_state=SessionState.DRAINING
     )

@@ -250,7 +250,7 @@ def test_is_session_running_stops_orphan_dashboard_when_pid_missing(
 def test_stop_session_no_pid_returns_false(tmp_path: Path) -> None:
     project = tmp_path / "repo"
     project.mkdir()
-    assert sp.stop_session(project) is False
+    assert sp.hard_stop_session(project) is False
 
 
 def test_stop_session_signals_both_groups_and_cleans_up(
@@ -287,7 +287,7 @@ def test_stop_session_signals_both_groups_and_cleans_up(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert (4001, _signal.SIGTERM) in killed
     assert (4002, _signal.SIGTERM) in killed
     # No SIGKILL needed because the SIGTERM "killed" them in our fake
@@ -333,7 +333,7 @@ def test_stop_session_escalates_to_sigkill_on_straggler(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert (5001, _signal.SIGTERM) in killed
     assert (5001, _signal.SIGKILL) in killed
 
@@ -369,7 +369,7 @@ def test_hard_stop_returns_false_when_process_survives_sigkill(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is False
+    assert sp.hard_stop_session(project) is False
 
 
 def test_signal_group_falls_back_to_bare_pid_when_not_group_leader(
@@ -393,7 +393,7 @@ def test_signal_group_falls_back_to_bare_pid_when_not_group_leader(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    sp.SessionProcessController._signal_group(9999, _signal.SIGTERM)
+    sp._signal_group(9999, _signal.SIGTERM)
     assert individual == [(9999, _signal.SIGTERM)]
 
 
@@ -418,7 +418,7 @@ def test_stop_session_handles_already_dead_process(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert not sp.session_pid_path(project).exists()
 
 
@@ -451,7 +451,7 @@ def test_stop_session_uses_taskkill_on_windows(
     monkeypatch.setattr(sp.subprocess, "run", fake_run)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert ["taskkill", "/PID", "7001", "/T"] in calls
     assert ["taskkill", "/PID", "7001", "/T", "/F"] in calls
 

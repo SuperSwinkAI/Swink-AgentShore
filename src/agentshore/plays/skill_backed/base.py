@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
-from agentshore.errors import FailureKind
+from agentshore.errors import ErrorClass, FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
     params_to_json_safe_dict,
@@ -179,7 +179,7 @@ class SkillBackedPlay(Play, ABC):
         rate_limited: set[str] = {
             a.agent_type.value
             for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
+            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
         }
         capable: list[AgentSnapshot] = [
             a

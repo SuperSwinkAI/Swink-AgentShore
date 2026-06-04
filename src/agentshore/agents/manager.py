@@ -27,6 +27,7 @@ from agentshore.errors import (
     AgentAuthError,
     AgentOutputInvalid,
     AgentTimeout,
+    ErrorClass,
     OrchestratorError,
     PreconditionFailed,
 )
@@ -187,7 +188,7 @@ class AgentManager:
                     identity_env,
                 )
             except (IdentityResolutionError, AgentAuthError) as exc:
-                handle.last_error_class = "auth"
+                handle.last_error_class = ErrorClass.AUTH
                 handle.transition_to(AgentStatus.ERROR)
                 _logger.warning(
                     "agent_repo_access_validation_failed",
@@ -330,7 +331,17 @@ class AgentManager:
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()
             if isinstance(exc, AgentTimeout):
-                handle.last_error_class = getattr(exc, "error_class", "timeout_transient")
+                raw_error_class = getattr(exc, "error_class", ErrorClass.TIMEOUT_TRANSIENT)
+                # PlayTimeoutError.error_class carries the precise timeout
+                # sub-class (timeout_wallclock / _stream_idle / _post_response);
+                # a bare AgentTimeout has no attribute, so the default applies.
+                # Coerce to ErrorClass, collapsing any unexpected value to
+                # UNKNOWN rather than persisting an unclassified string.
+                handle.last_error_class = (
+                    ErrorClass(raw_error_class)
+                    if raw_error_class in ErrorClass._value2member_map_
+                    else ErrorClass.UNKNOWN
+                )
                 handle.timeout_count += 1
                 handle.transition_to(AgentStatus.IDLE)
                 await self._store.increment_agent_tasks(agent_id, failed=1)
@@ -358,7 +369,7 @@ class AgentManager:
                 )
                 raise
             if isinstance(exc, AgentOutputInvalid):
-                handle.last_error_class = "output_invalid"
+                handle.last_error_class = ErrorClass.OUTPUT_INVALID
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
@@ -438,7 +449,7 @@ class AgentManager:
 
         if handle.status != AgentStatus.ERROR:
             return False
-        if handle.last_error_class in {"auth", "invalid_model"}:
+        if handle.last_error_class in {ErrorClass.AUTH, ErrorClass.INVALID_MODEL}:
             _logger.debug(
                 "agent_recovery_skipped_config_error",
                 agent_id=agent_id,
@@ -462,16 +473,27 @@ class AgentManager:
     async def mark_agent_error(
         self,
         agent_id: str,
-        error_class: str,
+        error_class: ErrorClass | str,
         reason: str,
         *,
         increment_failed: bool = False,
     ) -> None:
-        """Attach a semantic runtime/config failure to one concrete agent."""
+        """Attach a semantic runtime/config failure to one concrete agent.
+
+        ``error_class`` accepts a bare string at the boundary (current callers
+        pass ``"auth"``) and is coerced to :class:`ErrorClass`, collapsing any
+        unrecognised value to :attr:`ErrorClass.UNKNOWN`.
+        """
         handle = self._get_handle(agent_id)
         cb = self._circuit_breakers[agent_id]
         cb.record_failure()
-        handle.last_error_class = error_class
+        coerced = (
+            ErrorClass(error_class)
+            if error_class in ErrorClass._value2member_map_
+            else ErrorClass.UNKNOWN
+        )
+        error_class = coerced
+        handle.last_error_class = coerced
         handle.transition_to(AgentStatus.ERROR)
         if increment_failed:
             await self._store.increment_agent_tasks(agent_id, failed=1)
