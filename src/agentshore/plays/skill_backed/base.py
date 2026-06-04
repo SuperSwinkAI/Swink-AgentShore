@@ -374,16 +374,17 @@ class SkillBackedPlay(Play, ABC):
         # Parse the raw result block emitted by the skill
         skill_result = parse_skill_result(invocation.raw_output)
 
-        # desktop-dy2j: single bounded retry when the agent ran to completion
-        # (exit_code 0, non-empty output) but omitted the structured JSON
-        # envelope. This is the narrow exception to the --resume ban — see
-        # feedback_persistent_sessions for the general rule.
+        # desktop-dy2j: single bounded retry when the agent produced output but
+        # omitted the structured JSON envelope. Covers both a clean exit that
+        # forgot the envelope and a post-response idle kill (exit_code None) that
+        # salvaged a non-envelope line — both leave a resumable session, which is
+        # the only real prerequisite. This is the narrow exception to the
+        # --resume ban — see feedback_persistent_sessions for the general rule.
         if (
             not skill_result.success
             and skill_result.error
             and "no valid result block" in skill_result.error
             and invocation.session_id is not None
-            and invocation.exit_code == 0
             and len(invocation.raw_output) > 0
         ):
             _logger.info(
