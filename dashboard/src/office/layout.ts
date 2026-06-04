@@ -187,6 +187,7 @@ export const ZONES: Zone[] = [
       { x: 46, y: 17, facing: "east" },
       { x: 46, y: 20, facing: "east" },
       { x: 46, y: 23, facing: "east" },
+      { x: 27, y: 22, facing: "north" },
       { x: 34, y: 22, facing: "south" },
       { x: 38, y: 22, facing: "south" },
       { x: 31, y: 26, facing: "east" },
@@ -194,7 +195,8 @@ export const ZONES: Zone[] = [
       { x: 38, y: 30, facing: "north" },
       { x: 27, y: 31, facing: "south" },
       { x: 46, y: 31, facing: "south" },
-      { x: 52, y: 30, facing: "east" },
+      { x: 32, y: 35, facing: "west" },
+      { x: 44, y: 34, facing: "east" },
     ],
   },
   {
@@ -232,6 +234,7 @@ export const ZONES: Zone[] = [
     seats: [
       { x: 9, y: 40, facing: "east" },
       { x: 12, y: 44 },
+      { x: 9, y: 48, facing: "east" },
       { x: 16, y: 47, facing: "west" },
     ],
   },

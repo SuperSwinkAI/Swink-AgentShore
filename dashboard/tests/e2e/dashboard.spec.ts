@@ -1989,6 +1989,27 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
       launchControl: layout.getZone(layout.ZoneId.LAUNCH_CONTROL).seats.length,
       recoveryBay: layout.getZone(layout.ZoneId.RECOVERY_BAY).seats.length,
     };
+    const workshopSeats = layout.getZone(layout.ZoneId.WORKSHOP).seats;
+    const markedWorkshopSeats = [
+      { x: 27, y: 22, facing: "north" },
+      { x: 32, y: 35, facing: "west" },
+      { x: 44, y: 34, facing: "east" },
+    ].every((expected) =>
+      workshopSeats.some(
+        (seat) =>
+          seat.x === expected.x &&
+          seat.y === expected.y &&
+          seat.facing === expected.facing,
+      ),
+    );
+    const oldWorkshopSeat = workshopSeats.some(
+      (seat) => seat.x === 52 && seat.y === 30 && seat.facing === "east",
+    );
+    const markedRecoverySeat = layout
+      .getZone(layout.ZoneId.RECOVERY_BAY)
+      .seats.some(
+        (seat) => seat.x === 9 && seat.y === 48 && seat.facing === "east",
+      );
 
     const targetFailures: string[] = [];
     for (const zone of layout.ZONES) {
@@ -2079,6 +2100,9 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
 
     return {
       targetCounts,
+      markedWorkshopSeats,
+      oldWorkshopSeat,
+      markedRecoverySeat,
       targetFailures,
       furnitureFailures,
       catFurnitureFailures,
@@ -2093,12 +2117,15 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
   expect(result.targetCounts).toEqual({
     warRoom: 4,
     editorRoom: 4,
-    workshop: 15,
+    workshop: 17,
     zenGarden: 4,
     frontDesk: 3,
     launchControl: 4,
-    recoveryBay: 3,
+    recoveryBay: 4,
   });
+  expect(result.markedWorkshopSeats).toBe(true);
+  expect(result.oldWorkshopSeat).toBe(false);
+  expect(result.markedRecoverySeat).toBe(true);
   expect(result.targetFailures).toEqual([]);
   expect(result.furnitureFailures).toEqual([]);
   expect(result.catFurnitureFailures).toEqual([]);
