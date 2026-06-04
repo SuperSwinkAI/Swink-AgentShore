@@ -211,11 +211,19 @@ class Orchestrator(_OrchestratorBase):
             await phases._phase_load_learnings(cfg=cfg, repo_root=repo_root)
             if selector is None:
                 open_issues_at_bootstrap = await store.get_open_issues(sid)
+                # Determine whether beads already has epics: an epic-less graph
+                # on the no-seed path must route to the seed recipe (seedless
+                # SEED_PROJECT bootstraps epics) instead of grooming an empty
+                # graph and deadlocking.
+                from agentshore.beads import load_graph as _load_graph
+
+                _bootstrap_graph = await _load_graph(repo_root)
                 phases._phase_queue_agent_instantiation(
                     orch=orch,
                     cfg=cfg,
                     seed_path=effective_seed,
                     open_issues_count=len(open_issues_at_bootstrap),
+                    graph_has_epics=_bootstrap_graph is not None and _bootstrap_graph.has_epics,
                 )
 
             with suppress(Exception):

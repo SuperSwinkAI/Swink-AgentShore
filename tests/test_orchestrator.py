@@ -1123,7 +1123,10 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
                 bypass_preconditions=True,
             ),
         ),
+        (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
+    # Groom waits for the seed audit to complete before releasing.
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
@@ -1163,6 +1166,11 @@ def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
             bypass_preconditions=True,
         ),
     )
+    assert (entries[3].play_type, entries[3].params) == (
+        PlayType.GROOM_BACKLOG,
+        PlayParams(bypass_preconditions=True),
+    )
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> None:
@@ -1194,7 +1202,10 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
             ),
         ),
         (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+        (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
+    # Even with no medium spawn, groom still runs after the seed audit.
+    assert entries[2].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 @pytest.mark.asyncio
@@ -1294,7 +1305,10 @@ def test_bootstrap_recipe_order() -> None:
     assert entries[2].params.target_agent_type == AgentType.CODEX.value
     assert entries[2].params.target_model_tier == "medium"
     assert entries[2].params.bypass_preconditions is True
-    assert len(entries) == 3
+    assert play_types[3] == PlayType.GROOM_BACKLOG
+    assert entries[3].params.bypass_preconditions is True
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
+    assert len(entries) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -1329,49 +1343,98 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
         PlayType.INSTANTIATE_AGENT,
         PlayType.SEED_PROJECT,
         PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
     ]
     assert entries[1].params.seed_path == str(seed_file)
     assert entries[1].params.bypass_preconditions is True
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
-def test_bootstrap_open_start_queues_single_instantiate_without_seed() -> None:
-    """#11: without a seed, open-start queues exactly one large-tier
-    INSTANTIATE_AGENT cold-start backstop.
+def test_bootstrap_open_start_queues_instantiate_then_groom_without_seed() -> None:
+    """#11: without a seed, open-start queues one large-tier INSTANTIATE_AGENT
+    cold-start backstop followed by a GROOM_BACKLOG pass.
 
     The mask zeroes INSTANTIATE_AGENT for a zero-agent / no-remaining-work /
     non-terminal fleet, so the prior no-op design deadlocked at 0 agents. One
-    forced spawn breaks the catch-22; PPO still owns all subsequent fleet
-    growth (no medium spawn, no SEED_PROJECT, no forced first play).
+    forced spawn breaks the catch-22; groom then reconciles the beads↔GitHub
+    graph before PPO takes over. PPO still owns all subsequent fleet growth (no
+    medium spawn, no SEED_PROJECT).
     """
     cfg = _bootstrap_cfg()
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=120)
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120, graph_has_epics=True
+    )
 
     entries = []
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    assert len(entries) == 1
-    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+    assert len(entries) == 2
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
     assert entries[0].params == PlayParams(
         target_agent_type=AgentType.CLAUDE_CODE.value,
         target_model_tier="large",
         bypass_preconditions=True,
     )
     assert entries[0].kind is OverrideKind.BOOTSTRAP
+    # Groom is gated on the cold-start agent coming online, and bypasses the
+    # warmup floor / beads gate so it runs immediately at bootstrap.
+    assert entries[1].params == PlayParams(bypass_preconditions=True)
+    assert entries[1].kind is OverrideKind.BOOTSTRAP
+    assert entries[1].wait_for_play_type == PlayType.INSTANTIATE_AGENT
 
 
-def test_bootstrap_open_start_ignores_backlog_size() -> None:
-    """Open-start queues the same single cold-start agent regardless of backlog
-    size — no backlog-driven forced fleet either way."""
-    cfg = _bootstrap_cfg(cleanup_threshold=50)
+def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
+    """No seed input AND no epics → run the seedless seed recipe, not open-start.
+
+    Grooming an epic-less graph has nothing to reconcile and fails, so the
+    no-epic case must create epics first via a seedless SEED_PROJECT (its
+    precondition carve-out makes it eligible exactly when the graph is empty).
+    This is the deadlock fix: instantiate → seed (seedless) → instantiate →
+    groom, identical to the explicit-seed recipe but with seed_path=None.
+    """
+    cfg = _bootstrap_cfg()
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=10)
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=0, graph_has_epics=False
+    )
 
     entries = []
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    assert len(entries) == 1
-    assert entries[0].play_type == PlayType.INSTANTIATE_AGENT
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.SEED_PROJECT,
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
+    # Seedless: SEED_PROJECT runs with no seed document.
+    assert entries[1].params.seed_path is None
+    assert entries[1].params.bypass_preconditions is True
+    # Groom still waits for the (seedless) seed audit to complete.
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
+
+
+def test_bootstrap_open_start_ignores_backlog_size() -> None:
+    """Open-start queues the same instantiate→groom recipe regardless of backlog
+    size — no backlog-driven forced fleet either way."""
+    cfg = _bootstrap_cfg(cleanup_threshold=50)
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=10, graph_has_epics=True
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
     assert entries[0].params.target_model_tier == "large"

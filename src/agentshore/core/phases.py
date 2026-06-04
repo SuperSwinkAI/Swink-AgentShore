@@ -897,26 +897,42 @@ def _phase_queue_agent_instantiation(
     cfg: RuntimeConfig,
     seed_path: Path | None,
     open_issues_count: int = 0,
+    graph_has_epics: bool = True,
 ) -> None:
-    """Queue the bootstrap recipe — only when the user provided a seed input.
+    """Queue the bootstrap recipe.
 
-    Sequence when a seed is provided:
+    The **seed recipe** runs whenever a seed input was provided *or* the beads
+    graph has no epics yet (``graph_has_epics`` is False). In the latter case
+    SEED_PROJECT runs *seedless* — it bootstraps the graph from the repo +
+    GitHub issues (its precondition carve-out makes it eligible exactly when the
+    graph is empty). Routing the no-epic case here is what prevents the
+    open-path deadlock: GROOM_BACKLOG against an epic-less graph has nothing to
+    reconcile and fails, so we must create epics first.
+
+    Seed recipe:
       1. INSTANTIATE_AGENT — first configured enabled large-tier agent.
-      2. SEED_PROJECT — runs on the large agent against the seed input;
-         agent is BUSY so the idle-agent gate holds the remaining queue
-         until the seed audit completes.
+      2. SEED_PROJECT — runs on the large agent (against the seed input when
+         present, else seedless); agent is BUSY so the idle-agent gate holds the
+         remaining queue until the seed audit completes.
       3. INSTANTIATE_AGENT — first configured enabled medium-tier agent of a
          different type, giving the initial fleet cross-backend coverage.
+      4. GROOM_BACKLOG — reconciles the freshly-seeded beads graph against
+         GitHub before the PPO takes over; gated on SEED_PROJECT completing
+         (same trunk-exclusivity gate as the medium spawn, #569).
 
-    Without a seed input, the bootstrap is a minimal cold-start backstop: a
-    single large-tier ``INSTANTIATE_AGENT`` override (#11). The PPO still owns
-    fleet growth and composition from there — this only guarantees the loop
-    spawns one agent from cold so it can ever act. The cleanup-threshold
-    heuristic that previously forced a first *play* in the no-seed path is
-    removed; only the lone agent spawn remains.
+    **Open recipe** — no seed input *and* the graph already has epics (a project
+    being resumed): a minimal cold-start backstop plus a grooming pass:
+      1. INSTANTIATE_AGENT — single large-tier agent (#11). The mask zeroes
+         INSTANTIATE_AGENT for a zero-agent / no-work / non-terminal fleet, so
+         one forced spawn breaks the catch-22; the PPO owns all subsequent
+         fleet growth.
+      2. GROOM_BACKLOG — once the agent is online, reconcile the beads↔GitHub
+         graph (sync untracked GH issues, clear resolved blocks) so the PPO
+         starts from a clean backlog; gated on the INSTANTIATE_AGENT completing
+         so an idle agent exists to run the skill.
 
     All entries are queued with ``bypass_preconditions=True`` so the
-    deterministic recipe is not stalled by the cooldown or
+    deterministic recipe is not stalled by the cooldown, warmup-floor, or
     first-play-completion gates that PPO selections still see.
     """
 
@@ -934,6 +950,17 @@ def _phase_queue_agent_instantiation(
                     target_model_tier=tier,
                     bypass_preconditions=True,
                 ),
+                kind=OverrideKind.BOOTSTRAP,
+                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+                wait_for_play_type=wait_for_play_type,
+            )
+        )
+
+    def _enqueue_groom(*, wait_for_play_type: PlayType | None = None) -> None:
+        orch._overrides.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.GROOM_BACKLOG,
+                params=PlayParams(bypass_preconditions=True),
                 kind=OverrideKind.BOOTSTRAP,
                 enqueue_classification=MaskClassification.INDEFINITE_WAIT,
                 wait_for_play_type=wait_for_play_type,
@@ -961,7 +988,7 @@ def _phase_queue_agent_instantiation(
                 return agent_type
         return None
 
-    if seed_path is None:
+    if seed_path is None and graph_has_epics:
         # Open-start cold-start backstop (#11): queue exactly one large-tier
         # INSTANTIATE_AGENT override so the loop always spawns the first agent
         # from cold. The previous no-op design assumed the action mask left
@@ -982,15 +1009,24 @@ def _phase_queue_agent_instantiation(
         )
         if large_agent_type is not None:
             _enqueue_instantiate(large_agent_type, "large")
+            # Once the cold-start agent is online, groom the backlog so the
+            # beads↔GitHub graph is reconciled (untracked GH issues synced,
+            # resolved blocks cleared) before the PPO takes over. Gated on the
+            # INSTANTIATE_AGENT completing so an idle agent exists to run it.
+            _enqueue_groom(wait_for_play_type=PlayType.INSTANTIATE_AGENT)
         return
 
+    # Seed recipe: explicit seed input, or seedless because the graph has no
+    # epics yet (routing the no-epic open case here avoids the groom-against-
+    # empty-graph deadlock — SEED_PROJECT creates the epics groom needs).
     first_play_type = PlayType.SEED_PROJECT
     _logger.info(
         "bootstrap_first_play_decided",
         play_type=first_play_type.value,
-        reason="seed_input_provided",
+        reason="seed_input_provided" if seed_path is not None else "no_epics_needs_seed",
         open_issues_count=open_issues_count,
-        seed_input_provided=True,
+        seed_input_provided=seed_path is not None,
+        graph_has_epics=graph_has_epics,
     )
 
     t0 = time.perf_counter()
@@ -1000,7 +1036,7 @@ def _phase_queue_agent_instantiation(
             _enqueue_instantiate(large_agent_type, "large")
 
         first_play_params = PlayParams(
-            seed_path=str(seed_path),
+            seed_path=str(seed_path) if seed_path is not None else None,
             bypass_preconditions=True,
         )
         orch._overrides.put_nowait(
@@ -1022,6 +1058,12 @@ def _phase_queue_agent_instantiation(
             # or seed_project) completing — both touch trunk and need exclusive
             # access. bypass_preconditions still skips the instantiate cooldown.
             _enqueue_instantiate(medium_agent_type, "medium", wait_for_play_type=first_play_type)
+        # Groom the freshly-seeded graph once SEED_PROJECT completes — same
+        # trunk-exclusivity gate as the medium spawn (#569). Reconciles
+        # beads↔GitHub before the PPO drives. Requires an agent, so gate on the
+        # large agent having been queued.
+        if large_agent_type is not None:
+            _enqueue_groom(wait_for_play_type=first_play_type)
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         _logger.info(
