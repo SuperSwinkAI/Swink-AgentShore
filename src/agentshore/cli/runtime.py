@@ -444,9 +444,8 @@ async def _run_agent_mode(
 
 
 async def _start_dashboard_bridge(
-    socket_path: str | None = None,
     *,
-    ipc_endpoint: object | None = None,
+    ipc_endpoint: object,
     session_dir: Path,
     port: int | None = None,
 ) -> None:
@@ -463,10 +462,11 @@ async def _start_dashboard_bridge(
         click.echo(f"Dashboard ready → {url}")
         webbrowser.open(url)
 
-    endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else None
+    if not isinstance(ipc_endpoint, IpcEndpoint):
+        msg = f"_start_dashboard_bridge: expected IpcEndpoint, got {type(ipc_endpoint)!r}"
+        raise TypeError(msg)
     bridge = DashboardBridge(
-        socket_path=socket_path,
-        ipc_endpoint=endpoint,
+        ipc_endpoint=ipc_endpoint,
         session_dir=session_dir,
         port=port,
         on_ready=_on_ready,
