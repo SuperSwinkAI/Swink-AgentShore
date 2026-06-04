@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agentshore.errors import ErrorClass
 from agentshore.plays.base import PlayExecutionContext, PlayParams
 from agentshore.plays.internal.take_break import TakeBreakPlay
 from agentshore.state import (
@@ -41,7 +42,7 @@ def _make_error_agent(agent_id: str) -> AgentSnapshot:
         total_tokens=0,
         tasks_completed=0,
         tasks_failed=1,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
     )
 
 
@@ -103,7 +104,7 @@ def test_preconditions_block_duplicate_break_for_agent_already_cooling():
                 total_tokens=0,
                 tasks_completed=0,
                 tasks_failed=1,
-                last_error_class="rate_limit",
+                last_error_class=ErrorClass.RATE_LIMIT,
                 current_play_type=PlayType.TAKE_BREAK,
             )
         ],

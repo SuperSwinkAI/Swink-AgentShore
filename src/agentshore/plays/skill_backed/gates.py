@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.errors import ErrorClass
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
 
@@ -49,7 +50,7 @@ class CapabilityGate:
         rate_limited: set[str] = {
             a.agent_type.value
             for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
+            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
         }
         capable = [
             a

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from agentshore.plays.candidates import build_candidate_plan
 from agentshore.state import (
     IssueSnapshot,
     OrchestratorState,
@@ -12,7 +13,6 @@ from agentshore.state import (
     PullRequestSnapshot,
     SessionState,
 )
-from agentshore.work_availability import summarize_work_availability
 
 
 def _state(**kwargs: object) -> OrchestratorState:
@@ -80,12 +80,12 @@ def _seeded_graph(
 
 
 def test_blocked_disallowed_issue_is_open_but_not_workable() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
             open_issues=[_issue(209, ["agentshore/blocked", "agentshore/disallowed"])],
         )
-    )
+    ).work_availability
 
     assert summary.github_open_issue_count == 1
     assert summary.blocked_issue_count == 1
@@ -95,13 +95,13 @@ def test_blocked_disallowed_issue_is_open_but_not_workable() -> None:
 
 
 def test_issue_covered_by_open_pr_is_not_workable_issue_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
             open_issues=[_issue(10)],
             pull_requests=[_pr(20, issue_number=10)],
         )
-    )
+    ).work_availability
 
     assert summary.covered_by_open_pr_count == 1
     assert summary.workable_issue_count == 0
@@ -110,9 +110,9 @@ def test_issue_covered_by_open_pr_is_not_workable_issue_work() -> None:
 
 
 def test_needs_refinement_counts_as_refinement_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(graph=_seeded_graph(), open_issues=[_issue(10, ["agentshore/needs-refinement"])])
-    )
+    ).work_availability
 
     assert summary.refinement_eligible_count == 1
     assert summary.implementation_eligible_count == 0
@@ -121,9 +121,9 @@ def test_needs_refinement_counts_as_refinement_work() -> None:
 
 
 def test_in_flight_issue_is_excluded_from_workable_counts() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(graph=_seeded_graph(), open_issues=[_issue(10)], in_flight_issues=[10])
-    )
+    ).work_availability
 
     assert summary.in_flight_issue_count == 1
     assert summary.workable_issue_count == 0
@@ -131,38 +131,38 @@ def test_in_flight_issue_is_excluded_from_workable_counts() -> None:
 
 
 def test_missing_successful_terminal_audits_prevents_terminal_no_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
             open_issues=[_issue(10, ["agentshore/blocked", "agentshore/disallowed"])],
             last_play_success_by_type={},
         )
-    )
+    ).work_availability
 
     assert summary.workable_issue_count == 0
     assert summary.terminal_no_work is False
 
 
 def test_successful_seed_without_design_audit_prevents_terminal_no_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
             last_play_success_by_type={PlayType.SEED_PROJECT: True},
             plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
         )
-    )
+    ).work_availability
 
     assert summary.terminal_no_work is False
 
 
 def test_beads_without_ready_tasks_blocks_direct_issue_pickup_and_surfaces_groom_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(has_ready_tasks=False, tasks=[]),
             open_issues=[_issue(12, ["agentshore/planned", "agentshore/ai-slop"])],
             pull_requests=[_pr(350, mergeable="MERGEABLE")],
         )
-    )
+    ).work_availability
 
     assert summary.github_open_issue_count == 1
     assert summary.beads_blocks_issue_pickup is True
@@ -174,7 +174,7 @@ def test_beads_without_ready_tasks_blocks_direct_issue_pickup_and_surfaces_groom
 
 
 def test_ready_beads_tasks_without_actionable_candidate_do_not_block_terminal_no_work() -> None:
-    summary = summarize_work_availability(
+    summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(
                 has_ready_tasks=True,
@@ -182,7 +182,7 @@ def test_ready_beads_tasks_without_actionable_candidate_do_not_block_terminal_no
                 tasks=[SimpleNamespace(issue_number=12, ready=True)],
             )
         )
-    )
+    ).work_availability
 
     assert summary.ready_task_count == 1
     assert summary.terminal_no_work is True
