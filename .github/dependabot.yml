@@ -6,3 +6,27 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+
+  # Python — uv-managed (pyproject.toml + uv.lock)
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+
+  # Node — npm workspace root (dashboard + desktop via single root lockfile)
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+
+  # Rust — Tauri desktop shell
+  - package-ecosystem: cargo
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
