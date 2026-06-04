@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from agentshore.errors import ErrorClass
 from agentshore.plays.registry import build_default_registry
 from agentshore.rl.action_space import NUM_ACTIONS, PLAY_TO_INDEX, V1_ACTION_ORDER
 from agentshore.rl.mask import (
@@ -60,9 +61,9 @@ def _make_registry(precondition_pred) -> MagicMock:
 
     The authority resolves validity via ``registry.get(pt).preconditions(state)``
     (an empty list == met) and ``play.capability`` (None == internal, no
-    agent-eligibility gate). The legacy ``_stage_*`` free functions still call
-    ``registry.preconditions_met(pt, state)`` directly, so both surfaces are
-    wired here and kept consistent via ``precondition_pred(pt) -> bool``.
+    agent-eligibility gate). ``preconditions_met`` is also wired (some callers
+    still query it directly) and kept consistent via ``precondition_pred(pt) ->
+    bool``.
 
     ``capability`` is None on every stub so the agent-eligibility stage is a
     no-op; these helpers are only used without a ``cfg`` (the cfg-bearing tests
@@ -698,6 +699,40 @@ def test_reverse_failsafe_dead_end_controls_can_be_opened():
     assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
+def _error_agent_snapshot(agent_id: str, error_class: ErrorClass | None):
+    from agentshore.state import AgentSnapshot, AgentStatus, AgentType
+
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.ERROR,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=1,
+        model_tier="medium",
+        last_error_class=error_class,
+    )
+
+
+def test_end_agent_unmasked_for_terminal_error_agent():
+    """#20: a non-recoverable ERROR agent (auth) makes END_AGENT valid even when
+    its registry precondition would mask it — the PPO gets the retire option so
+    the agent isn't leaked until end_session."""
+    state = _state(agents=[_error_agent_snapshot("broken", ErrorClass.AUTH)])
+    mask = compute_action_mask(state, _registry_all_false())
+    assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
+
+
+def test_end_agent_stays_masked_for_recoverable_error_agent():
+    """A rate_limit ERROR agent still has the TAKE_BREAK recovery path and isn't
+    recovery-exhausted yet, so END_AGENT stays masked (recovery-first)."""
+    state = _state(agents=[_error_agent_snapshot("throttled", ErrorClass.RATE_LIMIT)])
+    mask = compute_action_mask(state, _registry_all_false())
+    assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
+
+
 def test_reverse_failsafe_end_session_requires_recent_terminal_evidence():
     from agentshore.state import AgentType
 
@@ -950,6 +985,41 @@ def test_terminal_no_work_stays_off_when_pr_work_exists():
     assert compute_terminal_no_work_decision(state, build_default_registry()) is None
 
 
+def test_terminal_no_work_blocked_when_beads_ready_tasks_nonzero():
+    """end_session must stay masked when beads still has open tasks (gh#35).
+
+    GitHub workable-issue counts can lag calibrate_alignment; beads ready_task_count
+    is authoritative — a non-empty beads backlog must prevent the terminal decision.
+    """
+    from agentshore.state import AgentType
+
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.has_ready_tasks = True
+    graph.tasks_ready = 25  # beads says: 25 tasks still open
+    graph.tasks = []
+    graph.global_closure_ratio = 0.0
+
+    state = _state(
+        graph=graph,
+        total_plays=30,
+        agents=[_agent_snapshot("qa", AgentType.CODEX, "large")],
+        # All GitHub issues blocked/disallowed → workable_issues == 0 from GitHub view
+        open_issues=[_issue_snapshot(209, ["agentshore/blocked", "agentshore/disallowed"])],
+        plays_since_last_play_type={
+            PlayType.RUN_QA: 13
+        },  # recent QA → would normally unlock end_session
+    )
+
+    decision = compute_terminal_no_work_decision(state, build_default_registry())
+    assert decision is None, "end_session must be blocked when ready_task_count > 0"
+
+    mask = compute_action_mask(state, build_default_registry())
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]], (
+        "end_session must be masked when beads backlog non-empty"
+    )
+
+
 def test_open_planned_issue_unreviewed_pr_and_groom_needed_are_not_terminal_no_work():
     from agentshore.state import AgentType
 
@@ -1060,7 +1130,7 @@ def test_compute_config_mask_rate_limit_error_blocks_repsawn():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1084,7 +1154,7 @@ def test_compute_config_mask_non_rate_limit_error_does_not_block():
         agent_id="cc-1",
         agent_type=AgentType.CLAUDE_CODE,
         status=AgentStatus.ERROR,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1107,7 +1177,7 @@ def test_compute_config_mask_invalid_model_blocks_same_config():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="invalid_model",
+        last_error_class=ErrorClass.INVALID_MODEL,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1383,7 +1453,7 @@ def test_compute_mask_reasons_emits_tier_eligibility_string():
     )
     reasons = compute_mask_reasons(state, build_default_registry(), cfg=cfg)
     assert PlayType.ISSUE_PICKUP in reasons
-    assert "tier" in reasons[PlayType.ISSUE_PICKUP].lower()
+    assert "tier" in reasons[PlayType.ISSUE_PICKUP].text
 
 
 def test_compute_mask_reasons_explains_idle_same_config_for_instantiate():
@@ -1522,7 +1592,7 @@ def test_take_break_enabled_for_rate_limit_error():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1541,7 +1611,7 @@ def test_take_break_enabled_for_unknown_error():
         agent_id="cc-1",
         agent_type=AgentType.CLAUDE_CODE,
         status=AgentStatus.ERROR,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1556,7 +1626,7 @@ def test_take_break_masked_for_other_error_classes():
     """auth/timeout errors do NOT trigger TAKE_BREAK."""
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
-    for ec in ("auth", "timeout", "context_limit", "invalid_model"):
+    for ec in (ErrorClass.AUTH, ErrorClass.TIMEOUT, ErrorClass.INVALID_MODEL):
         agent = AgentSnapshot(
             agent_id="cc-1",
             agent_type=AgentType.CLAUDE_CODE,
@@ -1580,7 +1650,7 @@ def test_take_break_does_not_force_global_session_pause_when_available():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1615,7 +1685,7 @@ def test_take_break_masked_when_trigger_agent_already_cooling_down():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         current_play_type=PlayType.TAKE_BREAK,
         context_size=0,
         total_cost=0.0,
@@ -1635,7 +1705,7 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
         agent_id="gem-1",
         agent_type=AgentType.GEMINI,
         status=AgentStatus.ERROR,
-        last_error_class="rate_limit",
+        last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
         total_cost=0.0,
         total_tokens=0,
@@ -1666,114 +1736,103 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
 
 
 # ===========================================================================
-# v0.15 Phase 6 — per-stage isolation tests
+# v0.15 Phase 7 — eligibility-authority / mask-builder gate tests
 #
-# Each ``_stage_*`` function is a pure transformation on the mask. The unit
-# contract is: zero-only stages return their input shape with bits possibly
-# flipped True→False (never False→True); short-circuit stages return a fresh
-# mask or ``None`` when they don't apply. These tests pin each stage's
-# behaviour in isolation so a future refactor that moves a gate between
-# stages can't silently change the overall mask.
+# The legacy ``_stage_*`` free functions were deleted (their logic lives in the
+# single :class:`EligibilityAuthority` + :class:`ActionMaskBuilder` pipeline).
+# These tests pin the same gate behaviour through the live surface so a future
+# refactor that moves a gate can't silently change the overall mask.
 # ===========================================================================
 
 
-def test_stage_preconditions_seeds_from_registry():
-    """_stage_preconditions returns a 1-array when registry says all True."""
+def test_eligibility_precondition_seeds_from_registry():
+    """Met registry preconditions make non-candidate, non-gated plays valid."""
     import numpy as np
 
-    from agentshore.rl.mask import _stage_preconditions
+    from agentshore.rl.eligibility import EligibilityAuthority
 
-    mask = _stage_preconditions(_state(), _registry_all_true())
+    mask = EligibilityAuthority(_state(), _registry_all_true()).eligibility().mask()
     assert mask.shape == (NUM_ACTIONS,)
     assert mask.dtype == np.bool_
-    assert mask.all()
+    # Plays with no candidate / terminal gate ride straight on the precondition
+    # verdict, so a met precondition leaves them valid.
+    assert mask[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
+    assert mask[PLAY_TO_INDEX[PlayType.CLEANUP]]
 
 
-def test_stage_preconditions_zeros_when_registry_false():
-    from agentshore.rl.mask import _stage_preconditions
+def test_eligibility_precondition_zeros_when_registry_false():
+    """The authority mask is all-False when no precondition is met."""
+    from agentshore.rl.eligibility import EligibilityAuthority
 
-    mask = _stage_preconditions(_state(), _registry_all_false())
+    mask = EligibilityAuthority(_state(), _registry_all_false()).eligibility().mask()
     assert mask.shape == (NUM_ACTIONS,)
     assert not mask.any()
 
 
-def test_stage_wedged_end_agent_reenables_end_agent():
-    """_stage_wedged_end_agent re-enables END_AGENT when an agent is recovery-exhausted."""
-    import numpy as np
+def test_eligibility_wedged_end_agent_reenables_end_agent():
+    """A recovery-exhausted agent re-enables END_AGENT even when its precondition is unmet."""
+    from agentshore.rl.eligibility import EligibilityAuthority
 
-    from agentshore.rl.mask import _stage_wedged_end_agent
-
-    base = np.zeros(NUM_ACTIONS, dtype=bool)
     state = _state(recovery_exhausted_agent_ids=frozenset({"a1"}))
-    out = _stage_wedged_end_agent(base.copy(), state)
-    assert out[PLAY_TO_INDEX[PlayType.END_AGENT]]
+    mask = EligibilityAuthority(state, _registry_all_false()).eligibility().mask()
+    assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
 
-def test_stage_wedged_end_agent_noop_without_flag():
+def test_eligibility_wedged_end_agent_noop_without_flag():
     """With no recovery-exhausted agent, END_AGENT stays masked (the precondition gate stands)."""
-    import numpy as np
+    from agentshore.rl.eligibility import EligibilityAuthority
 
-    from agentshore.rl.mask import _stage_wedged_end_agent
-
-    base = np.zeros(NUM_ACTIONS, dtype=bool)
-    state = _state()
-    out = _stage_wedged_end_agent(base.copy(), state)
-    assert not out[PLAY_TO_INDEX[PlayType.END_AGENT]]
+    mask = EligibilityAuthority(_state(), _registry_all_false()).eligibility().mask()
+    assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
 
-def test_stage_wedged_end_agent_suppressed_during_drain():
-    """Drain owns END_AGENT via the short-circuit; the wedged stage stays out of its way."""
-    import numpy as np
+def test_drain_mask_suppresses_wedged_end_agent_via_builder():
+    """Drain owns END_AGENT via the short-circuit; reaching it through the builder yields
+    an END_AGENT-only mask regardless of the recovery-exhausted re-enable."""
+    from agentshore.rl.mask import ActionMaskBuilder
 
-    from agentshore.rl.mask import _stage_wedged_end_agent
-
-    base = np.zeros(NUM_ACTIONS, dtype=bool)
     state = _state(
         session_state=SessionState.DRAINING,
         recovery_exhausted_agent_ids=frozenset({"a1"}),
     )
-    out = _stage_wedged_end_agent(base.copy(), state)
-    assert not out[PLAY_TO_INDEX[PlayType.END_AGENT]]
+    mask = ActionMaskBuilder(state, _registry_all_true()).build()
+    assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
+    others = [i for i in range(NUM_ACTIONS) if i != PLAY_TO_INDEX[PlayType.END_AGENT]]
+    for i in others:
+        assert not mask[i], f"draining mask leaked play index {i}"
 
 
-def test_stage_reserved_slots_zeros_future_slots():
-    """_stage_reserved_slots zeros all FUTURE_N slots regardless of input."""
-    import numpy as np
+def test_builder_reserved_slots_zeroed():
+    """The reserved-slot overlay zeros FUTURE_7/8 while leaving active slots untouched."""
+    from agentshore.rl.mask import ActionMaskBuilder
 
-    from agentshore.rl.mask import _stage_reserved_slots
-
-    base = np.ones(NUM_ACTIONS, dtype=bool)
-    out = _stage_reserved_slots(base.copy())
+    mask = ActionMaskBuilder(_state(), _registry_all_true()).build()
     # FUTURE_5 was filled in place by RECONCILE_STATE (AgentShore #593) and
     # FUTURE_6 by PRUNE — both are active slots now. Only FUTURE_7/8 remain
     # reserved and stay zeroed.
-    assert not out[PLAY_TO_INDEX[PlayType.FUTURE_7]]
-    assert not out[PLAY_TO_INDEX[PlayType.FUTURE_8]]
+    assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_7]]
+    assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_8]]
     # Active slots untouched — including the newly-active slots 11 and 19.
-    assert out[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
-    assert out[PLAY_TO_INDEX[PlayType.PRUNE]]
-    assert out[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
-    assert out[PLAY_TO_INDEX[PlayType.CLEANUP]]
+    assert mask[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
+    assert mask[PLAY_TO_INDEX[PlayType.PRUNE]]
+    assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+    assert mask[PLAY_TO_INDEX[PlayType.CLEANUP]]
 
 
-def test_stage_take_break_zeros_take_break_when_no_rate_limit():
+def test_eligibility_take_break_masked_when_no_rate_limit():
     """TAKE_BREAK stays masked unless an agent reports rate_limit/unknown error."""
-    import numpy as np
+    from agentshore.rl.eligibility import EligibilityAuthority
 
-    from agentshore.rl.mask import _stage_take_break
-
-    base = np.ones(NUM_ACTIONS, dtype=bool)
-    out = _stage_take_break(base.copy(), _state(agents=[]))
-    assert not out[PLAY_TO_INDEX[PlayType.TAKE_BREAK]]
+    mask = EligibilityAuthority(_state(agents=[]), _registry_all_true()).eligibility().mask()
+    assert not mask[PLAY_TO_INDEX[PlayType.TAKE_BREAK]]
 
 
-def test_stage_drain_mode_short_circuits_to_end_agent():
-    """When draining, _stage_drain_mode returns a mask with only END_AGENT enabled."""
-    from agentshore.rl.mask import _stage_drain_mode
+def test_builder_drain_short_circuits_to_end_agent():
+    """When draining, the builder returns a mask with only END_AGENT enabled."""
+    from agentshore.rl.mask import ActionMaskBuilder
 
     state = _state(session_state=SessionState.DRAINING)
-    mask = _stage_drain_mode(state)
-    assert mask is not None
+    mask = ActionMaskBuilder(state, _registry_all_true()).build()
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
     # All other slots must be off.
     others = [i for i in range(NUM_ACTIONS) if i != PLAY_TO_INDEX[PlayType.END_AGENT]]
@@ -1781,10 +1840,17 @@ def test_stage_drain_mode_short_circuits_to_end_agent():
         assert not mask[i], f"draining mask leaked play index {i}"
 
 
-def test_stage_drain_mode_returns_none_when_not_draining():
-    from agentshore.rl.mask import _stage_drain_mode
+def test_builder_no_drain_short_circuit_when_not_draining():
+    """When not draining, the builder does not collapse to an END_AGENT-only mask."""
+    from agentshore.rl.mask import ActionMaskBuilder
 
-    assert _stage_drain_mode(_state()) is None
+    mask = ActionMaskBuilder(_state(), _registry_all_true()).build()
+    # The drain short-circuit did not fire: other plays remain valid alongside
+    # (or instead of) END_AGENT, so the mask is not the END_AGENT-only collapse.
+    other_valid = [
+        i for i in range(NUM_ACTIONS) if mask[i] and i != PLAY_TO_INDEX[PlayType.END_AGENT]
+    ]
+    assert other_valid
 
 
 def test_pipeline_order_invariant_short_circuit_after_zero_only():

@@ -111,6 +111,19 @@ fi
 
 # ── 1. Provision managed venv from the bundled wheel ────────────────────────
 
+# Pre-clean any stale managed venv AS ROOT before handing off to the
+# console-user provision. install-agentshore-venv.sh runs as the console user
+# and its own `rm -rf` cannot delete a venv that an earlier install left
+# root-owned — every file fails with "Permission denied", the old tree
+# survives, and `uv venv` writes into the half-broken dir so the bundled wheel
+# never replaces the stale agentshore (the sidecar — and any opt-in timelapse
+# step that reuses this venv — then runs weeks-old code). postinstall runs as
+# root, so it can always clear the directory here regardless of prior owner.
+MANAGED_VENV="${USER_HOME}/Library/Application Support/AgentShore/venv"
+if [[ -d "$MANAGED_VENV" ]]; then
+  rm -rf "$MANAGED_VENV" || true
+fi
+
 VENV_OK=0
 if [[ -x "$INSTALL_HELPER" && -n "$BUNDLED_WHEEL" && -f "$BUNDLED_WHEEL" ]]; then
   if run_as_console_user /bin/bash "$INSTALL_HELPER" --wheel "$BUNDLED_WHEEL" \

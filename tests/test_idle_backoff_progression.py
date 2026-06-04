@@ -11,18 +11,31 @@ idle through a refresh hasn't become less idle.
 
 from __future__ import annotations
 
-import asyncio
+from unittest.mock import MagicMock
 
-from agentshore.core import _IDLE_BACKOFF_SECONDS, Orchestrator
+from agentshore.core import Orchestrator
+from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS, LoopRunner
+from agentshore.core.override_queue import OverrideQueue
 
 
 def _orch() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch._in_flight = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._idle_streak = 0
     orch._last_selection_digest = None
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id="t",
+        main_repo=MagicMock(),
+        overrides=orch._overrides,
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
     return orch
 
 
@@ -33,7 +46,7 @@ def test_idle_streak_advances_through_backoff_table() -> None:
     observed_waits: list[float] = []
     for _ in range(len(_IDLE_BACKOFF_SECONDS) + 5):
         # Simulate the loop branch on selection is None: log+increment+wait.
-        observed_waits.append(orch._idle_backoff())
+        observed_waits.append(orch._loop.idle_backoff())
         orch._idle_streak += 1
 
     # First N values match the table in order.
@@ -54,11 +67,11 @@ def test_idle_streak_reaches_index_3_and_matches_table() -> None:
     for _ in range(3):
         orch._idle_streak += 1
     assert orch._idle_streak >= 3
-    assert orch._idle_backoff() == _IDLE_BACKOFF_SECONDS[3]
+    assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[3]
 
 
 def test_idle_backoff_clamps_at_ceiling_for_long_idles() -> None:
     """The streak can run arbitrarily long without the wait crossing the ceiling."""
     orch = _orch()
     orch._idle_streak = 10_000
-    assert orch._idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
+    assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]

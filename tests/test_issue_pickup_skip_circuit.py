@@ -130,7 +130,7 @@ def test_threshold_skip_blacklists_issue() -> None:
     assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
     reasons = play.preconditions(state)
-    assert any("no open issues eligible" in r for r in reasons)
+    assert any("no open issues eligible" in r.text for r in reasons)
 
 
 def test_other_issues_still_eligible_during_cooldown() -> None:
@@ -202,7 +202,7 @@ def test_cooldown_holds_when_blocker_persists() -> None:
 
     reasons = play.preconditions(state)
 
-    assert any("no open issues eligible" in r for r in reasons)
+    assert any("no open issues eligible" in r.text for r in reasons)
     assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
 

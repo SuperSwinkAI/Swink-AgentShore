@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from agentshore.data.store.rows import _row_to_github_issue
@@ -163,8 +164,6 @@ class _IssuesMixin:
         kanban routing drops them straight into the Done column without
         needing a frontend change.
         """
-        from datetime import UTC, datetime, timedelta
-
         cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         cursor = await self._conn.execute(
             """

@@ -3,28 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import aiosqlite
 
 from agentshore.budget import budget_reserve_reached
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.git_safety import check_main_repo_branch_mutated, restore_default_branch
 from agentshore.core.helpers import (
     _logger,
     _ppo_selector_cls,
     _str_extra,
 )
+from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT
 from agentshore.data.store import PlayRecord, PullRequestRecord
+from agentshore.errors import ErrorClass
 from agentshore.github.labels import (
     MANUAL_REQUIRED_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
 )
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlaySkipReason, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
@@ -33,8 +35,19 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
+    from agentshore.agents.worktree import WorktreeManager
     from agentshore.config import RuntimeConfig
     from agentshore.core.context import _DispatchContext
+    from agentshore.core.experience_recorder import ExperienceRecorder
+    from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.drain import DrainController
+    from agentshore.core.mixins.lifecycle import LifecycleController
+    from agentshore.core.mixins.snapshots import SnapshotProjector
+    from agentshore.core.mixins.state import StateBuilder
+    from agentshore.core.override_queue import OverrideQueue
+    from agentshore.core.progress_monitor import ForwardProgressMonitor
+    from agentshore.core.recovery_tracker import RecoveryTracker
+    from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
@@ -48,27 +61,47 @@ if TYPE_CHECKING:
 
 DEFAULT_LEARNING_CONFIDENCE = 0.5
 
-# Consecutive take_break failures (attempt_recovery returned False) on the same
-# agent before it is considered recovery-exhausted. At/above this count the
-# agent's id is surfaced in OrchestratorState.recovery_exhausted_agent_ids,
-# which the mask uses to re-enable END_AGENT so the PPO — not a forced override
-# — decides whether to retire the wedged agent. The counter stays elevated
-# until the agent is actually ended (cleared in _harvest_completed).
-BREAK_RECOVERY_FAILURE_LIMIT = 2
+
+class _CompletionVerdict(enum.Enum):
+    """Outcome of an early completion-pipeline step.
+
+    Replaces the prior ``return True means abort`` bool convention scattered
+    across the skip and retry helpers: each early step now returns a typed
+    verdict, and one ``match`` in ``process_completion`` decides whether to
+    abort (``SKIPPED`` / ``RETRIED``) or run the remaining pipeline
+    (``CONTINUE``).
+    """
+
+    CONTINUE = "continue"
+    SKIPPED = "skipped"
+    RETRIED = "retried"
+
 
 # Error classes that trigger a system-side take_break override. Same membership
 # the take_break play uses for its preconditions — kept here so the loop's
 # override producer doesn't have to import from the play.
 #
+# Recovery-eligible ERROR classes, split into two paths (#23/#24):
+#   * rate_limit → RATE_LIMIT_RECOVERY + rate_limit_recovery_enqueued
+#   * unknown / codex_rollout → UNKNOWN_ERROR_RECOVERY + unknown_error_recovery_enqueued
+# Both enqueue a take_break (the backoff behavior is the same for now), but under
+# distinct kinds/telemetry so a genuine rate limit is never conflated with an
+# unclassified failure. Before this split, "unknown"/"codex_rollout" rode the
+# rate-limit path and logged rate_limit_recovery_enqueued — which read as "the
+# agent was rate-limited" when no rate limit occurred and caused a live
+# misdiagnosis.
+#
 # "codex_rollout" carved out of "unknown" by desktop-yxlj — same recovery path
-# (fresh codex exec gets a new rollout thread), just under a typed name now.
+# (fresh codex exec gets a new rollout thread), just under a typed name.
 # NOTE (#7): the crash classes "crash_signal" (SIGKILL/-9, e.g. OS OOM kill) and
-# "crash_oom" are deliberately NOT here — a crashed/OOM-killed agent is not rate
-# limited, so it must not get take_break backoff (which previously misfired when
-# such exits fell into the generic "unknown" bucket). "unknown" stays for
-# genuinely transient unclassified errors.
-_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[str] = frozenset(
-    {"rate_limit", "unknown", "codex_rollout"}
+# "crash_oom" are deliberately in NEITHER set — a crashed/OOM-killed agent is not
+# recoverable via take_break backoff, so it must not get one.
+_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMIT})
+# Non-rate-limit recoverable classes. "transient_network" is a precise carve-out
+# of the old "unknown" bucket (socket close / connection reset) — still transient,
+# still gets the take_break, just under an honest name.
+_UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
+    {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
 )
 
 # Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an
@@ -88,7 +121,7 @@ _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "ci config or infrastructure",
 )
 
-# Used by ``_refresh_issues`` — declared module-level so renaming inside the
+# Used by ``refresh_issues`` — declared module-level so renaming inside the
 # function body doesn't drift them away from the constants the original
 # monolithic ``core.py`` referenced.
 _DUPLICATE_BEAD_TITLE_RE = re.compile(r"^Duplicate bead", re.IGNORECASE)
@@ -107,10 +140,6 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
     }
 )
 
-# Lookback applied to the sync cursor so an issue updated mid-fetch is still
-# caught on the next call. Cheaper than racing against gh's wall clock.
-_INCREMENTAL_SYNC_LOOKBACK_SECONDS = 60
-
 # Substring signatures that mean "the agent ran issue_pickup, looked at the
 # real GH state, and discovered the issue was already CLOSED while our cache
 # still listed it open." GitHub's incremental ``since=`` query has been
@@ -125,6 +154,24 @@ _ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
 )
 
 
+def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
+    """Map an executor ``skip_category`` to the unified ``PlaySkipReason`` (TNQA 03 L1).
+
+    Single source for the executor-time skip translation. ``masked`` and
+    ``invalid_config`` both mean the action mask blocked the play
+    (``all_masked``); ``no_target`` / ``staffing`` mean no concrete candidate
+    resolved (``no_eligible_targets``); anything else falls back to
+    ``selector_returned_none``. The loop-tick selector-None path classifies from
+    tick state instead (``LoopRunner.classify_play_skipped_reason``); this table
+    covers only the executor's ``skip_category`` vocabulary.
+    """
+    if skip_category in {"masked", "invalid_config"}:
+        return "all_masked"
+    if skip_category in {"no_target", "staffing"}:
+        return "no_eligible_targets"
+    return "selector_returned_none"
+
+
 def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     """Return True when an issue_pickup outcome describes an already-closed issue."""
     import json as _json
@@ -136,99 +183,146 @@ def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     return any(sig in serialised for sig in _ALREADY_CLOSED_SIGNATURES)
 
 
-class _CompletionMixin(_OrchestratorBase):
-    """Process completed play tasks, update RL state, persist learnings."""
+class _CompletionHost(Protocol):
+    """Orchestrator runtime/control state read OR written live by :class:`CompletionProcessor`.
 
+    These members are accessed fresh via ``self._host.<attr>`` on every call so
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight maps,
+    completion-processing latches, pause event, recent-completion shadows,
+    bootstrap-assigned collaborators) are always current — never captured at
+    construction. Fields the processor *writes* (``_completion_processing_count``,
+    ``_last_selection_digest``, ``_idle_streak``, ``_last_play_id``,
+    ``_natural_exit_reason``, ``_stop_requested``,
+    ``_feedback_cadence_plays_since_ack``) are declared as plain annotated
+    attributes (not read-only ``@property``) so the assignments type-check.
+    ``_OrchestratorBase`` structurally satisfies this Protocol; the cross-component
+    methods (``_safe_call``, ``_initiate_autonomous_stop``,
+    ``_check_stagnation_escalation``) are resolved live on the composition root.
+    """
+
+    # --- written by the processor ------------------------------------------
+    _completion_processing_count: int
+    _last_selection_digest: bytes | None
+    _idle_streak: int
+    _last_play_id: int | None
+    _natural_exit_reason: str | None
+    _stop_requested: bool
+    _feedback_cadence_plays_since_ack: int
+    # --- read by the processor ---------------------------------------------
     _cfg: RuntimeConfig
-    _session_id: str
-    _store: DataStore
-    _manager: AgentManager
-    _executor: PlayExecutor
     _selector: PlaySelector | None
     _state_provider: StateProvider
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
-    _completion_processing_count: int
     _completion_processing_idle: asyncio.Event
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _override_dispatched_play_ids: set[int]
-    _stop_requested: bool
-    _last_play_id: int | None
-    _last_selection_digest: bytes | None
-    _idle_streak: int
-    _natural_exit_reason: str | None
-    _step_index: int
-    _policy_version: str
-    _config_hash: str
     _metrics: MetricsEngine | None
     _pause_event: asyncio.Event
-    _recent_executor_skip: bool
-    _executor_skip_window: collections.deque[bool]
-    _break_recovery_failures: dict[str, int]
-    _rate_limit_recovery_enqueued: set[str]
-    _velocity_events: collections.deque[tuple[int, str]]
-    _recent_agent_types: collections.deque[str]
     _last_refresh_time: float
     _end_session_dispatch_started: bool
     context_pressure_hints: dict[str, float]
+    _recent_play_outcomes: collections.deque[tuple[bool, str]]
+    _recent_play_completions: collections.deque[PlayRecord]
+    _recent_applied_labels: collections.deque[tuple[int, str]]
+    _experience_recorder: ExperienceRecorder | None
+    _progress_monitor: ForwardProgressMonitor | None
+    _worktrees: WorktreeManager | None
 
-    _feedback_cadence_plays_since_ack: int
-    _repo_root: Path  # supplied by _OrchestratorBase
-    # desktop-kqo5: shared with _DispatchMixin via the base class. Pre-play
-    # symbolic refs are popped here at play_completed.
-    _pre_play_branches: dict[str, str | None]
-    _default_branch: str
-    # desktop-kqo5: latched True when auto-restore failed for the main repo.
-    # Future dispatches are blocked until an operator intervenes. Surfaced via
-    # ``main_repo_auto_restore_failed`` log events.
-    _main_repo_dispatch_paused: bool
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+    async def _initiate_autonomous_stop(
+        self,
+        reason: str,
+        *,
+        arm_gate_only: bool = False,
+        fire_natural_exit: bool = False,
+        clear_pause_deadline: bool = False,
+    ) -> None: ...
+
+    async def _check_stagnation_escalation(self, state: OrchestratorState) -> bool: ...
+
+
+class CompletionProcessor:
+    """Process completed play tasks, update RL state, persist learnings.
+
+    Stable services / collaborators (store, manager, executor, the 1a state
+    collaborators, and the sibling components) are captured via the constructor;
+    all orchestrator runtime/control state (read or written) flows through the
+    :class:`_CompletionHost` Protocol so SIGHUP and per-tick mutation never goes
+    stale.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _CompletionHost,
+        store: DataStore,
+        manager: AgentManager,
+        executor: PlayExecutor,
+        session_id: str,
+        repo_root: Path,
+        main_repo: MainRepoGuard,
+        velocity: VelocityTracker,
+        recovery: RecoveryTracker,
+        overrides: OverrideQueue,
+        snapshots: SnapshotProjector,
+        state_builder: StateBuilder,
+        lifecycle: LifecycleController,
+        drain: DrainController,
+    ) -> None:
+        self._host = host
+        self._store = store
+        self._manager = manager
+        self._executor = executor
+        self._session_id = session_id
+        self._repo_root = repo_root
+        self._main_repo = main_repo
+        self._velocity = velocity
+        self._recovery = recovery
+        self._overrides = overrides
+        self._snapshots = snapshots
+        self._state_builder = state_builder
+        self._lifecycle = lifecycle
+        self._drain = drain
 
     # ------------------------------------------------------------------
 
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None:
-        """Await *coro* and log ERROR if it raises; never propagates."""
-        try:
-            await coro
-        except Exception as exc:
-            _logger.error("safe_call_failed", label=label, error=str(exc), exc_info=True)
-
-    async def _harvest_completed(self) -> None:
-        """Drain finished play tasks and process each via ``_process_completion``.
+    async def harvest_completed(self) -> None:
+        """Drain finished play tasks and process each via ``process_completion``.
 
         Invalidates the selection-digest cache when any task is harvested:
         a play completion (success or unhandled exception) is always worth a
         fresh selector pass, even when ``state.total_plays`` doesn't reflect
         it (e.g. tasks that raised before recording a row).
         """
-        if not hasattr(self, "_completion_processing_idle"):
-            self._completion_processing_count = 0
-            self._completion_processing_idle = asyncio.Event()
-            self._completion_processing_idle.set()
-        completed = [did for did, t in self._in_flight.items() if t.done()]
+        if not hasattr(self._host, "_completion_processing_idle"):
+            self._host._completion_processing_count = 0
+            self._host._completion_processing_idle = asyncio.Event()
+            self._host._completion_processing_idle.set()
+        completed = [did for did, t in self._host._in_flight.items() if t.done()]
         for did in completed:
-            task = self._in_flight.pop(did)
-            self._completion_processing_count += 1
-            self._completion_processing_idle.clear()
+            task = self._host._in_flight.pop(did)
+            self._host._completion_processing_count += 1
+            self._host._completion_processing_idle.clear()
             try:
-                await self._process_completion(did, task)
+                await self.process_completion(did, task)
             finally:
-                self._completion_processing_count -= 1
-                if self._completion_processing_count <= 0:
-                    self._completion_processing_count = 0
-                    self._completion_processing_idle.set()
+                self._host._completion_processing_count -= 1
+                if self._host._completion_processing_count <= 0:
+                    self._host._completion_processing_count = 0
+                    self._host._completion_processing_idle.set()
         if completed:
-            self._last_selection_digest = None
-            self._idle_streak = 0
+            self._host._last_selection_digest = None
+            self._host._idle_streak = 0
 
-    async def _wait_for_in_flight(self, *, timeout: float) -> None:
+    async def wait_for_in_flight(self, *, timeout: float) -> None:
         """``asyncio.wait`` with first-completed semantics on the in-flight set."""
         await asyncio.wait(
-            self._in_flight.values(),
+            self._host._in_flight.values(),
             timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-    async def _check_main_repo_invariant(
+    async def check_main_repo_invariant(
         self,
         *,
         dispatch_id: str,
@@ -239,14 +333,14 @@ class _CompletionMixin(_OrchestratorBase):
         """Compare pre/post symbolic-ref for the main repo; warn + auto-restore.
 
         Runs at every play_completed boundary (success and failure). Reads
-        the dispatch-time snapshot stored by ``_DispatchMixin._dispatch_play``
+        the dispatch-time snapshot stored by ``Dispatcher._dispatch_play``
         and the current HEAD via ``check_main_repo_branch_mutated``.
 
         ``merge_pr`` advances the commit SHA via ``git merge --no-ff`` + ``git
         push`` but leaves the symbolic ref unchanged, so it produces zero
         false positives here (see tests/test_merge_pr_no_false_positive.py).
         """
-        pre_play_ref = self._pre_play_branches.pop(dispatch_id, None)
+        pre_play_ref = self._main_repo.pop_pre_play_branch(dispatch_id)
         if pre_play_ref is None:
             # No snapshot recorded (or already detached pre-play). Tracking
             # the post-only state offers no signal — silent return.
@@ -256,7 +350,7 @@ class _CompletionMixin(_OrchestratorBase):
                 check_main_repo_branch_mutated,
                 self._repo_root,
                 pre_ref=pre_play_ref,
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
             )
         except Exception as exc:
             _logger.warning(
@@ -278,7 +372,7 @@ class _CompletionMixin(_OrchestratorBase):
             agent_type=agent_type,
             pre_play_branch=pre_play_ref,
             post_play_branch=post_ref,
-            default_branch=self._default_branch,
+            default_branch=self._main_repo.default_branch,
         )
         if not restored:
             _logger.error(
@@ -287,10 +381,10 @@ class _CompletionMixin(_OrchestratorBase):
                 play_type=play_type.value,
                 agent_id=agent_id,
                 agent_type=agent_type,
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
                 post_play_branch=post_ref,
             )
-            self._main_repo_dispatch_paused = True
+            self._main_repo.dispatch_paused = True
             return
         _logger.info(
             "main_repo_branch_restored",
@@ -298,10 +392,10 @@ class _CompletionMixin(_OrchestratorBase):
             play_type=play_type.value,
             agent_id=agent_id,
             agent_type=agent_type,
-            default_branch=self._default_branch,
+            default_branch=self._main_repo.default_branch,
         )
 
-    async def _process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
+    async def process_completion(self, dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
         """Process a completed play task — RL experience, learnings, and state."""
         loaded = self._pop_completed_dispatch(dispatch_id, task)
         if loaded is None:
@@ -311,12 +405,18 @@ class _CompletionMixin(_OrchestratorBase):
         state_before = ctx.state_at_dispatch
 
         await self._check_main_repo_after_completion(dispatch_id, ctx, outcome)
-        if await self._handle_skipped_completion(outcome):
-            return
+        match await self._handle_skipped_completion(outcome):
+            case _CompletionVerdict.SKIPPED:
+                return
+            case _:
+                pass
 
         self._record_completion_bookkeeping(ctx, outcome, completed_play_type)
-        if await self._schedule_retry_if_requested(ctx, outcome, completed_play_type):
-            return
+        match await self._schedule_retry_if_requested(ctx, outcome, completed_play_type):
+            case _CompletionVerdict.RETRIED:
+                return
+            case _:
+                pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
@@ -333,11 +433,11 @@ class _CompletionMixin(_OrchestratorBase):
     def _pop_completed_dispatch(
         self, dispatch_id: str, task: asyncio.Task[PlayOutcome]
     ) -> tuple[_DispatchContext, PlayOutcome] | None:
-        ctx = self._dispatch_ctx.pop(dispatch_id, None)
+        ctx = self._host._dispatch_ctx.pop(dispatch_id, None)
         if ctx is None:
             # Still drop the pre-play snapshot if we somehow have one without
             # matching dispatch context. Prevents the dict from leaking.
-            self._pre_play_branches.pop(dispatch_id, None)
+            self._main_repo.pop_pre_play_branch(dispatch_id)
             return None
 
         try:
@@ -372,7 +472,7 @@ class _CompletionMixin(_OrchestratorBase):
             handle = self._manager.handles.get(outcome.agent_id)
             if handle is not None:
                 agent_type_str = handle.agent_type.value
-        await self._check_main_repo_invariant(
+        await self.check_main_repo_invariant(
             dispatch_id=dispatch_id,
             play_type=completed_play_type,
             agent_id=outcome.agent_id,
@@ -381,29 +481,29 @@ class _CompletionMixin(_OrchestratorBase):
 
         # desktop-kqo5 catch-22 fix: a successful RECONCILE_STATE is the loop's
         # path out of a latched trunk-dispatch pause (RECONCILE_STATE is now
-        # exempt from the pause in _DispatchMixin so it can run while wedged).
+        # exempt from the pause in Dispatcher so it can run while wedged).
         # Re-verify the main checkout is back on a clean default branch (the
         # restore is idempotent and conflict-aware) and, only if so, lift the
         # pause so normal dispatch resumes.
         if (
             completed_play_type == PlayType.RECONCILE_STATE
             and outcome.success
-            and self._main_repo_dispatch_paused
+            and self._main_repo.dispatch_paused
         ):
             restored = await asyncio.to_thread(
-                restore_default_branch, self._repo_root, self._default_branch
+                restore_default_branch, self._repo_root, self._main_repo.default_branch
             )
-            self._main_repo_dispatch_paused = not restored
+            self._main_repo.dispatch_paused = not restored
             _logger.info(
                 "main_repo_dispatch_pause_cleared"
                 if restored
                 else "main_repo_dispatch_pause_persists",
                 session_id=self._session_id,
                 via="reconcile_state",
-                default_branch=self._default_branch,
+                default_branch=self._main_repo.default_branch,
             )
 
-    async def _handle_skipped_completion(self, outcome: PlayOutcome) -> bool:
+    async def _handle_skipped_completion(self, outcome: PlayOutcome) -> _CompletionVerdict:
         completed_play_type = outcome.play_type
         if getattr(outcome, "skipped", False) is True:
             # desktop-85ex: unify the ``play_skipped`` schema between the
@@ -413,15 +513,7 @@ class _CompletionMixin(_OrchestratorBase):
             # join them without grep-and-pray. ``skip_category`` is retained
             # for back-compat with existing dashboards.
             skip_category = outcome.skip_category
-            executor_reason: str
-            if skip_category == "masked":
-                executor_reason = "all_masked"
-            elif skip_category in {"no_target", "staffing"}:
-                executor_reason = "no_eligible_targets"
-            elif skip_category == "invalid_config":
-                executor_reason = "all_masked"
-            else:
-                executor_reason = "selector_returned_none"
+            executor_reason = skip_category_to_reason(skip_category)
             _logger.info(
                 "play_skipped",
                 session_id=self._session_id,
@@ -442,22 +534,22 @@ class _CompletionMixin(_OrchestratorBase):
             # ``_record_selection_repicks``). Other skip categories (no_target,
             # staffing) never indicated state divergence.
             is_masked_skip = outcome.skip_category == "masked"
-            self._recent_executor_skip = is_masked_skip
+            self._velocity.set_recent_executor_skip(is_masked_skip)
             # All-category no-op window for spin detection. The skip path returns
             # early (below) before the loop-detection/stagnation checks ever run,
             # so the no-op-spin check is invoked HERE — this is the exact path the
             # write_impl↔reconcile spin lived on.
-            self._recent_play_outcomes.append((True, completed_play_type.value))
-            post_state = await self._build_state()
-            await self._safe_call(
-                self._state_provider.on_state_update(post_state), "on_state_update_post"
+            self._host._recent_play_outcomes.append((True, completed_play_type.value))
+            post_state = await self._state_builder.build_state()
+            await self._host._safe_call(
+                self._host._state_provider.on_state_update(post_state), "on_state_update_post"
             )
             # A skip is the canonical no-forward-progress tick (no agent
             # dispatched) — feed the forward-progress monitor here, on the skip
             # path that returns early before the main checks below.
-            await self._check_no_forward_progress(post_state, outcome)
-            return True
-        return False
+            await self.check_no_forward_progress(post_state, outcome)
+            return _CompletionVerdict.SKIPPED
+        return _CompletionVerdict.CONTINUE
 
     def _record_completion_bookkeeping(
         self,
@@ -469,8 +561,8 @@ class _CompletionMixin(_OrchestratorBase):
         # divergence window is fed from selector confirm-repicks (see
         # ``_record_selection_repicks``), not from play completions, so nothing
         # is appended here anymore.
-        self._recent_executor_skip = False
-        self._recent_play_outcomes.append((False, completed_play_type.value))
+        self._velocity.set_recent_executor_skip(False)
+        self._host._recent_play_outcomes.append((False, completed_play_type.value))
 
         _logger.info(
             "play_completed",
@@ -493,13 +585,13 @@ class _CompletionMixin(_OrchestratorBase):
                 error=outcome.error,
             )
         if outcome.play_id is not None:
-            self._last_play_id = outcome.play_id
+            self._host._last_play_id = outcome.play_id
             # If this play was dispatched from the override queue, record the
-            # play_id so _compute_play_streaks can ignore it. Override-dispatched
+            # play_id so compute_play_streaks can ignore it. Override-dispatched
             # plays (bootstrap recipe, user request, retry) are not PPO-collapse,
             # so a burst of them must not trigger loop_detected.
             if ctx.override_kind is not None:
-                self._override_dispatched_play_ids.add(outcome.play_id)
+                self._overrides.dispatched_play_ids.add(outcome.play_id)
             # Capture the just-completed play in memory so the next
             # _build_state tick sees it even if the SQLite WAL write hasn't
             # been visible to a fresh `get_play_history` read yet. Without
@@ -507,7 +599,7 @@ class _CompletionMixin(_OrchestratorBase):
             # cooldown mask (desktop-65bg).
             started_at_raw = ctx.params.extras.get("started_at")
             started_at = started_at_raw if isinstance(started_at_raw, str) else ""
-            self._recent_play_completions.append(
+            self._host._recent_play_completions.append(
                 PlayRecord(
                     play_id=outcome.play_id,
                     session_id=self._session_id,
@@ -524,7 +616,7 @@ class _CompletionMixin(_OrchestratorBase):
             # the skill template applies ``agentshore/root-cause-found`` to the
             # issue via gh CLI from inside the agent subprocess. The label
             # lands on GitHub immediately, but AgentShore's cached issue snapshot
-            # only learns about it on the next ``_refresh_issues`` poll —
+            # only learns about it on the next ``refresh_issues`` poll —
             # which can be many seconds out. The next selector tick fires
             # well before that, so PPO can re-select (issue, systematic_debugging)
             # against the stale snapshot (observed in session 2b8729bf:
@@ -538,7 +630,7 @@ class _CompletionMixin(_OrchestratorBase):
                 and completed_play_type == PlayType.SYSTEMATIC_DEBUGGING
                 and isinstance(ctx.params.issue_number, int)
             ):
-                self._recent_applied_labels.append(
+                self._host._recent_applied_labels.append(
                     (ctx.params.issue_number, ROOT_CAUSE_FOUND_LABEL)
                 )
 
@@ -547,7 +639,7 @@ class _CompletionMixin(_OrchestratorBase):
         ctx: _DispatchContext,
         outcome: PlayOutcome,
         completed_play_type: PlayType,
-    ) -> bool:
+    ) -> _CompletionVerdict:
         if outcome.retry_requested:
             claim_group_id_raw = ctx.params.extras.get("claim_group_id")
             if isinstance(claim_group_id_raw, str) and claim_group_id_raw:
@@ -561,13 +653,13 @@ class _CompletionMixin(_OrchestratorBase):
                         play_id=outcome.play_id,
                     )
                     if replay is not None:
-                        params_payload = json.loads(str(replay["params_json"]))
+                        params_payload = json.loads(replay.params_json)
                         params_payload["extras"] = {
                             **dict(params_payload.get("extras") or {}),
-                            "__retry_prompt": replay["prompt"],
+                            "__retry_prompt": replay.prompt,
                         }
                         retry_params = PlayParams(**params_payload)
-                        self._override_queue.put_nowait(
+                        self._overrides.put_nowait(
                             OverrideEntry(
                                 play_type=completed_play_type,
                                 params=retry_params,
@@ -584,7 +676,7 @@ class _CompletionMixin(_OrchestratorBase):
                             claim_group_id=claim_group_id_raw,
                             attempt=new_attempt,
                         )
-                        return True
+                        return _CompletionVerdict.RETRIED
                 _logger.warning(
                     "play_retry_exhausted",
                     session_id=self._session_id,
@@ -597,7 +689,7 @@ class _CompletionMixin(_OrchestratorBase):
                     claim_group_id_raw,
                     status="released",
                 )
-        return False
+        return _CompletionVerdict.CONTINUE
 
     async def _record_unblock_attempt_if_needed(
         self,
@@ -625,16 +717,18 @@ class _CompletionMixin(_OrchestratorBase):
             error_text = (outcome.error or "").lower()
             terminal = any(m in error_text for m in _UNBLOCK_MANUAL_REQUIRED_MARKERS)
             if exhausted or terminal:
-                await self._safe_call(
-                    self._mark_pr_manual_required(ctx.params.pr_number),
+                await self._host._safe_call(
+                    self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
 
     async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
-        next_state = await self._build_state()
-        await self._record_trajectory_snapshot(outcome, next_state)
-        next_state = await self._begin_budget_reserve_drain_if_needed(next_state)
-        should_stop, reason = self._should_terminate(next_state)
+        next_state = await self._state_builder.build_state()
+        await self._snapshots.record_trajectory_snapshot(
+            outcome, next_state, safe_call=self._host._safe_call
+        )
+        next_state = await self._lifecycle.begin_budget_reserve_drain_if_needed(next_state)
+        should_stop, reason = self._lifecycle.should_terminate(next_state)
         if should_stop:
             _logger.info(
                 "loop_terminating",
@@ -642,16 +736,19 @@ class _CompletionMixin(_OrchestratorBase):
                 session_id=self._session_id,
             )
             if reason is not None and reason != "stop_requested":
-                self._natural_exit_reason = reason
-            self._stop_requested = True
-        elif reason is not None and self._pause_event.is_set():
-            await self._pause_with_reason(reason)
+                self._host._natural_exit_reason = reason
+            self._host._stop_requested = True
+        elif reason is not None and self._host._pause_event.is_set():
+            await self._lifecycle.pause_with_reason(reason)
 
-        await self._check_no_forward_progress(next_state, outcome)
-        if await self._check_stagnation_escalation(next_state) and self._pause_event.is_set():
-            await self._pause_with_reason("stagnation")
-        self._feedback_cadence_plays_since_ack += 1
-        await self._pause_for_feedback_cadence_if_due()
+        await self.check_no_forward_progress(next_state, outcome)
+        if (
+            await self._host._check_stagnation_escalation(next_state)
+            and self._host._pause_event.is_set()
+        ):
+            await self._lifecycle.pause_with_reason("stagnation")
+        self._host._feedback_cadence_plays_since_ack += 1
+        await self._lifecycle.pause_for_feedback_cadence_if_due()
         return next_state
 
     async def _record_completion_experience(
@@ -672,15 +769,15 @@ class _CompletionMixin(_OrchestratorBase):
         # ``sidecar_orchestrator_run_failed`` crash). Only the cheap, safe
         # bookkeeping (velocity events, ``done``) stays inline here.
         if (
-            self._experience_recorder is not None
-            and isinstance(self._selector, _ppo_selector_cls())
-            and self._metrics is not None
+            self._host._experience_recorder is not None
+            and isinstance(self._host._selector, _ppo_selector_cls())
+            and self._host._metrics is not None
         ):
             from agentshore.rl.selector import _PendingStep
 
             done = (
                 completed_play_type == PlayType.END_SESSION
-                or self._stop_requested
+                or self._host._stop_requested
                 or (
                     next_state.budget is not None
                     and next_state.budget.enabled
@@ -696,13 +793,13 @@ class _CompletionMixin(_OrchestratorBase):
             play_id_for_velocity = next_state.total_plays
             if outcome.success:
                 if completed_play_type == PlayType.MERGE_PR:
-                    self._velocity_events.append((play_id_for_velocity, "pr_merged"))
+                    self._velocity.record_velocity_event(play_id_for_velocity, "pr_merged")
                 elif completed_play_type == PlayType.ISSUE_PICKUP:
                     closed_issue = isinstance(outcome.artifacts, list) and any(
                         isinstance(a, dict) and a.get("closed_issue") for a in outcome.artifacts
                     )
                     if closed_issue:
-                        self._velocity_events.append((play_id_for_velocity, "issue_closed"))
+                        self._velocity.record_velocity_event(play_id_for_velocity, "issue_closed")
                 elif completed_play_type == PlayType.CLEANUP:
                     pass  # cleanup does not reset velocity
             if outcome.agent_id is not None:
@@ -710,14 +807,14 @@ class _CompletionMixin(_OrchestratorBase):
                     (a for a in next_state.agents if a.agent_id == outcome.agent_id), None
                 )
                 if agent_snap is not None:
-                    self._recent_agent_types.append(agent_snap.agent_type.value)
+                    self._velocity.record_agent_type(agent_snap.agent_type.value)
 
             raw_pending = ctx.pending_step
             pending_step: _PendingStep | None = (
                 raw_pending if isinstance(raw_pending, _PendingStep) else None
             )
 
-            await self._experience_recorder.record_and_update(
+            await self._host._experience_recorder.record_and_update(
                 state_before=state_before,
                 next_state=next_state,
                 outcome=outcome,
@@ -731,12 +828,6 @@ class _CompletionMixin(_OrchestratorBase):
         next_state: OrchestratorState,
         completed_play_type: PlayType,
     ) -> None:
-        # Persist alignment scores back to DB after calibrate_alignment plays
-        if completed_play_type == PlayType.CALIBRATE_ALIGNMENT and outcome.success:
-            await self._safe_call(
-                self._persist_alignment_scores(outcome), "persist_alignment_scores"
-            )
-
         # Refresh issue cache after plays that modify issues. QA and design
         # audit can create follow-up issues even if their play result is
         # partial, so they always trigger a post-play refresh.
@@ -779,8 +870,8 @@ class _CompletionMixin(_OrchestratorBase):
                     play_id=outcome.play_id,
                     session_id=self._session_id,
                 )
-            await self._safe_call(
-                self._refresh_issues(
+            await self._host._safe_call(
+                self.refresh_issues(
                     completing_play=completed_play_type,
                     force_full_sync=force_full_sync,
                 ),
@@ -788,13 +879,15 @@ class _CompletionMixin(_OrchestratorBase):
             )
 
         # Learnings: reinforce on success; harvest new entries after consolidation
-        if self._cfg.learnings.enabled and outcome.play_id is not None:
-            await self._safe_call(
-                self._update_learnings(outcome, completed_play_type),
+        if self._host._cfg.learnings.enabled and outcome.play_id is not None:
+            await self._host._safe_call(
+                self.update_learnings(outcome, completed_play_type),
                 "update_learnings",
             )
 
-        await self._safe_call(self._state_provider.on_play_completed(outcome), "on_play_completed")
+        await self._host._safe_call(
+            self._host._state_provider.on_play_completed(outcome), "on_play_completed"
+        )
         # The orchestrator owns final lifecycle publication. The executor may
         # update handles, but consumers get the terminal status event here
         # after persistence/reward side effects complete.
@@ -811,11 +904,11 @@ class _CompletionMixin(_OrchestratorBase):
                 if outcome.success
                 else AgentStatus.ERROR
             )
-            await self._safe_call(
-                self._state_provider.on_agent_changed(outcome.agent_id, final_status),
+            await self._host._safe_call(
+                self._host._state_provider.on_agent_changed(outcome.agent_id, final_status),
                 "on_agent_changed_final",
             )
-            self._maybe_enqueue_rate_limit_recovery(outcome.agent_id, final_status)
+            await self._retire_or_recover_errored_agent(outcome.agent_id, final_status)
         if completed_play_type == PlayType.TAKE_BREAK:
             self._handle_take_break_outcome(outcome)
         if (
@@ -826,11 +919,11 @@ class _CompletionMixin(_OrchestratorBase):
             # The agent slot was cleared by the END_AGENT play. Drop any stale
             # break-recovery count so a re-instantiated agent reusing the id
             # doesn't inherit an elevated (recovery-exhausted) counter.
-            self._break_recovery_failures.pop(outcome.agent_id, None)
+            self._recovery.clear_break_failures(outcome.agent_id)
         # Second state_update after play completes so consumers see the fresh result
-        post_state = await self._build_state()
-        await self._safe_call(
-            self._state_provider.on_state_update(post_state), "on_state_update_post"
+        post_state = await self._state_builder.build_state()
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(post_state), "on_state_update_post"
         )
 
     async def _handle_end_session_completion(
@@ -842,7 +935,7 @@ class _CompletionMixin(_OrchestratorBase):
     ) -> None:
         if completed_play_type == PlayType.END_SESSION:
             if not outcome.success:
-                self._end_session_dispatch_started = False
+                self._host._end_session_dispatch_started = False
                 _logger.warning(
                     "end_session_play_failed_before_drain",
                     play_id=outcome.play_id,
@@ -853,11 +946,14 @@ class _CompletionMixin(_OrchestratorBase):
             drain_reason = ctx.params.reason or _str_extra(ctx.params, "drain_reason")
             if drain_reason is None:
                 drain_reason = "ppo_selected"
-            if isinstance(self._selector, _ppo_selector_cls()) and len(self._selector.buffer) > 0:
-                await self._selector.update_policy(next_state_value=0.0)
-                final_state = await self._build_state()
+            if (
+                isinstance(self._host._selector, _ppo_selector_cls())
+                and len(self._host._selector.buffer) > 0
+            ):
+                await self._host._selector.update_policy(next_state_value=0.0)
+                final_state = await self._state_builder.build_state()
                 weights_dir = self._repo_root / ".agentshore" / "weights"
-                await self._selector.save_checkpoint(
+                await self._host._selector.save_checkpoint(
                     self._store, self._session_id, weights_dir, final_state.total_plays
                 )
             _logger.info(
@@ -867,9 +963,9 @@ class _CompletionMixin(_OrchestratorBase):
                 play_id=outcome.play_id,
                 session_id=self._session_id,
             )
-            await self.begin_drain(drain_reason)
+            await self._drain.begin_drain(drain_reason)
 
-    async def _mark_pr_manual_required(self, pr_number: int) -> None:
+    async def mark_pr_manual_required(self, pr_number: int) -> None:
         """Persist a terminal manual gate after repeated unblock_pr failures."""
         await self._store.add_pull_request_labels(
             self._session_id,
@@ -890,29 +986,72 @@ class _CompletionMixin(_OrchestratorBase):
             label=MANUAL_REQUIRED_LABEL,
         )
 
-    def _maybe_enqueue_rate_limit_recovery(
+    async def _retire_or_recover_errored_agent(
         self,
         agent_id: str,
         final_status: AgentStatus,
     ) -> None:
-        """Enqueue a take_break override when an agent enters rate_limit ERROR.
+        """On play completion, recover an errored agent — unless we're draining.
 
-        The override bypasses PPO entirely (desktop-ctnl): if PPO learned to
-        prefer idle plays under rate_limit, the work plays for healthy agents
-        could never get dispatched. With idle_tick / recover gone from the
+        During wind-down recovery (take_break) is masked, so a recoverable-ERROR
+        agent would never reach IDLE/TERMINATED and would wedge ``drain_complete``
+        (#30). Retire it immediately instead, and skip the doomed rate-limit
+        recovery enqueue (also kills the misleading ``rate_limit_recovery_enqueued``
+        telemetry, #23). Outside drain, fall back to the normal recovery path.
+        """
+        draining = getattr(self._host, "_draining", False) or getattr(
+            self._host, "_stop_requested", False
+        )
+        if draining and final_status == AgentStatus.ERROR:
+            await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
+            return
+        self._maybe_enqueue_error_recovery(agent_id, final_status)
+
+    def _maybe_enqueue_error_recovery(
+        self,
+        agent_id: str,
+        final_status: AgentStatus,
+    ) -> None:
+        """Enqueue a take_break override when an agent enters a recoverable ERROR.
+
+        Two distinct paths (#23/#24), each with its own kind, telemetry event,
+        and enqueue latch so a true rate limit is never conflated with an
+        unclassified failure:
+          * ``rate_limit`` → RATE_LIMIT_RECOVERY / ``rate_limit_recovery_enqueued``
+          * ``unknown`` / ``codex_rollout`` → UNKNOWN_ERROR_RECOVERY /
+            ``unknown_error_recovery_enqueued``
+
+        Either way the override bypasses PPO entirely (desktop-ctnl): if PPO
+        learned to prefer idle plays under rate_limit, the work plays for healthy
+        agents could never get dispatched. With idle_tick / recover gone from the
         policy head, the loop is the only producer of take_break.
         """
 
         if final_status != AgentStatus.ERROR:
-            self._rate_limit_recovery_enqueued.discard(agent_id)
+            self._recovery.clear_rate_limit_enqueued(agent_id)
+            self._recovery.clear_unknown_error_enqueued(agent_id)
             return
         handle = self._manager.handles.get(agent_id)
         if handle is None:
             return
         error_class = getattr(handle, "last_error_class", None)
-        if error_class not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
+
+        if error_class in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
+            kind = OverrideKind.RATE_LIMIT_RECOVERY
+            event = "rate_limit_recovery_enqueued"
+            already = self._recovery.is_rate_limit_enqueued(agent_id)
+            mark = self._recovery.mark_rate_limit_enqueued
+        elif error_class in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES:
+            kind = OverrideKind.UNKNOWN_ERROR_RECOVERY
+            event = "unknown_error_recovery_enqueued"
+            already = self._recovery.is_unknown_error_enqueued(agent_id)
+            mark = self._recovery.mark_unknown_error_enqueued
+        else:
+            # Not a recovery-eligible class (auth, invalid_model, crash_*,
+            # timeout*) — leave it for the END_AGENT path, no take_break.
             return
-        if agent_id in self._rate_limit_recovery_enqueued:
+
+        if already:
             return
         params = PlayParams(
             agent_id=agent_id,
@@ -921,16 +1060,16 @@ class _CompletionMixin(_OrchestratorBase):
                 "trigger_error_class": error_class,
             },
         )
-        self._override_queue.put_nowait(
+        self._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.TAKE_BREAK,
                 params=params,
-                kind=OverrideKind.RATE_LIMIT_RECOVERY,
+                kind=kind,
             )
         )
-        self._rate_limit_recovery_enqueued.add(agent_id)
+        mark(agent_id)
         _logger.info(
-            "rate_limit_recovery_enqueued",
+            event,
             session_id=self._session_id,
             agent_id=agent_id,
             error_class=error_class,
@@ -946,20 +1085,21 @@ class _CompletionMixin(_OrchestratorBase):
         ``_break_recovery_failures[agent_id] >= BREAK_RECOVERY_FAILURE_LIMIT``
         to unmask END_AGENT and let the PPO decide to retire the agent. The
         counter is cleared on a successful recovery (below) and when the agent
-        is actually ended (see END_AGENT cleanup in ``_harvest_completed``).
+        is actually ended (see END_AGENT cleanup in ``harvest_completed``).
         """
 
         agent_id = outcome.agent_id
         if agent_id is None:
             return
-        # Clear the rate-limit-recovery latch on any take_break completion so
-        # the next ERROR transition for this agent can re-arm the override.
-        self._rate_limit_recovery_enqueued.discard(agent_id)
+        # Clear both recovery latches on any take_break completion so the next
+        # ERROR transition for this agent can re-arm the appropriate override
+        # (the break could have been triggered by either path).
+        self._recovery.clear_rate_limit_enqueued(agent_id)
+        self._recovery.clear_unknown_error_enqueued(agent_id)
         if outcome.success:
-            self._break_recovery_failures.pop(agent_id, None)
+            self._recovery.clear_break_failures(agent_id)
             return
-        failures = self._break_recovery_failures.get(agent_id, 0) + 1
-        self._break_recovery_failures[agent_id] = failures
+        failures = self._recovery.record_break_failure(agent_id)
         if failures < BREAK_RECOVERY_FAILURE_LIMIT:
             _logger.info(
                 "break_recovery_failed",
@@ -981,7 +1121,7 @@ class _CompletionMixin(_OrchestratorBase):
             limit=BREAK_RECOVERY_FAILURE_LIMIT,
         )
 
-    async def _on_crash(self, agent_id: str, return_code: int) -> None:
+    async def on_crash(self, agent_id: str, return_code: int) -> None:
         """Log crash; leave handle in ERROR state. No auto-recovery in Phase 2."""
         _logger.error(
             "agent_crashed",
@@ -990,12 +1130,12 @@ class _CompletionMixin(_OrchestratorBase):
             return_code=return_code,
         )
 
-        await self._safe_call(
-            self._state_provider.on_agent_changed(agent_id, AgentStatus.ERROR),
+        await self._host._safe_call(
+            self._host._state_provider.on_agent_changed(agent_id, AgentStatus.ERROR),
             "on_agent_changed",
         )
 
-    async def _on_context_pressure(self, agent_id: str, ratio: float) -> None:
+    async def on_context_pressure(self, agent_id: str, ratio: float) -> None:
         """Annotate pressure hint; do not auto-trigger COMPACT/FRESH_START in Phase 2."""
         _logger.info(
             "context_pressure",
@@ -1003,22 +1143,18 @@ class _CompletionMixin(_OrchestratorBase):
             agent_id=agent_id,
             ratio=ratio,
         )
-        self.context_pressure_hints[agent_id] = ratio
+        self._host.context_pressure_hints[agent_id] = ratio
 
-        await self._safe_call(
-            self._state_provider.on_agent_changed(agent_id, AgentStatus.BUSY),
+        await self._host._safe_call(
+            self._host._state_provider.on_agent_changed(agent_id, AgentStatus.BUSY),
             "on_agent_changed",
         )
 
-    async def _persist_alignment_scores(self, outcome: PlayOutcome) -> None:
-        """No-op in v0.10.0: cluster alignment replaced by beads ProjectGraph
-        global_closure_ratio; no per-cluster DB rows to persist."""
-
-    async def _update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
+    async def update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""
         from agentshore.learnings import Learning, load, reinforce, save_atomic, top_k
 
-        learnings_path = self._repo_root / self._cfg.learnings.file
+        learnings_path = self._repo_root / self._host._cfg.learnings.file
         entries = await asyncio.to_thread(load, learnings_path)
         changed = False
 
@@ -1074,14 +1210,14 @@ class _CompletionMixin(_OrchestratorBase):
                 changed = True
 
         # Trim to max_entries keeping highest confidence
-        if len(entries) > self._cfg.learnings.max_entries:
-            entries = top_k(entries, k=self._cfg.learnings.max_entries)
+        if len(entries) > self._host._cfg.learnings.max_entries:
+            entries = top_k(entries, k=self._host._cfg.learnings.max_entries)
             changed = True
 
         if changed:
             await asyncio.to_thread(save_atomic, learnings_path, entries)
 
-    async def _check_no_forward_progress(
+    async def check_no_forward_progress(
         self, state: OrchestratorState, outcome: PlayOutcome
     ) -> None:
         """Forward-progress backstop: drain after N consecutive dead ticks.
@@ -1095,10 +1231,10 @@ class _CompletionMixin(_OrchestratorBase):
         and so missed an interleaved write_impl↔refine churn. Pure backstop: it
         never influences which play the policy selects.
         """
-        monitor = self._progress_monitor
+        monitor = self._host._progress_monitor
         if monitor is None:
             return
-        if getattr(self, "_draining", False) or getattr(self, "_stop_requested", False):
+        if getattr(self._host, "_draining", False) or getattr(self._host, "_stop_requested", False):
             return
         graph = state.graph
         fingerprint = (
@@ -1127,11 +1263,9 @@ class _CompletionMixin(_OrchestratorBase):
                 f"for {monitor.limit} consecutive ticks — draining the stalled session"
             ),
         )
-        self._natural_exit_reason = "no_forward_progress"
-        self._drain_reason = "no_forward_progress"
-        await self.begin_drain("no_forward_progress")
+        await self._host._initiate_autonomous_stop("no_forward_progress", fire_natural_exit=True)
 
-    async def _refresh_issues(
+    async def refresh_issues(
         self,
         completing_play: PlayType | None = None,
         *,
@@ -1159,15 +1293,17 @@ class _CompletionMixin(_OrchestratorBase):
         up the new state.
         """
         import time as _time
-        from datetime import UTC, datetime, timedelta
 
-        from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
+        from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
         try:
             from agentshore.github.adapter import GitHubAdapter
 
-            gh = GitHubAdapter(store=self._store, session_id=self._session_id, cfg=self._cfg)
+            gh = GitHubAdapter(store=self._store, session_id=self._session_id, cfg=self._host._cfg)
             await gh.probe()
+            syncer = GitHubSyncer(
+                gh=gh, store=self._store, cfg=self._host._cfg, session_id=self._session_id
+            )
             if gh.available:
                 last_sync = await self._store.get_last_issue_sync_at(self._session_id)
                 full_sync = (
@@ -1180,13 +1316,11 @@ class _CompletionMixin(_OrchestratorBase):
                 # Capture the cutoff *before* the fetch so anything that
                 # updates mid-fetch is picked up next time. Lookback absorbs
                 # clock skew between gh and the local box.
-                new_cutoff = (
-                    datetime.now(UTC) - timedelta(seconds=_INCREMENTAL_SYNC_LOOKBACK_SECONDS)
-                ).isoformat()
+                new_cutoff = sync_cursor_now()
 
                 # ``state="all"`` so close/reopen transitions surface — the
                 # cache_github_issues upsert flips local state to match.
-                issues = await gh.list_issues(state="all", since=since)
+                issues = await syncer.fetch_issues(state="all", since=since)
                 if issues is None:
                     _logger.warning(
                         "github_issues_refresh_failed",
@@ -1194,9 +1328,7 @@ class _CompletionMixin(_OrchestratorBase):
                         since=since,
                     )
                 else:
-                    if issues:
-                        await self._store.cache_github_issues(self._session_id, issues)
-                    await self._store.set_last_issue_sync_at(self._session_id, new_cutoff)
+                    await syncer.cache_issues(issues, cursor=new_cutoff)
                     _logger.info(
                         "github_issues_refreshed",
                         changed_count=len(issues),
@@ -1243,37 +1375,22 @@ class _CompletionMixin(_OrchestratorBase):
                                     issue_number=issue.issue_number,
                                     bead_count=len(related),
                                 )
-                pull_requests = await gh.list_pull_requests(state="open", limit=_PR_LIMIT)
-                trusted_pr_authors = trusted_pr_author_logins(self._cfg)
-                pull_requests = filter_trusted_pull_requests(
-                    pull_requests,
-                    self._cfg,
+                trusted_pr_authors = syncer.trusted_authors()
+                pull_requests = await syncer.fetch_trusted_open_pull_requests(
+                    limit=_PR_LIMIT,
                     trusted_authors=trusted_pr_authors,
                     context="refresh_open",
                 )
-                fetched_numbers = {pr.pr_number for pr in pull_requests}
-                locally_open = await self._store.list_open_pull_requests(self._session_id)
-                missing = [pr for pr in locally_open if pr.pr_number not in fetched_numbers]
-                refetched: list[PullRequestRecord] = []
-                if missing:
-                    all_prs = await gh.list_pull_requests(state="all", limit=_PR_LIMIT)
-                    all_prs = filter_trusted_pull_requests(
-                        all_prs,
-                        self._cfg,
-                        trusted_authors=trusted_pr_authors,
-                        context="refresh_resync",
-                    )
-                    by_number = {pr.pr_number: pr for pr in all_prs}
-                    refetched = [
-                        by_number[stale.pr_number]
-                        for stale in missing
-                        if stale.pr_number in by_number
-                    ]
-                    if refetched:
-                        pull_requests.extend(refetched)
-                        _logger.info("github_pull_requests_state_resync", count=len(refetched))
+                refetched = await syncer.resync_missing_pull_requests(
+                    fetched_open=pull_requests,
+                    limit=_PR_LIMIT,
+                    trusted_authors=trusted_pr_authors,
+                )
+                if refetched:
+                    pull_requests.extend(refetched)
+                    _logger.info("github_pull_requests_state_resync", count=len(refetched))
                 if pull_requests:
-                    await self._store.cache_pull_requests(self._session_id, pull_requests)
+                    await syncer.cache_pull_requests(pull_requests)
                     _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
                 # desktop-12g9: mark worktree rows ``stale`` for PRs that
                 # transitioned to MERGED or CLOSED, then run the TTL reaper.
@@ -1285,7 +1402,7 @@ class _CompletionMixin(_OrchestratorBase):
         except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
             _logger.warning("github_refresh_failed", error=str(exc))
         finally:
-            self._last_refresh_time = _time.monotonic()
+            self._host._last_refresh_time = _time.monotonic()
             await self._ensure_ssh_key_fresh()
 
     async def _ensure_ssh_key_fresh(self) -> None:
@@ -1305,12 +1422,12 @@ class _CompletionMixin(_OrchestratorBase):
     ) -> None:
         """Transition worktree rows to ``stale`` for PRs that just closed/merged.
 
-        Called from ``_refresh_issues`` with the PRs we re-pulled at
+        Called from ``refresh_issues`` with the PRs we re-pulled at
         ``state='all'`` to confirm their new state. A PR whose new state is
         anything other than ``"open"`` no longer needs an active worktree;
         the closed-PR TTL reaper will sweep it after the grace period.
         """
-        if self._worktrees is None or not refetched_prs:
+        if self._host._worktrees is None or not refetched_prs:
             return
         from agentshore.agents.worktree.registry import lookup_by_branch, mark_status
 
@@ -1353,11 +1470,11 @@ class _CompletionMixin(_OrchestratorBase):
 
     async def _sweep_closed_pr_worktrees(self) -> None:
         """Run the TTL reaper for ``stale`` worktree rows in the current session."""
-        if self._worktrees is None:
+        if self._host._worktrees is None:
             return
         try:
-            report = await self._worktrees.reap_closed_prs(
-                ttl_seconds=self._cfg.worktrees.reap_ttl_seconds,
+            report = await self._host._worktrees.reap_closed_prs(
+                ttl_seconds=self._host._cfg.worktrees.reap_ttl_seconds,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
@@ -1367,5 +1484,5 @@ class _CompletionMixin(_OrchestratorBase):
                 "worktree_pr_ttl_reap",
                 reaped=len(report.removed),
                 failed=len(report.failed),
-                ttl_seconds=self._cfg.worktrees.reap_ttl_seconds,
+                ttl_seconds=self._host._cfg.worktrees.reap_ttl_seconds,
             )

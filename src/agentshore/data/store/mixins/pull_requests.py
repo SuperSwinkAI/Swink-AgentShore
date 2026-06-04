@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.helpers import _PULL_REQUEST_UPSERT_SQL, _pull_request_upsert_row
+from agentshore.data.store.helpers import (
+    _PR_SELECT,
+    _PULL_REQUEST_UPSERT_SQL,
+    _pull_request_upsert_row,
+)
 from agentshore.data.store.rows import _row_to_pull_request
 from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.utils import now_iso
@@ -189,15 +194,7 @@ class _PullRequestsMixin:
     async def get_pull_request(self, session_id: str, pr_number: int) -> PullRequestRecord | None:
         """Return one cached PR by number for this session."""
         async with self._conn.execute(
-            """
-            SELECT pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-                   title, url, github_author, labels, review_decision,
-                   status_check_summary, is_draft,
-                   author_agent_id, author_agent_type, created_at, merged_at,
-                   head_sha, mergeable, last_reviewed_sha, last_review_status
-            FROM pull_requests
-            WHERE session_id = ? AND pr_number = ?
-            """,
+            f"{_PR_SELECT} WHERE session_id = ? AND pr_number = ?",
             (session_id, pr_number),
         ) as cursor:
             row = await cursor.fetchone()
@@ -206,13 +203,8 @@ class _PullRequestsMixin:
     async def list_open_pull_requests(self, session_id: str) -> list[PullRequestRecord]:
         """Return all open/review-blocked PRs for a session."""
         cursor = await self._conn.execute(
-            """
-            SELECT pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-                   title, url, github_author, labels, review_decision,
-                   status_check_summary, is_draft,
-                   author_agent_id, author_agent_type, created_at, merged_at,
-                   head_sha, mergeable, last_reviewed_sha, last_review_status
-            FROM pull_requests
+            f"""
+            {_PR_SELECT}
             WHERE session_id = ?
               AND lower(state) IN (
                   'open', 'review_requested', 'blocked', 'changes_requested', 'ci_failed'
@@ -227,13 +219,8 @@ class _PullRequestsMixin:
     async def list_active_pull_requests(self, session_id: str) -> list[PullRequestRecord]:
         """Return PRs still relevant to the active session environment."""
         cursor = await self._conn.execute(
-            """
-            SELECT pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-                   title, url, github_author, labels, review_decision,
-                   status_check_summary, is_draft,
-                   author_agent_id, author_agent_type, created_at, merged_at,
-                   head_sha, mergeable, last_reviewed_sha, last_review_status
-            FROM pull_requests
+            f"""
+            {_PR_SELECT}
             WHERE session_id = ?
               AND lower(state) IN (
                   'open', 'review_requested', 'blocked', 'changes_requested',
@@ -255,17 +242,10 @@ class _PullRequestsMixin:
         projection as open review work. The issue-close mirror can arrive on a
         later refresh, so this keeps merge completions visible immediately.
         """
-        from datetime import UTC, datetime, timedelta
-
         cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         cursor = await self._conn.execute(
-            """
-            SELECT pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-                   title, url, github_author, labels, review_decision,
-                   status_check_summary, is_draft,
-                   author_agent_id, author_agent_type, created_at, merged_at,
-                   head_sha, mergeable, last_reviewed_sha, last_review_status
-            FROM pull_requests
+            f"""
+            {_PR_SELECT}
             WHERE session_id = ?
               AND lower(state) = 'merged'
               AND merged_at IS NOT NULL
@@ -294,13 +274,8 @@ class _PullRequestsMixin:
         filtered downstream by the resolver/play preconditions.
         """
         cursor = await self._conn.execute(
-            """
-            SELECT pr_number, session_id, issue_number, linked_issue_numbers, branch, state,
-                   title, url, github_author, labels, review_decision,
-                   status_check_summary, is_draft,
-                   author_agent_id, author_agent_type, created_at, merged_at,
-                   head_sha, mergeable, last_reviewed_sha, last_review_status
-            FROM pull_requests
+            f"""
+            {_PR_SELECT}
             WHERE session_id = ?
               AND lower(state) = 'open'
               AND (

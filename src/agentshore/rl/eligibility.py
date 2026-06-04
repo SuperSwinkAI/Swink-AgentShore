@@ -34,8 +34,13 @@ from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
     effective_model_tier_config,
 )
+from agentshore.errors import ErrorClass
 from agentshore.identity_names import canonical_identity_name, same_identity
-from agentshore.play_rules import needs_review
+from agentshore.play_rules import (
+    CANDIDATE_REQUIRED_PLAY_TYPES,
+    LIVE_CONFIRM_PLAY_TYPES,
+    needs_review,
+)
 from agentshore.plays.candidates import (
     PlayCandidate,
     PlayCandidatePlan,
@@ -50,7 +55,7 @@ from agentshore.rl.mask_reason import (
     MaskReason,
     MaskSource,
 )
-from agentshore.state import AgentStatus, AgentType, PlayType
+from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -114,24 +119,6 @@ class EligibilityReport:
             if verdict is not None and verdict.valid:
                 mask[i] = True
         return mask
-
-
-# Play types whose validity is gated on a concrete candidate target existing in
-# the snapshot candidate plan. Mirrors ``mask._CANDIDATE_REQUIRED_PLAY_TYPES``;
-# duplicated here to keep the import-direction contract (mask imports
-# eligibility, never the reverse).
-_CANDIDATE_REQUIRED_PLAY_TYPES: frozenset[PlayType] = frozenset(
-    {
-        PlayType.UNBLOCK_PR,
-        PlayType.WRITE_IMPLEMENTATION_PLAN,
-        PlayType.ISSUE_PICKUP,
-        PlayType.CODE_REVIEW,
-        PlayType.MERGE_PR,
-        PlayType.SYSTEMATIC_DEBUGGING,
-        PlayType.REFINE_TASK_BREAKDOWN,
-        PlayType.GROOM_BACKLOG,
-    }
-)
 
 
 # ---------------------------------------------------------------------------
@@ -416,8 +403,8 @@ class EligibilityAuthority:
         # the sole re-enable — it hands the retire decision to the policy). It
         # MUST be evaluated before the precondition early-return below, otherwise
         # the precondition reason returns first and the re-enable is unreachable.
-        wedged_end_agent_reenable = pt == PlayType.END_AGENT and bool(
-            state.recovery_exhausted_agent_ids
+        wedged_end_agent_reenable = pt == PlayType.END_AGENT and (
+            bool(state.recovery_exhausted_agent_ids) or self._has_terminal_error_agent(state)
         )
 
         # 1. Registry preconditions (runs each play's declared gates).
@@ -437,15 +424,20 @@ class EligibilityAuthority:
                 return fn_reasons[0]
 
         # 4. Candidate-required plays: no concrete target → masked.
-        if pt in _CANDIDATE_REQUIRED_PLAY_TYPES and not plan.candidates_for(pt):
+        if pt in CANDIDATE_REQUIRED_PLAY_TYPES and not plan.candidates_for(pt):
             return _candidate_reason(plan, pt, f"no {pt.value} candidates")
 
         # 5. INSTANTIATE_AGENT config viability.
         if pt == PlayType.INSTANTIATE_AGENT:
             return self._instantiate_config_reason(state, plan)
 
-        # 6. END_SESSION while actionable work remains.
-        if pt == PlayType.END_SESSION and not plan.work_availability.terminal_no_work:
+        # 6. END_SESSION while actionable work remains, or while the beads
+        #    backlog is non-empty. GitHub workable-issue counts can lag
+        #    calibrate_alignment syncs; ready_task_count is authoritative.
+        if pt == PlayType.END_SESSION and (
+            not plan.work_availability.terminal_no_work
+            or plan.work_availability.ready_task_count > 0
+        ):
             return MaskReason(
                 text="Actionable work still remains",
                 classification=MaskClassification.INDEFINITE_WAIT,
@@ -577,8 +569,22 @@ class EligibilityAuthority:
     def _has_break_trigger(state: OrchestratorState) -> bool:
         return any(
             a.status == AgentStatus.ERROR
-            and a.last_error_class in ("rate_limit", "unknown")
+            and a.last_error_class in RECOVERABLE_ERROR_CLASSES
             and a.current_play_type != PlayType.TAKE_BREAK
+            for a in state.agents
+        )
+
+    @staticmethod
+    def _has_terminal_error_agent(state: OrchestratorState) -> bool:
+        """True if any agent is in a non-recoverable ERROR state (#20).
+
+        Such an agent has no TAKE_BREAK recovery path, so it never reaches
+        ``recovery_exhausted`` and END_AGENT would otherwise stay masked,
+        leaking it (and any subprocess it holds) until end_session. Unmasking
+        END_AGENT hands the retire decision to the PPO — it does not force one.
+        """
+        return any(
+            a.status == AgentStatus.ERROR and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
             for a in state.agents
         )
 
@@ -688,16 +694,7 @@ class EligibilityAuthority:
         """
         # The live-confirm set: candidate-bearing target plays. Internal/control
         # plays and audit plays are not target-confirmed here.
-        live_confirm_plays = {
-            PlayType.WRITE_IMPLEMENTATION_PLAN,
-            PlayType.ISSUE_PICKUP,
-            PlayType.SYSTEMATIC_DEBUGGING,
-            PlayType.REFINE_TASK_BREAKDOWN,
-            PlayType.CODE_REVIEW,
-            PlayType.MERGE_PR,
-            PlayType.UNBLOCK_PR,
-        }
-        if play_type not in live_confirm_plays:
+        if play_type not in LIVE_CONFIRM_PLAY_TYPES:
             return None
 
         target_issue = params.issue_number
@@ -807,7 +804,7 @@ def compute_agent_eligibility_mask(
     rate_limited_types: set[str] = {
         a.agent_type.value
         for a in state.agents
-        if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
     }
 
     for i, pt in enumerate(V1_ACTION_ORDER):
@@ -913,19 +910,19 @@ def compute_config_mask(
     blocked_auth_configs: set[tuple[str, str, str | None]] = set()
     blocked_model_configs: set[tuple[str, str, str | None]] = set()
     for a in state.agents:
-        if a.status.value == "terminated":
+        if a.status == AgentStatus.TERMINATED:
             continue
         tier = a.model_tier or "medium"
         key = (a.agent_type.value, tier)
         if a.status == AgentStatus.IDLE:
             idle_configs.add(key)
-        if a.status.value == "error" and a.last_error_class == "auth":
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.AUTH:
             blocked_auth_configs.add((a.agent_type.value, tier, a.github_identity))
             continue
-        if a.status.value == "error" and a.last_error_class == "invalid_model":
+        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.INVALID_MODEL:
             blocked_model_configs.add((a.agent_type.value, tier, a.model))
             continue
-        if a.status.value == "error" and a.last_error_class != "rate_limit":
+        if a.status == AgentStatus.ERROR and a.last_error_class != ErrorClass.RATE_LIMIT:
             continue
         counts[key] = counts.get(key, 0) + 1
 

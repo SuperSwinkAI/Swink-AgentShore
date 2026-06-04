@@ -18,6 +18,7 @@ import pytest
 import structlog
 
 from agentshore.core.git_safety import check_main_repo_branch_mutated, current_head_ref
+from agentshore.core.main_repo_guard import MainRepoGuard
 
 
 def _events_from_caplog(records: list[logging.LogRecord]) -> list[dict[str, object]]:
@@ -115,15 +116,15 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
     merge_repo: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """End-to-end through ``_check_main_repo_invariant``: no warning, no restore."""
+    from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.orchestrator import Orchestrator
     from agentshore.state import PlayType
 
     orch = Orchestrator.__new__(Orchestrator)
     orch._repo_root = merge_repo
     orch._session_id = "test-session-merge"
-    orch._default_branch = "main"
-    orch._pre_play_branches = {"d-merge": "refs/heads/main"}
-    orch._main_repo_dispatch_paused = False
+    orch._main_repo = MainRepoGuard()
+    orch._main_repo.record_pre_play_branch("d-merge", "refs/heads/main")
 
     class _StubManager:
         handles: dict[str, object] = {}
@@ -138,7 +139,8 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        await orch._check_main_repo_invariant(
+        await CompletionProcessor.check_main_repo_invariant(
+            orch,
             dispatch_id="d-merge",
             play_type=PlayType.MERGE_PR,
             agent_id="claude-merge",
@@ -152,4 +154,4 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
     )
     assert "main_repo_auto_restore_failed" not in event_names
     # No paused dispatch on a healthy merge_pr.
-    assert orch._main_repo_dispatch_paused is False
+    assert orch._main_repo.dispatch_paused is False

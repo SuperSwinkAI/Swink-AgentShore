@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 from agentshore.agents.handle import AgentHandle
 from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.data.models import PlayRecord
 from agentshore.state import AgentStatus, AgentType
 
@@ -40,6 +41,7 @@ def _orch_with_handles(handles: list[AgentHandle]) -> Orchestrator:
     manager = MagicMock()
     manager.handles = {h.agent_id: h for h in handles}
     orch._manager = manager
+    orch._snapshots = SnapshotProjector(manager=manager, store=MagicMock(), session_id="test")
     return orch
 
 
@@ -51,7 +53,7 @@ def test_tasks_completed_counts_successful_plays():
         _play("a", True),
         _play("b", True),
     ]
-    snaps = {s.agent_id: s for s in orch._build_agent_snapshots(history)}
+    snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots(history)}
     assert snaps["a"].tasks_completed == 3
     assert snaps["b"].tasks_completed == 1
 
@@ -63,7 +65,7 @@ def test_tasks_failed_counts_failed_plays():
         _play("a", False),
         _play("a", False),
     ]
-    snaps = {s.agent_id: s for s in orch._build_agent_snapshots(history)}
+    snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots(history)}
     assert snaps["a"].tasks_completed == 1
     assert snaps["a"].tasks_failed == 2
 
@@ -76,7 +78,7 @@ def test_unknown_agent_id_in_history_is_ignored():
         _play("ghost", True),  # not in handles
         _play(None, True),  # internal play (no agent)
     ]
-    snaps = {s.agent_id: s for s in orch._build_agent_snapshots(history)}
+    snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots(history)}
     assert snaps["a"].tasks_completed == 1
     assert "ghost" not in snaps
 
@@ -84,14 +86,14 @@ def test_unknown_agent_id_in_history_is_ignored():
 def test_handles_with_no_history_show_zero():
     orch = _orch_with_handles([_handle("a"), _handle("fresh")])
     history = [_play("a", True)]
-    snaps = {s.agent_id: s for s in orch._build_agent_snapshots(history)}
+    snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots(history)}
     assert snaps["fresh"].tasks_completed == 0
     assert snaps["fresh"].tasks_failed == 0
 
 
 def test_empty_history_yields_zero_counts():
     orch = _orch_with_handles([_handle("a")])
-    snaps = orch._build_agent_snapshots([])
+    snaps = orch._snapshots.build_agent_snapshots([])
     assert snaps[0].tasks_completed == 0
     assert snaps[0].tasks_failed == 0
     assert snaps[0].timeout_count == 0
@@ -101,5 +103,5 @@ def test_timeout_count_plumbed_from_handle() -> None:
     handle = _handle("a")
     handle.timeout_count = 5
     orch = _orch_with_handles([handle])
-    snaps = {s.agent_id: s for s in orch._build_agent_snapshots([])}
+    snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots([])}
     assert snaps["a"].timeout_count == 5

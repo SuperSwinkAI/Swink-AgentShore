@@ -304,6 +304,85 @@ async def test_finalize_branch_creating_returns_branch_from_skill_result(
     assert returned_branch == "feature/from-result"
 
 
+async def test_finalize_branch_creating_no_branch_removes_worktree(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A declined/failed pickup must not leak its registered pickup-<N> worktree.
+
+    Regression for #33: issue_pickup declining a non-actionable issue (success
+    but no branch produced) left ``.agentshore/worktrees/pickup-<N>`` registered
+    in git metadata, which reconcile_state could not clear (DB-only remediation)
+    and which accumulated on disk. Finalize must now de-register + delete it.
+    """
+    import subprocess
+
+    from agentshore.agents.worktree import WorktreeAllocation
+    from agentshore.agents.worktree.registry import insert_worktree, lookup_by_id
+    from agentshore.state import PlayOutcome, SkillResult
+
+    src = worktree_root / "pickup-339"
+    # Detached checkout (no -b): the play produced no branch, so finalize falls
+    # through to the stale/removal path rather than rekeying.
+    subprocess.check_call(
+        ["git", "worktree", "add", "--detach", str(src), "HEAD"],
+        cwd=str(main_repo),
+    )
+    row = await insert_worktree(
+        store,
+        session_id="sess-1",
+        branch_name=None,
+        pre_branch_key="pickup-339",
+        worktree_path=str(src),
+        original_play_type="issue_pickup",
+        base_ref="origin/HEAD",
+        head_sha=None,
+    )
+    # Sanity: it's registered before finalize.
+    listing_before = subprocess.check_output(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
+    )
+    assert str(src) in listing_before
+
+    wm = _make_manager(store, main_repo, worktree_root)
+    alloc = WorktreeAllocation(
+        worktree_id=row.worktree_id,
+        path=src,
+        branch_name=None,
+        pre_branch_key="pickup-339",
+        play_type=PlayType.ISSUE_PICKUP,
+        scope="branch_creating",
+    )
+    # Declined: the skill succeeded but deliberately produced no PR/branch.
+    skill_result = SkillResult(success=True, branch=None)
+    outcome = PlayOutcome(
+        play_type=PlayType.ISSUE_PICKUP,
+        agent_id=None,
+        success=True,
+        partial=False,
+        duration_seconds=0.0,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+    )
+
+    returned_branch = await wm.finalize_after_dispatch(
+        alloc, result=skill_result, play_outcome=outcome
+    )
+
+    assert returned_branch is None
+    # Worktree de-registered from git and gone from disk.
+    listing_after = subprocess.check_output(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
+    )
+    assert str(src) not in listing_after
+    assert not src.exists()
+    # Row marked stale so the reaper drops it.
+    persisted = await lookup_by_id(store, worktree_id=row.worktree_id)
+    assert persisted is not None
+    assert persisted.status == "stale"
+
+
 async def test_finalize_pr_scoped_returns_none(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:

@@ -72,14 +72,13 @@ async def test_startup_mark_ready() -> None:
 
 
 async def test_shutdown_screen_composes() -> None:
-    """The shutdown screen has title, teardown, and summary Static widgets."""
+    """The shutdown screen has title and teardown Static widgets."""
     app = ScreenTestApp()
     async with app.run_test() as pilot:
         app.push_screen(SessionEndScreen())
         await pilot.pause()
         assert app.screen.query_one("#title", Static) is not None
         assert app.screen.query_one("#teardown", Static) is not None
-        assert app.screen.query_one("#summary", Static) is not None
 
 
 async def test_shutdown_add_step() -> None:
@@ -95,20 +94,3 @@ async def test_shutdown_add_step() -> None:
         teardown = app.screen.query_one("#teardown", Static)
         rendered = str(teardown.render())
         assert "Clear agent: claude-code" in rendered
-
-
-async def test_shutdown_set_summary() -> None:
-    """set_summary() populates the #summary Static with key-value data."""
-    app = ScreenTestApp()
-    async with app.run_test() as pilot:
-        app.push_screen(SessionEndScreen())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, SessionEndScreen)
-        screen.set_summary({"Duration": "1h 52m", "Plays": 24, "Cost": "$4.18"})
-        await pilot.pause()
-        summary = app.screen.query_one("#summary", Static)
-        rendered = str(summary.render())
-        assert "Duration" in rendered
-        assert "1h 52m" in rendered
-        assert "24" in rendered

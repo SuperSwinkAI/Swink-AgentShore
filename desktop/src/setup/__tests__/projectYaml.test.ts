@@ -38,18 +38,21 @@ describe("parseProjectYaml", () => {
       enabledAgents: [],
       identityLogins: [],
       budget: null,
+      timelapse: null,
     });
     expect(parseProjectYaml("")).toEqual({
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
       budget: null,
+      timelapse: null,
     });
     expect(parseProjectYaml("   \n\n  ")).toEqual({
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
       budget: null,
+      timelapse: null,
     });
   });
 
@@ -114,6 +117,7 @@ rl:
       enabledAgents: [],
       identityLogins: [],
       budget: null,
+      timelapse: null,
     });
   });
 
@@ -209,6 +213,22 @@ describe("budgetHydrationToSelection", () => {
       mode: "capped",
       total: 0,
     });
+  });
+});
+
+describe("parseProjectYaml — timelapse", () => {
+  it("parses the timelapse block", () => {
+    const result = parseProjectYaml("timelapse:\n  enabled: true\n  installed: true\n");
+    expect(result.timelapse).toEqual({ enabled: true, installed: true });
+  });
+
+  it("leaves timelapse null when the block is absent", () => {
+    expect(parseProjectYaml("project:\n  path: .\n").timelapse).toBeNull();
+  });
+
+  it("parses installed independently of enabled", () => {
+    const result = parseProjectYaml("timelapse:\n  installed: true\n");
+    expect(result.timelapse).toEqual({ enabled: false, installed: true });
   });
 });
 

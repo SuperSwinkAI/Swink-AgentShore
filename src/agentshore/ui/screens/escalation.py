@@ -6,6 +6,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from textual.containers import Vertical
+from textual.css.query import QueryError
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
@@ -44,8 +45,6 @@ class EscalationModal(ModalScreen[str]):
             self._hide_budget_input()
 
     def _show_budget_input(self) -> None:
-        from textual.css.query import QueryError
-
         try:
             self.query_one("#budget-amount")
             return  # already mounted
@@ -65,15 +64,11 @@ class EscalationModal(ModalScreen[str]):
         )
 
     def _hide_budget_input(self) -> None:
-        from textual.css.query import QueryError
-
         for widget_id in ("budget-amount", "btn-budget-confirm", "btn-budget-cancel"):
             with contextlib.suppress(QueryError):
                 self.query_one(f"#{widget_id}").remove()
 
     def _submit_budget(self) -> None:
-        from textual.css.query import QueryError
-
         try:
             inp = self.query_one("#budget-amount", Input)
         except QueryError:

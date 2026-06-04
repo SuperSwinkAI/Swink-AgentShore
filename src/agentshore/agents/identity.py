@@ -33,12 +33,19 @@ from agentshore.identity_names import (
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 
 _logger = get_logger(__name__)
 
 _SOURCE_NONE = "none"
 _SOURCE_ENV = "env"
+_SOURCE_AMBIENT = "ambient"
+_SOURCE_GH_LOGIN = "gh_login"
+# Token sources that carry no per-identity secret and therefore can never be
+# "configured but failed validation" — they inherit ambient gh auth instead.
+_NEUTRAL_TOKEN_SOURCES = frozenset({_SOURCE_AMBIENT, _SOURCE_NONE})
 _REPO_ACCESS_TIMEOUT_SECONDS = 10
 
 
@@ -51,7 +58,10 @@ class _TokenResolution:
     source: str
     token: str | None
     detail: str
-    token_valid: bool = False
+    # True only when GitHub actually accepted this token (strict resolution).
+    # A non-strict resolution skips the live check, so it stays False rather
+    # than asserting an invariant the code never verified.
+    token_validated: bool = False
     resolved_login: str | None = None
     validation_error: str | None = None
     canonical_service: str | None = None
@@ -173,7 +183,7 @@ class IdentityResolver:
         self._token_cache[cache_key] = token
         return token
 
-    def read_keychain_token(self, service: str, *, warn_missing: bool = True) -> str | None:
+    def read_keychain_token(self, service: str) -> str | None:
         if service in self._keychain_cache:
             return self._keychain_cache[service]
 
@@ -195,9 +205,6 @@ class IdentityResolver:
             return None
 
         if not token:
-            if not warn_missing:
-                return None
-            _logger.warning("identity_keychain_token_empty", service=service)
             return None
 
         self._keychain_cache[service] = token
@@ -265,11 +272,14 @@ class IdentityResolver:
                 canonical_service=canonical_service,
             )
         if not validate:
+            # Not validated against GitHub: carry the token through but do not
+            # claim it is valid. ``resolved_login`` keeps the *configured*
+            # expectation so non-strict callers still get a usable overlay.
             return _TokenResolution(
                 source=source,
                 token=token,
                 detail=detail,
-                token_valid=True,
+                token_validated=False,
                 resolved_login=expected_login,
                 canonical_service=canonical_service,
             )
@@ -278,14 +288,14 @@ class IdentityResolver:
                 source=source,
                 token=token,
                 detail=detail,
-                token_valid=False,
+                token_validated=False,
                 validation_error=(
                     f"{source} token has no configured GitHub login to validate against"
                 ),
                 canonical_service=canonical_service,
             )
 
-        valid, login, error = _validate_github_token(token)
+        valid, login, error = self.validate_github_token(token)
         if valid and expected_login and login and not same_identity(login, expected_login):
             valid = False
             error = f"token resolved to GitHub login {login!r}, expected {expected_login!r}"
@@ -294,7 +304,7 @@ class IdentityResolver:
             source=source,
             token=token,
             detail=detail_with_login,
-            token_valid=valid,
+            token_validated=valid,
             resolved_login=canonical_identity_name(login) if valid and login else None,
             validation_error=error,
             canonical_service=canonical_service,
@@ -317,14 +327,14 @@ class IdentityResolver:
                     identity=name,
                     var=ident.gh_token_env,
                 )
-                return _validate_resolution(
+                return self.validate_resolution(
                     source="env",
                     token=None,
                     detail=detail,
                     expected_login=expected_login,
                     validate=validate,
                 )
-            return _validate_resolution(
+            return self.validate_resolution(
                 source="env",
                 token=token,
                 detail=f"env var {ident.gh_token_env}",
@@ -334,13 +344,13 @@ class IdentityResolver:
             )
 
         if ident.gh_token_login:
-            token = _read_gh_token_for_login(ident.gh_token_login, ident.gh_config_dir)
+            token = self.read_gh_token_for_login(ident.gh_token_login, ident.gh_config_dir)
             detail = (
                 f"gh auth token -u {ident.gh_token_login}"
                 if token is not None
                 else f"gh auth token -u {ident.gh_token_login} returned no token"
             )
-            return _validate_resolution(
+            return self.validate_resolution(
                 source="gh_login",
                 token=token,
                 detail=detail,
@@ -352,12 +362,12 @@ class IdentityResolver:
             configured_service = ident.gh_token_keychain
             first_failure: str | None = None
             for service in _keychain_services(configured_service):
-                token = _read_keychain_token(service, warn_missing=False)
+                token = self.read_keychain_token(service)
                 if token is None:
                     first_failure = first_failure or f"keychain {service} has no entry"
                     continue
                 expected_login = _expected_login_from_keychain_service(service)
-                resolution = _validate_resolution(
+                resolution = self.validate_resolution(
                     source="keychain",
                     token=token,
                     detail=f"keychain {service}",
@@ -366,7 +376,7 @@ class IdentityResolver:
                     canonical_service=service,
                     validate=validate,
                 )
-                if resolution.token_valid or not validate:
+                if resolution.token_validated or not validate:
                     if service != configured_service:
                         _logger.info(
                             "identity_keychain_service_corrected",
@@ -378,7 +388,7 @@ class IdentityResolver:
                 first_failure = first_failure or resolution.validation_error
 
             detail = first_failure or f"keychain {configured_service} has no valid entry"
-            return _validate_resolution(
+            return self.validate_resolution(
                 source="keychain",
                 token=None,
                 detail=detail,
@@ -418,13 +428,13 @@ class IdentityResolver:
             "GIT_COMMITTER_EMAIL": ident.git_user_email,
         }
 
-        resolution = _resolve_token_details(name, ident, validate=strict)
+        resolution = self.resolve_token_details(name, ident, validate=strict)
         if strict:
             if resolution.token is None:
                 raise IdentityResolutionError(
                     f"identity {name!r} token missing: {resolution.detail}"
                 )
-            if not resolution.token_valid:
+            if not resolution.token_validated:
                 raise IdentityResolutionError(
                     f"identity {name!r} token invalid: "
                     f"{resolution.validation_error or resolution.detail}"
@@ -433,8 +443,9 @@ class IdentityResolver:
             overlay["GH_TOKEN"] = resolution.token
             overlay["GITHUB_TOKEN"] = resolution.token
 
-        if ident.gh_config_dir:
-            overlay["GH_CONFIG_DIR"] = _expanded_gh_config_dir(ident.gh_config_dir) or ""
+        expanded_config_dir = _expanded_gh_config_dir(ident.gh_config_dir)
+        if expanded_config_dir:
+            overlay["GH_CONFIG_DIR"] = expanded_config_dir
         else:
             overlay["GH_CONFIG_DIR"] = str(_isolated_gh_config_dir(name))
 
@@ -490,55 +501,13 @@ class IdentityResolver:
         self._repo_access_cache.add(cache_key)
 
 
-# Module-level default instance — backward-compatible free functions delegate here.
+# Module-level default instance — the public free functions below delegate here.
 _default_resolver = IdentityResolver()
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible free functions
+# Public free-function API — delegate to the module-level default resolver
 # ---------------------------------------------------------------------------
-
-
-def _read_gh_token_for_login(login: str, gh_config_dir: str | None = None) -> str | None:
-    return _default_resolver.read_gh_token_for_login(login, gh_config_dir)
-
-
-def _read_keychain_token(service: str, *, warn_missing: bool = True) -> str | None:
-    return _default_resolver.read_keychain_token(service, warn_missing=warn_missing)
-
-
-def _validate_github_token(token: str) -> tuple[bool, str | None, str | None]:
-    return _default_resolver.validate_github_token(token)
-
-
-def _validate_resolution(
-    *,
-    source: str,
-    token: str | None,
-    detail: str,
-    expected_login: str | None = None,
-    canonical_service: str | None = None,
-    require_expected_login: bool = False,
-    validate: bool,
-) -> _TokenResolution:
-    return _default_resolver.validate_resolution(
-        source=source,
-        token=token,
-        detail=detail,
-        expected_login=expected_login,
-        canonical_service=canonical_service,
-        require_expected_login=require_expected_login,
-        validate=validate,
-    )
-
-
-def _resolve_token_details(
-    name: str,
-    ident: GitHubIdentity,
-    *,
-    validate: bool,
-) -> _TokenResolution:
-    return _default_resolver.resolve_token_details(name, ident, validate=validate)
 
 
 def resolve_identity_env(
@@ -567,7 +536,7 @@ def resolved_github_login_for_agent(cfg: RuntimeConfig, agent_cfg: AgentConfig) 
     resolution = _default_resolver.resolve_token_details(name, ident, validate=True)
     if resolution.token is None:
         raise IdentityResolutionError(f"identity {name!r} token missing: {resolution.detail}")
-    if not resolution.token_valid:
+    if not resolution.token_validated:
         raise IdentityResolutionError(
             f"identity {name!r} token invalid: {resolution.validation_error or resolution.detail}"
         )
@@ -651,7 +620,7 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
             # Defensive redaction: a previous wizard bug let a literal PAT
             # land in `gh_token_env`. Detect and redact rather than echo it
             # to terminals (and from there into shell scrollback).
-            from agentshore.cli_identity import looks_like_pat
+            from agentshore.identity_wizard import looks_like_pat
 
             if looks_like_pat(ident.gh_token_env):
                 rows.append(
@@ -674,24 +643,58 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
                 )
                 continue
 
-        resolution = _resolve_token_details(identity_name, ident, validate=True)
+        resolution = _default_resolver.resolve_token_details(identity_name, ident, validate=True)
         rows.append(
             IdentityStatus(
                 agent_key=agent_key,
                 identity_name=identity_name,
                 token_source=resolution.source,
                 token_resolved=resolution.token is not None,
-                token_valid=resolution.token_valid,
+                token_valid=resolution.token_validated,
                 resolved_login=resolution.resolved_login,
                 validation_error=resolution.validation_error,
                 detail=(
                     resolution.detail
-                    if resolution.token_valid
+                    if resolution.token_validated
                     else (resolution.validation_error or resolution.detail)
                 ),
             )
         )
     return rows
+
+
+def bad_identity_rows(rows: Iterable[IdentityStatus]) -> list[IdentityStatus]:
+    """Return the rows whose configured identity token failed validation.
+
+    A row is "bad" when it binds an explicit identity (``identity_name`` is
+    set) backed by a real per-identity token source (i.e. not the neutral
+    ``ambient``/``none`` sources, which inherit ambient gh auth) yet the token
+    did not validate. This is the single canonical statement of the
+    identity-health rule shared by ``agentshore start``, ``agentshore
+    identity``, and the wizard post-report.
+    """
+    return [
+        r
+        for r in rows
+        if r.identity_name is not None
+        and r.token_source not in _NEUTRAL_TOKEN_SOURCES
+        and not r.token_valid
+    ]
+
+
+def missing_token_rows(rows: Iterable[IdentityStatus]) -> list[IdentityStatus]:
+    """Return the bad rows whose token simply never resolved (vs. invalid).
+
+    A subset of :func:`bad_identity_rows`: the identity is configured to read
+    its token from an env var or ``gh`` login but no token was produced at all,
+    so the fix is "set it up" rather than "rotate an invalid token". Used to
+    emit ``export``/``gh auth login`` hints in the wizard post-report.
+    """
+    return [
+        r
+        for r in bad_identity_rows(rows)
+        if not r.token_resolved and r.token_source in {_SOURCE_ENV, _SOURCE_GH_LOGIN}
+    ]
 
 
 def report_identity_repo_access(cfg: RuntimeConfig, project_path: Path) -> list[RepoAccessStatus]:

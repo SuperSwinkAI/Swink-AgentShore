@@ -250,7 +250,7 @@ def test_is_session_running_stops_orphan_dashboard_when_pid_missing(
 def test_stop_session_no_pid_returns_false(tmp_path: Path) -> None:
     project = tmp_path / "repo"
     project.mkdir()
-    assert sp.stop_session(project) is False
+    assert sp.hard_stop_session(project) is False
 
 
 def test_stop_session_signals_both_groups_and_cleans_up(
@@ -287,7 +287,7 @@ def test_stop_session_signals_both_groups_and_cleans_up(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert (4001, _signal.SIGTERM) in killed
     assert (4002, _signal.SIGTERM) in killed
     # No SIGKILL needed because the SIGTERM "killed" them in our fake
@@ -310,26 +310,91 @@ def test_stop_session_escalates_to_sigkill_on_straggler(
     sp.session_pid_path(project).parent.mkdir(parents=True)
     sp.session_pid_path(project).write_text("5001", encoding="utf-8")
 
-    # Cap the grace window so the test stays quick.
+    # Cap the grace windows so the test stays quick.
     monkeypatch.setattr(sp, "_STOP_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(sp, "_STOP_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(sp, "_DASHBOARD_STOP_GRACE_SECONDS", 0.05)
 
     killed: list[tuple[int, int]] = []
+    alive = {5001}
 
     def fake_killpg(pid: int, sig: int) -> None:
-        killed.append((pid, sig))  # Process refuses to die on SIGTERM
+        killed.append((pid, sig))
+        if sig == _signal.SIGKILL:
+            alive.discard(pid)  # SIGKILL finally takes effect
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
-            return  # always alive
+            if pid not in alive:
+                raise OSError
+            return
         killed.append((pid, sig))
 
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert (5001, _signal.SIGTERM) in killed
     assert (5001, _signal.SIGKILL) in killed
+
+
+def test_hard_stop_returns_false_when_process_survives_sigkill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process still alive after SIGKILL must report failure, not success (#31).
+
+    The desktop-spawned sidecar bug: agentshore stop printed 'session stopped'
+    and exited 0 while the orchestrator kept running. hard_stop now confirms the
+    PID is gone before returning True.
+    """
+    import signal as _signal
+
+    monkeypatch.setattr(sp.sys, "platform", "linux")
+    monkeypatch.setattr(_signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(sp, "_STOP_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(sp, "_STOP_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(sp, "_DASHBOARD_STOP_GRACE_SECONDS", 0.05)
+    project = tmp_path / "repo"
+    project.mkdir()
+    sp.session_pid_path(project).parent.mkdir(parents=True)
+    sp.session_pid_path(project).write_text("5101", encoding="utf-8")
+
+    def fake_killpg(pid: int, sig: int) -> None:
+        pass  # process is unkillable in this scenario
+
+    def fake_kill(pid: int, sig: int) -> None:
+        if sig == 0:
+            return  # always alive
+
+    monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
+    monkeypatch.setattr(sp.os, "kill", fake_kill)
+
+    assert sp.hard_stop_session(project) is False
+
+
+def test_signal_group_falls_back_to_bare_pid_when_not_group_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-group-leader PID (desktop-spawned sidecar) must still be signalled (#31).
+
+    killpg(pid) raises ProcessLookupError when pid doesn't lead a group; the
+    controller must fall back to os.kill(pid) instead of giving up.
+    """
+    import signal as _signal
+
+    def fake_killpg(pid: int, sig: int) -> None:
+        raise ProcessLookupError  # pid is not a group leader
+
+    individual: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        individual.append((pid, sig))
+
+    monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
+    monkeypatch.setattr(sp.os, "kill", fake_kill)
+
+    sp._signal_group(9999, _signal.SIGTERM)
+    assert individual == [(9999, _signal.SIGTERM)]
 
 
 def test_stop_session_handles_already_dead_process(
@@ -353,7 +418,7 @@ def test_stop_session_handles_already_dead_process(
     monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert not sp.session_pid_path(project).exists()
 
 
@@ -366,21 +431,27 @@ def test_stop_session_uses_taskkill_on_windows(
     sp.session_pid_path(project).write_text("7001", encoding="utf-8")
     monkeypatch.setattr(sp.sys, "platform", "win32")
     monkeypatch.setattr(sp, "_STOP_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(sp, "_DASHBOARD_STOP_GRACE_SECONDS", 0.05)
 
     calls: list[list[str]] = []
+    alive = {7001}
 
     def fake_run(args: list[str], **_kwargs: object) -> object:
         calls.append(args)
+        if "/F" in args:
+            alive.discard(7001)  # force kill takes effect
         return object()
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
+            if pid not in alive:
+                raise OSError
             return
 
     monkeypatch.setattr(sp.subprocess, "run", fake_run)
     monkeypatch.setattr(sp.os, "kill", fake_kill)
 
-    assert sp.stop_session(project) is True
+    assert sp.hard_stop_session(project) is True
     assert ["taskkill", "/PID", "7001", "/T"] in calls
     assert ["taskkill", "/PID", "7001", "/T", "/F"] in calls
 

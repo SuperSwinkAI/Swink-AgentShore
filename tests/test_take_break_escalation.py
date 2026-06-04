@@ -18,17 +18,17 @@ loop must not re-schedule break → break → break indefinitely. The contract:
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentshore.core.mixins.completion import (
-    BREAK_RECOVERY_FAILURE_LIMIT,
-    _CompletionMixin,
-)
+from agentshore.core.mixins.completion import CompletionProcessor
+from agentshore.core.override_queue import OverrideQueue
+from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT, RecoveryTracker
+from agentshore.errors import ErrorClass
 from agentshore.plays.base import PlayExecutionContext, PlayParams
 from agentshore.plays.internal.take_break import TakeBreakPlay
+from agentshore.plays.override import OverrideKind
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
@@ -50,7 +50,7 @@ def _error_agent(agent_id: str = "err1") -> AgentSnapshot:
         total_tokens=0,
         tasks_completed=0,
         tasks_failed=1,
-        last_error_class="unknown",
+        last_error_class=ErrorClass.UNKNOWN,
     )
 
 
@@ -123,14 +123,13 @@ async def test_take_break_returns_success_when_recovery_succeeds() -> None:
     assert outcome.artifacts[0]["recovered_agents"] == ["err1"]
 
 
-class _Harness(_CompletionMixin):
-    """Minimal completion mixin stand-in for testing _handle_take_break_outcome."""
+class _Harness(CompletionProcessor):
+    """Minimal CompletionProcessor stand-in for testing _handle_take_break_outcome."""
 
     def __init__(self) -> None:
         self._session_id = "s1"
-        self._override_queue = asyncio.Queue()
-        self._break_recovery_failures = {}
-        self._rate_limit_recovery_enqueued = set()
+        self._overrides = OverrideQueue()
+        self._recovery = RecoveryTracker()
 
 
 def _outcome(*, agent_id: str, success: bool) -> PlayOutcome:
@@ -156,13 +155,13 @@ def test_two_consecutive_break_failures_do_not_enqueue_end_agent_override() -> N
     h = _Harness()
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
-    assert h._override_queue.empty()
-    assert h._break_recovery_failures["a1"] == 1
+    assert h._overrides.empty()
+    assert h._recovery._break_recovery_failures["a1"] == 1
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
 
     # No override of any kind is produced.
-    assert h._override_queue.empty()
+    assert h._overrides.empty()
 
 
 def test_break_recovery_counter_persists_at_limit() -> None:
@@ -177,13 +176,13 @@ def test_break_recovery_counter_persists_at_limit() -> None:
     for _ in range(BREAK_RECOVERY_FAILURE_LIMIT):
         h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
 
-    assert h._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT
-    assert h._break_recovery_failures["a1"] >= BREAK_RECOVERY_FAILURE_LIMIT
+    assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT
+    assert h._recovery._break_recovery_failures["a1"] >= BREAK_RECOVERY_FAILURE_LIMIT
 
     # Further failures keep the counter at/above the limit (never reset here).
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
-    assert h._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT + 1
-    assert h._override_queue.empty()
+    assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT + 1
+    assert h._overrides.empty()
 
 
 def test_break_recovery_failure_limit_is_two() -> None:
@@ -195,10 +194,10 @@ def test_successful_break_clears_failure_counter() -> None:
     """A recovered break resets the per-agent counter so the next failure starts fresh."""
     h = _Harness()
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
-    assert h._break_recovery_failures["a1"] == 1
+    assert h._recovery._break_recovery_failures["a1"] == 1
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=True))
-    assert "a1" not in h._break_recovery_failures
+    assert "a1" not in h._recovery._break_recovery_failures
 
 
 def test_failures_on_different_agents_do_not_share_a_counter() -> None:
@@ -206,8 +205,8 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
     h._handle_take_break_outcome(_outcome(agent_id="a2", success=False))
 
-    assert h._break_recovery_failures == {"a1": 1, "a2": 1}
-    assert h._override_queue.empty()
+    assert h._recovery._break_recovery_failures == {"a1": 1, "a2": 1}
+    assert h._overrides.empty()
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +216,7 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harness:
+def _enqueue_harness(error_class: ErrorClass | None, agent_id: str = "err1") -> _Harness:
     h = _Harness()
     handle = MagicMock()
     handle.last_error_class = error_class
@@ -226,30 +225,113 @@ def _enqueue_harness(error_class: str | None, agent_id: str = "err1") -> _Harnes
     return h
 
 
-@pytest.mark.parametrize("error_class", ["crash_signal", "crash_oom"])
-def test_crash_exit_does_not_enqueue_rate_limit_recovery(error_class: str) -> None:
-    """A crash/OOM/external-SIGKILL exit must not be treated as a rate limit (#7).
+@pytest.mark.parametrize("error_class", [ErrorClass.CRASH_SIGNAL, ErrorClass.CRASH_OOM])
+def test_crash_exit_does_not_enqueue_recovery(error_class: ErrorClass) -> None:
+    """A crash/OOM/external-SIGKILL exit must not get a take_break recovery (#7).
 
     The mass -9 burst landed in ``unknown`` and got ``take_break`` backoff. The
-    crash classes are now carved out of ``_RATE_LIMIT_RECOVERY_ERROR_CLASSES`` so
-    no override is enqueued.
+    crash classes are in neither recovery set, so no override is enqueued.
     """
     h = _enqueue_harness(error_class)
 
-    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
 
-    assert h._override_queue.empty()
-    assert "err1" not in h._rate_limit_recovery_enqueued
+    assert h._overrides.empty()
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._unknown_error_recovery_enqueued
 
 
-@pytest.mark.parametrize("error_class", ["rate_limit", "unknown", "codex_rollout"])
-def test_rate_limit_eligible_classes_still_enqueue_recovery(error_class: str) -> None:
-    """The legitimate rate-limit-recovery path must be preserved (#7 regression guard)."""
+def test_rate_limit_class_enqueues_rate_limit_recovery() -> None:
+    """A true rate_limit error → RATE_LIMIT_RECOVERY + its own latch (#23/#24)."""
+    h = _enqueue_harness(ErrorClass.RATE_LIMIT)
+
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
+
+    assert not h._overrides.empty()
+    assert "err1" in h._recovery._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._unknown_error_recovery_enqueued
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.RATE_LIMIT_RECOVERY
+
+
+@pytest.mark.parametrize(
+    "error_class",
+    [ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK],
+)
+def test_unknown_classes_enqueue_unknown_recovery(error_class: ErrorClass) -> None:
+    """unknown/codex_rollout/transient_network → the distinct UNKNOWN_ERROR_RECOVERY
+    path + its own latch, never the rate-limit one (#23/#24)."""
     h = _enqueue_harness(error_class)
 
-    h._maybe_enqueue_rate_limit_recovery("err1", AgentStatus.ERROR)
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
 
-    assert not h._override_queue.empty()
-    assert "err1" in h._rate_limit_recovery_enqueued
-    entry = h._override_queue.get_nowait()
+    assert not h._overrides.empty()
+    assert "err1" in h._recovery._unknown_error_recovery_enqueued
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+    entry = h._overrides.get_nowait()
     assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.UNKNOWN_ERROR_RECOVERY
+
+
+# ---------------------------------------------------------------------------
+# Drain wind-down: retire an errored agent instead of recovering it (#30/#23)
+# ---------------------------------------------------------------------------
+
+
+class _DrainHarness(CompletionProcessor):
+    """CompletionProcessor stand-in for _retire_or_recover_errored_agent."""
+
+    def __init__(self, *, draining: bool) -> None:
+        self._session_id = "s1"
+        self._overrides = OverrideQueue()
+        self._recovery = RecoveryTracker()
+        self._manager = MagicMock()
+        self._manager.clear = AsyncMock()
+        handle = MagicMock()
+        handle.last_error_class = ErrorClass.UNKNOWN  # recoverable class
+        self._manager.handles = {"err1": handle}
+        self._host = MagicMock()
+        self._host._draining = draining
+        self._host._stop_requested = False
+
+        async def _safe_call(coro: object, _name: str) -> None:
+            await coro  # actually run manager.clear() so the assertion is real
+
+        self._host._safe_call = _safe_call
+
+
+@pytest.mark.asyncio
+async def test_drain_retires_errored_agent_without_enqueuing_recovery() -> None:
+    """During drain, a completing ERROR agent is cleared, not recovered (#30)."""
+    h = _DrainHarness(draining=True)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
+
+    h._manager.clear.assert_awaited_once_with("err1")
+    assert h._overrides.empty()  # no doomed rate-limit recovery enqueued (#23)
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+
+
+@pytest.mark.asyncio
+async def test_non_drain_completion_still_enqueues_recovery() -> None:
+    """Outside drain, the normal rate-limit recovery path is preserved."""
+    h = _DrainHarness(draining=False)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
+
+    h._manager.clear.assert_not_awaited()
+    assert not h._overrides.empty()
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+
+
+@pytest.mark.asyncio
+async def test_drain_does_not_clear_a_non_errored_agent() -> None:
+    """A healthy (IDLE) agent completing during drain is left alone."""
+    h = _DrainHarness(draining=True)
+
+    await h._retire_or_recover_errored_agent("err1", AgentStatus.IDLE)
+
+    h._manager.clear.assert_not_awaited()
+    assert h._overrides.empty()

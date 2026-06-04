@@ -19,31 +19,23 @@ class _LearningsMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_learning(self, record: SessionLearningRecord) -> int:
         """Insert a session-learning record and return its ``learning_id``."""
-        cursor = await self._conn.execute(
-            """
-            INSERT INTO session_learnings
-                (session_id, pattern, category, source_play_id, confidence,
-                 reinforcement_count, created_at, last_reinforced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.pattern,
-                record.category,
-                record.source_play_id,
-                record.confidence,
-                record.reinforcement_count,
-                record.created_at,
-                record.last_reinforced_at,
-            ),
+        return await self._insert(
+            "session_learnings",
+            session_id=record.session_id,
+            pattern=record.pattern,
+            category=record.category,
+            source_play_id=record.source_play_id,
+            confidence=record.confidence,
+            reinforcement_count=record.reinforcement_count,
+            created_at=record.created_at,
+            last_reinforced_at=record.last_reinforced_at,
         )
-        await self._conn.commit()
-        if cursor.lastrowid is None:
-            msg = "INSERT did not return a row ID"
-            raise RuntimeError(msg)
-        return cursor.lastrowid
 
     async def reinforce_learning(self, learning_id: int) -> None:
         """Increment ``reinforcement_count`` and update ``last_reinforced_at``."""

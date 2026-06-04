@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio as _asyncio
 import dataclasses
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from agentshore.budget import budget_reserve_reached
 from agentshore.config import load_config
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.git_safety import resolve_default_branch
 from agentshore.core.helpers import _logger, _ppo_selector_cls
 from agentshore.data.store import HumanFeedbackRecord
@@ -19,14 +18,17 @@ from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Awaitable
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.drain import DrainController
+    from agentshore.core.mixins.state import StateBuilder
     from agentshore.data.store import DataStore
     from agentshore.plays.selector import PlaySelector
     from agentshore.state import (
         OrchestratorState,
-        PlayOutcome,
         StateProvider,
     )
 
@@ -41,82 +43,105 @@ _AUTO_STOP_PAUSE_REASONS: frozenset[str] = frozenset(
 )
 
 
-class _LifecycleMixin(_OrchestratorBase):
-    """Pause, resume, config reload, budget-drain initiation, and feedback cadence."""
+class _LifecycleHost(Protocol):
+    """Orchestrator runtime/control state read OR written live by :class:`LifecycleController`.
 
-    # Attributes supplied by _OrchestratorBase via MRO. Declared here so mypy
-    # can resolve attribute access; runtime values come from __init__.
-    _cfg: RuntimeConfig
-    _session_id: str
-    _store: DataStore
-    _selector: PlaySelector | None
-    _state_provider: StateProvider
-    _stop_requested: bool
-    _draining: bool
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _loop_started_at: float
-    _pause_event: asyncio.Event
+    These members are accessed fresh via ``self._host.<attr>`` on every call so
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (pause latches, budget
+    override, feedback-cadence counters) are always current — never captured at
+    construction. Fields the controller *writes* (``_cfg``, ``_pause_reason``,
+    ``_pause_deadline``, ``_budget_override``, the feedback-cadence counters) are
+    declared as plain annotated attributes (not read-only ``@property``) so the
+    assignments type-check. ``_OrchestratorBase`` structurally satisfies this
+    Protocol; the cross-component methods (``_safe_call``, ``begin_drain``) and
+    the ``_state_builder`` reference are resolved live on the composition root.
+    """
+
+    # --- written by the controller -----------------------------------------
+    _cfg: RuntimeConfig  # reassigned atomically on SIGHUP reload
     _pause_reason: str | None
-    _last_play_id: int | None
-    _config_path: Path | None
+    _pause_deadline: float | None
     _budget_override: bool
     _feedback_cadence_plays_since_ack: int
     _feedback_cadence_last_ack_monotonic: float
+    # --- read by the controller --------------------------------------------
+    _stop_requested: bool
+    _draining: bool
+    _loop_started_at: float
+    _last_play_id: int | None
+    _config_path: Path | None
+    _selector: PlaySelector | None
+    _state_provider: StateProvider
+    _pause_event: asyncio.Event
+    _state_builder: StateBuilder
+    _drain: DrainController
+
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+
+class LifecycleController:
+    """Pause, resume, config reload, budget-drain initiation, and feedback cadence.
+
+    Stable services / collaborators are captured via the constructor; all
+    orchestrator runtime/control state (read or written) flows through the
+    :class:`_LifecycleHost` Protocol so SIGHUP and per-tick mutation never goes
+    stale.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _LifecycleHost,
+        store: DataStore,
+        session_id: str,
+        repo_root: Path,
+        main_repo: MainRepoGuard,
+    ) -> None:
+        self._host = host
+        self._store = store
+        self._session_id = session_id
+        self._repo_root = repo_root
+        self._main_repo = main_repo
 
     # ------------------------------------------------------------------
     # Implementations
     # ------------------------------------------------------------------
 
-    def _should_terminate(self, state: OrchestratorState) -> tuple[bool, str | None]:
+    def should_terminate(self, state: OrchestratorState) -> tuple[bool, str | None]:
         """Return (should_stop, reason) based on termination conditions."""
-        if self._stop_requested:
+        if self._host._stop_requested:
             return True, "stop_requested"
         if state.session_state == SessionState.DRAINING:
             no_live_agents = not state.agents or all(
                 a.status == AgentStatus.TERMINATED for a in state.agents
             )
             if no_live_agents:
-                # Defensive visibility: drain should not have been entered with
-                # merge-ready PRs outstanding (the auto-stop guard in loop.py
-                # defers that). If we still reach drain_complete with mergeable
-                # PRs, surface it loudly — finished work is being abandoned and
-                # the entry guard did not hold.
-                from agentshore.plays.candidates import build_candidate_plan
-
-                mergeable = build_candidate_plan(state).work_availability.mergeable_pr_count
-                if mergeable > 0:
-                    _logger.error(
-                        "drain_complete_with_mergeable_prs",
-                        session_id=self._session_id,
-                        mergeable_pr_count=mergeable,
-                        note=(
-                            "session draining to completion while merge-ready PRs remain "
-                            "unmerged — finished work abandoned; the auto-stop entry guard "
-                            "should have prevented this drain"
-                        ),
-                    )
+                # Pure predicate: the defensive "drain completed with mergeable
+                # PRs" visibility check now fires from
+                # ``DrainController._on_drain_complete`` during drain
+                # finalization, keeping this method free of side effects.
                 return True, "drain_complete"
             return False, None  # continue; mask allows only end_agent
         if state.session_state == SessionState.SHUTTING_DOWN:
             return True, "shutting_down"
 
-        max_plays = self._cfg.session.max_plays
+        max_plays = self._host._cfg.session.max_plays
         if max_plays is not None and state.total_plays >= max_plays:
             return True, "max_plays"
 
-        timeout_minutes = self._cfg.session.timeout_minutes
-        if timeout_minutes is not None and self._loop_started_at > 0:
-            elapsed_minutes = (time.monotonic() - self._loop_started_at) / 60
+        timeout_minutes = self._host._cfg.session.timeout_minutes
+        if timeout_minutes is not None and self._host._loop_started_at > 0:
+            elapsed_minutes = (time.monotonic() - self._host._loop_started_at) / 60
             if elapsed_minutes >= timeout_minutes:
                 return True, "timeout"
 
         return False, None
 
-    async def _begin_budget_reserve_drain_if_needed(
+    async def begin_budget_reserve_drain_if_needed(
         self, state: OrchestratorState
     ) -> OrchestratorState:
         """Start graceful drain once known spend enters the budget reserve."""
-        if self._draining or self._stop_requested:
+        if self._host._draining or self._host._stop_requested:
             return state
         budget = state.budget
         if budget is None or not budget.enabled:
@@ -124,8 +149,8 @@ class _LifecycleMixin(_OrchestratorBase):
         if not budget_reserve_reached(spent=budget.spent, total_budget=budget.total_budget):
             return state
 
-        await self.begin_drain("budget_reserve_reached")
-        return await self._build_state()
+        await self._host._drain.begin_drain("budget_reserve_reached")
+        return await self._host._state_builder.build_state()
 
     async def pause(self, reason: str = "user_request") -> None:
         """Pause the orchestrator loop after the current play completes.
@@ -133,29 +158,31 @@ class _LifecycleMixin(_OrchestratorBase):
         Clears ``_pause_event`` so the loop blocks at the top of the next
         iteration until ``resume()`` is called.
         """
-        self._pause_reason = reason
-        self._pause_event.clear()
+        self._host._pause_reason = reason
+        self._host._pause_event.clear()
         # Arm the unanswered-pause backstop (#9): an automated-escalation pause
         # that nobody answers must auto-stop rather than wedge the loop forever.
         # Scoped to escalations where the awaited human may be AFK; explicit
         # user/ipc pauses are excluded — an operator who paused is present.
-        timeout = self._cfg.feedback.unanswered_timeout_seconds
+        timeout = self._host._cfg.feedback.unanswered_timeout_seconds
         if reason in _AUTO_STOP_PAUSE_REASONS and timeout is not None:
-            self._pause_deadline = time.monotonic() + float(timeout)
+            self._host._pause_deadline = time.monotonic() + float(timeout)
         else:
-            self._pause_deadline = None
+            self._host._pause_deadline = None
         _logger.warning("session_pausing", reason=reason, session_id=self._session_id)
-        await self._safe_call(
+        await self._host._safe_call(
             self._store.update_session_state(self._session_id, "paused"),
             "update_session_state",
         )
-        await self._safe_call(self._state_provider.on_session_paused(reason), "on_session_paused")
-        if self._last_play_id is not None:
-            await self._safe_call(
+        await self._host._safe_call(
+            self._host._state_provider.on_session_paused(reason), "on_session_paused"
+        )
+        if self._host._last_play_id is not None:
+            await self._host._safe_call(
                 self._store.record_human_feedback(
                     HumanFeedbackRecord(
                         session_id=self._session_id,
-                        play_id=self._last_play_id,
+                        play_id=self._host._last_play_id,
                         trigger=reason,
                         feedback_text=None,
                         action_taken="pause_requested",
@@ -164,14 +191,17 @@ class _LifecycleMixin(_OrchestratorBase):
                 ),
                 "record_human_feedback",
             )
-        if self._feedback_enabled_for_reason(reason):
-            await self._safe_call(
-                self._state_provider.on_feedback_requested(reason), "on_feedback_requested"
+        if self.feedback_enabled_for_reason(reason):
+            await self._host._safe_call(
+                self._host._state_provider.on_feedback_requested(reason), "on_feedback_requested"
             )
         # Flush any pending PPO experience so plays at pause point are not lost
-        if isinstance(self._selector, _ppo_selector_cls()) and len(self._selector.buffer) > 0:
+        if (
+            isinstance(self._host._selector, _ppo_selector_cls())
+            and len(self._host._selector.buffer) > 0
+        ):
             try:
-                await self._selector.update_policy(next_state_value=0.0)
+                await self._host._selector.update_policy(next_state_value=0.0)
             except (RuntimeError, ValueError) as exc:
                 _logger.warning("ppo_flush_on_pause_failed", error=str(exc))
 
@@ -182,32 +212,32 @@ class _LifecycleMixin(_OrchestratorBase):
         flows; budget reserve drain is handled separately.
         """
         if override_budget:
-            self._budget_override = True
-        self._pause_reason = None
-        self._pause_deadline = None
-        await self._safe_call(
+            self._host._budget_override = True
+        self._host._pause_reason = None
+        self._host._pause_deadline = None
+        await self._host._safe_call(
             self._store.update_session_state(self._session_id, "running"),
             "update_session_state",
         )
-        self._pause_event.set()
-        self._feedback_cadence_plays_since_ack = 0
-        self._feedback_cadence_last_ack_monotonic = time.monotonic()
+        self._host._pause_event.set()
+        self._host._feedback_cadence_plays_since_ack = 0
+        self._host._feedback_cadence_last_ack_monotonic = time.monotonic()
         _logger.info(
             "session_resumed", session_id=self._session_id, budget_override=override_budget
         )
 
-    async def _reload_config(self) -> None:
+    async def reload_config(self) -> None:
         """Reload configuration from disk (triggered by SIGHUP)."""
-        if self._config_path is None:
+        if self._host._config_path is None:
             _logger.warning("config_reload_skipped", reason="no config path set")
             return
         try:
-            new_cfg = load_config(self._config_path)
+            new_cfg = load_config(self._host._config_path)
         except (ConfigError, OSError) as exc:
             _logger.error("config_reload_failed", error=str(exc))
             return
 
-        old_cfg = self._cfg
+        old_cfg = self._host._cfg
         changed: list[str] = []
         for f in dataclasses.fields(old_cfg):
             if getattr(old_cfg, f.name) != getattr(new_cfg, f.name):
@@ -222,7 +252,7 @@ class _LifecycleMixin(_OrchestratorBase):
         if warned:
             _logger.warning("config_non_reloadable_fields_changed", fields=warned)
 
-        self._cfg = new_cfg
+        self._host._cfg = new_cfg
         # desktop-kqo5: SIGHUP-triggered reload also refreshes the cached
         # default branch in case the operator pointed origin/HEAD at a new
         # branch (e.g. main -> develop) between sessions.
@@ -231,24 +261,24 @@ class _LifecycleMixin(_OrchestratorBase):
         except Exception as exc:
             _logger.warning("default_branch_refresh_failed", error=str(exc))
         else:
-            if new_default != self._default_branch:
+            if new_default != self._main_repo.default_branch:
                 _logger.info(
                     "default_branch_refreshed",
                     session_id=self._session_id,
-                    previous=self._default_branch,
+                    previous=self._main_repo.default_branch,
                     current=new_default,
                     assumed=assumed,
                 )
-                self._default_branch = new_default
+                self._main_repo.default_branch = new_default
         _logger.info("config_reloaded", changed_fields=changed)
 
-    async def _pause_with_reason(self, reason: str) -> None:
+    async def pause_with_reason(self, reason: str) -> None:
         """Delegate to ``pause()``; callers should ``continue`` the loop, not ``return``."""
         await self.pause(reason)
 
-    def _feedback_enabled_for_reason(self, reason: str) -> bool:
+    def feedback_enabled_for_reason(self, reason: str) -> bool:
         """Return whether feedback prompts are enabled for a pause reason."""
-        feedback_cfg = self._cfg.feedback
+        feedback_cfg = self._host._cfg.feedback
         if reason == "stagnation":
             return feedback_cfg.on_stagnation
         if reason in {"budget_exhausted", "budget_predictive"}:
@@ -259,33 +289,33 @@ class _LifecycleMixin(_OrchestratorBase):
             return True
         return feedback_cfg.on_ambiguous_intake
 
-    def _feedback_cadence_reason(self) -> str | None:
+    def feedback_cadence_reason(self) -> str | None:
         """Return the cadence-checkpoint reason string if a checkpoint is due, else None."""
-        cfg = self._cfg.feedback
+        cfg = self._host._cfg.feedback
         cadence_plays = cfg.cadence_plays
         if (
             cadence_plays is not None
             and cadence_plays > 0
-            and self._feedback_cadence_plays_since_ack >= cadence_plays
+            and self._host._feedback_cadence_plays_since_ack >= cadence_plays
         ):
             return "feedback_cadence_plays"
         cadence_minutes = cfg.cadence_minutes
         if cadence_minutes is not None and cadence_minutes > 0:
-            elapsed = time.monotonic() - self._feedback_cadence_last_ack_monotonic
+            elapsed = time.monotonic() - self._host._feedback_cadence_last_ack_monotonic
             if elapsed >= cadence_minutes * 60:
                 return "feedback_cadence_minutes"
         return None
 
-    async def _pause_for_feedback_cadence_if_due(self) -> bool:
+    async def pause_for_feedback_cadence_if_due(self) -> bool:
         """Pause via the feedback channel if a cadence checkpoint is due.
 
         Returns True if a pause was initiated. Guards against double-pausing by
-        checking ``_pause_event`` before delegating to ``_pause_with_reason``.
+        checking ``_pause_event`` before delegating to ``pause_with_reason``.
         """
-        if not self._pause_event.is_set():
+        if not self._host._pause_event.is_set():
             return False
-        reason = self._feedback_cadence_reason()
+        reason = self.feedback_cadence_reason()
         if reason is None:
             return False
-        await self._pause_with_reason(reason)
+        await self.pause_with_reason(reason)
         return True

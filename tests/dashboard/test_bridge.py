@@ -64,9 +64,9 @@ def _make_bridge(
     static_dir: Path,
     session_dir: Path,
 ) -> DashboardBridge:
+    endpoint = sock_path if isinstance(sock_path, IpcEndpoint) else IpcEndpoint.unix(sock_path)
     return DashboardBridge(
-        socket_path=sock_path if isinstance(sock_path, Path) else None,
-        ipc_endpoint=sock_path if isinstance(sock_path, IpcEndpoint) else None,
+        ipc_endpoint=endpoint,
         session_dir=session_dir,
         port=0,
         static_dir=static_dir,

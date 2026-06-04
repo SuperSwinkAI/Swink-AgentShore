@@ -115,9 +115,10 @@ def test_preconditions_met_returns_false_when_unmet() -> None:
     assert registry.preconditions_met(PlayType.ISSUE_PICKUP, _make_state()) is False
 
 
-def test_preconditions_met_returns_false_for_unregistered_play() -> None:
+def test_preconditions_met_raises_for_unregistered_play() -> None:
     registry = PlayRegistry()
-    assert registry.preconditions_met(PlayType.CODE_REVIEW, _make_state()) is False
+    with pytest.raises(KeyError):
+        registry.preconditions_met(PlayType.CODE_REVIEW, _make_state())
 
 
 # ---------------------------------------------------------------------------

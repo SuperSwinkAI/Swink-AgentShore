@@ -6,7 +6,6 @@ import math
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.helpers import _logger
 from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.pr_state import blocked_reasons
@@ -24,9 +23,11 @@ from agentshore.state import (
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from agentshore.agents.manager import AgentManager
     from agentshore.beads import ProjectGraph
-    from agentshore.config import RuntimeConfig
+    from agentshore.config.models import BudgetConfig
     from agentshore.data.store import (
         DataStore,
         GitHubIssueRecord,
@@ -50,18 +51,27 @@ COLD_START_COST_ESTIMATE = 0.05
 _NON_WORK_PLAY_VALUES: frozenset[str] = frozenset()
 
 
-class _SnapshotsMixin(_OrchestratorBase):
+class SnapshotProjector:
     """Projection of records/history to snapshot dataclasses + trajectory math."""
 
-    _cfg: RuntimeConfig
     _session_id: str
     _store: DataStore
     _manager: AgentManager
-    _extra_budget: float
+
+    def __init__(
+        self,
+        *,
+        manager: AgentManager,
+        store: DataStore,
+        session_id: str,
+    ) -> None:
+        self._manager = manager
+        self._store = store
+        self._session_id = session_id
 
     # ------------------------------------------------------------------
 
-    def _build_agent_snapshots(self, play_history: list[PlayRecord]) -> list[AgentSnapshot]:
+    def build_agent_snapshots(self, play_history: list[PlayRecord]) -> list[AgentSnapshot]:
         """Project live agent handles into the immutable IPC snapshot type.
 
         ``tasks_completed``/``tasks_failed`` count plays this agent has run in
@@ -129,7 +139,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         ]
 
     @staticmethod
-    def _project_open_issues(
+    def project_open_issues(
         records: list[GitHubIssueRecord],
         graph: ProjectGraph | None,
     ) -> list[IssueSnapshot]:
@@ -165,7 +175,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         return snapshots
 
     @staticmethod
-    def _project_pull_requests(
+    def project_pull_requests(
         records: list[PullRequestRecord],
     ) -> list[PullRequestSnapshot]:
         snapshots: list[PullRequestSnapshot] = []
@@ -221,7 +231,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         return snapshots
 
     @staticmethod
-    def _compute_play_streaks(
+    def compute_play_streaks(
         play_history: list[PlayRecord],
         *,
         override_play_ids: set[int] | None = None,
@@ -271,7 +281,7 @@ class _SnapshotsMixin(_OrchestratorBase):
         return same_type_failure_streak, same_type_streak
 
     @staticmethod
-    def _compute_play_recency(
+    def compute_play_recency(
         play_history: list[PlayRecord],
     ) -> tuple[
         PlayType | None,
@@ -357,11 +367,16 @@ class _SnapshotsMixin(_OrchestratorBase):
             consecutive_nonproductive_by_type,
         )
 
-    def _build_budget_snapshot(self, total_plays: int, total_cost: float) -> BudgetSnapshot:
-        total_budget = self._cfg.budget.total + self._extra_budget
-        remaining = (
-            max(0.0, total_budget - total_cost) if self._cfg.budget.enabled else float("inf")
-        )
+    def build_budget_snapshot(
+        self,
+        total_plays: int,
+        total_cost: float,
+        *,
+        budget_cfg: BudgetConfig,
+        extra_budget: float,
+    ) -> BudgetSnapshot:
+        total_budget = budget_cfg.total + extra_budget
+        remaining = max(0.0, total_budget - total_cost) if budget_cfg.enabled else float("inf")
         return BudgetSnapshot(
             total_budget=total_budget,
             spent=total_cost,
@@ -370,11 +385,11 @@ class _SnapshotsMixin(_OrchestratorBase):
             estimated_cost_per_play=(
                 total_cost / total_plays if total_plays > 0 else COLD_START_COST_ESTIMATE
             ),
-            enabled=self._cfg.budget.enabled,
+            enabled=budget_cfg.enabled,
         )
 
     @staticmethod
-    def _extract_trajectory(
+    def extract_trajectory(
         record: TrajectorySnapshotRecord | None,
     ) -> TrajectorySnapshot | None:
         if record is None:
@@ -385,7 +400,7 @@ class _SnapshotsMixin(_OrchestratorBase):
             estimated_remaining_cost=record.estimated_remaining_cost,
         )
 
-    def _compute_trajectory_record(
+    def compute_trajectory_record(
         self,
         outcome: PlayOutcome,
         next_state: OrchestratorState,
@@ -429,10 +444,12 @@ class _SnapshotsMixin(_OrchestratorBase):
             created_at=now_iso(),
         )
 
-    async def _record_trajectory_snapshot(
+    async def record_trajectory_snapshot(
         self,
         outcome: PlayOutcome,
         next_state: OrchestratorState,
+        *,
+        safe_call: Callable[[Awaitable[object], str], Awaitable[None]],
     ) -> None:
         if not outcome.success:
             return
@@ -446,16 +463,16 @@ class _SnapshotsMixin(_OrchestratorBase):
                 exc_info=True,
             )
             history = []
-        record = self._compute_trajectory_record(outcome, next_state, history)
+        record = self.compute_trajectory_record(outcome, next_state, history)
         if record is None:
             return
-        await self._safe_call(
+        await safe_call(
             self._store.record_trajectory_snapshot(record),
             "record_trajectory_snapshot",
         )
 
     @staticmethod
-    def _compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
+    def compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
         """Aggregate full-session play stats for dashboard consumers.
 
         Non-work plays (``_NON_WORK_PLAY_VALUES``) are filtered out of the
@@ -513,24 +530,10 @@ class _SnapshotsMixin(_OrchestratorBase):
             successful = int(bucket["successful"])
             failed = int(bucket["failed"])
             play_type: PlayType | str
-            with suppress(ValueError):
+            try:
                 play_type = PlayType(raw_play_type)
-                rows.append(
-                    PlayTypeStatsSnapshot(
-                        play_type=play_type,
-                        total=total,
-                        successful=successful,
-                        failed=failed,
-                        success_rate=successful / total if total else 0.0,
-                        total_cost=float(bucket["total_cost"]),
-                        avg_duration_seconds=(
-                            float(bucket["total_duration_seconds"]) / total if total else 0.0
-                        ),
-                    )
-                )
-                continue
-
-            play_type = raw_play_type
+            except ValueError:
+                play_type = raw_play_type
             rows.append(
                 PlayTypeStatsSnapshot(
                     play_type=play_type,

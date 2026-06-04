@@ -30,11 +30,12 @@ if TYPE_CHECKING:
 
     from starlette.websockets import WebSocket
 
+    from agentshore.session_path import IpcEndpoint
+
 import structlog
 
 from agentshore.ipc.commands import parse_command, validate_command
 from agentshore.ipc.state_writer import EVENTS_FILENAME, STATE_FILENAME
-from agentshore.session_path import IpcEndpoint
 
 _logger = structlog.get_logger()
 
@@ -58,9 +59,8 @@ class DashboardBridge:
 
     def __init__(
         self,
-        socket_path: str | Path | IpcEndpoint | None = None,
         *,
-        ipc_endpoint: IpcEndpoint | None = None,
+        ipc_endpoint: IpcEndpoint,
         session_dir: Path,
         port: int = _DEFAULT_PORT,
         static_dir: Path | None = None,
@@ -68,17 +68,7 @@ class DashboardBridge:
         state_poll_interval: float = _STATE_POLL_INTERVAL,
         events_poll_interval: float = _EVENTS_POLL_INTERVAL,
     ) -> None:
-        if ipc_endpoint is None:
-            if socket_path is None:
-                msg = "DashboardBridge requires socket_path or ipc_endpoint"
-                raise ValueError(msg)
-            ipc_endpoint = (
-                socket_path
-                if isinstance(socket_path, IpcEndpoint)
-                else IpcEndpoint.unix(socket_path)
-            )
         self._ipc_endpoint = ipc_endpoint
-        self._socket_path = self._ipc_endpoint.path
         self._port = port
         self._static_dir = static_dir or (Path(__file__).parent / "static")
         self._on_ready = on_ready
@@ -546,10 +536,9 @@ class DashboardBridge:
         """Open a connection to the IPC endpoint for sending commands."""
         try:
             if self._ipc_endpoint.kind == "unix":
-                if self._socket_path is None:
-                    msg = "Unix IPC endpoint missing path"
-                    raise RuntimeError(msg)
-                _, self._ipc_writer = await asyncio.open_unix_connection(str(self._socket_path))
+                _, self._ipc_writer = await asyncio.open_unix_connection(
+                    str(self._ipc_endpoint.path)
+                )
             else:
                 _, self._ipc_writer = await asyncio.open_connection(
                     self._ipc_endpoint.host,

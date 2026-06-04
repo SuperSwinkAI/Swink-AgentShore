@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import FeedbackConfig, RuntimeConfig
+from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.lifecycle import LifecycleController
+from agentshore.core.mixins.loop import LoopRunner
 from agentshore.state import NullStateProvider
 
 
@@ -38,7 +41,27 @@ def _make_orch(tmp_path: Path, feedback: FeedbackConfig | None = None) -> Any:
     orch._budget_override = False
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
-    orch._auto_stop_reprieves_used = 0
+    orch._main_repo = MainRepoGuard()
+    orch._lifecycle = LifecycleController(
+        host=orch,
+        store=orch._store,
+        session_id=orch._session_id,
+        repo_root=tmp_path,
+        main_repo=orch._main_repo,
+    )
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=orch._main_repo,
+        overrides=MagicMock(),
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=orch._lifecycle,
+        drain=MagicMock(),
+    )
+    orch._loop._auto_stop_reprieves_used = 0
     return orch
 
 
@@ -80,10 +103,10 @@ async def test_resume_clears_deadline(tmp_path: Path) -> None:
 async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     # No actionable work → the guard does not defer; the pause auto-stops.
-    orch._actionable_work_remains = AsyncMock(return_value=(False, 0, 0))
+    orch._loop.actionable_work_remains = AsyncMock(return_value=(False, 0, 0))
     await orch.pause("loop_detected")
     orch._pause_event.clear()  # simulate still-paused
-    await orch._auto_stop_unanswered_pause()
+    await orch._loop.auto_stop_unanswered_pause()
     assert orch._draining is True
     assert orch._drain_reason == "loop_detection_prompt_timeout"
     assert orch._pause_event.is_set()  # gate unblocked so loop reaches drain
@@ -101,10 +124,10 @@ async def test_auto_stop_always_drains_even_with_work(tmp_path: Path) -> None:
     """
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     # Even with actionable work present, the simplified path drains.
-    orch._actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
+    orch._loop.actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
     await orch.pause("loop_detected")
     orch._pause_event.clear()
-    await orch._auto_stop_unanswered_pause()
+    await orch._loop.auto_stop_unanswered_pause()
     assert orch._draining is True
     assert orch._drain_reason == "loop_detection_prompt_timeout"
     assert orch._pause_event.is_set()

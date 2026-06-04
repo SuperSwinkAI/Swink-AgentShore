@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from agentshore.github.pr_links import issue_numbers_for_pr
 
 if TYPE_CHECKING:
     from agentshore.state import JsonArtifact
+
+WorktreeStatus = Literal["active", "stale", "reaping", "reaped", "failed"]
+
+_ACTIVE_WORKTREE_STATUSES: frozenset[WorktreeStatus] = frozenset({"active", "reaping"})
+_VALID_WORKTREE_STATUSES: frozenset[WorktreeStatus] = frozenset(
+    {"active", "stale", "reaping", "reaped", "failed"}
+)
 
 
 @dataclass(slots=True)
@@ -167,6 +174,20 @@ class WorkClaimRecord:
 
 
 @dataclass(slots=True)
+class DispatchReplayRecord:
+    """Row in the ``dispatch_replay`` table — a deterministic retry payload."""
+
+    session_id: str
+    claim_group_id: str
+    play_id: int
+    skill_name: str
+    params_json: str
+    prompt: str
+    created_at: str
+    branch: str | None = None
+
+
+@dataclass(slots=True)
 class ScopeDriftRecord:
     """Row in the ``scope_drift_log`` table."""
 
@@ -310,3 +331,22 @@ class ReviewQueueRecord:
     claimed_by: str | None = None
     claimed_at: str | None = None
     completed_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeRow:
+    """One row from the ``worktrees`` table."""
+
+    worktree_id: int
+    session_id: str
+    branch_name: str | None
+    pre_branch_key: str | None
+    worktree_path: str
+    status: WorktreeStatus
+    original_play_type: str
+    head_sha: str | None
+    base_ref: str
+    created_at: str
+    last_used_at: str
+    reaped_at: str | None
+    failure_reason: str | None

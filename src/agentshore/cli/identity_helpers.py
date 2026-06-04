@@ -1,23 +1,18 @@
-"""Identity-related helpers shared between init, configure, and identity commands.
-
-``_identity_repo_name_with_owner`` resolves ``_detect_gh_remote`` through
-``agentshore.cli`` at call time so the legacy
-``patch("agentshore.cli._detect_gh_remote", …)`` test contract is honoured.
-"""
+"""Identity-related helpers shared between init, configure, and identity commands."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore import cli as _cli_pkg
+from agentshore import cli_helpers
 from agentshore.cli.agent_select import _agent_key_for_detected_binary
-from agentshore.cli.helpers import _str_or_none
+from agentshore.config.coerce import str_or_none
 from agentshore.errors import OrchestratorError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from agentshore.cli_identity import IdentityBinding
+    from agentshore.identity_wizard import IdentityBinding
 
 
 def _agent_keys_from_yaml(
@@ -101,9 +96,9 @@ def _identity_defaults_from_yaml(config_path: Path) -> dict[str, str]:
             continue
         login = configured_github_login_from_fields(
             ident_name=canonical_identity_name(str(identity_name)),
-            gh_token_login=_str_or_none(identity, "gh_token_login"),
-            gh_token_env=_str_or_none(identity, "gh_token_env"),
-            gh_token_keychain=_str_or_none(identity, "gh_token_keychain"),
+            gh_token_login=str_or_none(identity.get("gh_token_login")),
+            gh_token_env=str_or_none(identity.get("gh_token_env")),
+            gh_token_keychain=str_or_none(identity.get("gh_token_keychain")),
         )
         if login:
             defaults[agent_key] = login
@@ -114,7 +109,7 @@ def _identity_repo_name_with_owner(project_path: Path) -> str | None:
     """Best-effort GitHub ``owner/repo`` name for repo-scoped identity secrets."""
 
     try:
-        name_with_owner = _cli_pkg._detect_gh_remote(project_path).get("nameWithOwner")
+        name_with_owner = cli_helpers._detect_gh_remote(project_path).get("nameWithOwner")
     except OrchestratorError:
         return None
     return name_with_owner or None
@@ -131,8 +126,8 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
     import yaml
 
     from agentshore.agents.identity import configured_github_login_from_fields
-    from agentshore.cli_identity import IdentityBinding
     from agentshore.identity_names import canonical_identity_name, canonical_keychain_service
+    from agentshore.identity_wizard import IdentityBinding
 
     try:
         raw = yaml.safe_load(config_path.read_text()) or {}
@@ -143,18 +138,15 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
     if not isinstance(identities, dict):
         return {}
 
-    def _value_str_or_none(value: object) -> str | None:
-        return value if isinstance(value, str) else None
-
     out: dict[str, IdentityBinding] = {}
     for ident_key, ident in identities.items():
         if not isinstance(ident, dict):
             continue
         login = configured_github_login_from_fields(
             ident_name=canonical_identity_name(str(ident_key)),
-            gh_token_login=_value_str_or_none(ident.get("gh_token_login")),
-            gh_token_env=_value_str_or_none(ident.get("gh_token_env")),
-            gh_token_keychain=_value_str_or_none(ident.get("gh_token_keychain")),
+            gh_token_login=str_or_none(ident.get("gh_token_login")),
+            gh_token_env=str_or_none(ident.get("gh_token_env")),
+            gh_token_keychain=str_or_none(ident.get("gh_token_keychain")),
         )
         if not login:
             continue
@@ -164,8 +156,8 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
             name=canonical_identity_name(str(ident_key)),
             git_user_name=str(ident.get("git_user_name") or login),
             git_user_email=str(ident.get("git_user_email") or default_email),
-            gh_token_login=_value_str_or_none(ident.get("gh_token_login")),
-            gh_token_env=_value_str_or_none(ident.get("gh_token_env")),
+            gh_token_login=str_or_none(ident.get("gh_token_login")),
+            gh_token_env=str_or_none(ident.get("gh_token_env")),
             gh_token_keychain=(
                 canonical_keychain_service(str(ident.get("gh_token_keychain")))
                 if ident.get("gh_token_keychain") is not None

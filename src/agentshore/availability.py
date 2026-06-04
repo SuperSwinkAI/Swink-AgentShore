@@ -11,8 +11,9 @@ Lives next to ``~/.config/swink/agentshore/sessions/`` and ``~/.config/swink/age
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 import yaml
 
@@ -21,13 +22,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from agentshore.agents.model_tiers import default_model_tiers_for
-from agentshore.cli_identity import detect_gh_accounts
 from agentshore.config import (
     AgentTypeAvailability,
     AvailabilityRecord,
     GhAccountAvailability,
 )
 from agentshore.environment import detect_agent_binaries, resolve_executable
+from agentshore.identity_wizard import detect_gh_accounts
 from agentshore.paths import GLOBAL_AVAILABILITY_PATH as DEFAULT_AVAILABILITY_PATH
 from agentshore.state import AgentType
 
@@ -64,7 +65,7 @@ def load(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
 def save(record: AvailabilityRecord, path: Path = DEFAULT_AVAILABILITY_PATH) -> None:
     """yaml.safe_dump the record; create parent dir if missing."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(_record_to_dict(record), sort_keys=False))
+    path.write_text(yaml.safe_dump(dataclasses.asdict(record), sort_keys=False))
 
 
 def refresh(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
@@ -119,54 +120,11 @@ def refresh(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
-
-
-class AgentTypeAvailabilityDict(TypedDict):
-    """Serialised shape of one ``AgentTypeAvailability`` row."""
-
-    agent_type: str
-    binary: str | None
-    available_tiers: list[str]
-    available: bool
-
-
-class GhAccountAvailabilityDict(TypedDict):
-    """Serialised shape of one ``GhAccountAvailability`` row."""
-
-    login: str
-    active: bool
-    token_via: str
-
-
-class AvailabilityRecordDict(TypedDict):
-    """Serialised shape of an ``AvailabilityRecord`` written to YAML."""
-
-    last_refreshed: str
-    agent_types: list[AgentTypeAvailabilityDict]
-    github_accounts: list[GhAccountAvailabilityDict]
-
-
-def _record_to_dict(record: AvailabilityRecord) -> AvailabilityRecordDict:
-    return {
-        "last_refreshed": record.last_refreshed,
-        "agent_types": [
-            {
-                "agent_type": a.agent_type,
-                "binary": a.binary,
-                "available_tiers": list(a.available_tiers),
-                "available": a.available,
-            }
-            for a in record.agent_types
-        ],
-        "github_accounts": [
-            {
-                "login": g.login,
-                "active": g.active,
-                "token_via": g.token_via,
-            }
-            for g in record.github_accounts
-        ],
-    }
+#
+# Writing is ``dataclasses.asdict(record)`` (see ``save``) — the record and its
+# rows are frozen dataclasses, so the serialized shape needs no second
+# hand-maintained declaration. Reading stays defensive below because the YAML
+# on disk is untrusted (hand-edited, partial, or written by an older build).
 
 
 def _record_from_dict(raw: Mapping[str, object]) -> AvailabilityRecord:

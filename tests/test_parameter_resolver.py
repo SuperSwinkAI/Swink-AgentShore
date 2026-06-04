@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,7 @@ from agentshore.config import (
     TrustedIdsConfig,
 )
 from agentshore.data.models import PullRequestRecord
+from agentshore.errors import ErrorClass
 from agentshore.plays.base import PlayParams
 from agentshore.plays.resolver import ParameterResolver
 from agentshore.state import (
@@ -44,7 +46,7 @@ def _make_snapshot(
     tasks_failed: int = 0,
     total_cost: float = 0.1,
     github_identity: str | None = None,
-    last_error_class: str | None = None,
+    last_error_class: ErrorClass | None = None,
     current_play_type: PlayType | None = None,
     current_play_pr_number: int | None = None,
 ) -> AgentSnapshot:
@@ -968,8 +970,8 @@ async def test_resolve_code_review_skips_pr_when_only_same_identity_reviewer() -
     from unittest.mock import patch
 
     with patch(
-        "agentshore.plays.resolver.ParameterResolver._first_open_pr_matching",
-        return_value=None,
+        "agentshore.plays.candidates.PlayCandidateService._github_pr_candidates",
+        return_value=[],
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
     assert result is None
@@ -1175,12 +1177,25 @@ async def test_resolve_code_review_skips_draft_prs_in_state_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_run_qa_returns_empty_params_for_default_branch() -> None:
-    """run_qa now targets the merged default branch — no specific branch lookup."""
+    """run_qa now targets the merged default branch — no specific branch lookup.
+
+    run_qa is trunk-scoped but not trunk-mutating, so it self-serializes on a
+    ``session:run_qa`` claim. The resolved params carry the claim metadata but
+    no branch/issue/pr target.
+    """
     resolver = _make_resolver()
+    resolver._store.acquire_work_claims = AsyncMock(return_value="claim-qa")
 
     result = await resolver.resolve(PlayType.RUN_QA, _make_state())
 
-    assert result == PlayParams()
+    assert result is not None
+    assert result.branch is None
+    assert result.issue_number is None
+    assert result.pr_number is None
+    assert result.extras["claim_group_id"] == "claim-qa"
+    resolver._store.acquire_work_claims.assert_awaited_once_with(
+        "sess-test", "run_qa", ["session:run_qa"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1526,6 +1541,53 @@ async def test_resolve_end_agent_returns_none_when_no_idle_agents() -> None:
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_end_agent_targets_terminal_error_agent() -> None:
+    """#20: a non-recoverable ERROR agent (e.g. auth) is the END_AGENT target,
+    bypassing the min-plays gate, even with zero plays — it has no recovery
+    path and would otherwise leak until end_session."""
+    resolver = _make_resolver()
+    agents = [
+        _make_snapshot("healthy", status=AgentStatus.IDLE, tasks_completed=1),
+        _make_snapshot(
+            "broken",
+            status=AgentStatus.ERROR,
+            last_error_class=ErrorClass.AUTH,
+            tasks_completed=0,
+            tasks_failed=1,
+        ),
+    ]
+    state = _make_state(agents=agents)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "broken"
+    assert result.bypass_preconditions is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_end_agent_skips_recoverable_error_agent() -> None:
+    """A recoverable ERROR agent (rate_limit/unknown) is NOT a terminal target —
+    it still has the TAKE_BREAK recovery path, so END_AGENT falls through to the
+    normal idle-failure-rate selection (no idle past the gate here → None)."""
+    resolver = _make_resolver()
+    agents = [
+        _make_snapshot(
+            "throttled",
+            status=AgentStatus.ERROR,
+            last_error_class=ErrorClass.RATE_LIMIT,
+            tasks_completed=0,
+            tasks_failed=1,
+        ),
+    ]
+    state = _make_state(agents=agents)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # INSTANTIATE_AGENT
 # ---------------------------------------------------------------------------
@@ -1662,13 +1724,13 @@ async def test_resolve_take_break_attributes_rate_limit_trigger() -> None:
             _make_snapshot(
                 "claude-unknown",
                 status=AgentStatus.ERROR,
-                last_error_class="unknown",
+                last_error_class=ErrorClass.UNKNOWN,
             ),
             _make_snapshot(
                 "gemini-rate-limit",
                 agent_type=AgentType.GEMINI,
                 status=AgentStatus.ERROR,
-                last_error_class="rate_limit",
+                last_error_class=ErrorClass.RATE_LIMIT,
             ),
         ]
     )
@@ -1704,14 +1766,14 @@ async def test_resolve_take_break_skips_agent_already_cooling_down() -> None:
                 "gemini-cooling",
                 agent_type=AgentType.GEMINI,
                 status=AgentStatus.ERROR,
-                last_error_class="rate_limit",
+                last_error_class=ErrorClass.RATE_LIMIT,
                 current_play_type=PlayType.TAKE_BREAK,
             ),
             _make_snapshot(
                 "codex-unknown",
                 agent_type=AgentType.CODEX,
                 status=AgentStatus.ERROR,
-                last_error_class="unknown",
+                last_error_class=ErrorClass.UNKNOWN,
             ),
         ]
     )
@@ -1835,8 +1897,8 @@ async def test_resolve_code_review_skips_when_only_small_tier_idle() -> None:
     )
 
     with patch(
-        "agentshore.plays.resolver.ParameterResolver._first_open_pr_matching",
-        return_value=None,
+        "agentshore.plays.candidates.PlayCandidateService._github_pr_candidates",
+        return_value=[],
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
 
@@ -2019,3 +2081,68 @@ async def test_resolve_code_review_pr_106_pattern() -> None:
     # Sorted by (agent_type, agent_id): "claude_code:a-claude" sorts first.
     assert result.target_agent_id == "a-claude"
     assert result.target_agent_type is None
+
+
+# ---------------------------------------------------------------------------
+# END_AGENT resolution during drain (#30)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_end_agent_during_drain_retires_recoverable_error_agent() -> None:
+    """During drain, a recoverable-ERROR agent must be targeted for end_agent.
+
+    Recovery (take_break) is masked during drain, so a recoverable-ERROR agent
+    (e.g. a BUSY agent reaped mid-play -> exit 143 -> ERROR/"unknown") never
+    reaches IDLE or recovery_exhausted. Without this it wedges drain forever
+    (#30). The resolver must retire it directly, bypassing preconditions.
+    """
+    resolver = _make_resolver()
+    errored = _make_snapshot(
+        "wedged",
+        status=AgentStatus.ERROR,
+        last_error_class=ErrorClass.UNKNOWN,  # IS in RECOVERABLE_ERROR_CLASSES
+    )
+    state = dataclasses.replace(_make_state(agents=[errored]), session_state=SessionState.DRAINING)
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "wedged"
+    assert result.bypass_preconditions is True
+
+
+async def test_resolve_end_agent_outside_drain_leaves_recoverable_error_for_take_break() -> None:
+    """Outside drain, a recoverable-ERROR agent is NOT auto-ended.
+
+    The drain ERROR-sweep is deliberately drain-scoped: when the session is
+    RUNNING the agent should still go through take_break recovery, so
+    _resolve_end_agent must not select it (no IDLE agent => None).
+    """
+    resolver = _make_resolver()
+    errored = _make_snapshot(
+        "recovering",
+        status=AgentStatus.ERROR,
+        last_error_class=ErrorClass.UNKNOWN,
+    )
+    state = _make_state(agents=[errored])  # session_state defaults to RUNNING
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is None
+
+
+async def test_resolve_end_agent_during_drain_prefers_error_over_idle() -> None:
+    """A wedged ERROR agent is retired before idle agents during drain."""
+    resolver = _make_resolver()
+    idle = _make_snapshot("healthy", status=AgentStatus.IDLE)
+    errored = _make_snapshot(
+        "wedged", status=AgentStatus.ERROR, last_error_class=ErrorClass.UNKNOWN
+    )
+    state = dataclasses.replace(
+        _make_state(agents=[idle, errored]), session_state=SessionState.DRAINING
+    )
+
+    result = await resolver.resolve(PlayType.END_AGENT, state)
+
+    assert result is not None
+    assert result.agent_id == "wedged"

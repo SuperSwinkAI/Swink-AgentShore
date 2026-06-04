@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agentshore.config import IntakeConfig, RuntimeConfig
-from agentshore.core import _resolve_seed_path
+from agentshore.core.phases import _resolve_seed_path
 from agentshore.seed_input import SeedInputError, resolve_seed_input
 
 

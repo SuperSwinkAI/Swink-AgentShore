@@ -40,6 +40,7 @@ _NUMERIC_POSITIVE_PARAMS: dict[str, frozenset[str]] = {
     "adjust_budget": frozenset({"delta_usd"}),
 }
 
+
 def parse_command(line: str) -> dict[str, object]:
     """Parse one NDJSON line into a command dict.
 

@@ -12,8 +12,11 @@ import pytest
 
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
 from agentshore.config.models import ModelTierConfig
-from agentshore.core import (
-    Orchestrator,
+from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
+from agentshore.core.mixins.state import StateBuilder
+from agentshore.core.override_queue import OverrideQueue
+from agentshore.core.phases import (
     _author_labels_for_config,
     _phase_queue_agent_instantiation,
 )
@@ -164,7 +167,7 @@ def test_compute_play_streaks_ignores_unfinished_rows() -> None:
         ),
     ]
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(history)
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(history)
 
     assert fail_streak == 0
     assert any_streak == 1
@@ -213,7 +216,7 @@ def test_compute_play_streaks_ignores_override_dispatched_plays() -> None:
     ]
     override_ids = {10, 11, 12, 13}
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(
         history, override_play_ids=override_ids
     )
 
@@ -267,7 +270,7 @@ def test_compute_play_streaks_real_streak_after_override_burst() -> None:
         ),
     ]
 
-    fail_streak, any_streak = Orchestrator._compute_play_streaks(
+    fail_streak, any_streak = SnapshotProjector.compute_play_streaks(
         history, override_play_ids={10, 11}
     )
 
@@ -351,8 +354,8 @@ async def test_bootstrap_clears_in_progress_beads_before_github_fetch(tmp_path: 
         return frozenset()
 
     with (
-        patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear),
-        patch("agentshore.core._phase_fetch_github", new=_fake_fetch_github),
+        patch("agentshore.core.phases._clear_session_scoped_bead_progress", new=_fake_clear),
+        patch("agentshore.core.phases._phase_fetch_github", new=_fake_fetch_github),
     ):
         await Orchestrator.bootstrap(
             cfg=_cfg(),
@@ -376,7 +379,7 @@ async def test_stop_clears_in_progress_beads_during_shutdown(tmp_path: Path) -> 
         phases.append(phase)
         return 1
 
-    with patch("agentshore.core._clear_session_scoped_bead_progress", new=_fake_clear):
+    with patch("agentshore.core.phases._clear_session_scoped_bead_progress", new=_fake_clear):
         async with orch:
             pass
 
@@ -393,7 +396,9 @@ async def test_run_until_idle_terminates_on_none_selector(tmp_path: Path) -> Non
     selector = FixedPlanSelector([])  # immediately returns None
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     async with orch:
-        with patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())):
+        with patch.object(
+            orch._state_builder, "build_state", new=AsyncMock(return_value=_idle_state_no_work())
+        ):
             await orch.run_until_idle()  # should return without hanging
 
 
@@ -410,9 +415,9 @@ async def test_run_until_idle_retries_selector_none_when_work_remains(tmp_path: 
 
     async with orch:
         with (
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
-            patch("agentshore.core.asyncio.sleep", new=_sleep),
-            patch("agentshore.core._logger.warning") as warning,
+            patch.object(orch._state_builder, "build_state", new=AsyncMock(return_value=state)),
+            patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
             await orch.run_until_idle()
 
@@ -425,7 +430,7 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
     selector = FixedPlanSelector([])
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     state = _idle_state_with_issue()
-    orch._last_selection_digest = orch._selection_state_digest(state, list(state.agents))
+    orch._last_selection_digest = orch._loop.selection_state_digest(state, list(state.agents))
     sleep_calls: list[float] = []
 
     async def _sleep(delay: float) -> None:
@@ -436,9 +441,9 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
         select = AsyncMock(return_value=None)
         with (
             patch.object(selector, "select", new=select),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=state)),
-            patch("agentshore.core.asyncio.sleep", new=_sleep),
-            patch("agentshore.core._logger.warning") as warning,
+            patch.object(orch._state_builder, "build_state", new=AsyncMock(return_value=state)),
+            patch("agentshore.core.mixins.loop.asyncio.sleep", new=_sleep),
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
             await orch.run_until_idle()
 
@@ -452,12 +457,23 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     orch = Orchestrator.__new__(Orchestrator)
     orch._cfg = _cfg()
     orch._session_id = "s1"
-    orch._idle_agent_claim_ticks = {}
     claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g1", resource_key="issue:42")
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
     orch._store = store
+    orch._state_builder = StateBuilder(
+        host=orch,
+        store=store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id="s1",
+        repo_root=Path("/tmp"),
+        snapshots=MagicMock(),
+        velocity=MagicMock(),
+        recovery=MagicMock(),
+        overrides=MagicMock(),
+    )
     state = OrchestratorState(
         session_id="s1",
         session_state=SessionState.RUNNING,
@@ -466,15 +482,15 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
         agents=[_idle_agent("agent-1")],
     )
 
-    await orch._release_claims_for_prolonged_idle_agents(state)
-    await orch._release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_not_awaited()
 
-    await orch._release_claims_for_prolonged_idle_agents(state)
+    await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_awaited_once_with("s1", ["agent-1"])
-    assert orch._idle_agent_claim_ticks == {}
+    assert orch._state_builder._idle_agent_claim_ticks == {}
 
 
 @pytest.mark.asyncio
@@ -490,8 +506,12 @@ async def test_audit_play_completion_forces_issue_refresh(
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=refresh_issues),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._completion, "refresh_issues", new=refresh_issues),
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
             patch.object(orch._executor, "execute", new=AsyncMock(return_value=outcome)),
         ):
             await orch.run_until_idle()
@@ -508,13 +528,15 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
 
     async with orch:
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()) as refresh_issues,
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()) as refresh_issues,
             patch.object(
-                orch, "_build_state", new=AsyncMock(return_value=_idle_state_with_issue())
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_with_issue()),
             ),
-            patch("agentshore.core._logger.warning") as warning,
+            patch("agentshore.core.helpers._logger.warning") as warning,
         ):
-            allowed = await orch._revalidate_end_session_before_dispatch()
+            allowed = await orch._dispatcher.revalidate_end_session_before_dispatch()
 
     assert allowed is False
     refresh_issues.assert_awaited_once()
@@ -547,11 +569,17 @@ async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
             patch.object(
-                orch, "_revalidate_end_session_before_dispatch", new=AsyncMock(return_value=False)
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
+            patch.object(
+                orch._dispatcher,
+                "revalidate_end_session_before_dispatch",
+                new=AsyncMock(return_value=False),
             ) as revalidate,
-            patch.object(orch, "_dispatch_play", new=AsyncMock()) as dispatch,
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock()) as dispatch,
         ):
             await orch.run_until_idle()
 
@@ -591,14 +619,14 @@ async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> N
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch,
-                "_build_state",
+                orch._state_builder,
+                "build_state",
                 new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
             ),
             patch.object(orch._executor, "execute", new=AsyncMock(side_effect=_execute)) as execute,
-            patch("agentshore.core.AGENT_PING_TIMEOUT_SECONDS", 0.001),
+            patch("agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS", 0.001),
         ):
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
@@ -622,10 +650,10 @@ async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch,
-                "_build_state",
+                orch._state_builder,
+                "build_state",
                 new=AsyncMock(return_value=_terminal_state_no_work_with_agent()),
             ),
             patch.object(orch._executor, "execute", new=AsyncMock(return_value=end_outcome)),
@@ -671,10 +699,10 @@ async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -
             plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
         )
 
-    orch._build_state = AsyncMock(side_effect=_fake_state)
-    orch._refresh_issues = AsyncMock()
-    orch._generate_end_session_report = AsyncMock(return_value=tmp_path / "esr.html")
-    orch._idle_backoff = MagicMock(return_value=0.0)
+    orch._state_builder.build_state = AsyncMock(side_effect=_fake_state)
+    orch._completion.refresh_issues = AsyncMock()
+    orch._drain.generate_end_session_report = AsyncMock(return_value=tmp_path / "esr.html")
+    orch._loop.idle_backoff = MagicMock(return_value=0.0)
 
     await orch.__aenter__()
     try:
@@ -704,7 +732,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
     cfg = _cfg()
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, selector=selector)
 
-    # Override _build_state to return a state inside the final $5 budget reserve.
+    # Override build_state to return a state inside the final $5 budget reserve.
     from agentshore.state import BudgetSnapshot
 
     reserve_budget = BudgetSnapshot(
@@ -721,7 +749,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
         )
 
     async with orch:
-        with patch.object(orch, "_build_state", new=_fake_state):
+        with patch.object(orch._state_builder, "build_state", new=_fake_state):
             await orch.run_until_idle()
 
     assert orch._draining is True
@@ -768,7 +796,7 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
         orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.INSTANTIATE_AGENT,
                 params=PlayParams(bypass_preconditions=True),
@@ -782,14 +810,20 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
             orch._in_flight.clear()
 
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
-            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
-            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+                orch._state_builder, "build_state", new=AsyncMock(return_value=busy_state)
             ),
-            patch("agentshore.core._logger.info") as info_log,
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(
+                orch._completion, "wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)
+            ),
+            patch.object(
+                orch._loop,
+                "continue_if_selector_idle_work_remains",
+                new=AsyncMock(return_value=False),
+            ),
+            patch("agentshore.core.helpers._logger.info") as info_log,
         ):
             await orch.run_until_idle()
 
@@ -846,14 +880,20 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
             orch._in_flight.clear()
 
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=busy_state)),
-            patch.object(orch, "_dispatch_play", new=AsyncMock(return_value=False)),
-            patch.object(orch, "_wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
-                orch, "_continue_if_selector_idle_work_remains", new=AsyncMock(return_value=False)
+                orch._state_builder, "build_state", new=AsyncMock(return_value=busy_state)
             ),
-            patch("agentshore.core._logger.info") as info_log,
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(
+                orch._completion, "wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)
+            ),
+            patch.object(
+                orch._loop,
+                "continue_if_selector_idle_work_remains",
+                new=AsyncMock(return_value=False),
+            ),
+            patch("agentshore.core.helpers._logger.info") as info_log,
         ):
             await orch.run_until_idle()
 
@@ -871,7 +911,7 @@ async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
         # Should not raise; should just log
-        await orch._on_crash("agent-123", 1)
+        await orch._completion.on_crash("agent-123", 1)
         # No handles were created so there's nothing to verify beyond no exception
 
 
@@ -884,7 +924,7 @@ async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
 async def test_on_context_pressure_annotates_hints(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
-        await orch._on_context_pressure("agent-42", 0.87)
+        await orch._completion.on_context_pressure("agent-42", 0.87)
         assert orch.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
 
 
@@ -935,6 +975,7 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
 
     # Mock executor so plays don't actually run
     end_outcome = _idle_outcome(PlayType.ISSUE_PICKUP)
+    paused = asyncio.Event()
 
     async def mock_execute(
         pt: PlayType,
@@ -943,17 +984,20 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
     ) -> PlayOutcome:
         # Pause after first play
         await orch.pause("test")
+        paused.set()
         return end_outcome
 
     async with orch:
         with patch.object(orch._executor, "execute", new=mock_execute):
             task = asyncio.create_task(orch.run_until_idle())
-            await asyncio.sleep(0.1)
-            # Loop should be paused now
+            # Wait deterministically until the loop has actually paused rather
+            # than sleeping a fixed interval (the prior wall-clock wait raced
+            # under xdist load, #13).
+            await asyncio.wait_for(paused.wait(), timeout=5.0)
             assert not orch._pause_event.is_set()
             # stop() should wake it
             await orch.stop()
-            await asyncio.wait_for(task, timeout=2.0)
+            await asyncio.wait_for(task, timeout=5.0)
             # Should have exited cleanly
             assert task.done()
 
@@ -993,8 +1037,12 @@ async def test_executor_exception_does_not_crash_loop(tmp_path: Path) -> None:
     async with orch:
         orch._last_refresh_time = time.monotonic()
         with (
-            patch.object(orch, "_refresh_issues", new=AsyncMock()),
-            patch.object(orch, "_build_state", new=AsyncMock(return_value=_idle_state_no_work())),
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
             patch.object(orch._executor, "execute", new=mock_execute),
         ):
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
@@ -1028,7 +1076,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
             await task
 
         # Should not raise even with cancelled task and missing dispatch context
-        await orch._process_completion("nonexistent-dispatch-id", task)
+        await orch._completion.process_completion("nonexistent-dispatch-id", task)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,7 +1087,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
 def _make_mock_orch() -> MagicMock:
     """Minimal mock Orchestrator with an _override_queue."""
     orch = MagicMock()
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     return orch
 
 
@@ -1054,8 +1102,8 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [(e.play_type, e.params) for e in entries] == [
         (
@@ -1075,7 +1123,10 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
                 bypass_preconditions=True,
             ),
         ),
+        (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
+    # Groom waits for the seed audit to complete before releasing.
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
@@ -1095,8 +1146,8 @@ def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert (entries[0].play_type, entries[0].params) == (
         PlayType.INSTANTIATE_AGENT,
@@ -1115,6 +1166,11 @@ def test_bootstrap_recipe_uses_next_large_when_claude_large_disabled() -> None:
             bypass_preconditions=True,
         ),
     )
+    assert (entries[3].play_type, entries[3].params) == (
+        PlayType.GROOM_BACKLOG,
+        PlayParams(bypass_preconditions=True),
+    )
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> None:
@@ -1133,8 +1189,8 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [(e.play_type, e.params) for e in entries] == [
         (
@@ -1146,7 +1202,10 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
             ),
         ),
         (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+        (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
+    # Even with no medium spawn, groom still runs after the seed audit.
+    assert entries[2].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 @pytest.mark.asyncio
@@ -1164,25 +1223,25 @@ async def test_stagnation_escalation_ladder_and_reset(tmp_path: Path) -> None:
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
         )
         assert await orch._check_stagnation_escalation(state) is False
-        assert orch._last_stagnation_stage == 1
+        assert orch._loop._last_stagnation_stage == 1
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=3))
         )
         assert await orch._check_stagnation_escalation(state) is True
-        assert orch._last_stagnation_stage == 2
+        assert orch._loop._last_stagnation_stage == 2
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=5))
         )
         assert await orch._check_stagnation_escalation(state) is True
-        assert orch._last_stagnation_stage == 3
+        assert orch._loop._last_stagnation_stage == 3
 
         orch._metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
         )
         assert await orch._check_stagnation_escalation(state) is False
-        assert orch._last_stagnation_stage == 0
+        assert orch._loop._last_stagnation_stage == 0
 
 
 @pytest.mark.asyncio
@@ -1209,7 +1268,7 @@ async def test_stagnation_stage_one_boosts_entropy_coef(tmp_path: Path) -> None:
 
         dummy = _DummySelector()
         orch._selector = dummy  # type: ignore[assignment]
-        with patch("agentshore.core._ppo_selector_cls", return_value=_DummySelector):
+        with patch("agentshore.core.mixins.loop._ppo_selector_cls", return_value=_DummySelector):
             await orch._check_stagnation_escalation(state)
             orch._metrics = SimpleNamespace(
                 snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
@@ -1234,8 +1293,8 @@ def test_bootstrap_recipe_order() -> None:
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=Path("/tmp/seed.md"))
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     play_types = [e.play_type for e in entries]
     assert play_types[0] == PlayType.INSTANTIATE_AGENT
@@ -1246,7 +1305,10 @@ def test_bootstrap_recipe_order() -> None:
     assert entries[2].params.target_agent_type == AgentType.CODEX.value
     assert entries[2].params.target_model_tier == "medium"
     assert entries[2].params.bypass_preconditions is True
-    assert len(entries) == 3
+    assert play_types[3] == PlayType.GROOM_BACKLOG
+    assert entries[3].params.bypass_preconditions is True
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
+    assert len(entries) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -1274,56 +1336,108 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500)
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
     assert [e.play_type for e in entries] == [
         PlayType.INSTANTIATE_AGENT,
         PlayType.SEED_PROJECT,
         PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
     ]
     assert entries[1].params.seed_path == str(seed_file)
     assert entries[1].params.bypass_preconditions is True
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
-def test_bootstrap_open_start_queues_single_instantiate_without_seed() -> None:
-    """#11: without a seed, open-start queues exactly one large-tier
-    INSTANTIATE_AGENT cold-start backstop.
+def test_bootstrap_open_start_queues_instantiate_then_groom_without_seed() -> None:
+    """#11: without a seed, open-start queues one large-tier INSTANTIATE_AGENT
+    cold-start backstop followed by a GROOM_BACKLOG pass.
 
     The mask zeroes INSTANTIATE_AGENT for a zero-agent / no-remaining-work /
     non-terminal fleet, so the prior no-op design deadlocked at 0 agents. One
-    forced spawn breaks the catch-22; PPO still owns all subsequent fleet
-    growth (no medium spawn, no SEED_PROJECT, no forced first play).
+    forced spawn breaks the catch-22; groom then reconciles the beads↔GitHub
+    graph before PPO takes over. PPO still owns all subsequent fleet growth (no
+    medium spawn, no SEED_PROJECT).
     """
     cfg = _bootstrap_cfg()
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=120)
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120, graph_has_epics=True
+    )
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
-    assert len(entries) == 1
-    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+    assert len(entries) == 2
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
     assert entries[0].params == PlayParams(
         target_agent_type=AgentType.CLAUDE_CODE.value,
         target_model_tier="large",
         bypass_preconditions=True,
     )
     assert entries[0].kind is OverrideKind.BOOTSTRAP
+    # Groom bypasses the warmup floor / beads gate so it runs immediately at
+    # bootstrap. As the first (and only) agent-consumer it carries NO wait_for
+    # gate — it claims the agent by queue position (mirroring SEED_PROJECT in
+    # the seed recipe) so PPO can't free-select onto the idle agent on a None
+    # override tick and starve groom of staffing.
+    assert entries[1].params == PlayParams(bypass_preconditions=True)
+    assert entries[1].kind is OverrideKind.BOOTSTRAP
+    assert entries[1].wait_for_play_type is None
+
+
+def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
+    """No seed input AND no epics → run the seedless seed recipe, not open-start.
+
+    Grooming an epic-less graph has nothing to reconcile and fails, so the
+    no-epic case must create epics first via a seedless SEED_PROJECT (its
+    precondition carve-out makes it eligible exactly when the graph is empty).
+    This is the deadlock fix: instantiate → seed (seedless) → instantiate →
+    groom, identical to the explicit-seed recipe but with seed_path=None.
+    """
+    cfg = _bootstrap_cfg()
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=0, graph_has_epics=False
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.SEED_PROJECT,
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
+    # Seedless: SEED_PROJECT runs with no seed document.
+    assert entries[1].params.seed_path is None
+    assert entries[1].params.bypass_preconditions is True
+    # Groom still waits for the (seedless) seed audit to complete.
+    assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
 def test_bootstrap_open_start_ignores_backlog_size() -> None:
-    """Open-start queues the same single cold-start agent regardless of backlog
+    """Open-start queues the same instantiate→groom recipe regardless of backlog
     size — no backlog-driven forced fleet either way."""
     cfg = _bootstrap_cfg(cleanup_threshold=50)
     orch = _make_mock_orch()
-    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=None, open_issues_count=10)
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=10, graph_has_epics=True
+    )
 
     entries = []
-    while not orch._override_queue.empty():
-        entries.append(orch._override_queue.get_nowait())
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
 
-    assert len(entries) == 1
-    assert entries[0].play_type == PlayType.INSTANTIATE_AGENT
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.GROOM_BACKLOG,
+    ]
     assert entries[0].params.target_model_tier == "large"

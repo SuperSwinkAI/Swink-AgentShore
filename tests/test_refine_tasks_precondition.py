@@ -36,7 +36,7 @@ def _state(issues: list[IssueSnapshot]) -> OrchestratorState:
 def test_masked_when_no_open_issues():
     play = RefineTaskBreakdownPlay()
     reasons = play.preconditions(_state([]))
-    assert any("no open issues" in r for r in reasons)
+    assert any("no open issues" in r.text for r in reasons)
 
 
 def test_masked_when_no_issue_carries_needs_refinement():
@@ -49,7 +49,7 @@ def test_masked_when_no_issue_carries_needs_refinement():
             ]
         )
     )
-    assert any("agentshore/needs-refinement" in r for r in reasons)
+    assert any("agentshore/needs-refinement" in r.text for r in reasons)
 
 
 def test_eligible_when_at_least_one_issue_needs_refinement():
@@ -79,7 +79,7 @@ def test_masked_when_only_issue_is_already_refined():
     reasons = play.preconditions(
         _state([_issue(1, ["agentshore/needs-refinement", "agentshore/refined"])])
     )
-    assert any("agentshore/needs-refinement" in r for r in reasons)
+    assert any("agentshore/needs-refinement" in r.text for r in reasons)
 
 
 def test_re_armed_when_refined_label_removed():

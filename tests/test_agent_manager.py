@@ -12,7 +12,13 @@ import pytest_asyncio
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
-from agentshore.errors import AgentAuthError, AgentTimeout, PlayTimeoutError, PreconditionFailed
+from agentshore.errors import (
+    AgentAuthError,
+    AgentTimeout,
+    ErrorClass,
+    PlayTimeoutError,
+    PreconditionFailed,
+)
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
 
@@ -284,14 +290,15 @@ async def test_dispatch_emits_subprocess_callbacks(
     assert exited[0][1] == AgentType.CODEX
 
 
-async def test_dispatch_missing_configured_identity_token_marks_auth_error(
+async def test_instantiate_missing_configured_identity_token_marks_auth_error(
     store: DataStore,
     tmp_path: Path,
     mock_agent_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agentshore.agents.identity import IdentityResolutionError
-
+    # The identity overlay is resolved once at instantiate(); a missing token
+    # fails that one-time preflight (no per-dispatch re-resolution) and leaves
+    # the handle ERROR/auth without registering it in the manager.
     monkeypatch.delenv("BOT_TOKEN", raising=False)
     agents = {
         "codex": AgentConfig(
@@ -320,14 +327,14 @@ async def test_dispatch_missing_configured_identity_token_marks_auth_error(
     )
     handle = await mgr.instantiate(AgentType.CODEX)
 
-    with pytest.raises(IdentityResolutionError):
-        await mgr.dispatch(handle.agent_id, "prompt")
-
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+    # Half-constructed agent must not be registered (H5).
+    assert handle.agent_id not in mgr.handles
+    assert handle.agent_id not in mgr.circuit_breakers
 
 
-async def test_dispatch_repo_preflight_failure_blocks_cli_launch(
+async def test_instantiate_repo_preflight_failure_does_not_register_agent(
     store: DataStore,
     tmp_path: Path,
     mock_agent_path: Path,
@@ -361,8 +368,7 @@ async def test_dispatch_repo_preflight_failure_blocks_cli_launch(
     def repo_preflight(*_args: object, **_kwargs: object) -> None:
         nonlocal calls
         calls += 1
-        if calls > 1:
-            raise AgentAuthError("repo denied")
+        raise AgentAuthError("repo denied")
 
     monkeypatch.setattr("agentshore.agents.manager.verify_identity_repo_access", repo_preflight)
     dispatch_cli = AsyncMock()
@@ -370,12 +376,16 @@ async def test_dispatch_repo_preflight_failure_blocks_cli_launch(
 
     handle = await mgr.instantiate(AgentType.CODEX)
 
-    with pytest.raises(AgentAuthError):
-        await mgr.dispatch(handle.agent_id, "prompt")
-
-    assert dispatch_cli.await_count == 0
+    # Repo access is verified exactly once at instantiate(), not per dispatch (C2).
+    assert calls == 1
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+    # H5: preflight failure leaves no live, dispatchable handle behind.
+    assert handle.agent_id not in mgr.handles
+    assert handle.agent_id not in mgr.circuit_breakers
+    with pytest.raises(PreconditionFailed):
+        await mgr.dispatch(handle.agent_id, "prompt")
+    assert dispatch_cli.await_count == 0
 
 
 @pytest.mark.parametrize(
@@ -621,7 +631,7 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
     handle.transition_to(AgentStatus.ERROR)
-    handle.last_error_class = "auth"
+    handle.last_error_class = ErrorClass.AUTH
 
     result = await mgr.attempt_recovery(handle.agent_id)
 

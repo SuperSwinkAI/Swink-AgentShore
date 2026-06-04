@@ -49,7 +49,6 @@ class SessionEndScreen(Screen[None]):
     _drain_reason: str = ""
     _teardown_steps: reactive[list[tuple[str, str]]] = reactive(list, layout=True)
     _agents: reactive[list[AgentSnapshot]] = reactive(list, layout=True)
-    _summary: reactive[dict[str, object] | None] = reactive(None, layout=True)
     _complete: reactive[str | None] = reactive(None, layout=True)
 
     def compose(self) -> ComposeResult:
@@ -57,7 +56,6 @@ class SessionEndScreen(Screen[None]):
         yield Static("  Ctrl+Shift+Q to force-quit immediately", id="drain-hint")
         yield Static("", id="agents")
         yield Static("", id="teardown")
-        yield Static("", id="summary")
 
     # ---- public API ----
 
@@ -88,9 +86,6 @@ class SessionEndScreen(Screen[None]):
         else:
             new_steps.append((icon, description))
         self._teardown_steps = new_steps
-
-    def set_summary(self, summary: dict[str, object]) -> None:
-        self._summary = dict(summary)
 
     def set_complete(self, reason: str) -> None:
         self._complete = reason
@@ -141,16 +136,6 @@ class SessionEndScreen(Screen[None]):
         except QueryError:
             pass
 
-    def watch__summary(self, summary: dict[str, object] | None) -> None:
-        from textual.css.query import QueryError
-
-        try:
-            widget = self.query_one("#summary", Static)
-        except QueryError as exc:
-            _logger.debug("shutdown_widget_query_failed", widget="summary", error=str(exc))
-            return
-        widget.update(self._render_summary(summary))
-
     @staticmethod
     def _render_agents(agents: list[AgentSnapshot]) -> str:
         if not agents:
@@ -173,13 +158,4 @@ class SessionEndScreen(Screen[None]):
         lines: list[str] = ["\n  Teardown Checklist", "  " + "─" * 60]
         for icon, description in steps:
             lines.append(f"  {icon} {description}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _render_summary(summary: dict[str, object] | None) -> str:
-        if summary is None:
-            return ""
-        lines: list[str] = ["\n  Session Summary", "  " + "─" * 60]
-        for key, value in summary.items():
-            lines.append(f"  {key:<20} {value}")
         return "\n".join(lines)

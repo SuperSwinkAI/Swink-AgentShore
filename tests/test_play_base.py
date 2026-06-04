@@ -21,12 +21,6 @@ def test_play_params_immutable_frozen() -> None:
         params.issue_number = 99  # type: ignore[misc]
 
 
-def test_play_params_empty_classmethod() -> None:
-    params = PlayParams.empty()
-    assert params.issue_number is None
-    assert params.agent_id is None
-
-
 def test_play_params_default_extras_independent_per_instance() -> None:
     a = PlayParams()
     b = PlayParams()

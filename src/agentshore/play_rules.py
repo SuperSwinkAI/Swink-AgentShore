@@ -2,9 +2,37 @@
 
 from __future__ import annotations
 
+from agentshore.state import PlayType
+
 SEED_PROJECT_COOLDOWN_PLAYS = 50
 DESIGN_AUDIT_COOLDOWN_PLAYS = 20
 TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS = 50
+
+# Play types whose validity is gated on a concrete candidate target existing in
+# the snapshot candidate plan. Single source of truth for the candidate-required
+# taxonomy, imported by both ``rl.eligibility`` (the authority that confirms a
+# play) and ``rl.mask`` (the pipeline that gates one) so the two surfaces can
+# never drift.
+CANDIDATE_REQUIRED_PLAY_TYPES: frozenset[PlayType] = frozenset(
+    {
+        PlayType.UNBLOCK_PR,
+        PlayType.WRITE_IMPLEMENTATION_PLAN,
+        PlayType.ISSUE_PICKUP,
+        PlayType.CODE_REVIEW,
+        PlayType.MERGE_PR,
+        PlayType.SYSTEMATIC_DEBUGGING,
+        PlayType.REFINE_TASK_BREAKDOWN,
+        PlayType.GROOM_BACKLOG,
+    }
+)
+
+# Candidate-bearing target plays that ``EligibilityAuthority.confirm`` re-checks
+# against the live candidate plan (the candidate-required set minus the backlog
+# play GROOM_BACKLOG, which has no pinned issue/PR target). Internal and control
+# plays are not target-confirmed.
+LIVE_CONFIRM_PLAY_TYPES: frozenset[PlayType] = CANDIDATE_REQUIRED_PLAY_TYPES - {
+    PlayType.GROOM_BACKLOG
+}
 
 
 def needs_review(pr: object) -> bool:

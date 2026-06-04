@@ -17,12 +17,18 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_codex_jsonl,
     _extract_text_from_gemini_jsonl,
     _extract_text_from_stream_json,
+    _is_terminal_event,
     build_argv,
     dispatch_cli,
 )
 from agentshore.agents.handle import AgentHandle
 from agentshore.config import AgentConfig
-from agentshore.errors import AgentOutputInvalid, AgentProcessError, PlayTimeoutError
+from agentshore.errors import (
+    AgentOutputInvalid,
+    AgentProcessError,
+    ErrorClass,
+    PlayTimeoutError,
+)
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
 
@@ -1026,6 +1032,23 @@ def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
 
 
+def test_classify_error_returns_error_class_members() -> None:
+    """The classifier returns typed ErrorClass members, not bare strings.
+
+    ErrorClass is a StrEnum, so ``== "rate_limit"`` keeps working; this guards
+    the stronger property that the *type* is the enum so downstream typed
+    comparisons (eligibility, gates) are exhaustive and typo-proof.
+    """
+    rl = _classify_error(1, "429 Too Many Requests", "")
+    assert rl is ErrorClass.RATE_LIMIT
+    assert isinstance(rl, ErrorClass)
+    assert _classify_error(1, "HTTP 403 Forbidden", "") is ErrorClass.AUTH
+    assert _classify_error(1, "context deadline exceeded", "") is ErrorClass.TIMEOUT
+    assert _classify_error(1, "model not found", "") is ErrorClass.INVALID_MODEL
+    assert _classify_error(-9, "", "") is ErrorClass.CRASH_SIGNAL
+    assert _classify_error(1, "something nobody matches", "") is ErrorClass.UNKNOWN
+
+
 def test_classify_error_invalid_model() -> None:
     assert (
         _classify_error(1, "ModelNotFoundError: Requested entity was not found.", "")
@@ -1039,6 +1062,59 @@ def test_classify_error_codex_chatgpt_unsupported_model() -> None:
             1,
             "",
             "The 'o4-mini' model is not supported when using Codex with a ChatGPT account.",
+        )
+        == "invalid_model"
+    )
+
+
+def test_classify_error_stdout_work_product_not_misclassified() -> None:
+    """#19: generic tokens in a coding agent's stdout (its work product) must
+    NOT be classified as rate_limit/auth/timeout/invalid_model. These are the
+    failure modes that corrupted the RL signal and tore down working agents."""
+    # A failed file edit whose surrounding diff/output happens to mention these.
+    assert (
+        _classify_error(
+            1,
+            "",
+            "Error executing tool replace: could not find the string to replace.\n"
+            "context near: if resp.status == 429: raise Overloaded('capacity')  # throttle\n",
+        )
+        == "unknown"
+    )
+    # Agent editing HTTP/error-handling code; 403/forbidden/401 are work product.
+    assert (
+        _classify_error(1, "", "added handler for 403 Forbidden and 401 Unauthorized") == "unknown"
+    )
+    # "timeout" is ubiquitous in code/test names.
+    assert (
+        _classify_error(1, "", "def test_request_timeout(): ...  # deadline exceeded path")
+        == "unknown"
+    )
+    # Generic invalid-model phrasing inside written code, not a CLI verdict.
+    assert _classify_error(1, "", 'raise ModelNotFoundError("model not found")') == "unknown"
+
+
+def test_classify_error_stderr_still_matches_generic_tokens() -> None:
+    """The full pattern set still applies to stderr (a CLI's own diagnostics)."""
+    assert _classify_error(1, "Error: 429 overloaded, retry after 5s", "") == "rate_limit"
+    assert _classify_error(1, "HTTP 403 Forbidden", "") == "auth"
+    assert _classify_error(1, "request timeout", "") == "timeout"
+    assert _classify_error(1, "model not found", "") == "invalid_model"
+
+
+def test_classify_error_high_precision_stdout_phrases_still_match() -> None:
+    """Distinctive phrases (real CLI/tool verdicts) are still caught in stdout."""
+    # Claude reports quota exhaustion on stdout with nothing on stderr.
+    assert _classify_error(1, "", "...\nrate limit exceeded\n") == "rate_limit"
+    # gh tool auth failure echoed into the agent's stdout JSONL.
+    assert (
+        _classify_error(1, "", "GraphQL: Could not resolve to a Repository with the name 'o/r'")
+        == "auth"
+    )
+    # Codex prints this model error to stdout.
+    assert (
+        _classify_error(
+            1, "", "The 'o4-mini' model is not supported when using Codex with a ChatGPT account."
         )
         == "invalid_model"
     )
@@ -1070,6 +1146,37 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
     assert _classify_error(-2, "", "") == "unknown"
 
 
+# ---------------------------------------------------------------------------
+# _is_terminal_event (#21 — response-complete fast-kill for all agent types)
+# ---------------------------------------------------------------------------
+
+
+def test_is_terminal_event_detects_each_agent_type() -> None:
+    """Claude/Gemini emit type:result; Codex emits turn.completed. All three
+    must be recognized so the 60s post-response grace applies (not the 30-min
+    stream_idle_timeout)."""
+    assert _is_terminal_event(b'{"type":"result","result":"ok"}', AgentType.CLAUDE_CODE)
+    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GEMINI)
+    assert _is_terminal_event(
+        b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
+    )
+
+
+def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
+    # Mid-stream events are not terminal.
+    assert not _is_terminal_event(b'{"type":"assistant","message":{}}', AgentType.CLAUDE_CODE)
+    assert not _is_terminal_event(b'{"type":"item.completed","item":{}}', AgentType.CODEX)
+    # Codex's terminal type must not fire for Claude/Gemini and vice versa.
+    assert not _is_terminal_event(b'{"type":"turn.completed"}', AgentType.GEMINI)
+    assert not _is_terminal_event(b'{"type":"result"}', AgentType.CODEX)
+    # Work product mentioning the word "result" is not a result event.
+    assert not _is_terminal_event(
+        b'{"type":"assistant","text":"the result is 42"}', AgentType.GEMINI
+    )
+    # Non-JSON lines never raise.
+    assert not _is_terminal_event(b"not json at all", AgentType.CLAUDE_CODE)
+
+
 def test_classify_error_content_wins_over_signal() -> None:
     """An explicit rate-limit message still wins even on a signal death."""
     assert _classify_error(-9, "429 Too Many Requests", "") == "rate_limit"
@@ -1087,13 +1194,41 @@ def test_classify_error_codex_rollout_thread_missing() -> None:
     assert _classify_error(1, stderr, "") == "codex_rollout"
 
 
+def test_socket_close_classifies_as_transient_network() -> None:
+    # claude_code's "socket connection was closed unexpectedly" used to fall
+    # into the generic "unknown" bucket and log a misleading rate-limit recovery
+    # (#23). It is now its own transient_network class.
+    stderr = "API Error: The socket connection was closed unexpectedly"
+    assert _classify_error(1, stderr, "") == "transient_network"
+
+
+def test_connection_reset_classifies_as_transient_network() -> None:
+    assert _classify_error(1, "read ECONNRESET", "") == "transient_network"
+
+
+def test_transient_network_is_recoverable_and_in_unknown_path() -> None:
+    """transient_network keeps the recoverable take_break treatment of the old
+    "unknown" classification, via the distinct unknown-error path (#23/#24)."""
+    from agentshore.core.mixins.completion import _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    from agentshore.state import RECOVERABLE_ERROR_CLASSES
+
+    assert "transient_network" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    assert "transient_network" in RECOVERABLE_ERROR_CLASSES
+
+
 def test_codex_rollout_is_in_take_break_recovery_set() -> None:
     # If this assertion ever fails, the classifier name changed but the
     # recovery set did not — the agent will skip the take_break override and
     # surface a permanent ERROR instead of rotating to a fresh codex process.
-    from agentshore.core.mixins.completion import _RATE_LIMIT_RECOVERY_ERROR_CLASSES
+    # codex_rollout now lives in the unknown-error recovery path (split from
+    # rate-limit recovery in #23/#24), not the rate-limit set.
+    from agentshore.core.mixins.completion import (
+        _RATE_LIMIT_RECOVERY_ERROR_CLASSES,
+        _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES,
+    )
 
-    assert "codex_rollout" in _RATE_LIMIT_RECOVERY_ERROR_CLASSES
+    assert "codex_rollout" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    assert "codex_rollout" not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES
 
 
 def test_extract_session_id_from_jsonl_handles_whitespace_lines() -> None:

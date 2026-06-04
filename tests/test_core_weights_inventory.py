@@ -10,7 +10,8 @@ import pytest
 import structlog
 
 from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator, _emit_weights_dir_inventory
+from agentshore.core import Orchestrator
+from agentshore.core.helpers import _emit_weights_dir_inventory
 
 if TYPE_CHECKING:
     from pathlib import Path

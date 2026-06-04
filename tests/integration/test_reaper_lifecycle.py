@@ -263,7 +263,9 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
     which the GitHub poll tick calls with the PRs it just re-pulled at
     ``state='all'`` to confirm new state.
     """
-    from agentshore.core.mixins.completion import _CompletionMixin
+    from types import SimpleNamespace
+
+    from agentshore.core.mixins.completion import CompletionProcessor
 
     active_id, _ = await _seed_real_worktree(
         store,
@@ -283,10 +285,13 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
         cfg=RuntimeConfig(),
     )
 
-    class _OrchStub:
-        _worktrees = wm
-        _store = store
-        _session_id = "sess-current"
+    # _mark_worktrees_stale_for_closed_prs reads ``_worktrees`` via the host and
+    # ``_store``/``_session_id`` as constructor deps on the processor itself.
+    completion_stub = SimpleNamespace(
+        _host=SimpleNamespace(_worktrees=wm),
+        _store=store,
+        _session_id="sess-current",
+    )
 
     merged_pr = PullRequestRecord(
         pr_number=42,
@@ -302,8 +307,8 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
         created_at="2026-05-20T00:00:00+00:00",
         branch="branch-still-open",
     )
-    await _CompletionMixin._mark_worktrees_stale_for_closed_prs(
-        _OrchStub(),  # type: ignore[arg-type]
+    await CompletionProcessor._mark_worktrees_stale_for_closed_prs(
+        completion_stub,  # type: ignore[arg-type]
         [merged_pr, still_open],
     )
 

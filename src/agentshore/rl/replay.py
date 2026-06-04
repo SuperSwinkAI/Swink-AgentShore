@@ -100,16 +100,6 @@ class ReplayLoader:
 
     async def iter_compatible_sessions(self) -> AsyncIterator[str]:
         """Yield session IDs that have at least one compatible experience row."""
-        async with self._store._conn.execute(
-            """
-            SELECT DISTINCT session_id
-            FROM rl_experience
-            WHERE action_space_version = ?
-            ORDER BY session_id
-            """,
-            (self._action_space_version,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        for row in rows:
-            yield row[0]
+        session_ids = await self._store.distinct_experience_session_ids(self._action_space_version)
+        for session_id in session_ids:
+            yield session_id

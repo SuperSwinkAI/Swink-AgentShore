@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.models import ExternalMutationRecord
+from agentshore.data.store.rows import _row_to_external_mutation
 
 if TYPE_CHECKING:
     import aiosqlite
+
+    from agentshore.data.models import ExternalMutationRecord
 
 
 class _ExternalMutationsMixin:
@@ -50,17 +52,7 @@ class _ExternalMutationsMixin:
             row = await cursor.fetchone()
         if row is None:
             return None
-        return ExternalMutationRecord(
-            session_id=row["session_id"],
-            idempotency_key=row["idempotency_key"],
-            mutation_type=row["mutation_type"],
-            target=row["target"],
-            status=row["status"],
-            created_at=row["created_at"],
-            play_id=row["play_id"],
-            request_json=row["request_json"],
-            response_json=row["response_json"],
-        )
+        return _row_to_external_mutation(row)
 
     async def update_external_mutation_status(
         self,
@@ -120,17 +112,4 @@ class _ExternalMutationsMixin:
             params,
         )
         rows = await cursor.fetchall()
-        return [
-            ExternalMutationRecord(
-                session_id=row["session_id"],
-                idempotency_key=row["idempotency_key"],
-                mutation_type=row["mutation_type"],
-                target=row["target"],
-                status=row["status"],
-                created_at=row["created_at"],
-                play_id=row["play_id"],
-                request_json=row["request_json"],
-                response_json=row["response_json"],
-            )
-            for row in rows
-        ]
+        return [_row_to_external_mutation(row) for row in rows]

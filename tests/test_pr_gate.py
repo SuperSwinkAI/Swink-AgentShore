@@ -120,20 +120,20 @@ def test_project_pull_requests_conflicting_sets_blocked() -> None:
     mergeable= argument, so merge conflicts never surfaced as blocked PRs and
     unblock_pr's precondition always saw an empty available_blocked list.
     """
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
 
     records = [_make_pr_record(42, mergeable="CONFLICTING")]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].blocked is True
     assert "merge_conflicts" in snapshots[0].blocked_reasons
 
 
 def test_project_pull_requests_mergeable_pr_not_blocked() -> None:
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
 
     records = [_make_pr_record(43, mergeable="MERGEABLE")]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert snapshots[0].blocked is False
     assert "merge_conflicts" not in snapshots[0].blocked_reasons
 
@@ -146,7 +146,7 @@ def test_project_pull_requests_mergeable_pr_not_blocked() -> None:
 @pytest.mark.asyncio
 async def test_phase_ensure_labels_includes_required_workflow_labels() -> None:
     from agentshore.config import RuntimeConfig
-    from agentshore.core import _phase_ensure_labels
+    from agentshore.core.phases import _phase_ensure_labels
 
     mock_gh = AsyncMock()
     mock_gh.available = True
@@ -169,7 +169,7 @@ async def test_phase_ensure_labels_includes_required_workflow_labels() -> None:
 @pytest.mark.asyncio
 async def test_phase_ensure_labels_skipped_when_gh_unavailable() -> None:
     from agentshore.config import RuntimeConfig
-    from agentshore.core import _phase_ensure_labels
+    from agentshore.core.phases import _phase_ensure_labels
 
     mock_gh = AsyncMock()
     mock_gh.available = False
@@ -186,7 +186,7 @@ async def test_phase_ensure_labels_skipped_when_gh_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_unblock_pr_resolver_skips_in_flight_pr() -> None:
-    """_resolve_unblock_pr returns None when the only blocked PR is already in flight."""
+    """unblock_pr resolution returns None when the only blocked PR is already in flight."""
     resolver = _make_resolver(open_prs=[_make_pr_record(20)])
 
     state = OrchestratorState(
@@ -203,13 +203,13 @@ async def test_unblock_pr_resolver_skips_in_flight_pr() -> None:
             )
         ],
     )
-    result = await resolver._resolve_unblock_pr(state)
+    result = await resolver._resolve_via_candidates(PlayType.UNBLOCK_PR, state)
     assert result is None, f"Expected None (all in flight); got {result}"
 
 
 @pytest.mark.asyncio
 async def test_unblock_pr_resolver_picks_other_blocked_pr() -> None:
-    """_resolve_unblock_pr skips the in-flight PR and picks the other available one."""
+    """unblock_pr resolution skips the in-flight PR and picks the other available one."""
     resolver = _make_resolver(open_prs=[_make_pr_record(20), _make_pr_record(21)])
 
     state = OrchestratorState(
@@ -226,7 +226,7 @@ async def test_unblock_pr_resolver_picks_other_blocked_pr() -> None:
             )
         ],
     )
-    result = await resolver._resolve_unblock_pr(state)
+    result = await resolver._resolve_via_candidates(PlayType.UNBLOCK_PR, state)
     assert result is not None, "Expected PR #21 to be returned"
     assert result.pr_number == 21, f"Expected pr_number=21; got {result.pr_number}"
 
@@ -260,14 +260,16 @@ def test_unblock_pr_preconditions_fail_when_all_in_flight() -> None:
     play = UnblockPrPlay()
     failures = play.preconditions(state)
     assert failures, "Expected preconditions to fail when all blocked PRs in flight"
-    assert any("in flight" in f for f in failures), f"Expected 'in flight' message; got: {failures}"
+    assert any("in flight" in f.text for f in failures), (
+        f"Expected 'in flight' message; got: {failures}"
+    )
 
 
 @pytest.mark.asyncio
 async def test_unblock_pr_resolver_github_fallback_excludes_exhausted() -> None:
     """Regression: exhausted PRs must be excluded from the GitHub fallback path.
 
-    Before this fix, _resolve_blocked_pr_from_github only excluded in-flight
+    Before this fix, the GitHub blocked-PR fallback only excluded in-flight
     PRs, so a PR exhausted by the DB loop was immediately re-selected via the
     fallback, producing an infinite retry cycle.
     """
@@ -283,7 +285,7 @@ async def test_unblock_pr_resolver_github_fallback_excludes_exhausted() -> None:
         total_cost=0.5,
         agents=[_make_agent_snapshot(agent_id="agent-1", status=AgentStatus.IDLE)],
     )
-    result = await resolver._resolve_unblock_pr(state)
+    result = await resolver._resolve_via_candidates(PlayType.UNBLOCK_PR, state)
     assert result is None, (
         f"Exhausted PR #187 should not be re-selected via GitHub fallback; got {result}"
     )
@@ -302,7 +304,7 @@ async def test_unblock_pr_resolver_skips_manual_required_pr() -> None:
         agents=[_make_agent_snapshot(agent_id="agent-1", status=AgentStatus.IDLE)],
     )
 
-    result = await resolver._resolve_unblock_pr(state)
+    result = await resolver._resolve_via_candidates(PlayType.UNBLOCK_PR, state)
 
     assert result is None
 

@@ -57,7 +57,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig) -> Any:
 async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
@@ -91,7 +91,7 @@ async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
         ),
     }
 
-    state = await orch._build_state()
+    state = await orch._state_builder.build_state()
 
     assert state.in_flight_plays == [PlayType.SEED_PROJECT]
 
@@ -106,7 +106,7 @@ def test_should_not_terminate_normally() -> None:
 
     orch = _make_orch(Path("/tmp"), cfg)
     state = _make_state()
-    should_stop, reason = orch._should_terminate(state)
+    should_stop, reason = orch._lifecycle.should_terminate(state)
     assert not should_stop
     assert reason is None
 
@@ -117,7 +117,7 @@ def test_should_terminate_on_max_plays() -> None:
     cfg = dataclasses.replace(RuntimeConfig(), session=SessionConfig(max_plays=5))
     orch = _make_orch(Path("/tmp"), cfg)
     state = _make_state(total_plays=5)
-    should_stop, reason = orch._should_terminate(state)
+    should_stop, reason = orch._lifecycle.should_terminate(state)
     assert should_stop
     assert reason == "max_plays"
 
@@ -126,7 +126,7 @@ def test_should_terminate_ignores_budget_reserve_check() -> None:
     cfg = RuntimeConfig()
     orch = _make_orch(Path("/tmp"), cfg)
     state = _make_state(remaining=0.0)
-    should_stop, reason = orch._should_terminate(state)
+    should_stop, reason = orch._lifecycle.should_terminate(state)
     assert not should_stop
     assert reason is None
 
@@ -137,7 +137,7 @@ async def test_budget_reserve_not_reached_keeps_running(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, cfg)
     state = _make_state(remaining=5.01)
 
-    result = await orch._begin_budget_reserve_drain_if_needed(state)
+    result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
 
     assert result is state
     assert orch._store.update_session_state.await_count == 0
@@ -149,9 +149,9 @@ async def test_budget_reserve_reached_begins_drain(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, cfg)
     state = _make_state(remaining=5.0)
     draining_state = _make_state(remaining=5.0, session_state=SessionState.DRAINING)
-    orch._build_state = AsyncMock(return_value=draining_state)
+    orch._state_builder.build_state = AsyncMock(return_value=draining_state)
 
-    result = await orch._begin_budget_reserve_drain_if_needed(state)
+    result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
 
     assert result is draining_state
     assert orch._draining is True
@@ -168,7 +168,7 @@ def test_should_terminate_on_timeout(monkeypatch: Any) -> None:
     orch = _make_orch(Path("/tmp"), cfg)
     orch._loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min timeout
     state = _make_state()
-    should_stop, reason = orch._should_terminate(state)
+    should_stop, reason = orch._lifecycle.should_terminate(state)
     assert should_stop
     assert reason == "timeout"
 
@@ -194,7 +194,7 @@ def test_compute_trajectory_record_uses_budget_and_graph(tmp_path: Path) -> None
     )
     history: list[PlayRecord] = []
 
-    rec = orch._compute_trajectory_record(outcome, next_state, history)
+    rec = orch._snapshots.compute_trajectory_record(outcome, next_state, history)
 
     assert rec is not None
     assert rec.session_id == "test-session"
@@ -220,7 +220,7 @@ def test_compute_trajectory_record_returns_none_without_play_id(tmp_path: Path) 
         play_id=None,
     )
 
-    assert orch._compute_trajectory_record(outcome, _make_state(), []) is None
+    assert orch._snapshots.compute_trajectory_record(outcome, _make_state(), []) is None
 
 
 def test_compute_trajectory_record_handles_disabled_budget(tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_compute_trajectory_record_handles_disabled_budget(tmp_path: Path) -> No
         play_id=1,
     )
 
-    rec = orch._compute_trajectory_record(outcome, state, [])
+    rec = orch._snapshots.compute_trajectory_record(outcome, state, [])
     assert rec is not None
     assert rec.estimated_remaining_plays == 0
     assert rec.estimated_remaining_cost == pytest.approx(0.0)
@@ -302,7 +302,7 @@ def test_compute_trajectory_record_slope_path_two_deltas(tmp_path: Path) -> None
     )
     history = [_make_play_record(0.01), _make_play_record(0.01)]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     # slope = (0.01 + 0.01) / 2 = 0.01; projected = 0.4 + 0.01 * 20 = 0.6
@@ -325,7 +325,7 @@ def test_compute_trajectory_record_slope_path_three_deltas(tmp_path: Path) -> No
         _make_play_record(0.01),
     ]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.7)
@@ -344,7 +344,7 @@ def test_compute_trajectory_record_slope_path_clamps_high(tmp_path: Path) -> Non
     # slope = 0.05; projected = 0.9 + 0.05 * 20 = 1.9 → clamped to 1.0
     history = [_make_play_record(0.05), _make_play_record(0.05)]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     assert rec.projected_alignment_at_budget_end == pytest.approx(1.0)
@@ -363,7 +363,7 @@ def test_compute_trajectory_record_slope_path_clamps_low(tmp_path: Path) -> None
     # slope = -0.05; projected = 0.3 + (-0.05) * 20 = -0.7 → clamped to 0.0
     history = [_make_play_record(-0.05), _make_play_record(-0.05)]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.0)
@@ -382,7 +382,7 @@ def test_compute_trajectory_record_isfinite_guard(tmp_path: Path) -> None:
     # sum([inf, -inf]) = nan → slope = nan → projected = nan → fallback
     history = [_make_play_record(float("inf")), _make_play_record(float("-inf"))]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.5)
@@ -401,7 +401,7 @@ def test_compute_trajectory_record_slope_window_uses_last_ten(tmp_path: Path) ->
     )
     history = [_make_play_record(1.0), _make_play_record(1.0)] + [_make_play_record(0.0)] * 10
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     # If all 12 were averaged: slope ≈ 0.167, projected ≠ 0.5
@@ -427,7 +427,7 @@ def test_compute_trajectory_record_slope_none_deltas_excluded(tmp_path: Path) ->
         _make_play_record(0.05),
     ]
 
-    rec = orch._compute_trajectory_record(_make_outcome_with_play_id(), state, history)
+    rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.6)
@@ -438,7 +438,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
     """Skipped plays are observability events, not completed agent plays or PPO samples."""
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     class Provider:
         def __init__(self) -> None:
@@ -455,7 +455,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
     orch = _make_orch(tmp_path, cfg)
     provider = Provider()
     orch._state_provider = provider
-    orch._build_state = AsyncMock(return_value=_make_state())
+    orch._state_builder.build_state = AsyncMock(return_value=_make_state())
     orch._selector.on_play_completed = AsyncMock()
 
     task: asyncio.Future[PlayOutcome] = asyncio.Future()
@@ -477,7 +477,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
         )
     }
 
-    await orch._process_completion("skip", task)
+    await orch._completion.process_completion("skip", task)
 
     assert provider.play_completed == 0
     assert provider.state_updates == 1
@@ -489,12 +489,12 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
 async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
     next_state = dataclasses.replace(_make_state(), graph=MagicMock(global_closure_ratio=0.6))
-    orch._build_state = AsyncMock(return_value=next_state)
+    orch._state_builder.build_state = AsyncMock(return_value=next_state)
 
     task: asyncio.Future[PlayOutcome] = asyncio.Future()
     task.set_result(
@@ -523,7 +523,7 @@ async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Pat
     }
     orch._store.get_play_history = AsyncMock(return_value=[])
 
-    await orch._process_completion("ok", task)
+    await orch._completion.process_completion("ok", task)
 
     orch._store.get_play_history.assert_awaited_once_with(orch._session_id)
     orch._store.record_trajectory_snapshot.assert_awaited_once()
@@ -533,11 +533,11 @@ async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Pat
 async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path) -> None:
     import asyncio
 
-    from agentshore.core import _DispatchContext
+    from agentshore.core.context import _DispatchContext
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
-    orch._build_state = AsyncMock(return_value=_make_state())
+    orch._state_builder.build_state = AsyncMock(return_value=_make_state())
 
     task: asyncio.Future[PlayOutcome] = asyncio.Future()
     task.set_result(
@@ -559,7 +559,7 @@ async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path)
         )
     }
 
-    await orch._process_completion("fail", task)
+    await orch._completion.process_completion("fail", task)
 
     orch._store.record_trajectory_snapshot.assert_not_awaited()
 
@@ -605,7 +605,7 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
     for pt in (PlayType.CODE_REVIEW, PlayType.RUN_QA):
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=pt,
                 params=PlayParams(bypass_preconditions=True),

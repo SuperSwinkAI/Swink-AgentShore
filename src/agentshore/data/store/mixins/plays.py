@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _ACTIVE_WORK_CLAIM_STATUSES
+from agentshore.data.store.base import _ACTIVE_WORK_CLAIM_STATUSES, _status_in_clause
 from agentshore.data.store.rows import _row_to_play_record
 from agentshore.utils import now_iso
 
@@ -22,42 +22,32 @@ class _PlaysMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_play(self, play: PlayRecord) -> int:
         """Insert a play record and return the auto-assigned ``play_id``."""
-        async with self._conn.execute(
-            """
-            INSERT INTO plays
-                (session_id, play_type, agent_id, started_at, ended_at,
-                 duration_ms, success, partial, token_cost, dollar_cost,
-                 alignment_before, alignment_after, alignment_delta,
-                 reward, failure_category, error, artifacts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                play.session_id,
-                play.play_type,
-                play.agent_id,
-                play.started_at,
-                play.ended_at,
-                play.duration_ms,
-                int(play.success),
-                int(play.partial),
-                play.token_cost,
-                play.dollar_cost,
-                play.alignment_before,
-                play.alignment_after,
-                play.alignment_delta,
-                play.reward,
-                play.failure_category,
-                play.error,
-                json.dumps(play.artifacts) if play.artifacts else None,
-            ),
-        ) as cursor:
-            await self._conn.commit()
-            if cursor.lastrowid is None:
-                msg = "INSERT did not return a row ID"
-                raise RuntimeError(msg)
-            return cursor.lastrowid
+        return await self._insert(
+            "plays",
+            session_id=play.session_id,
+            play_type=play.play_type,
+            agent_id=play.agent_id,
+            started_at=play.started_at,
+            ended_at=play.ended_at,
+            duration_ms=play.duration_ms,
+            success=int(play.success),
+            partial=int(play.partial),
+            token_cost=play.token_cost,
+            dollar_cost=play.dollar_cost,
+            alignment_before=play.alignment_before,
+            alignment_after=play.alignment_after,
+            alignment_delta=play.alignment_delta,
+            reward=play.reward,
+            failure_category=play.failure_category,
+            error=play.error,
+            artifacts=json.dumps(play.artifacts) if play.artifacts else None,
+        )
 
     async def update_play(
         self,
@@ -144,7 +134,7 @@ class _PlaysMixin:
         """Abandon active claims and open play rows owned by agents no longer present."""
         agent_ids = sorted({str(agent_id) for agent_id in active_agent_ids if agent_id})
         ended_at = now_iso()
-        status_placeholders = ",".join("?" for _ in _ACTIVE_WORK_CLAIM_STATUSES)
+        status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         if agent_ids:
             agent_placeholders = ",".join("?" for _ in agent_ids)
             agent_filter = f"AND agent_id NOT IN ({agent_placeholders})"
@@ -153,39 +143,33 @@ class _PlaysMixin:
             agent_filter = ""
             agent_params = ()
 
-        claim_sql = "\n".join(
-            (
-                "UPDATE work_claims",
-                "   SET status = 'abandoned',",
-                "       finished_at = COALESCE(finished_at, ?)",
-                " WHERE session_id = ?",
-                "   AND agent_id IS NOT NULL",
-                f"   AND status IN ({status_placeholders})",
-                f"   {agent_filter}",
-            )
-        )
         claim_cursor = await self._conn.execute(
-            claim_sql,
-            (ended_at, session_id, *_ACTIVE_WORK_CLAIM_STATUSES, *agent_params),
-        )
-        play_sql = "\n".join(
-            (
-                "UPDATE plays",
-                "   SET ended_at = ?,",
-                "       duration_ms = COALESCE(",
-                "           duration_ms,",
-                "           CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)",
-                "       ),",
-                "       failure_category = COALESCE(failure_category, 'abandoned'),",
-                "       error = COALESCE(error, ?)",
-                " WHERE session_id = ?",
-                "   AND ended_at IS NULL",
-                "   AND agent_id IS NOT NULL",
-                f"   {agent_filter}",
-            )
+            f"""
+            UPDATE work_claims
+               SET status = 'abandoned',
+                   finished_at = COALESCE(finished_at, ?)
+             WHERE session_id = ?
+               AND agent_id IS NOT NULL
+               AND {status_clause}
+               {agent_filter}
+            """,
+            (ended_at, session_id, *status_params, *agent_params),
         )
         play_cursor = await self._conn.execute(
-            play_sql,
+            f"""
+            UPDATE plays
+               SET ended_at = ?,
+                   duration_ms = COALESCE(
+                       duration_ms,
+                       CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)
+                   ),
+                   failure_category = COALESCE(failure_category, 'abandoned'),
+                   error = COALESCE(error, ?)
+             WHERE session_id = ?
+               AND ended_at IS NULL
+               AND agent_id IS NOT NULL
+               {agent_filter}
+            """,
             (ended_at, ended_at, reason, session_id, *agent_params),
         )
         await self._conn.commit()

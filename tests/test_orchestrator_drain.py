@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agentshore.core import Orchestrator
+from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.dispatch import Dispatcher
+from agentshore.core.mixins.drain import DrainController
+from agentshore.core.mixins.lifecycle import LifecycleController
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import (
     AgentSnapshot,
@@ -44,6 +48,22 @@ def _make_orch() -> Orchestrator:
     orch._drain_reason = None
     orch._end_session_report_requested = False
     orch._end_session_report_open_browser = False
+    orch._main_repo = MainRepoGuard()
+    orch._lifecycle = LifecycleController(
+        host=orch,
+        store=orch._store,
+        session_id=orch._session_id,
+        repo_root=Path("."),
+        main_repo=orch._main_repo,
+    )
+    orch._drain = DrainController(
+        host=orch,
+        store=orch._store,
+        manager=MagicMock(),
+        session_id=orch._session_id,
+        repo_root=Path("."),
+        state_builder=MagicMock(),
+    )
     return orch
 
 
@@ -166,7 +186,7 @@ def test_should_terminate_drain_with_in_flight_returns_false() -> None:
     orch = _make_orch()
     orch._in_flight = {"play-1": MagicMock()}  # one play in flight
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.BUSY)])
-    result, reason = orch._should_terminate(state)
+    result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
     assert reason is None
 
@@ -176,7 +196,7 @@ def test_should_terminate_drain_with_live_agents_returns_false() -> None:
     orch = _make_orch()
     orch._in_flight = {}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.IDLE)])
-    result, reason = orch._should_terminate(state)
+    result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
 
 
@@ -191,7 +211,7 @@ def test_should_terminate_drain_complete_when_all_terminated() -> None:
             _snap("a2", AgentStatus.TERMINATED),
         ],
     )
-    result, reason = orch._should_terminate(state)
+    result, reason = orch._lifecycle.should_terminate(state)
     assert result is True
     assert reason == "drain_complete"
 
@@ -201,9 +221,32 @@ def test_should_terminate_drain_complete_with_no_agents() -> None:
     orch = _make_orch()
     orch._in_flight = {}
     state = _state(SessionState.DRAINING, agents=[])
-    result, reason = orch._should_terminate(state)
+    result, reason = orch._lifecycle.should_terminate(state)
     assert result is True
     assert reason == "drain_complete"
+
+
+def test_should_terminate_drain_blocked_by_errored_agent() -> None:
+    """An ERROR agent blocks drain_complete — the wedge that motivated #30.
+
+    should_terminate requires every agent TERMINATED. A lingering ERROR agent
+    keeps drain open, which is why the resolver/completion fixes must retire
+    ERROR agents during drain (see test_parameter_resolver +
+    test_take_break_escalation). Documents the precondition this fix relies on.
+    """
+    orch = _make_orch()
+    orch._in_flight = {}
+    state = _state(SessionState.DRAINING, agents=[_snap("err1", AgentStatus.ERROR)])
+    result, reason = orch._lifecycle.should_terminate(state)
+    assert result is False
+    assert reason is None
+    # ...and once that agent is retired (cleared -> removed from the live list),
+    # drain completes immediately.
+    completed, completed_reason = orch._lifecycle.should_terminate(
+        _state(SessionState.DRAINING, agents=[])
+    )
+    assert completed is True
+    assert completed_reason == "drain_complete"
 
 
 def test_should_terminate_stop_requested_overrides_drain() -> None:
@@ -212,7 +255,7 @@ def test_should_terminate_stop_requested_overrides_drain() -> None:
     orch._stop_requested = True
     orch._in_flight = {"x": MagicMock()}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.BUSY)])
-    result, reason = orch._should_terminate(state)
+    result, reason = orch._lifecycle.should_terminate(state)
     assert result is True
     assert reason == "stop_requested"
 
@@ -222,21 +265,32 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
     """Drain mode drops queued bootstrap/override plays except end_agent."""
     orch = _make_orch()
     orch._draining = True
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.INSTANTIATE_AGENT,
             params=PlayParams(bypass_preconditions=True),
             kind=OverrideKind.BOOTSTRAP,
         )
     )
+    orch._dispatcher = Dispatcher(
+        host=orch,
+        store=orch._store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id=orch._session_id,
+        repo_root=Path("."),
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        state_builder=MagicMock(),
+        completion=MagicMock(),
+    )
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.IDLE)])
 
-    assert await orch._consume_override(state) is None
-    assert orch._override_queue.empty()
+    assert await orch._dispatcher.consume_override(state) is None
+    assert orch._overrides.empty()
 
 
 # ---------------------------------------------------------------------------
@@ -337,19 +391,32 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
     orch._health = None
     orch._integrity = None
     orch._power_assertion = None
+    orch._loop = MagicMock()
     orch._end_session_report_requested = True
     orch._end_session_report_open_browser = True
-    orch._build_state = AsyncMock(return_value=_state(SessionState.DRAINING, agents=[]))
-    orch._refresh_issues = AsyncMock(side_effect=_refresh)
-    orch._generate_end_session_report = AsyncMock(side_effect=_generate)
+    orch._state_builder = MagicMock()
+    orch._state_builder.build_state = AsyncMock(
+        return_value=_state(SessionState.DRAINING, agents=[])
+    )
+    orch._completion = MagicMock()
+    orch._completion.refresh_issues = AsyncMock(side_effect=_refresh)
     orch._store = AsyncMock()
     orch._store.complete_session = AsyncMock(side_effect=_complete)
     orch._store.close = AsyncMock(side_effect=_close)
     orch._state_provider = MagicMock()
     orch._state_provider.on_session_ended = AsyncMock(side_effect=_ended)
+    orch._drain = DrainController(
+        host=orch,
+        store=orch._store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
+    orch._drain.generate_end_session_report = AsyncMock(side_effect=_generate)
 
     with patch("webbrowser.open", side_effect=lambda _: events.append("open")):
-        await orch._stop_inner(0.0)
+        await orch._drain.stop_inner(0.0)
 
     assert events.index("generate") < events.index("store_close")
     assert events.index("ended") < events.index("open")

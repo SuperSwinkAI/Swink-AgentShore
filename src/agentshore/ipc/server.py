@@ -15,18 +15,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from typing import TYPE_CHECKING
 
 import structlog
 
 from agentshore.ipc.commands import parse_command, validate_command
+from agentshore.ipc.wire import frame
 from agentshore.session_path import IpcEndpoint, is_unix_socket_path, unlink_socket_if_present
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 _logger = structlog.get_logger()
+
+
+async def _write_line(writer: asyncio.StreamWriter, obj: object) -> bool:
+    """Write *obj* as a framed NDJSON line; return False on connection error.
+
+    Uses :func:`agentshore.ipc.wire.frame` so every reply from the IPC server
+    is valid JSON (``allow_nan=False``, non-finite floats nulled out), matching
+    the guarantee the serializer already provides on the outbound state path.
+    Returns ``False`` when the connection has broken so callers can ``break``
+    the read loop without a nested try/except.
+    """
+    try:
+        writer.write(frame(obj).encode("utf-8"))
+        await writer.drain()
+        return True
+    except (ConnectionError, OSError):
+        return False
 
 
 class IpcServer:
@@ -70,51 +87,65 @@ class IpcServer:
         Removes a stale Unix socket file if one already exists at the
         configured path before binding.
         """
-        # Unlink a stale entry at the bind path before binding. Path.exists()
-        # follows symlinks, so a dangling symlink reads as "missing" and used
-        # to slip through — bind() would then create the real socket inside
-        # whatever directory the symlink pointed at (e.g. a vanished pytest
-        # tmpdir). Check symlink status with lstat-aware probes first.
-        if self._endpoint.kind == "unix" and self._socket_path is not None:
-            if self._socket_path.is_symlink():
-                target = self._socket_path.readlink()
-                await _logger.awarning(
-                    "ipc.stale_symlink",
-                    path=str(self._socket_path),
-                    target=str(target),
-                )
-                self._socket_path.unlink()
-            elif self._socket_path.exists():
-                if not is_unix_socket_path(self._socket_path):
-                    raise RuntimeError(
-                        f"refusing to unlink non-socket IPC path: {self._socket_path}"
-                    )
-                await _logger.awarning(
-                    "ipc.stale_socket",
-                    path=str(self._socket_path),
-                )
-                unlink_socket_if_present(self._socket_path)
+        if self._endpoint.kind == "unix":
+            await self._prepare_unix_path()
+        self._server = await self._bind()
+        await _logger.ainfo("ipc.server_started", endpoint=self._endpoint.label)
 
+    async def _prepare_unix_path(self) -> None:
+        """Unlink a stale entry at the Unix bind path before binding.
+
+        ``Path.exists()`` follows symlinks, so a dangling symlink reads as
+        "missing" and used to slip through — ``bind()`` would then create the
+        real socket inside whatever directory the symlink pointed at (e.g. a
+        vanished pytest tmpdir). Check symlink status with lstat-aware probes
+        first.
+        """
+        if self._socket_path is None:
+            return
+        if self._socket_path.is_symlink():
+            target = self._socket_path.readlink()
+            await _logger.awarning(
+                "ipc.stale_symlink",
+                path=str(self._socket_path),
+                target=str(target),
+            )
+            self._socket_path.unlink()
+        elif self._socket_path.exists():
+            if not is_unix_socket_path(self._socket_path):
+                raise RuntimeError(f"refusing to unlink non-socket IPC path: {self._socket_path}")
+            await _logger.awarning(
+                "ipc.stale_socket",
+                path=str(self._socket_path),
+            )
+            unlink_socket_if_present(self._socket_path)
+
+    async def _bind(self) -> asyncio.AbstractServer:
+        """Bind the configured endpoint and return the listening server.
+
+        For TCP, ``self._endpoint`` is rewritten to the concrete bound
+        host/port (so an ephemeral ``port=0`` request resolves to the real
+        port).
+        """
         if self._endpoint.kind == "unix":
             if self._socket_path is None:
-                msg = "Unix IPC endpoint missing path"
-                raise RuntimeError(msg)
-            self._server = await asyncio.start_unix_server(
+                raise RuntimeError("Unix IPC endpoint missing path")
+            server = await asyncio.start_unix_server(
                 self._handle_client,
                 path=str(self._socket_path),
             )
             self._socket_path.chmod(0o600)
-        else:
-            self._server = await asyncio.start_server(
-                self._handle_client,
-                host=self._endpoint.host,
-                port=self._endpoint.port,
-            )
-            sock = self._server.sockets[0] if self._server.sockets else None
-            if sock is not None:
-                host, port = sock.getsockname()[:2]
-                self._endpoint = IpcEndpoint.tcp(str(host), int(port))
-        await _logger.ainfo("ipc.server_started", endpoint=self._endpoint.label)
+            return server
+        server = await asyncio.start_server(
+            self._handle_client,
+            host=self._endpoint.host,
+            port=self._endpoint.port,
+        )
+        sock = server.sockets[0] if server.sockets else None
+        if sock is not None:
+            host, port = sock.getsockname()[:2]
+            self._endpoint = IpcEndpoint.tcp(str(host), int(port))
+        return server
 
     async def stop(self) -> None:
         """Stop the server and remove the Unix socket file if present."""
@@ -182,11 +213,7 @@ class IpcServer:
                         error=str(exc),
                         raw_line=line,
                     )
-                    error_response = json.dumps({"type": "error", "error": str(exc)}) + "\n"
-                    try:
-                        writer.write(error_response.encode("utf-8"))
-                        await writer.drain()
-                    except (ConnectionError, OSError):
+                    if not await _write_line(writer, {"type": "error", "error": str(exc)}):
                         break
                     continue
 
@@ -195,17 +222,16 @@ class IpcServer:
                     # set_cached_state from the provider cannot tear the read.
                     cached = self._cached_state
                     if cached is None:
-                        reply = (
-                            json.dumps({"type": "error", "error": "no cached state available"})
-                            + "\n"
-                        )
+                        if not await _write_line(
+                            writer, {"type": "error", "error": "no cached state available"}
+                        ):
+                            break
                     else:
-                        reply = cached + "\n"
-                    try:
-                        writer.write(reply.encode("utf-8"))
-                        await writer.drain()
-                    except (ConnectionError, OSError):
-                        break
+                        try:
+                            writer.write((cached + "\n").encode("utf-8"))
+                            await writer.drain()
+                        except (ConnectionError, OSError):
+                            break
                     continue
 
                 await self._command_queue.put(cmd)

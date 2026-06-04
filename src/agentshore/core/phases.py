@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from agentshore.agents.manager import AgentManager
 from agentshore.agents.model_tiers import enabled_model_tiers
 from agentshore.core.git_safety import (
     commit_gitignore_if_dirty,
@@ -34,27 +35,27 @@ from agentshore.core.helpers import (
     _ppo_selector_cls,
     _step,
 )
-from agentshore.data.store import SessionRecord
+from agentshore.data.store import DataStore, SessionRecord
 from agentshore.github.labels import AGENTSHORE_WORKFLOW_LABELS
-from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.paths import GLOBAL_CONFIG_DIR as _GLOBAL_CONFIG_DIR
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.paths import project_db_path, project_dir, project_weights_dir
 from agentshore.plays.base import PlayParams
+from agentshore.plays.executor import PlayExecutor
 from agentshore.plays.override import OverrideEntry, OverrideKind
+from agentshore.plays.registry import build_default_registry
+from agentshore.plays.resolver import ParameterResolver
 from agentshore.rl.mask_reason import MaskClassification
 from agentshore.state import AgentType, PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from agentshore.agents.manager import AgentManager
     from agentshore.beads import ProjectGraph
     from agentshore.config import RuntimeConfig
     from agentshore.config.models import PolicyMode
     from agentshore.core.orchestrator import Orchestrator
-    from agentshore.data.store import DataStore, GitHubIssueRecord
+    from agentshore.data.store import GitHubIssueRecord
     from agentshore.github.adapter import GitHubAdapter
-    from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.registry import PlayRegistry
     from agentshore.rl.selector import PPOSelector
     from agentshore.state import StateProvider
@@ -85,11 +86,8 @@ async def _phase_init_datastore(repo_root: Path) -> DataStore:
         from agentshore.data.integrity import restore_from_snapshot_ring
 
         restore_from_snapshot_ring(db_path, db_dir)
-        # Look up DataStore via the package so tests that
-        # ``patch("agentshore.core.DataStore", ...)`` intercept construction.
-        from agentshore import core as _core_pkg
-
-        store: DataStore = _core_pkg.DataStore(db_path)
+        # Tests patch ``agentshore.core.phases.DataStore`` to intercept construction.
+        store: DataStore = DataStore(db_path)
         await store.initialize()
         return store
 
@@ -118,12 +116,10 @@ async def _phase_init_executor(
 
     Returns ``(manager, gh, executor, registry)``.
     """
-    # Look up patchable symbols via the agentshore.core package so tests that
-    # ``patch("agentshore.core.AgentManager", ...)`` etc. intercept them.
-    from agentshore import core as _core_pkg
-
+    # Tests patch these symbols on ``agentshore.core.phases`` (their binding
+    # home) to intercept construction.
     async with _step("init_manager"):
-        manager = _core_pkg.AgentManager(
+        manager = AgentManager(
             session_id=sid,
             store=store,
             cfg=cfg,
@@ -138,11 +134,11 @@ async def _phase_init_executor(
         gh = GitHubAdapter(store=store, session_id=sid, cfg=cfg)
 
     async with _step("init_executor"):
-        registry = _core_pkg.build_default_registry(cfg)
-        resolver = _core_pkg.ParameterResolver(
+        registry = build_default_registry(cfg)
+        resolver = ParameterResolver(
             store=store, manager=manager, cfg=cfg, github=gh, project_path=repo_root
         )
-        executor = _core_pkg.PlayExecutor(
+        executor = PlayExecutor(
             registry=registry,
             resolver=resolver,
             store=store,
@@ -168,8 +164,8 @@ async def _phase_init_metrics(
             store=store,
             session_id=sid,
             stagnation_warn_after=cfg.rl.stagnation.warn_after,
-            velocity_provider=orch._compute_rolling_velocity,
-            executor_skip_rate_provider=orch._executor_skip_rate_recent_50,
+            velocity_provider=orch._velocity.compute_rolling_velocity,
+            executor_skip_rate_provider=orch._velocity.executor_skip_rate_recent_50,
         )
         orch._config_hash = _compute_config_hash(cfg)
         orch._policy_version = f"ppo-v1-{orch._config_hash[:8]}"
@@ -316,6 +312,7 @@ async def _phase_init_ppo_selector(
             selector=ppo,
             cfg=cfg,
             host=orch,
+            velocity=orch._velocity,
         )
 
         # Single autonomous-stop signal: drain after N consecutive ticks with no
@@ -507,7 +504,7 @@ async def _phase_git_safety_sweep(
             )
 
         default_branch, assumed = await asyncio.to_thread(resolve_default_branch, repo_root)
-        orch._default_branch = default_branch
+        orch._main_repo.default_branch = default_branch
         if assumed:
             _logger.warning(
                 "default_branch_assumed",
@@ -625,12 +622,9 @@ async def _clear_session_scoped_bead_progress(
 async def _phase_clear_beads_in_progress(*, repo_root: Path, sid: str) -> None:
     """Clear stale beads progress before the first session state snapshot."""
     async with _step("clear_beads_in_progress"):
-        # Dispatch via the package attribute so tests that
-        # ``patch("agentshore.core._clear_session_scoped_bead_progress", ...)``
-        # intercept the call.
-        from agentshore import core as _core_pkg
-
-        await _core_pkg._clear_session_scoped_bead_progress(
+        # Tests patch ``agentshore.core.phases._clear_session_scoped_bead_progress``
+        # (this module's binding) to intercept the call.
+        await _clear_session_scoped_bead_progress(
             repo_root=repo_root,
             sid=sid,
             phase="session_start",
@@ -741,10 +735,11 @@ async def _phase_fetch_github(
                 # cursor exists yet, so we always do a complete fetch. After
                 # success, advance the cursor so subsequent refreshes can use
                 # the cheap incremental ``since=`` path.
-                from datetime import UTC, datetime, timedelta
+                from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
-                startup_cutoff = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
-                issues = await gh.list_issues(state="open")
+                syncer = GitHubSyncer(gh=gh, store=store, cfg=cfg, session_id=sid)
+                startup_cutoff = sync_cursor_now()
+                issues = await syncer.fetch_issues(state="open", since=None)
                 if issues is None:
                     _logger.error(
                         "github_issues_fetch_failed",
@@ -754,8 +749,7 @@ async def _phase_fetch_github(
                         session_id=sid,
                     )
                 elif issues:
-                    await store.cache_github_issues(sid, issues)
-                    await store.set_last_issue_sync_at(sid, startup_cutoff)
+                    await syncer.cache_issues(issues, cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_cached",
                         count=len(issues),
@@ -771,19 +765,15 @@ async def _phase_fetch_github(
                 else:
                     # Empty result is success — set cursor so we don't repeat
                     # the full sweep on the next refresh.
-                    await store.set_last_issue_sync_at(sid, startup_cutoff)
+                    await syncer.cache_issues([], cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_fetched_empty",
                         expected_issues_known=True,
                         note="0 open issues on GitHub (healthy empty-repo state)",
                         session_id=sid,
                     )
-                pull_requests = await gh.list_pull_requests(
-                    state="open", limit=GITHUB_PR_FETCH_LIMIT
-                )
-                pull_requests = filter_trusted_pull_requests(
-                    pull_requests,
-                    cfg,
+                pull_requests = await syncer.fetch_trusted_open_pull_requests(
+                    limit=GITHUB_PR_FETCH_LIMIT,
                     context="startup",
                 )
                 if pull_requests:
@@ -907,28 +897,83 @@ def _phase_queue_agent_instantiation(
     cfg: RuntimeConfig,
     seed_path: Path | None,
     open_issues_count: int = 0,
+    graph_has_epics: bool = True,
 ) -> None:
-    """Queue the bootstrap recipe — only when the user provided a seed input.
+    """Queue the bootstrap recipe.
 
-    Sequence when a seed is provided:
+    The **seed recipe** runs whenever a seed input was provided *or* the beads
+    graph has no epics yet (``graph_has_epics`` is False). In the latter case
+    SEED_PROJECT runs *seedless* — it bootstraps the graph from the repo +
+    GitHub issues (its precondition carve-out makes it eligible exactly when the
+    graph is empty). Routing the no-epic case here is what prevents the
+    open-path deadlock: GROOM_BACKLOG against an epic-less graph has nothing to
+    reconcile and fails, so we must create epics first.
+
+    Seed recipe:
       1. INSTANTIATE_AGENT — first configured enabled large-tier agent.
-      2. SEED_PROJECT — runs on the large agent against the seed input;
-         agent is BUSY so the idle-agent gate holds the remaining queue
-         until the seed audit completes.
+      2. SEED_PROJECT — runs on the large agent (against the seed input when
+         present, else seedless); agent is BUSY so the idle-agent gate holds the
+         remaining queue until the seed audit completes.
       3. INSTANTIATE_AGENT — first configured enabled medium-tier agent of a
          different type, giving the initial fleet cross-backend coverage.
+      4. GROOM_BACKLOG — reconciles the freshly-seeded beads graph against
+         GitHub before the PPO takes over; gated on SEED_PROJECT completing
+         (same trunk-exclusivity gate as the medium spawn, #569).
 
-    Without a seed input, the bootstrap is a minimal cold-start backstop: a
-    single large-tier ``INSTANTIATE_AGENT`` override (#11). The PPO still owns
-    fleet growth and composition from there — this only guarantees the loop
-    spawns one agent from cold so it can ever act. The cleanup-threshold
-    heuristic that previously forced a first *play* in the no-seed path is
-    removed; only the lone agent spawn remains.
+    **Open recipe** — no seed input *and* the graph already has epics (a project
+    being resumed): a minimal cold-start backstop plus a grooming pass:
+      1. INSTANTIATE_AGENT — single large-tier agent (#11). The mask zeroes
+         INSTANTIATE_AGENT for a zero-agent / no-work / non-terminal fleet, so
+         one forced spawn breaks the catch-22; the PPO owns all subsequent
+         fleet growth.
+      2. GROOM_BACKLOG — once the agent is online, reconcile the beads↔GitHub
+         graph (sync untracked GH issues, clear resolved blocks) so the PPO
+         starts from a clean backlog. Queued directly behind INSTANTIATE_AGENT
+         with **no** ``wait_for`` gate — exactly like SEED_PROJECT in the seed
+         recipe. As the first agent-consumer it must claim the agent by queue
+         position: ``_consume_override`` returns one play per tick and PPO only
+         selects on a tick where it returns ``None``. A ``wait_for`` gate here
+         would yield such a ``None`` tick while the agent sits idle, and PPO
+         would free-select a play onto it before groom's gate lifts — the agent
+         would be busy by the time groom dequeues and groom would be skipped for
+         staffing. No gate ⇒ groom dispatches the next tick onto the freshly
+         idle agent, before PPO ever gets a turn.
 
     All entries are queued with ``bypass_preconditions=True`` so the
-    deterministic recipe is not stalled by the cooldown or
+    deterministic recipe is not stalled by the cooldown, warmup-floor, or
     first-play-completion gates that PPO selections still see.
     """
+
+    def _enqueue_instantiate(
+        agent_type: AgentType,
+        tier: str,
+        *,
+        wait_for_play_type: PlayType | None = None,
+    ) -> None:
+        orch._overrides.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.INSTANTIATE_AGENT,
+                params=PlayParams(
+                    target_agent_type=agent_type.value,
+                    target_model_tier=tier,
+                    bypass_preconditions=True,
+                ),
+                kind=OverrideKind.BOOTSTRAP,
+                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+                wait_for_play_type=wait_for_play_type,
+            )
+        )
+
+    def _enqueue_groom(*, wait_for_play_type: PlayType | None = None) -> None:
+        orch._overrides.put_nowait(
+            OverrideEntry(
+                play_type=PlayType.GROOM_BACKLOG,
+                params=PlayParams(bypass_preconditions=True),
+                kind=OverrideKind.BOOTSTRAP,
+                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+                wait_for_play_type=wait_for_play_type,
+            )
+        )
 
     def _first_enabled_for_tier(
         tier: str,
@@ -951,7 +996,7 @@ def _phase_queue_agent_instantiation(
                 return agent_type
         return None
 
-    if seed_path is None:
+    if seed_path is None and graph_has_epics:
         # Open-start cold-start backstop (#11): queue exactly one large-tier
         # INSTANTIATE_AGENT override so the loop always spawns the first agent
         # from cold. The previous no-op design assumed the action mask left
@@ -971,51 +1016,41 @@ def _phase_queue_agent_instantiation(
             large_agent_type=large_agent_type.value if large_agent_type is not None else None,
         )
         if large_agent_type is not None:
-            orch._override_queue.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=large_agent_type.value,
-                        target_model_tier="large",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                )
-            )
+            _enqueue_instantiate(large_agent_type, "large")
+            # Groom the backlog once the cold-start agent is online so the
+            # beads↔GitHub graph is reconciled (untracked GH issues synced,
+            # resolved blocks cleared) before the PPO takes over. NO wait_for
+            # gate: as the first agent-consumer, groom must claim the agent by
+            # queue position (mirroring SEED_PROJECT in the seed recipe). A gate
+            # here yields a None override tick while the agent is idle, letting
+            # PPO free-select onto it first and starving groom (staffing skip).
+            _enqueue_groom()
         return
 
+    # Seed recipe: explicit seed input, or seedless because the graph has no
+    # epics yet (routing the no-epic open case here avoids the groom-against-
+    # empty-graph deadlock — SEED_PROJECT creates the epics groom needs).
     first_play_type = PlayType.SEED_PROJECT
     _logger.info(
         "bootstrap_first_play_decided",
         play_type=first_play_type.value,
-        reason="seed_input_provided",
+        reason="seed_input_provided" if seed_path is not None else "no_epics_needs_seed",
         open_issues_count=open_issues_count,
-        seed_input_provided=True,
+        seed_input_provided=seed_path is not None,
+        graph_has_epics=graph_has_epics,
     )
 
     t0 = time.perf_counter()
     try:
         large_agent_type = _first_enabled_for_tier("large")
         if large_agent_type is not None:
-            orch._override_queue.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=large_agent_type.value,
-                        target_model_tier="large",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                )
-            )
+            _enqueue_instantiate(large_agent_type, "large")
 
         first_play_params = PlayParams(
-            seed_path=str(seed_path),
+            seed_path=str(seed_path) if seed_path is not None else None,
             bypass_preconditions=True,
         )
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=first_play_type,
                 params=first_play_params,
@@ -1033,19 +1068,13 @@ def _phase_queue_agent_instantiation(
             # issue #569: gate the medium spawn behind the first-play (cleanup
             # or seed_project) completing — both touch trunk and need exclusive
             # access. bypass_preconditions still skips the instantiate cooldown.
-            orch._override_queue.put_nowait(
-                OverrideEntry(
-                    play_type=PlayType.INSTANTIATE_AGENT,
-                    params=PlayParams(
-                        target_agent_type=medium_agent_type.value,
-                        target_model_tier="medium",
-                        bypass_preconditions=True,
-                    ),
-                    kind=OverrideKind.BOOTSTRAP,
-                    enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                    wait_for_play_type=first_play_type,
-                )
-            )
+            _enqueue_instantiate(medium_agent_type, "medium", wait_for_play_type=first_play_type)
+        # Groom the freshly-seeded graph once SEED_PROJECT completes — same
+        # trunk-exclusivity gate as the medium spawn (#569). Reconciles
+        # beads↔GitHub before the PPO drives. Requires an agent, so gate on the
+        # large agent having been queued.
+        if large_agent_type is not None:
+            _enqueue_groom(wait_for_play_type=first_play_type)
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         _logger.info(

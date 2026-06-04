@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from textual.reactive import reactive
 from textual.widget import Widget
 
+from agentshore.ui.format import truncate
+
 if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.state import ActivePlay, AgentSnapshot, PlayType
@@ -45,11 +47,11 @@ class AgentPanel(Widget):
         for agent in self.agents[:MAX_VISIBLE_AGENTS]:
             sym = status_symbols.get(agent.status.value, "?")
             play = _agent_play(agent, self.active_play)
-            name = _truncate(agent.display_name or agent.agent_id, 16)
+            name = truncate(agent.display_name or agent.agent_id, 16)
             lines.append(
                 f"  {sym} {name:<16} {agent.status.value.upper():<10} "
-                f"{_truncate(play.play_label, 20):<20} "
-                f"{_truncate(play.target, 10):<10} "
+                f"{truncate(play.play_label, 20):<20} "
+                f"{truncate(play.target, 10):<10} "
                 f"{play.elapsed:<8} "
                 f"{_compact_count(agent.context_size):>6} "
                 f"${agent.total_cost:.3f}"
@@ -161,9 +163,3 @@ def _compact_count(value: int) -> str:
     if abs(value) >= 1_000:
         return f"{value / 1_000:.1f}k"
     return str(value)
-
-
-def _truncate(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: limit - 1] + "…"

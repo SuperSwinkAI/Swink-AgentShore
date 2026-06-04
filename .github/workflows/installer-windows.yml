@@ -1,9 +1,9 @@
 name: Installer — Windows
 
 # Tag-triggered Windows installer build.
-# No Authenticode signing yet (cert not acquired; see decision 0.10b).
+# No Authenticode signing yet (cert not acquired).
 # TODO: add signing step here when cert + AZURE_KEY_VAULT_URI / WINDOWS_SIGNING_CERT
-#       secrets are configured. See MIGRATION_TODO.md §10.3.
+#       secrets are configured.
 
 on:
   push:

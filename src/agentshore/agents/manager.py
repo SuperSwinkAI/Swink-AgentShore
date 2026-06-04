@@ -24,11 +24,10 @@ from agentshore.agents.worktree import WorktreeManager
 from agentshore.config import AgentConfig
 from agentshore.data.store import AgentRecord
 from agentshore.errors import (
-    AgentAPIError,
     AgentAuthError,
     AgentOutputInvalid,
-    AgentRateLimitError,
     AgentTimeout,
+    ErrorClass,
     OrchestratorError,
     PreconditionFailed,
 )
@@ -174,6 +173,34 @@ class AgentManager:
             github_identity=github_login,
         )
 
+        # Resolve the identity overlay exactly once and verify repo access
+        # *before* registering the handle into circuit breakers / DataStore /
+        # _handles. On preflight failure we mark the (unregistered) handle ERROR
+        # and return it without leaving a half-constructed agent live in the
+        # manager. On success the validated overlay is cached on the handle so
+        # dispatch() never re-resolves the token or re-runs `gh repo view`.
+        if agent_type in _CLI_AGENT_TYPES and ident_name:
+            try:
+                identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
+                await asyncio.to_thread(
+                    verify_identity_repo_access,
+                    self._working_dir,
+                    identity_env,
+                )
+            except (IdentityResolutionError, AgentAuthError) as exc:
+                handle.last_error_class = ErrorClass.AUTH
+                handle.transition_to(AgentStatus.ERROR)
+                _logger.warning(
+                    "agent_repo_access_validation_failed",
+                    agent_id=agent_id,
+                    agent_type=agent_type.value,
+                    model_tier=tier,
+                    github_identity=github_login,
+                    error=str(exc),
+                )
+                return handle
+            handle.identity_env = identity_env
+
         cb_cfg = self._cfg.circuit_breaker
         self._circuit_breakers[agent_id] = CircuitBreaker(
             failures=cb_cfg.failures,
@@ -193,25 +220,6 @@ class AgentManager:
         )
 
         self._handles[agent_id] = handle
-        if agent_type in _CLI_AGENT_TYPES and ident_name:
-            try:
-                identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
-                await asyncio.to_thread(
-                    verify_identity_repo_access,
-                    self._working_dir,
-                    identity_env,
-                )
-            except (IdentityResolutionError, AgentAuthError) as exc:
-                handle.last_error_class = "auth"
-                handle.transition_to(AgentStatus.ERROR)
-                _logger.warning(
-                    "agent_repo_access_validation_failed",
-                    agent_id=agent_id,
-                    agent_type=agent_type.value,
-                    model_tier=tier,
-                    github_identity=github_login,
-                    error=str(exc),
-                )
         _logger.info(
             "agent_instantiated",
             agent_id=agent_id,
@@ -274,26 +282,26 @@ class AgentManager:
         # per-agent `dispatch_share` reflects work attempts, not just
         # completions. ``increment_agent_tasks`` (further down) still tracks
         # the verdict-based counters separately. The handle's ``dispatches``
-        # counter is also bumped here so ``_build_agent_snapshots`` can read
+        # counter is also bumped here so ``build_agent_snapshots`` can read
         # the live value without a per-tick DB round-trip (cli_agent.py used
         # to bump this only on CLI dispatches; centralising it in the
         # manager makes API agents tracked too).
         handle.dispatches += 1
         await self._store.increment_agent_dispatch_count(agent_id)
 
+        # The identity overlay was resolved and repo-access-verified once at
+        # instantiate(); reuse the cached copy rather than re-shelling `gh` on
+        # the dispatch hot path. Copy before adding the per-dispatch
+        # AGENTSHORE_PROJECT_PATH key so the handle's cached overlay stays pristine.
+        identity_env = dict(handle.identity_env)
+        # Inject the canonical absolute project root so skill agents can anchor
+        # `MAIN_REPO` against a value AgentShore controls instead of the
+        # subprocess's pwd (which can be a leftover worktree path). See
+        # agentshore-issue-pickup/SKILL.md and siblings for the
+        # `${AGENTSHORE_PROJECT_PATH:-$(pwd)}` consumer pattern.
+        identity_env["AGENTSHORE_PROJECT_PATH"] = str(self._working_dir.resolve())
+
         try:
-            identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
-            # Inject the canonical absolute project root so skill agents can
-            # anchor `MAIN_REPO` against a value AgentShore controls instead of
-            # the subprocess's pwd (which can be a leftover worktree path).
-            # See agentshore-issue-pickup/SKILL.md and siblings for the
-            # `${AGENTSHORE_PROJECT_PATH:-$(pwd)}` consumer pattern.
-            identity_env["AGENTSHORE_PROJECT_PATH"] = str(self._working_dir.resolve())
-            await asyncio.to_thread(
-                verify_identity_repo_access,
-                self._working_dir,
-                identity_env,
-            )
             on_spawned = None
             if self._on_subprocess_spawned is not None:
                 spawned_cb = self._on_subprocess_spawned
@@ -323,7 +331,17 @@ class AgentManager:
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()
             if isinstance(exc, AgentTimeout):
-                handle.last_error_class = getattr(exc, "error_class", "timeout_transient")
+                raw_error_class = getattr(exc, "error_class", ErrorClass.TIMEOUT_TRANSIENT)
+                # PlayTimeoutError.error_class carries the precise timeout
+                # sub-class (timeout_wallclock / _stream_idle / _post_response);
+                # a bare AgentTimeout has no attribute, so the default applies.
+                # Coerce to ErrorClass, collapsing any unexpected value to
+                # UNKNOWN rather than persisting an unclassified string.
+                handle.last_error_class = (
+                    ErrorClass(raw_error_class)
+                    if raw_error_class in ErrorClass._value2member_map_
+                    else ErrorClass.UNKNOWN
+                )
                 handle.timeout_count += 1
                 handle.transition_to(AgentStatus.IDLE)
                 await self._store.increment_agent_tasks(agent_id, failed=1)
@@ -350,14 +368,8 @@ class AgentManager:
                     timeout_count=handle.timeout_count,
                 )
                 raise
-            if isinstance(exc, (IdentityResolutionError, AgentAuthError)):
-                handle.last_error_class = "auth"
-            elif isinstance(exc, AgentRateLimitError):
-                handle.last_error_class = "rate_limit"
-            elif isinstance(exc, AgentOutputInvalid):
-                handle.last_error_class = "output_invalid"
-            elif isinstance(exc, AgentAPIError):
-                handle.last_error_class = "api"
+            if isinstance(exc, AgentOutputInvalid):
+                handle.last_error_class = ErrorClass.OUTPUT_INVALID
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
@@ -437,7 +449,7 @@ class AgentManager:
 
         if handle.status != AgentStatus.ERROR:
             return False
-        if handle.last_error_class in {"auth", "invalid_model"}:
+        if handle.last_error_class in {ErrorClass.AUTH, ErrorClass.INVALID_MODEL}:
             _logger.debug(
                 "agent_recovery_skipped_config_error",
                 agent_id=agent_id,
@@ -461,16 +473,27 @@ class AgentManager:
     async def mark_agent_error(
         self,
         agent_id: str,
-        error_class: str,
+        error_class: ErrorClass | str,
         reason: str,
         *,
         increment_failed: bool = False,
     ) -> None:
-        """Attach a semantic runtime/config failure to one concrete agent."""
+        """Attach a semantic runtime/config failure to one concrete agent.
+
+        ``error_class`` accepts a bare string at the boundary (current callers
+        pass ``"auth"``) and is coerced to :class:`ErrorClass`, collapsing any
+        unrecognised value to :attr:`ErrorClass.UNKNOWN`.
+        """
         handle = self._get_handle(agent_id)
         cb = self._circuit_breakers[agent_id]
         cb.record_failure()
-        handle.last_error_class = error_class
+        coerced = (
+            ErrorClass(error_class)
+            if error_class in ErrorClass._value2member_map_
+            else ErrorClass.UNKNOWN
+        )
+        error_class = coerced
+        handle.last_error_class = coerced
         handle.transition_to(AgentStatus.ERROR)
         if increment_failed:
             await self._store.increment_agent_tasks(agent_id, failed=1)
