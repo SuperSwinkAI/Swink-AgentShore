@@ -74,6 +74,40 @@ _idle_can_review_agents = idle_can_review_agents
 _pick_reviewer_for_pr = pick_reviewer_for_pr
 
 
+# ---------------------------------------------------------------------------
+# Override-resolution dispatch table (mirrors _SkillSpec in dispatch.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _OverrideSpec:
+    """Per-play-type override-resolution rule.
+
+    ``required_field``: PlayParams attribute that must be non-None for the
+    targeted path; when None the path falls through to a re-resolve from scratch
+    (unless ``branch_bypass`` applies).
+    ``use_specific_pr``: True → call ``_resolve_specific_pr``; False → ``_claim_params``.
+    ``branch_bypass``: True → when ``required_field`` is None but ``branch`` is
+    set, re-run with ``bypass_preconditions=True`` (SYSTEMATIC_DEBUGGING).
+    """
+
+    required_field: str
+    use_specific_pr: bool = False
+    branch_bypass: bool = False
+
+
+_OVERRIDE_SPECS: dict[PlayType, _OverrideSpec] = {
+    # PR-work plays require pr_number; missing → fresh resolve.
+    **{pt: _OverrideSpec("pr_number", use_specific_pr=True) for pt in _PR_WORK_PLAY_TYPES},
+    # Issue-work plays require issue_number; missing → fresh resolve.
+    **{pt: _OverrideSpec("issue_number") for pt in _ISSUE_WORK_PLAY_TYPES},
+    # SYSTEMATIC_DEBUGGING: issue_number primary; branch-only path bypasses preconditions.
+    PlayType.SYSTEMATIC_DEBUGGING: _OverrideSpec("issue_number", branch_bypass=True),
+    # BROWSER_VERIFICATION: branch required; missing → fresh resolve.
+    PlayType.BROWSER_VERIFICATION: _OverrideSpec("branch"),
+}
+
+
 def _claim_group_id(params: PlayParams) -> str | None:
     raw = params.extras.get("claim_group_id")
     return raw if isinstance(raw, str) and raw else None
@@ -401,31 +435,18 @@ class ParameterResolver:
                 )
                 return None
 
-        if play_type in _PR_WORK_PLAY_TYPES:
-            if override.pr_number is None:
+        spec = _OVERRIDE_SPECS.get(play_type)
+        if spec is not None:
+            field_val = getattr(override, spec.required_field)
+            if field_val is None:
+                if spec.branch_bypass and override.branch is not None:
+                    # SYSTEMATIC_DEBUGGING with branch-only: bypass preconditions.
+                    override = dataclasses.replace(override, bypass_preconditions=True)
+                    return await self._claim_params(play_type, state, override)
                 return await self.resolve(play_type, state, override=PlayParams())
-            return await self._resolve_specific_pr(play_type, state, override)
-
-        if play_type in _ISSUE_WORK_PLAY_TYPES:
-            if override.issue_number is None:
-                return await self.resolve(play_type, state, override=PlayParams())
-            # Eligibility (issue open + available) is owned by the
-            # EligibilityAuthority's confirm(); the resolver only claims.
+            if spec.use_specific_pr:
+                return await self._resolve_specific_pr(play_type, state, override)
             return await self._claim_params(play_type, state, override)
-
-        if play_type == PlayType.SYSTEMATIC_DEBUGGING:
-            # Debuggability is owned by the EligibilityAuthority's confirm(); the
-            # resolver only claims. With an issue_number it claims that issue;
-            # branch-only debugging bypasses preconditions; with neither, it
-            # re-resolves from scratch.
-            if override.issue_number is None:
-                if override.branch is None:
-                    return await self.resolve(play_type, state, override=PlayParams())
-                override = dataclasses.replace(override, bypass_preconditions=True)
-            return await self._claim_params(play_type, state, override)
-
-        if play_type == PlayType.BROWSER_VERIFICATION and override.branch is None:
-            return await self.resolve(play_type, state, override=PlayParams())
 
         return await self._claim_params(play_type, state, override)
 
