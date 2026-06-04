@@ -282,14 +282,14 @@ def test_write_plan_blocked_when_all_issues_covered_by_open_prs() -> None:
     errs = WriteImplementationPlanPlay().preconditions(
         _state(issues=[_issue(num=1)], pull_requests=[pr])
     )
-    assert any("covered by open PR" in e or "eligible issue" in e for e in errs)
+    assert any("covered by open PR" in e.text or "eligible issue" in e.text for e in errs)
 
 
 def test_write_plan_blocked_when_only_in_flight() -> None:
     state = _state(issues=[_issue(num=1)])
     state.in_flight_issues = [1]
     errs = WriteImplementationPlanPlay().preconditions(state)
-    assert any("eligible issue" in e for e in errs)
+    assert any("eligible issue" in e.text for e in errs)
 
 
 def test_write_plan_unblocked_when_eligible_issue_remains() -> None:
@@ -315,7 +315,7 @@ def test_write_plan_unblocked_when_eligible_issue_remains() -> None:
 
 def test_systematic_debugging_requires_failure_signal() -> None:
     errors = SystematicDebuggingPlay().preconditions(_state(issues=[_issue()]))
-    assert errors == [
+    assert [e.text for e in errors] == [
         "no explicit QA/debug issue available (all in-flight, PR-linked, or none exist)"
     ]
 
@@ -375,7 +375,7 @@ def test_issue_pickup_blocked_when_only_issue_is_disallowed() -> None:
         _state(agents=[_snap()], issues=[_issue(labels=["agentshore/disallowed"])])
     )
 
-    assert any("issue-label gates" in e for e in errors)
+    assert any("issue-label gates" in e.text for e in errors)
 
 
 def test_issue_pickup_blocked_when_open_pr_queue_full() -> None:
@@ -387,8 +387,8 @@ def test_issue_pickup_blocked_when_open_pr_queue_full() -> None:
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
-    assert any("too many open PRs" in e for e in errors)
-    assert any("11" in e for e in errors)
+    assert any("too many open PRs" in e.text for e in errors)
+    assert any("11" in e.text for e in errors)
 
 
 def test_issue_pickup_blocked_at_threshold() -> None:
@@ -397,8 +397,8 @@ def test_issue_pickup_blocked_at_threshold() -> None:
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
-    assert any("too many open PRs" in e for e in errors)
-    assert any("10" in e for e in errors)
+    assert any("too many open PRs" in e.text for e in errors)
+    assert any("10" in e.text for e in errors)
 
 
 def test_issue_pickup_allowed_below_threshold() -> None:
@@ -1128,21 +1128,21 @@ def test_run_qa_precondition_met() -> None:
 
 def test_run_qa_blocks_before_min_plays() -> None:
     errors = RunQAPlay().preconditions(_state(agents=[_snap()], total_plays=6))
-    assert any(r == "warmup floor (6/20 plays)" for r in errors)
+    assert any(r.text == "warmup floor (6/20 plays)" for r in errors)
 
 
 def test_run_qa_blocks_in_flight() -> None:
     errors = RunQAPlay().preconditions(
         _state(agents=[_snap()], in_flight_plays=[PlayType.RUN_QA], total_plays=30)
     )
-    assert any(r == "run_qa already in flight" for r in errors)
+    assert any(r.text == "run_qa already in flight" for r in errors)
 
 
 def test_run_qa_blocks_during_cooldown() -> None:
     errors = RunQAPlay().preconditions(
         _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 19})
     )
-    assert errors == ["run_qa cooldown (19/20 plays since last)"]
+    assert [e.text for e in errors] == ["run_qa cooldown (19/20 plays since last)"]
 
 
 def test_run_qa_allows_after_cooldown() -> None:
@@ -1184,7 +1184,7 @@ def test_merge_pr_blocked_when_no_mergeable_pr() -> None:
         _pr(num=3, review_decision="APPROVED"),
     ]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
-    assert errors == [_MERGE_PR_BLOCK_ERR]
+    assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
 
 
 def test_merge_pr_blocked_when_pr_mergeable_but_not_approved() -> None:
@@ -1193,12 +1193,12 @@ def test_merge_pr_blocked_when_pr_mergeable_but_not_approved() -> None:
     # shouldn't satisfy.
     prs = [_pr(state="open", mergeable="MERGEABLE")]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
-    assert errors == [_MERGE_PR_BLOCK_ERR]
+    assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
 
 
 def test_merge_pr_blocked_when_no_prs() -> None:
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=[]))
-    assert errors == [_MERGE_PR_BLOCK_ERR]
+    assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
 
 
 def test_merge_pr_precondition_met_via_agentshore_internal_pass() -> None:
@@ -1230,7 +1230,7 @@ def test_merge_pr_blocked_when_agentshore_pass_is_stale() -> None:
         )
     ]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
-    assert errors == [_MERGE_PR_BLOCK_ERR]
+    assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
 
 
 def test_merge_pr_blocked_when_agentshore_block_at_current_head() -> None:
@@ -1245,7 +1245,7 @@ def test_merge_pr_blocked_when_agentshore_block_at_current_head() -> None:
         )
     ]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
-    assert errors == [_MERGE_PR_BLOCK_ERR]
+    assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
 
 
 # ---------------------------------------------------------------------------
@@ -1291,7 +1291,7 @@ def test_refine_tasks_masked_when_no_issue_needs_refinement() -> None:
 def test_browser_verify_precondition_fails_when_disabled() -> None:
     reasons = BrowserVerificationPlay(browser_enabled=False).preconditions(_state())
     assert len(reasons) == 1
-    assert "disabled" in reasons[0].lower()
+    assert "disabled" in reasons[0].text
 
 
 def test_browser_verify_precondition_met_when_enabled() -> None:

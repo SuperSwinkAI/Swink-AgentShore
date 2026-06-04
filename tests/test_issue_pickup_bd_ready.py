@@ -64,7 +64,7 @@ def test_preconditions_no_graph_does_not_block_on_beads() -> None:
     state = _make_state(graph=None)
     play = IssuePickupPlay()
     failures = play.preconditions(state)
-    assert not any("groom_backlog" in f for f in failures), (
+    assert not any("groom_backlog" in f.text for f in failures), (
         f"Beads gate must not fire when graph is None; got: {failures}"
     )
 
@@ -89,7 +89,7 @@ def test_preconditions_epics_no_ready_tasks_blocks() -> None:
     state = _make_state(graph=graph)
     play = IssuePickupPlay()
     failures = play.preconditions(state)
-    assert any("groom_backlog" in f for f in failures), (
+    assert any("groom_backlog" in f.text for f in failures), (
         f"Expected groom_backlog message; got: {failures}"
     )
 
@@ -114,7 +114,7 @@ def test_preconditions_epics_with_ready_tasks_does_not_block() -> None:
     state = _make_state(graph=graph)
     play = IssuePickupPlay()
     failures = play.preconditions(state)
-    assert not any("groom_backlog" in f for f in failures), (
+    assert not any("groom_backlog" in f.text for f in failures), (
         f"Beads gate must not fire when ready tasks exist; got: {failures}"
     )
 
@@ -135,6 +135,6 @@ def test_preconditions_no_epics_does_not_block() -> None:
     state = _make_state(graph=graph)
     play = IssuePickupPlay()
     failures = play.preconditions(state)
-    assert not any("groom_backlog" in f for f in failures), (
+    assert not any("groom_backlog" in f.text for f in failures), (
         f"Beads gate must not fire when there are no epics; got: {failures}"
     )

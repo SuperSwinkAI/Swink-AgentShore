@@ -98,7 +98,7 @@ def test_cleanup_preconditions_capability_gated() -> None:
 
 def test_cleanup_preconditions_in_flight() -> None:
     errors = CleanupPlay().preconditions(_state(in_flight_plays=[PlayType.CLEANUP]))
-    assert errors == ["cleanup already in flight"]
+    assert [e.text for e in errors] == ["cleanup already in flight"]
 
 
 def test_cleanup_blocked_during_cooldown() -> None:
@@ -106,7 +106,7 @@ def test_cleanup_blocked_during_cooldown() -> None:
     errors = CleanupPlay().preconditions(
         _state(plays_since_last_play_type={PlayType.CLEANUP: plays_left})
     )
-    assert errors == [f"cleanup cooldown ({plays_left}/{20} plays since last)"]
+    assert [e.text for e in errors] == [f"cleanup cooldown ({plays_left}/{20} plays since last)"]
 
 
 def test_cleanup_allowed_after_cooldown() -> None:
@@ -146,7 +146,7 @@ def test_cleanup_blocked_warmup_when_seed_project_just_ran() -> None:
             plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
         ),
     )
-    assert errors == ["warmup floor (1/20 plays)"]
+    assert [e.text for e in errors] == ["warmup floor (1/20 plays)"]
 
 
 def test_cleanup_allowed_after_warmup_completes_on_fresh_project() -> None:

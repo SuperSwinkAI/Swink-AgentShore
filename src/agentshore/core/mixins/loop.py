@@ -22,6 +22,7 @@ from agentshore.core.tick_action import (
 )
 from agentshore.plays.base import PlayParams
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
+from agentshore.rl.mask_reason import MaskReason
 from agentshore.state import AgentStatus, PlaySkipReason, PlayType, SessionState
 
 if TYPE_CHECKING:
@@ -352,7 +353,11 @@ class LoopRunner:
         # diagnosis is more specific than the generic ``all_masked`` bucket.
         if reason_counts:
             top_reason = reason_counts[0].get("reason")
-            if isinstance(top_reason, str):
+            if isinstance(top_reason, MaskReason):
+                low = top_reason.text.lower()
+                if "cooldown" in low or "recency" in low:
+                    return "cooldown_active"
+            elif isinstance(top_reason, str):
                 low = top_reason.lower()
                 if "cooldown" in low or "recency" in low:
                     return "cooldown_active"
