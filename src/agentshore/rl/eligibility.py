@@ -431,8 +431,13 @@ class EligibilityAuthority:
         if pt == PlayType.INSTANTIATE_AGENT:
             return self._instantiate_config_reason(state, plan)
 
-        # 6. END_SESSION while actionable work remains.
-        if pt == PlayType.END_SESSION and not plan.work_availability.terminal_no_work:
+        # 6. END_SESSION while actionable work remains, or while the beads
+        #    backlog is non-empty. GitHub workable-issue counts can lag
+        #    calibrate_alignment syncs; ready_task_count is authoritative.
+        if pt == PlayType.END_SESSION and (
+            not plan.work_availability.terminal_no_work
+            or plan.work_availability.ready_task_count > 0
+        ):
             return MaskReason(
                 text="Actionable work still remains",
                 classification=MaskClassification.INDEFINITE_WAIT,
