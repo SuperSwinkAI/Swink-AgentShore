@@ -13,13 +13,14 @@ Outbound message types:
 from __future__ import annotations
 
 import itertools
-import json
 import math
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
 from agentshore.beads import EpicStatus, GraphTask, ProjectGraph
+from agentshore.ipc.wire import frame as _frame
+from agentshore.plays.candidates import build_candidate_plan
 from agentshore.state import (
     ActivePlay,
     AgentPlaySpecializationSnapshot,
@@ -34,7 +35,6 @@ from agentshore.state import (
     SessionStatsSnapshot,
     TrajectorySnapshot,
 )
-from agentshore.work_availability import summarize_work_availability
 
 # ---------------------------------------------------------------------------
 # Monotonic sequence counter — incremented once per outbound message
@@ -135,17 +135,6 @@ def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
         ),
         "estimated_cost_per_play": budget.estimated_cost_per_play,
     }
-
-
-def _json_safe(value: object) -> object:
-    """Return a browser-JSON-safe copy of a serialized payload."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 def _serialize_epic_status(epic: EpicStatus) -> dict[str, object]:
@@ -265,7 +254,7 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
     All enum values are converted to their string ``.value``.
     None fields remain None.  Lists of dataclasses become lists of dicts.
     """
-    work_availability = summarize_work_availability(state).to_dict()
+    work_availability = build_candidate_plan(state).work_availability.to_dict()
     return {
         "session_id": state.session_id,
         "session_state": state.session_state.value,
@@ -276,7 +265,6 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
         "open_issues": [_serialize_issue(i) for i in state.open_issues],
         "pull_requests": [_serialize_pull_request(pr) for pr in state.pull_requests],
         "work_availability": work_availability,
-        "issue_availability": work_availability,
         "budget": _serialize_budget(state.budget) if state.budget is not None else None,
         "trajectory": (
             _serialize_trajectory(state.trajectory) if state.trajectory is not None else None
@@ -291,7 +279,9 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
         "last_play_type": (
             state.last_play_type.value if state.last_play_type is not None else None
         ),
-        "forced_mask_zeros": [p.value for p in state.forced_mask_zeros],
+        "loop_level": state.loop_level,
+        "main_repo_dispatch_paused": state.main_repo_dispatch_paused,
+        "end_session_in_flight": state.end_session_in_flight,
         "plays_since_last_instantiate": state.plays_since_last_instantiate,
         "last_play_success_by_type": {
             play_type.value: success
@@ -380,4 +370,4 @@ def make_message(msg_type: str, payload: dict[str, object]) -> str:
         "seq": next(_seq),
         "payload": payload,
     }
-    return json.dumps(_json_safe(envelope), allow_nan=False) + "\n"
+    return _frame(envelope)

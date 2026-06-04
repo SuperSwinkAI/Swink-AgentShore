@@ -112,7 +112,7 @@ class InstantiateAgentPlay:
                 MaskReason(
                     text=f"instantiate cooldown ({cooldown}/{cfg.cooldown_plays} plays since last)",
                     classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.PRECONDITION,
+                    source=MaskSource.SPAWN,
                 )
             )
         # Count a dispatched-but-not-yet-completed instantiate toward the
@@ -131,7 +131,7 @@ class InstantiateAgentPlay:
                         "cooldown not yet counted"
                     ),
                     classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.PRECONDITION,
+                    source=MaskSource.SPAWN,
                 )
             )
         return issues

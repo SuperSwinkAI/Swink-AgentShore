@@ -7,9 +7,8 @@ import dataclasses
 import json
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from agentshore.core.base import _OrchestratorBase
 from agentshore.core.context import _DispatchContext
 from agentshore.core.git_safety import (
     current_head_ref,
@@ -32,13 +31,20 @@ from agentshore.state import (
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
     from pathlib import Path
 
+    from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
+    from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.completion import CompletionProcessor
+    from agentshore.core.mixins.state import StateBuilder
+    from agentshore.core.override_queue import OverrideQueue
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
+    from agentshore.rl.action_space import ConfigKey
     from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.state import (
         OrchestratorState,
@@ -69,36 +75,79 @@ def _is_git_work_tree(path: Path) -> bool:
     return False
 
 
-class _DispatchMixin(_OrchestratorBase):
-    """Override resolution, selector calls, dispatch, and mask handling."""
+class _DispatcherHost(Protocol):
+    """Orchestrator runtime/control state read OR written live by :class:`Dispatcher`.
 
+    These members are accessed fresh via ``self._host.<attr>`` on every call so
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight maps,
+    dispatch-context map, selection digest, idle streak, end-session latch,
+    bootstrap-assigned registry/selector) are always current — never captured at
+    construction. Fields the dispatcher *writes* (``_end_session_dispatch_started``,
+    ``_last_selection_digest``) are declared as plain annotated attributes (not
+    read-only ``@property``) so the assignments type-check. ``_in_flight`` /
+    ``_dispatch_ctx`` are mutated in place. ``_OrchestratorBase`` structurally
+    satisfies this Protocol; the cross-component methods (``_safe_call``,
+    ``_selector_config_index``) are resolved live on the composition root.
+    """
+
+    # --- written by the dispatcher -----------------------------------------
+    _end_session_dispatch_started: bool
+    _last_selection_digest: bytes | None
+    # --- read by the dispatcher (and the two maps mutated in place) ---------
     _cfg: RuntimeConfig
-    _session_id: str
-    _store: DataStore
-    _executor: PlayExecutor
     _selector: PlaySelector | None
     _state_provider: StateProvider
     _stop_requested: bool
     _draining: bool
-    _end_session_dispatch_started: bool
     _in_flight: dict[str, asyncio.Task[PlayOutcome]]
     _dispatch_ctx: dict[str, _DispatchContext]
-    _first_play_override: tuple[PlayType, PlayParams] | None
-    _override_queue: asyncio.Queue[OverrideEntry]
-    _pending_override_kind: OverrideKind | None
     _registry: object | None
+    _idle_streak: int
 
-    _last_selection_digest: bytes | None
-    # desktop-kqo5: shared with _CompletionMixin via the base class. Pre-play
-    # symbolic ref snapshot keyed by dispatch_id, plus the cached default
-    # branch resolved at session start.
-    _pre_play_branches: dict[str, str | None]
-    _default_branch: str
-    _main_repo_dispatch_paused: bool
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+    def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
+
+
+class Dispatcher:
+    """Override resolution, selector calls, dispatch, and mask handling.
+
+    Stable services / collaborators (store, manager, executor, the 1a
+    collaborators ``main_repo``/``overrides``, and the sibling components
+    ``state_builder``/``completion``) are captured via the constructor; all
+    orchestrator runtime/control state (read or written) flows through the
+    :class:`_DispatcherHost` Protocol so SIGHUP and per-tick mutation never goes
+    stale.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _DispatcherHost,
+        store: DataStore,
+        manager: AgentManager,
+        executor: PlayExecutor,
+        session_id: str,
+        repo_root: Path,
+        main_repo: MainRepoGuard,
+        overrides: OverrideQueue,
+        state_builder: StateBuilder,
+        completion: CompletionProcessor,
+    ) -> None:
+        self._host = host
+        self._store = store
+        self._manager = manager
+        self._executor = executor
+        self._session_id = session_id
+        self._repo_root = repo_root
+        self._main_repo = main_repo
+        self._overrides = overrides
+        self._state_builder = state_builder
+        self._completion = completion
 
     # ------------------------------------------------------------------
 
-    async def _revalidate_end_session_before_dispatch(self) -> bool:
+    async def revalidate_end_session_before_dispatch(self) -> bool:
         """Refresh external work state before allowing an END_SESSION play.
 
         END_SESSION is a terminal lifecycle play. Before dispatching it, force
@@ -109,10 +158,11 @@ class _DispatchMixin(_OrchestratorBase):
 
         from agentshore.plays.candidates import build_candidate_plan
 
-        if self._end_session_dispatch_started or any(
+        if self._host._end_session_dispatch_started or any(
             ctx.play_type == PlayType.END_SESSION
-            for dispatch_id, ctx in self._dispatch_ctx.items()
-            if dispatch_id in self._in_flight and not self._in_flight[dispatch_id].done()
+            for dispatch_id, ctx in self._host._dispatch_ctx.items()
+            if dispatch_id in self._host._in_flight
+            and not self._host._in_flight[dispatch_id].done()
         ):
             _logger.warning(
                 "end_session_revalidation_blocked",
@@ -121,14 +171,16 @@ class _DispatchMixin(_OrchestratorBase):
             )
             return False
 
-        await self._safe_call(self._refresh_issues(), "refresh_issues_before_end_session")
-        fresh_state = await self._build_state()
+        await self._host._safe_call(
+            self._completion.refresh_issues(), "refresh_issues_before_end_session"
+        )
+        fresh_state = await self._state_builder.build_state()
         candidate_plan = build_candidate_plan(fresh_state)
         if not candidate_plan.has_remaining_work:
             return True
 
         availability = candidate_plan.work_availability
-        self._last_selection_digest = None
+        self._host._last_selection_digest = None
         _logger.warning(
             "end_session_revalidation_blocked",
             session_id=self._session_id,
@@ -142,21 +194,21 @@ class _DispatchMixin(_OrchestratorBase):
             actionable_pr_work=availability.actionable_pr_work_count,
             beads_blocks_issue_pickup=availability.beads_blocks_issue_pickup,
         )
-        await self._safe_call(
-            self._state_provider.on_state_update(fresh_state),
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(fresh_state),
             "on_state_update_end_session_revalidated",
         )
         return False
 
-    def _shutdown_allows_only_end_agent(self, state: OrchestratorState) -> bool:
+    def shutdown_allows_only_end_agent(self, state: OrchestratorState) -> bool:
         """Return True once the session may only wind down live agents."""
         return (
-            self._draining
-            or self._stop_requested
+            self._host._draining
+            or self._host._stop_requested
             or state.session_state in (SessionState.DRAINING, SessionState.SHUTTING_DOWN)
         )
 
-    async def _consume_override(
+    async def consume_override(
         self, state: OrchestratorState
     ) -> tuple[PlayType, PlayParams] | None:
         """Pop one queued override play, masking it if preconditions disallow.
@@ -165,16 +217,16 @@ class _DispatchMixin(_OrchestratorBase):
         Returns ``None`` if there is no override available or if the candidate
         is masked by the action mask.
 
-        Side-effect: sets ``self._pending_override_kind`` to the OverrideKind
+        Side-effect: sets ``self._overrides.pending_override_kind`` to the OverrideKind
         of the consumed entry so ``_dispatch_play`` can mark the resulting
         ``_DispatchContext`` for the loop detector to skip. Reset to None at
         the top of every consume so a stale value can't leak through.
         """
-        self._pending_override_kind = None
-        shutdown_only = self._shutdown_allows_only_end_agent(state)
-        if self._first_play_override is not None:
-            override_play: tuple[PlayType, PlayParams] = self._first_play_override
-            self._first_play_override = None
+        self._overrides.pending_override_kind = None
+        shutdown_only = self.shutdown_allows_only_end_agent(state)
+        if self._overrides.first_play_override is not None:
+            override_play: tuple[PlayType, PlayParams] = self._overrides.first_play_override
+            self._overrides.first_play_override = None
             if shutdown_only and override_play[0] != PlayType.END_AGENT:
                 _logger.warning(
                     "override_dropped_during_shutdown",
@@ -183,7 +235,7 @@ class _DispatchMixin(_OrchestratorBase):
                 )
                 return None
             # first_play_override is set during seed/bootstrap — treat as bootstrap kind.
-            self._pending_override_kind = OverrideKind.BOOTSTRAP
+            self._overrides.pending_override_kind = OverrideKind.BOOTSTRAP
             _logger.info(
                 "first_play_override",
                 play_type=override_play[0].value,
@@ -191,10 +243,10 @@ class _DispatchMixin(_OrchestratorBase):
             )
             return override_play
 
-        if self._override_queue.empty():
+        if self._overrides.empty():
             return None
 
-        entry: OverrideEntry | None = self._override_queue.get_nowait()
+        entry: OverrideEntry | None = self._overrides.get_nowait()
         while shutdown_only and entry is not None and entry.play_type != PlayType.END_AGENT:
             _logger.warning(
                 "override_dropped_during_shutdown",
@@ -202,7 +254,7 @@ class _DispatchMixin(_OrchestratorBase):
                 kind=entry.kind.value,
                 session_id=self._session_id,
             )
-            entry = None if self._override_queue.empty() else self._override_queue.get_nowait()
+            entry = None if self._overrides.empty() else self._overrides.get_nowait()
 
         # issue #569: targeted sequencing gate that survives bypass_preconditions.
         # When wait_for_play_type is set, hold the entry until that play type has
@@ -218,7 +270,7 @@ class _DispatchMixin(_OrchestratorBase):
                     classification=MaskClassification.INDEFINITE_WAIT,
                     source=MaskSource.PRECONDITION,
                 )
-                _override_log = _logger.debug if self._idle_streak > 1 else _logger.info
+                _override_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
                 _override_log(
                     "override_waiting_for_play_type",
                     play_type=entry.play_type.value,
@@ -226,7 +278,7 @@ class _DispatchMixin(_OrchestratorBase):
                     wait_for_play_type=awaited.value,
                     session_id=self._session_id,
                 )
-                await self._handle_masked_override(entry, wait_reason)
+                await self.handle_masked_override(entry, wait_reason)
                 entry = None
 
         from agentshore.plays.registry import PlayRegistry as _PlayRegistry
@@ -236,7 +288,7 @@ class _DispatchMixin(_OrchestratorBase):
         if (
             entry is not None
             and not entry.params.bypass_preconditions
-            and isinstance(self._registry, _PlayRegistry)
+            and isinstance(self._host._registry, _PlayRegistry)
             and entry.play_type in V1_ACTION_ORDER
         ):
             # Single source of truth: route the override through the same
@@ -245,9 +297,9 @@ class _DispatchMixin(_OrchestratorBase):
             # existing masked-override requeue taxonomy.
             authority = EligibilityAuthority(
                 state,
-                self._registry,
-                cfg=self._cfg,
-                config_index=self._selector_config_index(),
+                self._host._registry,
+                cfg=self._host._cfg,
+                config_index=self._host._selector_config_index(),
                 live_graph_loader=self._override_confirm_live_loader(),
             )
             verdict = await authority.confirm(entry.play_type, entry.params, state)
@@ -255,7 +307,7 @@ class _DispatchMixin(_OrchestratorBase):
                 reason = verdict.reason or ACTION_MASKED
                 log_fn = (
                     _logger.info
-                    if self._mask_reason_is_indefinite_wait(reason)
+                    if self.mask_reason_is_indefinite_wait(reason)
                     or entry.enqueue_classification == MaskClassification.INDEFINITE_WAIT
                     else _logger.warning
                 )
@@ -272,7 +324,7 @@ class _DispatchMixin(_OrchestratorBase):
                     ),
                     session_id=self._session_id,
                 )
-                await self._handle_masked_override(entry, reason)
+                await self.handle_masked_override(entry, reason)
                 entry = None
 
         if entry is not None:
@@ -282,7 +334,7 @@ class _DispatchMixin(_OrchestratorBase):
                 kind=entry.kind.value,
                 session_id=self._session_id,
             )
-            self._pending_override_kind = entry.kind
+            self._overrides.pending_override_kind = entry.kind
             return entry.play_type, entry.params
         return None
 
@@ -297,84 +349,56 @@ class _DispatchMixin(_OrchestratorBase):
         PPO selector (test stubs / non-beads sessions), matching the selector's
         own fallback.
         """
-        selector = self._selector
+        selector = self._host._selector
         if not isinstance(selector, _ppo_selector_cls()):
             return None
         return selector._build_live_graph_loader()
 
     @staticmethod
-    def _params_have_dispatch_target(params: PlayParams) -> bool:
-        return bool(
-            params.issue_number is not None
-            or params.pr_number is not None
-            or params.extras.get("claim_group_id")
-            or params.extras.get("resource_keys")
-        )
-
-    @staticmethod
-    def _mask_reason_is_transient(reason: MaskReason | str) -> bool:
+    def mask_reason_is_transient(reason: MaskReason) -> bool:
         """True if the override should re-queue with a bounded retry counter.
 
-        Accepts typed MaskReason (preferred — read .classification) or a raw
-        string for the remaining legacy emission sites yet to be migrated.
+        ``MaskReason.classification`` is the single source of truth — every
+        override-queue caller now passes a typed reason (the eligibility
+        authority and the sequencing gate both emit ``MaskReason``).
         """
-        if isinstance(reason, MaskReason):
-            return reason.classification == MaskClassification.TRANSIENT
-        lowered = reason.lower()
-        return any(
-            marker in lowered
-            for marker in (
-                "no idle",
-                "idle agent",
-                "rate_limit",
-                "quota",
-                "temporarily",
-            )
-        )
+        return reason.classification == MaskClassification.TRANSIENT
 
     @staticmethod
-    def _mask_reason_is_indefinite_wait(reason: MaskReason | str) -> bool:
+    def mask_reason_is_indefinite_wait(reason: MaskReason) -> bool:
         """True if the override should re-queue without bumping the retry counter.
 
         Deterministic-clear waits (cooldown, sequencing, evidence windows) live
-        here — the override survives until the awaited condition lifts.
-        Accepts typed MaskReason (preferred — read .classification) or a raw
-        string for the remaining legacy emission sites yet to be migrated.
+        here — the override survives until the awaited condition lifts. Driven
+        entirely by ``MaskReason.classification``.
         """
-        if isinstance(reason, MaskReason):
-            return reason.classification == MaskClassification.INDEFINITE_WAIT
-        lowered = reason.lower()
-        return "waiting for" in lowered or "cooldown" in lowered or "plays since last" in lowered
+        return reason.classification == MaskClassification.INDEFINITE_WAIT
 
-    async def _handle_masked_override(self, entry: OverrideEntry, reason: MaskReason | str) -> None:
+    async def handle_masked_override(self, entry: OverrideEntry, reason: MaskReason) -> None:
         # 1. BOOTSTRAP entries never drop. They drive the fleet-sequencing
         #    invariant (large agent → seed → medium of different type) and
         #    must survive arbitrary cooldown / wait masks until the awaited
         #    condition lifts.
         if entry.kind == OverrideKind.BOOTSTRAP:
-            self._override_queue.put_nowait(
-                dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
-            )
+            self._overrides.put_nowait(dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE))
             return
 
         # 2. INDEFINITE_WAIT classifications (typed at the mask source or
         #    declared at enqueue time) re-queue without bumping the retry
         #    counter — the wait clears deterministically.
         if (
-            self._mask_reason_is_indefinite_wait(reason)
+            self.mask_reason_is_indefinite_wait(reason)
             or entry.enqueue_classification == MaskClassification.INDEFINITE_WAIT
         ):
-            self._override_queue.put_nowait(
-                dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE)
-            )
+            self._overrides.put_nowait(dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE))
             return
 
         # 3. TRANSIENT classifications re-queue with a bounded retry counter.
         if (
-            self._mask_reason_is_transient(reason)
+            self.mask_reason_is_transient(reason)
             and entry.requeue_attempts < _MAX_MASKED_OVERRIDE_REQUEUES
         ):
-            self._override_queue.put_nowait(
+            self._overrides.put_nowait(
                 dataclasses.replace(
                     entry.with_bumped_attempts(),
                     kind=OverrideKind.MASK_REQUEUE,
@@ -384,11 +408,9 @@ class _DispatchMixin(_OrchestratorBase):
 
         # 4. Everything else (HARD classifications, exhausted transient
         #    budget) drops with a surfaced error.
-        await self._release_masked_override(entry, reason=reason)
+        await self.release_masked_override(entry, reason=reason)
 
-    async def _release_masked_override(
-        self, entry: OverrideEntry, *, reason: MaskReason | str
-    ) -> None:
+    async def release_masked_override(self, entry: OverrideEntry, *, reason: MaskReason) -> None:
         play_type = entry.play_type
         params = entry.params
         claim_group_id = params.extras.get("claim_group_id")
@@ -400,13 +422,11 @@ class _DispatchMixin(_OrchestratorBase):
             play_type=play_type.value,
             kind=entry.kind.value,
             reason=str(reason),
-            classification=(
-                reason.classification.value if isinstance(reason, MaskReason) else "unknown"
-            ),
+            classification=reason.classification.value,
             session_id=self._session_id,
         )
 
-    async def _record_control_rejection(
+    async def record_control_rejection(
         self,
         *,
         kind: str,
@@ -422,7 +442,7 @@ class _DispatchMixin(_OrchestratorBase):
             "agent": params.agent_id,
             "resource_keys": params.extras.get("resource_keys", []),
         }
-        await self._safe_call(
+        await self._host._safe_call(
             self._store.record_external_mutation(
                 ExternalMutationRecord(
                     session_id=self._session_id,
@@ -437,7 +457,7 @@ class _DispatchMixin(_OrchestratorBase):
             f"record_{kind}",
         )
 
-    async def _drop_selected_play_before_dispatch(
+    async def drop_selected_play_before_dispatch(
         self,
         play_type: PlayType,
         params: PlayParams,
@@ -445,15 +465,15 @@ class _DispatchMixin(_OrchestratorBase):
         reason: MaskReason | str,
         event: str,
     ) -> None:
-        if isinstance(self._selector, _ppo_selector_cls()):
-            self._selector.consume_pending()
+        if isinstance(self._host._selector, _ppo_selector_cls()):
+            self._host._selector.consume_pending()
         claim_group_id = params.extras.get("claim_group_id")
         if isinstance(claim_group_id, str) and claim_group_id:
-            await self._safe_call(
+            await self._host._safe_call(
                 self._store.release_work_claim_group(self._session_id, claim_group_id),
                 "release_dispatch_revalidation_claim",
             )
-        await self._record_control_rejection(
+        await self.record_control_rejection(
             kind="dispatch_revalidation_block",
             play_type=play_type,
             params=params,
@@ -478,7 +498,7 @@ class _DispatchMixin(_OrchestratorBase):
             revalidation_window_seconds=revalidation_window_seconds,
         )
 
-    async def _select_play(
+    async def select_play(
         self,
         state: OrchestratorState,
         *,
@@ -487,17 +507,15 @@ class _DispatchMixin(_OrchestratorBase):
         """Select the next play: queued override > selector > None (idle)."""
         if override_play is not None:
             return override_play
-        if self._selector is not None:
-            return await self._selector.select(state)
+        if self._host._selector is not None:
+            return await self._host._selector.select(state)
         return None
 
-    async def _dispatch_play(
+    async def dispatch_play(
         self,
         play_type: PlayType,
         params: PlayParams,
         state: OrchestratorState,
-        *,
-        revalidate: bool | None = None,
     ) -> bool:
         """Build the dispatch context and create the play task (fire-and-forget).
 
@@ -517,11 +535,9 @@ class _DispatchMixin(_OrchestratorBase):
         context + task creation). Play validity is settled upstream by the
         ``EligibilityAuthority`` — the action mask presents only valid plays
         to PPO, and ``_consume_override`` confirms overrides against the same
-        authority. The dispatch-time revalidation pass is gone. ``revalidate``
-        is accepted-and-ignored for caller back-compat and will be removed
-        once callers stop passing it.
+        authority. The dispatch-time revalidation pass is gone, so there is no
+        ``revalidate`` parameter to thread through.
         """
-        del revalidate  # eligibility now settled upstream; retained for back-compat
         # desktop-kqo5: hard pause when auto-restore failed. Refuse to spawn
         # further work until the trunk is healed. END_AGENT is still allowed so a
         # draining shutdown can complete cleanly. RECONCILE_STATE is ALSO allowed:
@@ -529,11 +545,11 @@ class _DispatchMixin(_OrchestratorBase):
         # catch-22 that wedged the loop. Letting it through lets the session
         # self-heal a conflicted trunk; a successful reconcile clears the latch
         # (see _check_main_repo_invariant).
-        if self._main_repo_dispatch_paused and play_type not in (
+        if self._main_repo.dispatch_paused and play_type not in (
             PlayType.END_AGENT,
             PlayType.RECONCILE_STATE,
         ):
-            await self._drop_selected_play_before_dispatch(
+            await self.drop_selected_play_before_dispatch(
                 play_type,
                 params,
                 reason="main_repo_dispatch_paused",
@@ -541,22 +557,23 @@ class _DispatchMixin(_OrchestratorBase):
             )
             return False
         if play_type == PlayType.END_SESSION and (
-            self._end_session_dispatch_started
+            self._host._end_session_dispatch_started
             or any(
                 ctx.play_type == PlayType.END_SESSION
-                for dispatch_id, ctx in self._dispatch_ctx.items()
-                if dispatch_id in self._in_flight and not self._in_flight[dispatch_id].done()
+                for dispatch_id, ctx in self._host._dispatch_ctx.items()
+                if dispatch_id in self._host._in_flight
+                and not self._host._in_flight[dispatch_id].done()
             )
         ):
-            await self._drop_selected_play_before_dispatch(
+            await self.drop_selected_play_before_dispatch(
                 play_type,
                 params,
                 reason="end_session_already_in_flight",
                 event="dispatch_revalidation_blocked",
             )
             return False
-        if self._shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
-            await self._drop_selected_play_before_dispatch(
+        if self.shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
+            await self.drop_selected_play_before_dispatch(
                 play_type,
                 params,
                 reason="shutdown_allows_only_end_agent",
@@ -587,7 +604,7 @@ class _DispatchMixin(_OrchestratorBase):
                         "refusing to spawn agent subprocess (desktop-4ugk part 2)."
                     ),
                 )
-                await self._drop_selected_play_before_dispatch(
+                await self.drop_selected_play_before_dispatch(
                     play_type,
                     params,
                     reason="worktree_path_backslash_space",
@@ -614,7 +631,7 @@ class _DispatchMixin(_OrchestratorBase):
                 session_id=self._session_id,
                 play_type=play_type.value,
             )
-            await self._drop_selected_play_before_dispatch(
+            await self.drop_selected_play_before_dispatch(
                 play_type,
                 params,
                 reason="worktree_manager_unavailable",
@@ -648,7 +665,7 @@ class _DispatchMixin(_OrchestratorBase):
                     error=str(exc),
                     reason=getattr(exc, "reason", None) or getattr(exc, "branch", None),
                 )
-                await self._drop_selected_play_before_dispatch(
+                await self.drop_selected_play_before_dispatch(
                     play_type,
                     params,
                     reason="worktree_create_failed",
@@ -703,7 +720,7 @@ class _DispatchMixin(_OrchestratorBase):
             )
 
         if play_type == PlayType.END_SESSION:
-            self._end_session_dispatch_started = True
+            self._host._end_session_dispatch_started = True
         # OrchestratorState is intentionally non-frozen to allow in-loop state patching.
         # Populate the typed ActivePlay snapshot so IPC consumers see what's
         # running, who is running it, and when it started without waiting
@@ -719,19 +736,21 @@ class _DispatchMixin(_OrchestratorBase):
             trigger_agent_type=_str_extra(params, "trigger_agent_type"),
             trigger_error_class=_str_extra(params, "trigger_error_class"),
         )
-        await self._safe_call(self._state_provider.on_state_update(state), "on_state_update")
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(state), "on_state_update"
+        )
         # The real executor emits this after agent selection. Tests and
         # adapters may provide a simpler executor that does not.
         if getattr(self._executor, "emits_play_started", None) is not True:
-            await self._safe_call(
-                self._state_provider.on_play_started(play_type, params),
+            await self._host._safe_call(
+                self._host._state_provider.on_play_started(play_type, params),
                 "on_play_started",
             )
 
         dispatch_id = str(uuid.uuid4())
         # desktop-kqo5: snapshot the main-repo symbolic ref BEFORE the task
         # fires. ``current_head_ref`` returns None for detached HEAD, which
-        # _CompletionMixin treats as a mutation of its own at completion.
+        # CompletionProcessor treats as a mutation of its own at completion.
         # Run synchronously — the git read is small (~5ms) and pre-task
         # ordering is load-bearing.
         try:
@@ -745,17 +764,17 @@ class _DispatchMixin(_OrchestratorBase):
                 error=str(exc),
             )
             pre_play_ref = None
-        self._pre_play_branches[dispatch_id] = pre_play_ref
+        self._main_repo.record_pre_play_branch(dispatch_id, pre_play_ref)
 
         pending: object | None = None
-        if isinstance(self._selector, _ppo_selector_cls()):
-            pending = self._selector.consume_pending()
+        if isinstance(self._host._selector, _ppo_selector_cls()):
+            pending = self._host._selector.consume_pending()
 
         # Read-and-clear: the very next dispatch consumes whatever
         # _consume_override left behind. Any subsequent dispatch (e.g. PPO-
         # selected following an override miss) defaults to None.
-        override_kind = self._pending_override_kind
-        self._pending_override_kind = None
+        override_kind = self._overrides.pending_override_kind
+        self._overrides.pending_override_kind = None
 
         ctx = _DispatchContext(
             dispatch_id=dispatch_id,
@@ -771,6 +790,6 @@ class _DispatchMixin(_OrchestratorBase):
             self._executor.execute(play_type, state, override=params)
         )
         task_obj.add_done_callback(_log_task_exception)
-        self._in_flight[dispatch_id] = task_obj
-        self._dispatch_ctx[dispatch_id] = ctx
+        self._host._in_flight[dispatch_id] = task_obj
+        self._host._dispatch_ctx[dispatch_id] = ctx
         return True

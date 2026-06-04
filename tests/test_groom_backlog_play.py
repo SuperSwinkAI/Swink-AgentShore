@@ -108,13 +108,13 @@ def _issue_snapshot(issue_number: int) -> IssueSnapshot:
 def test_groom_backlog_blocks_when_graph_is_none() -> None:
     errors = GroomBacklogPlay().preconditions(_state(graph=None))
     assert errors != []
-    assert any("beads not initialised" in e for e in errors)
+    assert any("beads not initialised" in e.text for e in errors)
 
 
 def test_groom_backlog_blocks_when_graph_has_no_epics() -> None:
     errors = GroomBacklogPlay().preconditions(_state(graph=_empty_graph()))
     assert errors != []
-    assert any("no epics" in e for e in errors)
+    assert any("no epics" in e.text for e in errors)
 
 
 def test_groom_backlog_preconditions_pass_with_epics() -> None:
@@ -214,10 +214,10 @@ def test_bypass1_no_capable_agent_returns_descriptive_error() -> None:
     # Play must be masked — a BUSY-only fleet cannot execute groom_backlog.
     assert errors != []
     # The message must contain the urgency context.
-    assert any("urgent groom needed" in e for e in errors)
-    assert any("unlinked ready tasks" in e for e in errors)
+    assert any("urgent groom needed" in e.text for e in errors)
+    assert any("unlinked ready tasks" in e.text for e in errors)
     # And the capability gap must be visible in the same message.
-    assert any("no IDLE agent" in e for e in errors)
+    assert any("no IDLE agent" in e.text for e in errors)
 
 
 def test_bypass2_untracked_gh_issues_with_capable_agent_allows_play() -> None:
@@ -251,7 +251,7 @@ def test_bypass1_unlinked_ready_tasks_respects_recent_groom_cooldown() -> None:
 
     errors = GroomBacklogPlay().preconditions(state)
 
-    assert errors == ["groom_backlog cooldown (0/20 plays since last)"]
+    assert [e.text for e in errors] == ["groom_backlog cooldown (0/20 plays since last)"]
 
 
 def test_bypass2_untracked_gh_issues_respects_recent_groom_cooldown() -> None:
@@ -266,7 +266,7 @@ def test_bypass2_untracked_gh_issues_respects_recent_groom_cooldown() -> None:
 
     errors = GroomBacklogPlay().preconditions(state)
 
-    assert errors == ["groom_backlog cooldown (3/20 plays since last)"]
+    assert [e.text for e in errors] == ["groom_backlog cooldown (3/20 plays since last)"]
 
 
 def test_bypass2_untracked_gh_issues_bypasses_first_run_floor() -> None:
@@ -311,5 +311,5 @@ def test_normal_path_capability_gate_blocks_when_no_bypass_fires() -> None:
 
     assert errors != []
     # Normal capability error — no urgency prefix.
-    assert not any("urgent groom needed" in e for e in errors)
-    assert any("no IDLE agent" in e for e in errors)
+    assert not any("urgent groom needed" in e.text for e in errors)
+    assert any("no IDLE agent" in e.text for e in errors)

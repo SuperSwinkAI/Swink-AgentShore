@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import FeedbackConfig, RuntimeConfig
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import AgentStatus, NullStateProvider, PlayOutcome, PlayType, SessionState
 
@@ -65,8 +66,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._policy_version = "test"
     orch._config_hash = "abc"
     orch._metrics = None
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
     orch._loop_started_at = 0.0
     orch._registry = None
     orch._pause_event = asyncio.Event()
@@ -75,18 +75,16 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     orch._last_play_id = None
     orch._draining = False
     orch._drain_reason = None
-    orch._last_warned_failure_streak = None
-    orch._last_warned_any_streak = None
-    orch._forced_mask_play_types = ()
     orch._executor.inflight_issues = set()
     orch._executor.planned_issues = frozenset()
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
-    # v0.15 Phase 5: state-divergence signals consumed by _assemble_state.
+    # v0.15 Phase 5: state-divergence signals consumed by assemble_state.
     import collections as _collections
 
-    orch._recent_executor_skip = False
-    orch._executor_skip_window = _collections.deque(maxlen=50)
+    from agentshore.core.velocity_tracker import VelocityTracker
+
+    orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = _collections.deque(maxlen=50)
     # desktop-65bg: in-memory shadow of just-completed plays.
     orch._recent_play_completions = _collections.deque(maxlen=64)
@@ -94,11 +92,91 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     # selector tick sees them across the gh-CLI / SQLite WAL-flush lag window.
     orch._recent_applied_labels = _collections.deque(maxlen=64)
     # desktop-yrr: loop-detector filter — override-dispatched plays excluded.
-    orch._pending_override_kind = None
-    orch._override_dispatched_play_ids = set()
     # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
-    orch._break_recovery_failures = {}
-    orch._rate_limit_recovery_enqueued = set()
+    from agentshore.core.main_repo_guard import MainRepoGuard
+    from agentshore.core.mixins.completion import CompletionProcessor
+    from agentshore.core.mixins.dispatch import Dispatcher
+    from agentshore.core.mixins.drain import DrainController
+    from agentshore.core.mixins.lifecycle import LifecycleController
+    from agentshore.core.mixins.snapshots import SnapshotProjector
+    from agentshore.core.mixins.state import StateBuilder
+    from agentshore.core.recovery_tracker import RecoveryTracker
+
+    orch._recovery = RecoveryTracker()
+    orch._main_repo = MainRepoGuard()
+    orch._snapshots = SnapshotProjector(
+        manager=orch._manager, store=mock_store, session_id=orch._session_id
+    )
+    orch._state_builder = StateBuilder(
+        host=orch,
+        store=mock_store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        snapshots=orch._snapshots,
+        velocity=orch._velocity,
+        recovery=orch._recovery,
+        overrides=orch._overrides,
+    )
+    orch._lifecycle = LifecycleController(
+        host=orch,
+        store=mock_store,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+    )
+    orch._drain = DrainController(
+        host=orch,
+        store=mock_store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
+    orch._completion = CompletionProcessor(
+        host=orch,
+        store=mock_store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+        velocity=orch._velocity,
+        recovery=orch._recovery,
+        overrides=orch._overrides,
+        snapshots=orch._snapshots,
+        state_builder=orch._state_builder,
+        lifecycle=orch._lifecycle,
+        drain=orch._drain,
+    )
+    orch._dispatcher = Dispatcher(
+        host=orch,
+        store=mock_store,
+        manager=orch._manager,
+        executor=orch._executor,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        state_builder=orch._state_builder,
+        completion=orch._completion,
+    )
+    from agentshore.core.mixins.loop import LoopRunner
+
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        velocity=orch._velocity,
+        state_builder=orch._state_builder,
+        dispatcher=orch._dispatcher,
+        completion=orch._completion,
+        lifecycle=orch._lifecycle,
+        drain=orch._drain,
+    )
+    orch._loop._last_loop_iteration_at = 0.0
     return orch
 
 
@@ -142,13 +220,13 @@ async def test_pause_clears_event(tmp_path: Path) -> None:
 
 def test_assemble_state_reports_paused_when_pause_event_cleared(tmp_path: Path) -> None:
     """Authoritative snapshots reflect pause state even before the next play."""
-    from agentshore.core import _StateData
+    from agentshore.core.context import _StateData
 
     orch = _make_orch(tmp_path)
     orch._manager.handles = {}
     orch._pause_event.clear()
 
-    state = orch._assemble_state(
+    state = orch._state_builder.assemble_state(
         _StateData(
             issue_records=[],
             pr_records=[],
@@ -327,7 +405,7 @@ async def test_paused_loop_harvests_completed_in_flight_without_dispatching(
             await first_can_finish.wait()
         return _make_outcome(play_type)
 
-    original_process_completion = orch._process_completion
+    original_process_completion = orch._completion.process_completion
 
     async def wrapped_process_completion(dispatch_id: str, task: asyncio.Task[PlayOutcome]) -> None:
         await original_process_completion(dispatch_id, task)
@@ -335,7 +413,7 @@ async def test_paused_loop_harvests_completed_in_flight_without_dispatching(
             first_harvested.set()
 
     orch._executor.execute = mock_execute
-    orch._process_completion = wrapped_process_completion  # type: ignore[method-assign]
+    orch._completion.process_completion = wrapped_process_completion  # type: ignore[method-assign]
 
     task = asyncio.create_task(orch.run_until_idle())
     await asyncio.wait_for(execute_started.wait(), timeout=2.0)
@@ -374,7 +452,7 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
     async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
         nonlocal called
         called = True
-        await orch._pause_with_reason("loop_detected")
+        await orch._lifecycle.pause_with_reason("loop_detected")
         pause_done.set()
         return _make_outcome()
 
@@ -446,7 +524,7 @@ async def test_on_agent_changed_called_on_crash(tmp_path: Path) -> None:
             changed_events.append((agent_id, status))
 
     orch._state_provider = TrackingProvider()
-    await orch._on_crash("agent-99", return_code=1)
+    await orch._completion.on_crash("agent-99", return_code=1)
 
     assert len(changed_events) == 1
     assert changed_events[0] == ("agent-99", AgentStatus.ERROR)
@@ -462,7 +540,7 @@ async def test_on_agent_changed_called_on_context_pressure(tmp_path: Path) -> No
             changed_events.append((agent_id, status))
 
     orch._state_provider = TrackingProvider()
-    await orch._on_context_pressure("agent-42", ratio=0.95)
+    await orch._completion.on_context_pressure("agent-42", ratio=0.95)
 
     assert len(changed_events) == 1
     assert changed_events[0][0] == "agent-42"
@@ -493,7 +571,7 @@ async def test_feedback_cadence_plays_pauses_after_configured_completed_plays(
             feedback_reasons.append(reason)
 
     orch._state_provider = TrackingProvider()
-    paused = await orch._pause_for_feedback_cadence_if_due()
+    paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert paused
     assert paused_reasons == ["feedback_cadence_plays"]
@@ -520,7 +598,7 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
             feedback_reasons.append(reason)
 
     orch._state_provider = TrackingProvider()
-    paused = await orch._pause_for_feedback_cadence_if_due()
+    paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert paused
     assert paused_reasons == ["feedback_cadence_minutes"]
@@ -539,7 +617,7 @@ async def test_feedback_cadence_disabled_does_not_pause(tmp_path: Path) -> None:
             paused_reasons.append(reason)
 
     orch._state_provider = TrackingProvider()
-    paused = await orch._pause_for_feedback_cadence_if_due()
+    paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert not paused
     assert paused_reasons == []
@@ -564,7 +642,7 @@ async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
     orch._state_provider = TrackingProvider()
 
     # Trigger first cadence pause
-    await orch._pause_for_feedback_cadence_if_due()
+    await orch._lifecycle.pause_for_feedback_cadence_if_due()
     assert paused_reasons == ["feedback_cadence_plays"]
     assert not orch._pause_event.is_set()
 
@@ -574,6 +652,6 @@ async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
 
     # Same play count (0 < 2) must not immediately re-trigger
     paused_reasons.clear()
-    paused = await orch._pause_for_feedback_cadence_if_due()
+    paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
     assert not paused
     assert paused_reasons == []

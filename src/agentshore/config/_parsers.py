@@ -38,6 +38,7 @@ from agentshore.config.models import (
     SkillsConfig,
     StagnationConfig,
     TaskValidationConfig,
+    TimelapseConfig,
     TrustedIdsConfig,
     UIConfig,
     WorktreeConfig,
@@ -77,6 +78,7 @@ class _RawBudget(TypedDict, total=False):
 
 class _RawTrustedIds(TypedDict, total=False):
     github_logins: list[object]
+    pr_allow_list: list[object]
 
 
 class _RawModelTier(TypedDict, total=False):
@@ -286,6 +288,11 @@ class _RawBrowser(TypedDict, total=False):
     timeout_seconds: int
 
 
+class _RawTimelapse(TypedDict, total=False):
+    enabled: bool
+    installed: bool
+
+
 class _RawLearnings(TypedDict, total=False):
     enabled: bool
     file: str
@@ -305,7 +312,6 @@ class _RawSkills(TypedDict, total=False):
 class _RawWorktrees(TypedDict, total=False):
     reap_ttl_seconds: int
     root: str | None
-    orphan_retention_seconds: int
 
 
 class _RawConfig(TypedDict, total=False):
@@ -329,6 +335,7 @@ class _RawConfig(TypedDict, total=False):
     ui: _RawUI
     logging: _RawLogging
     browser: _RawBrowser
+    timelapse: _RawTimelapse
     learnings: _RawLearnings
     skills: _RawSkills
     worktrees: _RawWorktrees
@@ -937,6 +944,13 @@ def _parse_browser(raw: _RawBrowser) -> BrowserConfig:
     )
 
 
+def _parse_timelapse(raw: _RawTimelapse) -> TimelapseConfig:
+    return TimelapseConfig(
+        enabled=bool(raw.get("enabled", False)),
+        installed=bool(raw.get("installed", False)),
+    )
+
+
 def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
     return LearningsConfig(
         enabled=raw.get("enabled", True),
@@ -964,16 +978,9 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
     root = raw.get("root")
     if root is not None and not (isinstance(root, str) and root.strip()):
         raise ConfigError(f"worktrees.root must be a non-empty string or omitted, got {root!r}")
-    orphan_ttl = raw.get("orphan_retention_seconds", 604800)
-    if not isinstance(orphan_ttl, int) or isinstance(orphan_ttl, bool) or orphan_ttl < 0:
-        raise ConfigError(
-            "worktrees.orphan_retention_seconds must be a non-negative integer, "
-            f"got {orphan_ttl!r}"
-        )
     return WorktreeConfig(
         reap_ttl_seconds=ttl,
         root=root.strip() if isinstance(root, str) else None,
-        orphan_retention_seconds=orphan_ttl,
     )
 
 
@@ -1080,6 +1087,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         ui=_parse_ui(data.get("ui", {}) or {}),
         logging=_parse_logging(data.get("logging", {}) or {}),
         browser=_parse_browser(data.get("browser", {}) or {}),
+        timelapse=_parse_timelapse(data.get("timelapse", {}) or {}),
         learnings=_parse_learnings(data.get("learnings", {}) or {}),
         skills=_parse_skills(data.get("skills", {}) or {}),
         worktrees=_parse_worktrees(data.get("worktrees", {}) or {}),

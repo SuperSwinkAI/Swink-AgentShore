@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.errors import DatabaseError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -14,6 +16,23 @@ _ACTIVE_WORK_CLAIM_STATUSES = frozenset({"queued", "claimed", "running", "retryi
 _TERMINAL_WORK_CLAIM_STATUSES = frozenset(
     {"completed", "released", "superseded", "failed", "abandoned"}
 )
+
+
+def _status_in_clause(
+    statuses: frozenset[str], *, column: str = "status"
+) -> tuple[str, tuple[str, ...]]:
+    """Build a ``status IN (?, ?, …)`` fragment and its ordered bind params.
+
+    Returns ``(clause, params)`` so callers splice the fragment into an
+    f-string and pass ``*params`` in the same position — collapsing the
+    hand-rolled ``",".join("?" for _ in …)`` placeholder builders repeated
+    across the work-claims mixin. ``statuses`` is a frozenset, so the
+    placeholder count and the param tuple are derived from one ordering and
+    cannot drift apart.
+    """
+    ordered = tuple(statuses)
+    placeholders = ", ".join("?" for _ in ordered)
+    return f"{column} IN ({placeholders})", ordered
 
 
 class _DataStoreBase:
@@ -38,3 +57,25 @@ class _DataStoreBase:
             msg = "DataStore is not initialized — call initialize() first"
             raise RuntimeError(msg)
         return self._db
+
+    async def _insert(self, table: str, **cols: object) -> int:
+        """Insert one row from keyword columns and return its ``lastrowid``.
+
+        ``**cols`` is keyed by column name, so the column list and the value
+        tuple cannot drift apart (dict insertion order is stable in 3.12) —
+        the misalignment class that left ``base_ref``/``mask_reason``
+        write-only. Commits the row and raises ``DatabaseError`` when SQLite
+        returns no row id. For plain single-row ``INSERT`` only; upserts,
+        ``INSERT OR IGNORE``, and ``executemany`` keep their explicit SQL.
+        """
+        names = ", ".join(cols)
+        placeholders = ", ".join("?" * len(cols))
+        cursor = await self._conn.execute(
+            f"INSERT INTO {table} ({names}) VALUES ({placeholders})",
+            tuple(cols.values()),
+        )
+        await self._conn.commit()
+        if cursor.lastrowid is None:
+            msg = f"INSERT into {table} returned no row id"
+            raise DatabaseError(msg)
+        return cursor.lastrowid

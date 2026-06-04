@@ -346,7 +346,7 @@ def test_issue_pickup_does_not_block_when_task_open() -> None:
     state = _make_state(graph=graph, issue_numbers=[3])
 
     failures = play.preconditions(state)
-    assert not any("already in_progress" in f for f in failures), (
+    assert not any("already in_progress" in f.text for f in failures), (
         f"Open task should not trigger duplicate guard; got: {failures}"
     )
 
@@ -512,10 +512,10 @@ def test_issue_pickup_groom_backlog_message_mentions_policy() -> None:
     state = _make_state(graph=graph)
     play = IssuePickupPlay()
     failures = play.preconditions(state)
-    groom_msgs = [f for f in failures if "groom_backlog" in f]
+    groom_msgs = [f for f in failures if "groom_backlog" in f.text]
     assert groom_msgs, "Expected a groom_backlog message"
     msg = groom_msgs[0]
-    assert "policy does not auto-promote" in msg, (
+    assert "policy does not auto-promote" in msg.text, (
         f"Message should clarify policy non-promotion; got: {msg!r}"
     )
 
@@ -627,7 +627,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
 
 def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
     """state.open_issues must reflect the OPEN duplicate, not whichever bead sorts last."""
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.data.models import GitHubIssueRecord
 
     closed_dup = _make_graph_task(
@@ -650,7 +650,7 @@ def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
         closed_at=None,
     )
 
-    snapshots = Orchestrator._project_open_issues([record], graph)
+    snapshots = SnapshotProjector.project_open_issues([record], graph)
 
     assert len(snapshots) == 1
     snap = snapshots[0]

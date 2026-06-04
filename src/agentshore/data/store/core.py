@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sqlite3
 from typing import TYPE_CHECKING
 
 import aiosqlite
+import structlog
 
 from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3
 from agentshore.data.store.base import _DataStoreBase
@@ -34,6 +36,7 @@ from agentshore.data.store.mixins.scope import _ScopeMixin
 from agentshore.data.store.mixins.sessions import _SessionsMixin
 from agentshore.data.store.mixins.trajectory import _TrajectoryMixin
 from agentshore.data.store.mixins.work_claims import _WorkClaimsMixin
+from agentshore.data.store.mixins.worktrees import _WorktreesMixin
 from agentshore.errors import DatabaseError
 
 if TYPE_CHECKING:
@@ -57,6 +60,7 @@ class DataStore(
     _ReviewPatternsMixin,
     _ArchiveMixin,
     _RLMixin,
+    _WorktreesMixin,
     _DataStoreBase,
 ):
     """Async SQLite data store for all AgentShore persistence.
@@ -143,8 +147,6 @@ class DataStore(
                     or attempt == self._INIT_LOCK_RETRY_ATTEMPTS
                 ):
                     raise
-                import structlog
-
                 structlog.get_logger(__name__).warning(
                     "store_init_db_locked_retry",
                     attempt=attempt,
@@ -271,8 +273,6 @@ class DataStore(
         if self._db is None:
             return
 
-        import os
-
         # Drain any open implicit transaction before backup. A failed write
         # (e.g., UNIQUE-constraint IntegrityError) can leave aiosqlite's
         # connection inside a transaction; sqlite3.Connection.backup() then
@@ -301,8 +301,6 @@ class DataStore(
             # Don't suppress — the orchestrator's shutdown_step logger surfaces
             # this as ``store_close_failed`` so the operator knows the snapshot
             # didn't land. Existing main DB file is left untouched.
-            import structlog
-
             structlog.get_logger(__name__).warning(
                 "store_close_backup_failed",
                 error=str(exc),
@@ -317,8 +315,6 @@ class DataStore(
             try:
                 os.replace(tmp_path, self._db_path)
             except OSError as exc:
-                import structlog
-
                 structlog.get_logger(__name__).warning(
                     "store_close_replace_failed",
                     error=str(exc),

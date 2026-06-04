@@ -103,6 +103,8 @@ type SetupState = {
   identities: string[];
   budget: BudgetSelection;
   startSelection: StartSelection;
+  /** Whether the optional timelapse-capture feature is installed (from yaml). */
+  timelapseInstalled: boolean;
 };
 
 type SetupScreen =
@@ -131,6 +133,7 @@ const defaultSetupState: SetupState = {
   identities: [],
   budget: { mode: "unlimited", total: 0 },
   startSelection: { seedInputPath: null },
+  timelapseInstalled: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,6 +212,7 @@ function loadStoredSetup(): SetupState {
         : defaultSetupState.identities,
       budget: parseBudgetSelection(parsed.budget),
       startSelection: parseStartSelection(parsed.startSelection),
+      timelapseInstalled: parsed.timelapseInstalled === true,
     };
   } catch {
     return defaultSetupState;
@@ -687,6 +691,14 @@ function SetupLayout({
                 identities: missingIdentities,
               }}
               selection={setup.startSelection}
+              timelapseAvailable={setup.timelapseInstalled}
+              onTimelapseInstalled={() => {
+                setSetup((prev) => {
+                  const merged = { ...prev, timelapseInstalled: true };
+                  persistSetup(merged);
+                  return merged;
+                });
+              }}
               onChange={(next) => {
                 setSetup((prev) => {
                   const merged = { ...prev, startSelection: next };
@@ -897,6 +909,7 @@ export function App() {
             ? { identities: hydration.identityLogins }
             : {}),
           ...(budgetSelection !== null ? { budget: budgetSelection } : {}),
+          timelapseInstalled: hydration.timelapse?.installed ?? false,
         };
         persistSetup(next);
         return next;
@@ -932,7 +945,12 @@ export function App() {
     });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        navigate("/starting", { state: { seedInputPath: selection.seedInputPath } });
+        navigate("/starting", {
+          state: {
+            seedInputPath: selection.seedInputPath,
+            ...(selection.timelapse !== undefined ? { timelapse: selection.timelapse } : {}),
+          },
+        });
       });
     });
   };

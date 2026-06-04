@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator, _DispatchContext
+from agentshore.core import Orchestrator
+from agentshore.core.context import _DispatchContext
 from agentshore.plays.base import PlayParams
 from agentshore.state import (
     AgentStatus,
@@ -47,7 +48,7 @@ async def _drive_completion(
     outcome: PlayOutcome,
 ) -> None:
     """Push a fake outcome through ``_process_completion`` end-to-end."""
-    state = await orch._build_state()
+    state = await orch._state_builder.build_state()
     ctx = _DispatchContext(
         dispatch_id="d-test",
         play_type=outcome.play_type,
@@ -63,7 +64,7 @@ async def _drive_completion(
 
     task: asyncio.Task[PlayOutcome] = asyncio.create_task(_result())
     await task
-    await orch._process_completion("d-test", task)
+    await orch._completion.process_completion("d-test", task)
 
 
 @pytest.mark.asyncio

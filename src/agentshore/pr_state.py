@@ -40,26 +40,14 @@ def label_names(raw: object) -> list[str]:
 
 def status_rollup_has_failure(raw: object) -> bool:
     """Return true when a GitHub statusCheckRollup payload contains a failed check."""
-    if raw is None:
-        return False
-    if isinstance(raw, dict):
-        status = str(raw.get("status", "")).upper()
-        conclusion = str(raw.get("conclusion", "")).upper()
-        if status in FAILED_STATUS_STATES or conclusion in FAILED_STATUS_STATES:
-            return True
-        return any(status_rollup_has_failure(value) for value in raw.values())
-    if isinstance(raw, list):
-        return any(status_rollup_has_failure(value) for value in raw)
-    return False
+    return bool(_collect_rollup_states(raw) & FAILED_STATUS_STATES)
 
 
 def status_rollup_summary(raw: object) -> str | None:
     """Summarize a GitHub statusCheckRollup payload for UI/state consumers."""
-    if raw is None:
-        return None
-    if status_rollup_has_failure(raw):
+    states = _collect_rollup_states(raw)
+    if states & FAILED_STATUS_STATES:
         return "failed"
-    states = _status_values(raw)
     if not states:
         return None
     if states & PENDING_STATUS_STATES:
@@ -130,21 +118,25 @@ def _changes_requested_is_stale(
     )
 
 
-def _status_values(raw: object) -> set[str]:
-    if raw is None:
-        return set()
+def _collect_rollup_states(raw: object) -> set[str]:
+    """Recursively pull every ``status``/``conclusion`` value from a rollup payload.
+
+    Single traversal of the arbitrarily-nested ``dict | list`` statusCheckRollup
+    structure; callers derive failure/pending/success predicates from the
+    returned set so they cannot disagree about what counts as a state.
+    """
     if isinstance(raw, dict):
-        values = {
+        states = {
             str(raw.get("status", "")).upper(),
             str(raw.get("conclusion", "")).upper(),
         }
-        values.discard("")
+        states.discard("")
         for value in raw.values():
-            values.update(_status_values(value))
-        return values
+            states.update(_collect_rollup_states(value))
+        return states
     if isinstance(raw, list):
-        list_values: set[str] = set()
+        list_states: set[str] = set()
         for value in raw:
-            list_values.update(_status_values(value))
-        return list_values
+            list_states.update(_collect_rollup_states(value))
+        return list_states
     return set()

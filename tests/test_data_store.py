@@ -304,8 +304,10 @@ async def test_dispatch_replay_round_trip_and_retry_counter(tmp_path) -> None:
             play_id=42,
         )
         assert replay is not None
-        assert replay["prompt"] == "verbatim prompt"
-        assert replay["branch"] == "agentshore/201-timeout"
+        assert replay.prompt == "verbatim prompt"
+        assert replay.branch == "agentshore/201-timeout"
+        assert replay.skill_name == "agentshore-issue-pickup"
+        assert replay.params_json == '{"issue_number":201,"extras":{"claim_group_id":"x"}}'
 
         assert await store.get_work_claim_retry_attempts("s1", claim_group) == 0
         assert await store.increment_work_claim_retry("s1", claim_group) == 1

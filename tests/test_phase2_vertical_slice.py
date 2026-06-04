@@ -100,7 +100,7 @@ def test_instantiate_blocked_until_intake_completes() -> None:
     )
     state = _make_state(plays_since_last_play_type={}, agent_snapshots=[agent])
     errors = play.preconditions(state)
-    assert any("bootstrap first-play" in e for e in errors)
+    assert any("bootstrap first-play" in e.text for e in errors)
 
 
 def test_instantiate_allowed_on_empty_fleet_cold_start() -> None:
@@ -128,7 +128,7 @@ def test_instantiate_precondition_budget_too_low() -> None:
     state = _make_state()
     state.budget = BudgetSnapshot(5.0, 5.0, 0.0, 0.0)
     errors = play.preconditions(state)
-    assert any("budget" in e for e in errors)
+    assert any("budget" in e.text for e in errors)
 
 
 def test_instantiate_precondition_met_with_budget_and_slots() -> None:
@@ -143,7 +143,7 @@ def test_instantiate_precondition_blocks_within_cooldown() -> None:
     state = _make_state()
     state.plays_since_last_instantiate = 2
     errors = play.preconditions(state)
-    assert any("cooldown" in e for e in errors)
+    assert any("cooldown" in e.text for e in errors)
 
 
 def test_instantiate_precondition_clears_after_cooldown() -> None:
@@ -158,7 +158,7 @@ def test_instantiate_uses_default_cooldown_of_2_plays() -> None:
     play = InstantiateAgentPlay()  # defaults: cooldown_plays=2
     state = _make_state()
     state.plays_since_last_instantiate = 1
-    assert any("cooldown" in e for e in play.preconditions(state))
+    assert any("cooldown" in e.text for e in play.preconditions(state))
     state.plays_since_last_instantiate = 2
     assert play.preconditions(state) == []
 
@@ -397,7 +397,7 @@ def test_issue_pickup_precondition_no_issues() -> None:
     play = IssuePickupPlay()
     state = _make_state(issues=[])
     errors = play.preconditions(state)
-    assert any("no open issues" in e for e in errors)
+    assert any("no open issues" in e.text for e in errors)
 
 
 def test_issue_pickup_precondition_no_idle_implementer() -> None:
@@ -418,7 +418,7 @@ def test_issue_pickup_precondition_no_idle_implementer() -> None:
     ]
     state = _make_state(agent_snapshots=agents, issues=[_make_issue(1)])
     errors = play.preconditions(state)
-    assert any("can_implement" in e for e in errors)
+    assert any("can_implement" in e.text for e in errors)
 
 
 def test_issue_pickup_precondition_met() -> None:

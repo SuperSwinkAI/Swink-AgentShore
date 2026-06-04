@@ -276,7 +276,6 @@ def test_screens_package_imports() -> None:
         GoalsScreen,
         HelpOverlay,
         MainDashboard,
-        RevertConfirmModal,
         SessionEndScreen,
         SessionStartupScreen,
     )
@@ -288,7 +287,6 @@ def test_screens_package_imports() -> None:
     assert SessionStartupScreen is not None
     assert SessionEndScreen is not None
     assert EscalationModal is not None
-    assert RevertConfirmModal is not None
 
 
 # ===========================================================================

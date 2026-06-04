@@ -10,6 +10,7 @@ import pytest
 
 from agentshore.config import RuntimeConfig
 from agentshore.plays.base import PlayParams
+from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
 
@@ -141,7 +142,7 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
     if PlayType.CODE_REVIEW in V1_ACTION_ORDER:
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
-        orch._override_queue.put_nowait(
+        orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.CODE_REVIEW,
                 params=PlayParams(),
@@ -178,7 +179,7 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
     )
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
@@ -206,8 +207,8 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
         pull_requests=[],
     )
 
-    assert await orch._consume_override(state) is None
-    assert orch._override_queue.empty()
+    assert await orch._dispatcher.consume_override(state) is None
+    assert orch._overrides.empty()
     orch._store.release_work_claim_group.assert_awaited_once_with(orch._session_id, "claim-210")
 
 
@@ -229,7 +230,7 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
     )
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
-    orch._override_queue.put_nowait(
+    orch._overrides.put_nowait(
         OverrideEntry(
             play_type=PlayType.MERGE_PR,
             params=params,
@@ -245,9 +246,9 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
         pull_requests=[],
     )
 
-    assert await orch._consume_override(state) is None
-    assert not orch._override_queue.empty()
-    requeued_entry = orch._override_queue.get_nowait()
+    assert await orch._dispatcher.consume_override(state) is None
+    assert not orch._overrides.empty()
+    requeued_entry = orch._overrides.get_nowait()
     assert requeued_entry.params.extras["mask_requeue_attempts"] == 1
     assert requeued_entry.requeue_attempts == 1
     orch._store.release_work_claim_group.assert_not_awaited()
@@ -256,40 +257,57 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 # _mask_reason_is_indefinite_wait: classifies deterministic-clear mask reasons
 # so the override stays queued (no counter bump, no drop) until the wait lifts.
+# Driven by MaskReason.classification (the single source of truth) — the legacy
+# string-substring fallback was deleted.
 # ---------------------------------------------------------------------------
 
 
-def test_mask_reason_is_indefinite_wait_matches_waiting_for() -> None:
-    from agentshore.core import Orchestrator
+def _mask(text: str, classification: MaskClassification) -> MaskReason:
+    return MaskReason(
+        text=text,
+        classification=classification,
+        source=MaskSource.PRECONDITION,
+    )
 
-    assert Orchestrator._mask_reason_is_indefinite_wait(
-        "waiting for seed_project to complete before expanding the fleet"
+
+def test_mask_reason_is_indefinite_wait_matches_waiting_for() -> None:
+    from agentshore.core.mixins.dispatch import Dispatcher
+
+    assert Dispatcher.mask_reason_is_indefinite_wait(
+        _mask(
+            "waiting for seed_project to complete before expanding the fleet",
+            MaskClassification.INDEFINITE_WAIT,
+        )
     )
 
 
 def test_mask_reason_is_indefinite_wait_matches_instantiate_cooldown() -> None:
     """Regression for desktop-e26.
 
-    The bootstrap medium-of-different-type override was dropped on
-    'instantiate cooldown (1/2 plays since last)' because the original predicate
-    only matched 'waiting for'. The cooldown is also a deterministic-clear wait
-    (it lifts after the configured number of plays), so the override should
-    survive without counter bump.
+    The bootstrap medium-of-different-type override was dropped on an
+    instantiate cooldown. The cooldown is a deterministic-clear wait
+    (INDEFINITE_WAIT), so the override should survive without counter bump.
     """
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.dispatch import Dispatcher
 
-    assert Orchestrator._mask_reason_is_indefinite_wait(
-        "instantiate cooldown (1/2 plays since last)"
+    assert Dispatcher.mask_reason_is_indefinite_wait(
+        _mask("instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT)
     )
-    assert Orchestrator._mask_reason_is_indefinite_wait("cooldown active for write_plan")
+    assert Dispatcher.mask_reason_is_indefinite_wait(
+        _mask("cooldown active for write_plan", MaskClassification.INDEFINITE_WAIT)
+    )
 
 
 def test_mask_reason_is_indefinite_wait_does_not_match_transient_staffing() -> None:
     """Staffing gaps go through the transient retry path (counter bumps), not here."""
-    from agentshore.core import Orchestrator
+    from agentshore.core.mixins.dispatch import Dispatcher
 
-    assert not Orchestrator._mask_reason_is_indefinite_wait("no idle agents")
-    assert not Orchestrator._mask_reason_is_indefinite_wait("rate_limit")
+    assert not Dispatcher.mask_reason_is_indefinite_wait(
+        _mask("no idle agents", MaskClassification.TRANSIENT)
+    )
+    assert not Dispatcher.mask_reason_is_indefinite_wait(
+        _mask("rate_limit", MaskClassification.TRANSIENT)
+    )
 
 
 @pytest.mark.asyncio
@@ -312,10 +330,15 @@ async def test_masked_override_requeues_on_instantiate_cooldown_without_counter_
         kind=OverrideKind.EXECUTOR_REQUEUE,
     )
 
-    await orch._handle_masked_override(entry, reason="instantiate cooldown (1/2 plays since last)")
+    await orch._dispatcher.handle_masked_override(
+        entry,
+        reason=_mask(
+            "instantiate cooldown (1/2 plays since last)", MaskClassification.INDEFINITE_WAIT
+        ),
+    )
 
-    assert not orch._override_queue.empty()
-    requeued_entry = orch._override_queue.get_nowait()
+    assert not orch._overrides.empty()
+    requeued_entry = orch._overrides.get_nowait()
     assert requeued_entry.params.extras["mask_requeue_attempts"] == 0
     assert requeued_entry.requeue_attempts == 0
     assert requeued_entry.kind == OverrideKind.MASK_REQUEUE
@@ -339,7 +362,7 @@ async def test_override_confirm_reuses_selector_live_loader(
     orch = _make_orch(tmp_path)
 
     # Default test selector is a MagicMock (not a real PPO selector) -> no loader.
-    assert orch._override_confirm_live_loader() is None
+    assert orch._dispatcher._override_confirm_live_loader() is None
 
     # A real PPO selector -> reuse its loader verbatim (single source of truth).
     sentinel_loader = AsyncMock()
@@ -351,5 +374,5 @@ async def test_override_confirm_reuses_selector_live_loader(
         lambda: type(ppo_selector),
     )
 
-    assert orch._override_confirm_live_loader() is sentinel_loader
+    assert orch._dispatcher._override_confirm_live_loader() is sentinel_loader
     ppo_selector._build_live_graph_loader.assert_called_once_with()

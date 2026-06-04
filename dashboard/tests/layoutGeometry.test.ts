@@ -97,6 +97,53 @@ describe("office furniture layout", () => {
     }
   });
 
+  it("keeps agent destinations separated for sprite clearance", () => {
+    const separationFailures: string[] = [];
+
+    for (const zone of ZONES) {
+      for (let i = 0; i < zone.seats.length; i += 1) {
+        for (let j = i + 1; j < zone.seats.length; j += 1) {
+          const a = zone.seats[i];
+          const b = zone.seats[j];
+          const tileDistance = Math.max(
+            Math.abs(a.x - b.x),
+            Math.abs(a.y - b.y),
+          );
+          if (tileDistance <= 2) {
+            separationFailures.push(
+              `${zone.name || ZoneId[zone.id]}:${a.x},${a.y}<->${b.x},${b.y}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(separationFailures).toEqual([]);
+  });
+
+  it("keeps the marked Workshop and Recovery Bay destinations on the floorplan", () => {
+    const workshop = ZONES.find((zone) => zone.id === ZoneId.WORKSHOP);
+    const recoveryBay = ZONES.find((zone) => zone.id === ZoneId.RECOVERY_BAY);
+
+    expect(workshop?.seats).toEqual(
+      expect.arrayContaining([
+        { x: 27, y: 22, facing: "north" },
+        { x: 32, y: 35, facing: "west" },
+        { x: 44, y: 34, facing: "east" },
+      ]),
+    );
+    expect(workshop?.seats).not.toContainEqual({
+      x: 52,
+      y: 30,
+      facing: "east",
+    });
+    expect(recoveryBay?.seats).toContainEqual({
+      x: 9,
+      y: 48,
+      facing: "east",
+    });
+  });
+
   it("keeps destinations and walk lanes off furniture side buffers", () => {
     buildWalkableGrid();
 

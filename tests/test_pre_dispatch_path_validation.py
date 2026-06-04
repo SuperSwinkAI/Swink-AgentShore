@@ -8,7 +8,6 @@ worktree pointer into the prompt.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 
+from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.dispatch import Dispatcher
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import PlayType
 
@@ -55,24 +57,16 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     orch = Orchestrator.__new__(Orchestrator)
     orch._session_id = "test-pre-dispatch"
     orch._repo_root = Path("/tmp/fake-repo")
-    orch._default_branch = "main"
-    orch._pre_play_branches = {}
-    orch._main_repo_dispatch_paused = False
+    orch._main_repo = MainRepoGuard()
     orch._draining = False
     orch._stop_requested = False
     orch._end_session_dispatch_started = False
     orch._in_flight = {}
     orch._dispatch_ctx = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
-    orch._pending_override_kind = None
+    orch._overrides = OverrideQueue()
     orch._registry = None
     orch._selector = None
     orch._last_selection_digest = None
-
-    # The drop helper writes to the store + emits a warning. We capture by
-    # patching the method directly.
-    orch._drop_selected_play_before_dispatch = AsyncMock()  # type: ignore[method-assign]
 
     manager_mock = MagicMock()
     manager_mock._working_dir = working_dir
@@ -83,6 +77,22 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     state_mock.session_state = MagicMock()
     state_mock.agents = []
     orch._state_provider = MagicMock()
+
+    orch._dispatcher = Dispatcher(
+        host=orch,
+        store=MagicMock(),
+        manager=manager_mock,
+        executor=MagicMock(),
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        state_builder=MagicMock(),
+        completion=MagicMock(),
+    )
+    # The drop helper writes to the store + emits a warning. We capture by
+    # patching the method directly on the Dispatcher.
+    orch._dispatcher.drop_selected_play_before_dispatch = AsyncMock()  # type: ignore[method-assign]
     return orch, state_mock
 
 
@@ -98,18 +108,17 @@ async def test_dispatch_refuses_backslash_space_working_dir(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        result = await orch._dispatch_play(
+        result = await orch._dispatcher.dispatch_play(
             PlayType.CODE_REVIEW,
             params,
             state,
-            revalidate=False,
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
     assert result is False
     # The drop helper got the right event + reason.
-    orch._drop_selected_play_before_dispatch.assert_awaited_once()
-    drop_call = orch._drop_selected_play_before_dispatch.await_args
+    orch._dispatcher.drop_selected_play_before_dispatch.assert_awaited_once()
+    drop_call = orch._dispatcher.drop_selected_play_before_dispatch.await_args
     assert drop_call.kwargs["event"] == "pre_dispatch_worktree_path_invalid"
     assert drop_call.kwargs["reason"] == "worktree_path_backslash_space"
     event_names = [str(e.get("event", "")) for e in captured]
@@ -129,17 +138,16 @@ async def test_dispatch_refuses_backslash_space_in_extras_worktree(
         structlog.testing.capture_logs() as captured_raw,
         caplog.at_level(logging.INFO, logger="agentshore.core"),
     ):
-        result = await orch._dispatch_play(
+        result = await orch._dispatcher.dispatch_play(
             PlayType.ISSUE_PICKUP,
             params,
             state,
-            revalidate=False,
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
     assert result is False
-    orch._drop_selected_play_before_dispatch.assert_awaited_once()
-    drop_call = orch._drop_selected_play_before_dispatch.await_args
+    orch._dispatcher.drop_selected_play_before_dispatch.assert_awaited_once()
+    drop_call = orch._dispatcher.drop_selected_play_before_dispatch.await_args
     assert drop_call.kwargs["reason"] == "worktree_path_backslash_space"
     event_names = [str(e.get("event", "")) for e in captured]
     assert "pre_dispatch_worktree_path_invalid" in event_names
@@ -156,7 +164,7 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
     orch, state = _build_dispatch_harness(tmp_path)
     params = PlayParams()
 
-    # Stub minimum extras to fall through to revalidate=False path. We
+    # Stub minimum extras to fall through past the backslash-space guard. We
     # short-circuit by asserting the helper itself is NOT called.
     state.session_state = MagicMock()
     # _shutdown_allows_only_end_agent reads draining/stop_requested/state.session_state.
@@ -167,12 +175,11 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
     from contextlib import suppress
 
     with suppress(Exception):
-        await orch._dispatch_play(
+        await orch._dispatcher.dispatch_play(
             PlayType.ISSUE_PICKUP,
             params,
             state,
-            revalidate=False,
         )
 
     # Critical: the bad-path guard was NOT invoked.
-    orch._drop_selected_play_before_dispatch.assert_not_called()
+    orch._dispatcher.drop_selected_play_before_dispatch.assert_not_called()

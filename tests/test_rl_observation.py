@@ -438,7 +438,8 @@ def test_pr_slots():
 
 def test_obs_version_slot():
     obs = encode_observation(_state(), _NULL_CTX)
-    assert obs[_S_OBS_VERSION] == pytest.approx(OBSERVATION_VERSION / 13.0, abs=1e-5)
+    # Self-normalizing marker: always 1.0 regardless of OBSERVATION_VERSION.
+    assert obs[_S_OBS_VERSION] == pytest.approx(1.0, abs=1e-5)
 
 
 def test_obs_version_is_nonzero():

@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 import pytest
 
-from agentshore.cli import _resolve_seed_input_path
+from agentshore.cli.helpers import _resolve_seed_input_path
 
 
 def test_resolve_seed_input_path_accepts_file(tmp_path: Path) -> None:

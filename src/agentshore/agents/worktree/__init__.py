@@ -28,7 +28,6 @@ from agentshore.agents.worktree.allocator import (
     WorktreeAllocationFailed,
     WorktreeBranchGone,
     ensure_worktree,
-    quarantine_orphan,
     reconcile_worktrees,
     remove_worktree,
 )
@@ -92,7 +91,6 @@ __all__ = [
     "WorktreeStatus",
     "default_worktree_root",
     "ensure_worktree",
-    "quarantine_orphan",
     "reconcile_worktrees",
     "remove_worktree",
 ]

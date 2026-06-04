@@ -13,16 +13,15 @@ from click.testing import CliRunner
 
 import agentshore.session_path as sp
 from agentshore.agents.identity import IdentityStatus, RepoAccessStatus
-from agentshore.cli import (
+from agentshore.cli import main
+from agentshore.cli.agent_select import _needs_interactive_agent_selection
+from agentshore.cli.commands.stop import _wait_for_session_exit
+from agentshore.cli.constants import (
     _DRAIN_WAIT_POLL_INTERVAL_S,
     _DRAIN_WAIT_RETRIES,
     _DRAIN_WAIT_TIMEOUT_S,
-    _dispatch_command,
-    _needs_interactive_agent_selection,
-    _run_agent_mode,
-    _wait_for_session_exit,
-    main,
 )
+from agentshore.cli.runtime import _dispatch_command, _run_agent_mode
 from agentshore.config.models import (
     AgentConfig,
     BudgetConfig,
@@ -121,13 +120,13 @@ def test_agent_mode_auto_selects_socket(
     monkeypatch.setattr(sp, "_SESSIONS_DIR", sessions_dir)
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
-        patch("agentshore.cli.uuid.uuid4", return_value="session-visible"),
+        patch("agentshore.cli.commands.start.uuid.uuid4", return_value="session-visible"),
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
     ):
         result = runner.invoke(main, ["start", "--project", str(repo), "--mode", "agent"])
@@ -182,10 +181,13 @@ def test_start_fails_fast_when_identity_token_lacks_repo_access(
     monkeypatch.setattr(sp, "_SESSIONS_DIR", tmp_path / "sessions")
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={"url": "https://github.com/o/r"}),
-        patch("agentshore.cli._detect_agents", return_value=["codex"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch(
+            "agentshore.cli_helpers._detect_gh_remote",
+            return_value={"url": "https://github.com/o/r"},
+        ),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["codex"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch(
             "agentshore.agents.identity.report_identities",
@@ -274,10 +276,10 @@ def test_start_runtime_error_cleans_session_metadata(
         raise RuntimeError("boom")
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
         patch("asyncio.run", side_effect=fail_asyncio_run),
@@ -345,13 +347,13 @@ def test_tui_mode_creates_app(runner: CliRunner, tmp_path: Path) -> None:
     cfg = _mock_cfg()
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
-        patch("agentshore.cli._run_solo_mode") as mock_solo,
+        patch("agentshore.cli.commands.start._run_solo_mode") as mock_solo,
     ):
         result = runner.invoke(main, ["start"])
 
@@ -365,13 +367,13 @@ def test_tui_flag_creates_app(runner: CliRunner, tmp_path: Path) -> None:
     cfg = _mock_cfg()
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
-        patch("agentshore.cli._run_solo_mode") as mock_solo,
+        patch("agentshore.cli.commands.start._run_solo_mode") as mock_solo,
     ):
         result = runner.invoke(main, ["start", "--project", str(repo), "--tui"])
 
@@ -499,8 +501,8 @@ def test_stop_requests_managed_esr_for_clean_drain(runner: CliRunner, tmp_path: 
     with (
         patch("agentshore.session_path.is_session_running", return_value=True),
         patch("agentshore.session_path.request_drain", return_value="sent") as request_drain,
-        patch("agentshore.cli._wait_for_session_exit", return_value=True),
-        patch("agentshore.cli._generate_end_session_report_cli") as generate_report,
+        patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=True),
+        patch("agentshore.cli.commands.stop._generate_end_session_report_cli") as generate_report,
     ):
         result = runner.invoke(main, ["stop", "--project", str(project)])
 
@@ -532,13 +534,50 @@ def test_wait_for_session_exit_escalates_after_fifteen_min_default(
     )
 
 
+def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the escalated hard stop can't kill the process, return None (#31)."""
+    with (
+        patch("agentshore.session_path.read_pid", return_value=1234),
+        patch("os.kill"),
+        patch("time.sleep"),
+        patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
+    ):
+        outcome = _wait_for_session_exit(tmp_path)
+
+    assert outcome is None
+    hard_stop.assert_called_once_with(tmp_path)
+    assert "hard stop failed" in capsys.readouterr().err
+
+
+def test_stop_reports_failure_when_session_survives_hard_stop(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The graceful stop path must exit non-zero — not print 'stopped' — when the
+    process is still alive after the hard-stop escalation (#31)."""
+    project = _make_git_repo(tmp_path)
+
+    with (
+        patch("agentshore.session_path.is_session_running", return_value=True),
+        patch("agentshore.session_path.request_drain", return_value="sent"),
+        patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=None),
+    ):
+        result = runner.invoke(main, ["stop", "--project", str(project)])
+
+    assert result.exit_code == 1, result.output
+    assert "still running after hard stop" in result.output
+    assert "AgentShore session stopped." not in result.output
+
+
 def test_stop_hard_esr_is_ignored(runner: CliRunner, tmp_path: Path) -> None:
     project = _make_git_repo(tmp_path)
 
     with (
         patch("agentshore.session_path.is_session_running", return_value=True),
         patch("agentshore.session_path.hard_stop_session", return_value=True),
-        patch("agentshore.cli._generate_end_session_report_cli") as generate_report,
+        patch("agentshore.cli.commands.stop._generate_end_session_report_cli") as generate_report,
     ):
         result = runner.invoke(main, ["stop", "--project", str(project), "--hard", "--esr"])
 
@@ -604,10 +643,10 @@ def test_phase2_warning_removed(
     )
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
@@ -629,10 +668,10 @@ def test_start_cleanup_stops_recorded_dashboard_process(
     )
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
@@ -674,13 +713,13 @@ def test_explicit_socket_override_writes_session_info_and_symlink(
         _close_asyncio_run_arg(coro)
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
-        patch("agentshore.cli.uuid.uuid4", return_value="session-info-test"),
+        patch("agentshore.cli.commands.start.uuid.uuid4", return_value="session-info-test"),
         patch("asyncio.run", side_effect=capture_during_run),
     ):
         result = runner.invoke(
@@ -720,10 +759,10 @@ def test_explicit_socket_matching_well_known_path_does_not_self_symlink(
         _close_asyncio_run_arg(coro)
 
     with (
-        patch("agentshore.cli._find_repo_root", return_value=repo),
-        patch("agentshore.cli._detect_gh_remote", return_value={}),
-        patch("agentshore.cli._detect_agents", return_value=["claude"]),
-        patch("agentshore.cli._detect_api_keys", return_value={}),
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
         patch("asyncio.run", side_effect=capture_during_run),

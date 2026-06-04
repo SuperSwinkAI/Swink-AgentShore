@@ -15,7 +15,7 @@ The three construction sites audited here are:
 2. ``agentshore.data.store.rows._row_to_pull_request`` — DB row -> record
    (exercised end-to-end via ``DataStore.record_pull_request`` +
    ``DataStore.get_pull_request``).
-3. ``agentshore.core.mixins.snapshots._project_pull_requests`` — record ->
+3. ``agentshore.core.mixins.snapshots.SnapshotProjector.project_pull_requests`` — record ->
    snapshot, the path that feeds ``state.pull_requests``.
 
 A fourth case covers the defensive ``pr_snapshot_missing_branch`` log emitted
@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.config import RuntimeConfig
-from agentshore.core import Orchestrator
+from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.data.models import PullRequestRecord
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.github.adapter import GitHubAdapter
@@ -153,6 +153,46 @@ async def test_data_store_round_trip_preserves_branch(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_data_store_round_trip_preserves_base_ref(tmp_path: Path) -> None:
+    """Persist a PR with a known ``base_ref``, read it back, and assert it survives.
+
+    Regression for the write-only ``base_ref`` bug: the upsert wrote the column
+    but every read SELECT omitted it and ``_row_to_pull_request`` never assigned
+    it, so ``PullRequestRecord.base_ref`` was always ``None`` for any PR loaded
+    from the DB — silently disabling the base-ref drift / retarget feature on
+    cached PRs.
+    """
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="s1",
+                project_path=str(tmp_path),
+                started_at="2026-05-22T00:00:00+00:00",
+            )
+        )
+        await store.record_pull_request(
+            PullRequestRecord(
+                pr_number=510,
+                session_id="s1",
+                state="open",
+                created_at="2026-05-22T00:00:01+00:00",
+                branch=_BRANCH,
+                base_ref="main",
+            )
+        )
+        pr = await store.get_pull_request("s1", 510)
+        assert pr is not None
+        assert pr.base_ref == "main"
+        # The list read paths must agree with the single-row read.
+        open_prs = await store.list_open_pull_requests("s1")
+        assert [p.base_ref for p in open_prs] == ["main"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_data_store_upsert_preserves_existing_branch_on_null_refresh(
     tmp_path: Path,
 ) -> None:
@@ -214,7 +254,7 @@ def test_project_pull_requests_propagates_branch() -> None:
             branch=_BRANCH,
         )
     ]
-    snapshots = Orchestrator._project_pull_requests(records)
+    snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch == _BRANCH
     assert snapshots[0].pr_number == 507
@@ -242,8 +282,8 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
         )
     ]
     mock_logger = MagicMock()
-    with patch("agentshore.core._logger", mock_logger):
-        snapshots = Orchestrator._project_pull_requests(records)
+    with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
+        snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch is None
     # Walk every warning() call and confirm one matches our event name +
@@ -273,8 +313,8 @@ def test_project_pull_requests_no_warning_for_merged_branch_none() -> None:
         )
     ]
     mock_logger = MagicMock()
-    with patch("agentshore.core._logger", mock_logger):
-        Orchestrator._project_pull_requests(records)
+    with patch("agentshore.core.mixins.snapshots._logger", mock_logger):
+        SnapshotProjector.project_pull_requests(records)
     matching = [
         call
         for call in mock_logger.warning.call_args_list

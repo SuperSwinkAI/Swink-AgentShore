@@ -1,21 +1,16 @@
-"""Tests for the three TUI data-display widgets: AgentPanel, ActivePlayWidget,
-and PlayHistoryTable."""
+"""Tests for the TUI data-display widgets: AgentPanel and PlayHistoryTable."""
 
 from __future__ import annotations
-
-import time
 
 from textual.app import App, ComposeResult
 
 from agentshore.state import (
-    ActivePlay,
     AgentSnapshot,
     AgentStatus,
     AgentType,
     PlayOutcome,
     PlayType,
 )
-from agentshore.ui.widgets.active_play import ActivePlayWidget
 from agentshore.ui.widgets.agent_panel import AgentPanel
 from agentshore.ui.widgets.play_history import PlayHistoryTable
 
@@ -27,11 +22,6 @@ from agentshore.ui.widgets.play_history import PlayHistoryTable
 class _AgentPanelApp(App[None]):
     def compose(self) -> ComposeResult:
         yield AgentPanel()
-
-
-class _ActivePlayApp(App[None]):
-    def compose(self) -> ComposeResult:
-        yield ActivePlayWidget()
 
 
 class _PlayHistoryApp(App[None]):
@@ -211,106 +201,6 @@ async def test_agent_panel_multiple_agents() -> None:
         rendered = panel.render()
         assert "agent-a" in rendered
         assert "agent-b" in rendered
-
-
-# ---------------------------------------------------------------------------
-# ActivePlayWidget tests
-# ---------------------------------------------------------------------------
-
-
-async def test_active_play_none_shows_idle() -> None:
-    """No active play renders the 'No active play' placeholder."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        await pilot.pause()
-        assert "No active play" in widget.render()
-
-
-async def test_active_play_shows_play_type() -> None:
-    """Setting a play type causes its value string to appear in render."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.set_play(PlayType.ISSUE_PICKUP, time.monotonic())
-        await pilot.pause()
-        assert "issue_pickup" in widget.render()
-
-
-async def test_active_play_clears_on_none() -> None:
-    """Clearing the play (set_play(None, None)) restores the placeholder."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.set_play(PlayType.CODE_REVIEW, time.monotonic())
-        await pilot.pause()
-        widget.set_play(None, None)
-        await pilot.pause()
-        assert "No active play" in widget.render()
-
-
-async def test_active_play_shows_elapsed_timer() -> None:
-    """Render output includes the [MM:SS] timer bracket."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.set_play(PlayType.RUN_QA, time.monotonic())
-        await pilot.pause()
-        rendered = widget.render()
-        assert "[" in rendered and "]" in rendered
-
-
-async def test_active_play_shows_arrow() -> None:
-    """Render output includes the ▶ playing indicator when a play is active."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.set_play(PlayType.MERGE_PR, time.monotonic())
-        await pilot.pause()
-        assert "▶" in widget.render()
-
-
-async def test_active_play_replays_state_snapshot_details() -> None:
-    """ActivePlay snapshots render play id and target fields."""
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.update_active_play(
-            ActivePlay(
-                play_type=PlayType.CODE_REVIEW,
-                agent_id="agent-123456789",
-                started_at="2026-01-01T00:00:00+00:00",
-                play_id=77,
-                issue_number=12,
-                pr_number=34,
-                branch="feature/dashboard",
-                phase="reviewing",
-            ),
-            agents=[_make_agent(agent_id="agent-123456789")],
-        )
-        await pilot.pause()
-        rendered = widget.render()
-        assert "play #77" in rendered
-        assert "issue=#12" in rendered
-        assert "pr=#34" in rendered
-        assert "phase=reviewing" in rendered
-
-
-async def test_active_play_replays_failed_phase_suffix() -> None:
-    app = _ActivePlayApp()
-    async with app.run_test() as pilot:
-        widget = app.query_one(ActivePlayWidget)
-        widget.update_active_play(
-            ActivePlay(
-                play_type=PlayType.BROWSER_VERIFICATION,
-                agent_id="agent-1",
-                started_at="2026-01-01T00:00:00+00:00",
-                phase="verifying — FAILED",
-            )
-        )
-        await pilot.pause()
-        rendered = widget.render()
-        assert "phase=verifying — FAILED" in rendered
 
 
 # ---------------------------------------------------------------------------

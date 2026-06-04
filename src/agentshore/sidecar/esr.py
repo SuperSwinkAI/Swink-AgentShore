@@ -23,6 +23,10 @@ class EsrPayload(TypedDict):
     archive_path: str
     report_path: str
     log_path: str | None
+    # Path to the rendered timelapse MP4 when the optional desktop timelapse
+    # capture ran for this session; ``None`` otherwise. The desktop opens it on
+    # session completion.
+    timelapse_output_path: str | None
     esr_summary: EndSessionReportData
 
 
@@ -35,6 +39,7 @@ async def build_esr_payload(
     log_path: str | None,
     exit_reason: str,
     exit_code: int,
+    timelapse_output_path: str | None = None,
 ) -> EsrPayload:
     """Build the ``session.stop`` / ``session.completed`` result payload."""
     collector = ReportDataCollector(store)
@@ -46,5 +51,6 @@ async def build_esr_payload(
         archive_path=archive_path,
         report_path=report_path,
         log_path=log_path,
+        timelapse_output_path=timelapse_output_path,
         esr_summary=summary,
     )

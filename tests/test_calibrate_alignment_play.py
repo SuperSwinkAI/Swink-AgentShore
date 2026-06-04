@@ -48,7 +48,7 @@ def test_preconditions_blocks_when_graph_is_none() -> None:
     play = CalibrateAlignmentPlay()
     result = play.preconditions(_state(graph=None))
     assert result != []
-    assert any("beads not initialised" in r for r in result)
+    assert any("beads not initialised" in r.text for r in result)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def test_preconditions_blocks_when_graph_has_no_epics() -> None:
     play = CalibrateAlignmentPlay()
     result = play.preconditions(_state(graph=_graph_no_epics()))
     assert result != []
-    assert any("no epics" in r for r in result)
+    assert any("no epics" in r.text for r in result)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ def test_preconditions_blocks_when_in_flight() -> None:
         _state(graph=_graph_with_epics(), in_flight=[PlayType.CALIBRATE_ALIGNMENT])
     )
     assert result != []
-    assert any("in flight" in r or "calibrate_alignment" in r for r in result)
+    assert any("in flight" in r.text or "calibrate_alignment" in r.text for r in result)
 
 
 # ---------------------------------------------------------------------------

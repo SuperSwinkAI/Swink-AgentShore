@@ -5,12 +5,14 @@ All components are pure functions of RewardSignals; no DB queries.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore.rl.constants import SAT_OPEN_PRS_COUNT
 from agentshore.state import PlayType
 
 if TYPE_CHECKING:
@@ -82,10 +84,6 @@ _CLEANUP_SUCCESS_BONUS: float = 0.05
 # than a primary driver. Symmetric with the cleanup / instantiate machinery.
 _PR_PRESSURE_THRESHOLD: float = 0.7
 _PR_PRESSURE_BONUS_SCALE: float = 0.05
-# Saturation cap for ``open_pr_count`` when converting to a ratio inside the
-# reward function. Mirrors ``_SAT_OPEN_PRS_COUNT`` in observation.py so the
-# obs feature and the reward bonus share the same notion of "full".
-_PR_PRESSURE_MAX_OPEN_PRS: float = 10.0
 _PR_PRESSURE_PLAYS: frozenset[PlayType] = frozenset({PlayType.MERGE_PR, PlayType.CODE_REVIEW})
 
 # "Dispatch plays" — skill-backed plays that dispatch work to an agent.
@@ -156,11 +154,11 @@ class RewardSignals:
     type_diversity_in_window: int = 1
     rolling_velocity: float = 0.0
     # Drain-pressure (desktop-8zzy): open_pr_count near the soft cap should
-    # encourage MERGE_PR / CODE_REVIEW. ``max_open_prs`` defaults to
-    # ``_PR_PRESSURE_MAX_OPEN_PRS`` (=10.0) so existing callers that don't set
-    # it still get a sensible ratio.
+    # encourage MERGE_PR / CODE_REVIEW. ``max_open_prs`` defaults to the shared
+    # ``SAT_OPEN_PRS_COUNT`` so existing callers that don't set it still get a
+    # sensible ratio that matches the observation PR-pressure features.
     open_pr_count: int = 0
-    max_open_prs: float = 10.0
+    max_open_prs: float = SAT_OPEN_PRS_COUNT
 
 
 @dataclass(slots=True)
@@ -190,6 +188,35 @@ class RewardBreakdown:
     velocity_bonus: float = 0.0
     raw_total: float = 0.0
     clipped_total: float = 0.0
+
+
+# Additive reward-term fields whose values sum to ``raw_total``. Deriving the
+# sum from this tuple (rather than a hand-written 19-term addition) means a
+# dropped term can never silently vanish from the total. Excludes the
+# diagnostic-only fields: ``concurrent_agent_utilization`` /
+# ``concurrent_agent_multiplier`` (inputs to ``concurrent_agent_bonus``, not
+# themselves added) and the ``raw_total`` / ``clipped_total`` outputs.
+_SUMMED_TERMS: tuple[str, ...] = (
+    "issue_throughput",
+    "alignment_delta",
+    "cost_penalty",
+    "time_penalty",
+    "completion_bonus",
+    "stagnation_penalty",
+    "failure_penalty",
+    "issue_inflation_penalty",
+    "anti_confirmation_bonus",
+    "loop_penalty",
+    "progress_play_bonus",
+    "debug_success_bonus",
+    "reconcile_state_success_bonus",
+    "instantiate_success_bonus",
+    "cleanup_success_bonus",
+    "pr_pressure_bonus",
+    "concurrent_agent_bonus",
+    "type_diversity_bonus",
+    "velocity_bonus",
+)
 
 
 def compute_reward(
@@ -323,7 +350,7 @@ def compute_reward(
     # (1 - threshold) * scale = 0.015 by default. Symmetric with the
     # cleanup/instantiate machinery — see _PR_PRESSURE_* constants above.
     if signals.success and signals.play_type in _PR_PRESSURE_PLAYS:
-        max_prs = signals.max_open_prs if signals.max_open_prs > 0.0 else _PR_PRESSURE_MAX_OPEN_PRS
+        max_prs = signals.max_open_prs if signals.max_open_prs > 0.0 else SAT_OPEN_PRS_COUNT
         ratio = signals.open_pr_count / max_prs
         pressure = max(0.0, ratio - _PR_PRESSURE_THRESHOLD)
         bd.pr_pressure_bonus = pressure * _PR_PRESSURE_BONUS_SCALE
@@ -364,27 +391,7 @@ def compute_reward(
     if any_streak >= 6:
         bd.loop_penalty += -0.5 * cfg.loop_penalty * (any_streak - 5)
 
-    raw = (
-        bd.issue_throughput
-        + bd.alignment_delta
-        + bd.cost_penalty
-        + bd.time_penalty
-        + bd.completion_bonus
-        + bd.stagnation_penalty
-        + bd.failure_penalty
-        + bd.issue_inflation_penalty
-        + bd.anti_confirmation_bonus
-        + bd.loop_penalty
-        + bd.progress_play_bonus
-        + bd.debug_success_bonus
-        + bd.reconcile_state_success_bonus
-        + bd.instantiate_success_bonus
-        + bd.cleanup_success_bonus
-        + bd.pr_pressure_bonus
-        + bd.concurrent_agent_bonus
-        + bd.type_diversity_bonus
-        + bd.velocity_bonus
-    )
+    raw = float(sum(getattr(bd, field) for field in _SUMMED_TERMS))
 
     if not math.isfinite(raw):
         _logger.error("reward_non_finite", raw=raw)
@@ -396,31 +403,13 @@ def compute_reward(
     clipped = max(reward_clip_low, min(reward_clip_high, raw))
     bd.clipped_total = clipped
 
-    _logger.debug(
-        "reward_breakdown",
-        issue_throughput=bd.issue_throughput,
-        alignment_delta=bd.alignment_delta,
-        cost_penalty=bd.cost_penalty,
-        time_penalty=bd.time_penalty,
-        completion_bonus=bd.completion_bonus,
-        stagnation_penalty=bd.stagnation_penalty,
-        failure_penalty=bd.failure_penalty,
-        issue_inflation_penalty=bd.issue_inflation_penalty,
-        anti_confirmation_bonus=bd.anti_confirmation_bonus,
-        loop_penalty=bd.loop_penalty,
-        progress_play_bonus=bd.progress_play_bonus,
-        debug_success_bonus=bd.debug_success_bonus,
-        reconcile_state_success_bonus=bd.reconcile_state_success_bonus,
-        instantiate_success_bonus=bd.instantiate_success_bonus,
-        cleanup_success_bonus=bd.cleanup_success_bonus,
-        pr_pressure_bonus=bd.pr_pressure_bonus,
-        concurrent_agent_bonus=bd.concurrent_agent_bonus,
-        concurrent_agent_utilization=bd.concurrent_agent_utilization,
-        concurrent_agent_multiplier=bd.concurrent_agent_multiplier,
-        type_diversity_bonus=bd.type_diversity_bonus,
-        velocity_bonus=bd.velocity_bonus,
-        raw=raw,
-        clipped=clipped,
-    )
+    # Log every breakdown field by name via ``asdict`` (so a new field is logged
+    # automatically), minus the two output fields that the call surfaces under
+    # the legacy ``raw`` / ``clipped`` keys instead of ``raw_total`` /
+    # ``clipped_total``.
+    fields = dataclasses.asdict(bd)
+    del fields["raw_total"]
+    del fields["clipped_total"]
+    _logger.debug("reward_breakdown", **fields, raw=raw, clipped=clipped)
 
     return clipped, bd

@@ -11,6 +11,13 @@ export interface StartSessionParams {
   progressToken?: string | number;
   /** Optional seed file or folder for the first seed_project play. */
   seedInputPath?: string | null;
+  /**
+   * Per-session override for the optional timelapse capture. When ``true``
+   * (and the feature is installed) the sidecar records a dashboard timelapse
+   * for this session. Omitted leaves the decision to ``timelapse.enabled`` in
+   * agentshore.yaml.
+   */
+  timelapse?: boolean;
 }
 
 export interface IpcEndpoint {
@@ -36,6 +43,9 @@ export async function startSession(
   }
   if (params.seedInputPath !== undefined && params.seedInputPath !== null) {
     rpcParams.seed_input_path = params.seedInputPath;
+  }
+  if (params.timelapse !== undefined) {
+    rpcParams.timelapse = params.timelapse;
   }
   return callJsonRpc<StartSessionResult>("session.start", rpcParams);
 }

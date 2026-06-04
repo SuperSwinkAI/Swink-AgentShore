@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from agentshore.cli_identity import GhAccount, run_wizard
+from agentshore.identity_wizard.gh_accounts import GhAccount
+from agentshore.identity_wizard.wizard import run_wizard
 
 
 def _accounts() -> list[GhAccount]:
@@ -22,7 +23,9 @@ def _accounts() -> list[GhAccount]:
 
 def test_picker_label_unchanged_without_defaults() -> None:
     """No defaults → no `(current)` annotation in the picker label."""
-    with patch("agentshore.cli_identity._prompt_choice", return_value=None) as mock_prompt:
+    with patch(
+        "agentshore.identity_wizard.wizard._prompt_choice", return_value=None
+    ) as mock_prompt:
         run_wizard(["claude_code"], accounts=_accounts())
 
     label = mock_prompt.call_args.args[0]
@@ -32,7 +35,9 @@ def test_picker_label_unchanged_without_defaults() -> None:
 
 def test_picker_shows_current_marker_when_default_matches_login() -> None:
     """defaults[agent] = login that exists in accounts → `(current: X)` annotation."""
-    with patch("agentshore.cli_identity._prompt_choice", return_value=None) as mock_prompt:
+    with patch(
+        "agentshore.identity_wizard.wizard._prompt_choice", return_value=None
+    ) as mock_prompt:
         run_wizard(
             ["claude_code"],
             accounts=_accounts(),
@@ -48,7 +53,9 @@ def test_picker_shows_current_marker_when_default_matches_login() -> None:
 def test_picker_shows_was_marker_when_default_login_no_longer_authenticated() -> None:
     """A previously-bound login that's no longer in gh auth and not in
     existing_identities → `(was X — re-pick)`."""
-    with patch("agentshore.cli_identity._prompt_choice", return_value=None) as mock_prompt:
+    with patch(
+        "agentshore.identity_wizard.wizard._prompt_choice", return_value=None
+    ) as mock_prompt:
         run_wizard(
             ["claude_code"],
             accounts=_accounts(),
@@ -69,7 +76,7 @@ def test_picker_surfaces_keychain_only_login_from_existing_identities() -> None:
     `unseriousAI` (PAT in macOS Keychain) disappeared from the picker because
     `detect_gh_accounts()` only sees logins from `gh auth status`.
     """
-    from agentshore.cli_identity import IdentityBinding
+    from agentshore.identity_wizard import IdentityBinding
 
     existing = {
         "unseriousAI": IdentityBinding(
@@ -80,7 +87,9 @@ def test_picker_surfaces_keychain_only_login_from_existing_identities() -> None:
         )
     }
 
-    with patch("agentshore.cli_identity._prompt_choice", return_value=None) as mock_prompt:
+    with patch(
+        "agentshore.identity_wizard.wizard._prompt_choice", return_value=None
+    ) as mock_prompt:
         run_wizard(
             ["claude_code"],
             accounts=_accounts(),
@@ -102,7 +111,7 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
     `Keep existing settings?` shortcut so the user doesn't have to re-paste
     the PAT or pick a strategy again.
     """
-    from agentshore.cli_identity import IdentityBinding
+    from agentshore.identity_wizard import IdentityBinding
 
     existing = {
         "unseriousAI": IdentityBinding(
@@ -116,8 +125,8 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
     # Step 1 picker → choose unseriousAI (the second-and-only configured-only entry).
     # Step 2 → confirm the "keep existing" prompt (default True).
     with (
-        patch("agentshore.cli_identity._prompt_choice", return_value="unseriousAI"),
-        patch("agentshore.cli_identity.click.confirm", return_value=True) as mock_confirm,
+        patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="unseriousAI"),
+        patch("agentshore.identity_wizard.wizard.click.confirm", return_value=True) as mock_confirm,
     ):
         result = run_wizard(
             ["claude_code"],
@@ -145,7 +154,7 @@ def test_per_agent_defaults_are_independent() -> None:
         calls.append((label, logins[default_idx]))
         return None
 
-    with patch("agentshore.cli_identity._prompt_choice", side_effect=fake_prompt):
+    with patch("agentshore.identity_wizard.wizard._prompt_choice", side_effect=fake_prompt):
         run_wizard(
             ["claude_code", "codex"],
             accounts=_accounts(),

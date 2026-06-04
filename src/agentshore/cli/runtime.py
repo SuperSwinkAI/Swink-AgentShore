@@ -1,11 +1,4 @@
-"""Run modes for the orchestrator (agent / headless / solo / dashboard launch).
-
-The module-level ``_logger`` is re-exported as ``agentshore.cli._logger`` so
-``patch("agentshore.cli._logger", …)`` in legacy tests still affects the
-logger used by ``_dispatch_command``.  All logger access inside this
-module goes through ``agentshore.cli`` (the package) at call time so the
-patch is observed.
-"""
+"""Run modes for the orchestrator (agent / headless / solo / dashboard launch)."""
 
 from __future__ import annotations
 
@@ -17,14 +10,12 @@ from typing import TYPE_CHECKING
 import click
 import structlog
 
-from agentshore import cli as _cli_pkg
 from agentshore.cli.constants import _SOCKET_POLL_INTERVAL_S, _SOCKET_WAIT_RETRIES
 from agentshore.cli.helpers import (
     _install_loop_signal_handler,
     _track_background_task,
 )
 from agentshore.config.models import PolicyMode, RunMode
-from agentshore.paths import project_archive_dir, project_db_path, project_reports_dir
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -61,12 +52,12 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         try:
             delta = float(delta_raw if isinstance(delta_raw, (int, float, str)) else 0)
         except ValueError:
-            _cli_pkg._logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
+            _logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
             return
         if orch.adjust_budget(delta):
             await orch.resume()
     elif command == "rescan_issues":
-        await orch._refresh_issues()
+        await orch.refresh_issues()
     elif command == "feedback_response":
         action = cmd.get("action")
         if action == "continue":
@@ -78,18 +69,17 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         elif action == "pause":
             # Pause is the modal's default state once feedback fires; an
             # explicit Pause click is informational only.
-            _cli_pkg._logger.info("ipc.feedback_response_pause_acknowledged")
+            _logger.info("ipc.feedback_response_pause_acknowledged")
         elif action in {"stop", "end_session", "drain"}:
             await orch.begin_drain("user_request")
         elif action == "rescan_issues":
-            await orch._refresh_issues()
+            await orch.refresh_issues()
             await orch.resume()
     elif command == "abort_play":
         # Cancel all in-flight play tasks.  The orchestrator loop will pick up
         # new work on the next iteration.
-        _cli_pkg._logger.warning("ipc.abort_play_received", in_flight=list(orch._in_flight.keys()))
-        for task in list(orch._in_flight.values()):
-            task.cancel()
+        _logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
+        await orch.abort_in_flight()
     elif command == "verification_response":
         # A human has responded to a verification_checkpoint.  If the checkpoint
         # passed, resume the paused orchestrator; otherwise keep it paused and log
@@ -98,14 +88,14 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         checkpoint_id = cmd.get("checkpoint_id")
         notes = cmd.get("notes")
         if passed:
-            _cli_pkg._logger.info(
+            _logger.info(
                 "ipc.verification_response_passed",
                 checkpoint_id=checkpoint_id,
                 notes=notes,
             )
             await orch.resume()
         else:
-            _cli_pkg._logger.warning(
+            _logger.warning(
                 "ipc.verification_response_failed",
                 checkpoint_id=checkpoint_id,
                 notes=notes,
@@ -113,29 +103,17 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             )
     elif command == "generate_report":
         report_type = str(cmd.get("report_type", "summary"))
-        from agentshore.reports.generator import ReportGenerator
-
-        gen = ReportGenerator(orch._store)
-        output_dir = project_reports_dir(orch._repo_root)
-        if report_type == "progress":
-            await gen.generate_progress_report(orch._session_id, output_dir)
-        else:
-            await gen.generate_session_summary(orch._session_id, output_dir)
+        await orch.generate_report(report_type)
     elif command == "archive_session":
-        from agentshore.archive import Archiver
-
-        archive_dir = project_archive_dir(orch._repo_root)
-        db_path = project_db_path(orch._repo_root)
-        archiver = Archiver(orch._store, archive_dir)
-        await archiver.create_archive(orch._session_id, db_path=db_path)
+        await orch.archive_session()
     elif command == "list_archives":
-        archives = await orch._store.list_archives()
-        _cli_pkg._logger.info("ipc.archives_listed", count=len(archives))
+        archives = await orch.list_archives()
+        _logger.info("ipc.archives_listed", count=len(archives))
     # "start" is accepted by the validator (so connecting clients can send it)
     # but is a no-op at dispatch time — the orchestrator is already running by
     # the time IPC commands are processed.
     elif command == "start":
-        _cli_pkg._logger.info("ipc.start_received_noop", message="Orchestrator already running")
+        _logger.info("ipc.start_received_noop", message="Orchestrator already running")
 
 
 def _launch_dashboard_background(
@@ -147,8 +125,9 @@ def _launch_dashboard_background(
     budget: float | None,
     policy_mode: PolicyMode,
     policy: str | None,
-    strict: bool,
+    strict: bool | None,
     config_path: str | None,
+    timelapse_enabled: bool = False,
 ) -> None:
     """Launch AgentShore + dashboard as two detached background processes and return.
 
@@ -162,7 +141,7 @@ def _launch_dashboard_background(
     import time
     import webbrowser
 
-    from agentshore.session_path import IpcEndpoint, session_dir
+    from agentshore.session_path import IpcEndpoint, find_dashboard_port, session_dir
 
     endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else IpcEndpoint.unix("")
     log_dir = session_dir(project_path)
@@ -194,8 +173,13 @@ def _launch_dashboard_background(
     cmd.extend(["--policy-mode", policy_mode.value])
     if policy:
         cmd.extend(["--policy", policy])
-    if strict:
+    # Propagate the parent's tri-state --strict/--no-strict to the detached
+    # orchestrator so it resolves scope.strict_mode identically. When omitted
+    # (None) the subprocess defers to agentshore.yaml, just as the parent did.
+    if strict is True:
         cmd.append("--strict")
+    elif strict is False:
+        cmd.append("--no-strict")
     if config_path:
         cmd.extend(["--config", config_path])
 
@@ -223,7 +207,7 @@ def _launch_dashboard_background(
         click.echo("Warning: timed out waiting for IPC socket — check the log.", err=True)
         return
 
-    port = _find_free_dashboard_port()
+    port = find_dashboard_port()
     dashboard_cmd: list[str] = [
         sys.executable,
         "-m",
@@ -260,7 +244,87 @@ def _launch_dashboard_background(
     url = f"http://localhost:{port}"
     webbrowser.open(url)
     click.echo(f"Dashboard: {url}")
+
+    if timelapse_enabled:
+        _maybe_start_cli_timelapse(project_path, url)
+
     click.echo("Stop with: agentshore stop")
+
+
+def _maybe_start_cli_timelapse(project_path: Path, dashboard_url: str) -> None:
+    """Start a best-effort dashboard timelapse and persist its run-id.
+
+    Mirrors the desktop sidecar's ``_maybe_start_timelapse`` for the CLI's
+    detached ``--dashboard`` path: the capture process is spawned detached (it
+    survives this launcher exiting) and its run-id is stashed in the session dir
+    so the separate ``agentshore stop`` can finalise the render. Any failure is
+    logged and swallowed — a missing binary or capture error must never block
+    session start.
+    """
+    import asyncio
+
+    from agentshore.session_path import write_timelapse_info
+    from agentshore.timelapse import TimelapseError, resolve_timelapse_binary, start_capture
+
+    if resolve_timelapse_binary() is None:
+        _logger.warning("timelapse_start_skipped", reason="binary_not_found")
+        return
+    runs_cwd = project_path / ".agentshore"
+    try:
+        run = asyncio.run(start_capture(dashboard_url, runs_cwd))
+    except TimelapseError as exc:
+        _logger.warning("timelapse_start_failed", error=str(exc))
+        return
+    write_timelapse_info(project_path, run_id=run.run_id, runs_cwd=runs_cwd)
+    click.echo(f"Timelapse capture started (run {run.run_id}).")
+
+
+def _finalize_cli_timelapse(
+    project_path: Path,
+    *,
+    info: dict[str, object] | None = None,
+    echo: bool = False,
+) -> str | None:
+    """Stop and render a CLI-started dashboard timelapse (best-effort).
+
+    Reads the recorded run-id (from *info* when supplied, else the session
+    ``timelapse.json``), stops the detached capture, waits for the render, and
+    clears the sidecar. Idempotent — safe to call from both the orchestrator's
+    own shutdown (covering a natural session end) and ``agentshore stop`` (a
+    backstop for hard stops, where the orchestrator is killed before it can run
+    its shutdown). Never raises: a missing/failed capture must not block
+    shutdown. Returns the rendered MP4 path when available.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from agentshore.session_path import clear_timelapse_info, read_timelapse_info
+
+    info = info if info is not None else read_timelapse_info(project_path)
+    if info is None:
+        return None
+    run_id = info.get("run_id")
+    runs_cwd_raw = info.get("runs_cwd")
+    if not isinstance(run_id, str) or not isinstance(runs_cwd_raw, str):
+        clear_timelapse_info(project_path)
+        return None
+
+    async def _run() -> str | None:
+        from agentshore.timelapse import TimelapseError, await_output, stop_capture
+
+        try:
+            await stop_capture(run_id, Path(runs_cwd_raw))
+        except TimelapseError as exc:
+            # Already stopped (e.g. the orchestrator finalised first) or a real
+            # failure — either way, still try to fetch the rendered output.
+            _logger.warning("timelapse_stop_failed", run_id=run_id, error=str(exc))
+        return await await_output(run_id, Path(runs_cwd_raw))
+
+    output_path = asyncio.run(_run())
+    clear_timelapse_info(project_path)
+    if echo and output_path:
+        click.echo(f"Timelapse saved: {output_path}")
+    return output_path
 
 
 async def _run_agent_mode(
@@ -359,9 +423,7 @@ async def _run_agent_mode(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _cli_pkg._logger.warning(
-                    "ipc.dispatch_error", command=cmd.get("command"), error=str(exc)
-                )
+                _logger.warning("ipc.dispatch_error", command=cmd.get("command"), error=str(exc))
 
     cmd_task = asyncio.create_task(_drain_commands())
 
@@ -381,24 +443,9 @@ async def _run_agent_mode(
         await server.stop()
 
 
-def _find_free_dashboard_port(start: int = 9400, end: int = 9410) -> int:
-    """Return the first free TCP port in [start, end), or start if all busy."""
-    import socket as _socket
-
-    for port in range(start, end):
-        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    return start
-
-
 async def _start_dashboard_bridge(
-    socket_path: str | None = None,
     *,
-    ipc_endpoint: object | None = None,
+    ipc_endpoint: object,
     session_dir: Path,
     port: int | None = None,
 ) -> None:
@@ -406,19 +453,20 @@ async def _start_dashboard_bridge(
     import webbrowser
 
     from agentshore.dashboard import DashboardBridge
-    from agentshore.session_path import IpcEndpoint
+    from agentshore.session_path import IpcEndpoint, find_dashboard_port
 
-    port = port or _find_free_dashboard_port()
+    port = port or find_dashboard_port()
     url = f"http://localhost:{port}"
 
     def _on_ready() -> None:
         click.echo(f"Dashboard ready → {url}")
         webbrowser.open(url)
 
-    endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else None
+    if not isinstance(ipc_endpoint, IpcEndpoint):
+        msg = f"_start_dashboard_bridge: expected IpcEndpoint, got {type(ipc_endpoint)!r}"
+        raise TypeError(msg)
     bridge = DashboardBridge(
-        socket_path=socket_path,
-        ipc_endpoint=endpoint,
+        ipc_endpoint=ipc_endpoint,
         session_dir=session_dir,
         port=port,
         on_ready=_on_ready,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from agentshore.cli.helpers import open_store, resolve_session_id
 from agentshore.cli_helpers import _PROJECT_DIR
 
 
@@ -30,36 +31,20 @@ def report(session: str | None, report_type: str, open_report: bool, project: st
 
     project_path = Path(project).resolve()
     db_path = project_path / _PROJECT_DIR / "agentshore.db"
-    if not db_path.exists():
-        click.echo(f"Error: No database found at {db_path}", err=True)
-        raise SystemExit(1)
-
     output_dir = project_path / _PROJECT_DIR / "reports"
 
     async def _run() -> None:
-        from agentshore.data.store import DataStore
         from agentshore.reports.generator import ReportGenerator
 
-        store = DataStore(db_path)
-        await store.initialize()
-
-        # Resolve session ID
-        sess_id = session
-        if sess_id is None:
-            sessions = await store.list_sessions()
-            if not sessions:
-                click.echo("No sessions found.", err=True)
-                await store.close()
-                raise SystemExit(1)
-            sess_id = sessions[0].session_id
-
-        gen = ReportGenerator(store)
-        if report_type == "summary":
-            path = await gen.generate_session_summary(sess_id, output_dir, open_browser=open_report)
-        else:
-            path = await gen.generate_progress_report(sess_id, output_dir)
-
-        click.echo(f"Report saved to: {path}")
-        await store.close()
+        async with open_store(db_path) as store:
+            sess_id = await resolve_session_id(store, session)
+            gen = ReportGenerator(store)
+            if report_type == "summary":
+                path = await gen.generate_session_summary(
+                    sess_id, output_dir, open_browser=open_report
+                )
+            else:
+                path = await gen.generate_progress_report(sess_id, output_dir)
+            click.echo(f"Report saved to: {path}")
 
     asyncio.run(_run())

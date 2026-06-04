@@ -13,9 +13,15 @@ from agentshore.plays.base import PlayParams
 from agentshore.plays.registry import build_default_registry
 from agentshore.rl.action_space import NUM_ACTIONS, PLAY_TO_INDEX
 from agentshore.rl.experience import RolloutBuffer
+from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.rl.observation import OBSERVATION_DIM
 from agentshore.rl.policy import ActorCritic
-from agentshore.rl.selector import PPOSelector, _only_capacity_waiting, _PendingStep
+from agentshore.rl.selector import (
+    PPOSelector,
+    _is_capacity_wait,
+    _only_capacity_waiting,
+    _PendingStep,
+)
 from agentshore.rl.training import PPOUpdater
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
@@ -212,12 +218,96 @@ def test_select_all_masked_logs_structured_diagnostics():
     assert "top_mask_reasons" in kwargs
 
 
+def _mask_reason(text: str, source: MaskSource) -> MaskReason:
+    return MaskReason(text=text, classification=MaskClassification.TRANSIENT, source=source)
+
+
 def test_capacity_only_reasons_include_allowed_tier_waits():
+    # Eligibility reasons count as capacity waits; RESERVED is an actionable ignore.
     assert _only_capacity_waiting(
         [
-            {"reason": "No IDLE agent of allowed tier (large)", "count": 1},
-            {"reason": "Reserved action slot", "count": 2},
+            {
+                "reason": MaskReason(
+                    text="No IDLE agent of allowed tier (large)",
+                    classification=MaskClassification.TRANSIENT,
+                    source=MaskSource.ELIGIBILITY,
+                ),
+                "count": 1,
+            },
+            {
+                "reason": MaskReason(
+                    text="Reserved action slot",
+                    classification=MaskClassification.HARD,
+                    source=MaskSource.RESERVED,
+                ),
+                "count": 2,
+            },
         ]
+    )
+
+
+def test_capacity_only_reasons_spawn_cooldown():
+    # Instantiate-cooldown reasons (SPAWN source) count as capacity waits.
+    assert _only_capacity_waiting(
+        [
+            {
+                "reason": MaskReason(
+                    text="instantiate cooldown (1/3 plays since last)",
+                    classification=MaskClassification.INDEFINITE_WAIT,
+                    source=MaskSource.SPAWN,
+                ),
+                "count": 3,
+            }
+        ]
+    )
+
+
+def test_capacity_only_reasons_non_capacity_returns_false():
+    # A reason from a non-capacity source (e.g. CONTROL) causes the predicate to
+    # return False even if other capacity-wait reasons are present.
+    assert not _only_capacity_waiting(
+        [
+            {
+                "reason": MaskReason(
+                    text="No IDLE agents",
+                    classification=MaskClassification.TRANSIENT,
+                    source=MaskSource.ELIGIBILITY,
+                ),
+                "count": 2,
+            },
+            {
+                "reason": MaskReason(
+                    text="session draining",
+                    classification=MaskClassification.INDEFINITE_WAIT,
+                    source=MaskSource.DRAIN,
+                ),
+                "count": 1,
+            },
+        ]
+    )
+
+
+def test_is_capacity_wait_eligibility_and_spawn():
+    assert _is_capacity_wait(
+        MaskReason(
+            text="No IDLE agents",
+            classification=MaskClassification.TRANSIENT,
+            source=MaskSource.ELIGIBILITY,
+        )
+    )
+    assert _is_capacity_wait(
+        MaskReason(
+            text="instantiate cooldown (0/3)",
+            classification=MaskClassification.INDEFINITE_WAIT,
+            source=MaskSource.SPAWN,
+        )
+    )
+    assert not _is_capacity_wait(
+        MaskReason(
+            text="session draining",
+            classification=MaskClassification.INDEFINITE_WAIT,
+            source=MaskSource.DRAIN,
+        )
     )
 
 
@@ -865,8 +955,10 @@ def test_cleanup_stale_canonical_uses_module_logger_for_rename(tmp_path: Path) -
         legacy_path,
     )
 
+    # The checkpoint lifecycle now lives in checkpoint_store; it logs via that
+    # module's logger (selector re-exports the function unchanged).
     logger = mock.Mock()
-    with mock.patch("agentshore.rl.selector._logger", logger):
+    with mock.patch("agentshore.rl.checkpoint_store._logger", logger):
         cleanup_stale_canonical_weights(weights_dir)
 
     logger.warning.assert_any_call(

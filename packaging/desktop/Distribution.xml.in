@@ -2,14 +2,22 @@
 <!--
   productbuild Distribution definition for AgentShore.
 
-  Two components are declared so the wizard's Customize panel shows
-  "Install CLI" as a deliberate user-visible checkbox. The desktop app
-  is required (start_selected + enabled="false"); the CLI is opt-out.
+  Three components are declared so the wizard's Customize panel shows them as
+  deliberate user-visible choices:
+    - Desktop is required (start_selected + enabled="false").
+    - Timelapse is opt-in (start_selected="false") — a heavier optional
+      toolchain (Homebrew ffmpeg/Node + a headless Chromium).
+    - CLI is opt-out (start_selected="true").
+
+  Outline order is install order: Desktop first (provisions the managed venv
+  the Timelapse component reuses), then Timelapse, then CLI last (it owns the
+  Installer auto-close in cli-postinstall).
 
   build-macos.sh substitutes:
-    @VERSION@             — pyproject + tauri.conf.json version string
-    @APP_COMPONENT_PKG@   — filename of the desktop component pkg
-    @CLI_COMPONENT_PKG@   — filename of the CLI component pkg
+    @VERSION@                  — pyproject + tauri.conf.json version string
+    @APP_COMPONENT_PKG@        — filename of the desktop component pkg
+    @TIMELAPSE_COMPONENT_PKG@  — filename of the timelapse component pkg
+    @CLI_COMPONENT_PKG@        — filename of the CLI component pkg
 -->
 <installer-gui-script minSpecVersion="2">
     <title>AgentShore</title>
@@ -26,6 +34,7 @@
     </volume-check>
     <choices-outline>
         <line choice="ai.agentshore.desktop"/>
+        <line choice="ai.agentshore.timelapse"/>
         <line choice="ai.agentshore.cli"/>
     </choices-outline>
     <choice id="ai.agentshore.desktop"
@@ -34,6 +43,12 @@
             enabled="false"
             start_selected="true">
         <pkg-ref id="ai.agentshore.desktop"/>
+    </choice>
+    <choice id="ai.agentshore.timelapse"
+            title="Timelapse Capture (optional)"
+            description="Provisions the timelapse-capture toolchain (Homebrew ffmpeg, Node.js 24+, and the timelapse-capture CLI via npm) so the desktop can record a timelapse of the dashboard. Heavier install — downloads a headless Chromium. Leave unchecked to skip; you can install it later from the app's Start screen."
+            start_selected="false">
+        <pkg-ref id="ai.agentshore.timelapse"/>
     </choice>
     <choice id="ai.agentshore.cli"
             title="AgentShore CLI"
@@ -45,6 +60,10 @@
              version="@VERSION@"
              onConclusion="none"
              auth="Root">@APP_COMPONENT_PKG@</pkg-ref>
+    <pkg-ref id="ai.agentshore.timelapse"
+             version="@VERSION@"
+             onConclusion="none"
+             auth="Root">@TIMELAPSE_COMPONENT_PKG@</pkg-ref>
     <pkg-ref id="ai.agentshore.cli"
              version="@VERSION@"
              onConclusion="none"

@@ -7,13 +7,10 @@ PlaySelector interface the Orchestrator expects.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import os
 from collections import Counter
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING
 
 import structlog
 import torch
@@ -24,6 +21,22 @@ from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, POLICY_VERSION, V1_ACTION_ORDER
+
+# Checkpoint lifecycle helpers live in checkpoint_store; re-exported here so the
+# existing ``agentshore.core.phases`` import sites keep resolving them through
+# the selector module.
+from agentshore.rl.checkpoint_store import (
+    _archive_old_canonicals as _archive_old_canonicals,
+)
+from agentshore.rl.checkpoint_store import (
+    _prune_local_checkpoints as _prune_local_checkpoints,
+)
+from agentshore.rl.checkpoint_store import (
+    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
+)
+from agentshore.rl.checkpoint_store import (
+    write_global_canonical_blocking,
+)
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
 from agentshore.rl.eligibility import EligibilityAuthority
 from agentshore.rl.experience import RolloutBuffer, Step
@@ -37,16 +50,13 @@ from agentshore.rl.mask import (
     compute_terminal_no_work_decision,
     reverse_failsafe_should_unmask,
 )
-from agentshore.rl.mask_reason import MaskReason
+from agentshore.rl.mask_reason import MaskReason, MaskSource
 from agentshore.rl.observation import encode_observation
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.training import PPOUpdater, UpdateStats
 from agentshore.state import AgentStatus, PlayType, SessionState
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from typing import BinaryIO
-
     import numpy as np
     from numpy.typing import NDArray
 
@@ -65,14 +75,6 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 
-class _WindowsLockingModule(Protocol):
-    LK_LOCK: int
-    LK_UNLCK: int
-
-    def locking(self, fd: int, mode: int, nbytes: int, /) -> int: ...
-
-
-_LOCAL_CHECKPOINT_KEEP = 2
 _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
     {
         PlayType.INSTANTIATE_AGENT,
@@ -85,131 +87,33 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
 )
 
 
-def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KEEP) -> None:
-    """Delete numbered local checkpoints beyond the most recent `keep` files."""
-    numbered = sorted(weights_dir.glob("policy_[0-9][0-9][0-9][0-9][0-9][0-9].pt"))
-    for stale in numbered[:-keep]:
-        with contextlib.suppress(OSError):
-            stale.unlink()
+_CAPACITY_WAIT_SOURCES = frozenset({MaskSource.ELIGIBILITY, MaskSource.CONFIG, MaskSource.SPAWN})
 
 
-def _archive_old_canonicals(weights_dir: Path) -> None:
-    """Rename policy_v{N}.pt files where N != current POLICY_VERSION to policy_legacy_v{N}.pt.
+def _is_capacity_wait(reason: MaskReason) -> bool:
+    """Return True if ``reason`` represents a staffing or spawn-rate constraint.
 
-    Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed policy.pt).
-    Never deletes — renames so the user can inspect.
+    Eligibility gates (no idle agent, tier/capability/exclude mismatches),
+    config gates (no eligible configuration), and spawn-cooldown gates
+    (``SPAWN`` source) are all considered capacity waits — the selector cannot
+    do more until staffing or cooldown state changes.  Reserved slots are
+    structural noise and are handled by the caller.
     """
-    current = weights_dir / f"policy_v{POLICY_VERSION}.pt"
-    for f in sorted(weights_dir.glob("policy_v*.pt")):
-        if f == current or f.name.startswith("policy_legacy_v"):
-            continue
-        stem = f.stem  # e.g. "policy_v2"
-        if stem.startswith("policy_v") and stem[len("policy_v") :].isdigit():
-            dest = weights_dir / f"policy_legacy_{stem[len('policy_') :]}.pt"
-            with contextlib.suppress(OSError):
-                f.rename(dest)
-
-
-def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
-    """Rename policy.pt to policy_legacy_v{N}.pt if it's version-incompatible.
-
-    Called at session start. Never deletes — just renames so the user can inspect.
-    """
-    legacy = weights_dir / "policy.pt"
-    if not legacy.exists():
-        return
-    try:
-        from agentshore.rl.policy import IncompatibleCheckpointError
-
-        ActorCritic.load(legacy)
-        # Compatible — leave it alone.
-    except IncompatibleCheckpointError:
-        try:
-            payload = torch.load(legacy, map_location="cpu", weights_only=True)
-            saved_ver = (
-                payload.get("policy_version", "unknown") if isinstance(payload, dict) else "unknown"
-            )
-        except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            _logger.warning("legacy_checkpoint_load_failed", path=str(legacy), error=str(exc))
-            saved_ver = "unknown"
-        dest = weights_dir / f"policy_legacy_v{saved_ver}.pt"
-        legacy.rename(dest)
-        _logger.warning(
-            "stale_canonical_checkpoint_renamed",
-            from_path=str(legacy),
-            to_path=str(dest),
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        _logger.warning("cleanup_stale_canonical_failed", error=str(exc))
-
-
-@contextmanager
-def _exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Hold an exclusive advisory lock for ``path`` on POSIX and Windows."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as lock_file:
-        _lock_file(lock_file)
-        try:
-            yield
-        finally:
-            _unlock_file(lock_file)
-
-
-def _lock_file(lock_file: BinaryIO) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        _prepare_windows_lock_byte(lock_file)
-        win_lock = cast("_WindowsLockingModule", msvcrt)
-        win_lock.locking(lock_file.fileno(), win_lock.LK_LOCK, 1)
-        return
-
-    import fcntl
-
-    fcntl.flock(lock_file, fcntl.LOCK_EX)
-
-
-def _unlock_file(lock_file: BinaryIO) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        lock_file.seek(0)
-        win_lock = cast("_WindowsLockingModule", msvcrt)
-        win_lock.locking(lock_file.fileno(), win_lock.LK_UNLCK, 1)
-        return
-
-    import fcntl
-
-    fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-
-def _prepare_windows_lock_byte(lock_file: BinaryIO) -> None:
-    lock_file.seek(0, os.SEEK_END)
-    if lock_file.tell() == 0:
-        lock_file.write(b"\0")
-        lock_file.flush()
-    lock_file.seek(0)
+    return reason.source in _CAPACITY_WAIT_SOURCES
 
 
 def _only_capacity_waiting(reason_counts: list[dict[str, object]]) -> bool:
     """Return True when all reported blockers are staffing/capacity waits."""
     if not reason_counts:
         return False
-    capacity_markers = (
-        "No IDLE",
-        "Idle agent",
-        "allowed tier",
-        "No eligible agent configuration",
-        "instantiate_agent cooldown",
-        "max_per_config",
-    )
-    actionable_ignores = {"Reserved action slot"}
     saw_capacity = False
     for item in reason_counts:
-        reason = str(item.get("reason", ""))
-        if reason in actionable_ignores:
+        reason = item.get("reason")
+        if not isinstance(reason, MaskReason):
+            return False
+        if reason.source == MaskSource.RESERVED:
             continue
-        if any(marker in reason for marker in capacity_markers):
+        if _is_capacity_wait(reason):
             saw_capacity = True
             continue
         return False
@@ -558,9 +462,7 @@ class PPOSelector:
         # ``reason`` is typed ``MaskReason | None``; guard against a malformed
         # non-typed reason leaking through so a clean re-pick can never crash the
         # selector (the re-pick must stay a pure resample, not raise).
-        classification = (
-            reason.classification.value if isinstance(reason, MaskReason) else None
-        )
+        classification = reason.classification.value if isinstance(reason, MaskReason) else None
         _logger.info(
             f"ppo_selector.{event}",
             play_type=play_type.value,
@@ -953,60 +855,13 @@ class PPOSelector:
     def _write_global_canonical_blocking(self, canonical: Path, lock_path: Path) -> None:
         """Apply this session's gradient delta to the global canonical under a lock.
 
-        Three sessions writing simultaneously each read the current global,
-        add their own delta, and write back.  The exclusive flock serialises the
-        read-modify-write so no session's update is lost.
-
-        This method performs only synchronous I/O and must be called via
-        ``asyncio.to_thread`` from the async ``save_checkpoint`` path.
+        Thin wrapper around
+        :func:`agentshore.rl.checkpoint_store.write_global_canonical_blocking`,
+        binding this selector's current policy and reload base. Performs only
+        synchronous I/O and must be called via ``asyncio.to_thread`` from the
+        async ``save_checkpoint`` path.
         """
-        import tempfile
-
-        from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
-
-        current_sd = self._policy.state_dict()
-
-        if self._reload_base is not None:
-            # Compute what this PPO update actually changed.
-            try:
-                delta = {k: current_sd[k] - self._reload_base[k] for k in self._reload_base}
-            except (KeyError, RuntimeError):
-                # Shape mismatch — architecture changed mid-session; full write.
-                delta = None
-        else:
-            delta = None  # No base snapshot; write full weights.
-
-        with _exclusive_file_lock(lock_path):
-            if delta is not None and canonical.exists():
-                try:
-                    base = ActorCritic.load(canonical)
-                    if base.num_configs == self._policy.num_configs:
-                        merged_sd = {k: base.state_dict()[k] + delta[k] for k in delta}
-                        base.load_state_dict(merged_sd)
-                        to_save = base
-                    else:
-                        to_save = self._policy  # config index mismatch; full write
-                except (IncompatibleCheckpointError, KeyError, RuntimeError):
-                    to_save = self._policy  # incompatible global; full write
-            else:
-                to_save = self._policy  # no delta or no existing global; full write
-
-            canonical.parent.mkdir(parents=True, exist_ok=True)
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=canonical.parent, suffix=".pt.tmp")
-            try:
-                os.close(tmp_fd)
-                to_save.save(Path(tmp_path))
-                os.replace(tmp_path, canonical)
-            except (OSError, RuntimeError):
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-
-        _logger.debug(
-            "ppo_selector.global_canonical_updated",
-            path=str(canonical),
-            mode="delta" if (delta is not None and canonical.exists()) else "full",
-        )
+        write_global_canonical_blocking(self._policy, self._reload_base, canonical, lock_path)
 
     async def save_checkpoint(
         self,

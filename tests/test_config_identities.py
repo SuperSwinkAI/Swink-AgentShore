@@ -32,7 +32,7 @@ def test_identities_block_parses(tmp_path: Path) -> None:
         + """
 identities:
   example-user:
-    git_user_name: "Wes Eyer"
+    git_user_name: "Example User"
     git_user_email: "user@example.com"
     gh_token_login: example-user
   unseriousAI:
@@ -71,7 +71,7 @@ agents:
 
 identities:
   example-user:
-    git_user_name: "Wes Eyer"
+    git_user_name: "Example User"
     git_user_email: "user@example.com"
     gh_token_login: example-user
   unseriousAI:
@@ -133,7 +133,7 @@ agents:
 
 identities:
   example-user:
-    git_user_name: "Wes Eyer"
+    git_user_name: "Example User"
     git_user_email: "user@example.com"
 """
     with pytest.raises(ConfigError, match="references an unknown identity"):
@@ -146,7 +146,7 @@ def test_both_token_sources_set_raises(tmp_path: Path) -> None:
         + """
 identities:
   example-user:
-    git_user_name: "Wes Eyer"
+    git_user_name: "Example User"
     git_user_email: "user@example.com"
     gh_token_env: GH_TOKEN
     gh_token_login: example-user

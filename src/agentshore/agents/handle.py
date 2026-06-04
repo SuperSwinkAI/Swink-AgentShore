@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import asyncio
     from pathlib import Path
 
+    from agentshore.errors import ErrorClass
     from agentshore.state import AgentStatus, AgentType, PlayType
 
 _logger = get_logger(__name__)
@@ -196,9 +197,14 @@ class AgentHandle:
     current_play_issue_number: int | None = None
     current_play_pr_number: int | None = None
     current_play_branch: str | None = None
-    last_error_class: str | None = None
+    last_error_class: ErrorClass | None = None
     timeout_count: int = 0
     github_identity: str | None = None
+    # Identity env overlay resolved once at instantiate() and reused by every
+    # dispatch — never re-resolved per play. Empty when the agent has no bound
+    # identity. Treat as read-only; dispatch builds a per-call copy before adding
+    # transient keys like ``AGENTSHORE_PROJECT_PATH``.
+    identity_env: dict[str, str] = field(default_factory=dict)
 
     def transition_to(self, new_status: AgentStatus) -> None:
         """Change status and emit a structlog INFO event."""

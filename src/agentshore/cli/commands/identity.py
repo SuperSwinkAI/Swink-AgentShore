@@ -1,8 +1,4 @@
-"""``agentshore identity`` subcommand.
-
-Helpers go through ``agentshore.cli`` so tests can patch them via
-``agentshore.cli._agent_keys_from_yaml`` and friends after the package split.
-"""
+"""``agentshore identity`` subcommand."""
 
 from __future__ import annotations
 
@@ -10,7 +6,12 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
+from agentshore.cli.identity_helpers import (
+    _agent_keys_from_yaml,
+    _existing_identities_from_yaml,
+    _identity_defaults_from_yaml,
+    _identity_repo_name_with_owner,
+)
 
 
 @click.command()
@@ -42,44 +43,43 @@ def identity(project: str, reconfigure: bool) -> None:
 
     if reconfigure:
         from agentshore.availability import refresh as refresh_availability
-        from agentshore.cli_identity import run_identity_wizard
+        from agentshore.identity_wizard import run_identity_wizard
 
-        agent_keys = _cli_pkg._agent_keys_from_yaml(cfg_path)
+        agent_keys = _agent_keys_from_yaml(cfg_path)
         if not agent_keys:
             click.echo("No CLI agents in agentshore.yaml; nothing to bind.", err=True)
             return
         refresh_availability()
-        defaults = _cli_pkg._identity_defaults_from_yaml(cfg_path)
-        existing = _cli_pkg._existing_identities_from_yaml(cfg_path)
+        defaults = _identity_defaults_from_yaml(cfg_path)
+        existing = _existing_identities_from_yaml(cfg_path)
         run_identity_wizard(
             cfg_path,
             agent_keys,
             force_run=True,
             defaults=defaults,
             existing_identities=existing,
-            repo_name_with_owner=_cli_pkg._identity_repo_name_with_owner(project_path),
+            repo_name_with_owner=_identity_repo_name_with_owner(project_path),
         )
         return
 
-    from agentshore.agents.identity import report_identities, report_identity_repo_access
-    from agentshore.cli_identity import echo_identity_report
+    from agentshore.agents.identity import (
+        bad_identity_rows,
+        report_identities,
+        report_identity_repo_access,
+    )
     from agentshore.config import load_config
+    from agentshore.identity_wizard import echo_identity_report, echo_repo_access_report
 
     cfg = load_config(cfg_path)
     rows = report_identities(cfg)
     echo_identity_report(rows)
     # Exit 1 if any configured identity failed to resolve.
-    bad = [
-        r
-        for r in rows
-        if r.identity_name is not None
-        and r.token_source not in {"ambient", "none"}
-        and not r.token_valid
-    ]
-    if bad:
+    if bad_identity_rows(rows):
         raise SystemExit(1)
 
     repo_access_rows = report_identity_repo_access(cfg, project_path)
-    _cli_pkg._echo_repo_access_rows(repo_access_rows)
+    if repo_access_rows:
+        click.echo()
+        echo_repo_access_report(repo_access_rows)
     if any(not row.ok for row in repo_access_rows):
         raise SystemExit(1)

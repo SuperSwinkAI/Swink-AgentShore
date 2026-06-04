@@ -48,6 +48,7 @@ class MaskSource(StrEnum):
     TERMINAL = "terminal"
     RESERVED = "reserved"
     CIRCUIT_BREAKER = "circuit_breaker"
+    SPAWN = "spawn"
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -61,11 +62,8 @@ class MaskReason:
     pipeline emitted the reason and is useful for the new
     ``play_skipped_at_executor`` metric.
 
-    String-compat: ``MaskReason`` compares equal to a bare ``str`` matching
-    ``text``, supports ``in`` substring tests on ``text``, and provides
-    ``.lower()`` / ``.upper()`` returning lowercased / uppercased text.
-    Tests, log inspection, and UI string formatting all work without
-    reaching into ``.text`` explicitly.
+    ``__str__`` returns ``text`` so existing log emission sites keep working
+    without change.
     """
 
     text: str
@@ -82,26 +80,10 @@ class MaskReason:
                 and self.classification == other.classification
                 and self.source == other.source
             )
-        if isinstance(other, str):
-            return self.text == other
         return NotImplemented
 
     def __hash__(self) -> int:
         return hash((self.text, self.classification, self.source))
-
-    def __contains__(self, substring: object) -> bool:
-        """Allow ``"substring" in mask_reason`` to test the human text."""
-        if not isinstance(substring, str):
-            return False
-        return substring in self.text
-
-    def lower(self) -> str:
-        """Return ``text.lower()`` for ``str``-style comparisons."""
-        return self.text.lower()
-
-    def upper(self) -> str:
-        """Return ``text.upper()`` for ``str``-style comparisons."""
-        return self.text.upper()
 
 
 # Common pre-allocated instances for hot paths. Reuse where the reason text
@@ -130,4 +112,18 @@ SELECTED_CANDIDATE_NO_LONGER_AVAILABLE: Final = MaskReason(
     text="selected candidate no longer available",
     classification=MaskClassification.HARD,
     source=MaskSource.CANDIDATE,
+)
+# Main-repo dispatch-pause latch is set: only end_agent / reconcile_state are
+# permitted until the trunk is healed. Transient — clears when the pause lifts.
+MAIN_REPO_DISPATCH_PAUSED: Final = MaskReason(
+    text="main repo dispatch paused: only end_agent / reconcile_state permitted",
+    classification=MaskClassification.TRANSIENT,
+    source=MaskSource.CONTROL,
+)
+# END_SESSION is already started or in-flight. Transient — clears when that
+# dispatch resolves.
+END_SESSION_IN_FLIGHT: Final = MaskReason(
+    text="end_session already in flight",
+    classification=MaskClassification.TRANSIENT,
+    source=MaskSource.CONTROL,
 )

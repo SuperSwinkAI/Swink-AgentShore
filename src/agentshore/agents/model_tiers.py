@@ -18,8 +18,12 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="opus"),
     },
     AgentType.CODEX: {
+        # gpt-5.x (non-``-codex``) ids are the ChatGPT-account-compatible line.
+        # The ``-codex`` suffixed ids (e.g. gpt-5.3-codex) are API-key only and
+        # return HTTP 400 "not supported when using Codex with a ChatGPT
+        # account", so they must not be defaults.
         "small": ModelTierConfig(model="gpt-5.4-mini", reasoning_effort="low"),
-        "medium": ModelTierConfig(model="gpt-5.3-codex", reasoning_effort="medium"),
+        "medium": ModelTierConfig(model="gpt-5.4", reasoning_effort="medium"),
         "large": ModelTierConfig(model="gpt-5.5", reasoning_effort="high"),
     },
     AgentType.GEMINI: {

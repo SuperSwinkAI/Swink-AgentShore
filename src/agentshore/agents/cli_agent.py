@@ -9,16 +9,21 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
-from agentshore.errors import AgentOutputInvalid, AgentProcessError, PlayTimeoutError
+from agentshore.errors import (
+    AgentOutputInvalid,
+    AgentProcessError,
+    ErrorClass,
+    PlayTimeoutError,
+)
 from agentshore.logging import get_logger
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
 
     from agentshore.agents.handle import AgentHandle
@@ -26,7 +31,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-type _ReadOutputResult = tuple[str, int, int, int, int, int, int, str | None]
 
 _DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
@@ -38,6 +42,19 @@ _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from 
 # `gh` call, so we bypass the per-tool permission gates the CLIs ship with.
 # The user can opt out by explicitly setting any non-empty extra_flags in
 # agentshore.yaml; that signals "I'm managing flags myself."
+# Each category carries two pattern sets (#19). The *stderr* set is the full
+# list: a CLI's own stderr is pure diagnostics, so matching anything there is
+# safe. The *stdout-safe* set is the subset of high-precision phrases that
+# effectively never appear in legitimate agent output. For a CLI **coding**
+# agent, stdout is the work PRODUCT — code, diffs, tool output, model
+# reasoning — and genuine quota/auth signals from `gh`/`git` tools are embedded
+# there too (tool_result JSONL), so we cannot ignore stdout entirely. But the
+# generic tokens ("429", "403", "forbidden", "timeout", "overloaded",
+# "capacity", "model not found", ...) routinely occur in code an agent edits;
+# matching those in stdout misclassified ordinary task failures as
+# rate_limit/auth, corrupting the RL reward signal, firing spurious take_break
+# recovery, and (for auth/invalid_model) tearing down a working agent. So the
+# stdout-safe sets drop every generic token and keep only distinctive phrases.
 _RATE_LIMIT_PATTERNS = (
     "rate limit",
     "rate_limit",
@@ -48,6 +65,7 @@ _RATE_LIMIT_PATTERNS = (
     "retry after",
     "throttl",
 )
+_RATE_LIMIT_STDOUT = ("rate limit", "rate_limit", "too many requests", "retry after")
 _AUTH_PATTERNS = (
     "unauthorized",
     "401",
@@ -68,7 +86,28 @@ _AUTH_PATTERNS = (
     "lacks access to repository",
     "cannot access repository metadata",
 )
+# Drops the short generic tokens ("401"/"403"/"unauthorized"/"forbidden"/
+# "authentication") that appear in code; keeps the distinctive gh/git access
+# strings an agent echoes from a real `gh` tool failure.
+_AUTH_STDOUT = (
+    "invalid api key",
+    "bad credentials",
+    "irrecoverable github access failure",
+    "github connector returned 404",
+    "connector repo 404",
+    "could not resolve to a repository with the name",
+    "could not resolve to a repository",
+    "repository/pr is not accessible",
+    "not found/could not resolve repository",
+    "repository is not resolvable to this token",
+    "not resolvable to this token/session",
+    "lacks access to repository",
+    "cannot access repository metadata",
+)
 _TIMEOUT_PATTERNS = ("timeout", "timed out", "deadline exceeded", "context deadline")
+# All timeout tokens are common in source code/test names — none are safe to
+# match against the work product.
+_TIMEOUT_STDOUT: tuple[str, ...] = ()
 _INVALID_MODEL_PATTERNS = (
     "modelnotfounderror",
     "model not found",
@@ -77,6 +116,13 @@ _INVALID_MODEL_PATTERNS = (
     "not found or is not supported",
     "not supported when using codex with a chatgpt account",
     "invalid_request_error",
+)
+# Keep only the distinctive Codex CLI phrasings it prints to stdout; drop the
+# generic "model not found"/"requested entity..."/"invalid_request_error" that
+# can appear in code an agent writes (invalid_model triggers agent teardown).
+_INVALID_MODEL_STDOUT = (
+    "not found or is not supported",
+    "not supported when using codex with a chatgpt account",
 )
 # Codex CLI internal error: its rollout-recording layer references a session
 # thread id it can't find on disk. desktop-yxlj observed one occurrence in
@@ -97,53 +143,83 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
+# Transient network/socket failures. desktop/agentic_jane observed claude_code
+# exits with "API Error: The socket connection was closed unexpectedly" falling
+# into the generic "unknown" bucket (#23). These are distinctive enough to match
+# in either stream and are genuinely transient (a retry/take_break recovers), so
+# pulling them out of "unknown" gives operators an accurate signal instead of a
+# catch-all while keeping the same recovery treatment.
+_TRANSIENT_NETWORK_PATTERNS = (
+    "socket connection was closed unexpectedly",
+    "connection reset by peer",
+    "econnreset",
+    "socket hang up",
+)
 
 
-def _classify_error(rc: int, stderr: str, stdout: str) -> str:
+def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     """Classify a non-zero CLI exit into a semantic error bucket.
 
-    Returns one of ``"rate_limit"``, ``"auth"``, ``"timeout"``,
-    ``"invalid_model"``, ``"codex_rollout"``, ``"crash_oom"``,
-    ``"crash_signal"``, or ``"unknown"``.
-    Inspects both *stderr* and the trailing 1 000 chars of *stdout* because some
-    CLIs (notably Claude Code) exit with code 1 on rate limits without writing
-    anything to stderr. ``rc`` is inspected for signal deaths last, after the
-    content classifiers, so an explicit rate-limit/auth/timeout message still
-    wins over the raw return code.
+    Returns one of ``ErrorClass.RATE_LIMIT``, ``ErrorClass.AUTH``,
+    ``ErrorClass.TIMEOUT``, ``ErrorClass.INVALID_MODEL``,
+    ``ErrorClass.CODEX_ROLLOUT``, ``ErrorClass.TRANSIENT_NETWORK``,
+    ``ErrorClass.CRASH_OOM``, ``ErrorClass.CRASH_SIGNAL``, or
+    ``ErrorClass.UNKNOWN`` (each a ``str`` subclass, so callers comparing
+    against the bare strings keep working).
+
+    *stderr* is matched against the full pattern set; the trailing 1 000 chars
+    of *stdout* are matched only against each category's high-precision
+    stdout-safe subset (#19). stdout is inspected at all because some CLIs
+    (notably Claude Code) report quota exhaustion on stdout with nothing on
+    stderr, and `gh`/`git` tool failures surface in the agent's stdout JSONL —
+    but stdout is also the coding agent's work product, so matching generic
+    tokens there misclassified ordinary task failures (e.g. a failed file edit)
+    as rate_limit/auth. ``rc`` is inspected for signal deaths last, so an
+    explicit content message still wins over the raw return code.
     """
-    combined = (stderr + stdout[-1000:]).lower()
-    if any(p in combined for p in _RATE_LIMIT_PATTERNS):
-        return "rate_limit"
-    if any(p in combined for p in _AUTH_PATTERNS):
-        return "auth"
-    if any(p in combined for p in _TIMEOUT_PATTERNS):
-        return "timeout"
-    if any(p in combined for p in _INVALID_MODEL_PATTERNS):
-        return "invalid_model"
+    err = stderr.lower()
+    out = stdout[-1000:].lower()
+
+    def hit(stderr_patterns: tuple[str, ...], stdout_patterns: tuple[str, ...]) -> bool:
+        return any(p in err for p in stderr_patterns) or any(p in out for p in stdout_patterns)
+
+    if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
+        return ErrorClass.RATE_LIMIT
+    if hit(_AUTH_PATTERNS, _AUTH_STDOUT):
+        return ErrorClass.AUTH
+    if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
+        return ErrorClass.TIMEOUT
+    if hit(_INVALID_MODEL_PATTERNS, _INVALID_MODEL_STDOUT):
+        return ErrorClass.INVALID_MODEL
+    # codex_rollout + OOM signatures are distinctive enough to match in either
+    # stream (an OOM "Out of memory" notice legitimately lands on stdout).
+    combined = err + out
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
-        return "codex_rollout"
+        return ErrorClass.CODEX_ROLLOUT
+    if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
+        return ErrorClass.TRANSIENT_NETWORK
     if any(p in combined for p in _OOM_PATTERNS):
-        return "crash_oom"
+        return ErrorClass.CRASH_OOM
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS
     # OOM killer or an external kill is a crash, NOT a rate limit — bucketing it
     # as "unknown" routed it into rate-limit take_break recovery (#7). SIGTERM
     # (-15) and SIGINT (-2) are graceful AgentShore/OS-initiated stops and keep
     # falling through to "unknown".
     if rc < 0 and rc not in (-2, -15):
-        return "crash_signal"
-    return "unknown"
+        return ErrorClass.CRASH_SIGNAL
+    return ErrorClass.UNKNOWN
 
 
 def _process_error_detail(
     *,
     agent_type: AgentType,
     model: str | None,
-    error_class: str,
+    error_class: ErrorClass,
     stderr: str,
     stdout: str,
 ) -> str:
     """Return a concise user-facing subprocess error detail."""
-    if error_class == "invalid_model":
+    if error_class == ErrorClass.INVALID_MODEL:
         model_text = f" model {model!r}" if model else ""
         report = _extract_cli_report_path(stderr)
         suffix = f" Full report: {report}" if report else ""
@@ -202,6 +278,13 @@ class _UsageTotals:
     max_turn_input_tokens: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadOutput:
+    raw: str
+    usage: _UsageTotals
+    session_id: str | None
+
+
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
 
@@ -223,6 +306,15 @@ class _StdoutActivity:
 @dataclass(frozen=True, slots=True)
 class _ReadOutputFailed:
     exc: BaseException
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatchArgv:
+    """Packaged argv + derived log fields produced by ``_build_dispatch_argv``."""
+
+    argv: list[str]
+    prompt_bytes: int
+    argv_str: str  # truncated preview for ``cli_dispatch_start`` log event
 
 
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
@@ -306,6 +398,219 @@ def build_argv(
 
 
 # ---------------------------------------------------------------------------
+# Core dispatch helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_dispatch_argv(
+    handle: AgentHandle,
+    prompt: str,
+    *,
+    cfg: AgentConfig,
+    python_executable: str | None,
+    resume_session_id: str | None,
+    effective_cwd: Path,
+) -> _DispatchArgv:
+    """Build the subprocess argv list and log-preview fields for a single dispatch.
+
+    Encapsulates the test-shim path (``python_executable``), the normal
+    ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
+    (desktop-dy2j).
+    """
+    if python_executable is not None:
+        # Test shim: invoke cfg.binary as a Python script.
+        argv: list[str] = [python_executable, cfg.binary or ""]
+    else:
+        argv = build_argv(
+            handle.agent_type,
+            prompt,
+            binary=cfg.binary,
+            model=handle.model or cfg.model,
+            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
+            extra_flags=cfg.extra_flags,
+            project_dir=str(effective_cwd),
+        )
+
+    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
+    # re-enters the same session and emits the structured trailer it missed.
+    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
+        argv = [
+            argv[0],
+            "--resume",
+            resume_session_id,
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            prompt,
+        ]
+
+    prompt_bytes = len(prompt.encode("utf-8"))
+
+    # Clamp argv_preview to keep the log readable. The last argv element is the
+    # full skill prompt (~7 KB), and embedding it in every dispatch event bloats
+    # the orchestrator log by ~1 MB per session. The full prompt is
+    # reconstructible from the skill template plus the PlayParams that hit the
+    # dispatcher, so keep only the leading flags here.
+    argv_str = " ".join(argv[:10])
+    if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
+        truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
+        argv_str = argv_str[:_ARGV_PREVIEW_MAX_CHARS] + f"…(+{truncated} chars truncated)"
+
+    return _DispatchArgv(argv=argv, prompt_bytes=prompt_bytes, argv_str=argv_str)
+
+
+async def _await_output_or_timeout(
+    proc: asyncio.subprocess.Process,
+    handle: AgentHandle,
+    *,
+    max_bytes: int,
+    cfg: AgentConfig,
+    stream_idle_timeout: float,
+    timeout: float,
+    prompt_bytes: int,
+) -> tuple[_ReadOutput, bool]:
+    """Drive the read/idle race and return ``(result, post_response_killed)``.
+
+    Called inside ``dispatch_cli``'s outer ``try:`` block so that the caller's
+    ``except``/``finally`` clauses remain responsible for process cleanup on
+    error.  Raises ``PlayTimeoutError`` directly on wall-clock or idle expiry;
+    re-raises ``_ReadOutputFailed.exc`` on output-parse errors.
+    """
+    post_response_killed = False
+    stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    read_task = asyncio.create_task(
+        _read_output_guarded(
+            proc,
+            handle.agent_type,
+            max_bytes,
+            line_limit=cfg.line_limit_bytes,
+            agent_id=handle.agent_id,
+            stdout_activity=stdout_activity,
+        )
+    )
+    idle_task = asyncio.create_task(
+        _watch_stream_idle(
+            stdout_activity,
+            timeout=stream_idle_timeout,
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+            model_tier=handle.model_tier,
+            prompt_bytes=prompt_bytes,
+        )
+    )
+    done, _pending = await asyncio.wait(
+        {read_task, idle_task},
+        timeout=float(timeout),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if not done:
+        read_task.cancel()
+        idle_task.cancel()
+        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        # desktop-awc: enrich the wall-clock timeout error with the
+        # agent shape so operators can spot whether timeouts correlate
+        # with model tier or huge prompts without having to rejoin the
+        # play_id back to the agents table by hand.
+        raise PlayTimeoutError(
+            (
+                f"agent {handle.agent_id!r} ({handle.agent_type.value}/"
+                f"{handle.model_tier or '?'}) timed out after {timeout}s "
+                f"(prompt_bytes={prompt_bytes})"
+            ),
+            error_class=ErrorClass.TIMEOUT_WALLCLOCK,
+        ) from None
+    if read_task in done:
+        idle_task.cancel()
+        await asyncio.gather(idle_task, return_exceptions=True)
+        read_result = await read_task
+        if isinstance(read_result, _ReadOutputFailed):
+            raise read_result.exc
+        return read_result, post_response_killed
+    else:
+        idle_exc = idle_task.exception()
+        if idle_exc is None:
+            read_result = await read_task
+        elif (
+            isinstance(idle_exc, PlayTimeoutError)
+            and getattr(idle_exc, "error_class", None) == ErrorClass.TIMEOUT_POST_RESPONSE
+        ):
+            post_response_killed = True
+            _logger.info(
+                "post_response_process_kill",
+                agent_id=handle.agent_id,
+                grace_s=_POST_RESPONSE_GRACE_S,
+            )
+            await _kill_process(proc, handle.agent_id)
+            try:
+                read_result = await asyncio.wait_for(read_task, timeout=5.0)
+            except TimeoutError:
+                read_task.cancel()
+                await asyncio.gather(read_task, return_exceptions=True)
+                raise idle_exc from None
+        else:
+            grace_s = min(stream_idle_timeout, 0.25)
+            try:
+                await asyncio.wait_for(asyncio.shield(read_task), timeout=grace_s)
+            except TimeoutError:
+                read_task.cancel()
+                await asyncio.gather(read_task, return_exceptions=True)
+                raise idle_exc from None
+            read_result = await read_task
+
+        if isinstance(read_result, _ReadOutputFailed):
+            raise read_result.exc
+        return read_result, post_response_killed
+
+
+async def _finalize_nonzero_exit(
+    proc: asyncio.subprocess.Process,
+    handle: AgentHandle,
+    *,
+    cfg: AgentConfig,
+    rc: int,
+    raw_output: str,
+) -> NoReturn:
+    """Read stderr, classify the error, log, and raise ``AgentProcessError``.
+
+    Always raises — the ``-> NoReturn`` annotation lets mypy verify callers
+    need not handle a return value.
+    """
+    stderr_text = ""
+    if proc.stderr:
+        try:
+            raw_err = await proc.stderr.read()
+            stderr_text = raw_err.decode("utf-8", errors="replace")
+        except (OSError, EOFError) as exc:
+            _logger.warning(
+                "cli_agent_stderr_read_failed",
+                agent_id=handle.agent_id,
+                error=str(exc),
+            )
+    error_class = _classify_error(rc, stderr_text, raw_output)
+    handle.last_error_class = error_class
+    _logger.warning(
+        "cli_agent_nonzero_exit",
+        agent_id=handle.agent_id,
+        exit_code=rc,
+        error_class=error_class,
+        stderr_tail=stderr_text[:500],
+        stdout_tail=raw_output[-500:] if raw_output else "(empty)",
+    )
+    detail = _process_error_detail(
+        agent_type=handle.agent_type,
+        model=handle.model or cfg.model,
+        error_class=error_class,
+        stderr=stderr_text,
+        stdout=raw_output,
+    )
+    _close_process_transport(proc)
+    raise AgentProcessError(
+        f"agent {handle.agent_id!r} exited with code {rc} [{error_class}]: {detail}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core dispatch
 # ---------------------------------------------------------------------------
 
@@ -357,45 +662,15 @@ async def dispatch_cli(
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
 
-    if python_executable is not None:
-        # Test shim: invoke cfg.binary as a Python script.
-        argv = [python_executable, cfg.binary or ""]
-    else:
-        argv = build_argv(
-            handle.agent_type,
-            prompt,
-            binary=cfg.binary,
-            model=handle.model or cfg.model,
-            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
-            extra_flags=cfg.extra_flags,
-            project_dir=str(effective_cwd),
-        )
-
-    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
-    # re-enters the same session and emits the structured trailer it missed.
-    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
-        argv = [
-            argv[0],
-            "--resume",
-            resume_session_id,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            prompt,
-        ]
-
-    prompt_bytes = len(prompt.encode("utf-8"))
-
-    # Clamp argv_preview to keep the log readable. The last argv element is the
-    # full skill prompt (~7 KB), and embedding it in every dispatch event bloats
-    # the orchestrator log by ~1 MB per session. The full prompt is
-    # reconstructible from the skill template plus the PlayParams that hit the
-    # dispatcher, so keep only the leading flags here.
-    argv_str = " ".join(argv[:10])
-    if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
-        truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
-        argv_str = argv_str[:_ARGV_PREVIEW_MAX_CHARS] + f"…(+{truncated} chars truncated)"
+    _argv = _build_dispatch_argv(
+        handle,
+        prompt,
+        cfg=cfg,
+        python_executable=python_executable,
+        resume_session_id=resume_session_id,
+        effective_cwd=effective_cwd,
+    )
+    argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
     _logger.info(
         "cli_dispatch_start",
@@ -427,119 +702,30 @@ async def dispatch_cli(
     if on_subprocess_spawned is not None and proc.pid is not None:
         await on_subprocess_spawned(proc.pid)
 
-    post_response_killed = False
     try:
-        stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
-        read_task = asyncio.create_task(
-            _read_output_guarded(
-                proc,
-                handle.agent_type,
-                max_bytes,
-                line_limit=cfg.line_limit_bytes,
-                agent_id=handle.agent_id,
-                stdout_activity=stdout_activity,
-            )
-        )
-        idle_task = asyncio.create_task(
-            _watch_stream_idle(
-                stdout_activity,
-                timeout=stream_idle_timeout,
-                agent_id=handle.agent_id,
-                agent_type=handle.agent_type.value,
-                model_tier=handle.model_tier,
-                prompt_bytes=prompt_bytes,
-            )
-        )
-        done, _pending = await asyncio.wait(
-            {read_task, idle_task},
+        read_result, post_response_killed = await _await_output_or_timeout(
+            proc,
+            handle,
+            max_bytes=max_bytes,
+            cfg=cfg,
+            stream_idle_timeout=stream_idle_timeout,
             timeout=float(timeout),
-            return_when=asyncio.FIRST_COMPLETED,
+            prompt_bytes=prompt_bytes,
         )
-        if not done:
-            read_task.cancel()
-            idle_task.cancel()
-            await asyncio.gather(read_task, idle_task, return_exceptions=True)
-            # desktop-awc: enrich the wall-clock timeout error with the
-            # agent shape so operators can spot whether timeouts correlate
-            # with model tier or huge prompts without having to rejoin the
-            # play_id back to the agents table by hand.
-            raise PlayTimeoutError(
-                (
-                    f"agent {handle.agent_id!r} ({handle.agent_type.value}/"
-                    f"{handle.model_tier or '?'}) timed out after {timeout}s "
-                    f"(prompt_bytes={prompt_bytes})"
-                ),
-                error_class="timeout_wallclock",
-            ) from None
-        if read_task in done:
-            idle_task.cancel()
-            await asyncio.gather(idle_task, return_exceptions=True)
-            read_result = await read_task
-            if isinstance(read_result, _ReadOutputFailed):
-                raise read_result.exc
-            (
-                raw_output,
-                tokens_in,
-                tokens_out,
-                cached_tokens_in,
-                cache_write_tokens_in,
-                turn_count,
-                max_turn_input_tokens,
-                observed_session_id,
-            ) = read_result
-        else:
-            idle_exc = idle_task.exception()
-            if idle_exc is None:
-                read_result = await read_task
-            elif (
-                isinstance(idle_exc, PlayTimeoutError)
-                and getattr(idle_exc, "error_class", None) == "timeout_post_response"
-            ):
-                post_response_killed = True
-                _logger.info(
-                    "post_response_process_kill",
-                    agent_id=handle.agent_id,
-                    grace_s=_POST_RESPONSE_GRACE_S,
-                )
-                await _kill_process(proc, handle.agent_id)
-                try:
-                    read_result = await asyncio.wait_for(read_task, timeout=5.0)
-                except TimeoutError:
-                    read_task.cancel()
-                    await asyncio.gather(read_task, return_exceptions=True)
-                    raise idle_exc from None
-            else:
-                grace_s = min(stream_idle_timeout, 0.25)
-                try:
-                    await asyncio.wait_for(asyncio.shield(read_task), timeout=grace_s)
-                except TimeoutError:
-                    read_task.cancel()
-                    await asyncio.gather(read_task, return_exceptions=True)
-                    raise idle_exc from None
-                read_result = await read_task
-
-            if isinstance(read_result, _ReadOutputFailed):
-                raise read_result.exc
-            (
-                raw_output,
-                tokens_in,
-                tokens_out,
-                cached_tokens_in,
-                cache_write_tokens_in,
-                turn_count,
-                max_turn_input_tokens,
-                observed_session_id,
-            ) = read_result
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
-        _observed_session_id = observed_session_id
+        raw_output, usage, _observed_session_id = (
+            read_result.raw,
+            read_result.usage,
+            read_result.session_id,
+        )
     except TimeoutError:
         await _kill_process(proc, handle.agent_id)
         _close_streams(proc)
         _close_process_transport(proc)
         raise PlayTimeoutError(
             f"agent {handle.agent_id!r} timed out after {timeout}s",
-            error_class="timeout_wallclock",
+            error_class=ErrorClass.TIMEOUT_WALLCLOCK,
         ) from None
     except asyncio.CancelledError:
         # Task cancellation — clean up the child process before propagating.
@@ -565,56 +751,25 @@ async def dispatch_cli(
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
-        stderr_text = ""
-        if proc.stderr:
-            try:
-                raw_err = await proc.stderr.read()
-                stderr_text = raw_err.decode("utf-8", errors="replace")
-            except (OSError, EOFError) as exc:
-                _logger.warning(
-                    "cli_agent_stderr_read_failed",
-                    agent_id=handle.agent_id,
-                    error=str(exc),
-                )
-        error_class = _classify_error(rc or 1, stderr_text, raw_output)
-        handle.last_error_class = error_class
-        _logger.warning(
-            "cli_agent_nonzero_exit",
-            agent_id=handle.agent_id,
-            exit_code=rc,
-            error_class=error_class,
-            stderr_tail=stderr_text[:500],
-            stdout_tail=raw_output[-500:] if raw_output else "(empty)",
-        )
-        detail = _process_error_detail(
-            agent_type=handle.agent_type,
-            model=handle.model or cfg.model,
-            error_class=error_class,
-            stderr=stderr_text,
-            stdout=raw_output,
-        )
-        _close_process_transport(proc)
-        raise AgentProcessError(
-            f"agent {handle.agent_id!r} exited with code {rc} [{error_class}]: {detail}"
-        )
+        await _finalize_nonzero_exit(proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output)
 
     dollar_cost = estimate_cost(
-        tokens_in,
-        tokens_out,
+        usage.tokens_in,
+        usage.tokens_out,
         cfg,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
     )
     _logger.info(
         "cli_dispatch_done",
         agent_id=handle.agent_id,
         duration_ms=duration_ms,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
-        turn_count=turn_count,
-        max_turn_input_tokens=max_turn_input_tokens,
+        tokens_in=usage.tokens_in,
+        tokens_out=usage.tokens_out,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
+        turn_count=usage.turn_count,
+        max_turn_input_tokens=usage.max_turn_input_tokens,
         dollar_cost=dollar_cost,
         prompt_bytes=prompt_bytes,
         output_length=len(raw_output),
@@ -623,12 +778,12 @@ async def dispatch_cli(
     _close_process_transport(proc)
     return AgentInvocationResult(
         raw_output=raw_output,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        cache_write_tokens_in=cache_write_tokens_in,
-        turn_count=turn_count,
-        max_turn_input_tokens=max_turn_input_tokens,
+        tokens_in=usage.tokens_in,
+        tokens_out=usage.tokens_out,
+        cached_tokens_in=usage.cached_tokens_in,
+        cache_write_tokens_in=usage.cache_write_tokens_in,
+        turn_count=usage.turn_count,
+        max_turn_input_tokens=usage.max_turn_input_tokens,
         dollar_cost=dollar_cost,
         duration_ms=duration_ms,
         exit_code=rc or 0,
@@ -649,7 +804,7 @@ async def _read_output(
     line_limit: int,
     agent_id: str,
     stdout_activity: _StdoutActivity | None = None,
-) -> _ReadOutputResult:
+) -> _ReadOutput:
     """Stream stdout, accumulate output, extract token metadata.
 
     Returns raw text, billable token buckets, lightweight turn metrics, and
@@ -662,7 +817,6 @@ async def _read_output(
         raise RuntimeError(msg)
     chunks: list[bytes] = []
     total_bytes = 0
-    usage = _UsageTotals()
     drift_warned = False
 
     try:
@@ -685,14 +839,12 @@ async def _read_output(
                 )
             chunks.append(line)
 
-            if agent_type == AgentType.CLAUDE_CODE:
-                usage = _maybe_parse_usage(line, usage)
-                if (
-                    stdout_activity is not None
-                    and not stdout_activity.response_complete
-                    and _is_claude_result_event(line)
-                ):
-                    stdout_activity.mark_response_complete()
+            if (
+                stdout_activity is not None
+                and not stdout_activity.response_complete
+                and _is_terminal_event(line, agent_type)
+            ):
+                stdout_activity.mark_response_complete()
     except asyncio.LimitOverrunError as exc:
         raise AgentOutputInvalid(
             f"agent {agent_id!r} stream-json line exceeded {line_limit} bytes "
@@ -713,27 +865,15 @@ async def _read_output(
 
     raw = b"".join(chunks).decode("utf-8", errors="replace")
 
-    if agent_type == AgentType.CLAUDE_CODE:
-        session_id = _extract_session_id_from_jsonl(raw)
-        raw = _extract_text_from_stream_json(raw)
-    elif agent_type == AgentType.CODEX:
-        raw, usage, session_id = _extract_text_from_codex_jsonl(raw)
-    elif agent_type == AgentType.GEMINI:
-        raw, usage, session_id = _extract_text_from_gemini_jsonl(raw)
+    parser = _PARSERS.get(agent_type)
+    if parser is not None:
+        raw, usage, session_id = parser.parse(raw)
     else:
+        usage = _UsageTotals()
         session_id = None
 
     await proc.wait()
-    return (
-        raw,
-        usage.tokens_in,
-        usage.tokens_out,
-        usage.cached_tokens_in,
-        usage.cache_write_tokens_in,
-        usage.turn_count,
-        usage.max_turn_input_tokens,
-        session_id,
-    )
+    return _ReadOutput(raw=raw, usage=usage, session_id=session_id)
 
 
 async def _read_output_guarded(
@@ -744,7 +884,7 @@ async def _read_output_guarded(
     line_limit: int,
     agent_id: str,
     stdout_activity: _StdoutActivity,
-) -> _ReadOutputResult | _ReadOutputFailed:
+) -> _ReadOutput | _ReadOutputFailed:
     try:
         return await _read_output(
             proc,
@@ -796,7 +936,7 @@ async def _watch_stream_idle(
                 raise PlayTimeoutError(
                     f"agent {agent_id!r}{extra} response complete but process "
                     f"did not exit within {_POST_RESPONSE_GRACE_S:g}s grace period",
-                    error_class="timeout_post_response",
+                    error_class=ErrorClass.TIMEOUT_POST_RESPONSE,
                 )
             silence_qualifier = (
                 "produced no stdout"
@@ -805,318 +945,8 @@ async def _watch_stream_idle(
             )
             raise PlayTimeoutError(
                 f"agent {agent_id!r}{extra} {silence_qualifier} for {timeout:g}s",
-                error_class="timeout_stream_idle",
+                error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
             )
-
-
-# ---------------------------------------------------------------------------
-# CliOutputParser — per-agent-type JSONL/stream output parsing
-# ---------------------------------------------------------------------------
-
-
-class CliOutputParser:
-    """Parses CLI agent output streams into text, usage totals, and session IDs.
-
-    Groups the three per-agent-type parsers (Claude, Codex, Gemini) and their
-    shared helpers into a cohesive class. All methods are static since parsers
-    are stateless — the class provides namespace cohesion and discoverability.
-    """
-
-    @staticmethod
-    def extract_session_id(raw: str) -> str | None:
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            for key in ("session_id", "thread_id"):
-                value = event.get(key)
-                if isinstance(value, str) and value:
-                    return value
-        return None
-
-    @staticmethod
-    def maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            return current
-
-        usage: object = {}
-        if event.get("type") == "result":
-            usage = event.get("usage", {})
-        elif event.get("type") == "assistant":
-            message = event.get("message", {})
-            usage = message.get("usage", {}) if isinstance(message, dict) else {}
-        elif event.get("type") == "message_delta":
-            usage = event.get("usage", {})
-
-        if not isinstance(usage, dict):
-            return current
-        parsed = CliOutputParser.usage_totals_from_dict(usage, input_includes_cache=False)
-        return CliOutputParser.max_usage(current, parsed)
-
-    @staticmethod
-    def usage_totals_from_dict(
-        usage: dict[str, object], *, input_includes_cache: bool
-    ) -> _UsageTotals:
-        total_usage = usage.get("total_token_usage")
-        last_usage = usage.get("last_token_usage")
-        turn_usage: dict[str, object] | None = None
-        if isinstance(total_usage, dict):
-            if isinstance(last_usage, dict):
-                turn_usage = last_usage
-            usage = total_usage
-            input_includes_cache = True
-        elif isinstance(last_usage, dict):
-            usage = last_usage
-            turn_usage = last_usage
-            input_includes_cache = True
-
-        input_tokens = _safe_int(usage.get("input_tokens"))
-        cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
-            usage.get("cache_read_input_tokens")
-        )
-        cache_write_tokens = _safe_int(usage.get("cache_creation_input_tokens"))
-        output_tokens = _safe_int(usage.get("output_tokens"))
-        reasoning_tokens = _safe_int(usage.get("reasoning_output_tokens"))
-
-        tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
-        if not input_includes_cache:
-            tokens_in += cache_write_tokens
-
-        tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
-        max_turn_input_tokens = (
-            _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
-        )
-        return _UsageTotals(
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cached_tokens_in=cache_read_tokens,
-            cache_write_tokens_in=cache_write_tokens,
-            max_turn_input_tokens=max_turn_input_tokens,
-        )
-
-    @staticmethod
-    def max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-        return _UsageTotals(
-            tokens_in=max(left.tokens_in, right.tokens_in),
-            tokens_out=max(left.tokens_out, right.tokens_out),
-            cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
-            cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
-            turn_count=max(left.turn_count, right.turn_count),
-            max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
-        )
-
-    @staticmethod
-    def parse_codex(raw: str) -> tuple[str, _UsageTotals, str | None]:
-        session_id: str | None = None
-        usage_totals = _UsageTotals()
-        turn_count = 0
-        max_turn_input_tokens = 0
-        messages: list[str] = []
-
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if event.get("type") == "thread.started":
-                thread_id = event.get("thread_id")
-                if isinstance(thread_id, str) and thread_id:
-                    session_id = thread_id
-                continue
-
-            if event.get("type") in {"turn.completed", "token_count"}:
-                usage = event.get("usage" if event.get("type") == "turn.completed" else "info", {})
-                if isinstance(usage, dict):
-                    turn_count += 1
-                    parsed = CliOutputParser.usage_totals_from_dict(
-                        usage, input_includes_cache=True
-                    )
-                    max_turn_input_tokens = max(
-                        max_turn_input_tokens,
-                        parsed.max_turn_input_tokens,
-                    )
-                    usage_totals = CliOutputParser.max_usage(usage_totals, parsed)
-                continue
-
-            if event.get("type") != "item.completed":
-                continue
-            item = event.get("item", {})
-            if not isinstance(item, dict) or item.get("type") != "agent_message":
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                messages.append(text)
-
-        usage_totals = _UsageTotals(
-            tokens_in=usage_totals.tokens_in,
-            tokens_out=usage_totals.tokens_out,
-            cached_tokens_in=usage_totals.cached_tokens_in,
-            cache_write_tokens_in=usage_totals.cache_write_tokens_in,
-            turn_count=turn_count,
-            max_turn_input_tokens=max_turn_input_tokens,
-        )
-        return (messages[-1] if messages else raw), usage_totals, session_id
-
-    @staticmethod
-    def parse_gemini(raw: str) -> tuple[str, _UsageTotals, str | None]:
-        session_id: str | None = None
-        usage_totals = _UsageTotals()
-        messages: list[str] = []
-        final_response: str | None = None
-
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-
-            session_id = session_id or CliOutputParser._extract_gemini_session_id(event)
-
-            event_type = event.get("type")
-            if event_type == "message":
-                role = event.get("role")
-                message = event.get("message")
-                if role is None and isinstance(message, dict):
-                    role = message.get("role")
-                if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
-                    continue
-                text = CliOutputParser._extract_text_value(event.get("message"))
-                if text is None:
-                    text = CliOutputParser._extract_text_value(event)
-                if text:
-                    messages.append(text)
-                continue
-
-            if event_type == "result" or "response" in event:
-                text = CliOutputParser._extract_text_value(event.get("response"))
-                if text is None:
-                    text = CliOutputParser._extract_text_value(event.get("result"))
-                if text:
-                    final_response = text
-
-                stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
-                if isinstance(stats, dict):
-                    usage_totals = CliOutputParser.max_usage(
-                        usage_totals, CliOutputParser._usage_totals_from_gemini_stats(stats)
-                    )
-
-        return (final_response or "".join(messages) or raw), usage_totals, session_id
-
-    @staticmethod
-    def parse_claude(raw: str) -> str:
-        for line in map(str.strip, reversed(raw.splitlines())):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "result" and "result" in event:
-                return str(event["result"])
-
-        parts: list[str] = []
-        for line in map(str.strip, raw.splitlines()):
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "assistant":
-                msg = event.get("message", {})
-                for block in msg.get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        parts.append(str(block.get("text", "")))
-            elif event.get("type") == "content_block_delta":
-                delta = event.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    parts.append(str(delta.get("text", "")))
-        return "".join(parts)
-
-    @staticmethod
-    def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-        for key in ("session_id", "sessionId", "thread_id", "id"):
-            value = event.get(key)
-            if isinstance(value, str) and value:
-                return value
-        metadata = event.get("metadata")
-        if isinstance(metadata, dict):
-            for key in ("session_id", "sessionId", "thread_id", "id"):
-                value = metadata.get(key)
-                if isinstance(value, str) and value:
-                    return value
-        return None
-
-    @staticmethod
-    def _extract_text_value(value: object) -> str | None:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            parts = [CliOutputParser._extract_text_value(item) for item in value]
-            return "".join(part for part in parts if part)
-        if not isinstance(value, dict):
-            return None
-
-        for key in ("text", "content", "response", "result"):
-            text = CliOutputParser._extract_text_value(value.get(key))
-            if text:
-                return text
-
-        value_parts = value.get("parts")
-        if isinstance(value_parts, list):
-            text_parts = [CliOutputParser._extract_text_value(part) for part in value_parts]
-            return "".join(part for part in text_parts if part)
-        return None
-
-    @staticmethod
-    def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-        usage = stats.get("usageMetadata")
-        if isinstance(usage, dict):
-            stats = usage
-
-        tokens_in = _first_int(
-            stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-        )
-        cached_tokens_in = _first_int(
-            stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
-        )
-        tokens_out = _first_int(
-            stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-        )
-
-        if tokens_in == 0 and tokens_out == 0:
-            nested = [
-                CliOutputParser._usage_totals_from_gemini_stats(value)
-                for value in stats.values()
-                if isinstance(value, dict)
-            ]
-            if nested:
-                return _UsageTotals(
-                    tokens_in=sum(item.tokens_in for item in nested),
-                    tokens_out=sum(item.tokens_out for item in nested),
-                    cached_tokens_in=sum(item.cached_tokens_in for item in nested),
-                    cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
-                    max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
-                )
-
-        return _UsageTotals(
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cached_tokens_in=cached_tokens_in,
-            max_turn_input_tokens=tokens_in,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1124,67 +954,356 @@ class CliOutputParser:
 # ---------------------------------------------------------------------------
 
 
-def _is_claude_result_event(line: bytes) -> bool:
-    """Return True if *line* is a Claude Code ``type: "result"`` stream event.
+# The terminal stream event each CLI emits once its response is fully written.
+# Detecting it lets the idle watcher apply the short _POST_RESPONSE_GRACE_S
+# (60s) instead of waiting the full stream_idle_timeout (default 1800s) for a
+# finished-but-unexited subprocess. Previously only Claude was wired up, so a
+# finished gemini/codex lingered up to 30 min each — stacking memory across
+# plays toward OOM (#21). Codex emits ``turn.completed``; Gemini and Claude
+# emit ``type: "result"``.
+_TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
+    AgentType.CLAUDE_CODE: frozenset({"result"}),
+    AgentType.CODEX: frozenset({"turn.completed"}),
+    AgentType.GEMINI: frozenset({"result"}),
+}
 
-    This is the final event Claude Code emits after completing a response.
+
+def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
+    """Return True if *line* is *agent_type*'s response-complete stream event.
+
+    This is the final event the CLI emits after completing a response.
     Detecting it lets the idle watcher switch to a short grace period so
-    lingering background tasks don't block process exit for 30 minutes.
+    lingering background tasks don't block process exit for 30 minutes (#21).
     """
-    if b'"result"' not in line:
+    terminal_types = _TERMINAL_EVENT_TYPES.get(agent_type)
+    if not terminal_types:
+        return False
+    # Cheap pre-filter: skip json.loads unless a terminal type name appears.
+    if not any(t.encode() in line for t in terminal_types):
         return False
     try:
         event = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return False
-    return bool(event.get("type") == "result")
+    return isinstance(event, dict) and event.get("type") in terminal_types
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible free functions
+# Per-agent-type JSONL/stream output parsing
 # ---------------------------------------------------------------------------
+
+
+def _iter_json_events(raw: str) -> Iterator[dict[str, object]]:
+    """Yield each non-blank, JSON-decodable line of *raw* as a dict event.
+
+    The three CLI agents all emit JSONL on stdout; this is the single scan
+    loop they share (skip blank lines, ``json.loads``, drop ``JSONDecodeError``
+    and non-dict payloads) so the per-format parsers below only express their
+    own event semantics.
+    """
+    for line in map(str.strip, raw.splitlines()):
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def _extract_session_id_from_jsonl(raw: str) -> str | None:
-    return CliOutputParser.extract_session_id(raw)
+    for event in _iter_json_events(raw):
+        for key in ("session_id", "thread_id"):
+            value = event.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
-    return CliOutputParser.maybe_parse_usage(line, current)
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return current
+
+    usage: object = {}
+    if event.get("type") == "result":
+        usage = event.get("usage", {})
+    elif event.get("type") == "assistant":
+        message = event.get("message", {})
+        usage = message.get("usage", {}) if isinstance(message, dict) else {}
+    elif event.get("type") == "message_delta":
+        usage = event.get("usage", {})
+
+    if not isinstance(usage, dict):
+        return current
+    parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
+    return _max_usage(current, parsed)
 
 
 def _usage_totals_from_dict(
     usage: dict[str, object], *, input_includes_cache: bool
 ) -> _UsageTotals:
-    return CliOutputParser.usage_totals_from_dict(usage, input_includes_cache=input_includes_cache)
+    total_usage = usage.get("total_token_usage")
+    last_usage = usage.get("last_token_usage")
+    turn_usage: dict[str, object] | None = None
+    if isinstance(total_usage, dict):
+        if isinstance(last_usage, dict):
+            turn_usage = last_usage
+        usage = total_usage
+        input_includes_cache = True
+    elif isinstance(last_usage, dict):
+        usage = last_usage
+        turn_usage = last_usage
+        input_includes_cache = True
+
+    input_tokens = _safe_int(usage.get("input_tokens"))
+    cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
+        usage.get("cache_read_input_tokens")
+    )
+    cache_write_tokens = _safe_int(usage.get("cache_creation_input_tokens"))
+    output_tokens = _safe_int(usage.get("output_tokens"))
+    reasoning_tokens = _safe_int(usage.get("reasoning_output_tokens"))
+
+    tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
+    if not input_includes_cache:
+        tokens_in += cache_write_tokens
+
+    tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
+    max_turn_input_tokens = _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
+    return _UsageTotals(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cached_tokens_in=cache_read_tokens,
+        cache_write_tokens_in=cache_write_tokens,
+        max_turn_input_tokens=max_turn_input_tokens,
+    )
 
 
 def _max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-    return CliOutputParser.max_usage(left, right)
+    return _UsageTotals(
+        tokens_in=max(left.tokens_in, right.tokens_in),
+        tokens_out=max(left.tokens_out, right.tokens_out),
+        cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
+        cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
+        turn_count=max(left.turn_count, right.turn_count),
+        max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
+    )
 
 
 def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    return CliOutputParser.parse_codex(raw)
+    session_id: str | None = None
+    usage_totals = _UsageTotals()
+    turn_count = 0
+    max_turn_input_tokens = 0
+    messages: list[str] = []
+
+    for event in _iter_json_events(raw):
+        if event.get("type") == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                session_id = thread_id
+            continue
+
+        if event.get("type") in {"turn.completed", "token_count"}:
+            usage = event.get("usage" if event.get("type") == "turn.completed" else "info", {})
+            if isinstance(usage, dict):
+                turn_count += 1
+                parsed = _usage_totals_from_dict(usage, input_includes_cache=True)
+                max_turn_input_tokens = max(
+                    max_turn_input_tokens,
+                    parsed.max_turn_input_tokens,
+                )
+                usage_totals = _max_usage(usage_totals, parsed)
+            continue
+
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item", {})
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            messages.append(text)
+
+    usage_totals = _UsageTotals(
+        tokens_in=usage_totals.tokens_in,
+        tokens_out=usage_totals.tokens_out,
+        cached_tokens_in=usage_totals.cached_tokens_in,
+        cache_write_tokens_in=usage_totals.cache_write_tokens_in,
+        turn_count=turn_count,
+        max_turn_input_tokens=max_turn_input_tokens,
+    )
+    return (messages[-1] if messages else raw), usage_totals, session_id
 
 
 def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    return CliOutputParser.parse_gemini(raw)
+    session_id: str | None = None
+    usage_totals = _UsageTotals()
+    messages: list[str] = []
+    final_response: str | None = None
+
+    for event in _iter_json_events(raw):
+        session_id = session_id or _extract_gemini_session_id(event)
+
+        event_type = event.get("type")
+        if event_type == "message":
+            role = event.get("role")
+            message = event.get("message")
+            if role is None and isinstance(message, dict):
+                role = message.get("role")
+            if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
+                continue
+            text = _extract_text_value(event.get("message"))
+            if text is None:
+                text = _extract_text_value(event)
+            if text:
+                messages.append(text)
+            continue
+
+        if event_type == "result" or "response" in event:
+            text = _extract_text_value(event.get("response"))
+            if text is None:
+                text = _extract_text_value(event.get("result"))
+            if text:
+                final_response = text
+
+            stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
+            if isinstance(stats, dict):
+                usage_totals = _max_usage(usage_totals, _usage_totals_from_gemini_stats(stats))
+
+    return (final_response or "".join(messages) or raw), usage_totals, session_id
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
-    return CliOutputParser.parse_claude(raw)
+    last_result: str | None = None
+    for event in _iter_json_events(raw):
+        if event.get("type") == "result" and "result" in event:
+            last_result = str(event["result"])
+    if last_result is not None:
+        return last_result
+
+    parts: list[str] = []
+    for event in _iter_json_events(raw):
+        if event.get("type") == "assistant":
+            msg = event.get("message", {})
+            content = msg.get("content", []) if isinstance(msg, dict) else []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+        elif event.get("type") == "content_block_delta":
+            delta = event.get("delta", {})
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                parts.append(str(delta.get("text", "")))
+    return "".join(parts)
+
+
+def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    """Parse a Claude Code stream-json transcript into text/usage/session id."""
+    usage = _UsageTotals()
+    for line in map(str.strip, raw.splitlines()):
+        if line:
+            usage = _maybe_parse_usage(line.encode("utf-8"), usage)
+    return _extract_text_from_stream_json(raw), usage, _extract_session_id_from_jsonl(raw)
 
 
 def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    return CliOutputParser._extract_gemini_session_id(event)
+    for key in ("session_id", "sessionId", "thread_id", "id"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return value
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("session_id", "sessionId", "thread_id", "id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _extract_text_value(value: object) -> str | None:
-    return CliOutputParser._extract_text_value(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_extract_text_value(item) for item in value]
+        return "".join(part for part in parts if part)
+    if not isinstance(value, dict):
+        return None
+
+    for key in ("text", "content", "response", "result"):
+        text = _extract_text_value(value.get(key))
+        if text:
+            return text
+
+    value_parts = value.get("parts")
+    if isinstance(value_parts, list):
+        text_parts = [_extract_text_value(part) for part in value_parts]
+        return "".join(part for part in text_parts if part)
+    return None
 
 
 def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-    return CliOutputParser._usage_totals_from_gemini_stats(stats)
+    usage = stats.get("usageMetadata")
+    if isinstance(usage, dict):
+        stats = usage
+
+    tokens_in = _first_int(
+        stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
+    )
+    cached_tokens_in = _first_int(
+        stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
+    )
+    tokens_out = _first_int(
+        stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
+    )
+
+    if tokens_in == 0 and tokens_out == 0:
+        nested = [
+            _usage_totals_from_gemini_stats(value)
+            for value in stats.values()
+            if isinstance(value, dict)
+        ]
+        if nested:
+            return _UsageTotals(
+                tokens_in=sum(item.tokens_in for item in nested),
+                tokens_out=sum(item.tokens_out for item in nested),
+                cached_tokens_in=sum(item.cached_tokens_in for item in nested),
+                cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
+                max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
+            )
+
+    return _UsageTotals(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cached_tokens_in=cached_tokens_in,
+        max_turn_input_tokens=tokens_in,
+    )
+
+
+class CliOutputFormat(Protocol):
+    """A per-agent-type parser: raw stdout -> (text, usage totals, session id)."""
+
+    def parse(self, raw: str) -> tuple[str, _UsageTotals, str | None]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _FunctionFormat:
+    """Adapt a free parse function into the :class:`CliOutputFormat` protocol."""
+
+    _parse: Callable[[str], tuple[str, _UsageTotals, str | None]]
+
+    def parse(self, raw: str) -> tuple[str, _UsageTotals, str | None]:
+        return self._parse(raw)
+
+
+# Registry: adding a fourth agent type is one entry here, not an if/elif edit
+# in ``_read_output``.
+_PARSERS: dict[AgentType, CliOutputFormat] = {
+    AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
+    AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
+    AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
+}
 
 
 def _first_int(values: dict[str, object], *keys: str) -> int:
@@ -1198,7 +1317,7 @@ def _first_int(values: dict[str, object], *keys: str) -> int:
 def _safe_int(value: object) -> int:
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, int | float | str | bytes | bytearray):
+    if isinstance(value, int | float | str):
         try:
             return int(value)
         except ValueError:
@@ -1208,9 +1327,11 @@ def _safe_int(value: object) -> int:
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
     """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
-    with contextlib.suppress(ProcessLookupError):
+    try:
         pgid = os.getpgid(proc.pid)
-    if "pgid" not in locals():
+    except (ProcessLookupError, TypeError):
+        # ProcessLookupError: the process already exited. TypeError: proc.pid is
+        # None (subprocess never spawned). Either way there is no group to kill.
         _close_process_transport(proc)
         return
     try:

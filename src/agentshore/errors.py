@@ -13,6 +13,68 @@ class FailureCategory(StrEnum):
     gate_rejection = "gate_rejection"
 
 
+class FailureKind(StrEnum):
+    """Typed cause a play sets at the failure site, where the cause is known.
+
+    Distinct from :class:`FailureCategory`, the wire/string taxonomy persisted
+    to the plays table and consumed by reward filtering, dashboard styling, and
+    ESR rollups. ``failure_kind`` is the structured signal; ``failure_category``
+    is derived from it via :meth:`to_category` so those consumers keep working.
+    The substring inferer remains the fallback for legacy/uncaught paths that
+    never set a kind.
+    """
+
+    AUTH = "auth"
+    TEST = "test"
+    GATE = "gate"
+    SCOPE = "scope"
+    AGENT_ERROR = "agent_error"
+    CODE_ERROR = "code_error"
+
+    def to_category(self) -> FailureCategory:
+        """Map a typed failure kind to its persisted ``FailureCategory`` string."""
+        return _FAILURE_KIND_TO_CATEGORY[self]
+
+
+_FAILURE_KIND_TO_CATEGORY: dict[FailureKind, FailureCategory] = {
+    FailureKind.AUTH: FailureCategory.agent_error,
+    FailureKind.TEST: FailureCategory.test_failure,
+    FailureKind.GATE: FailureCategory.gate_rejection,
+    FailureKind.SCOPE: FailureCategory.alignment_drift,
+    FailureKind.AGENT_ERROR: FailureCategory.agent_error,
+    FailureKind.CODE_ERROR: FailureCategory.code_error,
+}
+
+
+class ErrorClass(StrEnum):
+    """Canonical agent error classifications (was stringly-typed).
+
+    A ``StrEnum`` (``str`` subclass), so existing ``frozenset[str]`` membership
+    tests and ``== "..."`` comparisons keep working unchanged. Every value ever
+    assigned to ``AgentHandle.last_error_class`` MUST be a member here, or a
+    coercion at the manager boundary would silently collapse it to ``UNKNOWN``.
+    """
+
+    RATE_LIMIT = "rate_limit"
+    AUTH = "auth"
+    TIMEOUT = "timeout"
+    INVALID_MODEL = "invalid_model"
+    CODEX_ROLLOUT = "codex_rollout"
+    TRANSIENT_NETWORK = "transient_network"
+    CRASH_OOM = "crash_oom"
+    CRASH_SIGNAL = "crash_signal"
+    TIMEOUT_TRANSIENT = "timeout_transient"
+    # Timeout sub-classes carried on PlayTimeoutError.error_class and threaded
+    # onto last_error_class via the manager dispatch handler. Distinct strings
+    # asserted by tests (test_agent_manager / test_cli_agent), so they must be
+    # first-class members rather than collapsing to TIMEOUT/UNKNOWN.
+    TIMEOUT_WALLCLOCK = "timeout_wallclock"
+    TIMEOUT_POST_RESPONSE = "timeout_post_response"
+    TIMEOUT_STREAM_IDLE = "timeout_stream_idle"
+    OUTPUT_INVALID = "output_invalid"
+    UNKNOWN = "unknown"
+
+
 class OrchestratorError(Exception):
     error_type: str = "agentshore_error"
     recoverable: bool = True
@@ -64,7 +126,7 @@ class PlayTimeoutError(AgentTimeout):
         self,
         message: str,
         *,
-        error_class: str = "timeout",
+        error_class: ErrorClass | str = ErrorClass.TIMEOUT,
         recoverable: bool | None = None,
         recovery_action: str | None = None,
     ) -> None:

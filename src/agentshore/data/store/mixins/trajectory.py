@@ -18,26 +18,21 @@ class _TrajectoryMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def record_trajectory_snapshot(self, record: TrajectorySnapshotRecord) -> None:
         """Insert a trajectory snapshot."""
-        await self._conn.execute(
-            """
-            INSERT INTO trajectory_snapshots
-                (session_id, play_id, projected_alignment_at_budget_end,
-                 estimated_remaining_plays, estimated_remaining_cost,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.session_id,
-                record.play_id,
-                record.projected_alignment_at_budget_end,
-                record.estimated_remaining_plays,
-                record.estimated_remaining_cost,
-                record.created_at,
-            ),
+        await self._insert(
+            "trajectory_snapshots",
+            session_id=record.session_id,
+            play_id=record.play_id,
+            projected_alignment_at_budget_end=record.projected_alignment_at_budget_end,
+            estimated_remaining_plays=record.estimated_remaining_plays,
+            estimated_remaining_cost=record.estimated_remaining_cost,
+            created_at=record.created_at,
         )
-        await self._conn.commit()
 
     async def get_latest_trajectory(self, session_id: str) -> TrajectorySnapshotRecord | None:
         """Return the most recent trajectory snapshot for *session_id*, or None."""

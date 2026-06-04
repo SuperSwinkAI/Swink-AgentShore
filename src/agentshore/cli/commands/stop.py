@@ -1,10 +1,4 @@
-"""``agentshore stop`` subcommand.
-
-``_wait_for_session_exit`` and ``_generate_end_session_report_cli`` are
-referenced through ``agentshore.cli`` (the package) so that legacy
-``patch("agentshore.cli._wait_for_session_exit", …)`` tests still intercept
-the call after the CLI was split into a package.
-"""
+"""``agentshore stop`` subcommand."""
 
 from __future__ import annotations
 
@@ -12,12 +6,11 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
 from agentshore.cli.constants import (
     _DRAIN_WAIT_POLL_INTERVAL_S,
     _DRAIN_WAIT_RETRIES,
 )
-from agentshore.cli.helpers import _drain_wait_timeout_label
+from agentshore.cli.helpers import _drain_wait_timeout_label, open_store, resolve_session_id
 from agentshore.cli_helpers import _PROJECT_DIR
 
 
@@ -26,29 +19,18 @@ def _generate_end_session_report_cli(project_path: Path) -> Path:
     import asyncio
 
     db_path = project_path / _PROJECT_DIR / "agentshore.db"
-    if not db_path.exists():
-        msg = f"No database found at {db_path}"
-        raise RuntimeError(msg)
 
     async def _run() -> Path:
-        from agentshore.data.store import DataStore
         from agentshore.reports.generator import ReportGenerator
 
-        store = DataStore(db_path)
-        await store.initialize()
-        try:
-            sessions = await store.list_sessions()
-            if not sessions:
-                msg = "No sessions found."
-                raise RuntimeError(msg)
+        async with open_store(db_path) as store:
+            sess_id = await resolve_session_id(store, None)
             generator = ReportGenerator(store)
             return await generator.generate_end_session_report(
-                sessions[0].session_id,
+                sess_id,
                 project_path / _PROJECT_DIR / "reports",
                 open_browser=False,
             )
-        finally:
-            await store.close()
 
     return asyncio.run(_run())
 
@@ -80,13 +62,24 @@ def stop(project: str, hard: bool, esr: bool) -> None:
 
     Use --hard to request immediate platform-specific process-tree termination.
     """
-    from agentshore.session_path import hard_stop_session, is_session_running, request_drain
+    from agentshore.session_path import (
+        hard_stop_session,
+        is_session_running,
+        read_timelapse_info,
+        request_drain,
+    )
 
     project_path = Path(project).resolve()
 
     if not is_session_running(project_path):
         click.echo("No running AgentShore session found for this project.")
         raise SystemExit(0)
+
+    # Capture the timelapse handle before stopping: a graceful drain lets the
+    # orchestrator finalise and clear the sidecar on its way out, so read it now
+    # and finalise as a backstop (mainly for --hard, where the orchestrator is
+    # killed before it can run its own shutdown).
+    timelapse_info = read_timelapse_info(project_path)
 
     if hard:
         if esr:
@@ -108,9 +101,17 @@ def stop(project: str, hard: bool, esr: bool) -> None:
                 f"(Press Ctrl+C to force-stop sooner; "
                 f"auto hard stop after {_drain_wait_timeout_label()})"
             )
-            clean_exit = _cli_pkg._wait_for_session_exit(project_path)
+            outcome = _wait_for_session_exit(project_path)
+            if outcome is None:
+                # Escalated to hard stop but the process is still alive (#31) —
+                # don't claim a clean stop.
+                click.echo(
+                    "Error: AgentShore session is still running after hard stop.",
+                    err=True,
+                )
+                raise SystemExit(1)
             click.echo("AgentShore session stopped.")
-            if not clean_exit:
+            if outcome is False:
                 click.echo("End session report skipped because the session did not stop cleanly.")
         elif result == "fallback_hard":
             click.echo("No IPC endpoint found — falling back to hard stop.")
@@ -128,9 +129,19 @@ def stop(project: str, hard: bool, esr: bool) -> None:
             click.echo("Error: Failed to request drain.", err=True)
             raise SystemExit(1)
 
+    if timelapse_info is not None:
+        from agentshore.cli.runtime import _finalize_cli_timelapse
 
-def _wait_for_session_exit(project_path: Path) -> bool:
-    """Poll until the orchestrator PID is gone. Return False if escalated."""
+        _finalize_cli_timelapse(project_path, info=timelapse_info, echo=True)
+
+
+def _wait_for_session_exit(project_path: Path) -> bool | None:
+    """Poll until the orchestrator PID is gone.
+
+    Returns ``True`` for a clean drain (process exited on its own), ``False``
+    when it escalated to a hard stop that succeeded, and ``None`` when the hard
+    stop ran but the process is still alive (#31).
+    """
     import os
     import time
 
@@ -167,4 +178,5 @@ def _wait_for_session_exit(project_path: Path) -> bool:
         )
     if not hard_stop_session(project_path):
         click.echo("Error: hard stop failed.", err=True)
+        return None
     return False

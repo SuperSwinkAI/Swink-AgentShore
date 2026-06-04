@@ -18,32 +18,27 @@ class _AgentsMixin:
     _db: aiosqlite.Connection | None
     _conn: aiosqlite.Connection
 
+    if TYPE_CHECKING:
+        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
+        async def _insert(self, table: str, **cols: object) -> int: ...
+
     async def register_agent(self, agent: AgentRecord) -> None:
         """Insert a new agent row."""
-        await self._conn.execute(
-            """
-            INSERT INTO agents
-                (agent_id, session_id, agent_type, created_at, terminated_at,
-                 total_tokens, total_cost, tasks_completed, tasks_failed,
-                 model_tier, display_name, dispatch_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                agent.agent_id,
-                agent.session_id,
-                agent.agent_type,
-                agent.created_at,
-                agent.terminated_at,
-                agent.total_tokens,
-                agent.total_cost,
-                agent.tasks_completed,
-                agent.tasks_failed,
-                agent.model_tier,
-                agent.display_name,
-                agent.dispatch_count,
-            ),
+        await self._insert(
+            "agents",
+            agent_id=agent.agent_id,
+            session_id=agent.session_id,
+            agent_type=agent.agent_type,
+            created_at=agent.created_at,
+            terminated_at=agent.terminated_at,
+            total_tokens=agent.total_tokens,
+            total_cost=agent.total_cost,
+            tasks_completed=agent.tasks_completed,
+            tasks_failed=agent.tasks_failed,
+            model_tier=agent.model_tier,
+            display_name=agent.display_name,
+            dispatch_count=agent.dispatch_count,
         )
-        await self._conn.commit()
 
     async def update_agent_stats(self, agent_id: str, tokens: int, cost: float) -> None:
         """Increment an agent's cumulative token and cost counters."""
@@ -118,24 +113,16 @@ class _AgentsMixin:
 
     async def record_handoff(self, handoff: HandoffRecord) -> None:
         """Insert a Switch or Fresh-Start handoff record."""
-        await self._conn.execute(
-            """
-            INSERT INTO agent_handoffs
-                (session_id, play_id, source_agent_id, target_agent_id,
-                 context_tokens_transferred, ramp_up_duration_ms, context_loss_estimate)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                handoff.session_id,
-                handoff.play_id,
-                handoff.source_agent_id,
-                handoff.target_agent_id,
-                handoff.context_tokens_transferred,
-                handoff.ramp_up_duration_ms,
-                handoff.context_loss_estimate,
-            ),
+        await self._insert(
+            "agent_handoffs",
+            session_id=handoff.session_id,
+            play_id=handoff.play_id,
+            source_agent_id=handoff.source_agent_id,
+            target_agent_id=handoff.target_agent_id,
+            context_tokens_transferred=handoff.context_tokens_transferred,
+            ramp_up_duration_ms=handoff.ramp_up_duration_ms,
+            context_loss_estimate=handoff.context_loss_estimate,
         )
-        await self._conn.commit()
 
     async def list_handoffs(self, session_id: str, *, limit: int = 100) -> list[HandoffRecord]:
         """Return most-recent handoff rows for a session, oldest-first."""

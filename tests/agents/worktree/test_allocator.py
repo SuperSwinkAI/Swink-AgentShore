@@ -94,16 +94,15 @@ async def test_ensure_worktree_branch_creating_detached(
 # --- failure paths -----------------------------------------------------------
 
 
-async def test_ensure_worktree_quarantines_dirty_target(
+async def test_ensure_worktree_deletes_clean_orphan_target(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
-    """An orphan dir at the target path is quarantined and allocate proceeds.
+    """A clean orphan dir at the target path is deleted and allocate proceeds.
 
     Previously raised ``WorktreeAllocationFailed(reason="target_path_dirty")``
     and permanently blocked the allocate — see #570 (example-project session
-    c78d7074, 2026-05-22). The new behaviour moves the orphan to
-    ``agentshore-worktrees-orphan/`` so the original content is preserved
-    without blocking forward progress.
+    c78d7074, 2026-05-22). The behaviour now deletes the rebuildable debris so
+    forward progress is unblocked (orphans are never re-adopted).
     """
     target = worktree_root / "dirty-target"
     target.mkdir()
@@ -120,33 +119,34 @@ async def test_ensure_worktree_quarantines_dirty_target(
     # The new worktree at ``target`` is a real git checkout, not the leftover dir.
     assert (target / ".git").exists()
     assert not (target / "stray.txt").exists()
+    # No quarantine sibling dir is created.
+    assert not worktree_root.with_name(worktree_root.name + "-orphan").exists()
 
 
-async def test_ensure_worktree_quarantine_failure_raises_structured(
+async def test_ensure_worktree_raises_on_dirty_orphan_target(
     main_repo: Path,
     worktree_root: Path,
     remote_branch: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the inline quarantine itself fails, surface a typed allocator error.
+    """A dirty orphan at the target path is preserved; allocate fails loudly.
 
-    ``ensure_worktree`` calls ``quarantine_orphan`` to move an unregistered
-    target dir aside before ``git worktree add``. If ``shutil.move`` raises
-    (cross-FS, read-only files, permission denied), the allocator must
-    surface ``WorktreeAllocationFailed(reason="quarantine_orphan_failed")``
-    rather than a bare ``OSError`` — downstream play-verdict mapping +
-    metrics rely on the structured ``reason`` to categorise the failure.
+    ``ensure_worktree`` delegates orphan disposition to ``_dispose_orphan``;
+    when that returns ``"preserved"`` (the orphan has uncommitted work), the
+    allocator must surface ``WorktreeAllocationFailed
+    (reason="orphan_dirty_uncommitted")`` rather than destroy the work, so
+    downstream play-verdict mapping categorises it and the dir is left intact.
     """
     from agentshore.agents.worktree import allocator as alloc_mod
 
     target = worktree_root / "dirty-target"
     target.mkdir()
-    (target / "stray.txt").write_text("not git\n")
+    (target / "uncommitted.txt").write_text("unsaved\n")
 
-    def fake_move(*_args: object, **_kwargs: object) -> None:
-        raise OSError("simulated cross-fs failure")
+    async def fake_dispose(*, main_repo: Path, path: Path) -> str:
+        return "preserved"
 
-    monkeypatch.setattr(alloc_mod.shutil, "move", fake_move)
+    monkeypatch.setattr(alloc_mod, "_dispose_orphan", fake_dispose)
 
     with pytest.raises(WorktreeAllocationFailed) as exc:
         await ensure_worktree(
@@ -156,10 +156,10 @@ async def test_ensure_worktree_quarantine_failure_raises_structured(
             base_ref=f"origin/{remote_branch}",
             fetch=True,
         )
-    assert exc.value.reason == "quarantine_orphan_failed"
-    # Orphan stays in place (no cleanup obligation); next dispatch retries.
+    assert exc.value.reason == "orphan_dirty_uncommitted"
+    # Preserved dirty orphan stays in place.
     assert target.exists()
-    assert (target / "stray.txt").exists()
+    assert (target / "uncommitted.txt").exists()
 
 
 async def test_ensure_worktree_missing_main_repo(tmp_path: Path) -> None:

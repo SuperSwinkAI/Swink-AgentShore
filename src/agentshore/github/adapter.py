@@ -38,6 +38,16 @@ _GH_LIST_TIMEOUT = 180  # seconds
 _ISSUES_PER_PAGE = 25
 _LIST_ISSUES_MAX_PAGES = 1000
 
+# Shared ``--json`` field list for the cacheable PR record. Single-sourced so
+# ``list_pull_requests`` and ``fetch_pull_request_by_number`` can never drift
+# (they did before the desktop-08a948ed fix). Any field added to
+# ``_pr_record_from_json`` must be added here too.
+_PR_JSON_FIELDS = (
+    "number,title,url,state,headRefName,baseRefName,headRefOid,labels,"
+    "reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,"
+    "body,closingIssuesReferences"
+)
+
 
 def _priority_from_labels(labels: list[str]) -> int | None:
     """Return the numeric priority rank from labels, or None if no priority label."""
@@ -46,6 +56,50 @@ def _priority_from_labels(labels: list[str]) -> int | None:
         if rank is not None:
             return rank
     return None
+
+
+def _pr_record_from_json(session_id: str, item: dict[str, object]) -> PullRequestRecord | None:
+    """Map a single ``gh pr`` JSON object (queried with ``_PR_JSON_FIELDS``) to a
+    ``PullRequestRecord``, or ``None`` if the item lacks a usable PR number.
+
+    Single source of truth for the record schema shared by
+    ``list_pull_requests`` and ``fetch_pull_request_by_number``.
+    """
+    raw_number = item.get("number")
+    if not isinstance(raw_number, (int, str)):
+        _logger.warning("gh_response_missing_number", item=item)
+        return None
+    labels = label_names(item.get("labels", []))
+    author = item.get("author")
+    github_author = (
+        str(author.get("login"))
+        if isinstance(author, dict) and author.get("login") is not None
+        else None
+    )
+    issue_links = infer_pr_issue_links(
+        closing_issue_references=item.get("closingIssuesReferences"),
+        body=item.get("body"),
+        branch=item.get("headRefName"),
+    )
+    return PullRequestRecord(
+        pr_number=int(raw_number),
+        session_id=session_id,
+        state=str(item.get("state", "OPEN")).lower(),
+        created_at=str(item.get("createdAt", now_iso())),
+        issue_number=issue_links.primary_issue_number,
+        linked_issue_numbers=issue_links.issue_numbers,
+        branch=str(item["headRefName"]) if item.get("headRefName") else None,
+        title=str(item.get("title", "")),
+        url=str(item["url"]) if item.get("url") else None,
+        github_author=github_author,
+        labels=labels,
+        review_decision=(str(item["reviewDecision"]) if item.get("reviewDecision") else None),
+        status_check_summary=status_rollup_summary(item.get("statusCheckRollup")),
+        is_draft=bool(item.get("isDraft", False)),
+        head_sha=str(item["headRefOid"]) if item.get("headRefOid") else None,
+        mergeable=str(item["mergeable"]) if item.get("mergeable") else None,
+        base_ref=str(item["baseRefName"]) if item.get("baseRefName") else None,
+    )
 
 
 class GitHubUnavailableError(Exception):
@@ -247,56 +301,16 @@ class GitHubAdapter:
             "--state",
             state,
             "--json",
-            (
-                "number,title,url,state,headRefName,baseRefName,headRefOid,labels,"
-                "reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,"
-                "body,closingIssuesReferences"
-            ),
+            _PR_JSON_FIELDS,
             "--limit",
             str(limit),
         ]
         raw_prs = await self._gh_json_list(cmd)
         records: list[PullRequestRecord] = []
         for item in raw_prs:
-            raw_number = item.get("number")
-            if not isinstance(raw_number, (int, str)):
-                _logger.warning("gh_response_missing_number", item=item)
-                continue
-            labels = label_names(item.get("labels", []))
-            author = item.get("author")
-            github_author = (
-                str(author.get("login"))
-                if isinstance(author, dict) and author.get("login") is not None
-                else None
-            )
-            issue_links = infer_pr_issue_links(
-                closing_issue_references=item.get("closingIssuesReferences"),
-                body=item.get("body"),
-                branch=item.get("headRefName"),
-            )
-            records.append(
-                PullRequestRecord(
-                    pr_number=int(raw_number),
-                    session_id=self._session_id,
-                    state=str(item.get("state", "OPEN")).lower(),
-                    created_at=str(item.get("createdAt", now_iso())),
-                    issue_number=issue_links.primary_issue_number,
-                    linked_issue_numbers=issue_links.issue_numbers,
-                    branch=str(item["headRefName"]) if item.get("headRefName") else None,
-                    title=str(item.get("title", "")),
-                    url=str(item["url"]) if item.get("url") else None,
-                    github_author=github_author,
-                    labels=labels,
-                    review_decision=(
-                        str(item["reviewDecision"]) if item.get("reviewDecision") else None
-                    ),
-                    status_check_summary=status_rollup_summary(item.get("statusCheckRollup")),
-                    is_draft=bool(item.get("isDraft", False)),
-                    head_sha=str(item["headRefOid"]) if item.get("headRefOid") else None,
-                    mergeable=str(item["mergeable"]) if item.get("mergeable") else None,
-                    base_ref=str(item["baseRefName"]) if item.get("baseRefName") else None,
-                )
-            )
+            record = _pr_record_from_json(self._session_id, item)
+            if record is not None:
+                records.append(record)
         return records
 
     async def fetch_pull_request_by_number(self, pr_number: int) -> PullRequestRecord | None:
@@ -314,54 +328,11 @@ class GitHubAdapter:
         """
         if not self._available:
             return None
-        cmd = [
-            "pr",
-            "view",
-            str(pr_number),
-            "--json",
-            (
-                "number,title,url,state,headRefName,baseRefName,headRefOid,labels,"
-                "reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,"
-                "body,closingIssuesReferences"
-            ),
-        ]
+        cmd = ["pr", "view", str(pr_number), "--json", _PR_JSON_FIELDS]
         item = await self._gh_json(cmd)
         if not isinstance(item, dict):
             return None
-        raw_number = item.get("number")
-        if not isinstance(raw_number, (int, str)):
-            return None
-        labels = label_names(item.get("labels", []))
-        author = item.get("author")
-        github_author = (
-            str(author.get("login"))
-            if isinstance(author, dict) and author.get("login") is not None
-            else None
-        )
-        issue_links = infer_pr_issue_links(
-            closing_issue_references=item.get("closingIssuesReferences"),
-            body=item.get("body"),
-            branch=item.get("headRefName"),
-        )
-        return PullRequestRecord(
-            pr_number=int(raw_number),
-            session_id=self._session_id,
-            state=str(item.get("state", "OPEN")).lower(),
-            created_at=str(item.get("createdAt", now_iso())),
-            issue_number=issue_links.primary_issue_number,
-            linked_issue_numbers=issue_links.issue_numbers,
-            branch=str(item["headRefName"]) if item.get("headRefName") else None,
-            title=str(item.get("title", "")),
-            url=str(item["url"]) if item.get("url") else None,
-            github_author=github_author,
-            labels=labels,
-            review_decision=(str(item["reviewDecision"]) if item.get("reviewDecision") else None),
-            status_check_summary=status_rollup_summary(item.get("statusCheckRollup")),
-            is_draft=bool(item.get("isDraft", False)),
-            head_sha=str(item["headRefOid"]) if item.get("headRefOid") else None,
-            mergeable=str(item["mergeable"]) if item.get("mergeable") else None,
-            base_ref=str(item["baseRefName"]) if item.get("baseRefName") else None,
-        )
+        return _pr_record_from_json(self._session_id, item)
 
     async def list_approved_prs(self) -> list[dict[str, object]]:
         """Return open PRs that have at least one approved review."""

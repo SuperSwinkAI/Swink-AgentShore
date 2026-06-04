@@ -423,6 +423,22 @@ class BrowserConfig:
 
 
 @dataclass(frozen=True)
+class TimelapseConfig:
+    """Optional desktop timelapse-capture feature.
+
+    ``installed`` records that the ``timelapse-capture`` CLI and its
+    dependencies were provisioned via the desktop install checkbox.
+    ``enabled`` is the per-project default for whether a session records a
+    timelapse of the dashboard; the desktop Start screen can override it for
+    a single run. Capture interval/fps and output location are left to the
+    timelapse CLI's own defaults, so there is nothing else to configure here.
+    """
+
+    enabled: bool = False
+    installed: bool = False
+
+
+@dataclass(frozen=True)
 class LearningsConfig:
     enabled: bool = True
     file: str = ".agentshore/learnings.json"
@@ -454,12 +470,6 @@ class WorktreeConfig:
     # same filesystem, never the repo's parent). Set to an absolute path to
     # centralize worktrees elsewhere; per-repo subdirs disambiguate by name.
     root: str | None = None
-
-    # Seconds an orphaned (quarantined) worktree is retained before the
-    # session-start sweep deletes it. Orphans are full repo checkouts that
-    # otherwise accumulate unbounded (only uncommitted agent work is unique —
-    # committed work is already in git). Default 7 days.
-    orphan_retention_seconds: int = 604800
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +534,7 @@ class RuntimeConfig:
     ui: UIConfig = field(default_factory=UIConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
+    timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
     learnings: LearningsConfig = field(default_factory=LearningsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)

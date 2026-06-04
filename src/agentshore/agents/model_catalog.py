@@ -26,13 +26,20 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-6",
         "claude-opus-4-5",
         "claude-opus-4-7",
+        "claude-opus-4-8",
     ],
     "codex": [
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
+        # ChatGPT-account-compatible line (also works with API-key auth).
+        # gpt-5.5 first: OpenAI's recommended default workhorse.
         "gpt-5.5",
         "gpt-5.4",
-        "gpt-5.4-nano",
+        "gpt-5.4-mini",
+        "gpt-5.2",
+        # API-key-only coding model. Kept selectable for users on API-key
+        # auth, but it is NOT a default tier — ChatGPT-account sign-in rejects
+        # it with HTTP 400 ("not supported when using Codex with a ChatGPT
+        # account").
+        "gpt-5.3-codex",
     ],
     "gemini": [
         # Gemini CLI aliases. Keep these first so the setup wizard can use
@@ -41,13 +48,14 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "pro",
         "flash",
         "flash-lite",
-        # Current Gemini API text-generation IDs. Do not list deprecated
-        # Gemini 3 Pro Preview IDs here; the public endpoint was shut down.
+        # Current Gemini API text-generation IDs, newest first. Do not list
+        # deprecated IDs here: the Gemini 3 Pro Preview and Gemini 3.1
+        # Flash-Lite Preview endpoints have been shut down.
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite",
         "gemini-3.1-pro-preview",
         "gemini-3.1-pro-preview-customtools",
         "gemini-3-flash-preview",
-        "gemini-3.1-flash-lite-preview",
         "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
@@ -187,5 +195,5 @@ def models_for_agent(agent_key: str, *, timeout: float = 5.0) -> list[str]:
     except RuntimeError:
         return asyncio.run(models_for_agent_async(agent_key, timeout=timeout))
 
-    _logger.debug("model_catalog.sync_call_inside_event_loop", agent_key=agent_key)
+    _logger.info("model_catalog.sync_call_inside_event_loop", agent_key=agent_key)
     return list(KNOWN_MODELS.get(agent_key, []))

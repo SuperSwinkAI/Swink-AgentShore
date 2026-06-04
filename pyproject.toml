@@ -1,6 +1,6 @@
 [project]
 name = "agentshore"
-version = "0.1.0"
+version = "0.2.0"
 description = "Swink AgentShore — RL-based multi-agent orchestrator"
 readme = "README.md"
 license = { text = "MIT" }
@@ -42,6 +42,7 @@ dependencies = [
     "ruamel-yaml==0.19.1",
     "beaupy==3.11.0",
     "platformdirs==4.9.6",
+    "packaging==25.0",
 ]
 
 [dependency-groups]
@@ -118,6 +119,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
 # Worktree exception names follow the same design-doc taxonomy
 # (WorktreeBranchGone, WorktreeAllocationConflict)
 "src/agentshore/agents/worktree/*.py" = ["N818"]
+# WorktreeAllocationConflict now lives with the worktrees table I/O mixin
+"src/agentshore/data/store/mixins/worktrees.py" = ["N818"]
 # Tests use Path/Play only as annotations but pytest fixtures need them at function-def time
 # E501: pre-existing long docstring/BudgetSnapshot lines in test helpers
 # TC002: pytest is a runtime dep in tests, not annotation-only

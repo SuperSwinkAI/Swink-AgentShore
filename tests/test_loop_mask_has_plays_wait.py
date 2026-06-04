@@ -11,15 +11,16 @@ project.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agentshore.core
 from agentshore.core import Orchestrator
+from agentshore.core.main_repo_guard import MainRepoGuard
+from agentshore.core.mixins.loop import LoopRunner
+from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import SessionState
 
 
@@ -54,21 +55,32 @@ class _StateStub:
 def _orch() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch._in_flight = {}
-    orch._first_play_override = None
-    orch._override_queue = asyncio.Queue()
+    orch._overrides = OverrideQueue()
+    orch._main_repo = MainRepoGuard()
     orch._idle_streak = 0
     orch._last_selection_digest = None
     orch._session_id = "sess-562"
-    orch._fleet_idle_persistent_active = False
     orch._registry = None
     orch._cfg = _Cfg()  # type: ignore[assignment]
+    orch._loop = LoopRunner(
+        host=orch,
+        session_id=orch._session_id,
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        velocity=MagicMock(),
+        state_builder=MagicMock(),
+        dispatcher=MagicMock(),
+        completion=MagicMock(),
+        lifecycle=MagicMock(),
+        drain=MagicMock(),
+    )
     return orch
 
 
 @pytest.fixture
 def info_calls(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_logger = MagicMock()
-    monkeypatch.setattr(agentshore.core, "_logger", mock_logger)
+    monkeypatch.setattr("agentshore.core.mixins.loop._logger", mock_logger)
     return mock_logger.info
 
 
@@ -117,10 +129,10 @@ async def test_continue_when_mask_has_plays_even_if_graph_has_no_work(
             "agentshore.plays.candidates.build_candidate_plan",
             return_value=_candidate_plan_stub(has_remaining_work=False),
         ),
-        patch.object(orch, "_check_fleet_idle_persistent", new=AsyncMock()),
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
         patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
     ):
-        result = await orch._continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
             state, reason="unchanged_digest"
         )
 
@@ -144,9 +156,9 @@ async def test_exit_when_mask_empty_and_graph_has_no_work(
             "agentshore.plays.candidates.build_candidate_plan",
             return_value=_candidate_plan_stub(has_remaining_work=False),
         ),
-        patch.object(orch, "_check_fleet_idle_persistent", new=AsyncMock()),
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
     ):
-        result = await orch._continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
             state, reason="unchanged_digest"
         )
 
@@ -166,11 +178,11 @@ async def test_continue_when_graph_has_work_regardless_of_mask(
             "agentshore.plays.candidates.build_candidate_plan",
             return_value=_candidate_plan_stub(has_remaining_work=True),
         ),
-        patch.object(orch, "_check_fleet_idle_persistent", new=AsyncMock()),
-        patch.object(orch, "_classify_selector_idle", return_value="waiting_for_capacity"),
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+        patch.object(orch._loop, "classify_selector_idle", return_value="waiting_for_capacity"),
         patch("asyncio.sleep", new=AsyncMock()),
     ):
-        result = await orch._continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
             state, reason="selector_none"
         )
 

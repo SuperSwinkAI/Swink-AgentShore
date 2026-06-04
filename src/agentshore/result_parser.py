@@ -91,6 +91,22 @@ def _json_object(value: object) -> JsonObject | None:
     return result
 
 
+def _json_object_list(data: JsonObject, key: str) -> list[JsonObject]:
+    """Return *data[key]* coerced to a list of string-keyed JSON objects.
+
+    Non-list values yield an empty list; non-object items are dropped.
+    """
+    raw = data.get(key, [])
+    if not isinstance(raw, list):
+        return []
+    objects: list[JsonObject] = []
+    for item in raw:
+        obj = _json_object(item)
+        if obj is not None:
+            objects.append(obj)
+    return objects
+
+
 def _candidate_result_objects(text: str) -> Iterator[JsonObject]:
     """Yield JSON objects in *text* that look like skill results."""
     for idx, ch in enumerate(text):
@@ -203,14 +219,7 @@ def parse_skill_result(output: str) -> SkillResult:
     if error is not None:
         error = str(error)
 
-    mutations_raw = data.get("requested_mutations", [])
-    if not isinstance(mutations_raw, list):
-        mutations_raw = []
-    requested_mutations: list[JsonObject] = []
-    for item in mutations_raw:
-        obj = _json_object(item)
-        if obj is not None:
-            requested_mutations.append(obj)
+    requested_mutations = _json_object_list(data, "requested_mutations")
 
     spec_compliance_raw = data.get("spec_compliance")
     spec_compliance: str | None = None
@@ -251,23 +260,8 @@ def parse_skill_result(output: str) -> SkillResult:
     tests_passed_raw = data.get("tests_passed")
     tests_passed = tests_passed_raw if isinstance(tests_passed_raw, bool) else None
 
-    verification_raw = data.get("verification_evidence", [])
-    if not isinstance(verification_raw, list):
-        verification_raw = []
-    verification_evidence: list[JsonObject] = []
-    for item in verification_raw:
-        obj = _json_object(item)
-        if obj is not None:
-            verification_evidence.append(obj)
-
-    review_patterns_raw = data.get("review_patterns", [])
-    if not isinstance(review_patterns_raw, list):
-        review_patterns_raw = []
-    review_patterns: list[JsonObject] = []
-    for item in review_patterns_raw:
-        obj = _json_object(item)
-        if obj is not None:
-            review_patterns.append(obj)
+    verification_evidence = _json_object_list(data, "verification_evidence")
+    review_patterns = _json_object_list(data, "review_patterns")
 
     return SkillResult(
         success=success,

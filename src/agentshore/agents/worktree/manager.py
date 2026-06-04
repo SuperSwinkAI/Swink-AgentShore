@@ -40,7 +40,6 @@ from agentshore.agents.worktree.allocator import (
 from agentshore.agents.worktree.reaper import (
     ReapReport,
     reap_for_closed_prs,
-    sweep_orphans,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -60,6 +59,8 @@ from agentshore.state import PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from agentshore.config.models import RuntimeConfig
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
@@ -296,11 +297,18 @@ class WorktreeManager:
           worktree.
         - **Branch-creating success with ``result.branch``:** rekey to the
           real branch + rename directory.
-        - **Branch-creating success without a branch:** mark ``stale`` —
-          the play "succeeded" without producing a branch (rare; usually
-          means SkillResult dropped the field). Reaper picks it up later.
-        - **Branch-creating failure:** mark ``stale`` so the reaper drops
-          the on-disk worktree after the TTL.
+        - **Branch-creating success without a branch:** remove the
+          worktree and mark ``stale`` — the play "succeeded" without
+          producing a branch (e.g. issue_pickup declined a non-actionable
+          issue), so the ``pickup-<N>`` checkout has nothing worth keeping.
+        - **Branch-creating failure:** remove the worktree and mark
+          ``stale``.
+
+        Branch-creating worktrees that produced no branch are removed inline
+        (``git worktree remove --force`` + prune) rather than left for the
+        TTL reaper: a declined/failed pickup otherwise leaks a git-registered
+        ``pickup-<N>`` worktree that ``reconcile_state`` can't clear and that
+        accumulates disk across short sessions (#33).
         """
         if allocation.scope == "pr":
             await touch(self._store, worktree_id=allocation.worktree_id)
@@ -340,6 +348,10 @@ class WorktreeManager:
         # prebranch lock; the row is on its way out (desktop-kdl5).
         if allocation.pre_branch_key is not None:
             await self._evict_lock("prebranch", allocation.pre_branch_key)
+        # Remove the leaked checkout now (git + disk + prune) so a declined or
+        # failed pickup doesn't leave a git-registered pickup-<N> worktree
+        # behind (#33). Never raises.
+        await _best_effort_remove(self._main_repo, allocation.path)
         await mark_status(
             self._store,
             worktree_id=allocation.worktree_id,
@@ -360,8 +372,9 @@ class WorktreeManager:
              ``worktree_root`` vs ``git worktree list`` — one filesystem
              traversal, one git invocation, so the reconcile and DB-sweep
              stages can't disagree about which paths are registered.
-          2. ``reconcile_worktrees`` consumes the scan to quarantine
-             unregistered on-disk dirs (closes #570).
+          2. ``reconcile_worktrees`` consumes the scan to delete
+             unregistered on-disk dirs (preserving any with uncommitted
+             work) (closes #570).
           3. ``sweep_session_start`` reaps DB rows from prior sessions
              (existing behaviour).
         """
@@ -373,25 +386,39 @@ class WorktreeManager:
             worktree_root=self._worktree_root,
             scan=scan,
         )
-        if reconcile.quarantined:
+        if reconcile.deleted or reconcile.preserved_dirty:
             log.info(
                 "worktree_reconcile_summary",
-                quarantined_count=len(reconcile.quarantined),
-                quarantined_paths=[str(p) for p in reconcile.quarantined],
+                deleted_count=len(reconcile.deleted),
+                deleted_paths=[str(p) for p in reconcile.deleted],
+                preserved_dirty_count=len(reconcile.preserved_dirty),
+                preserved_dirty_paths=[str(p) for p in reconcile.preserved_dirty],
             )
         report = await sweep_session_start(
             self._store,
             current_session_id=self._session_id,
             main_repo=self._main_repo,
         )
-        # Bound the orphan quarantine: delete aged-out orphan worktrees so the
-        # ``-orphan`` dir can't grow unbounded (it never auto-cleaned before).
-        retention = getattr(getattr(self._cfg, "worktrees", None), "orphan_retention_seconds", 0)
-        await sweep_orphans(self._worktree_root, retention_seconds=retention)
+        # One-shot migration: AgentShore used to quarantine orphans into a
+        # ``<root>-orphan`` sibling that was never reliably reaped (a monitored
+        # machine accumulated 116 GB of Rust build caches there). Orphans are
+        # now deleted in reconcile, so remove any pre-existing quarantine dir.
+        await self._remove_legacy_orphan_dir()
         # Prune locks whose (scope, key) no longer maps to a live row in
         # the current session (desktop-kdl5).
         await self._prune_locks()
         return report
+
+    async def _remove_legacy_orphan_dir(self) -> None:
+        """Delete a pre-existing ``<worktree_root>-orphan`` quarantine dir (best-effort)."""
+        import asyncio
+        import shutil
+
+        legacy = self._worktree_root.with_name(self._worktree_root.name + "-orphan")
+        if not legacy.exists():
+            return
+        await asyncio.to_thread(shutil.rmtree, legacy, ignore_errors=True)
+        log.info("worktree_legacy_orphan_dir_removed", path=str(legacy))
 
     async def reap_closed_prs(self, *, ttl_seconds: int) -> ReapReport:
         """Reap ``stale`` rows older than ``ttl_seconds`` in this session."""
@@ -457,16 +484,66 @@ class WorktreeManager:
     async def _allocate_pr_scoped_locked(
         self, play_type: PlayType, branch: str
     ) -> WorktreeAllocation:
-        existing = await lookup_by_branch(
-            self._store, session_id=self._session_id, branch_name=branch
+        return await self._allocate_locked(
+            play_type=play_type,
+            lookup=lambda: lookup_by_branch(
+                self._store, session_id=self._session_id, branch_name=branch
+            ),
+            branch_name=branch,
+            pre_branch_key=None,
+            target_key=branch,
+            base_ref=f"origin/{branch}",
+            scope="pr",
         )
+
+    async def _allocate_branch_creating(
+        self, play_type: PlayType, params: PlayParams
+    ) -> WorktreeAllocation:
+        pre_branch_key = _make_prebranch_key(play_type, params)
+        lock = await self._get_alloc_lock("prebranch", pre_branch_key)
+        async with lock:
+            return await self._allocate_branch_creating_locked(play_type, pre_branch_key)
+
+    async def _allocate_branch_creating_locked(
+        self, play_type: PlayType, pre_branch_key: str
+    ) -> WorktreeAllocation:
+        return await self._allocate_locked(
+            play_type=play_type,
+            lookup=lambda: lookup_by_prebranch_key(
+                self._store, session_id=self._session_id, pre_branch_key=pre_branch_key
+            ),
+            branch_name=None,
+            pre_branch_key=pre_branch_key,
+            target_key=pre_branch_key,
+            base_ref="origin/HEAD",
+            scope="branch_creating",
+        )
+
+    async def _allocate_locked(
+        self,
+        *,
+        play_type: PlayType,
+        lookup: Callable[[], Awaitable[WorktreeRow | None]],
+        branch_name: str | None,
+        pre_branch_key: str | None,
+        target_key: str,
+        base_ref: str,
+        scope: Literal["pr", "branch_creating"],
+    ) -> WorktreeAllocation:
+        """Shared allocate body for PR-scoped and branch-creating plays.
+
+        Callers supply the distinct lookup, key fields, and ``base_ref``; the
+        reuse-existing → ensure → touch → return and insert → conflict-relookup
+        → best-effort-remove → return skeletons are identical between the two.
+        """
+        existing = await lookup()
         if existing is not None:
             try:
                 allocate = await ensure_worktree(
                     main_repo=self._main_repo,
                     worktree_path=Path(existing.worktree_path),
-                    branch_name=branch,
-                    base_ref=f"origin/{branch}",
+                    branch_name=branch_name,
+                    base_ref=base_ref,
                     fetch=True,
                 )
             except WorktreeAllocationFailed as exc:
@@ -484,36 +561,34 @@ class WorktreeManager:
             return WorktreeAllocation(
                 worktree_id=existing.worktree_id,
                 path=allocate.path,
-                branch_name=branch,
-                pre_branch_key=None,
+                branch_name=branch_name,
+                pre_branch_key=pre_branch_key,
                 play_type=play_type,
-                scope="pr",
+                scope=scope,
             )
 
-        target = worktree_target_path(self._worktree_root, branch)
+        target = worktree_target_path(self._worktree_root, target_key)
         allocate = await ensure_worktree(
             main_repo=self._main_repo,
             worktree_path=target,
-            branch_name=branch,
-            base_ref=f"origin/{branch}",
+            branch_name=branch_name,
+            base_ref=base_ref,
             fetch=True,
         )
-        await self._verify_worktree_registered(allocate, scope="pr")
+        await self._verify_worktree_registered(allocate, scope=scope)
         try:
             row = await insert_worktree(
                 self._store,
                 session_id=self._session_id,
-                branch_name=branch,
-                pre_branch_key=None,
+                branch_name=branch_name,
+                pre_branch_key=pre_branch_key,
                 worktree_path=str(allocate.path),
                 original_play_type=play_type.value,
-                base_ref=f"origin/{branch}",
+                base_ref=base_ref,
                 head_sha=allocate.head_sha,
             )
         except WorktreeAllocationConflict:
-            existing = await lookup_by_branch(
-                self._store, session_id=self._session_id, branch_name=branch
-            )
+            existing = await lookup()
             if existing is None:
                 raise
             await touch(
@@ -524,10 +599,10 @@ class WorktreeManager:
             return WorktreeAllocation(
                 worktree_id=existing.worktree_id,
                 path=Path(existing.worktree_path),
-                branch_name=branch,
-                pre_branch_key=None,
+                branch_name=branch_name,
+                pre_branch_key=pre_branch_key,
                 play_type=play_type,
-                scope="pr",
+                scope=scope,
             )
         except Exception:
             # Insert failed for a non-conflict reason (DB connection,
@@ -538,104 +613,10 @@ class WorktreeManager:
         return WorktreeAllocation(
             worktree_id=row.worktree_id,
             path=allocate.path,
-            branch_name=branch,
-            pre_branch_key=None,
-            play_type=play_type,
-            scope="pr",
-        )
-
-    async def _allocate_branch_creating(
-        self, play_type: PlayType, params: PlayParams
-    ) -> WorktreeAllocation:
-        pre_branch_key = _make_prebranch_key(play_type, params)
-        lock = await self._get_alloc_lock("prebranch", pre_branch_key)
-        async with lock:
-            return await self._allocate_branch_creating_locked(play_type, pre_branch_key)
-
-    async def _allocate_branch_creating_locked(
-        self, play_type: PlayType, pre_branch_key: str
-    ) -> WorktreeAllocation:
-        existing = await lookup_by_prebranch_key(
-            self._store, session_id=self._session_id, pre_branch_key=pre_branch_key
-        )
-        if existing is not None:
-            try:
-                allocate = await ensure_worktree(
-                    main_repo=self._main_repo,
-                    worktree_path=Path(existing.worktree_path),
-                    branch_name=None,
-                    base_ref="origin/HEAD",
-                    fetch=True,
-                )
-            except WorktreeAllocationFailed as exc:
-                await mark_status(
-                    self._store,
-                    worktree_id=existing.worktree_id,
-                    status="stale",
-                    failure_reason=f"reuse_ensure_failed: {exc.reason}",
-                )
-                raise
-            await touch(self._store, worktree_id=existing.worktree_id, head_sha=allocate.head_sha)
-            return WorktreeAllocation(
-                worktree_id=existing.worktree_id,
-                path=allocate.path,
-                branch_name=None,
-                pre_branch_key=pre_branch_key,
-                play_type=play_type,
-                scope="branch_creating",
-            )
-
-        target = worktree_target_path(self._worktree_root, pre_branch_key)
-        allocate = await ensure_worktree(
-            main_repo=self._main_repo,
-            worktree_path=target,
-            branch_name=None,
-            base_ref="origin/HEAD",
-            fetch=True,
-        )
-        await self._verify_worktree_registered(allocate, scope="branch_creating")
-        try:
-            row = await insert_worktree(
-                self._store,
-                session_id=self._session_id,
-                branch_name=None,
-                pre_branch_key=pre_branch_key,
-                worktree_path=str(allocate.path),
-                original_play_type=play_type.value,
-                base_ref="origin/HEAD",
-                head_sha=allocate.head_sha,
-            )
-        except WorktreeAllocationConflict:
-            existing = await lookup_by_prebranch_key(
-                self._store,
-                session_id=self._session_id,
-                pre_branch_key=pre_branch_key,
-            )
-            if existing is None:
-                raise
-            await touch(
-                self._store,
-                worktree_id=existing.worktree_id,
-                head_sha=allocate.head_sha,
-            )
-            return WorktreeAllocation(
-                worktree_id=existing.worktree_id,
-                path=Path(existing.worktree_path),
-                branch_name=None,
-                pre_branch_key=pre_branch_key,
-                play_type=play_type,
-                scope="branch_creating",
-            )
-        except Exception:
-            await _best_effort_remove(self._main_repo, allocate.path)
-            raise
-        return WorktreeAllocation(
-            worktree_id=row.worktree_id,
-            path=allocate.path,
-            branch_name=None,
+            branch_name=branch_name,
             pre_branch_key=pre_branch_key,
             play_type=play_type,
-            scope="branch_creating",
+            scope=scope,
         )
 
 

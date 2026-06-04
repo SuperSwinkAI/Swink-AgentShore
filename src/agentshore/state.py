@@ -7,10 +7,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.errors import ErrorClass
 from agentshore.github.pr_links import issue_numbers_for_pr
 
 if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
+    from agentshore.errors import FailureKind
     from agentshore.plays.base import PlayParams
     from agentshore.rl.mask_reason import MaskReason
 
@@ -121,6 +123,41 @@ class AgentStatus(enum.Enum):
     TERMINATED = "terminated"
 
 
+# Error classes (from ``cli_agent._classify_error``) that a TAKE_BREAK recovery
+# can plausibly clear, so an ERROR agent in one of these gets a recovery-first
+# path (TAKE_BREAK → recovery-exhausted → END_AGENT). An ERROR agent in ANY
+# other class (auth, invalid_model, crash_oom, crash_signal, timeout,
+# codex_rollout, or None) is terminal: no recovery path exists, so END_AGENT is
+# unmasked for it immediately rather than leaving it leaked until end_session
+# (#20). Kept here so the eligibility mask and the END_AGENT resolver agree.
+# "transient_network" (socket close / connection reset, #23) is recoverable —
+# it is a precise carve-out of the old "unknown" bucket, which was recoverable.
+RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
+    {ErrorClass.RATE_LIMIT, ErrorClass.UNKNOWN, ErrorClass.TRANSIENT_NETWORK}
+)
+
+# Per-agent circuit breaker (#22): an agent that has produced ZERO successful
+# plays this session and has either hit a dispatch timeout or accumulated
+# repeated failures is treated as non-functional and masked/deprioritized from
+# work selection until it succeeds. Guards against routing critical plays
+# (e.g. code_review) to a known-dead agent (the gemini-ETIMEDOUT case, where a
+# single failed dispatch burned a full ~30-min idle timeout). The mask lifts
+# automatically the moment the agent completes any play (``tasks_completed > 0``).
+CIRCUIT_BREAKER_FAILURE_LIMIT = 2
+
+
+def is_agent_circuit_broken(
+    *,
+    tasks_completed: int,
+    tasks_failed: int,
+    timeout_count: int,
+) -> bool:
+    """Return True when an agent should be benched as non-functional (#22)."""
+    if tasks_completed > 0:
+        return False
+    return timeout_count >= 1 or tasks_failed >= CIRCUIT_BREAKER_FAILURE_LIMIT
+
+
 class SessionState(enum.Enum):
     """Lifecycle state of an AgentShore session."""
 
@@ -155,6 +192,11 @@ class PlayOutcome:
     skipped: bool = False
     skip_category: SkipCategory | None = None
     retry_requested: bool = False
+    # Typed cause set at the failure site when the play knows it. The persisted
+    # ``failure_category`` string is derived from this (see executor
+    # ``_infer_failure_category``); the substring inferer is the fallback when a
+    # play leaves this None.
+    failure_kind: FailureKind | None = None
 
     @classmethod
     def failed(
@@ -165,6 +207,7 @@ class PlayOutcome:
         dollar_cost: float = 0.0,
         partial: bool = False,
         retry_requested: bool = False,
+        failure_kind: FailureKind | None = None,
     ) -> PlayOutcome:
         """Convenience constructor for a zero-cost failure outcome."""
         return cls(
@@ -179,6 +222,7 @@ class PlayOutcome:
             alignment_delta=0.0,
             error=error,
             retry_requested=retry_requested,
+            failure_kind=failure_kind,
         )
 
     @classmethod
@@ -274,7 +318,7 @@ class AgentSnapshot:
     current_play_issue_number: int | None = None
     current_play_pr_number: int | None = None
     current_play_branch: str | None = None
-    last_error_class: str | None = None
+    last_error_class: ErrorClass | None = None
     timeout_count: int = 0
     github_identity: str | None = None
     # desktop-31h2: cumulative dispatch count and the agent's share of the
@@ -440,6 +484,52 @@ class SessionStatsSnapshot:
     agent_specialization: list[AgentPlaySpecializationSnapshot] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkQueueItem:
+    """An issue together with the pull request (if any) representing its work."""
+
+    issue: IssueSnapshot
+    pr: PullRequestSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkQueueView:
+    """Lifecycle-grouped view of the issue/PR backlog.
+
+    Single source of truth for "what phase is each issue/PR in", computed once
+    per snapshot by :meth:`OrchestratorState.work_queue`. UI consumers (the
+    issue work-queue screen and the dashboard summary widget) are pure
+    formatters over this view rather than reimplementing the grouping.
+
+    ``orphan_review_prs`` holds open PRs with no matching open issue; each entry
+    pairs the PR with whether it is currently queued for review. They are
+    rendered alongside ``in_review`` issues by the work-queue screen.
+    """
+
+    todo: list[WorkQueueItem] = field(default_factory=list)
+    in_progress: list[WorkQueueItem] = field(default_factory=list)
+    in_review: list[WorkQueueItem] = field(default_factory=list)
+    done: list[WorkQueueItem] = field(default_factory=list)
+    orphan_review_prs: list[tuple[PullRequestSnapshot, bool]] = field(default_factory=list)
+    next_issue: IssueSnapshot | None = None
+
+
+def loop_level_for_streak(streak: int) -> int:
+    """Map failure streak to escalation level: 0 (none), 1 (warn), 2 (force), 3 (escalation).
+
+    Single source of truth for the loop-escalation ladder. Lives here (core,
+    UI-free) so ``StateBuilder`` can precompute ``OrchestratorState.loop_level``
+    without a core->ui import inversion; the TUI widgets import it from here too.
+    """
+    if streak >= 7:
+        return 3
+    if streak >= 5:
+        return 2
+    if streak >= 3:
+        return 1
+    return 0
+
+
 @dataclass(slots=True)
 class OrchestratorState:
     """Complete snapshot of the AgentShore session pushed to UI/IPC consumers."""
@@ -468,7 +558,21 @@ class OrchestratorState:
     active_play: ActivePlay | None = None
     same_type_failure_streak: int = 0
     last_play_type: PlayType | None = None
-    forced_mask_zeros: tuple[PlayType, ...] = field(default_factory=tuple)
+    # Precomputed loop-escalation level for ``same_type_failure_streak`` via
+    # :func:`loop_level_for_streak` (0 none, 1 warn, 2 force, 3 escalation).
+    # Computed once in StateBuilder so UI/IPC consumers read it directly instead
+    # of each re-applying the ladder.
+    loop_level: int = 0
+    # Snapshot of the main-repo dispatch-pause latch
+    # (``MainRepoGuard.dispatch_paused``). When True the mask hides every play
+    # except END_AGENT and RECONCILE_STATE from PPO; ``dispatch_play`` gate 1
+    # keeps the live recheck as a backstop since state can flip between
+    # selection and dispatch.
+    main_repo_dispatch_paused: bool = False
+    # Snapshot of whether END_SESSION is already started or in-flight. When True
+    # the mask hides END_SESSION from PPO; ``dispatch_play`` gate 2 keeps the
+    # live recheck as a backstop.
+    end_session_in_flight: bool = False
     # Agent IDs whose break-recovery counter has reached
     # ``BREAK_RECOVERY_FAILURE_LIMIT``. END_AGENT is unmasked for these agents
     # even when the normal min-plays / two-agent gate would block it, so the
@@ -536,6 +640,79 @@ class OrchestratorState:
     seed_freshness: int | None = None
     learnings_count: int = 0
     human_feedback_count: int = 0
+
+    def work_queue(self) -> WorkQueueView:
+        """Group issues and PRs into todo / in-progress / in-review / done.
+
+        Lifecycle classification is a property of orchestrator state, not of any
+        renderer; this is the single derivation both the issue work-queue screen
+        and the dashboard summary widget format over.
+        """
+        prs_by_issue: dict[int, PullRequestSnapshot] = {}
+        for pr in self.pull_requests:
+            for issue_number in issue_numbers_for_pr(pr):
+                existing = prs_by_issue.get(issue_number)
+                if existing is None or (existing.state != "open" and pr.state == "open"):
+                    prs_by_issue[issue_number] = pr
+
+        pending_review_prs = {item.pr_number for item in self.pending_review_queue}
+        reviewing_issues = {
+            issue_number
+            for pr in self.pull_requests
+            if pr.state == "open" or pr.pr_number in pending_review_prs
+            for issue_number in issue_numbers_for_pr(pr)
+        }
+        in_progress_issues = {
+            agent.current_play_issue_number
+            for agent in self.agents
+            if agent.current_play_issue_number is not None and agent.current_play_type is not None
+        }
+
+        todo: list[WorkQueueItem] = []
+        in_progress: list[WorkQueueItem] = []
+        in_review: list[WorkQueueItem] = []
+        done: list[WorkQueueItem] = []
+        for issue in self.open_issues:
+            item = WorkQueueItem(issue=issue, pr=prs_by_issue.get(issue.issue_number))
+            if issue.state.lower() == "closed":
+                done.append(item)
+            elif issue.issue_number in in_progress_issues:
+                in_progress.append(item)
+            elif issue.issue_number in reviewing_issues:
+                in_review.append(item)
+            else:
+                todo.append(item)
+
+        known_issue_numbers = {issue.issue_number for issue in self.open_issues}
+        orphan_review_prs: list[tuple[PullRequestSnapshot, bool]] = []
+        for pr in self.pull_requests:
+            if pr.state != "open":
+                continue
+            if known_issue_numbers.intersection(issue_numbers_for_pr(pr)):
+                continue
+            orphan_review_prs.append((pr, pr.pr_number in pending_review_prs))
+
+        open_issues = [issue for issue in self.open_issues if issue.state.lower() == "open"]
+        next_issue = (
+            min(
+                open_issues,
+                key=lambda issue: (
+                    issue.priority if issue.priority is not None else 999,
+                    issue.issue_number,
+                ),
+            )
+            if open_issues
+            else None
+        )
+
+        return WorkQueueView(
+            todo=todo,
+            in_progress=in_progress,
+            in_review=in_review,
+            done=done,
+            orphan_review_prs=orphan_review_prs,
+            next_issue=next_issue,
+        )
 
 
 # ---------------------------------------------------------------------------

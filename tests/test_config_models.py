@@ -144,3 +144,28 @@ def test_legacy_max_total_field_parses_with_deprecation_warning(tmp_path: Path) 
     with pytest.warns(DeprecationWarning, match="max_total is deprecated"):
         cfg = load_config(yaml_path)
     assert cfg.agent_spawn.max_per_config == 3
+
+
+def test_timelapse_defaults_to_disabled_and_uninstalled() -> None:
+    cfg = RuntimeConfig()
+    assert cfg.timelapse.enabled is False
+    assert cfg.timelapse.installed is False
+
+
+def test_timelapse_yaml_round_trip(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "timelapse:\n  enabled: true\n  installed: true\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yaml_path)
+    assert cfg.timelapse.enabled is True
+    assert cfg.timelapse.installed is True
+
+
+def test_timelapse_absent_block_uses_defaults(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n", encoding="utf-8")
+    cfg = load_config(yaml_path)
+    assert cfg.timelapse.enabled is False
+    assert cfg.timelapse.installed is False

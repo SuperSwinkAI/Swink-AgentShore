@@ -99,7 +99,6 @@ def test_serialize_state_has_required_keys() -> None:
         "active_play",
         "pull_requests",
         "work_availability",
-        "issue_availability",
     ):
         assert key in result, f"Missing key: {key}"
 
@@ -144,7 +143,7 @@ def test_serialize_state_includes_work_availability_counts() -> None:
     assert isinstance(availability, dict)
     assert availability["github_open_issue_count"] == 1
     assert availability["workable_issue_count"] == 0
-    assert result["issue_availability"] == availability
+    assert "issue_availability" not in result
 
 
 def test_serialize_paused_session_state_as_string() -> None:

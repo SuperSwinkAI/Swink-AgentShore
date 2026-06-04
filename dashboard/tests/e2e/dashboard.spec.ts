@@ -115,7 +115,7 @@ test("top bar omits inactive pause and override controls", async ({ page }) => {
   }
 });
 
-test("top bar shows open and workable issue counts when available", async ({
+test("top bar shows open issue count when available", async ({
   page,
 }) => {
   await page.goto("/?demo=1&scenario=empty&freeze=1");
@@ -152,7 +152,6 @@ test("top bar shows open and workable issue counts when available", async ({
       open_issues: [],
       pull_requests: [],
       work_availability: availability,
-      issue_availability: availability,
       budget: null,
       trajectory: null,
       active_play: null,
@@ -166,7 +165,7 @@ test("top bar shows open and workable issue counts when available", async ({
   });
 
   await expect(page.locator("#plays-count")).toContainText(
-    "Plays: 42 · Issues: 1/0",
+    "Plays: 42 · Open Issues : 1",
   );
 });
 
@@ -1795,6 +1794,17 @@ test("kanban card opens issue detail modal with GitHub link", async ({
   await expect(page.locator("#issue-detail-body")).toContainText(
     "Authentication System",
   );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Current Signals",
+  );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Issue #47 is Open",
+  );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Bead task-47 is Open",
+  );
+  await expect(page.getByRole("button", { name: "Copy issue #" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Copy branch" })).toBeDisabled();
   await expect(page.locator("#issue-detail-open-github")).toHaveAttribute(
     "href",
     "https://github.com/example/agentshore/issues/47",
@@ -1810,6 +1820,47 @@ test("kanban card opens issue detail modal with GitHub link", async ({
     .click();
   await page.locator("#issue-detail-close").click();
   await expect(page.locator("#issue-detail-modal")).not.toHaveClass(/visible/);
+});
+
+test("kanban issue detail modal remains readable in light and dark themes", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop modal color assertion");
+
+  for (const theme of ["light", "dark"] as const) {
+    await page.goto("/?demo=1&scenario=active&freeze=1");
+    await page.locator(`#theme-toggle [data-theme-mode="${theme}"]`).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await page.getByRole("tab", { name: /Kanban/ }).click();
+
+    await page
+      .locator(".km-card")
+      .filter({ hasText: "Implement session budget guard" })
+      .first()
+      .click();
+    await expect(page.locator("#issue-detail-modal")).toHaveClass(/visible/);
+
+    const colors = await page.locator(".issue-detail-box").evaluate((modal) => {
+      const title = modal.querySelector(".issue-detail-title");
+      if (!(title instanceof HTMLElement)) {
+        throw new Error("issue detail title missing");
+      }
+      const modalStyle = getComputedStyle(modal);
+      const titleStyle = getComputedStyle(title);
+      return {
+        background: modalStyle.backgroundColor,
+        borderColor: modalStyle.borderTopColor,
+        titleColor: titleStyle.color,
+      };
+    });
+    expect(colors.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(colors.borderColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(colors.titleColor).not.toBe(colors.background);
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#issue-detail-modal")).not.toHaveClass(/visible/);
+  }
 });
 
 test("kanban stage drag does not open issue detail modal", async ({
@@ -1937,6 +1988,27 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
       launchControl: layout.getZone(layout.ZoneId.LAUNCH_CONTROL).seats.length,
       recoveryBay: layout.getZone(layout.ZoneId.RECOVERY_BAY).seats.length,
     };
+    const workshopSeats = layout.getZone(layout.ZoneId.WORKSHOP).seats;
+    const markedWorkshopSeats = [
+      { x: 27, y: 22, facing: "north" },
+      { x: 32, y: 35, facing: "west" },
+      { x: 44, y: 34, facing: "east" },
+    ].every((expected) =>
+      workshopSeats.some(
+        (seat) =>
+          seat.x === expected.x &&
+          seat.y === expected.y &&
+          seat.facing === expected.facing,
+      ),
+    );
+    const oldWorkshopSeat = workshopSeats.some(
+      (seat) => seat.x === 52 && seat.y === 30 && seat.facing === "east",
+    );
+    const markedRecoverySeat = layout
+      .getZone(layout.ZoneId.RECOVERY_BAY)
+      .seats.some(
+        (seat) => seat.x === 9 && seat.y === 48 && seat.facing === "east",
+      );
 
     const targetFailures: string[] = [];
     for (const zone of layout.ZONES) {
@@ -2027,6 +2099,9 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
 
     return {
       targetCounts,
+      markedWorkshopSeats,
+      oldWorkshopSeat,
+      markedRecoverySeat,
       targetFailures,
       furnitureFailures,
       catFurnitureFailures,
@@ -2041,12 +2116,15 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
   expect(result.targetCounts).toEqual({
     warRoom: 4,
     editorRoom: 4,
-    workshop: 15,
+    workshop: 17,
     zenGarden: 4,
     frontDesk: 3,
     launchControl: 4,
-    recoveryBay: 3,
+    recoveryBay: 4,
   });
+  expect(result.markedWorkshopSeats).toBe(true);
+  expect(result.oldWorkshopSeat).toBe(false);
+  expect(result.markedRecoverySeat).toBe(true);
   expect(result.targetFailures).toEqual([]);
   expect(result.furnitureFailures).toEqual([]);
   expect(result.catFurnitureFailures).toEqual([]);

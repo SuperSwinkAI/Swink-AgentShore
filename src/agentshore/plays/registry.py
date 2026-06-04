@@ -57,11 +57,14 @@ class PlayRegistry:
         return set(self._plays)
 
     def preconditions_met(self, play_type: PlayType, state: OrchestratorState) -> bool:
-        """Return True iff the play's preconditions list is empty."""
-        try:
-            play = self.get(play_type)
-        except KeyError:
-            return False
+        """Return True iff the play's preconditions list is empty.
+
+        Raises ``KeyError`` if *play_type* is not registered. The default
+        registry registers all PlayTypes and freezes, so a missing lookup is a
+        registry-wiring bug, not a runtime "not eligible" condition — surfacing
+        it loudly beats masking it as a benign ``False``.
+        """
+        play = self.get(play_type)
         return len(play.preconditions(state)) == 0
 
 

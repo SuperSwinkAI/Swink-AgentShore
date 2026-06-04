@@ -1,10 +1,4 @@
-"""``agentshore init`` subcommand.
-
-Helpers are accessed through ``agentshore.cli`` (the package) so that tests'
-``patch("agentshore.cli._detect_agents", …)`` calls remain effective after the
-CLI was split into a package.  See ``commands/start.py`` for the full
-rationale.
-"""
+"""``agentshore init`` subcommand."""
 
 from __future__ import annotations
 
@@ -14,9 +8,20 @@ from pathlib import Path
 
 import click
 
-from agentshore import cli as _cli_pkg
+from agentshore import cli_helpers
+from agentshore.cli.agent_select import (
+    _interactive_agent_select,
+    _load_config_for_agent_setup,
+)
+from agentshore.cli.identity_helpers import (
+    _agent_keys_from_yaml,
+    _existing_identities_from_yaml,
+    _identity_defaults_from_yaml,
+    _identity_repo_name_with_owner,
+)
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _PROJECT_DIR
 from agentshore.config.models import AgentConfig
+from agentshore.config.yaml_io import ruamel_get_nested, ruamel_set_nested
 from agentshore.errors import OrchestratorError
 
 
@@ -88,24 +93,7 @@ def _write_target_branch_to_yaml(config_path: Path, branch: str) -> None:
     wizard and the CLI converge on the same on-disk shape. Comments and key
     ordering on other top-level entries are preserved.
     """
-    import io
-
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    data = rt.load(existing) if existing.strip() else None
-    if data is None:
-        data = {}
-    project = data.get("project")
-    if not isinstance(project, dict):
-        project = {}
-        data["project"] = project
-    project["target_branch"] = branch
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    ruamel_set_nested(config_path, ("project", "target_branch"), branch)
 
 
 def _write_max_per_config_to_yaml(config_path: Path, max_per_config: int) -> None:
@@ -114,44 +102,12 @@ def _write_max_per_config_to_yaml(config_path: Path, max_per_config: int) -> Non
     Used by the CLI init wizard's "Max agents per type" prompt and the
     Desktop AgentsScreen to converge on the same yaml shape (desktop-ty04).
     """
-    import io
-
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    data = rt.load(existing) if existing.strip() else None
-    if data is None:
-        data = {}
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        agent_spawn = {}
-        data["agent_spawn"] = agent_spawn
-    agent_spawn["max_per_config"] = int(max_per_config)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    ruamel_set_nested(config_path, ("agent_spawn", "max_per_config"), int(max_per_config))
 
 
 def _read_max_per_config_from_yaml(config_path: Path) -> int | None:
     """Return the persisted ``agent_spawn.max_per_config`` if present, else None."""
-    if not config_path.exists():
-        return None
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    try:
-        data = rt.load(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, KeyError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        return None
-    value = agent_spawn.get("max_per_config")
+    value = ruamel_get_nested(config_path, ("agent_spawn", "max_per_config"))
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     return None
@@ -318,53 +274,69 @@ def init(
     from agentshore.skills import install_skills
 
     project_path = Path(project).resolve()
+    config_yaml = project_path / "agentshore.yaml"
 
-    # -- 1. Generate or merge agentshore.yaml (unless --install-skills) ----
-    if not install_skills_only:
-        if force:
-            # Route through the package so test patches on
-            # ``agentshore.cli._reset_agentshore_database`` still intercept here.
-            removed = _cli_pkg._reset_agentshore_database(project_path)
-            if removed:
-                click.echo("Reset AgentShore database: " + ", ".join(str(path) for path in removed))
-
-        config_path = project_path / "agentshore.yaml"
-        if config_path.exists() and not force:
-            click.echo(
-                f"agentshore.yaml already exists at {config_path}. "
-                f"Use `agentshore configure` to update settings, or `agentshore init --force` "
-                f"to merge fresh template defaults into your existing config."
-            )
+    # --install-skills: run only phases 2 + 4, skip all config-mutating steps.
+    if install_skills_only:
+        # -- 2. Install skill files ---------------------------------------
+        installed = install_skills(project_path, force=force)
+        if installed:
+            click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
         else:
-            if force and config_path.exists():
-                click.echo(
-                    f"Merging fresh template into {config_path} "
-                    f"(preserves user-edited keys outside `agents:`)"
-                )
+            click.echo("All skills are up-to-date.")
+        # -- 4. Ensure artifact dirs are gitignored -----------------------
+        if (project_path / ".git").exists():
+            gitignore = project_path / ".gitignore"
+            existed = gitignore.exists()
+            for _entry in (".agentshore/", ".agents/", ".beads/"):
+                if cli_helpers._ensure_gitignore_entry(project_path, _entry):
+                    verb = "Added" if existed else "Created"
+                    click.echo(f"{verb} {_entry} to {gitignore}")
+                    existed = True
+        return
 
-            # Detect project metadata for the template. Agent detection is
-            # authoritative: init should not invent unavailable CLI agents.
-            try:
-                gh_info = _cli_pkg._detect_gh_remote(project_path)
-                name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
-            except OrchestratorError:
-                name_with_owner = "owner/repo"
+    # -- 1. Generate or merge agentshore.yaml ----------------------------
+    if force:
+        removed = _reset_agentshore_database(project_path)
+        if removed:
+            click.echo("Reset AgentShore database: " + ", ".join(str(path) for path in removed))
 
-            agents = _cli_pkg._detect_agents()
-            written = _cli_pkg._render_or_merge_agentshore_yaml(
-                config_path,
-                name_with_owner=name_with_owner,
-                agents=agents,
-                budget=_DEFAULT_BUDGET,
-                strict=False,
+    if config_yaml.exists() and not force:
+        click.echo(
+            f"agentshore.yaml already exists at {config_yaml}. "
+            f"Use `agentshore configure` to update settings, or `agentshore init --force` "
+            f"to merge fresh template defaults into your existing config."
+        )
+    else:
+        if force and config_yaml.exists():
+            click.echo(
+                f"Merging fresh template into {config_yaml} "
+                f"(preserves user-edited keys outside `agents:`)"
             )
-            if written and not config_path.exists():
-                # Defensive — should always exist after _render_or_merge.
-                click.echo(f"Created {config_path}")
-            elif not force:
-                click.echo(f"Created {config_path}")
 
-    # -- 2. Install skill files -----------------------------------------
+        # Detect project metadata for the template. Agent detection is
+        # authoritative: init should not invent unavailable CLI agents.
+        try:
+            gh_info = cli_helpers._detect_gh_remote(project_path)
+            name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
+        except OrchestratorError:
+            name_with_owner = "owner/repo"
+
+        agents = cli_helpers._detect_agents()
+        written = cli_helpers._render_or_merge_agentshore_yaml(
+            config_yaml,
+            name_with_owner=name_with_owner,
+            agents=agents,
+            budget=_DEFAULT_BUDGET,
+            strict=False,
+        )
+        if written and not config_yaml.exists():
+            # Defensive — should always exist after _render_or_merge.
+            click.echo(f"Created {config_yaml}")
+        elif not force:
+            click.echo(f"Created {config_yaml}")
+
+    # -- 2. Install skill files ------------------------------------------
     installed = install_skills(project_path, force=force)
     if installed:
         click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
@@ -373,72 +345,65 @@ def init(
 
     # -- 2b. Prompt for / persist the target branch ---------------------
     # Mirrors the desktop wizard's TargetBranchScreen so CLI-bootstrapped
-    # projects also have project.target_branch set. Skipped when the user
-    # only requested skill installation. See desktop-3t62.
-    if not install_skills_only:
-        target_yaml_path = project_path / "agentshore.yaml"
-        if target_yaml_path.exists():
-            _maybe_prompt_target_branch(
-                project_path,
-                target_yaml_path,
-                explicit_target_branch=target_branch,
-            )
-            # Per-(agent_type, model_tier) cap (desktop-ty04). Surfaced as
-            # "Max agents per type" — single number, applies to every
-            # (type, tier) combination. Default 2.
-            _maybe_prompt_max_per_config(target_yaml_path)
+    # projects also have project.target_branch set. See desktop-3t62.
+    if config_yaml.exists():
+        _maybe_prompt_target_branch(
+            project_path,
+            config_yaml,
+            explicit_target_branch=target_branch,
+        )
+        # Per-(agent_type, model_tier) cap (desktop-ty04). Surfaced as
+        # "Max agents per type" — single number, applies to every
+        # (type, tier) combination. Default 2.
+        _maybe_prompt_max_per_config(config_yaml)
 
     # -- 3. Refresh availability + run wizards --------------------------
     # ``init`` is an explicit user command; all wizards run with prefill
     # from the (possibly merged) config. Both wizards skip cleanly when
     # stdin isn't a TTY.
-    if not install_skills_only:
-        from agentshore.availability import refresh as refresh_availability
-        from agentshore.cli_identity import run_identity_wizard
-        from agentshore.errors import ConfigError
+    from agentshore.availability import refresh as refresh_availability
+    from agentshore.errors import ConfigError
+    from agentshore.identity_wizard import run_identity_wizard
 
-        config_path = project_path / "agentshore.yaml"
-        if config_path.exists():
-            refresh_availability()
-            _init_agents = _cli_pkg._detect_agents()
+    if config_yaml.exists():
+        refresh_availability()
+        _init_agents = cli_helpers._detect_agents()
 
-            # -- 3a. Agent / tier / model wizard --------------------------
-            try:
-                _init_cfg = _cli_pkg._load_config_for_agent_setup(config_path)
-                _cli_pkg._interactive_agent_select(
-                    _init_cfg,
-                    _init_agents,
-                    config_path,
-                    force_run=True,
-                )
-            except (ConfigError, OSError, ValueError):
-                pass  # unparseable YAML — skip; `agentshore configure` can fix
+        # -- 3a. Agent / tier / model wizard ------------------------------
+        try:
+            _init_cfg = _load_config_for_agent_setup(config_yaml)
+            _interactive_agent_select(
+                _init_cfg,
+                _init_agents,
+                config_yaml,
+                force_run=True,
+            )
+        except (ConfigError, OSError, ValueError):
+            pass  # unparseable YAML — skip; `agentshore configure` can fix
 
-            # -- 3b. Identity wizard --------------------------------------
-            agent_keys = _cli_pkg._agent_keys_from_yaml(config_path, detected_agents=_init_agents)
-            if agent_keys:
-                defaults = _cli_pkg._identity_defaults_from_yaml(config_path)
-                existing = _cli_pkg._existing_identities_from_yaml(config_path)
-                run_identity_wizard(
-                    config_path,
-                    agent_keys,
-                    force_run=True,
-                    defaults=defaults,
-                    existing_identities=existing,
-                    repo_name_with_owner=_cli_pkg._identity_repo_name_with_owner(project_path),
-                )
+        # -- 3b. Identity wizard ------------------------------------------
+        agent_keys = _agent_keys_from_yaml(config_yaml, detected_agents=_init_agents)
+        if agent_keys:
+            defaults = _identity_defaults_from_yaml(config_yaml)
+            existing = _existing_identities_from_yaml(config_yaml)
+            run_identity_wizard(
+                config_yaml,
+                agent_keys,
+                force_run=True,
+                defaults=defaults,
+                existing_identities=existing,
+                repo_name_with_owner=_identity_repo_name_with_owner(project_path),
+            )
 
     # -- 4. Ensure artifact dirs are gitignored --------------------------
     if (project_path / ".git").exists():
         gitignore = project_path / ".gitignore"
         existed = gitignore.exists()
         for _entry in (".agentshore/", ".agents/", ".beads/"):
-            if _cli_pkg._ensure_gitignore_entry(project_path, _entry):
+            if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                 verb = "Added" if existed else "Created"
                 click.echo(f"{verb} {_entry} to {gitignore}")
                 existed = True
 
     # -- 5. Beads project-graph initialisation --------------------------
-    if not install_skills_only:
-        _yaml_path = project_path / "agentshore.yaml"
-        _cli_pkg._run_beads_init(project_path, _yaml_path if _yaml_path.exists() else None)
+    _run_beads_init(project_path, config_yaml if config_yaml.exists() else None)

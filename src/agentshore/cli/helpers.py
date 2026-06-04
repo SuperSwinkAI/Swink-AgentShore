@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import signal
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,13 +24,51 @@ from agentshore.cli.constants import (
     _START_MODE_TUI,
 )
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.seed_input import SeedInputError, resolve_seed_input
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Sequence
+    from collections.abc import AsyncIterator, Callable, Coroutine
 
-    from agentshore.agents.identity import RepoAccessStatus
+    from agentshore.data.store import DataStore
 
 _logger = structlog.get_logger(__name__)
+
+
+@asynccontextmanager
+async def open_store(db_path: Path) -> AsyncIterator[DataStore]:
+    """Open an initialised :class:`DataStore` for *db_path*, closing on exit.
+
+    Raises :class:`click.ClickException` (exit code 1, ``Error: …`` on stderr)
+    when no database exists at *db_path*, so the DB-backed read commands
+    (``archive``, ``report``, ``stop``, ``train``) share one existence-check
+    and one guaranteed-``close`` lifecycle instead of hand-rolling the same
+    try/finally per ``asyncio.run`` site.
+    """
+    if not db_path.exists():
+        raise click.ClickException(f"No database found at {db_path}")
+    from agentshore.data.store import DataStore
+
+    store = DataStore(db_path)
+    await store.initialize()
+    try:
+        yield store
+    finally:
+        await store.close()
+
+
+async def resolve_session_id(store: DataStore, explicit: str | None) -> str:
+    """Return *explicit* if given, else the most recent session in *store*.
+
+    Raises :class:`click.ClickException` when no explicit id is given and the
+    store holds no sessions. Centralises the "default to last session" rule
+    shared by ``archive create``, ``report``, and ``stop``'s ESR generation.
+    """
+    if explicit is not None:
+        return explicit
+    sessions = await store.list_sessions()
+    if not sessions:
+        raise click.ClickException("No sessions found.")
+    return sessions[0].session_id
 
 
 def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
@@ -66,59 +105,11 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
     return True, first_line
 
 
-def _echo_repo_access_rows(repo_access_rows: Sequence[RepoAccessStatus]) -> None:
-    """Pretty-print repository access preflight rows."""
-
-    if not repo_access_rows:
-        return
-    click.echo()
-    click.echo("Repository access")
-    click.echo("─────────────────")
-    width = max(len(row.agent_key) for row in repo_access_rows)
-    for row in repo_access_rows:
-        identity = row.identity_name or "(no identity)"
-        if row.ok:
-            click.echo(f"  {row.agent_key:<{width}}  →  {identity}  [repo: ok]")
-        else:
-            detail = " ".join(row.detail.split())
-            click.echo(f"  {row.agent_key:<{width}}  →  {identity}  [repo: BLOCKED — {detail}]")
-
-
 def _drain_wait_timeout_label() -> str:
     minutes = int(_DRAIN_WAIT_TIMEOUT_S / 60)
     if minutes * 60 == _DRAIN_WAIT_TIMEOUT_S:
         return f"{minutes} min"
     return f"{_DRAIN_WAIT_TIMEOUT_S:.0f}s"
-
-
-def _str_or_none(d: dict[str, object], key: str) -> str | None:
-    """Narrow ``d.get(key)`` to ``str | None``.
-
-    Returns ``None`` when the key is absent or the value is ``None``; otherwise
-    coerces the value to ``str``. Centralises the ``Any``-coercion at a single,
-    testable boundary so callers stay free of ``# type: ignore`` suppressions.
-    """
-    value = d.get(key)
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
-
-
-def _int_or_none(d: dict[str, object], key: str) -> int | None:
-    """Narrow ``d.get(key)`` to ``int | None``.
-
-    Returns ``None`` when the key is absent or the value is ``None``. Accepts
-    ``int`` values as-is and attempts to coerce other values via ``int(...)``;
-    a ``ValueError`` or ``TypeError`` from coercion is propagated to the caller.
-    """
-    value = d.get(key)
-    if value is None:
-        return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return int(value)
-    raise TypeError(f"Cannot coerce value of type {type(value).__name__} for key {key!r} to int")
 
 
 def _resolve_policy_mode_override(
@@ -166,6 +157,19 @@ def _resolve_start_run_mode(
 def _display_run_mode(run_mode: RunMode) -> str:
     """Return the user-facing label for a resolved start mode."""
     return _START_MODE_TUI if run_mode == RunMode.SOLO else run_mode.value
+
+
+def _resolve_seed_input_path(seed: str, repo_root: Path) -> tuple[Path, str]:
+    """Resolve --seed to a file path, expanding directories into a capped bundle.
+
+    Thin CLI wrapper over :func:`agentshore.seed_input.resolve_seed_input`;
+    converts :class:`SeedInputError` to ``click.BadParameter`` so usage errors
+    surface with the ``--seed`` hint.
+    """
+    try:
+        return resolve_seed_input(seed, repo_root)
+    except SeedInputError as exc:
+        raise click.BadParameter(str(exc), param_hint="--seed") from exc
 
 
 def _track_background_task(

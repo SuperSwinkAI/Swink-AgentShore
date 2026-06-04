@@ -11,7 +11,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -26,7 +26,7 @@ _WINDOWS_REPLACE_ATTEMPTS = 50
 _WINDOWS_REPLACE_RETRY_SECONDS = 0.02
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Learning:
     id: str
     pattern: str
@@ -116,18 +116,7 @@ def decay(
     result: list[Learning] = []
     for e in entries:
         if e.sessions_since_use >= threshold_sessions:
-            result.append(
-                Learning(
-                    id=e.id,
-                    pattern=e.pattern,
-                    confidence=max(0.0, e.confidence * factor),
-                    sessions_since_use=e.sessions_since_use,
-                    source_play_id=e.source_play_id,
-                    last_reinforced_play_id=e.last_reinforced_play_id,
-                    created_at=e.created_at,
-                    category=e.category,
-                )
-            )
+            result.append(replace(e, confidence=max(0.0, e.confidence * factor)))
         else:
             result.append(e)
     return result
@@ -146,15 +135,11 @@ def reinforce(
     for e in entries:
         if e.pattern in pattern:
             result.append(
-                Learning(
-                    id=e.id,
-                    pattern=e.pattern,
+                replace(
+                    e,
                     confidence=min(1.0, e.confidence + bump),
                     sessions_since_use=0,
-                    source_play_id=e.source_play_id,
                     last_reinforced_play_id=source_play_id,
-                    created_at=e.created_at,
-                    category=e.category,
                 )
             )
         else:

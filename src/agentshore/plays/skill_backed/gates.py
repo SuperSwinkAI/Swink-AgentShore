@@ -20,8 +20,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.errors import ErrorClass
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayType
+from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
 
 if TYPE_CHECKING:
     from agentshore.state import OrchestratorState
@@ -49,13 +50,21 @@ class CapabilityGate:
         rate_limited: set[str] = {
             a.agent_type.value
             for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == "rate_limit"
+            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
         }
         capable = [
             a
             for a in state.agents
             if a.status == AgentStatus.IDLE
             and a.agent_type.value not in rate_limited
+            # Circuit breaker (#22): a known-dead agent (0 successes + a timeout
+            # or repeated failures) is masked from work selection until it
+            # succeeds, so plays aren't routed to it.
+            and not is_agent_circuit_broken(
+                tasks_completed=a.tasks_completed,
+                tasks_failed=a.tasks_failed,
+                timeout_count=a.timeout_count,
+            )
             and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(self.capability, False))
         ]
         if capable:
@@ -213,29 +222,6 @@ class BeadsInitializedGate:
                 source=MaskSource.PRECONDITION,
             )
         return None
-
-
-class OpenIssueCeilingGate:
-    """Mask when the count of OPEN issues reaches or exceeds ``ceiling``.
-
-    Prevents plays from firing when the issue queue is already saturated.
-    Used by cleanup (15).
-    """
-
-    __slots__ = ("ceiling",)
-
-    def __init__(self, ceiling: int) -> None:
-        self.ceiling = ceiling
-
-    def __call__(self, state: OrchestratorState) -> MaskReason | None:
-        open_count = sum(1 for iss in state.open_issues if iss.state.upper() == "OPEN")
-        if open_count < self.ceiling:
-            return None
-        return MaskReason(
-            text=f"too many open issues ({open_count}/{self.ceiling})",
-            classification=MaskClassification.HARD,
-            source=MaskSource.PRECONDITION,
-        )
 
 
 class FirstRunWarmupGate:

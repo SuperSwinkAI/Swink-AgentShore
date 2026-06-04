@@ -7,8 +7,10 @@ from typing import TYPE_CHECKING
 from textual.reactive import reactive
 from textual.widget import Widget
 
+from agentshore.ui.play_labels import play_label
+
 if TYPE_CHECKING:
-    from agentshore.state import OrchestratorState, PlayType
+    from agentshore.state import OrchestratorState
 
 
 class RLStateBar(Widget):
@@ -33,13 +35,13 @@ class RLStateBar(Widget):
         masked = len(s.action_mask) - eligible if s.action_mask else 0
         last = s.last_play_type.value if s.last_play_type is not None else "none"
         drain = f"  drain={s.drain_reason}" if s.drain_reason else ""
-        loop_level = loop_level_for_streak(s.same_type_failure_streak)
+        loop_level = s.loop_level
         loop_line = ""
         if loop_level == 1 and s.last_play_type is not None:
-            play_name = display_play(s.last_play_type)
+            play_name = play_label(s.last_play_type)
             loop_line = f"\n  ⚠ Loop: {play_name} failed {s.same_type_failure_streak}x"
         elif loop_level == 2 and s.last_play_type is not None:
-            play_name = display_play(s.last_play_type)
+            play_name = play_label(s.last_play_type)
             loop_line = f"\n  ⚠ Loop: {play_name} blocked ({s.same_type_failure_streak}x fail)"
         return (
             f"  state={s.session_state.value}  policy={s.policy_mode.value}  "
@@ -54,24 +56,8 @@ class RLStateBar(Widget):
         """Replace the displayed state snapshot."""
         self.remove_class("loop--warning", "loop--force")
         if state is not None:
-            loop_level = loop_level_for_streak(state.same_type_failure_streak)
-            if loop_level == 1:
+            if state.loop_level == 1:
                 self.add_class("loop--warning")
-            elif loop_level == 2:
+            elif state.loop_level == 2:
                 self.add_class("loop--force")
         self.state = state
-
-
-def loop_level_for_streak(streak: int) -> int:
-    """Map failure streak to escalation level: 0 (none), 1 (warn), 2 (force), 3 (escalation)."""
-    if streak >= 7:
-        return 3
-    if streak >= 5:
-        return 2
-    if streak >= 3:
-        return 1
-    return 0
-
-
-def display_play(play_type: PlayType) -> str:
-    return play_type.value.replace("_", " ").title()

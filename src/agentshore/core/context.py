@@ -30,7 +30,7 @@ class _DispatchContext:
     # OverrideKind for plays dispatched from the override queue (bootstrap
     # recipe, user-request, retry, etc); None means PPO drove the selection.
     # Used by _process_completion to register the play_id in
-    # _override_dispatched_play_ids so the loop detector can ignore it.
+    # _overrides.dispatched_play_ids so the loop detector can ignore it.
     override_kind: OverrideKind | None = None
 
 

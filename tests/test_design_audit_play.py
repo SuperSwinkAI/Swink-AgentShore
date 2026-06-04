@@ -99,13 +99,13 @@ def test_play_identity() -> None:
 def test_preconditions_block_when_graph_missing() -> None:
     errors = DesignAuditPlay().preconditions(_state(graph=None))
     assert errors
-    assert any("beads not initialised" in error for error in errors)
+    assert any("beads not initialised" in error.text for error in errors)
 
 
 def test_preconditions_block_when_graph_has_no_epics() -> None:
     errors = DesignAuditPlay().preconditions(_state(graph=ProjectGraph()))
     assert errors
-    assert any("no epics" in error for error in errors)
+    assert any("no epics" in error.text for error in errors)
 
 
 def test_preconditions_block_without_idle_issue_creator() -> None:
@@ -113,7 +113,7 @@ def test_preconditions_block_without_idle_issue_creator() -> None:
         _state(graph=_graph_with_epics(), agents=[_idle_agent(status=AgentStatus.BUSY)])
     )
     assert errors
-    assert any("can_create_issues" in error for error in errors)
+    assert any("can_create_issues" in error.text for error in errors)
 
 
 def test_preconditions_block_when_in_flight() -> None:
@@ -121,7 +121,7 @@ def test_preconditions_block_when_in_flight() -> None:
         _state(graph=_graph_with_epics(), in_flight=[PlayType.DESIGN_AUDIT])
     )
     assert errors
-    assert any("already in flight" in error for error in errors)
+    assert any("already in flight" in error.text for error in errors)
 
 
 def test_preconditions_block_during_cooldown() -> None:
@@ -132,7 +132,7 @@ def test_preconditions_block_during_cooldown() -> None:
         )
     )
     assert errors
-    assert any("cooldown" in error for error in errors)
+    assert any("cooldown" in error.text for error in errors)
 
 
 def test_preconditions_pass_after_cooldown() -> None:

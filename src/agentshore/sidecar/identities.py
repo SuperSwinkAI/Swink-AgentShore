@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from enum import StrEnum
 from typing import TYPE_CHECKING, TypedDict
 
 import yaml
@@ -30,7 +31,22 @@ class IdentityRow(TypedDict):
     repo_access: str
 
 
-_TOKEN_SOURCE_FIELDS = frozenset({"gh_token_login", "gh_token_env", "gh_token_keychain"})
+class TokenSource(StrEnum):
+    """Token-source kinds for a configured identity.
+
+    Values are the exact YAML field names written into ``agentshore.yaml`` so
+    that enum members round-trip through config I/O and test assertions without
+    any mapping step.
+    """
+
+    LOGIN = "gh_token_login"
+    ENV = "gh_token_env"
+    KEYCHAIN = "gh_token_keychain"
+    AMBIENT = "ambient"
+
+
+# Derived from the enum so the validation set stays in sync with the enum members.
+_TOKEN_SOURCE_FIELDS = frozenset(s.value for s in TokenSource if s is not TokenSource.AMBIENT)
 _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
@@ -87,26 +103,33 @@ def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
             pass
 
 
-def _keychain_has_token(service: str) -> bool:
-    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+def _keyring_get(service: str) -> str | None:
+    """Read a Keychain token for *service*, returning ``None`` on any failure.
+
+    Swallows the keyring import (its macOS backend runs setup at import time)
+    and a get that raises ``KeyringError`` or any backend-specific error, so
+    callers never have to repeat the import + double-except dance.
+    """
     try:
         import keyring  # local import: keyring's macOS backend runs setup at import time
-        from keyring.errors import KeyringError
     except Exception:
-        return False
+        return None
     try:
-        token = keyring.get_password(service, service)
-    except KeyringError:
-        return False
+        return keyring.get_password(service, service)
     except Exception:
-        return False
+        return None
+
+
+def _keychain_has_token(service: str) -> bool:
+    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+    token = _keyring_get(service)
     return bool(token and token.strip())
 
 
 def keychain_status(login: str) -> dict[str, object]:
     """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
 
-    Mirrors the CLI wizard's pre-flight check (``cli_identity._keychain_has_token``)
+    Mirrors the CLI wizard's pre-flight check (``identity_wizard.keychain._keychain_has_token``)
     so the desktop "Add identity" form can offer to reuse a stored PAT instead of
     forcing the user to paste it again. Returns the canonical login, the managed
     keychain service name, and whether a non-empty token is present there.
@@ -122,46 +145,60 @@ def keychain_status(login: str) -> dict[str, object]:
     }
 
 
+def _resolve_login_token(raw: dict[str, object]) -> str | None:
+    """Resolve a token via ``gh auth token`` for the configured GitHub login."""
+    env = os.environ.copy()
+    gh_config_dir = raw.get("gh_config_dir")
+    if isinstance(gh_config_dir, str) and gh_config_dir:
+        env["GH_CONFIG_DIR"] = gh_config_dir
+    gh_bin = shutil.which("gh")
+    if gh_bin is None:
+        return None
+    try:
+        proc = subprocess.run(  # noqa: S603 — resolved absolute path
+            [gh_bin, "auth", "token", "--user", str(raw["gh_token_login"])],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+# Per-source token resolver: dict[TokenSource, callable(raw) -> str | None].
+# Each callable receives the raw identity dict and returns the resolved token or None.
+_TOKEN_RESOLVERS: dict[TokenSource, object] = {
+    TokenSource.LOGIN: _resolve_login_token,
+    TokenSource.ENV: lambda raw: os.environ.get(str(raw["gh_token_env"])),
+    TokenSource.KEYCHAIN: lambda raw: _keyring_get(str(raw["gh_token_keychain"])) or None,
+}
+
+
 def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
-    if isinstance(raw.get("gh_token_login"), str) and raw["gh_token_login"]:
-        env = os.environ.copy()
-        gh_config_dir = raw.get("gh_config_dir")
-        if isinstance(gh_config_dir, str) and gh_config_dir:
-            env["GH_CONFIG_DIR"] = gh_config_dir
-        gh_bin = shutil.which("gh")
-        if gh_bin is None:
-            return None, "gh_token_login"
-        try:
-            proc = subprocess.run(  # noqa: S603 — resolved absolute path
-                [gh_bin, "auth", "token", "--user", str(raw["gh_token_login"])],
-                capture_output=True,
-                text=True,
-                check=False,
-                env=env,
-            )
-        except OSError:
-            return None, "gh_token_login"
-        if proc.returncode != 0:
-            return None, "gh_token_login"
-        token = proc.stdout.strip()
-        return (token or None), "gh_token_login"
-    if isinstance(raw.get("gh_token_env"), str) and raw["gh_token_env"]:
-        return os.environ.get(str(raw["gh_token_env"])), "gh_token_env"
-    if isinstance(raw.get("gh_token_keychain"), str) and raw["gh_token_keychain"]:
-        service = str(raw["gh_token_keychain"])
-        try:
-            import keyring  # local import: keyring's macOS backend runs setup at import time
-            from keyring.errors import KeyringError
-        except Exception:
-            return None, "gh_token_keychain"
-        try:
-            keychain_token: str | None = keyring.get_password(service, service)
-        except KeyringError:
-            return None, "gh_token_keychain"
-        except Exception:
-            return None, "gh_token_keychain"
-        return (keychain_token or None), "gh_token_keychain"
-    return None, "ambient"
+    for source in (TokenSource.LOGIN, TokenSource.ENV, TokenSource.KEYCHAIN):
+        if isinstance(raw.get(source.value), str) and raw[source.value]:
+            resolver = _TOKEN_RESOLVERS[source]
+            token = resolver(raw)  # type: ignore[operator]
+            return token, source.value
+    return None, TokenSource.AMBIENT.value
+
+
+def _apply_source(entry: dict[str, object], source: str, canonical: str) -> None:
+    """Write the token-source field(s) for *source* into *entry* (in-place).
+
+    Used by both ``add_identity`` and ``update_identity`` so the logic for
+    mapping a token-source kind onto the corresponding YAML field lives in one place.
+    """
+    if source == TokenSource.LOGIN:
+        entry["gh_token_login"] = canonical
+    elif source == TokenSource.ENV:
+        entry["gh_token_env"] = f"{canonical.upper().replace('-', '_')}_GH_TOKEN"
+    else:
+        entry["gh_token_keychain"] = keychain_service_for_login(canonical)
 
 
 def list_identities(project_path: Path) -> list[IdentityRow]:
@@ -242,23 +279,18 @@ def add_identity(
         "git_user_name": login,
         "git_user_email": f"{canonical}@users.noreply.github.com",
     }
-    if source == "gh_token_login":
-        entry["gh_token_login"] = canonical
-    elif source == "gh_token_env":
-        entry["gh_token_env"] = f"{canonical.upper().replace('-', '_')}_GH_TOKEN"
-    else:
+    _apply_source(entry, source, canonical)
+    if source == TokenSource.KEYCHAIN and pat:
         service = keychain_service_for_login(canonical)
-        entry["gh_token_keychain"] = service
-        if pat:
-            try:
-                import keyring  # local import: keyring's macOS backend runs setup at import time
-                from keyring.errors import KeyringError
-            except Exception as exc:
-                raise ValueError(f"keyring package unavailable: {exc}") from exc
-            try:
-                keyring.set_password(service, service, pat)
-            except KeyringError as exc:
-                raise ValueError(f"failed to store PAT in Keychain: {exc}") from exc
+        try:
+            import keyring  # local import: keyring's macOS backend runs setup at import time
+            from keyring.errors import KeyringError
+        except Exception as exc:
+            raise ValueError(f"keyring package unavailable: {exc}") from exc
+        try:
+            keyring.set_password(service, service, pat)
+        except KeyringError as exc:
+            raise ValueError(f"failed to store PAT in Keychain: {exc}") from exc
     _validate_token_matches_login(entry, login)
     identities[canonical] = entry
     _write_yaml_atomic(cfg_path, data)
@@ -285,12 +317,7 @@ def update_identity(project_path: Path, login: str, patch: dict[str, object]) ->
             raise ValueError(f"unsupported token_source: {source}")
         for key in _TOKEN_SOURCE_FIELDS:
             next_raw.pop(key, None)
-        if source == "gh_token_login":
-            next_raw["gh_token_login"] = canonical
-        elif source == "gh_token_env":
-            next_raw["gh_token_env"] = f"{canonical.upper().replace('-', '_')}_GH_TOKEN"
-        else:
-            next_raw["gh_token_keychain"] = keychain_service_for_login(canonical)
+        _apply_source(next_raw, source, canonical)
     for key in ("git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"):
         if key in patch and patch[key] is not None:
             next_raw[key] = patch[key]
