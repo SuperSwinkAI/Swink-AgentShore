@@ -372,7 +372,9 @@ async def test_issue_pickup_reconcile_create_pr_uses_configured_target_branch() 
 
     with (
         patch("agentshore.plays.executor.validate_scope", new_callable=AsyncMock),
-        patch.object(executor, "_remote_branch_exists", new=AsyncMock(return_value=True)),
+        patch.object(
+            executor._reconciler, "_remote_branch_exists", new=AsyncMock(return_value=True)
+        ),
     ):
         outcome = await executor.execute(
             PlayType.ISSUE_PICKUP,
@@ -429,7 +431,9 @@ async def test_issue_pickup_reconcile_create_pr_falls_back_to_default_branch_whe
 
     with (
         patch("agentshore.plays.executor.validate_scope", new_callable=AsyncMock),
-        patch.object(executor, "_remote_branch_exists", new=AsyncMock(return_value=True)),
+        patch.object(
+            executor._reconciler, "_remote_branch_exists", new=AsyncMock(return_value=True)
+        ),
     ):
         outcome = await executor.execute(
             PlayType.ISSUE_PICKUP,
