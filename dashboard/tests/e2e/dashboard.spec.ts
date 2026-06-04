@@ -1795,6 +1795,17 @@ test("kanban card opens issue detail modal with GitHub link", async ({
   await expect(page.locator("#issue-detail-body")).toContainText(
     "Authentication System",
   );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Current Signals",
+  );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Issue #47 is Open",
+  );
+  await expect(page.locator("#issue-detail-body")).toContainText(
+    "Bead task-47 is Open",
+  );
+  await expect(page.getByRole("button", { name: "Copy issue #" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Copy branch" })).toBeDisabled();
   await expect(page.locator("#issue-detail-open-github")).toHaveAttribute(
     "href",
     "https://github.com/example/agentshore/issues/47",
@@ -1810,6 +1821,47 @@ test("kanban card opens issue detail modal with GitHub link", async ({
     .click();
   await page.locator("#issue-detail-close").click();
   await expect(page.locator("#issue-detail-modal")).not.toHaveClass(/visible/);
+});
+
+test("kanban issue detail modal remains readable in light and dark themes", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop modal color assertion");
+
+  for (const theme of ["light", "dark"] as const) {
+    await page.goto("/?demo=1&scenario=active&freeze=1");
+    await page.locator(`#theme-toggle [data-theme-mode="${theme}"]`).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await page.getByRole("tab", { name: /Kanban/ }).click();
+
+    await page
+      .locator(".km-card")
+      .filter({ hasText: "Implement session budget guard" })
+      .first()
+      .click();
+    await expect(page.locator("#issue-detail-modal")).toHaveClass(/visible/);
+
+    const colors = await page.locator(".issue-detail-box").evaluate((modal) => {
+      const title = modal.querySelector(".issue-detail-title");
+      if (!(title instanceof HTMLElement)) {
+        throw new Error("issue detail title missing");
+      }
+      const modalStyle = getComputedStyle(modal);
+      const titleStyle = getComputedStyle(title);
+      return {
+        background: modalStyle.backgroundColor,
+        borderColor: modalStyle.borderTopColor,
+        titleColor: titleStyle.color,
+      };
+    });
+    expect(colors.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(colors.borderColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(colors.titleColor).not.toBe(colors.background);
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#issue-detail-modal")).not.toHaveClass(/visible/);
+  }
 });
 
 test("kanban stage drag does not open issue detail modal", async ({
