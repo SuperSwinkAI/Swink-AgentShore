@@ -1381,11 +1381,14 @@ def test_bootstrap_open_start_queues_instantiate_then_groom_without_seed() -> No
         bypass_preconditions=True,
     )
     assert entries[0].kind is OverrideKind.BOOTSTRAP
-    # Groom is gated on the cold-start agent coming online, and bypasses the
-    # warmup floor / beads gate so it runs immediately at bootstrap.
+    # Groom bypasses the warmup floor / beads gate so it runs immediately at
+    # bootstrap. As the first (and only) agent-consumer it carries NO wait_for
+    # gate — it claims the agent by queue position (mirroring SEED_PROJECT in
+    # the seed recipe) so PPO can't free-select onto the idle agent on a None
+    # override tick and starve groom of staffing.
     assert entries[1].params == PlayParams(bypass_preconditions=True)
     assert entries[1].kind is OverrideKind.BOOTSTRAP
-    assert entries[1].wait_for_play_type == PlayType.INSTANTIATE_AGENT
+    assert entries[1].wait_for_play_type is None
 
 
 def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:

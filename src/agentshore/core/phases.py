@@ -928,8 +928,16 @@ def _phase_queue_agent_instantiation(
          fleet growth.
       2. GROOM_BACKLOG — once the agent is online, reconcile the beads↔GitHub
          graph (sync untracked GH issues, clear resolved blocks) so the PPO
-         starts from a clean backlog; gated on the INSTANTIATE_AGENT completing
-         so an idle agent exists to run the skill.
+         starts from a clean backlog. Queued directly behind INSTANTIATE_AGENT
+         with **no** ``wait_for`` gate — exactly like SEED_PROJECT in the seed
+         recipe. As the first agent-consumer it must claim the agent by queue
+         position: ``_consume_override`` returns one play per tick and PPO only
+         selects on a tick where it returns ``None``. A ``wait_for`` gate here
+         would yield such a ``None`` tick while the agent sits idle, and PPO
+         would free-select a play onto it before groom's gate lifts — the agent
+         would be busy by the time groom dequeues and groom would be skipped for
+         staffing. No gate ⇒ groom dispatches the next tick onto the freshly
+         idle agent, before PPO ever gets a turn.
 
     All entries are queued with ``bypass_preconditions=True`` so the
     deterministic recipe is not stalled by the cooldown, warmup-floor, or
@@ -1009,11 +1017,14 @@ def _phase_queue_agent_instantiation(
         )
         if large_agent_type is not None:
             _enqueue_instantiate(large_agent_type, "large")
-            # Once the cold-start agent is online, groom the backlog so the
+            # Groom the backlog once the cold-start agent is online so the
             # beads↔GitHub graph is reconciled (untracked GH issues synced,
-            # resolved blocks cleared) before the PPO takes over. Gated on the
-            # INSTANTIATE_AGENT completing so an idle agent exists to run it.
-            _enqueue_groom(wait_for_play_type=PlayType.INSTANTIATE_AGENT)
+            # resolved blocks cleared) before the PPO takes over. NO wait_for
+            # gate: as the first agent-consumer, groom must claim the agent by
+            # queue position (mirroring SEED_PROJECT in the seed recipe). A gate
+            # here yields a None override tick while the agent is idle, letting
+            # PPO free-select onto it first and starving groom (staffing skip).
+            _enqueue_groom()
         return
 
     # Seed recipe: explicit seed input, or seedless because the graph has no
