@@ -265,7 +265,6 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
         "open_issues": [_serialize_issue(i) for i in state.open_issues],
         "pull_requests": [_serialize_pull_request(pr) for pr in state.pull_requests],
         "work_availability": work_availability,
-        "issue_availability": work_availability,
         "budget": _serialize_budget(state.budget) if state.budget is not None else None,
         "trajectory": (
             _serialize_trajectory(state.trajectory) if state.trajectory is not None else None
