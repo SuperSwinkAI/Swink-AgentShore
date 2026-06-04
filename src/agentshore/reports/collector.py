@@ -183,11 +183,12 @@ def _format_agent_label(
       2. ``<Type>:<6-char-uuid-suffix>`` when the agent record exists but
          lacks the persisted fields (back-compat for older DBs).
       3. Bare ``agent_id`` if no AgentRecord is found at all.
-      4. The literal ``"agentshore"`` if agent_id is None — only happens for
-         malformed plays since internal heartbeats are filtered upstream.
+      4. ``"—"`` if agent_id is None — orchestrator-internal plays
+         (e.g. failed ``instantiate_agent``) that were never dispatched to
+         a CLI agent.
     """
     if agent_id is None:
-        return "agentshore"
+        return "—"
     record = agents.get(agent_id)
     if record is None:
         return agent_id
