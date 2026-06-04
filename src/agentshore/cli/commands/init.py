@@ -274,51 +274,69 @@ def init(
     from agentshore.skills import install_skills
 
     project_path = Path(project).resolve()
+    config_yaml = project_path / "agentshore.yaml"
 
-    # -- 1. Generate or merge agentshore.yaml (unless --install-skills) ----
-    if not install_skills_only:
-        if force:
-            removed = _reset_agentshore_database(project_path)
-            if removed:
-                click.echo("Reset AgentShore database: " + ", ".join(str(path) for path in removed))
-
-        config_path = project_path / "agentshore.yaml"
-        if config_path.exists() and not force:
-            click.echo(
-                f"agentshore.yaml already exists at {config_path}. "
-                f"Use `agentshore configure` to update settings, or `agentshore init --force` "
-                f"to merge fresh template defaults into your existing config."
-            )
+    # --install-skills: run only phases 2 + 4, skip all config-mutating steps.
+    if install_skills_only:
+        # -- 2. Install skill files ---------------------------------------
+        installed = install_skills(project_path, force=force)
+        if installed:
+            click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
         else:
-            if force and config_path.exists():
-                click.echo(
-                    f"Merging fresh template into {config_path} "
-                    f"(preserves user-edited keys outside `agents:`)"
-                )
+            click.echo("All skills are up-to-date.")
+        # -- 4. Ensure artifact dirs are gitignored -----------------------
+        if (project_path / ".git").exists():
+            gitignore = project_path / ".gitignore"
+            existed = gitignore.exists()
+            for _entry in (".agentshore/", ".agents/", ".beads/"):
+                if cli_helpers._ensure_gitignore_entry(project_path, _entry):
+                    verb = "Added" if existed else "Created"
+                    click.echo(f"{verb} {_entry} to {gitignore}")
+                    existed = True
+        return
 
-            # Detect project metadata for the template. Agent detection is
-            # authoritative: init should not invent unavailable CLI agents.
-            try:
-                gh_info = cli_helpers._detect_gh_remote(project_path)
-                name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
-            except OrchestratorError:
-                name_with_owner = "owner/repo"
+    # -- 1. Generate or merge agentshore.yaml ----------------------------
+    if force:
+        removed = _reset_agentshore_database(project_path)
+        if removed:
+            click.echo("Reset AgentShore database: " + ", ".join(str(path) for path in removed))
 
-            agents = cli_helpers._detect_agents()
-            written = cli_helpers._render_or_merge_agentshore_yaml(
-                config_path,
-                name_with_owner=name_with_owner,
-                agents=agents,
-                budget=_DEFAULT_BUDGET,
-                strict=False,
+    if config_yaml.exists() and not force:
+        click.echo(
+            f"agentshore.yaml already exists at {config_yaml}. "
+            f"Use `agentshore configure` to update settings, or `agentshore init --force` "
+            f"to merge fresh template defaults into your existing config."
+        )
+    else:
+        if force and config_yaml.exists():
+            click.echo(
+                f"Merging fresh template into {config_yaml} "
+                f"(preserves user-edited keys outside `agents:`)"
             )
-            if written and not config_path.exists():
-                # Defensive — should always exist after _render_or_merge.
-                click.echo(f"Created {config_path}")
-            elif not force:
-                click.echo(f"Created {config_path}")
 
-    # -- 2. Install skill files -----------------------------------------
+        # Detect project metadata for the template. Agent detection is
+        # authoritative: init should not invent unavailable CLI agents.
+        try:
+            gh_info = cli_helpers._detect_gh_remote(project_path)
+            name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
+        except OrchestratorError:
+            name_with_owner = "owner/repo"
+
+        agents = cli_helpers._detect_agents()
+        written = cli_helpers._render_or_merge_agentshore_yaml(
+            config_yaml,
+            name_with_owner=name_with_owner,
+            agents=agents,
+            budget=_DEFAULT_BUDGET,
+            strict=False,
+        )
+        if written and not config_yaml.exists():
+            # Defensive — should always exist after _render_or_merge.
+            click.echo(f"Created {config_yaml}")
+        elif not force:
+            click.echo(f"Created {config_yaml}")
+
+    # -- 2. Install skill files ------------------------------------------
     installed = install_skills(project_path, force=force)
     if installed:
         click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
@@ -327,60 +345,55 @@ def init(
 
     # -- 2b. Prompt for / persist the target branch ---------------------
     # Mirrors the desktop wizard's TargetBranchScreen so CLI-bootstrapped
-    # projects also have project.target_branch set. Skipped when the user
-    # only requested skill installation. See desktop-3t62.
-    if not install_skills_only:
-        target_yaml_path = project_path / "agentshore.yaml"
-        if target_yaml_path.exists():
-            _maybe_prompt_target_branch(
-                project_path,
-                target_yaml_path,
-                explicit_target_branch=target_branch,
-            )
-            # Per-(agent_type, model_tier) cap (desktop-ty04). Surfaced as
-            # "Max agents per type" — single number, applies to every
-            # (type, tier) combination. Default 2.
-            _maybe_prompt_max_per_config(target_yaml_path)
+    # projects also have project.target_branch set. See desktop-3t62.
+    if config_yaml.exists():
+        _maybe_prompt_target_branch(
+            project_path,
+            config_yaml,
+            explicit_target_branch=target_branch,
+        )
+        # Per-(agent_type, model_tier) cap (desktop-ty04). Surfaced as
+        # "Max agents per type" — single number, applies to every
+        # (type, tier) combination. Default 2.
+        _maybe_prompt_max_per_config(config_yaml)
 
     # -- 3. Refresh availability + run wizards --------------------------
     # ``init`` is an explicit user command; all wizards run with prefill
     # from the (possibly merged) config. Both wizards skip cleanly when
     # stdin isn't a TTY.
-    if not install_skills_only:
-        from agentshore.availability import refresh as refresh_availability
-        from agentshore.errors import ConfigError
-        from agentshore.identity_wizard import run_identity_wizard
+    from agentshore.availability import refresh as refresh_availability
+    from agentshore.errors import ConfigError
+    from agentshore.identity_wizard import run_identity_wizard
 
-        config_path = project_path / "agentshore.yaml"
-        if config_path.exists():
-            refresh_availability()
-            _init_agents = cli_helpers._detect_agents()
+    if config_yaml.exists():
+        refresh_availability()
+        _init_agents = cli_helpers._detect_agents()
 
-            # -- 3a. Agent / tier / model wizard --------------------------
-            try:
-                _init_cfg = _load_config_for_agent_setup(config_path)
-                _interactive_agent_select(
-                    _init_cfg,
-                    _init_agents,
-                    config_path,
-                    force_run=True,
-                )
-            except (ConfigError, OSError, ValueError):
-                pass  # unparseable YAML — skip; `agentshore configure` can fix
+        # -- 3a. Agent / tier / model wizard ------------------------------
+        try:
+            _init_cfg = _load_config_for_agent_setup(config_yaml)
+            _interactive_agent_select(
+                _init_cfg,
+                _init_agents,
+                config_yaml,
+                force_run=True,
+            )
+        except (ConfigError, OSError, ValueError):
+            pass  # unparseable YAML — skip; `agentshore configure` can fix
 
-            # -- 3b. Identity wizard --------------------------------------
-            agent_keys = _agent_keys_from_yaml(config_path, detected_agents=_init_agents)
-            if agent_keys:
-                defaults = _identity_defaults_from_yaml(config_path)
-                existing = _existing_identities_from_yaml(config_path)
-                run_identity_wizard(
-                    config_path,
-                    agent_keys,
-                    force_run=True,
-                    defaults=defaults,
-                    existing_identities=existing,
-                    repo_name_with_owner=_identity_repo_name_with_owner(project_path),
-                )
+        # -- 3b. Identity wizard ------------------------------------------
+        agent_keys = _agent_keys_from_yaml(config_yaml, detected_agents=_init_agents)
+        if agent_keys:
+            defaults = _identity_defaults_from_yaml(config_yaml)
+            existing = _existing_identities_from_yaml(config_yaml)
+            run_identity_wizard(
+                config_yaml,
+                agent_keys,
+                force_run=True,
+                defaults=defaults,
+                existing_identities=existing,
+                repo_name_with_owner=_identity_repo_name_with_owner(project_path),
+            )
 
     # -- 4. Ensure artifact dirs are gitignored --------------------------
     if (project_path / ".git").exists():
@@ -393,6 +406,4 @@ def init(
                 existed = True
 
     # -- 5. Beads project-graph initialisation --------------------------
-    if not install_skills_only:
-        _yaml_path = project_path / "agentshore.yaml"
-        _run_beads_init(project_path, _yaml_path if _yaml_path.exists() else None)
+    _run_beads_init(project_path, config_yaml if config_yaml.exists() else None)
