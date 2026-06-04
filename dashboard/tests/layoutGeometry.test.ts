@@ -121,6 +121,29 @@ describe("office furniture layout", () => {
     expect(separationFailures).toEqual([]);
   });
 
+  it("keeps the marked Workshop and Recovery Bay destinations on the floorplan", () => {
+    const workshop = ZONES.find((zone) => zone.id === ZoneId.WORKSHOP);
+    const recoveryBay = ZONES.find((zone) => zone.id === ZoneId.RECOVERY_BAY);
+
+    expect(workshop?.seats).toEqual(
+      expect.arrayContaining([
+        { x: 27, y: 22, facing: "north" },
+        { x: 32, y: 35, facing: "west" },
+        { x: 44, y: 34, facing: "east" },
+      ]),
+    );
+    expect(workshop?.seats).not.toContainEqual({
+      x: 52,
+      y: 30,
+      facing: "east",
+    });
+    expect(recoveryBay?.seats).toContainEqual({
+      x: 9,
+      y: 48,
+      facing: "east",
+    });
+  });
+
   it("keeps destinations and walk lanes off furniture side buffers", () => {
     buildWalkableGrid();
 
