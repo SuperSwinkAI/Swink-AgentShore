@@ -308,6 +308,15 @@ class _ReadOutputFailed:
     exc: BaseException
 
 
+@dataclass(frozen=True, slots=True)
+class _DispatchArgv:
+    """Packaged argv + derived log fields produced by ``_build_dispatch_argv``."""
+
+    argv: list[str]
+    prompt_bytes: int
+    argv_str: str  # truncated preview for ``cli_dispatch_start`` log event
+
+
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
     """Return YOLO defaults for *agent_type* when the user provided no flags."""
     if extra_flags:
@@ -389,6 +398,219 @@ def build_argv(
 
 
 # ---------------------------------------------------------------------------
+# Core dispatch helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_dispatch_argv(
+    handle: AgentHandle,
+    prompt: str,
+    *,
+    cfg: AgentConfig,
+    python_executable: str | None,
+    resume_session_id: str | None,
+    effective_cwd: Path,
+) -> _DispatchArgv:
+    """Build the subprocess argv list and log-preview fields for a single dispatch.
+
+    Encapsulates the test-shim path (``python_executable``), the normal
+    ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
+    (desktop-dy2j).
+    """
+    if python_executable is not None:
+        # Test shim: invoke cfg.binary as a Python script.
+        argv: list[str] = [python_executable, cfg.binary or ""]
+    else:
+        argv = build_argv(
+            handle.agent_type,
+            prompt,
+            binary=cfg.binary,
+            model=handle.model or cfg.model,
+            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
+            extra_flags=cfg.extra_flags,
+            project_dir=str(effective_cwd),
+        )
+
+    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
+    # re-enters the same session and emits the structured trailer it missed.
+    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
+        argv = [
+            argv[0],
+            "--resume",
+            resume_session_id,
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            prompt,
+        ]
+
+    prompt_bytes = len(prompt.encode("utf-8"))
+
+    # Clamp argv_preview to keep the log readable. The last argv element is the
+    # full skill prompt (~7 KB), and embedding it in every dispatch event bloats
+    # the orchestrator log by ~1 MB per session. The full prompt is
+    # reconstructible from the skill template plus the PlayParams that hit the
+    # dispatcher, so keep only the leading flags here.
+    argv_str = " ".join(argv[:10])
+    if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
+        truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
+        argv_str = argv_str[:_ARGV_PREVIEW_MAX_CHARS] + f"…(+{truncated} chars truncated)"
+
+    return _DispatchArgv(argv=argv, prompt_bytes=prompt_bytes, argv_str=argv_str)
+
+
+async def _await_output_or_timeout(
+    proc: asyncio.subprocess.Process,
+    handle: AgentHandle,
+    *,
+    max_bytes: int,
+    cfg: AgentConfig,
+    stream_idle_timeout: float,
+    timeout: float,
+    prompt_bytes: int,
+) -> tuple[_ReadOutput, bool]:
+    """Drive the read/idle race and return ``(result, post_response_killed)``.
+
+    Called inside ``dispatch_cli``'s outer ``try:`` block so that the caller's
+    ``except``/``finally`` clauses remain responsible for process cleanup on
+    error.  Raises ``PlayTimeoutError`` directly on wall-clock or idle expiry;
+    re-raises ``_ReadOutputFailed.exc`` on output-parse errors.
+    """
+    post_response_killed = False
+    stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    read_task = asyncio.create_task(
+        _read_output_guarded(
+            proc,
+            handle.agent_type,
+            max_bytes,
+            line_limit=cfg.line_limit_bytes,
+            agent_id=handle.agent_id,
+            stdout_activity=stdout_activity,
+        )
+    )
+    idle_task = asyncio.create_task(
+        _watch_stream_idle(
+            stdout_activity,
+            timeout=stream_idle_timeout,
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+            model_tier=handle.model_tier,
+            prompt_bytes=prompt_bytes,
+        )
+    )
+    done, _pending = await asyncio.wait(
+        {read_task, idle_task},
+        timeout=float(timeout),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if not done:
+        read_task.cancel()
+        idle_task.cancel()
+        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        # desktop-awc: enrich the wall-clock timeout error with the
+        # agent shape so operators can spot whether timeouts correlate
+        # with model tier or huge prompts without having to rejoin the
+        # play_id back to the agents table by hand.
+        raise PlayTimeoutError(
+            (
+                f"agent {handle.agent_id!r} ({handle.agent_type.value}/"
+                f"{handle.model_tier or '?'}) timed out after {timeout}s "
+                f"(prompt_bytes={prompt_bytes})"
+            ),
+            error_class=ErrorClass.TIMEOUT_WALLCLOCK,
+        ) from None
+    if read_task in done:
+        idle_task.cancel()
+        await asyncio.gather(idle_task, return_exceptions=True)
+        read_result = await read_task
+        if isinstance(read_result, _ReadOutputFailed):
+            raise read_result.exc
+        return read_result, post_response_killed
+    else:
+        idle_exc = idle_task.exception()
+        if idle_exc is None:
+            read_result = await read_task
+        elif (
+            isinstance(idle_exc, PlayTimeoutError)
+            and getattr(idle_exc, "error_class", None) == ErrorClass.TIMEOUT_POST_RESPONSE
+        ):
+            post_response_killed = True
+            _logger.info(
+                "post_response_process_kill",
+                agent_id=handle.agent_id,
+                grace_s=_POST_RESPONSE_GRACE_S,
+            )
+            await _kill_process(proc, handle.agent_id)
+            try:
+                read_result = await asyncio.wait_for(read_task, timeout=5.0)
+            except TimeoutError:
+                read_task.cancel()
+                await asyncio.gather(read_task, return_exceptions=True)
+                raise idle_exc from None
+        else:
+            grace_s = min(stream_idle_timeout, 0.25)
+            try:
+                await asyncio.wait_for(asyncio.shield(read_task), timeout=grace_s)
+            except TimeoutError:
+                read_task.cancel()
+                await asyncio.gather(read_task, return_exceptions=True)
+                raise idle_exc from None
+            read_result = await read_task
+
+        if isinstance(read_result, _ReadOutputFailed):
+            raise read_result.exc
+        return read_result, post_response_killed
+
+
+async def _finalize_nonzero_exit(
+    proc: asyncio.subprocess.Process,
+    handle: AgentHandle,
+    *,
+    cfg: AgentConfig,
+    rc: int,
+    raw_output: str,
+) -> NoReturn:
+    """Read stderr, classify the error, log, and raise ``AgentProcessError``.
+
+    Always raises — the ``-> NoReturn`` annotation lets mypy verify callers
+    need not handle a return value.
+    """
+    stderr_text = ""
+    if proc.stderr:
+        try:
+            raw_err = await proc.stderr.read()
+            stderr_text = raw_err.decode("utf-8", errors="replace")
+        except (OSError, EOFError) as exc:
+            _logger.warning(
+                "cli_agent_stderr_read_failed",
+                agent_id=handle.agent_id,
+                error=str(exc),
+            )
+    error_class = _classify_error(rc, stderr_text, raw_output)
+    handle.last_error_class = error_class
+    _logger.warning(
+        "cli_agent_nonzero_exit",
+        agent_id=handle.agent_id,
+        exit_code=rc,
+        error_class=error_class,
+        stderr_tail=stderr_text[:500],
+        stdout_tail=raw_output[-500:] if raw_output else "(empty)",
+    )
+    detail = _process_error_detail(
+        agent_type=handle.agent_type,
+        model=handle.model or cfg.model,
+        error_class=error_class,
+        stderr=stderr_text,
+        stdout=raw_output,
+    )
+    _close_process_transport(proc)
+    raise AgentProcessError(
+        f"agent {handle.agent_id!r} exited with code {rc} [{error_class}]: {detail}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core dispatch
 # ---------------------------------------------------------------------------
 
@@ -440,45 +662,15 @@ async def dispatch_cli(
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
 
-    if python_executable is not None:
-        # Test shim: invoke cfg.binary as a Python script.
-        argv = [python_executable, cfg.binary or ""]
-    else:
-        argv = build_argv(
-            handle.agent_type,
-            prompt,
-            binary=cfg.binary,
-            model=handle.model or cfg.model,
-            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
-            extra_flags=cfg.extra_flags,
-            project_dir=str(effective_cwd),
-        )
-
-    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
-    # re-enters the same session and emits the structured trailer it missed.
-    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
-        argv = [
-            argv[0],
-            "--resume",
-            resume_session_id,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            prompt,
-        ]
-
-    prompt_bytes = len(prompt.encode("utf-8"))
-
-    # Clamp argv_preview to keep the log readable. The last argv element is the
-    # full skill prompt (~7 KB), and embedding it in every dispatch event bloats
-    # the orchestrator log by ~1 MB per session. The full prompt is
-    # reconstructible from the skill template plus the PlayParams that hit the
-    # dispatcher, so keep only the leading flags here.
-    argv_str = " ".join(argv[:10])
-    if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
-        truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
-        argv_str = argv_str[:_ARGV_PREVIEW_MAX_CHARS] + f"…(+{truncated} chars truncated)"
+    _argv = _build_dispatch_argv(
+        handle,
+        prompt,
+        cfg=cfg,
+        python_executable=python_executable,
+        resume_session_id=resume_session_id,
+        effective_cwd=effective_cwd,
+    )
+    argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
     _logger.info(
         "cli_dispatch_start",
@@ -510,102 +702,23 @@ async def dispatch_cli(
     if on_subprocess_spawned is not None and proc.pid is not None:
         await on_subprocess_spawned(proc.pid)
 
-    post_response_killed = False
     try:
-        stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
-        read_task = asyncio.create_task(
-            _read_output_guarded(
-                proc,
-                handle.agent_type,
-                max_bytes,
-                line_limit=cfg.line_limit_bytes,
-                agent_id=handle.agent_id,
-                stdout_activity=stdout_activity,
-            )
-        )
-        idle_task = asyncio.create_task(
-            _watch_stream_idle(
-                stdout_activity,
-                timeout=stream_idle_timeout,
-                agent_id=handle.agent_id,
-                agent_type=handle.agent_type.value,
-                model_tier=handle.model_tier,
-                prompt_bytes=prompt_bytes,
-            )
-        )
-        done, _pending = await asyncio.wait(
-            {read_task, idle_task},
+        read_result, post_response_killed = await _await_output_or_timeout(
+            proc,
+            handle,
+            max_bytes=max_bytes,
+            cfg=cfg,
+            stream_idle_timeout=stream_idle_timeout,
             timeout=float(timeout),
-            return_when=asyncio.FIRST_COMPLETED,
+            prompt_bytes=prompt_bytes,
         )
-        if not done:
-            read_task.cancel()
-            idle_task.cancel()
-            await asyncio.gather(read_task, idle_task, return_exceptions=True)
-            # desktop-awc: enrich the wall-clock timeout error with the
-            # agent shape so operators can spot whether timeouts correlate
-            # with model tier or huge prompts without having to rejoin the
-            # play_id back to the agents table by hand.
-            raise PlayTimeoutError(
-                (
-                    f"agent {handle.agent_id!r} ({handle.agent_type.value}/"
-                    f"{handle.model_tier or '?'}) timed out after {timeout}s "
-                    f"(prompt_bytes={prompt_bytes})"
-                ),
-                error_class=ErrorClass.TIMEOUT_WALLCLOCK,
-            ) from None
-        if read_task in done:
-            idle_task.cancel()
-            await asyncio.gather(idle_task, return_exceptions=True)
-            read_result = await read_task
-            if isinstance(read_result, _ReadOutputFailed):
-                raise read_result.exc
-            raw_output, usage, observed_session_id = (
-                read_result.raw,
-                read_result.usage,
-                read_result.session_id,
-            )
-        else:
-            idle_exc = idle_task.exception()
-            if idle_exc is None:
-                read_result = await read_task
-            elif (
-                isinstance(idle_exc, PlayTimeoutError)
-                and getattr(idle_exc, "error_class", None) == ErrorClass.TIMEOUT_POST_RESPONSE
-            ):
-                post_response_killed = True
-                _logger.info(
-                    "post_response_process_kill",
-                    agent_id=handle.agent_id,
-                    grace_s=_POST_RESPONSE_GRACE_S,
-                )
-                await _kill_process(proc, handle.agent_id)
-                try:
-                    read_result = await asyncio.wait_for(read_task, timeout=5.0)
-                except TimeoutError:
-                    read_task.cancel()
-                    await asyncio.gather(read_task, return_exceptions=True)
-                    raise idle_exc from None
-            else:
-                grace_s = min(stream_idle_timeout, 0.25)
-                try:
-                    await asyncio.wait_for(asyncio.shield(read_task), timeout=grace_s)
-                except TimeoutError:
-                    read_task.cancel()
-                    await asyncio.gather(read_task, return_exceptions=True)
-                    raise idle_exc from None
-                read_result = await read_task
-
-            if isinstance(read_result, _ReadOutputFailed):
-                raise read_result.exc
-            raw_output, usage, observed_session_id = (
-                read_result.raw,
-                read_result.usage,
-                read_result.session_id,
-            )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
-        _observed_session_id = observed_session_id
+        raw_output, usage, _observed_session_id = (
+            read_result.raw,
+            read_result.usage,
+            read_result.session_id,
+        )
     except TimeoutError:
         await _kill_process(proc, handle.agent_id)
         _close_streams(proc)
@@ -638,38 +751,7 @@ async def dispatch_cli(
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
-        stderr_text = ""
-        if proc.stderr:
-            try:
-                raw_err = await proc.stderr.read()
-                stderr_text = raw_err.decode("utf-8", errors="replace")
-            except (OSError, EOFError) as exc:
-                _logger.warning(
-                    "cli_agent_stderr_read_failed",
-                    agent_id=handle.agent_id,
-                    error=str(exc),
-                )
-        error_class = _classify_error(rc or 1, stderr_text, raw_output)
-        handle.last_error_class = error_class
-        _logger.warning(
-            "cli_agent_nonzero_exit",
-            agent_id=handle.agent_id,
-            exit_code=rc,
-            error_class=error_class,
-            stderr_tail=stderr_text[:500],
-            stdout_tail=raw_output[-500:] if raw_output else "(empty)",
-        )
-        detail = _process_error_detail(
-            agent_type=handle.agent_type,
-            model=handle.model or cfg.model,
-            error_class=error_class,
-            stderr=stderr_text,
-            stdout=raw_output,
-        )
-        _close_process_transport(proc)
-        raise AgentProcessError(
-            f"agent {handle.agent_id!r} exited with code {rc} [{error_class}]: {detail}"
-        )
+        await _finalize_nonzero_exit(proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output)
 
     dollar_cost = estimate_cost(
         usage.tokens_in,
