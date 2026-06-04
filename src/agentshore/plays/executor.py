@@ -159,6 +159,20 @@ def _issue_label_mutation(mut: dict[str, object]) -> tuple[int, list[str]] | Non
     return issue_number, labels
 
 
+class _SkipDispatchError(Exception):
+    """Internal signal that a phase short-circuited with a terminal PlayOutcome.
+
+    Raised by ``_prepare_dispatch``, ``_select_skill_agent``, and
+    ``_prepare_execution_context`` instead of returning a ``PlayOutcome``
+    union.  Caught exactly once by ``execute`` so the early-exit path is a
+    single ``try/except`` rather than three repeated isinstance guards.
+    """
+
+    def __init__(self, outcome: PlayOutcome) -> None:
+        self.outcome = outcome
+        super().__init__()
+
+
 class PlayExecutor:
     """Orchestrates every play through its full lifecycle."""
 
@@ -226,32 +240,23 @@ class PlayExecutor:
         PlayOutcome.
         """
         started_at = now_iso()
-        prepared = await self._prepare_dispatch(play_type, state, override, started_at)
-        if isinstance(prepared, PlayOutcome):
-            return prepared
-        play, params = prepared
+        try:
+            play, params = await self._prepare_dispatch(play_type, state, override, started_at)
 
-        # PR-base self-heal (#8) --------------------------------------------
-        # issue_pickup agents sometimes open PRs against the repo default
-        # instead of the configured target branch. Retarget before running any
-        # PR-scoped play so merge_pr can merge and code_review diffs the right
-        # base. Idempotent; a no-op when the base already matches.
-        if params.pr_number is not None and play_type in _PR_BASE_RECONCILE_PLAYS:
-            await self._maybe_retarget_pr_base(play_type, params, state)
+            # PR-base self-heal (#8) ----------------------------------------
+            # issue_pickup agents sometimes open PRs against the repo default
+            # instead of the configured target branch. Retarget before running
+            # any PR-scoped play so merge_pr can merge and code_review diffs the
+            # right base. Idempotent; a no-op when the base already matches.
+            if params.pr_number is not None and play_type in _PR_BASE_RECONCILE_PLAYS:
+                await self._maybe_retarget_pr_base(play_type, params, state)
 
-        selected = await self._select_skill_agent(play, play_type, params, started_at)
-        if isinstance(selected, PlayOutcome):
-            return selected
-
-        setup = await self._prepare_execution_context(
-            play,
-            play_type,
-            selected,
-            state,
-            started_at,
-        )
-        if isinstance(setup, PlayOutcome):
-            return setup
+            params = await self._select_skill_agent(play, play_type, params, started_at)
+            setup = await self._prepare_execution_context(
+                play, play_type, params, state, started_at
+            )
+        except _SkipDispatchError as e:
+            return e.outcome
         return await self._run_finalize_and_persist(play, play_type, state, setup)
 
     # -------------------------------------------------------------------------
@@ -264,7 +269,7 @@ class PlayExecutor:
         state: OrchestratorState,
         override: PlayParams | None,
         started_at: str,
-    ) -> tuple[Play, PlayParams] | PlayOutcome:
+    ) -> tuple[Play, PlayParams]:
         try:
             play = self._registry.get(play_type)
         except KeyError:
@@ -274,11 +279,13 @@ class PlayExecutor:
                 skip_category="code_error",
                 error=f"no play registered for {play_type!r}",
             )
-            return PlayOutcome.failed(
-                play_type,
-                f"no play registered for {play_type!r}",
-                failure_kind=FailureKind.CODE_ERROR,
-            )
+            raise _SkipDispatchError(
+                PlayOutcome.failed(
+                    play_type,
+                    f"no play registered for {play_type!r}",
+                    failure_kind=FailureKind.CODE_ERROR,
+                )
+            ) from None
 
         # When override params are already populated, the EligibilityAuthority's
         # confirm() has already validated this play and the resolver has already
@@ -301,10 +308,12 @@ class PlayExecutor:
                 skip_category="no_target",
                 error="unresolved parameters",
             )
-            return PlayOutcome.skipped_outcome(
-                play_type,
-                "no_target",
-                error="unresolved parameters",
+            raise _SkipDispatchError(
+                PlayOutcome.skipped_outcome(
+                    play_type,
+                    "no_target",
+                    error="unresolved parameters",
+                )
             )
         return play, params
 
@@ -314,7 +323,7 @@ class PlayExecutor:
         play_type: PlayType,
         params: PlayParams,
         started_at: str,
-    ) -> PlayParams | PlayOutcome:
+    ) -> PlayParams:
         if play.skill_name is None:
             return params
 
@@ -340,7 +349,9 @@ class PlayExecutor:
                 required_agent_id=params.target_agent_id,
             )
         except AntiConfirmationViolation as exc:
-            return await self._handle_selection_violation(play_type, params, started_at, exc)
+            raise _SkipDispatchError(
+                await self._handle_selection_violation(play_type, params, started_at, exc)
+            ) from exc
 
         # Anti-confirmation DB re-check (defense in depth)
         anti_err = await self._anti_confirmation_check(play_type, params, handle.agent_id)
@@ -353,11 +364,13 @@ class PlayExecutor:
                 error=anti_err,
                 agent_id=handle.agent_id,
             )
-            return PlayOutcome.skipped_outcome(
-                play_type,
-                "staffing",
-                error=anti_err,
-                agent_id=handle.agent_id,
+            raise _SkipDispatchError(
+                PlayOutcome.skipped_outcome(
+                    play_type,
+                    "staffing",
+                    error=anti_err,
+                    agent_id=handle.agent_id,
+                )
             )
         return dataclasses.replace(params, agent_id=handle.agent_id)
 
@@ -454,7 +467,7 @@ class PlayExecutor:
         params: PlayParams,
         state: OrchestratorState,
         started_at: str,
-    ) -> _ExecutionSetup | PlayOutcome:
+    ) -> _ExecutionSetup:
         # Snapshot alignment_before from the dispatch-time beads graph.
         alignment_before = state.graph.global_closure_ratio if state.graph is not None else None
 
@@ -493,11 +506,13 @@ class PlayExecutor:
                 failure_category="code_error",
                 agent_id=params.agent_id,
             )
-            return PlayOutcome.failed(
-                play_type,
-                "work claim inactive",
-                agent_id=params.agent_id,
-                failure_kind=FailureKind.CODE_ERROR,
+            raise _SkipDispatchError(
+                PlayOutcome.failed(
+                    play_type,
+                    "work claim inactive",
+                    agent_id=params.agent_id,
+                    failure_kind=FailureKind.CODE_ERROR,
+                )
             )
 
         current_play_handle = await self._notify_dispatch_started(
