@@ -9,7 +9,7 @@ Because nothing here is a live bug, **value** = future-bug prevention + unblocki
 work + readability, and **cost** = LOC + behavior/wire/perf risk. Full rationale and exact
 line ranges live in `.tnqa/01..10_*.md` (referenced inline as `NN`).
 
-**Open: 2 High · 12 Medium · 14 Low (28).** Last full suite (integrated `tnqa/staging`):
+**Open: 1 High · 6 Medium · 13 Low (20).** Last full suite (integrated `tnqa/staging`):
 3207 passed / 0 failed / 2 skipped, 84% coverage, ruff + mypy strict clean.
 
 **Tier-1 sweep merged** (branch `tnqa/typesafety-shim-removal`): `work_availability` re-export
@@ -28,36 +28,42 @@ debug). `07 M4` — `TokenSource` StrEnum + per-source resolver dict in `sidecar
 `07 L1` — `issue_availability` same-value alias deleted from serializer, `StateUpdate` type,
 `TopBarHud`, and e2e fixture.
 
+**Tier-3 Phase A merged** (branch `tnqa/staging`): `10 H1` — `ReportDataCollector` god-class
+decomposed into `reports/_repo_url.py`, `reports/_loop_incidents.py`, `reports/_aggregations.py`;
+class keeps only the 4 public `collect_*` methods. `07 M3` — `ipc/server.py` inbound loop
+duplicated `json.dumps+write+drain` blocks replaced with `_write_line` helper routing through
+`wire.frame`. `01 M3` — `_reconcile_issue_pickup_publish` (~90 lines) extracted to
+`IssuePickupPublishReconciler` collaborator in `plays/_publish_reconciler.py`. `02 M2` —
+`_resolve_override` 5-branch if-chain replaced by `_OVERRIDE_SPECS` table (mirrors
+`_SKILL_SPECS` from `dispatch.py`). `01 M4` — three `isinstance`-sentinel union-return guards
+in `execute()` replaced by `_SkipDispatchError` exception; phase methods now `raise` instead
+of returning `T | PlayOutcome`. `08 M1` — `init()` restructured with an early
+`install_skills_only` return; `config_yaml` path computed once; four scattered
+`if not install_skills_only:` guards eliminated. `06 M1` — `dispatch_cli` (~314 lines)
+decomposed into `_build_dispatch_argv` / `_await_output_or_timeout` / `_finalize_nonzero_exit`
+helpers; `_DispatchArgv` frozen dataclass packages argv + log-preview fields. `08 L2` closed
+as moot — the stale phase comments (`-- 0.`, `-- 2.`, `-- 11a.`) were already removed by the
+`session/bootstrap.py` extraction that shipped with the Tier-2 sweep.
+
+Deferred to **Tier-3 Phase B**: `01 M2` (reviewer-pinning dedup — behavior-change risk at
+anti-confirmation-bias call sites), `07 M1` (sidecar teardown merge — build-ESR-before-store-close
+ordering invariant), `03 L2` (22-file `__new__` test migration — high churn, low value).
+
 Each item: **`NN` severity** · `location` — problem → fix. *(deferral / ROI note.)*
 
 ---
 
-## Tier 3 — Marginal / opportunistic
+## Tier 3 — Marginal / opportunistic (Phase B — deferred)
 
-Real value but high cost or behavior-change risk — **do these when you're next editing the
-file anyway**, not as standalone efforts.
+Phase A items are recorded in the "Tier-3 Phase A merged" note above. Three items remain,
+deferred for high risk or churn relative to payoff:
 
-- **`06 M1`** · `agents/cli_agent.py` — 320-line `dispatch_cli` decomposition. *(Large; hot
-  file.)*
-- **`01 M3`** · `plays/executor.py` — 76-line procedural `_reconcile_issue_pickup_publish`
-  → extract a reconciler. *(Recovery state machine; design judgment.)*
+- **`01 M2`** · `plays/candidates.py` — 4-way duplicated CODE_REVIEW/PR candidate builders
+  → consolidate. *(Reviewer-pinning behavior-change risk: `pick_reviewer_for_pr`
+  anti-confirmation-bias pinning has 3 call sites with differing `sort_key` tuples.)*
 - **`07 M1`** · `sidecar/` — 95-line `session.stop` teardown duplicated by `_supervise`.
   *(Touches the build-ESR-before-store-close ordering invariant.)*
-- **`10 H1`** · `reports/collector.py` — ~1300-line static-helper god-class → decompose.
-  *(Large, but low-risk: reports aren't hot-path.)*
-- **`07 M3`** · `sidecar/server.py` — inbound IPC loop: split parse/validate/route.
-  *(Re-architecture of the connection loop.)*
-- **`08 M1`** · `cli/init.py` — 5-phase inline wizard with repeated
-  `if not install_skills_only` → decompose. *(Large.)*
-- **`08 L2`** · `cli/start.py` — stale/misnumbered phase comments (`-- 0.`, `-- 2.`,
-  `-- 11a.`). *(Near-zero standalone; resolves for free with `08 M1`/`start()` decomp.)*
-- **`01 M2`** · `plays/candidates.py` — 4-way duplicated CODE_REVIEW/PR candidate builders
-  → consolidate. *(Reviewer-pinning behavior-change risk.)*
-- **`02 M2`** · `plays/resolver.py` — `_resolve_override` second hand-rolled dispatcher →
-  table-driven. *(Behavior-change risk.)*
-- **`01 M4`** · `plays/executor.py` — 11-phase `isinstance`-sentinel `execute` lifecycle →
-  typed dispatch. *(Touches PPO dispatch control flow.)*
-- **`03 L2`** · `core/` — ~21 tests bypass `Orchestrator.__new__`, blocking deletion of the
+- **`03 L2`** · `core/` — ~22 tests bypass `Orchestrator.__new__`, blocking deletion of the
   `getattr(self,"_x",default)` guards. *(Unblocked, but high churn / low value, and one
   guard may protect real optionality.)*
 
@@ -115,6 +121,7 @@ won't-fix. Don't pick these up without a forcing function.
 
 ---
 
-**Suggested sweep:** Tier 1 + the two Tier-2 type-safety items (`04 M4`, `07 M4`) form one
-coherent "type-safety & shim-removal" PR — same test-patch-migration mechanics throughout,
-and it de-risks the recovery code that just shipped.
+**Suggested next:** Tier 3 Phase B (`01 M2` reviewer-pinning dedup) is the highest-value
+remaining item, but needs its own focused PR given the anti-confirmation-bias invariants.
+`07 M1` and `03 L2` follow the same pattern — high-effort moves best done as a forcing
+function (next time the relevant files are open for a feature change).
