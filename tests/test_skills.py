@@ -324,6 +324,26 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "unresolved_gaps" in text
 
 
+def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:
+    """groom-backlog must remove sticky blocked labels once all deps resolve (gh#35 follow-up).
+
+    A GH ``blocked`` / ``agentshore/blocked`` label does not auto-clear when its
+    blocker closes, so the issue stays out of the issue_pickup pool forever. Groom
+    is the periodic sweep that reconciles the (already self-healed) beads state to
+    the sticky GH label — but only on concrete evidence, never an opaque block.
+    """
+    text = (_TEMPLATE_ROOT / "agentshore-groom-backlog" / "SKILL.md").read_text(encoding="utf-8")
+
+    # The clearing action and its conservative gate are present.
+    assert "blocks_cleared" in text
+    assert "--remove-label" in text
+    assert "agentshore/blocked" in text
+    # Evidence-gated: requires an identifiable, fully-resolved dependency.
+    assert "identifiable dependency" in text
+    # Opaque/manual blocks and human-review gates must be left alone.
+    assert "needs-human-review" in text
+
+
 def test_skill_template_descriptions_match_action_slots() -> None:
     """Skill descriptions should not carry stale play numbers."""
     for play_type, skill_name in PLAY_SKILL_MAP.items():
