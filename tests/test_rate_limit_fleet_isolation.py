@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from agentshore.errors import ErrorClass
 from agentshore.plays.registry import build_default_registry
 from agentshore.rl.action_space import PLAY_TO_INDEX
 from agentshore.rl.mask import compute_agent_eligibility_mask
@@ -30,7 +31,7 @@ def _agent(
     agent_id: str,
     agent_type: AgentType,
     status: AgentStatus = AgentStatus.IDLE,
-    last_error_class: str | None = None,
+    last_error_class: ErrorClass | None = None,
     model_tier: str = "medium",
 ) -> AgentSnapshot:
     return AgentSnapshot(
@@ -70,7 +71,7 @@ def test_rate_limit_on_gemini_does_not_zero_claude_codex_eligibility() -> None:
             agent_id="gem-1",
             agent_type=AgentType.GEMINI,
             status=AgentStatus.ERROR,
-            last_error_class="rate_limit",
+            last_error_class=ErrorClass.RATE_LIMIT,
         ),
         _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE, model_tier="large"),
         _agent(agent_id="cx-1", agent_type=AgentType.CODEX, model_tier="medium"),
@@ -100,7 +101,7 @@ def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> N
             agent_id="gem-1",
             agent_type=AgentType.GEMINI,
             status=AgentStatus.ERROR,
-            last_error_class="rate_limit",
+            last_error_class=ErrorClass.RATE_LIMIT,
         ),
         _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE),
         _agent(agent_id="cx-1", agent_type=AgentType.CODEX),
@@ -144,13 +145,13 @@ def test_rate_limit_excludes_only_same_type_candidates() -> None:
             agent_id="gem-1",
             agent_type=AgentType.GEMINI,
             status=AgentStatus.ERROR,
-            last_error_class="rate_limit",
+            last_error_class=ErrorClass.RATE_LIMIT,
         ),
         _agent(
             agent_id="gem-2",
             agent_type=AgentType.GEMINI,
             status=AgentStatus.ERROR,
-            last_error_class="rate_limit",
+            last_error_class=ErrorClass.RATE_LIMIT,
         ),
         _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE, model_tier="large"),
     ]

@@ -46,6 +46,35 @@ _FAILURE_KIND_TO_CATEGORY: dict[FailureKind, FailureCategory] = {
 }
 
 
+class ErrorClass(StrEnum):
+    """Canonical agent error classifications (was stringly-typed).
+
+    A ``StrEnum`` (``str`` subclass), so existing ``frozenset[str]`` membership
+    tests and ``== "..."`` comparisons keep working unchanged. Every value ever
+    assigned to ``AgentHandle.last_error_class`` MUST be a member here, or a
+    coercion at the manager boundary would silently collapse it to ``UNKNOWN``.
+    """
+
+    RATE_LIMIT = "rate_limit"
+    AUTH = "auth"
+    TIMEOUT = "timeout"
+    INVALID_MODEL = "invalid_model"
+    CODEX_ROLLOUT = "codex_rollout"
+    TRANSIENT_NETWORK = "transient_network"
+    CRASH_OOM = "crash_oom"
+    CRASH_SIGNAL = "crash_signal"
+    TIMEOUT_TRANSIENT = "timeout_transient"
+    # Timeout sub-classes carried on PlayTimeoutError.error_class and threaded
+    # onto last_error_class via the manager dispatch handler. Distinct strings
+    # asserted by tests (test_agent_manager / test_cli_agent), so they must be
+    # first-class members rather than collapsing to TIMEOUT/UNKNOWN.
+    TIMEOUT_WALLCLOCK = "timeout_wallclock"
+    TIMEOUT_POST_RESPONSE = "timeout_post_response"
+    TIMEOUT_STREAM_IDLE = "timeout_stream_idle"
+    OUTPUT_INVALID = "output_invalid"
+    UNKNOWN = "unknown"
+
+
 class OrchestratorError(Exception):
     error_type: str = "agentshore_error"
     recoverable: bool = True
@@ -97,7 +126,7 @@ class PlayTimeoutError(AgentTimeout):
         self,
         message: str,
         *,
-        error_class: str = "timeout",
+        error_class: ErrorClass | str = ErrorClass.TIMEOUT,
         recoverable: bool | None = None,
         recovery_action: str | None = None,
     ) -> None:

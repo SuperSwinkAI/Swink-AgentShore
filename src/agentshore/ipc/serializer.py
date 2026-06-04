@@ -20,6 +20,7 @@ from typing import Literal
 
 from agentshore.beads import EpicStatus, GraphTask, ProjectGraph
 from agentshore.ipc.wire import frame as _frame
+from agentshore.plays.candidates import build_candidate_plan
 from agentshore.state import (
     ActivePlay,
     AgentPlaySpecializationSnapshot,
@@ -34,7 +35,6 @@ from agentshore.state import (
     SessionStatsSnapshot,
     TrajectorySnapshot,
 )
-from agentshore.work_availability import summarize_work_availability
 
 # ---------------------------------------------------------------------------
 # Monotonic sequence counter — incremented once per outbound message
@@ -254,7 +254,7 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
     All enum values are converted to their string ``.value``.
     None fields remain None.  Lists of dataclasses become lists of dicts.
     """
-    work_availability = summarize_work_availability(state).to_dict()
+    work_availability = build_candidate_plan(state).work_availability.to_dict()
     return {
         "session_id": state.session_id,
         "session_state": state.session_state.value,
