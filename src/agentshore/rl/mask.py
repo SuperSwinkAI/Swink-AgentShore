@@ -163,6 +163,11 @@ def compute_terminal_no_work_decision(
     if not availability.terminal_no_work:
         return None
 
+    # Block terminal plays while beads has open tasks. GitHub workable-issue
+    # counts can lag calibrate_alignment syncs, so beads takes precedence here.
+    if availability.ready_task_count > 0:
+        return None
+
     mask = np.zeros(NUM_ACTIONS, dtype=bool)
     qa_plays_since_last = state.plays_since_last_play_type.get(PlayType.RUN_QA)
     if qa_ran_within_terminal_window(state, window=_TERMINAL_QA_RECENT_WINDOW):
@@ -252,10 +257,12 @@ def compute_reverse_failsafe_mask(
         has_in_flight = bool(state.in_flight_plays) or any(
             agent.status == AgentStatus.BUSY for agent in state.agents
         )
+        availability = build_candidate_plan(state).work_availability
         if (
             has_in_flight
             or not terminal_audits_are_fresh(state)
             or not qa_ran_within_terminal_window(state, window=_TERMINAL_QA_RECENT_WINDOW)
+            or availability.ready_task_count > 0
         ):
             lifted[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
 

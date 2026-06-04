@@ -985,6 +985,37 @@ def test_terminal_no_work_stays_off_when_pr_work_exists():
     assert compute_terminal_no_work_decision(state, build_default_registry()) is None
 
 
+def test_terminal_no_work_blocked_when_beads_ready_tasks_nonzero():
+    """end_session must stay masked when beads still has open tasks (gh#35).
+
+    GitHub workable-issue counts can lag calibrate_alignment; beads ready_task_count
+    is authoritative — a non-empty beads backlog must prevent the terminal decision.
+    """
+    from agentshore.state import AgentType
+
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.has_ready_tasks = True
+    graph.tasks_ready = 25  # beads says: 25 tasks still open
+    graph.tasks = []
+    graph.global_closure_ratio = 0.0
+
+    state = _state(
+        graph=graph,
+        total_plays=30,
+        agents=[_agent_snapshot("qa", AgentType.CODEX, "large")],
+        # All GitHub issues blocked/disallowed → workable_issues == 0 from GitHub view
+        open_issues=[_issue_snapshot(209, ["agentshore/blocked", "agentshore/disallowed"])],
+        plays_since_last_play_type={PlayType.RUN_QA: 13},  # recent QA → would normally unlock end_session
+    )
+
+    decision = compute_terminal_no_work_decision(state, build_default_registry())
+    assert decision is None, "end_session must be blocked when ready_task_count > 0"
+
+    mask = compute_action_mask(state, build_default_registry())
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]], "end_session must be masked when beads backlog non-empty"
+
+
 def test_open_planned_issue_unreviewed_pr_and_groom_needed_are_not_terminal_no_work():
     from agentshore.state import AgentType
 
