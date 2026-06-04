@@ -234,7 +234,6 @@ export interface StateUpdate extends MessageEnvelope {
   open_issues: IssueSnapshot[];
   pull_requests: PullRequestSnapshot[];
   work_availability?: WorkAvailability;
-  issue_availability?: WorkAvailability;
   budget: BudgetSnapshot | null;
   trajectory: TrajectorySnapshot | null;
   active_play: ActivePlay | null;

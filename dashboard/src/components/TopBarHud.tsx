@@ -15,7 +15,7 @@ export function notifyTopBarHud(state: StateUpdate): void {
   // historically populated 0/0 availability summaries even with hundreds
   // of issues in state.open_issues; fall back to the raw issue list size
   // when the server did not report any open issues.
-  const availability = state.work_availability ?? state.issue_availability;
+  const availability = state.work_availability;
   const openFromState = state.open_issues?.length ?? 0;
   const totalReported = availability?.github_open_issue_count ?? 0;
   const openIssueCount = totalReported > 0 ? totalReported : openFromState;

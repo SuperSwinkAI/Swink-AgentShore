@@ -152,7 +152,6 @@ test("top bar shows open issue count when available", async ({
       open_issues: [],
       pull_requests: [],
       work_availability: availability,
-      issue_availability: availability,
       budget: null,
       trajectory: null,
       active_play: null,
