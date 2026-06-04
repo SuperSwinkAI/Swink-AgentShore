@@ -1006,14 +1006,18 @@ def test_terminal_no_work_blocked_when_beads_ready_tasks_nonzero():
         agents=[_agent_snapshot("qa", AgentType.CODEX, "large")],
         # All GitHub issues blocked/disallowed → workable_issues == 0 from GitHub view
         open_issues=[_issue_snapshot(209, ["agentshore/blocked", "agentshore/disallowed"])],
-        plays_since_last_play_type={PlayType.RUN_QA: 13},  # recent QA → would normally unlock end_session
+        plays_since_last_play_type={
+            PlayType.RUN_QA: 13
+        },  # recent QA → would normally unlock end_session
     )
 
     decision = compute_terminal_no_work_decision(state, build_default_registry())
     assert decision is None, "end_session must be blocked when ready_task_count > 0"
 
     mask = compute_action_mask(state, build_default_registry())
-    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]], "end_session must be masked when beads backlog non-empty"
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]], (
+        "end_session must be masked when beads backlog non-empty"
+    )
 
 
 def test_open_planned_issue_unreviewed_pr_and_groom_needed_are_not_terminal_no_work():
@@ -1449,7 +1453,7 @@ def test_compute_mask_reasons_emits_tier_eligibility_string():
     )
     reasons = compute_mask_reasons(state, build_default_registry(), cfg=cfg)
     assert PlayType.ISSUE_PICKUP in reasons
-    assert "tier" in reasons[PlayType.ISSUE_PICKUP].lower()
+    assert "tier" in reasons[PlayType.ISSUE_PICKUP].text
 
 
 def test_compute_mask_reasons_explains_idle_same_config_for_instantiate():

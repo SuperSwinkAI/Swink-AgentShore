@@ -50,7 +50,7 @@ from agentshore.rl.mask import (
     compute_terminal_no_work_decision,
     reverse_failsafe_should_unmask,
 )
-from agentshore.rl.mask_reason import MaskReason
+from agentshore.rl.mask_reason import MaskReason, MaskSource
 from agentshore.rl.observation import encode_observation
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.training import PPOUpdater, UpdateStats
@@ -87,25 +87,33 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
 )
 
 
+_CAPACITY_WAIT_SOURCES = frozenset({MaskSource.ELIGIBILITY, MaskSource.CONFIG, MaskSource.SPAWN})
+
+
+def _is_capacity_wait(reason: MaskReason) -> bool:
+    """Return True if ``reason`` represents a staffing or spawn-rate constraint.
+
+    Eligibility gates (no idle agent, tier/capability/exclude mismatches),
+    config gates (no eligible configuration), and spawn-cooldown gates
+    (``SPAWN`` source) are all considered capacity waits — the selector cannot
+    do more until staffing or cooldown state changes.  Reserved slots are
+    structural noise and are handled by the caller.
+    """
+    return reason.source in _CAPACITY_WAIT_SOURCES
+
+
 def _only_capacity_waiting(reason_counts: list[dict[str, object]]) -> bool:
     """Return True when all reported blockers are staffing/capacity waits."""
     if not reason_counts:
         return False
-    capacity_markers = (
-        "No IDLE",
-        "Idle agent",
-        "allowed tier",
-        "No eligible agent configuration",
-        "instantiate_agent cooldown",
-        "max_per_config",
-    )
-    actionable_ignores = {"Reserved action slot"}
     saw_capacity = False
     for item in reason_counts:
-        reason = str(item.get("reason", ""))
-        if reason in actionable_ignores:
+        reason = item.get("reason")
+        if not isinstance(reason, MaskReason):
+            return False
+        if reason.source == MaskSource.RESERVED:
             continue
-        if any(marker in reason for marker in capacity_markers):
+        if _is_capacity_wait(reason):
             saw_capacity = True
             continue
         return False

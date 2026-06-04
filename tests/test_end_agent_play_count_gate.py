@@ -56,7 +56,7 @@ def test_end_agent_masked_when_only_one_agent():
     play = EndAgentPlay()
     state = _state([_agent("a", completed=20)])
     reasons = play.preconditions(state)
-    assert any("at least 2 agents" in r.lower() for r in reasons)
+    assert any("at least 2 agents" in r.text for r in reasons)
 
 
 def test_end_agent_masked_when_no_agent_has_threshold_plays():
@@ -70,7 +70,7 @@ def test_end_agent_masked_when_no_agent_has_threshold_plays():
         ]
     )
     reasons = play.preconditions(state)
-    assert any(f"more than {_MIN_PLAYS_PER_AGENT} plays" in r for r in reasons)
+    assert any(f"more than {_MIN_PLAYS_PER_AGENT} plays" in r.text for r in reasons)
 
 
 def test_end_agent_floor_is_ten():

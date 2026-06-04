@@ -110,7 +110,7 @@ def test_drain_mask_reasons_cover_all_other_plays() -> None:
     for pt in V1_ACTION_ORDER:
         if pt != PlayType.END_AGENT:
             assert pt in reasons, f"Expected mask reason for {pt} in drain mode"
-            assert "drain" in reasons[pt].lower() or "draining" in reasons[pt].lower()
+            assert "drain" in reasons[pt].text or "draining" in reasons[pt].text
 
 
 def test_non_draining_state_not_restricted_to_end_agent() -> None:

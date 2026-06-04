@@ -260,7 +260,9 @@ def test_unblock_pr_preconditions_fail_when_all_in_flight() -> None:
     play = UnblockPrPlay()
     failures = play.preconditions(state)
     assert failures, "Expected preconditions to fail when all blocked PRs in flight"
-    assert any("in flight" in f for f in failures), f"Expected 'in flight' message; got: {failures}"
+    assert any("in flight" in f.text for f in failures), (
+        f"Expected 'in flight' message; got: {failures}"
+    )
 
 
 @pytest.mark.asyncio
