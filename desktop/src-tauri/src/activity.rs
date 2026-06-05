@@ -55,6 +55,20 @@ impl ActivityHolder {
         }
     }
 
+    /// Whether an activity assertion is currently held.
+    ///
+    /// The assertion is acquired on `session.start` and released on
+    /// `session.stop` / `session.completed`, so this doubles as the shell's
+    /// "is a AgentShore session running?" signal — used to gate the
+    /// quit-while-running confirmation prompt.
+    pub fn is_active(&self) -> bool {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.is_some()
+    }
+
     /// Release the activity if held. Idempotent: a release on an empty
     /// holder is a safe no-op.
     pub fn release(&self) {
@@ -168,6 +182,16 @@ mod tests {
         assert!(h.acquire("first"));
         assert!(!h.acquire("second"));
         h.release();
+    }
+
+    #[test]
+    fn is_active_tracks_acquire_and_release() {
+        let h = ActivityHolder::new();
+        assert!(!h.is_active());
+        h.acquire("session");
+        assert!(h.is_active());
+        h.release();
+        assert!(!h.is_active());
     }
 
     #[test]
