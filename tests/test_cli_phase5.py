@@ -16,11 +16,7 @@ from agentshore.agents.identity import IdentityStatus, RepoAccessStatus
 from agentshore.cli import main
 from agentshore.cli.agent_select import _needs_interactive_agent_selection
 from agentshore.cli.commands.stop import _wait_for_session_exit
-from agentshore.cli.constants import (
-    _DRAIN_WAIT_POLL_INTERVAL_S,
-    _DRAIN_WAIT_RETRIES,
-    _DRAIN_WAIT_TIMEOUT_S,
-)
+from agentshore.cli.constants import _DRAIN_WAIT_POLL_INTERVAL_S
 from agentshore.cli.runtime import _dispatch_command, _run_agent_mode
 from agentshore.config.models import (
     AgentConfig,
@@ -511,27 +507,41 @@ def test_stop_requests_managed_esr_for_clean_drain(runner: CliRunner, tmp_path: 
     generate_report.assert_not_called()
 
 
-def test_wait_for_session_exit_escalates_after_fifteen_min_default(
+def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
+    tmp_path: Path,
+) -> None:
+    """No deadline: the wait polls across many ticks until the process exits."""
+    with (
+        patch("agentshore.session_path.read_pid", return_value=1234),
+        # Stays alive for several polls, then the orchestrator exits on its own.
+        patch("os.kill", side_effect=[None, None, None, ProcessLookupError()]) as kill,
+        patch("time.sleep") as sleep,
+        patch("agentshore.session_path.hard_stop_session") as hard_stop,
+    ):
+        clean_exit = _wait_for_session_exit(tmp_path)
+
+    assert clean_exit is True
+    assert kill.call_count == 4
+    sleep.assert_called_with(_DRAIN_WAIT_POLL_INTERVAL_S)
+    hard_stop.assert_not_called()
+
+
+def test_wait_for_session_exit_escalates_on_keyboard_interrupt(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Ctrl+C during the drain wait escalates to a hard stop (the only deadline)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill") as kill,
-        patch("time.sleep") as sleep,
+        patch("os.kill", side_effect=KeyboardInterrupt),
+        patch("time.sleep"),
         patch("agentshore.session_path.hard_stop_session", return_value=True) as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
 
     assert clean_exit is False
-    assert _DRAIN_WAIT_TIMEOUT_S == 15 * 60.0
-    assert kill.call_count == _DRAIN_WAIT_RETRIES
-    assert sleep.call_count == _DRAIN_WAIT_RETRIES
-    sleep.assert_called_with(_DRAIN_WAIT_POLL_INTERVAL_S)
     hard_stop.assert_called_once_with(tmp_path)
-    assert (
-        "Session still running after 15 min; escalating to hard stop..." in capsys.readouterr().out
-    )
+    assert "Force-stop requested; escalating to hard stop..." in capsys.readouterr().out
 
 
 def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
@@ -541,7 +551,7 @@ def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
     """When the escalated hard stop can't kill the process, return None (#31)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill"),
+        patch("os.kill", side_effect=KeyboardInterrupt),
         patch("time.sleep"),
         patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
     ):
