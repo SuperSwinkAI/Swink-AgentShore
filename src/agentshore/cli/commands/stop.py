@@ -6,11 +6,8 @@ from pathlib import Path
 
 import click
 
-from agentshore.cli.constants import (
-    _DRAIN_WAIT_POLL_INTERVAL_S,
-    _DRAIN_WAIT_RETRIES,
-)
-from agentshore.cli.helpers import _drain_wait_timeout_label, open_store, resolve_session_id
+from agentshore.cli.constants import _DRAIN_WAIT_POLL_INTERVAL_S
+from agentshore.cli.helpers import open_store, resolve_session_id
 from agentshore.cli_helpers import _PROJECT_DIR
 
 
@@ -88,11 +85,8 @@ def stop(project: str, hard: bool) -> None:
             open_report=True,
         )
         if result == "sent":
-            click.echo("Drain requested — waiting for session to finish in-flight plays…")
-            click.echo(
-                f"(Press Ctrl+C to force-stop sooner; "
-                f"auto hard stop after {_drain_wait_timeout_label()})"
-            )
+            click.echo("Drain requested — waiting for in-flight plays to finish…")
+            click.echo("(Press Ctrl+C to force-stop now.)")
             outcome = _wait_for_session_exit(project_path)
             if outcome is None:
                 # Escalated to hard stop but the process is still alive (#31) —
@@ -128,9 +122,11 @@ def stop(project: str, hard: bool) -> None:
 def _wait_for_session_exit(project_path: Path) -> bool | None:
     """Poll until the orchestrator PID is gone.
 
-    Returns ``True`` for a clean drain (process exited on its own), ``False``
-    when it escalated to a hard stop that succeeded, and ``None`` when the hard
-    stop ran but the process is still alive (#31).
+    Waits indefinitely so in-flight plays finish on their own — there is no
+    automatic hard-stop deadline. The user escalates explicitly with Ctrl+C (or
+    by re-running ``agentshore stop --hard``). Returns ``True`` for a clean drain
+    (process exited on its own), ``False`` when an escalated hard stop succeeded,
+    and ``None`` when that hard stop ran but the process is still alive (#31).
     """
     import os
     import time
@@ -141,31 +137,25 @@ def _wait_for_session_exit(project_path: Path) -> bool | None:
     if pid is None:
         return True
 
-    polls = 0
     interrupted = False
     try:
-        while polls < _DRAIN_WAIT_RETRIES:
+        while True:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
                 return True
             except PermissionError:
                 click.echo(
-                    "Warning: cannot check PID ownership; treating as still running.",
+                    "Warning: cannot check PID ownership; escalating to hard stop...",
                     err=True,
                 )
                 break
             time.sleep(_DRAIN_WAIT_POLL_INTERVAL_S)
-            polls += 1
     except KeyboardInterrupt:
         interrupted = True
 
     if interrupted:
         click.echo("Force-stop requested; escalating to hard stop...")
-    else:
-        click.echo(
-            f"Session still running after {_drain_wait_timeout_label()}; escalating to hard stop..."
-        )
     if not hard_stop_session(project_path):
         click.echo("Error: hard stop failed.", err=True)
         return None

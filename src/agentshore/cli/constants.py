@@ -12,10 +12,10 @@ _SOCKET_WAIT_TIMEOUT_S: float = 15.0
 _SOCKET_POLL_INTERVAL_S: float = 0.25
 _SOCKET_WAIT_RETRIES: int = int(_SOCKET_WAIT_TIMEOUT_S / _SOCKET_POLL_INTERVAL_S)
 
-# Graceful ``agentshore stop`` drain wait before the CLI escalates to a hard stop.
-_DRAIN_WAIT_TIMEOUT_S: float = 15 * 60.0
+# Poll interval for the graceful ``agentshore stop`` drain wait. The wait has no
+# deadline — it polls until the orchestrator exits or the user escalates with
+# Ctrl+C — so only the interval is configurable here.
 _DRAIN_WAIT_POLL_INTERVAL_S: float = 0.5
-_DRAIN_WAIT_RETRIES: int = int(_DRAIN_WAIT_TIMEOUT_S / _DRAIN_WAIT_POLL_INTERVAL_S)
 
 _START_MODE_TUI = "tui"
 _START_MODE_AGENT = RunMode.AGENT.value

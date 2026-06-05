@@ -63,7 +63,6 @@ from agentshore.sidecar.recents import (
     touch_recent,
 )
 from agentshore.sidecar.session_lifecycle import (
-    DEFAULT_DRAIN_TIMEOUT_SECONDS,
     SessionStartError,
     run_session_start,
 )
@@ -521,13 +520,19 @@ async def _build_session_stop_response(
             with contextlib.suppress(Exception):
                 orch.request_drain("session_stop_drain")  # type: ignore[attr-defined]
             if orch_task is not None and not orch_task.done():
-                drain_timeout = DEFAULT_DRAIN_TIMEOUT_SECONDS
+                # No deadline by default: let in-flight plays finish on their
+                # own. Callers that need a bounded wait pass an explicit
+                # ``drain_timeout_seconds``; an immediate kill is ``mode="hard"``.
+                drain_timeout: float | None = None
                 if isinstance(raw_params, dict):
                     param = raw_params.get("drain_timeout_seconds")
                     if isinstance(param, (int, float)) and param > 0:
                         drain_timeout = float(param)
                 try:
-                    await asyncio.wait_for(asyncio.shield(orch_task), timeout=drain_timeout)
+                    if drain_timeout is None:
+                        await asyncio.shield(orch_task)
+                    else:
+                        await asyncio.wait_for(asyncio.shield(orch_task), timeout=drain_timeout)
                 except TimeoutError:
                     # Drain timed out — fall back to hard-cancel semantics.
                     orch_task.cancel()

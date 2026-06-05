@@ -53,11 +53,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Default time the drain path waits for in-flight plays to complete before
-# falling back to a hard cancel during session.stop. Set as a constant so
-# tests can override via the kwarg; not yet promoted to ``agentshore.yaml``.
-DEFAULT_DRAIN_TIMEOUT_SECONDS: float = 300.0
-
 # Cap on how long ``first_snapshot`` waits for the orchestrator to publish
 # its first state. ``Orchestrator.publish_initial_state`` runs in the boot
 # task and completes immediately for empty projects; longer waits indicate

@@ -19,7 +19,6 @@ import click
 import structlog
 
 from agentshore.cli.constants import (
-    _DRAIN_WAIT_TIMEOUT_S,
     _START_MODE_AGENT,
     _START_MODE_TUI,
 )
@@ -102,13 +101,6 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
         return False, result.stderr.strip() or "no identities loaded"
     first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
     return True, first_line
-
-
-def _drain_wait_timeout_label() -> str:
-    minutes = int(_DRAIN_WAIT_TIMEOUT_S / 60)
-    if minutes * 60 == _DRAIN_WAIT_TIMEOUT_S:
-        return f"{minutes} min"
-    return f"{_DRAIN_WAIT_TIMEOUT_S:.0f}s"
 
 
 def _resolve_policy_mode_override(
