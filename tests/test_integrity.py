@@ -25,6 +25,7 @@ from agentshore.data.integrity import (
     restore_from_snapshot_ring,
 )
 from agentshore.data.store import DataStore, SessionRecord
+from tests.ci_support import requires_external_tooling
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,6 +167,7 @@ async def test_restore_skips_corrupt_snapshots_and_picks_newer(tmp_path: Path) -
     assert chosen == older  # newer was corrupt → fell through
 
 
+@requires_external_tooling
 async def test_restore_falls_through_to_recovery_when_no_clean_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -388,6 +390,7 @@ def _shred_file_header(path: Path) -> None:
         fh.write(b"\xff" * 100)
 
 
+@requires_external_tooling
 def test_recover_via_sqlite_recover_salvages_localized_corruption(
     tmp_path: Path,
 ) -> None:
@@ -426,6 +429,7 @@ def test_recover_via_sqlite_recover_fails_on_shredded_header(tmp_path: Path) -> 
     # must NOT report success on a shredded source.
 
 
+@requires_external_tooling
 def test_recover_via_sqlite_recover_overwrites_existing_dest(tmp_path: Path) -> None:
     """A stale ``dest_path`` from a prior attempt must be cleared before retry."""
     db_path = tmp_path / "src.db"
