@@ -837,3 +837,29 @@ def test_null_author_issue_excluded_when_gating_on() -> None:
 
     assert plan.candidates_for(PlayType.ISSUE_PICKUP) == ()
     assert plan.work_availability.untrusted_issue_count == 1
+
+
+# --- Piece A: parked-resource exclusion (issue #60 backstop) ------------------
+
+
+def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
+    """A resource parked after repeated worktree-allocation failures is excluded
+    from every play that touches it, so it can't be re-selected each tick."""
+    conflicting = _pr(
+        489,
+        mergeable="CONFLICTING",
+        review_decision=None,
+        blocked=True,
+        blocked_reasons=["merge_conflict"],
+    )
+    # Control: without parking, #489 is an unblock_pr candidate.
+    unparked = build_candidate_plan(_state(pull_requests=[conflicting]))
+    assert 489 in [c.params.pr_number for c in unparked.candidates_for(PlayType.UNBLOCK_PR)]
+
+    # Parked: the candidate disappears and a "parked" blocked-reason is recorded.
+    parked = build_candidate_plan(
+        _state(pull_requests=[conflicting], parked_resource_keys=frozenset({"pr:489"}))
+    )
+    assert parked.candidates_for(PlayType.UNBLOCK_PR) == ()
+    reasons = parked.blocked_reasons_by_play_type.get(PlayType.UNBLOCK_PR, ())
+    assert any("parked" in r and "pr:489" in r for r in reasons)

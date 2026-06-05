@@ -320,6 +320,16 @@ class _OrchestratorBase:
         # are ``(issue_number, label)`` tuples; the merge helper is keyed
         # on issue_number.
         self._recent_applied_labels = collections.deque(maxlen=64)
+        # Per-resource worktree-allocation failure backstop (Piece A, issue #60).
+        # ``_resource_failure_counts`` tallies consecutive allocation failures
+        # keyed on resource key (``pr:<n>``); once a key crosses
+        # ``WORKTREE_PARK_THRESHOLD`` it is added to ``_parked_resource_keys`` and
+        # excluded from candidate selection for the rest of the session. This
+        # bounds transient blips (a couple of retries) while stopping a
+        # structurally-unallocatable PR from being re-selected every tick. Both
+        # are session-scoped in-memory; snapshotted onto state each tick.
+        self._resource_failure_counts: dict[str, int] = {}
+        self._parked_resource_keys: set[str] = set()
         # take_break-failure + rate-limit-recovery latches (desktop-s1u7). The
         # completion path mutates them; state.py reads recovery_exhausted_agent_ids.
         self._recovery = RecoveryTracker()

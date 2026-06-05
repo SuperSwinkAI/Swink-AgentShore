@@ -91,6 +91,8 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     # desktop-quv9: in-memory shadow of just-applied issue labels so the next
     # selector tick sees them across the gh-CLI / SQLite WAL-flush lag window.
     orch._recent_applied_labels = _collections.deque(maxlen=64)
+    orch._resource_failure_counts = {}
+    orch._parked_resource_keys = set()
     # desktop-yrr: loop-detector filter — override-dispatched plays excluded.
     # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
     from agentshore.core.main_repo_guard import MainRepoGuard
