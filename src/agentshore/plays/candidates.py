@@ -85,6 +85,9 @@ class WorkAvailability:
     blocked_issue_count: int
     disallowed_issue_count: int
     untrusted_issue_count: int
+    # Open PRs dropped this tick because their base branch != target_branch
+    # (Piece C). Surfaced so the dashboard can render an "(N hidden)" badge.
+    pull_requests_hidden_count: int
     covered_by_open_pr_count: int
     resolved_by_merged_pr_count: int
     in_flight_issue_count: int
@@ -552,8 +555,19 @@ class PlayCandidateAnalyzer:
         candidates: dict[PlayType, list[PlayCandidate]] = {}
         blocked: dict[PlayType, list[str]] = {}
         active_keys = active_resource_keys(state)
+        parked_keys = state.parked_resource_keys
 
         def add(candidate: PlayCandidate) -> None:
+            # Piece A: a resource parked after repeated worktree-allocation
+            # failures is excluded from every play that touches it, so a
+            # structurally-unallocatable PR can't be re-selected each tick.
+            parked_hit = sorted(set(candidate.resource_keys) & parked_keys)
+            if parked_hit:
+                reasons = blocked.setdefault(candidate.play_type, [])
+                msg = f"resource parked (worktree allocation failed): {', '.join(parked_hit)}"
+                if msg not in reasons:
+                    reasons.append(msg)
+                return
             conflict = resource_conflict_reason(candidate.resource_keys, active_keys)
             if conflict is not None:
                 reasons = blocked.setdefault(candidate.play_type, [])
@@ -752,6 +766,7 @@ class PlayCandidateAnalyzer:
             blocked_issue_count=len(self.blocked_issue_numbers),
             disallowed_issue_count=len(self.disallowed_issue_numbers),
             untrusted_issue_count=len(self.untrusted_issue_numbers),
+            pull_requests_hidden_count=state.ignored_pr_count,
             covered_by_open_pr_count=len(covered_by_open_pr_numbers),
             resolved_by_merged_pr_count=len(resolved_by_merged_pr_numbers),
             in_flight_issue_count=len(in_flight_numbers),

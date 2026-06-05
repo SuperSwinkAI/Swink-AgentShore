@@ -113,6 +113,8 @@ def make_test_orchestrator(
     orch._config_path = None
     orch._recent_play_completions = collections.deque(maxlen=64)
     orch._recent_applied_labels = collections.deque(maxlen=64)
+    orch._resource_failure_counts = {}
+    orch._parked_resource_keys = set()
     orch._recovery = RecoveryTracker()
     orch._snapshots = SnapshotProjector(
         manager=orch._manager, store=store, session_id=orch._session_id

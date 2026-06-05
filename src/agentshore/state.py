@@ -550,6 +550,13 @@ class OrchestratorState:
     agents: list[AgentSnapshot] = field(default_factory=list)
     open_issues: list[IssueSnapshot] = field(default_factory=list)
     pull_requests: list[PullRequestSnapshot] = field(default_factory=list)
+    # Count of open PRs dropped from ``pull_requests`` this tick because their
+    # base branch != the configured ``target_branch`` (Piece C target-branch
+    # filter). The PRs themselves are removed from the shared collection so they
+    # never reach the dashboard, candidate pool, or backpressure; this scalar is
+    # surfaced via WorkAvailability so the dashboard can render an "(N hidden)"
+    # badge. Zero when no filter is active or nothing was filtered.
+    ignored_pr_count: int = 0
     pending_review_queue: list[PendingReviewSnapshot] = field(default_factory=list)
     budget: BudgetSnapshot | None = None
     trajectory: TrajectorySnapshot | None = None
@@ -599,6 +606,13 @@ class OrchestratorState:
     # False and the author set is empty (no gating).
     restrict_issues_to_trusted_authors: bool = False
     trusted_issue_authors: frozenset[str] = field(default_factory=frozenset)
+    # Resource keys (``pr:<n>`` / ``issue:<n>``) parked for the session because a
+    # worktree allocation against them failed repeatedly (Piece A backstop). The
+    # candidate analyzer treats these like in-flight resources and excludes every
+    # play that touches them, so a structurally-unallocatable PR can't be
+    # re-selected every tick (the unblock_pr hot-loop, issue #60). Snapshotted
+    # each tick from the orchestrator's in-memory park set; empty by default.
+    parked_resource_keys: frozenset[str] = field(default_factory=frozenset)
     # Consecutive plays of the same type regardless of success/failure. Catches
     # PPO collapses onto a cheap repeated play (where every play succeeds and
     # `same_type_failure_streak` stays at 0). Used for masking + reward penalty

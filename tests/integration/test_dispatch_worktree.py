@@ -39,6 +39,7 @@ from agentshore.core.mixins.dispatch import Dispatcher
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.base import PlayParams
+from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentType, PlayType
 
 # ---------------------------------------------------------------------------
@@ -365,7 +366,15 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         assert result is False
         drop_mock.assert_awaited_once()
         call = drop_mock.await_args
-        assert call.kwargs["reason"] == "worktree_create_failed"
+        # Piece A (issue #60): the drop now carries a typed MaskReason instead of
+        # the bare string "worktree_create_failed" that logged an uninformative
+        # classification="unknown". With no resource_keys on params this single
+        # failure is TRANSIENT (still retrying), not yet parked.
+        reason = call.kwargs["reason"]
+        assert isinstance(reason, MaskReason)
+        assert reason.classification == MaskClassification.TRANSIENT
+        assert reason.source == MaskSource.SPAWN
+        assert "worktree allocation failed" in reason.text
         assert call.kwargs["event"] == "dispatch_worktree_create_failed"
         # No worktrees row was written for the failed attempt.
         assert await _count_active_worktrees(store, session_id="s-fail") == 0
