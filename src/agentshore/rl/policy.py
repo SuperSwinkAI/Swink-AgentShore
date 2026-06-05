@@ -253,9 +253,15 @@ class ActorCritic(nn.Module):
         """Load weights from *path*.
 
         Raises ``IncompatibleCheckpointError`` if any of action_space_version,
-        policy_version, observation_version, or num_configs disagree with the
-        current build. Hard-reset by design — the config head is fresh for each
-        POLICY_VERSION bump.
+        policy_version, or observation_version disagree with the current build.
+        Hard-reset by design — the config head is fresh for each POLICY_VERSION
+        bump.
+
+        ``num_configs`` is *not* gated: it is read from the checkpoint to size
+        the config head, so a checkpoint trained on one agent roster loads with
+        that roster's head width. Callers that mix rosters (e.g. the shipped
+        warm-start seed) must reconcile the width themselves — the seed ships
+        with ``num_configs == 0`` for exactly this reason.
         """
         payload = torch.load(Path(path), map_location="cpu", weights_only=True)
         saved_action_ver = payload.get("action_space_version")
