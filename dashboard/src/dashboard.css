@@ -2149,6 +2149,18 @@
         color: var(--fm-text-muted);
         flex-shrink: 0;
       }
+      /* Piece C: "(N hidden)" PR badge — open PRs filtered out because their
+         base branch differs from the session target branch. Muted so it reads
+         as accounting metadata, not active work. */
+      .km-hdr-hidden {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: var(--fm-text-muted);
+        opacity: 0.75;
+        flex-shrink: 0;
+        margin-right: auto;
+      }
       .km-legend {
         display: flex;
         align-items: center;
