@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import {
   BUDGET_DEFAULT_USD,
+  BUDGET_DRAIN_RESERVE_USD,
   BUDGET_MAX_USD,
   BUDGET_MIN_USD,
   BudgetScreen,
@@ -42,8 +43,21 @@ describe("BudgetScreen", () => {
 
   it("renders the live label with the dollar amount when capped", () => {
     renderScreen({ mode: "capped", total: 250 });
-    expect(screen.getByTestId("budget-live-label")).toHaveTextContent("Budget: $250");
+    expect(screen.getByTestId("budget-live-label")).toHaveTextContent("Soft cap: $250");
     expect(screen.getByTestId("budget-slider-value")).toHaveTextContent("$250");
+  });
+
+  it("explains the soft-cap reserve and overrun behavior", () => {
+    renderScreen({ mode: "capped", total: 250 });
+    expect(
+      screen.getByText(
+        new RegExp(
+          `soft cap.*within \\$${BUDGET_DRAIN_RESERVE_USD}.*already working can finish.*slightly above the cap`,
+          "iu",
+        ),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Soft cap")).toBeInTheDocument();
   });
 
   it("disables the slider when Unlimited is selected", () => {

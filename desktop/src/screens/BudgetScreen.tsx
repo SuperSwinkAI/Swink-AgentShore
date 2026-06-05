@@ -16,6 +16,7 @@ export const BUDGET_MIN_USD = 20;
 export const BUDGET_MAX_USD = 1000;
 export const BUDGET_STEP_USD = 5;
 export const BUDGET_DEFAULT_USD = 200;
+export const BUDGET_DRAIN_RESERVE_USD = 5;
 
 export type BudgetMode = "capped" | "unlimited";
 
@@ -90,7 +91,7 @@ export function BudgetScreen({
   );
 
   const isCapped = selection.mode === "capped";
-  const liveLabel = isCapped ? `Budget: ${formatDollars(sliderValue)}` : "Budget: Unlimited";
+  const liveLabel = isCapped ? `Soft cap: ${formatDollars(sliderValue)}` : "Budget: Unlimited";
 
   const onContinue = useCallback(async () => {
     // Match TargetBranchScreen's save-then-navigate flow. When no
@@ -124,8 +125,9 @@ export function BudgetScreen({
       <header className={styles.header}>
         <h1>Budget</h1>
         <p>
-          Session spend cap. AgentShore halts dispatching new plays when the running cost reaches
-          this amount.
+          Set a soft cap for this session. AgentShore stops assigning new plays within{" "}
+          {formatDollars(BUDGET_DRAIN_RESERVE_USD)} of the cap, while agents already working can
+          finish so their work is not wasted. Final spend may land slightly above the cap.
         </p>
       </header>
 
@@ -139,7 +141,7 @@ export function BudgetScreen({
             onChange={() => setMode("capped")}
             data-testid="budget-mode-capped"
           />
-          <span>Capped</span>
+          <span>Soft cap</span>
         </label>
 
         <div
@@ -155,7 +157,7 @@ export function BudgetScreen({
             value={sliderValue}
             disabled={!isCapped}
             onChange={onSliderChange}
-            aria-label="Session spend cap in US dollars"
+            aria-label="Session soft cap in US dollars"
             data-testid="budget-slider"
             className={styles.slider}
           />
