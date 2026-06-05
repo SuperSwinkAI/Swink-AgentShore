@@ -195,7 +195,6 @@ export const ZONES: Zone[] = [
       { x: 38, y: 30, facing: "north" },
       { x: 27, y: 31, facing: "south" },
       { x: 46, y: 31, facing: "south" },
-      { x: 32, y: 35, facing: "west" },
       { x: 44, y: 34, facing: "east" },
     ],
   },
