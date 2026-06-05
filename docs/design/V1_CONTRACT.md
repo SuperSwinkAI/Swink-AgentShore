@@ -45,12 +45,23 @@ The action index order is fixed for checkpoints, replay, and reports:
 | 16 | Groom Backlog | |
 | 17 | Seed Project | |
 | 18 | Calibrate Alignment | |
-| 19 | Future 6 | reserved / permanently masked |
+| 19 | Prune | infrastructure-debt sweep; threshold-gated |
 | 20 | Future 7 | reserved / permanently masked |
 | 21 | Future 8 | reserved / permanently masked |
 
-Any policy checkpoint must include this action-space version:
+The space is 22 slots: 19 active plays plus 3 permanently reserved
+(`FUTURE_4` at 14, `FUTURE_7` at 20, `FUTURE_8` at 21). Any policy checkpoint
+must include this action-space version:
 `{"action_space_version": 13, "num_actions": 22, "policy_version": 5}`
+
+**Versioning contract.** `ACTION_SPACE_VERSION` is bumped only when the tensor
+shape (22) changes. A reserved slot may be filled with a real play — or a play
+may be emptied back to a reserved slot — *in place* without bumping
+`ACTION_SPACE_VERSION`, so existing learned weights still load. This is why
+removing browser verification (former slot 14, now `FUTURE_4` reserved),
+adding `Prune` at slot 19, and adding `Reconcile State` at slot 11 all kept the
+space at v13. `POLICY_VERSION` (5) is bumped independently when the config head's
+shape or semantics change; mismatched-`policy_version` checkpoints are rejected.
 
 `Instantiate Agent` uses the config head to choose `(agent_type, model_tier)`.
 A type/tier config is spawnable only when the session is seeded, budget and
@@ -58,6 +69,44 @@ cooldown gates pass, total live agents are below `agent_spawn.max_total`, live
 agents for that same type/tier are below `agent_spawn.max_per_config`, and no
 idle agent of that type/tier already exists. Busy agents do not block spawning
 additional same-config capacity.
+
+## Observation Vector
+
+The policy consumes a fixed-size float32 vector built by `encode_observation` in
+`src/agentshore/rl/observation.py`. The layout is locked; changing any slot bumps
+`OBSERVATION_VERSION`.
+
+`{"observation_version": 13, "observation_dim": 246}`
+
+| Slots | Block | Contents |
+|---:|---|---|
+| 0-1 | dependency | beads blocked-task-ratio + ready-task-ratio |
+| 2-7 | retired | permanently zero-filled |
+| 8-11 | epic | global closure ratio + top-3 epic closure ratios |
+| 12-16 | issue | open, closed, created, net-velocity, scope-completion |
+| 17-32 | tier-fleet | 3 tiers × 5 features + active-count |
+| 33-36 | budget | remaining, spent, avg-cost, sufficiency |
+| 37-52 | history | last-5 play-types + last-5 success-flags + rolling stats + drift |
+| 53-55 | time | session-duration, since-calibration, since-seed |
+| 56-58 | pr | open, awaiting-review, approved-unmerged |
+| 59-62 | health | stagnation, streak, loop-level, agents-in-error |
+| 63-64 | handoff | avg-context-loss, avg-rampup |
+| 65-67 | trajectory | projected-alignment, est-plays, est-cost |
+| 68-70 | learnings | count, avg-confidence, injection-rate |
+| 71 | churn | issue churn rate over last 10 plays |
+| 72-167 | per-config | 32 configs × (idle, busy, success-rate) zero-padded |
+| 168-171 | pr-author | open + awaiting-review per claude_code/codex authorship |
+| 172-173 | velocity / busy | rolling velocity + normalized busy-agent count |
+| 174-176 | pr-readiness | unreviewed-fraction, mergeable-fraction, in-flight-issues |
+| 177 | skip-rate | clean confirm/claim re-pick rate (diagnostic, no action) |
+| 178 | pr-pressure | open-prs / saturation, clamped [0, 1] |
+| 179-244 | specialization | 3 tiers × 22 plays success rates (0.5 default) |
+| 245 | version marker | stable per-version constant (1.0) |
+
+Tier order is `(small, medium, large)` across the tier-fleet and specialization
+blocks. The specialization block auto-sizes with the action space (3 × 22 = 66
+slots at `NUM_ACTIONS=22`). `encode_observation` is a pure function: identical
+inputs always produce identical bytes (the V1 determinism gate).
 
 ## PPO-First Alpha
 
@@ -95,8 +144,11 @@ Offline PPO training may only train on trajectories that include these fields.
 ### Cold-Start Play Weights
 
 The actor bias is initialised from `DEFAULT_PLAY_WEIGHTS` in
-`src/agentshore/rl/cold_start.py`. Reserved slots are masked at runtime via
-preconditions and are never selected in practice.
+`src/agentshore/rl/cold_start.py`. The three reserved slots
+(`Future 4`, `Future 7`, `Future 8`) still carry the low anchor weight `0.0114`
+so the log-renormalization sums to ~1.0, but they are masked at runtime via
+preconditions and are never selected in practice. The weight on a reserved slot
+is a numerical anchor only, not a selection prior.
 
 | Play | Cold-Start Weight |
 |---|---:|
@@ -116,8 +168,8 @@ preconditions and are never selected in practice.
 | Design Audit | 0.0114 |
 | End Agent | 0.0114 |
 | Reconcile State | 0.0114 |
+| Prune | 0.0114 |
 | Future 4 (reserved) | 0.0114 |
-| Future 6 (reserved) | 0.0114 |
 | Future 7 (reserved) | 0.0114 |
 | Future 8 (reserved) | 0.0114 |
 | End Session | 0.0057 |
@@ -173,7 +225,8 @@ Skill-backed plays use these canonical skill names:
 It must include:
 
 - session id, state, run mode, and policy mode;
-- action-space version (13), policy version (5), and policy checkpoint id;
+- action-space version (13), observation version (13), policy version (5), and
+  policy checkpoint id;
 - current play and recent play history;
 - agents and agent status;
 - BEADS graph summary (epic/story/task counts) and open issue counts;
@@ -187,7 +240,7 @@ It must include:
 
 ## V1 Persistence
 
-Schema version: 13. BEADS graph state is owned by the `bd` tool and is not
+Schema version: 3. BEADS graph state is owned by the `bd` tool and is not
 replicated into AgentShore SQLite. The schema (22 tables) must support the safety
 and PPO contracts, persisting at minimum: sessions; plays with params, output,
 artifacts, reward, failure category, and checkpoint id; agents and task history;

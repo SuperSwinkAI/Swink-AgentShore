@@ -20,7 +20,7 @@ masked when every enabled type/tier already has an idle agent available.
 
 ## Implementation Status
 
-Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, and dashboard bridge are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 246-dim (observation version 13). Policy version 5. Schema version 13 with 22 tables.
+Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, dashboard bridge, and packaged desktop app (version 0.2.1) are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 246-dim (observation version 13). Policy version 5. SQLite schema version 3 with 22 tables.
 
 ## Tech Stack
 
@@ -78,12 +78,11 @@ Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestra
 |         v                    v                                             |
 | +----------------+  +------------------------------------------------+   |
 | | Metrics        |  | Coding Agents                                   |   |
-| | Collector      |  | +----------+ +----------+ +---------+ +------+ |   |
-| +-------+--------+  | | Claude   | | Codex    | | API LLMs| |Brwsr | |   |
-|         |            | | Code CLI | | CLI      | | (httpx) | |(Play-| |   |
-|         |            | +----------+ +----------+ +---------+ |wright| |   |
-|         |            |                                       +------+ |   |
-|         |            +------------------------------------------------+   |
+| | Collector      |  | +--------+ +-------+ +--------+ +--------+    |   |
+| +-------+--------+  | | Claude | | Codex | | Gemini | | API    |    |   |
+|         |           | | Code   | | CLI   | | CLI    | | (httpx)|    |   |
+|         |           | +--------+ +-------+ +--------+ +--------+    |   |
+|         |           +------------------------------------------------+   |
 |         |                                                                 |
 | +----------------+  +----------------+                                    |
 | | Session        |  | Scope          |                                    |
@@ -109,7 +108,7 @@ Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestra
 
 ### Skill Architecture
 
-AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding skill template that is rendered with minimal parameters (issue number, PR URL, branch name, etc.) and invoked on a coding agent via its CLI. The 14 current skill templates are:
+AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding skill template that is rendered with minimal parameters (issue number, PR URL, branch name, etc.) and invoked on a coding agent via its CLI. The 15 current skill templates are:
 
 - `agentshore-calibrate-alignment`
 - `agentshore-cleanup`
@@ -118,6 +117,7 @@ AgentShore dispatches pre-built prompt templates ("skills") to coding agents rat
 - `agentshore-groom-backlog`
 - `agentshore-issue-pickup`
 - `agentshore-merge-pr`
+- `agentshore-prune`
 - `agentshore-reconcile-state`
 - `agentshore-refine-tasks`
 - `agentshore-run-qa`
@@ -145,7 +145,7 @@ Skills ship as project-scoped files in `.agents/skills/`, making them version-co
 | [Reports](reports/DESIGN.md) | HTML report generation, Chart.js visualizations, session summaries | `docs/design/reports/` |
 | [Metrics](metrics/DESIGN.md) | Alignment tracking, cost accounting, observability | `docs/design/metrics/` |
 | [Dashboard](dashboard/DESIGN.md) | Browser bridge, pixel-art canvas state rendering, demo transport | `docs/design/dashboard/` |
-| [Desktop Layer Cake](desktop/LAYER_CAKE.html) | Proposed Tauri shell, sidecar IPC, start screen, and packaged dashboard stack | `docs/design/desktop/` |
+| [Desktop](desktop/DESIGN.md) | Tauri shell (app version 0.2.1), bd sidecar IPC, start screen, and packaged dashboard stack | `docs/design/desktop/` |
 
 ## Data Flow
 
@@ -190,6 +190,6 @@ The core loop is: auto-detect and seed the BEADS graph from GitHub issues, then 
 - **No secrets in config/DB**: API keys come from environment variables or OS keychain only.
 - **No code execution**: AgentShore dispatches plays; agents execute code. Agent output is logged, never eval'd.
 - **GitHub writes**: All AgentShore-created issues/PRs are labeled `agentshore/*` for auditability.
-- **Browser sandbox**: Playwright headless Chromium has no access to AgentShore state beyond the target URL.
+- **Per-agent identities**: CLI agents can bind to distinct GitHub identities (git authorship + `GH_TOKEN`) applied as per-subprocess env overlays; tokens never appear in log events.
 - **Learnings injection**: Filtered by confidence score and capped at `max_prompt_entries` to limit prompt injection risk.
 - **Skill integrity**: Skill templates (`.agents/skills/`) control agent instructions; treat with the same rigor as CI pipeline definitions.

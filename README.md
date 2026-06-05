@@ -14,17 +14,18 @@
 ## Install
 
 ```bash
-pip install agentshore
+uv tool install --editable .   # install the `agentshore` CLI from a checkout
 ```
 
-Or via the macOS `.pkg` installer (includes bundled sidecar and desktop app).
+For development, `uv sync --group dev` sets up the full toolchain in `.venv/` and you can run the CLI with `uv run agentshore`.
+
+The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `scripts/build-macos.sh`, which produces a signed `.app`, `.dmg`, and `.pkg` installer.
 
 ## Quick start
 
 ```bash
 # In your project directory
-agentshore init            # scaffold config, connect GitHub, set up identity
-agentshore status          # confirm everything is wired
+agentshore init            # scaffold config, wire BEADS + GitHub, set up identity
 agentshore start           # start a supervised session (TUI)
 ```
 
@@ -65,14 +66,12 @@ Full config reference: `agentshore configure --help`.
 ## CLI reference
 
 ```
-agentshore init              scaffold config and project state
+agentshore init              scaffold config, wire BEADS + GitHub, set up identity
 agentshore start             start an RL session (TUI or headless)
 agentshore stop              gracefully drain and stop a running session
-agentshore status            show session state, agent health, recent plays
 agentshore dashboard         open the browser dashboard for a running session
 agentshore configure         interactive config wizard
-agentshore identity          manage per-agent GitHub identities
-agentshore approvals         review and process pending human-approval requests
+agentshore identity          manage and verify per-agent GitHub identities
 agentshore archive           archive session data for cross-session analysis
 agentshore report            generate an end-of-session HTML report
 agentshore train             offline PPO training from archived experience
@@ -83,10 +82,10 @@ agentshore trusted-ids       manage GitHub logins allowed to unblock plays
 
 The core loop: observe state → RL policy selects a play → execute play via agent → compute reward → update policy.
 
-- **RL engine**: custom PPO in PyTorch, 22-action head (19 active plays), 246-feature observation vector
+- **RL engine**: custom PPO in PyTorch, 22-action head (19 active plays + 3 reserved/masked, action-space version 13), 246-feature observation vector (observation version 13)
 - **Plays**: each play implements `preconditions()`, `execute()`, `estimated_cost()`; a mask prevents invalid plays from being selected
-- **Agents**: Claude Code, Codex, Gemini run as async subprocesses; API agents use httpx
-- **Beads integration**: plays operate on a three-layer graph (BEADS epics/stories/tasks → GitHub issues → AgentShore session DB)
+- **Agents**: CLI agents (Claude Code, Codex, Gemini) run as async subprocesses; API agents use httpx
+- **Three-layer graph**: BEADS is the canonical project graph (epics → stories → tasks), GitHub is the human conversation surface, and AgentShore's SQLite database holds session-scoped RL state
 - **Data**: single SQLite database per project (schema namespace `agentshore_dev_v1`), WAL mode, aiosqlite
 
 Design documentation: [`docs/design/HLD.md`](docs/design/HLD.md)
