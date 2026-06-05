@@ -17,6 +17,7 @@ from agentshore.state import (
     OrchestratorState,
     PendingReviewSnapshot,
     PlayType,
+    PullRequestSnapshot,
     SessionState,
     loop_level_for_streak,
 )
@@ -155,6 +156,10 @@ class _StateBuilderHost(Protocol):
     _pause_event: asyncio.Event
     _recent_play_completions: collections.deque[PlayRecord]
     _recent_applied_labels: collections.deque[tuple[int, str]]
+    # Session-scoped park set for resources whose worktree allocation failed
+    # repeatedly (Piece A). Snapshotted onto OrchestratorState each tick so the
+    # state-only candidate analyzer can exclude them.
+    _parked_resource_keys: set[str]
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
 
@@ -403,14 +408,59 @@ class StateBuilder:
         except (KeyError, ValueError, AttributeError) as exc:
             _logger.warning("action_mask_compute_failed", error=str(exc))
 
+    @staticmethod
+    def _filter_pull_requests_to_target(
+        pull_requests: list[PullRequestSnapshot],
+        target_branch: str | None,
+    ) -> tuple[list[PullRequestSnapshot], int]:
+        """Drop open PRs whose base branch != ``target_branch`` (Piece C).
+
+        Returns ``(kept, hidden_count)``. The filter only engages when
+        ``target_branch`` is explicitly set; otherwise the input list is returned
+        unchanged. A PR is dropped only when its ``base_ref`` is a known, non-empty
+        string that differs from the target — PRs with an unknown base (``None`` /
+        empty) are kept so missing data never hides work. One ``github_pr_ignored``
+        event is emitted per dropped PR (the direct analog of
+        ``github_issue_ignored``) for forensics.
+        """
+        if not target_branch:
+            return pull_requests, 0
+        kept: list[PullRequestSnapshot] = []
+        hidden = 0
+        for pr in pull_requests:
+            base = getattr(pr, "base_ref", None)
+            if isinstance(base, str) and base and base != target_branch:
+                hidden += 1
+                _logger.info(
+                    "github_pr_ignored",
+                    reason="wrong_base_branch",
+                    pr_number=pr.pr_number,
+                    base_ref=base,
+                    target_branch=target_branch,
+                )
+            else:
+                kept.append(pr)
+        return kept, hidden
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
+        cfg = self._host._cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
         pull_requests = self._snapshots.project_pull_requests(data.pr_records)
+        # Piece C: target-branch PR filter. When the project explicitly configures
+        # a ``target_branch``, drop open PRs whose base branch is known and differs
+        # from it — they are out of scope for this session and must not reach the
+        # dashboard, candidate pool, or backpressure (all of which source from
+        # ``state.pull_requests``). Conservative: a PR with an unknown base
+        # (``base_ref`` None/empty, e.g. legacy rows) is kept. Skipped entirely
+        # when ``target_branch`` is unset so the repo default isn't second-guessed.
+        pull_requests, ignored_pr_count = self._filter_pull_requests_to_target(
+            pull_requests, cfg.project.target_branch
+        )
         active_pr_numbers = {pr.pr_number for pr in pull_requests}
         pending_review_queue = [
             PendingReviewSnapshot(
@@ -442,7 +492,6 @@ class StateBuilder:
             seed_freshness,
             consecutive_nonproductive_by_type,
         ) = self._snapshots.compute_play_recency(data.play_history)
-        cfg = self._host._cfg
         budget = self._snapshots.build_budget_snapshot(
             total_plays,
             total_cost,
@@ -487,6 +536,7 @@ class StateBuilder:
             agents=agents,
             open_issues=open_issues,
             pull_requests=pull_requests,
+            ignored_pr_count=ignored_pr_count,
             pending_review_queue=pending_review_queue,
             budget=budget,
             trajectory=trajectory,
@@ -503,6 +553,7 @@ class StateBuilder:
                 if cfg.trusted_ids.restrict_issues_to_trusted_authors
                 else frozenset()
             ),
+            parked_resource_keys=frozenset(self._host._parked_resource_keys),
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,

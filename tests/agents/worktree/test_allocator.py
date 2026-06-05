@@ -10,6 +10,7 @@ from agentshore.agents.worktree.allocator import (
     AllocateResult,
     WorktreeAllocationFailed,
     WorktreeBranchGone,
+    _branch_checked_out_in_primary,
     ensure_worktree,
     remove_worktree,
     slug_for_branch,
@@ -316,3 +317,62 @@ async def test_allocate_does_not_retry_on_non_pickup_collision(
         )
     # The operator-owned worktree is untouched.
     assert held_path.exists()
+
+
+# --- Piece B: detached-HEAD fallback when the branch is checked out elsewhere -
+
+
+def _head_is_detached(worktree: Path) -> bool:
+    """Return True when ``worktree`` has a detached HEAD (no current branch)."""
+    import subprocess
+
+    rc = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=str(worktree),
+        capture_output=True,
+    ).returncode
+    return rc != 0
+
+
+async def test_branch_checked_out_in_primary_detects_current_branch(main_repo: Path) -> None:
+    # The primary working tree holds ``main``; a sibling feature branch does not.
+    assert await _branch_checked_out_in_primary(main_repo, "main") is True
+    assert await _branch_checked_out_in_primary(main_repo, "feature/x") is False
+
+
+async def test_ensure_worktree_detaches_when_branch_held_by_primary(
+    main_repo: Path, worktree_root: Path
+) -> None:
+    # A PR whose head branch is ``main`` (the repo default the primary tree
+    # already has checked out): ``-B main`` would fail, so we must detach. Issue #60.
+    target = worktree_root / "pr-from-main"
+    result = await ensure_worktree(
+        main_repo=main_repo,
+        worktree_path=target,
+        branch_name="main",
+        base_ref="origin/main",
+        fetch=True,
+    )
+    assert isinstance(result, AllocateResult)
+    assert result.created is True
+    assert result.detached is True
+    assert target.exists()
+    assert _head_is_detached(target) is True
+
+
+async def test_ensure_worktree_uses_branch_when_not_checked_out_elsewhere(
+    main_repo: Path, worktree_root: Path, remote_branch: str
+) -> None:
+    # The normal case: the head branch is a feature branch nobody else holds, so
+    # the worktree is created on that branch (not detached).
+    target = worktree_root / "feature-x"
+    result = await ensure_worktree(
+        main_repo=main_repo,
+        worktree_path=target,
+        branch_name=remote_branch,
+        base_ref=f"origin/{remote_branch}",
+        fetch=True,
+    )
+    assert result.created is True
+    assert result.detached is False
+    assert _head_is_detached(target) is False

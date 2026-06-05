@@ -896,6 +896,12 @@ export default function KanbanStage(): React.ReactElement | null {
   const { columns, graph } = buildColumns(internal.state);
   const epicIds = (graph?.epics ?? []).map((epic) => epic.bead_id);
 
+  // Piece C: open PRs hidden by the target-branch filter (base != target_branch).
+  // Surfaced as a small header badge so the filtered PRs are accounted for
+  // without cluttering the board with out-of-scope cards.
+  const hiddenPrCount =
+    internal.state?.work_availability?.pull_requests_hidden_count ?? 0;
+
   // Build a unique epic set in insertion order across all phases for the legend.
   const seenEpics = new Map<string, { title: string; hue: number }>();
   for (const phase of PHASES) {
@@ -950,6 +956,16 @@ export default function KanbanStage(): React.ReactElement | null {
         >
           <div className="km-hdr">
             <span className="km-hdr-label">Issues</span>
+            {hiddenPrCount > 0 && (
+              <span
+                className="km-hdr-hidden"
+                title={`${hiddenPrCount} open PR${
+                  hiddenPrCount === 1 ? "" : "s"
+                } hidden — base branch differs from the session target branch`}
+              >
+                ({hiddenPrCount} hidden)
+              </span>
+            )}
             <div className="km-legend">
               {Array.from(seenEpics.entries()).map(([id, { title, hue }]) => (
                 <span key={id} className="km-legend-item">

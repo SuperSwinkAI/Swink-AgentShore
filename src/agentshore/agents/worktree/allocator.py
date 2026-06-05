@@ -52,6 +52,13 @@ class AllocateResult:
     created: bool
     fetched: bool
     head_sha: str
+    # True when the worktree was checked out in detached-HEAD mode instead of on
+    # ``branch_name`` because that branch was already checked out in another
+    # worktree (e.g. a PR whose head branch is the repo default ``main``, which
+    # the primary working tree holds). Git refuses the same branch in two
+    # worktrees, so we detach at ``base_ref`` instead; the skill still pushes by
+    # explicit refspec (``git push origin HEAD:<branch>``). Issue #60 / Piece B.
+    detached: bool = False
 
 
 _SLUG_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -296,6 +303,30 @@ async def _list_worktrees_porcelain(main_repo: Path) -> list[str]:
     return paths
 
 
+async def _branch_checked_out_in_primary(main_repo: Path, branch_name: str) -> bool:
+    """Return True when ``branch_name`` is the branch the primary tree holds.
+
+    Git refuses to check the same branch out in two worktrees. When a PR's head
+    branch equals the branch the *primary* working tree (``main_repo`` itself)
+    has checked out — most commonly the repo default ``main`` — a
+    ``git worktree add -B <branch>`` is structurally doomed (``fatal: '<name>'
+    is already used by worktree at ...``) and the primary checkout can't be
+    removed to reclaim it. The caller detaches at ``base_ref`` instead.
+
+    Deliberately narrow: a branch held by a *sibling* worktree is left to the
+    existing collision-retry path — a crashed-session ``pickup-*`` orphan is
+    force-removed and the branch reclaimed (better than detaching around it),
+    and an operator-owned worktree still surfaces a loud error. Returns False on
+    any git failure so the subsequent add surfaces the real error rather than
+    being silently skipped. Issue #60 / Piece B.
+    """
+    try:
+        _, stdout, _ = await _run_git("branch", "--show-current", cwd=main_repo, check=False)
+    except WorktreeAllocationFailed:
+        return False
+    return stdout.strip() == branch_name
+
+
 async def ensure_worktree(
     *,
     main_repo: Path,
@@ -396,20 +427,40 @@ async def ensure_worktree(
                 reason="orphan_dirty_uncommitted",
             )
 
+    # When a specific branch is requested but it's already checked out in
+    # another worktree (the primary tree holding the repo default, a sibling
+    # worktree), ``git worktree add -B <branch>`` cannot succeed — git forbids
+    # the same branch in two worktrees. Fall back to a detached-HEAD checkout at
+    # ``base_ref``; the caller/skill pushes by explicit refspec rather than
+    # relying on being "on" the branch. Issue #60 / Piece B.
+    detached = branch_name is not None and await _branch_checked_out_in_primary(
+        main_repo, branch_name
+    )
     args: list[str] = ["worktree", "add"]
-    if branch_name is not None:
+    if branch_name is not None and not detached:
         args.extend(["-B", branch_name, str(worktree_path), base_ref])
     else:
+        if detached:
+            log.warning(
+                "worktree_detached_branch_in_use",
+                branch=branch_name,
+                base_ref=base_ref,
+                worktree_path=str(worktree_path),
+            )
         args.extend(["--detach", str(worktree_path), base_ref])
 
     try:
-        await _add_worktree_with_collision_retry(args, main_repo=main_repo, branch_name=branch_name)
+        # In detached mode there is no branch to collide on pickup-*, so pass
+        # branch_name=None to keep the collision-retry path's branch logic off.
+        await _add_worktree_with_collision_retry(
+            args, main_repo=main_repo, branch_name=None if detached else branch_name
+        )
     except WorktreeAllocationFailed:
         if worktree_path.exists():
             shutil.rmtree(worktree_path, ignore_errors=True)
         raise
 
-    if branch_name is not None and fetched:
+    if branch_name is not None and not detached and fetched:
         await _run_git(
             "merge",
             "--ff-only",
@@ -419,7 +470,13 @@ async def ensure_worktree(
         )
 
     head = await _head_sha(worktree_path)
-    return AllocateResult(path=worktree_path, created=True, fetched=fetched, head_sha=head)
+    return AllocateResult(
+        path=worktree_path,
+        created=True,
+        fetched=fetched,
+        head_sha=head,
+        detached=detached,
+    )
 
 
 async def remove_worktree(

@@ -54,6 +54,11 @@ if TYPE_CHECKING:
 
 
 _MAX_MASKED_OVERRIDE_REQUEUES = 3
+# Consecutive worktree-allocation failures against a single resource key before
+# it is parked for the session (Piece A, issue #60). Allows a couple of retries
+# for a transient blip (git timeout, momentary lock) while stopping a
+# structurally-unallocatable PR from being re-selected every tick.
+_WORKTREE_PARK_THRESHOLD = 3
 
 
 def _is_git_work_tree(path: Path) -> bool:
@@ -103,6 +108,12 @@ class _DispatcherHost(Protocol):
     _dispatch_ctx: dict[str, _DispatchContext]
     _registry: object | None
     _idle_streak: int
+    # Per-resource worktree-allocation failure backstop (Piece A, issue #60).
+    # The dispatcher tallies failures here and parks keys that cross the
+    # threshold; the state builder snapshots ``_parked_resource_keys`` onto
+    # OrchestratorState each tick so the candidate analyzer excludes them.
+    _resource_failure_counts: dict[str, int]
+    _parked_resource_keys: set[str]
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
@@ -498,6 +509,43 @@ class Dispatcher:
             revalidation_window_seconds=revalidation_window_seconds,
         )
 
+    def register_worktree_allocation_failure(self, params: PlayParams) -> bool:
+        """Tally a worktree-allocation failure per resource key; park on threshold.
+
+        Increments the per-resource failure counter for each resource key carried
+        on ``params`` and, once a key reaches ``_WORKTREE_PARK_THRESHOLD``, adds it
+        to the session park set so the candidate analyzer stops re-selecting it
+        (Piece A backstop, issue #60). Returns ``True`` when any of this play's
+        resource keys is parked as of this failure — the caller uses that to
+        classify the drop as HARD (structurally stuck) vs TRANSIENT (still
+        retrying). Resources with no usable key are treated as transient.
+        """
+        host = self._host
+        raw = params.extras.get("resource_keys", [])
+        keys = (
+            [k for k in raw if isinstance(k, str) and k] if isinstance(raw, (list, tuple)) else []
+        )
+        if not keys:
+            return False
+        newly_parked: list[str] = []
+        for key in keys:
+            if key in host._parked_resource_keys:
+                continue
+            count = host._resource_failure_counts.get(key, 0) + 1
+            host._resource_failure_counts[key] = count
+            if count >= _WORKTREE_PARK_THRESHOLD:
+                host._parked_resource_keys.add(key)
+                newly_parked.append(key)
+        if newly_parked:
+            _logger.warning(
+                "dispatch_resource_parked",
+                session_id=self._session_id,
+                reason="worktree_allocation_failed",
+                resource_keys=newly_parked,
+                threshold=_WORKTREE_PARK_THRESHOLD,
+            )
+        return any(key in host._parked_resource_keys for key in keys)
+
     async def select_play(
         self,
         state: OrchestratorState,
@@ -658,17 +706,34 @@ class Dispatcher:
                     play_type=play_type, params=params
                 )
             except (WorktreeAllocationFailed, WorktreeBranchGone) as exc:
+                alloc_reason = getattr(exc, "reason", None) or getattr(exc, "branch", None)
                 _logger.warning(
                     "worktree_allocate_failed",
                     session_id=self._session_id,
                     play_type=play_type.value,
                     error=str(exc),
-                    reason=getattr(exc, "reason", None) or getattr(exc, "branch", None),
+                    reason=alloc_reason,
+                )
+                # Piece A: tally the failure per resource key and park keys that
+                # cross the retry threshold. A parked resource is structurally
+                # stuck (HARD) — the candidate analyzer will stop offering it, so
+                # the drop no longer hot-loops. Below threshold it's still
+                # retrying (TRANSIENT). Passing a typed MaskReason also replaces
+                # the old bare-string ``"worktree_create_failed"`` that logged an
+                # uninformative ``classification: "unknown"``.
+                parked = self.register_worktree_allocation_failure(params)
+                drop_reason = MaskReason(
+                    text=f"worktree allocation failed ({alloc_reason})"
+                    + (" — resource parked for session" if parked else ""),
+                    classification=(
+                        MaskClassification.HARD if parked else MaskClassification.TRANSIENT
+                    ),
+                    source=MaskSource.SPAWN,
                 )
                 await self.drop_selected_play_before_dispatch(
                     play_type,
                     params,
-                    reason="worktree_create_failed",
+                    reason=drop_reason,
                     event="dispatch_worktree_create_failed",
                 )
                 return False

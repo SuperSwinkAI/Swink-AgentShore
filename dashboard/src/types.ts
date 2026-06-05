@@ -206,6 +206,10 @@ export interface WorkAvailability {
   mergeable_pr_count: number;
   unblockable_pr_count: number;
   actionable_pr_work_count: number;
+  // Open PRs hidden because their base branch != the session target_branch
+  // (Piece C target-branch filter). Drives the "(N hidden)" board badge.
+  // Optional: absent on older servers that predate the filter.
+  pull_requests_hidden_count?: number;
   terminal_no_work: boolean;
 }
 
