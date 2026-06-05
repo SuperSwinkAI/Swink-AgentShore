@@ -282,6 +282,7 @@ class GitHubIssueRecord:
     source: str | None = None
     url: str | None = None
     closed_at: str | None = None
+    github_author: str | None = None
 
 
 @dataclass(slots=True)

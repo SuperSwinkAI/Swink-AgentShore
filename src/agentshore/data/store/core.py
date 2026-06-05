@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import structlog
 
-from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3
+from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4
 from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.helpers import _load_schema_sql
 from agentshore.data.store.mixins.agents import _AgentsMixin
@@ -170,6 +170,7 @@ class DataStore(
         """
         await migrate_v1_to_v2(self._conn)
         await migrate_v2_to_v3(self._conn)
+        await migrate_v3_to_v4(self._conn)
 
     async def wal_checkpoint(self) -> None:
         """Merge WAL frames into the main DB file (passive checkpoint)."""

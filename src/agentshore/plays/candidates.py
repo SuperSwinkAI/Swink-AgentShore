@@ -26,7 +26,7 @@ from agentshore.github.labels import (
 )
 from agentshore.github.pr_links import canonical_issue_numbers, issue_numbers_for_pr
 from agentshore.github.trust import filter_trusted_pull_requests
-from agentshore.identity_names import same_identity
+from agentshore.identity_names import canonical_identity_name, same_identity
 from agentshore.logging import get_logger
 from agentshore.play_rules import (
     DESIGN_AUDIT_COOLDOWN_PLAYS,
@@ -84,6 +84,7 @@ class WorkAvailability:
     workable_issue_count: int
     blocked_issue_count: int
     disallowed_issue_count: int
+    untrusted_issue_count: int
     covered_by_open_pr_count: int
     resolved_by_merged_pr_count: int
     in_flight_issue_count: int
@@ -368,6 +369,26 @@ class PlayCandidateAnalyzer:
         self.disallowed_issue_numbers: set[int] = {
             i.issue_number for i in self.open_issues if DISALLOWED_LABEL in i.labels
         }
+        # Opt-in issue-author gating: when enabled, only issues authored by a
+        # trusted login (configured logins ∪ enabled agents' own identities) are
+        # workable. The toggle and the resolved trusted set are carried on the
+        # state (assembled once per tick from config), so this stays pure and
+        # state-only. Off by default → empty set, behavior unchanged.
+        self.untrusted_issue_numbers: set[int] = set()
+        if state.restrict_issues_to_trusted_authors:
+            trusted = state.trusted_issue_authors
+            for issue in self.open_issues:
+                author = (
+                    canonical_identity_name(issue.github_author) if issue.github_author else None
+                )
+                if author is None or author not in trusted:
+                    self.untrusted_issue_numbers.add(issue.issue_number)
+                    _logger.info(
+                        "github_issue_ignored",
+                        reason="untrusted_author",
+                        issue_number=issue.issue_number,
+                        author=issue.github_author,
+                    )
 
         # Graph-derived state
         graph = state.graph
@@ -447,6 +468,7 @@ class PlayCandidateAnalyzer:
             and issue.issue_number not in self.bead_blocked_issue_numbers
             and not self.beads_blocks_issue_pickup
             and not (ISSUE_PICKUP_SKIP_LABELS & labels)
+            and issue.issue_number not in self.untrusted_issue_numbers
         )
 
     def issue_available_for_refine(self, issue: IssueSnapshot) -> bool:
@@ -484,6 +506,7 @@ class PlayCandidateAnalyzer:
             # in_progress issue every tick (deterministic priority sort) and is
             # bounced at dispatch, starving other workable issues.
             and issue.issue_number not in self.bead_in_progress_issue_numbers
+            and issue.issue_number not in self.untrusted_issue_numbers
             and "agentshore/blocked" not in labels
             and "blocked" not in labels
             and DISALLOWED_LABEL not in labels
@@ -728,6 +751,7 @@ class PlayCandidateAnalyzer:
             workable_issue_count=len(workable_issue_numbers),
             blocked_issue_count=len(self.blocked_issue_numbers),
             disallowed_issue_count=len(self.disallowed_issue_numbers),
+            untrusted_issue_count=len(self.untrusted_issue_numbers),
             covered_by_open_pr_count=len(covered_by_open_pr_numbers),
             resolved_by_merged_pr_count=len(resolved_by_merged_pr_numbers),
             in_flight_issue_count=len(in_flight_numbers),
@@ -817,7 +841,14 @@ def qa_ran_within_terminal_window(
 
 
 def build_candidate_plan(state: OrchestratorState) -> PlayCandidatePlan:
-    """Build a pure, state-only candidate plan for PPO-safe consumers."""
+    """Build a pure, state-only candidate plan for PPO-safe consumers.
+
+    Issue-author trust gating (opt-in
+    ``trusted_ids.restrict_issues_to_trusted_authors``) is driven entirely off
+    the state: ``state.restrict_issues_to_trusted_authors`` and
+    ``state.trusted_issue_authors`` are resolved once per tick at state assembly,
+    so every consumer of this plan gates consistently with no config threading.
+    """
     return PlayCandidateAnalyzer(state).build()
 
 

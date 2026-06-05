@@ -205,6 +205,10 @@ class GitHubAdapter:
             if not isinstance(raw_number, (int, str)):
                 _logger.warning("gh_response_missing_number", item=item)
                 continue
+            user = item.get("user")
+            github_author = (
+                str(user["login"]) if isinstance(user, dict) and user.get("login") else None
+            )
             records.append(
                 GitHubIssueRecord(
                     issue_number=int(raw_number),
@@ -216,6 +220,7 @@ class GitHubAdapter:
                     labels=label_names,
                     priority=_priority_from_labels(label_names),
                     url=str(item["html_url"]) if item.get("html_url") else None,
+                    github_author=github_author,
                 )
             )
 

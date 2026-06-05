@@ -19,7 +19,12 @@ from agentshore.config import (
 )
 from agentshore.core.phases import _phase_fetch_github
 from agentshore.data.models import PullRequestRecord
-from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
+from agentshore.errors import ConfigError
+from agentshore.github.trust import (
+    filter_trusted_pull_requests,
+    trusted_issue_author_logins,
+    trusted_pr_author_logins,
+)
 from agentshore.plays.resolver import ParameterResolver
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
@@ -64,6 +69,36 @@ def test_trusted_ids_default_to_empty(tmp_path: Path) -> None:
 
     assert cfg.trusted_ids.github_logins == ()
     assert cfg.trusted_ids.pr_allow_list == ()
+    assert cfg.trusted_ids.restrict_issues_to_trusted_authors is False
+
+
+def test_trusted_ids_restrict_issues_parses_true(tmp_path: Path) -> None:
+    cfg = load_config(
+        _write(
+            tmp_path,
+            """\
+trusted_ids:
+  github_logins:
+    - example-user
+  restrict_issues_to_trusted_authors: true
+""",
+        )
+    )
+
+    assert cfg.trusted_ids.restrict_issues_to_trusted_authors is True
+
+
+def test_trusted_ids_restrict_issues_rejects_non_bool(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="restrict_issues_to_trusted_authors must be a boolean"):
+        load_config(
+            _write(
+                tmp_path,
+                """\
+trusted_ids:
+  restrict_issues_to_trusted_authors: "yes"
+""",
+            )
+        )
 
 
 def test_trusted_ids_pr_allow_list_parses_and_dedupes(tmp_path: Path) -> None:
@@ -243,6 +278,32 @@ def test_trusted_pr_authors_include_agent_and_external_ids(
     )
 
     assert trusted_pr_author_logins(cfg) == frozenset({"example-user", "agentshorebot"})
+
+
+def test_trusted_issue_authors_match_pr_authors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The issue trusted set is the same union as the PR trusted set, including
+    the enabled agents' own resolved identities — so AgentShore never ignores an
+    issue it filed itself."""
+    cfg = RuntimeConfig(
+        trusted_ids=TrustedIdsConfig(github_logins=("example-user",)),
+        agents={"codex": AgentConfig(enabled=True, identity="bot")},
+        identities={
+            "bot": GitHubIdentity(
+                git_user_name="Bot",
+                git_user_email="bot@example.com",
+                gh_token_login="bot",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        "agentshore.github.trust.resolved_github_login_for_agent",
+        lambda _cfg, _agent_cfg: "AgentShoreBot",
+    )
+
+    assert trusted_issue_author_logins(cfg) == trusted_pr_author_logins(cfg)
+    assert trusted_issue_author_logins(cfg) == frozenset({"example-user", "agentshorebot"})
 
 
 def test_trusted_pr_filter_keeps_only_trusted_authors(monkeypatch: pytest.MonkeyPatch) -> None:

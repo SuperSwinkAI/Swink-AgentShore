@@ -96,6 +96,7 @@ def test_capabilities_advertises_project_methods() -> None:
         "project.inspect",
         "project.branches",
         "project.set_target_branch",
+        "project.set_trusted_issue_enforcement",
         "project.deselect",
     ):
         assert method in caps
@@ -600,6 +601,142 @@ def test_set_budget_round_trips_through_config_loader(tmp_path: Path) -> None:
     assert cfg.budget.enabled is True
     assert cfg.budget.total == 175.0
     assert cfg.budget.warning_threshold == 0.25
+
+
+# ---------------------------------------------------------------------------
+# project.set_trusted_issue_enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_set_trusted_issue_enforcement_writes_block(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n  goals: ship it\n")
+    project_rpc.select(str(tmp_path))
+
+    result = project_rpc.set_trusted_issue_enforcement(True)
+
+    assert result["enabled"] is True
+    assert result["yaml_path"] == str(yaml_path)
+    new_text = yaml_path.read_text()
+    assert "trusted_ids:" in new_text
+    assert "restrict_issues_to_trusted_authors: true" in new_text
+    # Pre-existing keys preserved by ruamel.yaml round-trip.
+    assert "path: ." in new_text
+    assert "goals: ship it" in new_text
+
+
+def test_set_trusted_issue_enforcement_creates_yaml_when_missing(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    assert not yaml_path.exists()
+    project_rpc.select(str(tmp_path))
+
+    result = project_rpc.set_trusted_issue_enforcement(True)
+
+    assert result["enabled"] is True
+    assert yaml_path.exists()
+    text = yaml_path.read_text()
+    assert "trusted_ids:" in text
+    assert "restrict_issues_to_trusted_authors: true" in text
+
+
+def test_set_trusted_issue_enforcement_preserves_other_top_level_keys(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "project:\n  path: .\n"
+        "agents:\n  claude_code:\n    enabled: true\n"
+        "trusted_ids:\n  github_logins:\n    - alice\n"
+    )
+    project_rpc.select(str(tmp_path))
+
+    project_rpc.set_trusted_issue_enforcement(True)
+
+    text = yaml_path.read_text()
+    assert "project:" in text
+    assert "path: ." in text
+    assert "agents:" in text
+    assert "claude_code:" in text
+    # Existing trusted_ids sub-keys preserved; only the flag is added.
+    assert "github_logins:" in text
+    assert "- alice" in text
+    assert "restrict_issues_to_trusted_authors: true" in text
+
+
+def test_set_trusted_issue_enforcement_disable_writes_false(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    project_rpc.select(str(tmp_path))
+
+    result = project_rpc.set_trusted_issue_enforcement(False)
+
+    assert result["enabled"] is False
+    text = yaml_path.read_text()
+    assert "restrict_issues_to_trusted_authors: false" in text
+
+
+def test_set_trusted_issue_enforcement_rejects_non_bool(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError):
+        project_rpc.set_trusted_issue_enforcement("yes")
+
+
+def test_set_trusted_issue_enforcement_round_trips_through_config_loader(tmp_path: Path) -> None:
+    """Sidecar-written flag must deserialise into TrustedIdsConfig."""
+    from agentshore.config import load_config
+
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n")
+    project_rpc.select(str(tmp_path))
+
+    project_rpc.set_trusted_issue_enforcement(True)
+
+    cfg = load_config(yaml_path)
+    assert cfg.trusted_ids.restrict_issues_to_trusted_authors is True
+
+
+def test_dispatch_set_trusted_issue_enforcement_happy_path(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "project.set_trusted_issue_enforcement",
+            "params": {"enabled": True},
+        }
+    )
+    assert response is not None
+    assert "result" in response
+    result = cast("dict[str, object]", response["result"])
+    assert result["enabled"] is True
+    assert result["yaml_path"] == str(tmp_path / "agentshore.yaml")
+
+
+def test_dispatch_set_trusted_issue_enforcement_without_active_remaps_to_public_code() -> None:
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "project.set_trusted_issue_enforcement",
+            "params": {"enabled": True},
+        }
+    )
+    assert response is not None
+    assert "error" in response
+    assert response["error"]["code"] == ERR_NO_ACTIVE_PROJECT
+
+
+def test_dispatch_set_trusted_issue_enforcement_missing_enabled_is_invalid_params(
+    tmp_path: Path,
+) -> None:
+    project_rpc.select(str(tmp_path))
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "project.set_trusted_issue_enforcement",
+            "params": {},
+        }
+    )
+    assert response is not None
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 def test_set_budget_capabilities_advertised() -> None:

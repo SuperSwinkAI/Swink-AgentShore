@@ -123,7 +123,7 @@
 <header class="hero">
   <h1><span>AgentShore</span> RL Architecture</h1>
   <p>An RL-based orchestrator that coordinates multiple LLM coding agents using Proximal Policy Optimization to select high-level development actions.</p>
-  <span class="badge">PPO &middot; 20 actions &middot; 238-dim state &middot; policy version 4</span>
+  <span class="badge">PPO &middot; 22 actions &middot; 246-dim state &middot; policy version 5</span>
 </header>
 
 <!-- Architecture Diagram -->
@@ -138,7 +138,7 @@
 
       <rect x="200" y="60" width="130" height="80" rx="10" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
       <text x="265" y="95" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">State Encoder</text>
-      <text x="265" y="115" text-anchor="middle" fill="#8b949e" font-size="10">238 features</text>
+      <text x="265" y="115" text-anchor="middle" fill="#8b949e" font-size="10">246 features</text>
 
       <rect x="380" y="60" width="130" height="80" rx="10" fill="none" stroke="#bc8cff" stroke-width="1.5"/>
       <text x="445" y="95" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="600">Policy Network</text>
@@ -214,7 +214,7 @@
   <!-- State -->
   <div class="card full">
     <h3><span class="icon" style="background:rgba(57,210,192,0.15);color:var(--cyan);">S</span> State &mdash; Observation Vector</h3>
-    <p>A 238-dimensional float32 vector (<code>OBSERVATION_VERSION = 9</code>) encoding the full session state, normalized to [0, 1] via saturation clipping. Fed to the policy network at each decision step. Slots 0&ndash;71 are the base feature block; slots 72&ndash;167 are the per-config block; slots 168&ndash;176 are PR-author and execution-pressure features; slots 177&ndash;236 are the per-tier / per-play specialization block.</p>
+    <p>A 246-dimensional float32 vector (<code>OBSERVATION_VERSION = 13</code>) encoding the full session state, normalized to [0, 1] via saturation clipping. Fed to the policy network at each decision step. Slots 0&ndash;71 are the base feature block; slots 72&ndash;167 are the per-config block; slots 168&ndash;178 are PR-author and execution-pressure features; slots 179&ndash;244 are the per-tier / per-play specialization block; slot 245 is a version marker.</p>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-top:0.75rem;">
       <div>
         <ul class="c-cyan">
@@ -306,7 +306,7 @@
       <svg viewBox="0 0 340 180" width="340" height="180" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', monospace">
         <!-- Input -->
         <rect x="10" y="75" width="55" height="30" rx="5" fill="rgba(57,210,192,0.15)" stroke="#39d2c0" stroke-width="0.8"/>
-        <text x="37" y="94" text-anchor="middle" fill="#39d2c0" font-size="10">238</text>
+        <text x="37" y="94" text-anchor="middle" fill="#39d2c0" font-size="10">246</text>
         <text x="37" y="118" text-anchor="middle" fill="#8b949e" font-size="8">input</text>
         <!-- Hidden 1 -->
         <rect x="85" y="65" width="45" height="50" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="0.8"/>
@@ -318,7 +318,7 @@
         <text x="172" y="128" text-anchor="middle" fill="#8b949e" font-size="8">ReLU</text>
         <!-- Actor head -->
         <rect x="225" y="25" width="55" height="30" rx="5" fill="rgba(210,153,34,0.15)" stroke="#d29922" stroke-width="0.8"/>
-        <text x="252" y="44" text-anchor="middle" fill="#d29922" font-size="10">20</text>
+        <text x="252" y="44" text-anchor="middle" fill="#d29922" font-size="10">22</text>
         <text x="252" y="18" text-anchor="middle" fill="#8b949e" font-size="8">actor (play)</text>
         <!-- Value head -->
         <rect x="225" y="75" width="55" height="30" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="0.8"/>
@@ -339,8 +339,8 @@
       </svg>
     </div>
     <table class="spec-table" style="margin-top:0.5rem;">
-      <tr><td>Parameters</td><td>~42K (shared trunk + 3 heads)</td></tr>
-      <tr><td>Heads</td><td>actor (20 plays), value V(s), config (N agent configs)</td></tr>
+      <tr><td>Parameters</td><td>~51K (shared trunk + 3 heads; +~4K when the config head is active)</td></tr>
+      <tr><td>Heads</td><td>actor (22 plays), value V(s), config (N agent configs)</td></tr>
       <tr><td>Activation</td><td>ReLU (hidden), linear (heads)</td></tr>
       <tr><td>Inference</td><td>CPU-only, &lt;50ms</td></tr>
     </table>
@@ -387,7 +387,7 @@
   <p>AgentShore &mdash; RL-based multi-agent coding orchestrator</p>
   <p style="margin-top:0.5rem;">
     <a href="https://github.com/SuperSwinkAI/Swink-AgentShore">GitHub</a> &middot;
-    20 actions &middot; 238-dim state &middot; PPO-Clip &middot; policy version 4
+    22 actions &middot; 246-dim state &middot; PPO-Clip &middot; policy version 5
   </p>
 </footer>
 

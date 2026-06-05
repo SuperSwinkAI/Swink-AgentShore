@@ -164,6 +164,7 @@ class SnapshotProjector:
                     url=record.url,
                     created_at=record.created_at,
                     closed_at=record.closed_at,
+                    github_author=record.github_author,
                     bead_id=task.bead_id if task is not None else None,
                     bead_epic_id=task.epic_id if task is not None else None,
                     bead_epic_title=task.epic_title if task is not None else None,

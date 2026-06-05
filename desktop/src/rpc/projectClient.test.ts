@@ -5,7 +5,7 @@ vi.mock("./jsonrpc", () => ({
   callJsonRpc: (method: string, params?: unknown) => callJsonRpc(method, params),
 }));
 
-import { setSeedPaths, setTargetBranch } from "./projectClient";
+import { setSeedPaths, setTargetBranch, setTrustedIssueEnforcement } from "./projectClient";
 
 describe("projectClient.setSeedPaths", () => {
   it("posts project.set_seed_paths with the seed_paths array", async () => {
@@ -26,5 +26,15 @@ describe("projectClient.setSeedPaths", () => {
     callJsonRpc.mockResolvedValueOnce({ target_branch: "integration" });
     await setTargetBranch("integration");
     expect(callJsonRpc).toHaveBeenCalledWith("project.set_target_branch", { name: "integration" });
+  });
+});
+
+describe("projectClient.setTrustedIssueEnforcement", () => {
+  it("posts project.set_trusted_issue_enforcement with the enabled flag", async () => {
+    callJsonRpc.mockResolvedValueOnce({ enabled: true, yaml_path: "/p/agentshore.yaml" });
+    await setTrustedIssueEnforcement(true);
+    expect(callJsonRpc).toHaveBeenCalledWith("project.set_trusted_issue_enforcement", {
+      enabled: true,
+    });
   });
 });
