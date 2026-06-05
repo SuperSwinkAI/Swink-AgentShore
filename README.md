@@ -61,7 +61,8 @@ rl:
   policy_mode: learning   # learning | frozen | random
 ```
 
-Full config reference: `agentshore configure --help`.
+Re-run `agentshore init` at any time to refresh settings via the setup wizards (it
+preserves your existing `agentshore.yaml` unless you pass `--force`).
 
 ## CLI reference
 
@@ -70,11 +71,7 @@ agentshore init              scaffold config, wire BEADS + GitHub, set up identi
 agentshore start             start an RL session (TUI or headless)
 agentshore stop              gracefully drain and stop a running session
 agentshore dashboard         open the browser dashboard for a running session
-agentshore configure         interactive config wizard
 agentshore identity          manage and verify per-agent GitHub identities
-agentshore archive           archive session data for cross-session analysis
-agentshore report            generate an end-of-session HTML report
-agentshore train             offline PPO training from archived experience
 agentshore trusted-ids       manage GitHub logins allowed to unblock plays
 ```
 

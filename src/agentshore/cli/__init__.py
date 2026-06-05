@@ -12,15 +12,11 @@ from __future__ import annotations
 import click
 
 from agentshore import __version__
-from agentshore.cli.commands.archive import archive
-from agentshore.cli.commands.configure import configure
 from agentshore.cli.commands.dashboard import dashboard
 from agentshore.cli.commands.identity import identity
 from agentshore.cli.commands.init import init
-from agentshore.cli.commands.report import report
 from agentshore.cli.commands.start import start
 from agentshore.cli.commands.stop import stop
-from agentshore.cli.commands.train import train
 from agentshore.cli.commands.trusted_ids import trusted_ids
 
 
@@ -35,12 +31,8 @@ def main() -> None:
 # top-level group object is sufficient to register the full command tree.
 main.add_command(start)
 main.add_command(init)
-main.add_command(configure)
 main.add_command(identity)
 main.add_command(trusted_ids)
-main.add_command(report)
-main.add_command(train)
-main.add_command(archive)
 main.add_command(dashboard)
 main.add_command(stop)
 

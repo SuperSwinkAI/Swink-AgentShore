@@ -39,10 +39,9 @@ async def open_store(db_path: Path) -> AsyncIterator[DataStore]:
     """Open an initialised :class:`DataStore` for *db_path*, closing on exit.
 
     Raises :class:`click.ClickException` (exit code 1, ``Error: …`` on stderr)
-    when no database exists at *db_path*, so the DB-backed read commands
-    (``archive``, ``report``, ``stop``, ``train``) share one existence-check
-    and one guaranteed-``close`` lifecycle instead of hand-rolling the same
-    try/finally per ``asyncio.run`` site.
+    when no database exists at *db_path*, so DB-backed commands (currently
+    ``stop``) get one existence-check and one guaranteed-``close`` lifecycle
+    instead of hand-rolling the same try/finally per ``asyncio.run`` site.
     """
     if not db_path.exists():
         raise click.ClickException(f"No database found at {db_path}")
