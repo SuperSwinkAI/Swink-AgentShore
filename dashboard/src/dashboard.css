@@ -58,6 +58,7 @@
         --fm-text-body: rgba(25, 36, 59, 0.66);
         --fm-text-muted: rgba(25, 36, 59, 0.5);
         --fm-shadow: 0 4px 12px rgba(35, 77, 153, 0.08);
+        --dashboard-side-panel-width: clamp(240px, 17vw, 300px);
         --c-tint-l: 95%;
         --c-tint-c: 0.09;
         --c-mark-l: 53%;
@@ -337,8 +338,9 @@
         pointer-events: none;
       }
       #left-panel {
-        width: min(340px, calc(100vw - 48px));
-        max-height: min(70vh, 560px);
+        width: min(var(--dashboard-side-panel-width), calc(100vw - 48px));
+        height: 100%;
+        min-height: 0;
         overflow-y: auto;
         background: var(--fm-panel);
         border-right: 1px solid var(--fm-border);
@@ -480,7 +482,7 @@
         right: 0;
         top: 0;
         bottom: 0;
-        width: 240px;
+        width: var(--dashboard-side-panel-width);
         background: var(--fm-panel);
         border-left: 1px solid var(--fm-border);
         color: var(--fm-text-body);
@@ -1948,9 +1950,9 @@
         background: var(--color-fm-bg);
         overflow: hidden;
         padding: calc(var(--stats-inset-top, 38px) + 14px)
-          calc(var(--stats-inset-right, 240px) + 16px)
+          calc(var(--stats-inset-right, var(--dashboard-side-panel-width)) + 16px)
           calc(var(--stats-inset-bottom, 120px) + 16px)
-          calc(var(--stats-inset-left, 340px) + 16px);
+          calc(var(--stats-inset-left, var(--dashboard-side-panel-width)) + 16px);
       }
       /* When HTML stages are active hide the office canvas underneath. */
       body.kanban-active .agentshore-dashboard-canvas,

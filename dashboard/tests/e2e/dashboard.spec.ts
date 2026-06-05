@@ -88,6 +88,53 @@ test("demo active scenario renders office, HUD, and active play", async ({
   await expectCanvasNonBlank(page);
 });
 
+test("dashboard side rails share width and span to the plays tray", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop chrome geometry assertion");
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await page.goto("/?demo=1&scenario=active&freeze=1");
+
+  const geometry = await page.evaluate(() => {
+    const left = document.querySelector("#left-panel")!.getBoundingClientRect();
+    const right = document.querySelector("#side-panel")!.getBoundingClientRect();
+    const main = document.querySelector("#main-area")!.getBoundingClientRect();
+    const bottom = document.querySelector("#bottom-bar")!.getBoundingClientRect();
+    return {
+      left: {
+        width: left.width,
+        top: left.top,
+        bottom: left.bottom,
+      },
+      right: {
+        width: right.width,
+        top: right.top,
+        bottom: right.bottom,
+      },
+      mainBottom: main.bottom,
+      bottomBarTop: bottom.top,
+    };
+  });
+
+  expect(
+    Math.abs(geometry.left.width - geometry.right.width),
+  ).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.left.top - geometry.right.top)).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(geometry.left.bottom - geometry.right.bottom),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(geometry.left.bottom - geometry.mainBottom),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(geometry.right.bottom - geometry.mainBottom),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(geometry.mainBottom - geometry.bottomBarTop),
+  ).toBeLessThanOrEqual(1);
+});
+
 test("local dev default route uses demo mock data", async ({ page }) => {
   await page.goto("/?freeze=1");
   await expect(page.locator("#play-type-label")).toContainText("Issue Pickup");
