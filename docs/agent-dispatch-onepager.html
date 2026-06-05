@@ -464,19 +464,19 @@
   <div class="figure code-figure">
     <div class="code-header">
       <span class="code-dot r"></span><span class="code-dot y"></span><span class="code-dot g"></span>
-      <span class="code-filename">.agentshore/contexts/s-2026-05-21-a3f7/play-00218.json</span>
+      <span class="code-filename">.agentshore/contexts/s-2026-05-21-a3f7/play-218.json</span>
     </div>
 <pre class="code-body"><span class="cmt">// written atomically before subprocess spawn · session-scoped path · per-play file</span>
 <span class="punct">{</span>
   <span class="key">"schema_version"</span><span class="punct">:</span> <span class="num">1</span><span class="punct">,</span>
   <span class="key">"session_id"</span><span class="punct">:</span> <span class="str">"s-2026-05-21-a3f7"</span><span class="punct">,</span>
-  <span class="key">"mode"</span><span class="punct">:</span> <span class="str">"embedded"</span><span class="punct">,</span>           <span class="cmt">// solo · embedded · dashboard</span>
+  <span class="key">"mode"</span><span class="punct">:</span> <span class="str">"agent"</span><span class="punct">,</span>               <span class="cmt">// solo · agent</span>
   <span class="key">"current_play"</span><span class="punct">:</span> <span class="str">"code_review"</span><span class="punct">,</span>
   <span class="key">"skill_name"</span><span class="punct">:</span> <span class="str">"agentshore-code-review"</span><span class="punct">,</span>
-  <span class="key">"play_id"</span><span class="punct">:</span> <span class="str">"play-00218"</span><span class="punct">,</span>
+  <span class="key">"play_id"</span><span class="punct">:</span> <span class="num">218</span><span class="punct">,</span>
   <span class="key">"assigned_github_identity"</span><span class="punct">:</span> <span class="str">"reviewer-bot"</span><span class="punct">,</span>
   <span class="key">"target_branch"</span><span class="punct">:</span> <span class="str">"review/gh-112"</span><span class="punct">,</span>
-  <span class="key">"context_file"</span><span class="punct">:</span> <span class="str">".agentshore/contexts/s-…/play-00218.json"</span><span class="punct">,</span>
+  <span class="key">"context_file"</span><span class="punct">:</span> <span class="str">".agentshore/contexts/s-…/play-218.json"</span><span class="punct">,</span>
 
   <span class="key">"params"</span><span class="punct">: {</span>                          <span class="cmt">// resolved by the param resolver, not by the model</span>
     <span class="key">"agent_id"</span><span class="punct">:</span> <span class="str">"claude-reviewer-2"</span><span class="punct">,</span>
@@ -569,7 +569,7 @@
         <rect width="280" height="80" fill="#1f2940"/>
         <rect x="0" y="0" width="280" height="3" fill="#0f8a6c"/>
         <text x="20" y="30" class="pill" fill="#d8efe6">DISPATCH ASSEMBLER</text>
-        <text x="20" y="56" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#ffffff">render_play_prompt()</text>
+        <text x="20" y="56" font-family="SFMono-Regular,Consolas,monospace" font-size="14" fill="#ffffff">render_skill_prompt()</text>
         <text x="20" y="72" font-family="SFMono-Regular,Consolas,monospace" font-size="12" fill="#9aa6c2">+ resolve_identity_env() + write_context_file()</text>
       </g>
 
@@ -686,7 +686,7 @@
             <text y="22">cwd        ← _active_project_path(state)</text>
             <text y="42">git author ← identities[agent].git_user_*</text>
             <text y="62">GH_TOKEN   ← keychain service · scoped</text>
-            <text y="82">prompt     ← render_play_prompt(skill, params)</text>
+            <text y="82">prompt     ← render_skill_prompt(skill, params)</text>
             <text y="102">issue      ← param resolver, deduped</text>
             <text y="122">scope      ← inflation cap + prompt-baked rules</text>
             <text y="142">memory     ← session_learnings + agent_handoffs</text>
