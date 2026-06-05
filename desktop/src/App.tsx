@@ -994,6 +994,13 @@ export function App() {
           state: {
             seedInputPath: selection.seedInputPath,
             ...(selection.timelapse !== undefined ? { timelapse: selection.timelapse } : {}),
+            // Carry the trusted-issue gate so StartingProgressRoute can
+            // reconcile it into agentshore.yaml before session.start reads
+            // it. The setup-rail toggle persists via a best-effort RPC and
+            // the checkbox hydrates from localStorage, so the file may not
+            // match the user's choice — the start path is the authoritative
+            // write (the project is active there).
+            trustedIssueEnforcement: setup.trustedIssueEnforcement,
           },
         });
       });
