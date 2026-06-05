@@ -99,7 +99,6 @@ _DISPATCH_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.UNBLOCK_PR,
         PlayType.SYSTEMATIC_DEBUGGING,
         PlayType.REFINE_TASK_BREAKDOWN,
-        PlayType.BROWSER_VERIFICATION,
         PlayType.CLEANUP,
         PlayType.GROOM_BACKLOG,
         PlayType.SEED_PROJECT,

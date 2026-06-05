@@ -75,7 +75,6 @@ _PR_SCOPED_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.CODE_REVIEW,
         PlayType.UNBLOCK_PR,
-        PlayType.BROWSER_VERIFICATION,
     }
 )
 _BRANCH_CREATING_PLAYS: frozenset[PlayType] = frozenset(

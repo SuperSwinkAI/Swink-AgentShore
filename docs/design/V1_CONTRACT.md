@@ -40,7 +40,7 @@ The action index order is fixed for checkpoints, replay, and reports:
 | 11 | Reconcile State | event-driven self-heal; masked except during wedge conditions |
 | 12 | Refine Task Breakdown | |
 | 13 | Cleanup | |
-| 14 | Browser Verification | |
+| 14 | Future 4 | reserved / permanently masked |
 | 15 | Take Break | |
 | 16 | Groom Backlog | |
 | 17 | Seed Project | |
@@ -113,10 +113,10 @@ preconditions and are never selected in practice.
 | Seed Project | 0.0186 |
 | Calibrate Alignment | 0.0186 |
 | Cleanup | 0.0120 |
-| Browser Verification | 0.0120 |
 | Design Audit | 0.0114 |
 | End Agent | 0.0114 |
 | Reconcile State | 0.0114 |
+| Future 4 (reserved) | 0.0114 |
 | Future 6 (reserved) | 0.0114 |
 | Future 7 (reserved) | 0.0114 |
 | Future 8 (reserved) | 0.0114 |
@@ -163,7 +163,6 @@ Skill-backed plays use these canonical skill names:
 | Design Audit | `agentshore-design-audit` |
 | Refine Task Breakdown | `agentshore-refine-tasks` |
 | Cleanup | `agentshore-cleanup` |
-| Browser Verification | `agentshore-browser-verify` |
 | Groom Backlog | `agentshore-groom-backlog` |
 | Calibrate Alignment | `agentshore-calibrate-alignment` |
 | Reconcile State | `agentshore-reconcile-state` |

@@ -223,9 +223,9 @@
 <text x="920" y="585" text-anchor="middle" fill="#d29922" class="box-title">RUN_QA</text>
 <text x="920" y="604" text-anchor="middle" class="box-sub">test/lint/typecheck cadence</text>
 
-<rect x="1060" y="560" width="205" height="62" rx="8" fill="rgba(210,153,34,0.1)" stroke="#d29922" stroke-width="1.5"/>
-<text x="1162" y="585" text-anchor="middle" fill="#d29922" class="box-title">BROWSER_VERIFICATION</text>
-<text x="1162" y="604" text-anchor="middle" class="box-sub">visual acceptance check</text>
+<rect x="1060" y="560" width="205" height="62" rx="8" fill="rgba(139,148,158,0.08)" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="4,3"/>
+<text x="1162" y="585" text-anchor="middle" fill="#8b949e" class="box-title">FUTURE_4</text>
+<text x="1162" y="604" text-anchor="middle" class="box-sub">reserved / permanently masked</text>
 
 <rect x="1015" y="445" width="250" height="62" rx="8" fill="rgba(248,81,73,0.1)" stroke="#f85149" stroke-width="1.5"/>
 <text x="1140" y="470" text-anchor="middle" fill="#f85149" class="box-title">SYSTEMATIC_DEBUGGING</text>
@@ -274,9 +274,9 @@
 <text x="1258" y="779" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700" opacity="0.65">FUTURE_5</text>
 <text x="1258" y="797" text-anchor="middle" class="box-sub">reserved</text>
 
-<rect x="1060" y="845" width="115" height="58" rx="8" fill="rgba(240,136,62,0.06)" stroke="#f0883e" stroke-width="1" stroke-dasharray="4,3"/>
-<text x="1118" y="869" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700" opacity="0.65">FUTURE_6</text>
-<text x="1118" y="887" text-anchor="middle" class="box-sub">reserved</text>
+<rect x="1060" y="845" width="115" height="58" rx="8" fill="rgba(210,153,34,0.08)" stroke="#d29922" stroke-width="1.5"/>
+<text x="1118" y="869" text-anchor="middle" fill="#d29922" class="box-title">PRUNE</text>
+<text x="1118" y="887" text-anchor="middle" class="box-sub">stale-debt sweep</text>
 
 <rect x="1200" y="845" width="115" height="58" rx="8" fill="rgba(188,140,255,0.07)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,3"/>
 <text x="1258" y="869" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">MASKED</text>
@@ -304,7 +304,7 @@
 </div>
 
 <div class="note">
-  <strong>Current play set:</strong> 18 active plays plus 2 reserved action slots. Reserved slots stay in the action space for checkpoint compatibility and are masked at runtime.
+  <strong>Current play set:</strong> 19 active plays plus 3 reserved action slots. Reserved slots stay in the action space for checkpoint compatibility and are masked at runtime.
   <br><br>
   <strong>Precondition highlights:</strong> <code>SEED_PROJECT</code> runs before graph expansion; <code>INSTANTIATE_AGENT</code> is blocked until seeding completes and then obeys budget, cooldown, total slot caps, per-type/tier caps, and idle same type/tier availability. Busy agents do not mask another same-config spawn. <code>CODE_REVIEW</code> excludes the PR author's GitHub identity. <code>RUN_QA</code> and <code>CLEANUP</code> have first-run floors and cooldowns. <code>GROOM_BACKLOG</code> and <code>CALIBRATE_ALIGNMENT</code> require an initialized beads graph. <code>TAKE_BREAK</code> is forced when a rate-limit or unknown agent error is present.
 </div>

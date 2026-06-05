@@ -16,7 +16,7 @@ export const PLAY_KEYS: readonly string[] = [
   "reconcile_state",
   "refine_task_breakdown",
   "cleanup",
-  "browser_verification",
+  "future_4",
   "take_break",
   "groom_backlog",
   "seed_project",
@@ -43,7 +43,7 @@ export const PLAY_TRAY_KEYS: readonly string[] = [
   "unblock_pr",
   "merge_pr",
   "reconcile_state",
-  "browser_verification",
+  "future_4",
   "prune",
   "run_qa",
   "take_break",
@@ -69,7 +69,7 @@ export const PLAY_DISPLAY_NAMES: Record<string, string> = {
   reconcile_state: "Reconcile",
   refine_task_breakdown: "Refine Tasks",
   cleanup: "Clean Up",
-  browser_verification: "Browser Verify",
+  future_4: "Reserved 4",
   take_break: "Take Break",
   groom_backlog: "Groom Backlog",
   seed_project: "Seed Project",
@@ -81,6 +81,7 @@ export const PLAY_DISPLAY_NAMES: Record<string, string> = {
 
 // Reserved action slots (italicized in the Plays Panel, always masked by the policy).
 export const PLAY_RESERVED: ReadonlySet<string> = new Set([
+  "future_4",
   "future_7",
   "future_8",
 ]);
@@ -130,7 +131,6 @@ export const PLAY_TO_ZONE: Record<string, ZoneId> = {
 
   // Science Lab — QA & verification
   run_qa: ZoneId.SCIENCE_LAB,
-  browser_verification: ZoneId.SCIENCE_LAB,
 
   // Launch Control — deploy & merge
   merge_pr: ZoneId.LAUNCH_CONTROL,
@@ -150,6 +150,7 @@ export const PLAY_TO_ZONE: Record<string, ZoneId> = {
 
 export const FRONT_DESK_EXIT_PLAY_TYPES = new Set(["end_agent", "end_session"]);
 export const CURRENT_LOCATION_PLAY_TYPES = new Set([
+  "future_4",
   "future_7",
   "future_8",
 ]);

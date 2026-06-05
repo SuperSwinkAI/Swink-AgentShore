@@ -36,7 +36,6 @@ Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestra
 | Report charts | Chart.js (embedded in HTML reports) |
 | IPC (embedded mode) | Unix domain socket or TCP, NDJSON protocol |
 | Agent communication | asyncio subprocess (CLI agents), httpx (API LLMs) |
-| Browser verification | MCP/Playwright (Browser Verification play) |
 | Configuration | YAML |
 | Logging | structlog → NDJSON |
 
@@ -110,9 +109,8 @@ Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestra
 
 ### Skill Architecture
 
-AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding skill template that is rendered with minimal parameters (issue number, PR URL, branch name, etc.) and invoked on a coding agent via its CLI. The 15 current skill templates are:
+AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding skill template that is rendered with minimal parameters (issue number, PR URL, branch name, etc.) and invoked on a coding agent via its CLI. The 14 current skill templates are:
 
-- `agentshore-browser-verify`
 - `agentshore-calibrate-alignment`
 - `agentshore-cleanup`
 - `agentshore-code-review`

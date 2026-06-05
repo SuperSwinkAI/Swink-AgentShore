@@ -71,6 +71,7 @@ def test_short_play_label_known_values() -> None:
     assert play_short_label(PlayType.RUN_QA) == "QA"
     assert play_short_label(PlayType.GROOM_BACKLOG) == "Groom"
     assert play_short_label(PlayType.SEED_PROJECT) == "Seed"
+    assert play_short_label(PlayType.FUTURE_4) == "Reserved"
     assert play_short_label(PlayType.FUTURE_7) == "Reserved"
     assert play_short_label(PlayType.FUTURE_8) == "Reserved"
 

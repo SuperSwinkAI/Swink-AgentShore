@@ -70,13 +70,13 @@ Each play maps to a zone. When a play starts, the assigned agent walks to that z
 |------|-------------------|
 | **War Room** | `refine_task_breakdown`, `seed_project`, `groom_backlog`, `calibrate_alignment` |
 | **Workshop** | `issue_pickup`, `unblock_pr`, `systematic_debugging`, `cleanup` |
-| **Science Lab** | `run_qa`, `browser_verification` |
+| **Science Lab** | `run_qa` |
 | **Launch Control** | `merge_pr` |
 | **Editor's Desk** | `code_review`, `write_implementation_plan`, `design_audit` |
 | **Recovery Bay** | Failed agent-associated play events, `agent_changed`/snapshot `error`, `reconcile_state`, `take_break` |
 | **Zen Garden** | Idle agents |
 | **Front Desk** | Spawn/wait target for `instantiate_agent`; exit target for `end_agent`, `end_session` |
-| **Agent Lifecycle** | `instantiate_agent` spawns at the Front Desk then walks to Zen Garden. `end_agent` and `end_session` walk to the Front Desk exit and fade out. `future_6`, `future_7`, and `future_8` are reserved, masked action slots with no dashboard routing. |
+| **Agent Lifecycle** | `instantiate_agent` spawns at the Front Desk then walks to Zen Garden. `end_agent` and `end_session` walk to the Front Desk exit and fade out. `future_4`, `future_7`, and `future_8` are reserved, masked action slots with no dashboard routing. |
 
 ## HUD Decisions
 

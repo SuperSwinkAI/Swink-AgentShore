@@ -412,17 +412,6 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
-class BrowserConfig:
-    enabled: bool = True
-    base_url: str = "http://localhost:3000"
-    file_patterns: tuple[str, ...] = ("*.tsx", "*.css", "*.html", "*.vue", "*.svelte")
-    timeout_seconds: int = 30
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "file_patterns", _tuple(self.file_patterns))
-
-
-@dataclass(frozen=True)
 class TimelapseConfig:
     """Optional desktop timelapse-capture feature.
 
@@ -533,7 +522,6 @@ class RuntimeConfig:
     scope: ScopeConfig = field(default_factory=ScopeConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    browser: BrowserConfig = field(default_factory=BrowserConfig)
     timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
     learnings: LearningsConfig = field(default_factory=LearningsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)

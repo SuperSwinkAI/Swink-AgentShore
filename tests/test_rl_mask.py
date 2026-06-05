@@ -112,6 +112,7 @@ def test_all_preconditions_met_applies_global_masks():
         PlayType.MERGE_PR,
         PlayType.SYSTEMATIC_DEBUGGING,
         PlayType.END_SESSION,
+        PlayType.FUTURE_4,
         PlayType.FUTURE_7,
         PlayType.FUTURE_8,
         PlayType.REFINE_TASK_BREAKDOWN,
@@ -1803,13 +1804,14 @@ def test_drain_mask_suppresses_wedged_end_agent_via_builder():
 
 
 def test_builder_reserved_slots_zeroed():
-    """The reserved-slot overlay zeros FUTURE_7/8 while leaving active slots untouched."""
+    """The reserved-slot overlay zeros FUTURE_4/7/8 while leaving active slots untouched."""
     from agentshore.rl.mask import ActionMaskBuilder
 
     mask = ActionMaskBuilder(_state(), _registry_all_true()).build()
     # FUTURE_5 was filled in place by RECONCILE_STATE (AgentShore #593) and
-    # FUTURE_6 by PRUNE — both are active slots now. Only FUTURE_7/8 remain
-    # reserved and stay zeroed.
+    # FUTURE_6 by PRUNE — both are active slots now. FUTURE_4 (slot 14, formerly
+    # browser_verification) plus FUTURE_7/8 remain reserved and stay zeroed.
+    assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_4]]
     assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_7]]
     assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_8]]
     # Active slots untouched — including the newly-active slots 11 and 19.
@@ -1903,6 +1905,7 @@ def test_reverse_failsafe_overlay_without_base_mask_falls_back_to_v0_14_4():
     no_base = compute_reverse_failsafe_mask(state)
     # Reserved future slots are always hard-masked by the lift gate. Slot 11
     # is no longer reserved (RECONCILE_STATE) and slot 19 is no longer reserved
-    # (PRUNE) — only FUTURE_7/8 remain in the reserved set.
+    # (PRUNE) — FUTURE_4 (slot 14) plus FUTURE_7/8 remain in the reserved set.
+    assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_4]]
     assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_7]]
     assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_8]]

@@ -13,7 +13,6 @@ from agentshore.config.models import (
     AgentSpawnConfig,
     AutoDetectConfig,
     BootstrapConfig,
-    BrowserConfig,
     BudgetConfig,
     CircuitBreakerConfig,
     DataIntegrityConfig,
@@ -281,13 +280,6 @@ class _RawLogging(TypedDict, total=False):
     log_dir: str
 
 
-class _RawBrowser(TypedDict, total=False):
-    enabled: bool
-    base_url: str
-    file_patterns: list[str]
-    timeout_seconds: int
-
-
 class _RawTimelapse(TypedDict, total=False):
     enabled: bool
     installed: bool
@@ -334,7 +326,6 @@ class _RawConfig(TypedDict, total=False):
     scope: _RawScope
     ui: _RawUI
     logging: _RawLogging
-    browser: _RawBrowser
     timelapse: _RawTimelapse
     learnings: _RawLearnings
     skills: _RawSkills
@@ -930,20 +921,6 @@ def _parse_logging(raw: _RawLogging) -> LoggingConfig:
     )
 
 
-def _parse_browser(raw: _RawBrowser) -> BrowserConfig:
-    return BrowserConfig(
-        enabled=raw.get("enabled", False),
-        base_url=raw.get("base_url", "http://localhost:3000"),
-        file_patterns=tuple(
-            raw.get(
-                "file_patterns",
-                ["*.tsx", "*.css", "*.html", "*.vue", "*.svelte"],
-            )
-        ),
-        timeout_seconds=raw.get("timeout_seconds", 30),
-    )
-
-
 def _parse_timelapse(raw: _RawTimelapse) -> TimelapseConfig:
     return TimelapseConfig(
         enabled=bool(raw.get("enabled", False)),
@@ -1086,7 +1063,6 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         scope=_parse_scope(data.get("scope", {}) or {}),
         ui=_parse_ui(data.get("ui", {}) or {}),
         logging=_parse_logging(data.get("logging", {}) or {}),
-        browser=_parse_browser(data.get("browser", {}) or {}),
         timelapse=_parse_timelapse(data.get("timelapse", {}) or {}),
         learnings=_parse_learnings(data.get("learnings", {}) or {}),
         skills=_parse_skills(data.get("skills", {}) or {}),

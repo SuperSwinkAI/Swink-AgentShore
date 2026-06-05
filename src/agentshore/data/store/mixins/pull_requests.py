@@ -293,17 +293,3 @@ class _PullRequestsMixin:
         )
         rows = await cursor.fetchall()
         return [_row_to_pull_request(row) for row in rows]
-
-    async def get_most_recent_branch(self, session_id: str) -> str | None:
-        """Return the branch most recently touched in this session, or None."""
-        async with self._conn.execute(
-            """
-            SELECT branch FROM branch_activity
-            WHERE session_id = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (session_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row["branch"] if row else None

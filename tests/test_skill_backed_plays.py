@@ -9,7 +9,6 @@ import pytest
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.play_rules import needs_review
 from agentshore.plays.base import PlayParams
-from agentshore.plays.skill_backed.browser_verify import BrowserVerificationPlay
 from agentshore.plays.skill_backed.calibrate_alignment import CalibrateAlignmentPlay
 from agentshore.plays.skill_backed.code_review import CodeReviewPlay
 from agentshore.plays.skill_backed.design_audit import DesignAuditPlay
@@ -23,7 +22,6 @@ from agentshore.plays.skill_backed.systematic_debugging import SystematicDebuggi
 from agentshore.plays.skill_backed.unblock_pr import UnblockPrPlay
 from agentshore.plays.skill_backed.write_plan import WriteImplementationPlanPlay
 from agentshore.state import (
-    ActivePlay,
     AgentSnapshot,
     AgentStatus,
     AgentType,
@@ -138,9 +136,8 @@ def _state(
     )
 
 
-def _ctx(browser_enabled: bool = False) -> MagicMock:
+def _ctx() -> MagicMock:
     ctx = MagicMock()
-    ctx.cfg.browser.enabled = browser_enabled
     ctx.manager.dispatch = AsyncMock()
     ctx.store.list_learnings = AsyncMock(return_value=[])
     ctx.store.list_pending_reviews = AsyncMock(return_value=[])
@@ -1281,117 +1278,6 @@ def test_refine_tasks_masked_when_no_issue_needs_refinement() -> None:
 # CleanupPlay
 # (see tests/test_plays_cleanup.py for full precondition coverage)
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# BrowserVerificationPlay
-# ---------------------------------------------------------------------------
-
-
-def test_browser_verify_precondition_fails_when_disabled() -> None:
-    reasons = BrowserVerificationPlay(browser_enabled=False).preconditions(_state())
-    assert len(reasons) == 1
-    assert "disabled" in reasons[0].text
-
-
-def test_browser_verify_precondition_met_when_enabled() -> None:
-    assert BrowserVerificationPlay().preconditions(_state()) == []
-
-
-@pytest.mark.asyncio
-async def test_browser_verify_emits_phase_progression_to_state_provider() -> None:
-    from unittest.mock import patch
-
-    from agentshore.state import SkillResult
-
-    state = _state()
-    state.active_play = ActivePlay(
-        play_type=PlayType.BROWSER_VERIFICATION,
-        agent_id="a1",
-        started_at="2026-01-01T00:00:00Z",
-    )
-    emitted_phases: list[str | None] = []
-
-    async def _record_state(s: OrchestratorState) -> None:
-        emitted_phases.append(s.active_play.phase if s.active_play else None)
-
-    ctx = _ctx_for_execute()
-    ctx.state_provider = MagicMock()
-    ctx.state_provider.on_state_update = AsyncMock(side_effect=_record_state)
-    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
-
-    with (
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.render_skill_prompt",
-            return_value="<prompt>",
-        ),
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.write_play_context",
-            return_value=None,
-        ),
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.parse_skill_result",
-            return_value=SkillResult(success=True, artifacts=["done"]),
-        ),
-    ):
-        outcome = await BrowserVerificationPlay().execute(state, PlayParams(agent_id="a1"), ctx=ctx)
-
-    assert outcome.success is True
-    assert emitted_phases == [
-        "launching browser",
-        "navigating",
-        "capturing screenshot",
-        "verifying",
-        "closing",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_browser_verify_emits_failed_phase_before_returning_failure() -> None:
-    from unittest.mock import patch
-
-    from agentshore.state import SkillResult
-
-    state = _state()
-    state.active_play = ActivePlay(
-        play_type=PlayType.BROWSER_VERIFICATION,
-        agent_id="a1",
-        started_at="2026-01-01T00:00:00Z",
-    )
-    emitted_phases: list[str | None] = []
-
-    async def _record_state(s: OrchestratorState) -> None:
-        emitted_phases.append(s.active_play.phase if s.active_play else None)
-
-    ctx = _ctx_for_execute()
-    ctx.state_provider = MagicMock()
-    ctx.state_provider.on_state_update = AsyncMock(side_effect=_record_state)
-    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=False))
-
-    with (
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.render_skill_prompt",
-            return_value="<prompt>",
-        ),
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.write_play_context",
-            return_value=None,
-        ),
-        patch(
-            "agentshore.plays.skill_backed.browser_verify.parse_skill_result",
-            return_value=SkillResult(success=False, artifacts=[], error="boom"),
-        ),
-    ):
-        outcome = await BrowserVerificationPlay().execute(state, PlayParams(agent_id="a1"), ctx=ctx)
-
-    assert outcome.success is False
-    assert emitted_phases == [
-        "launching browser",
-        "navigating",
-        "capturing screenshot",
-        "verifying",
-        "verifying — FAILED",
-    ]
 
 
 # ---------------------------------------------------------------------------

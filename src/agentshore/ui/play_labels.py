@@ -19,7 +19,7 @@ _SHORT_LABELS: dict[PlayType, str] = {
     PlayType.RECONCILE_STATE: "Reconcile",
     PlayType.REFINE_TASK_BREAKDOWN: "Refine",
     PlayType.CLEANUP: "Cleanup",
-    PlayType.BROWSER_VERIFICATION: "Browser",
+    PlayType.FUTURE_4: "Reserved",
     PlayType.TAKE_BREAK: "Break",
     PlayType.GROOM_BACKLOG: "Groom",
     PlayType.SEED_PROJECT: "Seed",

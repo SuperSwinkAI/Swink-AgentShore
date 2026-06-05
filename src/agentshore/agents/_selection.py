@@ -61,7 +61,6 @@ _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 #     to set or certify the trajectory.
 # Medium is the universal fallback for the first three bands.
 _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
-    PlayType.BROWSER_VERIFICATION: frozenset({"small", "medium"}),
     PlayType.CLEANUP: frozenset({"small", "medium", "large"}),
     PlayType.MERGE_PR: frozenset({"small", "medium"}),
     # Medium ∪ large — coding & strategic

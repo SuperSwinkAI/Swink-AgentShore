@@ -38,7 +38,6 @@ DEFAULT_PLAY_WEIGHTS: Final[dict[PlayType, float]] = {
     PlayType.END_AGENT: 0.0114,
     PlayType.END_SESSION: 0.0057,
     PlayType.CLEANUP: 0.0120,
-    PlayType.BROWSER_VERIFICATION: 0.0120,
     PlayType.TAKE_BREAK: 0.0057,
     # Beads-native plays — weights will be tuned by PPO once in production.
     PlayType.GROOM_BACKLOG: 0.0248,
@@ -56,6 +55,7 @@ DEFAULT_PLAY_WEIGHTS: Final[dict[PlayType, float]] = {
     # placeholders so the sum stays within ~1.0. They never get selected (mask
     # gates them off) — the weight only matters as a numerical anchor for the
     # log-renormalization, not as a selection prior.
+    PlayType.FUTURE_4: 0.0114,
     PlayType.FUTURE_7: 0.0114,
     PlayType.FUTURE_8: 0.0114,
 }
