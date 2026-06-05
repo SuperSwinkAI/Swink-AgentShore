@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 #[cfg(not(test))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -48,6 +49,31 @@ impl Default for UiState {
 #[derive(Default)]
 struct UiStateHolder {
     state: Mutex<UiState>,
+}
+
+/// One-shot latch: set once the user has approved a quit while a session was
+/// running, so the re-entrant close/exit that follows the confirmation (window
+/// `destroy()` → `ExitRequested`, or `app.exit()`) proceeds without re-prompting.
+/// Also set by the explicit in-app Quit buttons (recovery / fatal-error
+/// screens), which are themselves a deliberate quit and shouldn't double-prompt.
+#[derive(Default)]
+struct QuitConfirmed(AtomicBool);
+
+impl QuitConfirmed {
+    fn get(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn set(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether quitting now needs the running-session confirmation prompt: a
+/// session is live and the user hasn't already approved this quit. Pure so the
+/// gate logic is unit-testable without a running Tauri app.
+fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> bool {
+    session_active && !already_confirmed
 }
 
 struct SidecarHolder {
@@ -232,6 +258,9 @@ fn restart_sidecar(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn quit_app(app: AppHandle) -> Result<(), String> {
+    // Explicit in-app Quit (recovery / fatal-error screens): the user already
+    // chose to quit, so latch confirmation to skip the native prompt.
+    app.state::<QuitConfirmed>().set();
     app.exit(0);
     Ok(())
 }
@@ -271,14 +300,87 @@ fn set_last_selected_tab(app: AppHandle, tab: String) -> Result<UiState, String>
     Ok(next)
 }
 
+/// Show the async "a session is still running" confirmation. Non-blocking:
+/// the caller has already prevented the close/exit, and `on_choice(true)` is
+/// invoked on the "Quit" button (false on "Cancel"). Async (not `blocking_show`)
+/// because this runs on the main thread, where a blocking dialog would deadlock
+/// the event loop the dialog itself needs to pump.
+#[cfg_attr(test, allow(dead_code))]
+fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, on_choice: F) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "A AgentShore session is still running. Quitting now force-stops it \
+             immediately — in-flight plays are killed and no end-of-session report \
+             is written. Quit anyway?",
+        )
+        .title("Quit AgentShore?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(on_choice);
+}
+
+/// Tear down agent subprocesses and the Python sidecar before the shell exits.
+/// Order matters: kill the AGENT subprocesses (Claude / Codex / Gemini CLIs and
+/// anything they spawned) FIRST. If we drop the supervisor before killing the
+/// agents, the sidecar's tracked-PID map disappears and the agent subprocesses
+/// are reparented to launchd, burning API tokens silently (desktop-ieql).
+#[cfg_attr(test, allow(dead_code))]
+fn shutdown_sidecar_and_agents(app_handle: &AppHandle) {
+    {
+        let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
+        let lock_result = sidecar_state.lock();
+        if let Ok(guard) = lock_result {
+            if let Some(holder) = guard.as_ref() {
+                let _ = holder.supervisor.kill_all_agents();
+            }
+        }
+    }
+    // Now drop the supervisor so its Drop impl SIGKILLs the Python sidecar.
+    let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
+    let lock_result = sidecar_state.lock();
+    if let Ok(mut guard) = lock_result {
+        *guard = None;
+    }
+    // desktop-bzr2: release the App Nap activity assertion if a session was
+    // still running at quit time. Without this the assertion can linger in
+    // pmset for a fraction of a second past app exit; belt-and-suspenders for
+    // the session.completed path.
+    let activity_state: tauri::State<'_, activity::ActivityHolder> = app_handle.state();
+    activity_state.release();
+}
+
 #[cfg_attr(test, allow(dead_code))]
 fn attach_window_persistence(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let app_handle = app.clone();
-        window.on_window_event(move |event| {
-            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+        window.on_window_event(move |event| match event {
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 update_window_state(&app_handle);
             }
+            // Red close button / ⌘W. Confirm before force-killing a live
+            // session; ⌘Q and the app-menu Quit are handled by ExitRequested.
+            WindowEvent::CloseRequested { api, .. } => {
+                let session_active = app_handle.state::<activity::ActivityHolder>().is_active();
+                let already_confirmed = app_handle.state::<QuitConfirmed>().get();
+                if quit_requires_confirmation(session_active, already_confirmed) {
+                    api.prevent_close();
+                    let app = app_handle.clone();
+                    prompt_quit_confirmation(&app_handle, move |quit| {
+                        if quit {
+                            app.state::<QuitConfirmed>().set();
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.destroy();
+                            }
+                        }
+                    });
+                }
+            }
+            _ => {}
         });
     }
 }
@@ -481,6 +583,7 @@ pub fn run() {
         .manage::<SidecarHolderState>(Mutex::new(None))
         .manage(FatalShellState::default())
         .manage(activity::ActivityHolder::new())
+        .manage(QuitConfirmed::default())
         .on_menu_event(|app, event| {
             if event.id().as_ref() == "stop_session" {
                 // React's SessionDashboardScreen listens for this event
@@ -551,10 +654,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // macOS ⌘Q / NSApp terminate short-circuits to exit() and can
-            // skip our SidecarSupervisor::drop, leaving the Python sidecar
-            // adopted by launchd. Tear it down explicitly on ExitRequested
-            // so the child gets SIGKILL via Drop before the shell exits.
             match event {
                 // macOS dock-icon click on a running app. Tauri 2 fires
                 // Reopen but does not bring the window to front by
@@ -574,39 +673,30 @@ pub fn run() {
                         let _ = window.set_focus();
                     }
                 }
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                    // Order matters: kill the AGENT subprocesses (Claude /
-                    // Codex / Gemini CLIs and any worktree pytest etc.
-                    // they spawned) FIRST. If we drop the supervisor
-                    // before killing the agents, the sidecar's
-                    // tracked-PID map disappears and the agent
-                    // subprocesses are reparented to launchd, burning
-                    // API tokens silently (desktop-ieql).
-                    {
-                        let sidecar_state: tauri::State<'_, SidecarHolderState> =
-                            app_handle.state();
-                        let lock_result = sidecar_state.lock();
-                        if let Ok(guard) = lock_result {
-                            if let Some(holder) = guard.as_ref() {
-                                let _ = holder.supervisor.kill_all_agents();
+                // ⌘Q / app-menu Quit / NSApp terminate. macOS short-circuits
+                // to exit() and can skip our SidecarSupervisor::drop, so we tear
+                // the sidecar down explicitly. But first: if a session is still
+                // running, confirm — quitting force-kills it with no drain and
+                // no end-of-session report.
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    let session_active =
+                        app_handle.state::<activity::ActivityHolder>().is_active();
+                    let already_confirmed = app_handle.state::<QuitConfirmed>().get();
+                    if quit_requires_confirmation(session_active, already_confirmed) {
+                        api.prevent_exit();
+                        let app = app_handle.clone();
+                        prompt_quit_confirmation(app_handle, move |quit| {
+                            if quit {
+                                app.state::<QuitConfirmed>().set();
+                                app.exit(0);
                             }
-                        }
+                        });
+                        return;
                     }
-                    // Now drop the supervisor so its Drop impl SIGKILLs
-                    // the Python sidecar itself.
-                    let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
-                    let lock_result = sidecar_state.lock();
-                    if let Ok(mut guard) = lock_result {
-                        *guard = None;
-                    }
-                    // desktop-bzr2: release the App Nap activity assertion if
-                    // a session was still running at quit time (e.g. ⌘Q while
-                    // the dashboard is open). Without this the assertion can
-                    // linger in pmset for a fraction of a second past app exit;
-                    // belt-and-suspenders for the session.completed path.
-                    let activity_state: tauri::State<'_, activity::ActivityHolder> =
-                        app_handle.state();
-                    activity_state.release();
+                    shutdown_sidecar_and_agents(app_handle);
+                }
+                tauri::RunEvent::Exit => {
+                    shutdown_sidecar_and_agents(app_handle);
                 }
                 _ => {}
             }
@@ -650,6 +740,30 @@ mod tests {
             w < 2560.0,
             "window must not be wider than the logical screen"
         );
+    }
+
+    #[test]
+    fn quit_requires_confirmation_only_when_session_active_and_unconfirmed() {
+        use super::quit_requires_confirmation;
+        // Live session, not yet approved → prompt.
+        assert!(quit_requires_confirmation(true, false));
+        // Live session but already approved (re-entrant close / explicit Quit).
+        assert!(!quit_requires_confirmation(true, true));
+        // No session → never prompt, regardless of the latch.
+        assert!(!quit_requires_confirmation(false, false));
+        assert!(!quit_requires_confirmation(false, true));
+    }
+
+    #[test]
+    fn quit_confirmed_latch_sets_once() {
+        use super::QuitConfirmed;
+        let guard = QuitConfirmed::default();
+        assert!(!guard.get());
+        guard.set();
+        assert!(guard.get());
+        // Idempotent.
+        guard.set();
+        assert!(guard.get());
     }
 
     #[test]
