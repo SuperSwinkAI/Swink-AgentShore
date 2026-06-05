@@ -6,10 +6,12 @@ import type { ProgressNotificationParams } from "../services/sidecarEvents";
 
 type ProgressHandler = (params: ProgressNotificationParams) => void;
 
-const { subscribeProgressMock, startSessionMock } = vi.hoisted(() => ({
-  subscribeProgressMock: vi.fn(),
-  startSessionMock: vi.fn(),
-}));
+const { subscribeProgressMock, startSessionMock, setTrustedIssueEnforcementMock } =
+  vi.hoisted(() => ({
+    subscribeProgressMock: vi.fn(),
+    startSessionMock: vi.fn(),
+    setTrustedIssueEnforcementMock: vi.fn(),
+  }));
 
 vi.mock("../services/sidecarEvents", () => ({
   subscribeProgress: subscribeProgressMock,
@@ -19,11 +21,16 @@ vi.mock("../services/sessionClient", () => ({
   startSession: startSessionMock,
 }));
 
+vi.mock("../rpc/projectClient", () => ({
+  setTrustedIssueEnforcement: setTrustedIssueEnforcementMock,
+}));
+
 import { StartingProgressRoute } from "../StartingProgressRoute";
 
 afterEach(() => {
   subscribeProgressMock.mockReset();
   startSessionMock.mockReset();
+  setTrustedIssueEnforcementMock.mockReset();
   cleanup();
 });
 
@@ -189,6 +196,85 @@ describe("StartingProgressRoute", () => {
     // Without a startResult the handoff is incomplete and the route
     // falls back to firing session.start itself.
     await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("writes the trusted-issue gate to agentshore.yaml before firing session.start", async () => {
+    let handler: ProgressHandler | null = null;
+    subscribeProgressMock.mockImplementation(async (h: ProgressHandler) => {
+      handler = h;
+      return () => undefined;
+    });
+    setTrustedIssueEnforcementMock.mockResolvedValue({
+      enabled: true,
+      yaml_path: "/p/agentshore.yaml",
+    });
+    startSessionMock.mockResolvedValue({
+      session_id: "test-session",
+      ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
+    });
+
+    renderRoute({ state: { trustedIssueEnforcement: true } });
+
+    await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
+    // The reconcile RPC ran, with the user's choice, before session.start.
+    expect(setTrustedIssueEnforcementMock).toHaveBeenCalledWith(true);
+    expect(setTrustedIssueEnforcementMock.mock.invocationCallOrder[0]).toBeLessThan(
+      startSessionMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("refuses to start when ENABLING the gate fails (no silent ungated launch)", async () => {
+    let handler: ProgressHandler | null = null;
+    subscribeProgressMock.mockImplementation(async (h: ProgressHandler) => {
+      handler = h;
+      return () => undefined;
+    });
+    setTrustedIssueEnforcementMock.mockRejectedValue(new Error("no active project"));
+
+    renderRoute({ state: { trustedIssueEnforcement: true } });
+
+    await waitFor(() => expect(handler).not.toBeNull());
+    // The enable write failed, so the session must NOT start ungated and
+    // the user sees the error.
+    expect(startSessionMock).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(/only work issues from trusted identities/i),
+    ).toBeInTheDocument();
+  });
+
+  it("still starts when DISABLING the gate fails (absent key already means off)", async () => {
+    let handler: ProgressHandler | null = null;
+    subscribeProgressMock.mockImplementation(async (h: ProgressHandler) => {
+      handler = h;
+      return () => undefined;
+    });
+    setTrustedIssueEnforcementMock.mockRejectedValue(new Error("no active project"));
+    startSessionMock.mockResolvedValue({
+      session_id: "test-session",
+      ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
+    });
+
+    renderRoute({ state: { trustedIssueEnforcement: false } });
+
+    // wantGate === false: a failed write is a no-op, so start proceeds.
+    await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("skips the reconcile entirely when no gate choice is in the route state", async () => {
+    let handler: ProgressHandler | null = null;
+    subscribeProgressMock.mockImplementation(async (h: ProgressHandler) => {
+      handler = h;
+      return () => undefined;
+    });
+    startSessionMock.mockResolvedValue({
+      session_id: "test-session",
+      ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
+    });
+
+    renderRoute();
+
+    await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
+    expect(setTrustedIssueEnforcementMock).not.toHaveBeenCalled();
   });
 
   it("does not advance when first_snapshot fails", async () => {
