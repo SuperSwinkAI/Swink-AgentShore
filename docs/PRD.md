@@ -34,7 +34,7 @@ Coding agents are organized into three cost/capability tiers so the policy can m
 
 | Tier | Claude Code | Codex | Gemini | Typical use |
 |------|-------------|-------|--------|-------------|
-| `small` | Haiku | `gpt-5.4-mini` | `flash-lite` | Cheap mechanical checks — browser verification and cleanup |
+| `small` | Haiku | `gpt-5.4-mini` | `flash-lite` | Cheap mechanical checks — cleanup |
 | `medium` | Sonnet | `gpt-5.3-codex` | `auto` | Default workhorse — implementation, code review, refinement, debugging, groom backlog |
 | `large` | Opus | `gpt-5.5` with high reasoning | `pro` | Heavy validation and project graph work — QA, planning, seed project, design audit, calibrate alignment |
 
@@ -46,7 +46,7 @@ Agent expansion follows the same type/tier lifecycle. `Instantiate Agent` is mas
 
 > Design docs: [Play System](design/plays/DESIGN.md) | [RL Engine](design/rl/DESIGN.md) | [Agent Manager](design/agents/DESIGN.md)
 
-Each play is an atomic action the RL agent can select. Plays are the unit of decision-making. The action space has 22 slots (action-space version 13); 19 are active plays and 3 remain permanently reserved/masked (FUTURE_6, FUTURE_7, FUTURE_8).
+Each play is an atomic action the RL agent can select. Plays are the unit of decision-making. The action space has 22 slots (action-space version 13); 19 are active plays and 3 remain permanently reserved/masked (FUTURE_4, FUTURE_7, FUTURE_8).
 
 ### Complete Play Table (declaration order, idx 0–21)
 
@@ -66,12 +66,12 @@ Each play is an atomic action the RL agent can select. Plays are the unit of dec
 | 11 | **Reconcile State** | medium+ | Parse recent failure logs and reconcile local state (branches, worktrees, stale locks) to unblock subsequent plays. Armed by prior play failures. |
 | 12 | **Refine Task Breakdown** | medium+ | Re-analyze open issues, decompose oversized ones into sub-issues, re-prioritize based on current state. |
 | 13 | **Cleanup** | small/medium/large | Remove stale branches, tidy transient artifacts, and close obsolete issues. |
-| 14 | **Browser Verification** | small/medium | Load pages via MCP/Playwright and verify UI changes for frontend-heavy projects. |
+| 14 | **FUTURE_4** | — | Reserved / permanently masked. |
 | 15 | **Take Break** | any | Brief pause between intensive plays to avoid rate limits or context degradation. |
 | 16 | **Groom Backlog** | medium+ | Review and re-prioritize the open issue queue in the beads graph. |
 | 17 | **Seed Project** | large | Call `bd` to build the full epic → story → task hierarchy from seed material; bootstrap the beads graph for a new session. |
 | 18 | **Calibrate Alignment** | large | Measure `global_closure_ratio` against the beads graph and emit an `alignment_delta` signal. |
-| 19 | **FUTURE_6** | — | Reserved / permanently masked. |
+| 19 | **Prune** | small/medium/large | Retire stale worktrees, merged/closed branches, and dead beads to clear accumulated infrastructure debt. Armed only when measurable debt exists. |
 | 20 | **FUTURE_7** | — | Reserved / permanently masked. |
 | 21 | **FUTURE_8** | — | Reserved / permanently masked. |
 

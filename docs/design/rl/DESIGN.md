@@ -32,16 +32,16 @@ The config block aligns with the instantiate-agent config head. The config index
 | 11 | `RECONCILE_STATE` |
 | 12 | `REFINE_TASK_BREAKDOWN` |
 | 13 | `CLEANUP` |
-| 14 | `BROWSER_VERIFICATION` |
+| 14 | `FUTURE_4` |
 | 15 | `TAKE_BREAK` |
 | 16 | `GROOM_BACKLOG` |
 | 17 | `SEED_PROJECT` |
 | 18 | `CALIBRATE_ALIGNMENT` |
-| 19 | `FUTURE_6` |
+| 19 | `PRUNE` |
 | 20 | `FUTURE_7` |
 | 21 | `FUTURE_8` |
 
-`FUTURE_6`, `FUTURE_7`, and `FUTURE_8` are permanently masked reserved slots.
+`FUTURE_4`, `FUTURE_7`, and `FUTURE_8` are permanently masked reserved slots.
 
 ## Masking
 

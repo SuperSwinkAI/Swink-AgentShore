@@ -79,10 +79,10 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     from agentshore.plays.internal.instantiate_agent import InstantiateAgentPlay
     from agentshore.plays.internal.reserved_action import (
         FutureEightPlay,
+        FutureFourPlay,
         FutureSevenPlay,
     )
     from agentshore.plays.internal.take_break import TakeBreakPlay
-    from agentshore.plays.skill_backed.browser_verify import BrowserVerificationPlay
     from agentshore.plays.skill_backed.calibrate_alignment import CalibrateAlignmentPlay
     from agentshore.plays.skill_backed.cleanup import CleanupPlay
     from agentshore.plays.skill_backed.code_review import CodeReviewPlay
@@ -100,7 +100,6 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     from agentshore.plays.skill_backed.write_plan import WriteImplementationPlanPlay
 
     spawn_cfg = cfg.agent_spawn if cfg is not None else None
-    browser_enabled = cfg.browser.enabled if cfg is not None else True
     seed_project_ceiling = (
         cfg.scope.seed_project_mid_session_issue_ceiling if cfg is not None else 10
     )
@@ -124,7 +123,7 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
         ReconcileStatePlay(),
         RefineTaskBreakdownPlay(),
         CleanupPlay(),
-        BrowserVerificationPlay(browser_enabled=browser_enabled),
+        FutureFourPlay(),
         TakeBreakPlay(),
         GroomBacklogPlay(),
         SeedProjectPlay(mid_session_issue_ceiling=seed_project_ceiling),

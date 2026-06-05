@@ -37,6 +37,12 @@ class _ReservedActionPlay:
         return PlayOutcome.failed(self.play_type, _RESERVED_ERROR)
 
 
+class FutureFourPlay(_ReservedActionPlay):
+    """Reserved replacement for the fourth future slot (idx 14)."""
+
+    play_type = PlayType.FUTURE_4
+
+
 class FutureSevenPlay(_ReservedActionPlay):
     """Reserved replacement for the seventh future slot."""
 

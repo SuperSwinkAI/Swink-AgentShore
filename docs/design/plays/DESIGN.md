@@ -10,9 +10,9 @@ The action order is locked by `PlayType` in `src/agentshore/state.py` and `V1_AC
 
 | Category | Count | Plays |
 |----------|-------|-------|
-| Skill-backed | 15 | `UNBLOCK_PR`, `WRITE_IMPLEMENTATION_PLAN`, `ISSUE_PICKUP`, `CODE_REVIEW`, `MERGE_PR`, `RUN_QA`, `SYSTEMATIC_DEBUGGING`, `DESIGN_AUDIT`, `REFINE_TASK_BREAKDOWN`, `CLEANUP`, `BROWSER_VERIFICATION`, `GROOM_BACKLOG`, `SEED_PROJECT`, `CALIBRATE_ALIGNMENT`, `RECONCILE_STATE` |
+| Skill-backed | 15 | `UNBLOCK_PR`, `WRITE_IMPLEMENTATION_PLAN`, `ISSUE_PICKUP`, `CODE_REVIEW`, `MERGE_PR`, `RUN_QA`, `SYSTEMATIC_DEBUGGING`, `DESIGN_AUDIT`, `REFINE_TASK_BREAKDOWN`, `CLEANUP`, `GROOM_BACKLOG`, `SEED_PROJECT`, `CALIBRATE_ALIGNMENT`, `RECONCILE_STATE`, `PRUNE` |
 | Active internal | 4 | `INSTANTIATE_AGENT`, `END_AGENT`, `END_SESSION`, `TAKE_BREAK` |
-| Reserved internal | 3 | `FUTURE_6`, `FUTURE_7`, `FUTURE_8` |
+| Reserved internal | 3 | `FUTURE_4`, `FUTURE_7`, `FUTURE_8` |
 
 Reserved slots remain in the tensor for checkpoint compatibility and are permanently masked.
 
@@ -40,12 +40,12 @@ The result parser extracts the last valid result-shaped JSON object from raw age
 | 11 | `RECONCILE_STATE` |
 | 12 | `REFINE_TASK_BREAKDOWN` |
 | 13 | `CLEANUP` |
-| 14 | `BROWSER_VERIFICATION` |
+| 14 | `FUTURE_4` |
 | 15 | `TAKE_BREAK` |
 | 16 | `GROOM_BACKLOG` |
 | 17 | `SEED_PROJECT` |
 | 18 | `CALIBRATE_ALIGNMENT` |
-| 19 | `FUTURE_6` |
+| 19 | `PRUNE` |
 | 20 | `FUTURE_7` |
 | 21 | `FUTURE_8` |
 
@@ -68,7 +68,6 @@ The result parser extracts the last valid result-shaped JSON object from raw age
 | `MERGE_PR` | `agentshore-merge-pr` | Idle `can_merge` agent; small/medium tier only; PR approved + `MERGEABLE` |
 | `RUN_QA` | `agentshore-run-qa` | Idle `can_test` agent; 25-play cooldown; <10 open issues; no anti-confirmation rule |
 | `SYSTEMATIC_DEBUGGING` | `agentshore-systematic-debugging` | Idle `can_implement` agent; open issue with debug trigger label; not root-cause-found |
-| `BROWSER_VERIFICATION` | `agentshore-browser-verify` | `browser.enabled` is true |
 | `CLEANUP` | `agentshore-cleanup` | Idle `can_implement` agent; 20-play cooldown; <15 open issues |
 
 ## Internal Plays

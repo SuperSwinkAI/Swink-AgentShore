@@ -199,16 +199,19 @@ async def test_collect_end_session_report_stats_and_closed_issues(store):
     assert report["play_stats"][0]["failed"] == 1
     assert [issue["issue_number"] for issue in report["closed_issues"]] == [10]
     # desktop-rni0: INTERNAL_PLAY_TYPES is empty, so all 22 registry entries
-    # appear. Slot 11 is now RECONCILE_STATE (AgentShore #593), so 19 active +
-    # 2 reserved FUTURE_N slots + 20 active = 22 columns.
+    # appear. Slot 11 is now RECONCILE_STATE (AgentShore #593); slot 14 is now
+    # FUTURE_4 (reserved, formerly browser_verification), so 18 active +
+    # 3 reserved FUTURE_N slots (4/7/8) + 1 internal = 22 columns.
     assert len(report["play_log_columns"]) == 22
     column_labels = [c["label"] for c in report["play_log_columns"]]
     assert "IDLE_TICK" not in column_labels
     assert "RECOVER" not in column_labels
     assert "FUTURE_5" not in column_labels
     assert "FUTURE_6" not in column_labels
+    assert "BROWSER_VERIFICATION" not in column_labels
     assert "RECONCILE_STATE" in column_labels
     assert "PRUNE" in column_labels
+    assert "FUTURE_4" in column_labels
     assert "FUTURE_7" in column_labels
     assert "FUTURE_8" in column_labels
     assert report["play_log_columns"][0]["label"] == "INSTANTIATE_AGENT"

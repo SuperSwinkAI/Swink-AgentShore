@@ -555,7 +555,7 @@ export class DemoTransport implements DashboardTransport {
       // V1_ACTION_ORDER: instantiate_agent, unblock_pr, write_implementation_plan,
       // end_agent, issue_pickup, code_review, merge_pr, run_qa,
       // systematic_debugging, design_audit, end_session, reconcile_state,
-      // refine_task_breakdown, cleanup, browser_verification, take_break,
+      // refine_task_breakdown, cleanup, future_4, take_break,
       // groom_backlog, seed_project, calibrate_alignment, prune,
       // future_7, future_8
       action_mask: [
@@ -573,7 +573,7 @@ export class DemoTransport implements DashboardTransport {
         true, // reconcile_state
         true, // refine_task_breakdown
         true, // cleanup
-        true, // browser_verification
+        false, // future_4 — reserved
         false, // take_break — rate-limit cooldown
         true, // groom_backlog
         false, // seed_project — already seeded
@@ -588,6 +588,7 @@ export class DemoTransport implements DashboardTransport {
         take_break: "Reserved for rate-limit cooldown",
         seed_project: "Beads graph already seeded",
         prune: "No prune-worthy debt yet",
+        future_4: "Reserved action slot",
         future_7: "Reserved action slot",
         future_8: "Reserved action slot",
       },

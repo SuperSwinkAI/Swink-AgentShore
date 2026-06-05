@@ -15,7 +15,6 @@ from agentshore.config.models import (
     AutoDetectConfig,
     AvailabilityRecord,
     BootstrapConfig,
-    BrowserConfig,
     BudgetConfig,
     CircuitBreakerConfig,
     DataIntegrityConfig,
@@ -59,7 +58,6 @@ __all__ = [
     "AutoDetectConfig",
     "AvailabilityRecord",
     "BootstrapConfig",
-    "BrowserConfig",
     "BudgetConfig",
     "CircuitBreakerConfig",
     "ConfigError",
@@ -272,17 +270,6 @@ logging:
   level: info
   file: true
   log_dir: .agentshore/logs
-
-browser:
-  enabled: false
-  base_url: http://localhost:3000
-  file_patterns:
-    - "*.tsx"
-    - "*.css"
-    - "*.html"
-    - "*.vue"
-    - "*.svelte"
-  timeout_seconds: 30
 
 learnings:
   enabled: true

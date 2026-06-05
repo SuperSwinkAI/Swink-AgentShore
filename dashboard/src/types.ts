@@ -24,7 +24,7 @@ export type PlayType =
   | "reconcile_state"
   | "refine_task_breakdown"
   | "cleanup"
-  | "browser_verification"
+  | "future_4"
   | "take_break"
   | "groom_backlog"
   | "seed_project"

@@ -70,7 +70,6 @@ _SKILL_SPECS: dict[PlayType, _SkillSpec] = {
     PlayType.RUN_QA: _SkillSpec("agentshore-run-qa", ["branch"]),
     PlayType.MERGE_PR: _SkillSpec("agentshore-merge-pr", ["pr_number"]),
     PlayType.REFINE_TASK_BREAKDOWN: _SkillSpec("agentshore-refine-tasks", []),
-    PlayType.BROWSER_VERIFICATION: _SkillSpec("agentshore-browser-verify", ["url"]),
     PlayType.CLEANUP: _SkillSpec("agentshore-cleanup", []),
     PlayType.GROOM_BACKLOG: _SkillSpec("agentshore-groom-backlog", []),
     PlayType.SEED_PROJECT: _SkillSpec("agentshore-seed-project", ["seed_path"]),

@@ -201,12 +201,6 @@ class RevertFailed(OrchestratorError):
     recovery_action = "surface to human for manual intervention"
 
 
-class BrowserVerificationFailed(OrchestratorError):
-    error_type = "browser_verification_failed"
-    recoverable = True
-    recovery_action = "log failure, RL adjusts"
-
-
 class LearningExtractionFailed(OrchestratorError):
     error_type = "learning_extraction_failed"
     recoverable = True

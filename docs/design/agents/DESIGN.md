@@ -37,7 +37,7 @@ Representative current rules:
 
 | Play | Allowed tiers |
 |------|---------------|
-| `BROWSER_VERIFICATION`, `CLEANUP` | `small`, `medium` |
+| `CLEANUP` | `small`, `medium` |
 | `ISSUE_PICKUP`, `UNBLOCK_PR`, `CODE_REVIEW`, `REFINE_TASK_BREAKDOWN`, `SYSTEMATIC_DEBUGGING`, `GROOM_BACKLOG` | `medium`, `large` |
 | `RUN_QA`, `WRITE_IMPLEMENTATION_PLAN`, `SEED_PROJECT`, `DESIGN_AUDIT`, `CALIBRATE_ALIGNMENT`, `RECONCILE_STATE` | `large` |
 | `MERGE_PR` | `small`, `medium` |
@@ -48,7 +48,6 @@ Skill-backed plays render a project-local skill prompt, write a play-specific co
 
 Current skill templates (installed to `.agents/skills/<skill-name>/SKILL.md`):
 
-- `agentshore-browser-verify`
 - `agentshore-calibrate-alignment`
 - `agentshore-cleanup`
 - `agentshore-code-review`

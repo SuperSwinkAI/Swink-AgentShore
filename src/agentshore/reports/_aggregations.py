@@ -73,12 +73,12 @@ _PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = (
     ("systematic_debugging", "SYSTEMATIC_DEBUGGING", 8, 2, False),
     ("code_review", "CODE_REVIEW", 5, 3, False),
     ("run_qa", "RUN_QA", 7, 3, False),
-    ("browser_verification", "BROWSER_VERIFICATION", 14, 3, False),
     ("merge_pr", "MERGE_PR", 6, 4, False),
     ("cleanup", "CLEANUP", 13, 4, False),
     ("take_break", "TAKE_BREAK", 15, 5, False),
     ("reconcile_state", "RECONCILE_STATE", 11, 5, False),
     ("prune", "PRUNE", 19, 6, False),
+    ("future_4", "FUTURE_4", 14, 6, True),
     ("future_7", "FUTURE_7", 20, 6, True),
     ("future_8", "FUTURE_8", 21, 6, True),
     ("end_agent", "END_AGENT", 3, 7, False),
@@ -319,7 +319,7 @@ def compute_play_log_columns() -> list[PlayLogColumnEntry]:
 
     Internal plays (``INTERNAL_PLAY_TYPES``) are excluded — the play log
     is user-facing agent activity. After desktop-rni0 the registry has
-    22 entries with 18 active and 4 reserved FUTURE_N slots.
+    22 entries with 19 active and 3 reserved FUTURE_N slots.
     """
     internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     result: list[PlayLogColumnEntry] = []

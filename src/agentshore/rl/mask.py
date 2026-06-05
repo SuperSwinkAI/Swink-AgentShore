@@ -61,6 +61,7 @@ _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = frozenset(
         PlayType.END_AGENT,
         PlayType.END_SESSION,
         PlayType.TAKE_BREAK,
+        PlayType.FUTURE_4,
         PlayType.FUTURE_7,
         PlayType.FUTURE_8,
     }
@@ -368,7 +369,7 @@ class ActionMaskBuilder:
                 self._mask[V1_ACTION_ORDER.index(pt)] = False
 
     def _stage_reserved_slots(self) -> None:
-        for reserved in (PlayType.FUTURE_7, PlayType.FUTURE_8):
+        for reserved in (PlayType.FUTURE_4, PlayType.FUTURE_7, PlayType.FUTURE_8):
             if reserved in V1_ACTION_ORDER:
                 self._mask[V1_ACTION_ORDER.index(reserved)] = False
 
@@ -504,7 +505,7 @@ class ActionMaskBuilder:
                 continue
 
             # Reserved tensor slots (B-type overlay).
-            if pt in (PlayType.FUTURE_7, PlayType.FUTURE_8):
+            if pt in (PlayType.FUTURE_4, PlayType.FUTURE_7, PlayType.FUTURE_8):
                 reasons[pt] = RESERVED_SLOT
                 continue
 

@@ -7,7 +7,7 @@ Outbound message types:
     play_event            — play started / completed / failed notification
     feedback_requested    — escalation trigger requiring human feedback
     issue_landscape_changed — external issue churn detected
-    verification_checkpoint — browser verify or manual review needed
+    verification_checkpoint — manual review / verification needed
 """
 
 from __future__ import annotations

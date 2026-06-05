@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-AgentShore configuration controls project discovery, agent setup, spawn limits, budget enforcement, RL parameters, session behavior, logging, UI, browser verification, learnings, and skill installation.
+AgentShore configuration controls project discovery, agent setup, spawn limits, budget enforcement, RL parameters, session behavior, logging, UI, learnings, and skill installation.
 
 Configuration is loaded into frozen dataclasses in `src/agentshore/config/models.py`. The source code is canonical for field names and defaults; this document records the user-facing contract.
 

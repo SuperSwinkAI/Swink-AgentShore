@@ -78,9 +78,10 @@ def test_idle_tick_and_recover_are_not_in_action_order():
 
 
 def test_reserved_future_slots_keep_stable_indices():
-    """Slot 11 hosts RECONCILE_STATE, slot 19 hosts PRUNE; FUTURE_7/8 reserved."""
+    """Slot 11 hosts RECONCILE_STATE, slot 19 hosts PRUNE; FUTURE_4@14, FUTURE_7/8 reserved."""
     assert PLAY_TO_INDEX[PlayType.RECONCILE_STATE] == 11
     assert PLAY_TO_INDEX[PlayType.PRUNE] == 19
+    assert PLAY_TO_INDEX[PlayType.FUTURE_4] == 14
     assert PLAY_TO_INDEX[PlayType.FUTURE_7] == 20
     assert PLAY_TO_INDEX[PlayType.FUTURE_8] == 21
 

@@ -11,6 +11,7 @@ from agentshore.plays.internal.end_agent import EndAgentPlay
 from agentshore.plays.internal.end_session import EndSessionPlay
 from agentshore.plays.internal.reserved_action import (
     FutureEightPlay,
+    FutureFourPlay,
     FutureSevenPlay,
 )
 from agentshore.state import (
@@ -78,6 +79,7 @@ def _ctx() -> MagicMock:
 
 def test_reserved_slots_are_unavailable() -> None:
     state = _state()
+    assert FutureFourPlay().preconditions(state) != []
     assert FutureSevenPlay().preconditions(state) != []
     assert FutureEightPlay().preconditions(state) != []
 
@@ -162,9 +164,19 @@ async def test_end_agent_returns_failure_on_exception() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Reserved future slots (7, 8) — kept for policy shape compatibility.
+# Reserved future slots (4, 7, 8) — kept for policy shape compatibility.
 # Always fail preconditions; execute returns success=False.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_future_four_is_reserved_no_op() -> None:
+    play = FutureFourPlay()
+    reasons = play.preconditions(_state())
+    assert len(reasons) == 1
+    assert reasons[0].text == "Reserved action slot"
+    outcome = await play.execute(_state(), PlayParams(), ctx=_ctx())
+    assert outcome.success is False
 
 
 @pytest.mark.asyncio

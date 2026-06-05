@@ -103,8 +103,6 @@ _OVERRIDE_SPECS: dict[PlayType, _OverrideSpec] = {
     **{pt: _OverrideSpec("issue_number") for pt in _ISSUE_WORK_PLAY_TYPES},
     # SYSTEMATIC_DEBUGGING: issue_number primary; branch-only path bypasses preconditions.
     PlayType.SYSTEMATIC_DEBUGGING: _OverrideSpec("issue_number", branch_bypass=True),
-    # BROWSER_VERIFICATION: branch required; missing → fresh resolve.
-    PlayType.BROWSER_VERIFICATION: _OverrideSpec("branch"),
 }
 
 
@@ -246,12 +244,11 @@ class ParameterResolver:
                 )
             case PlayType.RUN_QA:
                 return await self._resolve_run_qa(state)
-            case PlayType.BROWSER_VERIFICATION:
-                return await self._resolve_browser_verification(state)
             # -- no-arg plays -------------------------------------------------
             case _:
                 # END_SESSION, CLEANUP, TAKE_BREAK, GROOM_BACKLOG,
-                # CALIBRATE_ALIGNMENT, DESIGN_AUDIT, RECONCILE_STATE, PRUNE, FUTURE_7/8
+                # CALIBRATE_ALIGNMENT, DESIGN_AUDIT, RECONCILE_STATE, PRUNE,
+                # FUTURE_4/7/8
                 return PlayParams()
 
     # -------------------------------------------------------------------------
@@ -677,11 +674,3 @@ class ParameterResolver:
         — the cooldown gate and can_test capability still control rate.
         """
         return await self._claim_params(PlayType.RUN_QA, state, PlayParams())
-
-    async def _resolve_browser_verification(self, state: OrchestratorState) -> PlayParams | None:
-        branch = await self._store.get_most_recent_branch(state.session_id)
-        if not branch:
-            return None
-        return await self._claim_params(
-            PlayType.BROWSER_VERIFICATION, state, PlayParams(branch=branch)
-        )

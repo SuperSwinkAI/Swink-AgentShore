@@ -336,7 +336,7 @@ def test_config_nested_containers_are_immutable() -> None:
     with pytest.raises(TypeError):
         config.agents["codex"].model_tiers["extra"] = config.agents["codex"].model_tiers["small"]  # type: ignore[index]
     with pytest.raises(AttributeError):
-        config.browser.file_patterns.append("*.jsx")  # type: ignore[attr-defined]
+        config.intake.seed_paths.append("docs/")  # type: ignore[attr-defined]
 
 
 def test_generated_default_file_matches_runtime_defaults(tmp_path: Path) -> None:
