@@ -210,6 +210,11 @@ agentshore.yaml
 *.db-wal
 *.db-shm
 *.pt
+# Exception: the shipped warm-start seed is the one tracked .pt file. It is
+# packaged into the wheel (hatchling honors these ignores) so fresh installs
+# start from a trained policy instead of cold-starting. Regenerate via
+# `make export-bootstrap-policy`.
+!src/agentshore/data/bootstrap_policy.pt
 *.onnx
 learnings.json
 timelapse-runs/
