@@ -10,7 +10,7 @@ AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agen
 
 **Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from this agent session.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and have cost hundreds of dollars in wasted spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
 
-**Single exception: the `/run_rl_loop` skill.** When the user directly invokes `/run_rl_loop` (and only then), the skill body is authorised to run `agentshore start`, `agentshore stop`, and `agentshore --version` as documented in its steps. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the commands the skill prescribes — every other AgentShore CLI invocation still falls under the rule above.
+**Single exception: the `/monitor_run` skill.** When the user directly invokes `/monitor_run` (and only then), the skill body is authorised to run `agentshore stop --project <DIR>` — and nothing else; `/monitor_run` attaches to an already-running session and never starts one. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the command it prescribes — every other AgentShore CLI invocation still falls under the rule above.
 
 This is the same rule as the [skill-template direct-usage prohibition](#critical-never-edit-installed-skill-templates-directly) below — they cover the two ways an agent can accidentally diverge a live AgentShore from its source tree.
 
@@ -24,7 +24,7 @@ This is the same rule as the [skill-template direct-usage prohibition](#critical
 uv sync --group dev          # Install all dependencies (including dev tools)
 uv run agentshore --help        # Run CLI
 uv run pytest tests/         # Run full suite (xdist-parallel, ~75s on 8-core)
-uv run pytest tests/test_cli.py::test_cli_help -o addopts=''  # Run a focused test
+uv run pytest tests/test_cli.py::test_cli_help -p no:xdist  # Run a focused test
 uv run ruff check src/ tests/        # Lint
 uv run ruff format src/ tests/       # Format
 uv run mypy src/                     # Type check
@@ -37,7 +37,8 @@ The venv lives at `.venv/` — created automatically by `uv sync`. The CLI entry
 Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` with `-n auto --dist=worksteal`, plus branch coverage and a 180s per-test timeout. This drops the full suite from ~20 min serial to ~75s on an 8-core box.
 
 - **Full suite**: `uv run pytest tests/` — do NOT pass `-o addopts=''` (that wipes xdist + coverage + timeout and pushes the run back to 8+ min).
-- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name` — runs fine with default addopts in most cases. Add `--override-ini="addopts="` only if xdist startup cost exceeds the test time.
+- **Avoid `-o addopts=''`**: it silently disables xdist parallelism, coverage enforcement, and the per-test timeout. Prefer `-p no:xdist` instead (keeps coverage + timeout).
+- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name` — runs fine with default addopts in most cases. Add `-p no:xdist` only if xdist startup cost exceeds the test time.
 - **Debug a flaky parallel-only failure**: `uv run pytest tests/path -p no:xdist` — forces serial execution while keeping coverage + timeout.
 - **Never tail-pipe a long-running pytest** (`| tail -N` buffers until EOF, so a healthy run looks hung). Use `-q --tb=line` for compact output, or redirect to a file.
 
@@ -53,9 +54,9 @@ The system runs as a single asyncio process. The core loop is: observe state →
 
 **Agents** (`src/agentshore/agents/`): CLI agents (Claude Code, Codex, Gemini) are asyncio subprocesses. API agents (GPT and other OpenAI-compatible backends) use httpx. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
 
-**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema namespace `agentshore_dev_v1`). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
+**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema namespace `agentshore_dev_v1`, schema version 3). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
 
-**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 23 tables including `schema_info` (namespace check) and `schema_version` plus 21 domain tables covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, pending approvals, learnings, archives, review patterns, and worktrees.
+**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 22 tables (schema version 3) including `schema_info` (namespace check) and `schema_version` plus 20 domain tables covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, learnings, archives, review patterns, and worktrees. The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
 
 **Scope validation**: After each skill-backed play, `validate_scope()` enforces issue-inflation limits. Artifact drift is not blocked until AgentShore has reliable beads-native path boundaries; existing drift tables are evidence logs for other consumers.
 
