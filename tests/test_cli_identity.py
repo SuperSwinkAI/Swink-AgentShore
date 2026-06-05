@@ -17,6 +17,7 @@ from agentshore.identity_wizard.yaml_patch import (
     normalize_trusted_ids_for_bound_agents,
     patch_yaml_with_bindings,
 )
+from tests.ci_support import requires_external_tooling
 
 
 @pytest.fixture(autouse=True)
@@ -1540,6 +1541,7 @@ def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(
     assert db_path.stat().st_mtime_ns == db_mtime_before
 
 
+@requires_external_tooling
 def test_agentshore_init_passes_force_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``agentshore init`` must invoke the wizard with ``force_run=True`` so the
     TTY heuristic doesn't silently skip an explicit user invocation."""

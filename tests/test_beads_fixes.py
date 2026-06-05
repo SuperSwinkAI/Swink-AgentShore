@@ -31,6 +31,7 @@ from agentshore.state import (
     PlayType,
     SkillResult,
 )
+from tests.ci_support import requires_external_tooling
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,6 +126,7 @@ def _success_outcome(pr_number: int = 42) -> PlayOutcome:
 # ---------------------------------------------------------------------------
 
 
+@requires_external_tooling
 @pytest.mark.asyncio
 async def test_bd_lock_serialises_concurrent_calls() -> None:
     """Two concurrent bd coroutines must not overlap — the lock ensures sequential execution."""

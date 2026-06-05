@@ -28,6 +28,11 @@ jobs:
         run: uv run mypy src/
 
       - name: Tests (pytest)
+        # Skip tests that require external tooling not provisioned on the runner
+        # (the bd/beads binary, the sqlite3 .recover CLI). They run locally where
+        # the tooling exists; see tests/ci_support.py:requires_external_tooling.
+        env:
+          AGENTSHORE_SKIP_CI_UNSUPPORTED: "1"
         run: uv run pytest tests/ -q --tb=short
 
   dashboard:
