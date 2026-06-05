@@ -1090,6 +1090,34 @@ async def test_migrate_v2_to_v3_adds_mask_reason_column(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_migrate_v3_to_v4_adds_github_author_column(tmp_path) -> None:
+    """A v3-shaped github_issues (no github_author) gains the column idempotently."""
+    import aiosqlite
+
+    from agentshore.data.migrations import migrate_v3_to_v4
+
+    db_path = tmp_path / "legacy.db"
+    conn = await aiosqlite.connect(str(db_path))
+    try:
+        await conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
+        # v3-shaped github_issues: github_author absent.
+        await conn.execute(
+            "CREATE TABLE github_issues (issue_number INTEGER, session_id TEXT, title TEXT)"
+        )
+        await conn.commit()
+
+        await migrate_v3_to_v4(conn)
+        async with conn.execute("PRAGMA table_info(github_issues)") as cur:
+            cols = {r[1] for r in await cur.fetchall()}
+        assert "github_author" in cols
+
+        # Idempotent: a second run does not raise (duplicate-column).
+        await migrate_v3_to_v4(conn)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_iter_experience_empty_for_unknown_session(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()

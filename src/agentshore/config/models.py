@@ -98,10 +98,16 @@ class BudgetConfig:
 class TrustedIdsConfig:
     github_logins: tuple[str, ...] = ()
     pr_allow_list: tuple[int, ...] = ()
+    restrict_issues_to_trusted_authors: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "github_logins", _tuple(self.github_logins))
         object.__setattr__(self, "pr_allow_list", tuple(self.pr_allow_list))
+        object.__setattr__(
+            self,
+            "restrict_issues_to_trusted_authors",
+            bool(self.restrict_issues_to_trusted_authors),
+        )
 
 
 @dataclass(frozen=True)

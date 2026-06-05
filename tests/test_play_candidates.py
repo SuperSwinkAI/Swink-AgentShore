@@ -732,3 +732,108 @@ def test_merge_pr_candidate_includes_matching_base() -> None:
     )
     nums = [c.params.pr_number for c in plan.candidates_for(PlayType.MERGE_PR)]
     assert nums == [51]
+
+
+# ---------------------------------------------------------------------------
+# Opt-in trusted-issue-author gating (Phase B)
+# ---------------------------------------------------------------------------
+
+
+def _authored_issue(
+    number: int, author: str | None, labels: list[str] | None = None
+) -> IssueSnapshot:
+    return IssueSnapshot(
+        issue_number=number,
+        title=f"Issue {number}",
+        state="open",
+        priority=None,
+        labels=labels or [],
+        source=None,
+        github_author=author,
+    )
+
+
+def _gated_state(open_issues: list[IssueSnapshot], **kwargs: object) -> OrchestratorState:
+    """State with issue-author gating ON and ``trusted-user`` as the trusted set.
+
+    The trusted set is resolved once per tick at assembly in production
+    (``assemble_state`` → ``trusted_issue_author_logins``); the candidate
+    analyzer reads it straight off the state, so tests set it directly.
+    """
+    return _state(
+        open_issues=open_issues,
+        restrict_issues_to_trusted_authors=True,
+        trusted_issue_authors=frozenset({"trusted-user"}),
+        **kwargs,
+    )
+
+
+def test_untrusted_issue_workable_when_gating_off() -> None:
+    # Default state has the toggle off → author is never consulted.
+    state = _state(open_issues=[_authored_issue(1, "stranger")])
+
+    plan = build_candidate_plan(state)
+
+    pickup_nums = [c.params.issue_number for c in plan.candidates_for(PlayType.ISSUE_PICKUP)]
+    assert pickup_nums == [1]
+    assert plan.work_availability.untrusted_issue_count == 0
+
+
+def test_untrusted_issue_excluded_from_all_issue_plays_when_gating_on() -> None:
+    state = _gated_state(
+        [
+            _authored_issue(1, "stranger"),
+            _authored_issue(2, "stranger", labels=["agentshore/needs-refinement"]),
+            _authored_issue(3, "stranger", labels=["bug"]),
+        ]
+    )
+
+    plan = build_candidate_plan(state)
+
+    assert plan.candidates_for(PlayType.ISSUE_PICKUP) == ()
+    assert plan.candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN) == ()
+    assert plan.candidates_for(PlayType.REFINE_TASK_BREAKDOWN) == ()
+    assert plan.candidates_for(PlayType.SYSTEMATIC_DEBUGGING) == ()
+    assert plan.work_availability.untrusted_issue_count == 3
+    assert plan.work_availability.workable_issue_count == 0
+
+
+def test_trusted_login_issue_stays_workable_when_gating_on() -> None:
+    state = _gated_state([_authored_issue(1, "trusted-user")])
+
+    plan = build_candidate_plan(state)
+
+    pickup_nums = [c.params.issue_number for c in plan.candidates_for(PlayType.ISSUE_PICKUP)]
+    plan_nums = [
+        c.params.issue_number for c in plan.candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN)
+    ]
+    assert pickup_nums == [1]
+    assert plan_nums == [1]
+    assert plan.work_availability.untrusted_issue_count == 0
+
+
+def test_agent_identity_issue_stays_workable_when_gating_on() -> None:
+    # Agent identities are folded into the trusted set at assembly (covered by
+    # trusted_issue_author_logins tests); here the resolved bot login is in the
+    # state's trusted set, and its issues stay workable. Author match is
+    # case-insensitive (canonicalized).
+    state = _state(
+        open_issues=[_authored_issue(1, "AgentShoreBot")],
+        restrict_issues_to_trusted_authors=True,
+        trusted_issue_authors=frozenset({"agentshorebot"}),
+    )
+
+    plan = build_candidate_plan(state)
+
+    pickup_nums = [c.params.issue_number for c in plan.candidates_for(PlayType.ISSUE_PICKUP)]
+    assert pickup_nums == [1]
+    assert plan.work_availability.untrusted_issue_count == 0
+
+
+def test_null_author_issue_excluded_when_gating_on() -> None:
+    state = _gated_state([_authored_issue(1, None)])
+
+    plan = build_candidate_plan(state)
+
+    assert plan.candidates_for(PlayType.ISSUE_PICKUP) == ()
+    assert plan.work_availability.untrusted_issue_count == 1

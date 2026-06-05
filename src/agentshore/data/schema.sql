@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS github_issues (
     url          TEXT,
     created_at   TEXT NOT NULL,
     closed_at    TEXT,
+    github_author TEXT,
     PRIMARY KEY (issue_number, session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_github_issues_session ON github_issues(session_id);
@@ -360,4 +361,4 @@ VALUES ('schema_namespace', 'agentshore_dev_v1');
 
 -- Current schema version for the agentshore_dev_v1 generation.
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (3, datetime('now'));
+VALUES (4, datetime('now'));

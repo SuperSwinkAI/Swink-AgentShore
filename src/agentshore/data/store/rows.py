@@ -313,6 +313,7 @@ def _row_to_github_issue(row: aiosqlite.Row) -> GitHubIssueRecord:
         url=row["url"],
         created_at=row["created_at"],
         closed_at=row["closed_at"],
+        github_author=row["github_author"],
     )
 
 

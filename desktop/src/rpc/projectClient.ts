@@ -121,6 +121,21 @@ export async function installTimelapse(): Promise<TimelapseInstallResult> {
   return callJsonRpc<TimelapseInstallResult>("project.install_timelapse", {});
 }
 
+/**
+ * Persist the "only work issues opened by trusted identities" toggle to
+ * ``trusted_ids.restrict_issues_to_trusted_authors`` in agentshore.yaml via
+ * ``project.set_trusted_issue_enforcement``. The sidecar echoes the stored
+ * boolean and the resolved yaml path.
+ */
+export async function setTrustedIssueEnforcement(
+  enabled: boolean,
+): Promise<{ enabled: boolean; yaml_path: string }> {
+  return callJsonRpc<{ enabled: boolean; yaml_path: string }>(
+    "project.set_trusted_issue_enforcement",
+    { enabled },
+  );
+}
+
 export async function inspectProject(): Promise<ProjectInspectResult> {
   return callJsonRpc<ProjectInspectResult>("project.inspect");
 }
