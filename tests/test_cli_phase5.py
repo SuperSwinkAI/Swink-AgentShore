@@ -571,7 +571,7 @@ def test_stop_reports_failure_when_session_survives_hard_stop(
     assert "AgentShore session stopped." not in result.output
 
 
-def test_stop_hard_esr_is_ignored(runner: CliRunner, tmp_path: Path) -> None:
+def test_stop_hard_skips_end_session_report(runner: CliRunner, tmp_path: Path) -> None:
     project = _make_git_repo(tmp_path)
 
     with (
@@ -579,11 +579,11 @@ def test_stop_hard_esr_is_ignored(runner: CliRunner, tmp_path: Path) -> None:
         patch("agentshore.session_path.hard_stop_session", return_value=True),
         patch("agentshore.cli.commands.stop._generate_end_session_report_cli") as generate_report,
     ):
-        result = runner.invoke(main, ["stop", "--project", str(project), "--hard", "--esr"])
+        result = runner.invoke(main, ["stop", "--project", str(project), "--hard"])
 
     assert result.exit_code == 0, result.output
     generate_report.assert_not_called()
-    assert "Ignoring --esr with --hard" in result.output
+    assert "AgentShore session force-stopped." in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +838,22 @@ def test_dashboard_reports_no_session_when_socket_stale(
     # The stale socket and PID should have been cleaned up by discover_socket.
     assert not sp.session_socket_path(project).exists()
     assert not sp.session_pid_path(project).exists()
+
+
+def test_dashboard_ipc_host_requires_ipc_port(runner: CliRunner, tmp_path: Path) -> None:
+    """`--ipc-host` without `--ipc-port` is rejected rather than silently ignored."""
+    from agentshore.cli import main as cli_main
+
+    project = tmp_path / "project"
+    project.mkdir()
+
+    result = runner.invoke(
+        cli_main,
+        ["dashboard", "--project", str(project), "--ipc-host", "10.0.0.1", "--no-open"],
+    )
+
+    assert result.exit_code != 0
+    assert "--ipc-host requires --ipc-port" in result.output
 
 
 # ---------------------------------------------------------------------------

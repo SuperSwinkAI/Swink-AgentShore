@@ -48,13 +48,7 @@ def _generate_end_session_report_cli(project_path: Path) -> Path:
     default=False,
     help="Force immediate shutdown. Default: graceful drain.",
 )
-@click.option(
-    "--esr",
-    is_flag=True,
-    default=False,
-    help="Deprecated; graceful stops always generate and open an end-of-session report.",
-)
-def stop(project: str, hard: bool, esr: bool) -> None:
+def stop(project: str, hard: bool) -> None:
     """Stop a running AgentShore session for this project.
 
     By default, triggers a graceful drain: in-flight plays finish, agents are
@@ -82,8 +76,6 @@ def stop(project: str, hard: bool, esr: bool) -> None:
     timelapse_info = read_timelapse_info(project_path)
 
     if hard:
-        if esr:
-            click.echo("Ignoring --esr with --hard; hard stop can bypass clean shutdown.")
         if hard_stop_session(project_path):
             click.echo("AgentShore session force-stopped.")
         else:
@@ -115,8 +107,6 @@ def stop(project: str, hard: bool, esr: bool) -> None:
                 click.echo("End session report skipped because the session did not stop cleanly.")
         elif result == "fallback_hard":
             click.echo("No IPC endpoint found — falling back to hard stop.")
-            if esr:
-                click.echo("End session report skipped because hard stop was required.")
             if hard_stop_session(project_path):
                 click.echo("AgentShore session stopped.")
             else:

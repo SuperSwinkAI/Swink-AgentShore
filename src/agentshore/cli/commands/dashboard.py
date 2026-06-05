@@ -76,6 +76,9 @@ def dashboard(
 
     project_path = Path(project).resolve()
 
+    if ipc_host is not None and ipc_port is None:
+        raise click.UsageError("--ipc-host requires --ipc-port.")
+
     if socket is not None:
         ipc_endpoint = IpcEndpoint.unix(Path(socket))
     elif ipc_port is not None:

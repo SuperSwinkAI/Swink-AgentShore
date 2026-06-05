@@ -581,6 +581,21 @@ def test_init_install_skills_force_passes_force(tmp_path: Path) -> None:
     mock_install.assert_called_once_with(repo, force=True)
 
 
+def test_init_install_skills_rejects_target_branch(tmp_path: Path) -> None:
+    """`--target-branch` with `--install-skills` errors rather than being silently ignored."""
+    repo = _make_git_repo(tmp_path)
+
+    runner = CliRunner()
+    with patch("agentshore.skills.install_skills", return_value=[]):
+        result = runner.invoke(
+            main,
+            ["init", "--project", str(repo), "--install-skills", "--target-branch", "develop"],
+        )
+
+    assert result.exit_code != 0
+    assert "--target-branch has no effect with --install-skills" in result.output
+
+
 # ---------------------------------------------------------------------------
 # 8.5. agentshore init manages .gitignore for .agentshore/ runtime artifacts
 # ---------------------------------------------------------------------------

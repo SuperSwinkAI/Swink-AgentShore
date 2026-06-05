@@ -278,6 +278,11 @@ def init(
 
     # --install-skills: run only phases 2 + 4, skip all config-mutating steps.
     if install_skills_only:
+        if target_branch is not None:
+            raise click.UsageError(
+                "--target-branch has no effect with --install-skills "
+                "(skill install skips config generation)."
+            )
         # -- 2. Install skill files ---------------------------------------
         installed = install_skills(project_path, force=force)
         if installed:
