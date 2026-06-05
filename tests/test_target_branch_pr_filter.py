@@ -12,8 +12,11 @@ it is a pure static method, so no DB / git fixtures are needed.
 
 from __future__ import annotations
 
-import structlog
+from unittest.mock import MagicMock
 
+import pytest
+
+import agentshore.core.mixins.state as state_mod
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.state import PullRequestSnapshot
 
@@ -61,14 +64,23 @@ def test_empty_string_base_is_kept() -> None:
     assert [pr.pr_number for pr in kept] == [7]
 
 
-def test_emits_github_pr_ignored_per_dropped_pr() -> None:
+def test_emits_github_pr_ignored_per_dropped_pr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Assert on the structured-logger call directly rather than via
+    # structlog.testing.capture_logs(): capture_logs depends on the global
+    # structlog processor config, which other tests can leave cached under
+    # xdist, making it flaky in CI. Patching the module-level _logger is
+    # config-independent.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(state_mod, "_logger", mock_logger)
     prs = [_pr(96, "integration"), _pr(62, "main")]
-    with structlog.testing.capture_logs() as captured:
-        _kept, hidden = StateBuilder._filter_pull_requests_to_target(prs, "integration")
+    _kept, hidden = StateBuilder._filter_pull_requests_to_target(prs, "integration")
     assert hidden == 1
-    ignored = [e for e in captured if e.get("event") == "github_pr_ignored"]
+    ignored = [
+        c for c in mock_logger.info.call_args_list if c.args and c.args[0] == "github_pr_ignored"
+    ]
     assert len(ignored) == 1
-    assert ignored[0]["reason"] == "wrong_base_branch"
-    assert ignored[0]["pr_number"] == 62
-    assert ignored[0]["base_ref"] == "main"
-    assert ignored[0]["target_branch"] == "integration"
+    kwargs = ignored[0].kwargs
+    assert kwargs["reason"] == "wrong_base_branch"
+    assert kwargs["pr_number"] == 62
+    assert kwargs["base_ref"] == "main"
+    assert kwargs["target_branch"] == "integration"
