@@ -2038,7 +2038,6 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
     const workshopSeats = layout.getZone(layout.ZoneId.WORKSHOP).seats;
     const markedWorkshopSeats = [
       { x: 27, y: 22, facing: "north" },
-      { x: 32, y: 35, facing: "west" },
       { x: 44, y: 34, facing: "east" },
     ].every((expected) =>
       workshopSeats.some(

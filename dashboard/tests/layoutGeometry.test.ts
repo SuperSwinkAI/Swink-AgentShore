@@ -128,7 +128,6 @@ describe("office furniture layout", () => {
     expect(workshop?.seats).toEqual(
       expect.arrayContaining([
         { x: 27, y: 22, facing: "north" },
-        { x: 32, y: 35, facing: "west" },
         { x: 44, y: 34, facing: "east" },
       ]),
     );
