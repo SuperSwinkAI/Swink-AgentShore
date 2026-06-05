@@ -16,10 +16,10 @@ Turn session data into self-contained, shareable HTML artifacts of a AgentShore 
 
 | Report | Trigger | Contents |
 |--------|---------|----------|
-| **Session Summary** | Orchestrator on session end, or `agentshore report` | Full artifact: overview, play timeline, cost breakdown (by play type / by agent / cumulative), agent performance and specialization, failure analysis, scope-drift count, anti-confirmation audit, issue inflation, trajectory snapshots + analysis, learnings count, cleanup/revert count, loop incidents, code-review patterns, recommendations, epic summaries, and epic-closure timeline. Charted (Chart.js). |
+| **Session Summary** | Orchestrator on session end (also the TUI report action) | Full artifact: overview, play timeline, cost breakdown (by play type / by agent / cumulative), agent performance and specialization, failure analysis, scope-drift count, anti-confirmation audit, issue inflation, trajectory snapshots + analysis, learnings count, cleanup/revert count, loop incidents, code-review patterns, recommendations, epic summaries, and epic-closure timeline. Charted (Chart.js). |
 | **End-of-Session Report (ESR)** | Orchestrator drain path on shutdown, and `agentshore stop` | Compact static page (no charts): overview, repo URL, per-play-type stats, control rejections (dispatch revalidation / selector rejections), closed issues, and a phased play log (rows per executed play, plus plays-in-use / total-slots and unique-agent counts). |
-| **Progress** | Orchestrator mid-session, or `agentshore report` | Lightweight snapshot: overview, recent plays (last 10), remaining-budget estimate, and currently active agents. |
-| **Archive Comparison** | `agentshore archive compare <id1> <id2>` | Side-by-side of two sessions: cost / alignment / play-count diffs, cost breakdowns, issue throughput, play distribution, alignment trajectories, and a learnings diff (added / removed / shared). Charted. |
+| **Progress** | Orchestrator mid-session (also the TUI report action) | Lightweight snapshot: overview, recent plays (last 10), remaining-budget estimate, and currently active agents. |
+| **Archive Comparison** | Reports engine, on demand (cross-session comparison) | Side-by-side of two sessions: cost / alignment / play-count diffs, cost breakdowns, issue throughput, play distribution, alignment trajectories, and a learnings diff (added / removed / shared). Charted. |
 
 ## Data Sources
 

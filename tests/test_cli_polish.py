@@ -169,41 +169,16 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# 0agentshore report --help mentions options
+# Removed CLI commands (report, train, configure, archive) are not registered
 # ---------------------------------------------------------------------------
 
 
-def test_report_help_text() -> None:
+def test_removed_commands_not_registered() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["report", "--help"])
-    assert result.exit_code == 0
-    assert "--session" in result.output
-    assert "--type" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 0agentshore train --help mentions --epochs
-# ---------------------------------------------------------------------------
-
-
-def test_train_help_text() -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["train", "--help"])
-    assert result.exit_code == 0
-    assert "--epochs" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 0agentshore archive --help lists subcommands
-# ---------------------------------------------------------------------------
-
-
-def test_archive_help_text() -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["archive", "--help"])
-    assert result.exit_code == 0
-    assert "list" in result.output
-    assert "compare" in result.output
+    for cmd in ("report", "train", "configure", "archive"):
+        result = runner.invoke(main, [cmd, "--help"])
+        assert result.exit_code != 0, f"removed command '{cmd}' still resolves"
+        assert "No such command" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -550,10 +525,10 @@ def test_init_without_force_preserves_database(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_init_without_force_directs_user_to_configure(tmp_path: Path) -> None:
-    """When agentshore.yaml exists and --force is absent, init points the user
-    at ``agentshore configure`` (the new non-destructive path) rather than
-    silently writing or insisting on --force."""
+def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) -> None:
+    """When agentshore.yaml exists and --force is absent, init re-runs the
+    setup wizards without rewriting the file, and points the user at
+    ``agentshore init --force`` for a fresh-template merge."""
     repo = _make_git_repo(tmp_path)
     original = "# original config\nbudget:\n  enabled: true\n  total: 1.0\n"
     (repo / "agentshore.yaml").write_text(original)
@@ -565,7 +540,7 @@ def test_init_without_force_directs_user_to_configure(tmp_path: Path) -> None:
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
-    assert "agentshore configure" in result.output
+    assert "agentshore init --force" in result.output
     # Original file should be preserved
     assert (repo / "agentshore.yaml").read_text() == original
 
@@ -813,5 +788,6 @@ def test_all_subcommands_listed() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("start", "init", "report", "train", "archive"):
+    for cmd in ("start", "init", "identity", "dashboard", "stop"):
         assert cmd in result.output, f"Missing subcommand '{cmd}' in --help"
+    # Removed commands' absence is asserted in test_removed_commands_not_registered.

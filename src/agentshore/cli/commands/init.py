@@ -304,7 +304,7 @@ def init(
     if config_yaml.exists() and not force:
         click.echo(
             f"agentshore.yaml already exists at {config_yaml}. "
-            f"Use `agentshore configure` to update settings, or `agentshore init --force` "
+            f"Re-running the setup wizards to update settings; use `agentshore init --force` "
             f"to merge fresh template defaults into your existing config."
         )
     else:
