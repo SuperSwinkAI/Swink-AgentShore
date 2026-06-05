@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { SessionContext } from "./services/sessionContext";
 import { StartingProgress } from "./StartingProgress";
+import { setTrustedIssueEnforcement } from "./rpc/projectClient";
 import { startSession, type StartSessionResult } from "./services/sessionClient";
 import { subscribeProgress } from "./services/sidecarEvents";
 import { applyProgressEvent, buildInitialSteps } from "./startupSteps";
@@ -22,6 +23,18 @@ interface StartingLocationState {
   seedInputPath?: string | null;
   /** Per-session timelapse-capture override from the Start screen toggle. */
   timelapse?: boolean;
+  /**
+   * The setup rail's "only work issues from trusted identities" choice
+   * (``trusted_ids.restrict_issues_to_trusted_authors``). The setup-rail
+   * toggle persists via a best-effort RPC and the checkbox hydrates from
+   * localStorage, so agentshore.yaml can silently disagree with what the
+   * user selected. When present, this route reconciles the value into the
+   * file via ``project.set_trusted_issue_enforcement`` BEFORE firing
+   * session.start, because the orchestrator reads the gate off
+   * agentshore.yaml at start. Absent on the Repeat / Quick Start paths,
+   * which replay the already-configured project and trust the file as-is.
+   */
+  trustedIssueEnforcement?: boolean;
   /**
    * Issue #582 handoff from ``startSessionFromPersistedSetup`` (Repeat
    * via #561, Quick Start via #565). When ``sessionStarted`` is true and
@@ -98,7 +111,7 @@ export function StartingProgressRoute(): JSX.Element {
         applyProgressEvent(current, params.step!, params.status!, params.error ?? null),
       );
     })
-      .then((fn) => {
+      .then(async (fn) => {
         if (cancelled) {
           fn();
           return;
@@ -124,6 +137,32 @@ export function StartingProgressRoute(): JSX.Element {
           );
           return;
         }
+        // Reconcile the trusted-issue-author gate into agentshore.yaml
+        // before session.start reads it. The setup-rail toggle's live RPC
+        // is best-effort and the checkbox can show "on" from localStorage
+        // while the file has no trusted_ids block, so push the user's
+        // choice through here where the project is guaranteed active.
+        const wantGate = state?.trustedIssueEnforcement;
+        if (wantGate !== undefined) {
+          try {
+            await setTrustedIssueEnforcement(wantGate);
+          } catch (err) {
+            if (cancelled) return;
+            if (wantGate) {
+              // Refuse to start with a security gate the user enabled
+              // silently dropped. (A failed write of `false` is a no-op:
+              // an absent key already means the gate is off, so we fall
+              // through and start normally in that case.)
+              setStartError(
+                `Couldn't enable "only work issues from trusted identities": ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+              return;
+            }
+          }
+        }
+        if (cancelled) return;
         // Listener is registered — now fire session.start. The
         // progress_token correlates the $/progress notifications back
         // to this specific call (DESIGN §2.4).
