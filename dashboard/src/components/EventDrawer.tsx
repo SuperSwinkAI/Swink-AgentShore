@@ -17,7 +17,7 @@ const MAX_ERROR_MESSAGE_CHARS = 140;
 
 type EventFilter = "all" | "started" | "completed" | "failed";
 
-interface EventCard {
+export interface EventCard {
   key: string;
   name: string;
   type: string;
@@ -39,14 +39,14 @@ interface EventCard {
   branch: string | null;
 }
 
-interface DrawerState {
+export interface DrawerState {
   cards: EventCard[];
   activeFilter: EventFilter;
   fallbackId: number;
   agentsById: Map<string, AgentSnapshot>;
 }
 
-type DrawerAction =
+export type DrawerAction =
   | { type: "hydrate" }
   | { type: "state_update"; agents: AgentSnapshot[] }
   | { type: "play_event"; event: PlayEvent }
@@ -214,13 +214,25 @@ function upsertCardInList(
   const endedAt = endedAtForEvent(event, existing);
   const startedAt = startedAtForEvent(event, existing, endedAt);
 
+  // Resolve the agent's name/type from the live snapshot when possible, but
+  // fall back to the values already captured on the card (the same existing?.*
+  // preservation used for the trigger/target fields above). A terminated agent
+  // drops out of agentsById, so recomputing would clobber a real name with the
+  // id-slice/"Agent" fallback — completed-play tiles are historical records and
+  // must keep the identity captured while the agent was live.
+  const resolvedAgent = lookupAgent(displayAgentId, agentsById);
+  const resolvedName = resolvedAgent
+    ? shortAgentName(resolvedAgent, displayAgentId?.slice(0, 8) ?? "Session")
+    : (existing?.name ?? (displayAgentId?.slice(0, 8) ?? "Session"));
+  const resolvedType = resolvedAgent
+    ? formatAgentClass(resolvedAgent)
+    : (existing?.type ??
+      displayAgentType(displayAgentId, agentsById, triggerAgentType));
+
   const next: EventCard = {
     key,
-    name: shortAgentName(
-      lookupAgent(displayAgentId, agentsById),
-      displayAgentId?.slice(0, 8) ?? "Session",
-    ),
-    type: displayAgentType(displayAgentId, agentsById, triggerAgentType),
+    name: resolvedName,
+    type: resolvedType,
     play: formatPlayWithTarget(event.play_type, {
       issue_number: issueNumber,
       pr_number: prNumber,
@@ -291,7 +303,7 @@ function currentPlayMatchesCard(current: ActivePlay, card: EventCard): boolean {
   );
 }
 
-function reducer(state: DrawerState, action: DrawerAction): DrawerState {
+export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
   switch (action.type) {
     case "hydrate":
       return state;
@@ -353,20 +365,23 @@ function reducer(state: DrawerState, action: DrawerAction): DrawerState {
         return card;
       });
 
-      // Refresh name/type using the new agent map for every card.
+      // Refresh name/type from the new agent map, but ONLY for cards whose
+      // agent is still present. A terminated agent drops out of the snapshot,
+      // and unconditionally recomputing would reset its completed-play cards to
+      // the id-slice/"Agent" fallback — clobbering the identity captured while
+      // it was live. Completed-play tiles are historical records: keep what was
+      // resolved at execution time, only upgrade when the agent is resolvable.
       cards = cards.map((card) => {
         const displayAgentId = card.agentId ?? card.triggerAgentId;
+        const resolvedAgent = lookupAgent(displayAgentId, agentsById);
+        if (!resolvedAgent) return card;
         return {
           ...card,
           name: shortAgentName(
-            lookupAgent(displayAgentId, agentsById),
+            resolvedAgent,
             displayAgentId?.slice(0, 8) ?? "Session",
           ),
-          type: displayAgentType(
-            displayAgentId,
-            agentsById,
-            card.triggerAgentType,
-          ),
+          type: formatAgentClass(resolvedAgent),
         };
       });
 
@@ -409,7 +424,7 @@ function reducer(state: DrawerState, action: DrawerAction): DrawerState {
   }
 }
 
-const INITIAL_STATE: DrawerState = {
+export const INITIAL_STATE: DrawerState = {
   cards: [],
   activeFilter: "all",
   fallbackId: 0,
