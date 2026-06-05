@@ -53,6 +53,14 @@ def trusted_pr_author_logins(cfg: RuntimeConfig) -> frozenset[str]:
     return frozenset(trusted)
 
 
+def trusted_issue_author_logins(cfg: RuntimeConfig) -> frozenset[str]:
+    """GitHub logins whose issues AgentShore may pick up when issue-author
+    enforcement is enabled. Shares the PR trusted set (configured logins ∪ the
+    enabled agents' own resolved identities) so AgentShore never ignores issues
+    it filed itself."""
+    return trusted_pr_author_logins(cfg)
+
+
 def filter_trusted_pull_requests(
     pull_requests: Collection[PullRequestRecord],
     cfg: RuntimeConfig,

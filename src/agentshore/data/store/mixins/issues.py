@@ -68,8 +68,8 @@ class _IssuesMixin:
             """
             INSERT INTO github_issues
                 (issue_number, session_id, title, state, priority,
-                 labels, source, url, created_at, closed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 labels, source, url, created_at, closed_at, github_author)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(issue_number, session_id) DO UPDATE SET
                 title      = excluded.title,
                 state      = excluded.state,
@@ -81,7 +81,8 @@ class _IssuesMixin:
                 closed_at  = CASE WHEN excluded.state = 'open'
                                   THEN NULL
                                   ELSE COALESCE(excluded.closed_at, github_issues.closed_at)
-                             END
+                             END,
+                github_author = COALESCE(excluded.github_author, github_issues.github_author)
             """,
             [
                 (
@@ -95,6 +96,7 @@ class _IssuesMixin:
                     issue.url,
                     issue.created_at,
                     issue.closed_at,
+                    issue.github_author,
                 )
                 for issue in issues
             ],
@@ -106,7 +108,7 @@ class _IssuesMixin:
         cursor = await self._conn.execute(
             """
             SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at
+                   labels, source, url, created_at, closed_at, github_author
             FROM github_issues
             WHERE session_id = ? AND LOWER(state) = 'open'
             ORDER BY
@@ -125,7 +127,7 @@ class _IssuesMixin:
         async with self._conn.execute(
             """
             SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at
+                   labels, source, url, created_at, closed_at, github_author
             FROM github_issues
             WHERE issue_number = ? AND session_id = ?
             """,
@@ -139,7 +141,7 @@ class _IssuesMixin:
         cursor = await self._conn.execute(
             """
             SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at
+                   labels, source, url, created_at, closed_at, github_author
             FROM github_issues
             WHERE session_id = ?
             ORDER BY issue_number ASC
@@ -168,7 +170,7 @@ class _IssuesMixin:
         cursor = await self._conn.execute(
             """
             SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at
+                   labels, source, url, created_at, closed_at, github_author
             FROM github_issues
             WHERE session_id = ?
               AND LOWER(state) = 'closed'

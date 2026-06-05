@@ -39,6 +39,7 @@ describe("parseProjectYaml", () => {
       identityLogins: [],
       budget: null,
       timelapse: null,
+      trustedIssueEnforcement: null,
     });
     expect(parseProjectYaml("")).toEqual({
       targetBranch: null,
@@ -46,6 +47,7 @@ describe("parseProjectYaml", () => {
       identityLogins: [],
       budget: null,
       timelapse: null,
+      trustedIssueEnforcement: null,
     });
     expect(parseProjectYaml("   \n\n  ")).toEqual({
       targetBranch: null,
@@ -53,6 +55,7 @@ describe("parseProjectYaml", () => {
       identityLogins: [],
       budget: null,
       timelapse: null,
+      trustedIssueEnforcement: null,
     });
   });
 
@@ -118,6 +121,7 @@ rl:
       identityLogins: [],
       budget: null,
       timelapse: null,
+      trustedIssueEnforcement: null,
     });
   });
 
@@ -182,6 +186,33 @@ identities:
     const r = parseProjectYaml(yaml);
     expect(r.targetBranch).toBe("ok");
     expect(r.identityLogins).toEqual(["example-user"]);
+  });
+});
+
+describe("parseProjectYaml — trusted_ids.restrict_issues_to_trusted_authors", () => {
+  it("parses true from the trusted_ids block", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - example-user
+  restrict_issues_to_trusted_authors: true
+`;
+    expect(parseProjectYaml(yaml).trustedIssueEnforcement).toBe(true);
+  });
+
+  it("parses false from the trusted_ids block", () => {
+    const yaml = `trusted_ids:
+  restrict_issues_to_trusted_authors: false
+`;
+    expect(parseProjectYaml(yaml).trustedIssueEnforcement).toBe(false);
+  });
+
+  it("leaves trustedIssueEnforcement null when the key is absent", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - example-user
+`;
+    expect(parseProjectYaml(yaml).trustedIssueEnforcement).toBeNull();
+    expect(parseProjectYaml(FULL_YAML).trustedIssueEnforcement).toBeNull();
   });
 });
 

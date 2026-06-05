@@ -26,7 +26,12 @@ import {
   type AgentRow,
   type AgentsCatalog,
 } from "./rpc/agentsClient";
-import { inspectProject, setBudget, setSeedPaths } from "./rpc/projectClient";
+import {
+  inspectProject,
+  setBudget,
+  setSeedPaths,
+  setTrustedIssueEnforcement,
+} from "./rpc/projectClient";
 import {
   budgetHydrationToSelection,
   budgetSelectionToConfig,
@@ -105,6 +110,9 @@ type SetupState = {
   startSelection: StartSelection;
   /** Whether the optional timelapse-capture feature is installed (from yaml). */
   timelapseInstalled: boolean;
+  /** Gate issue pickup to issues opened by trusted identities
+   *  (``trusted_ids.restrict_issues_to_trusted_authors``). */
+  trustedIssueEnforcement: boolean;
 };
 
 type SetupScreen =
@@ -134,6 +142,7 @@ const defaultSetupState: SetupState = {
   budget: { mode: "unlimited", total: 0 },
   startSelection: { seedInputPath: null },
   timelapseInstalled: false,
+  trustedIssueEnforcement: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -213,6 +222,7 @@ function loadStoredSetup(): SetupState {
       budget: parseBudgetSelection(parsed.budget),
       startSelection: parseStartSelection(parsed.startSelection),
       timelapseInstalled: parsed.timelapseInstalled === true,
+      trustedIssueEnforcement: parsed.trustedIssueEnforcement === true,
     };
   } catch {
     return defaultSetupState;
@@ -640,6 +650,38 @@ function SetupLayout({
                   At least two identities are required to start.
                 </p>
               )}
+              <label className="id-screen-toggle">
+                <input
+                  type="checkbox"
+                  checked={setup.trustedIssueEnforcement}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setSetup((prev) => {
+                      const merged = { ...prev, trustedIssueEnforcement: checked };
+                      persistSetup(merged);
+                      return merged;
+                    });
+                    void (async () => {
+                      try {
+                        await setTrustedIssueEnforcement(checked);
+                      } catch (error) {
+                        // Non-fatal: localStorage already tracks the choice.
+                        console.error(
+                          "project.set_trusted_issue_enforcement failed",
+                          error,
+                        );
+                      }
+                    })();
+                  }}
+                />
+                <span>Only work issues opened by trusted identities</span>
+              </label>
+              {setup.identities.length === 0 && (
+                <p className="id-screen-hint">
+                  Enabling this restricts issue pickup to the agents' own
+                  identities, so the backlog may shrink.
+                </p>
+              )}
               <div className="setup-screen-actions">
                 <button
                   type="button"
@@ -909,6 +951,9 @@ export function App() {
             ? { identities: hydration.identityLogins }
             : {}),
           ...(budgetSelection !== null ? { budget: budgetSelection } : {}),
+          ...(hydration.trustedIssueEnforcement !== null
+            ? { trustedIssueEnforcement: hydration.trustedIssueEnforcement }
+            : {}),
           timelapseInstalled: hydration.timelapse?.installed ?? false,
         };
         persistSetup(next);

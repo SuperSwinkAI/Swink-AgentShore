@@ -489,6 +489,7 @@ async def test_cache_github_issues_reopen_clears_closed_at() -> None:
                 url          TEXT,
                 created_at   TEXT NOT NULL,
                 closed_at    TEXT,
+                github_author TEXT,
                 PRIMARY KEY (issue_number, session_id)
             );
             """

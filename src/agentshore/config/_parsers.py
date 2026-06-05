@@ -78,6 +78,7 @@ class _RawBudget(TypedDict, total=False):
 class _RawTrustedIds(TypedDict, total=False):
     github_logins: list[object]
     pr_allow_list: list[object]
+    restrict_issues_to_trusted_authors: object
 
 
 class _RawModelTier(TypedDict, total=False):
@@ -626,7 +627,18 @@ def _parse_trusted_ids(raw: _RawTrustedIds) -> TrustedIdsConfig:
             pr_allow_list.append(value)
             seen_prs.add(value)
 
-    return TrustedIdsConfig(github_logins=tuple(logins), pr_allow_list=tuple(pr_allow_list))
+    raw_restrict = raw.get("restrict_issues_to_trusted_authors", False)
+    if not isinstance(raw_restrict, bool):
+        raise ConfigError(
+            "trusted_ids.restrict_issues_to_trusted_authors must be a boolean, "
+            f"got {type(raw_restrict).__name__}"
+        )
+
+    return TrustedIdsConfig(
+        github_logins=tuple(logins),
+        pr_allow_list=tuple(pr_allow_list),
+        restrict_issues_to_trusted_authors=raw_restrict,
+    )
 
 
 _API_AGENT_PREFIX = "api_"

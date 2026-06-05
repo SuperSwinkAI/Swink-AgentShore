@@ -345,6 +345,7 @@ class IssueSnapshot:
     url: str | None = None
     created_at: str | None = None
     closed_at: str | None = None
+    github_author: str | None = None
     bead_id: str | None = None
     bead_epic_id: str | None = None
     bead_epic_title: str | None = None
@@ -591,6 +592,13 @@ class OrchestratorState:
     # Issues that have had a WRITE_IMPLEMENTATION_PLAN dispatched this session.
     # Persists after completion to prevent re-planning before the GH label refresh.
     planned_issues: frozenset[int] = field(default_factory=frozenset)
+    # Opt-in issue-author trust gating (trusted_ids.restrict_issues_to_trusted_authors).
+    # Resolved once per tick at state assembly from config — so the state-only
+    # candidate analyzer can exclude issues opened by non-trusted authors without
+    # threading config through every call site. When the toggle is off the flag is
+    # False and the author set is empty (no gating).
+    restrict_issues_to_trusted_authors: bool = False
+    trusted_issue_authors: frozenset[str] = field(default_factory=frozenset)
     # Consecutive plays of the same type regardless of success/failure. Catches
     # PPO collapses onto a cheap repeated play (where every play succeeds and
     # `same_type_failure_streak` stays at 0). Used for masking + reward penalty

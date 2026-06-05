@@ -194,6 +194,7 @@ _PROJECT_NO_ACTIVE_REMAP = frozenset(
         "project.set_target_branch",
         "project.set_seed_paths",
         "project.set_budget",
+        "project.set_trusted_issue_enforcement",
         "project.set_timelapse",
         "project.install_timelapse",
     }
@@ -225,6 +226,11 @@ def _dispatch_project(method: str, params: object, state: ServerState) -> object
         if not isinstance(budget_param, dict):
             raise _ParamError("project.set_budget requires object 'budget'")
         return project_rpc.set_budget(budget_param)
+    if method == "project.set_trusted_issue_enforcement":
+        enabled = obj_params.get("enabled")
+        if not isinstance(enabled, bool):
+            raise _ParamError("project.set_trusted_issue_enforcement requires boolean 'enabled'")
+        return project_rpc.set_trusted_issue_enforcement(enabled)
     if method == "project.set_timelapse":
         timelapse_param = obj_params.get("timelapse")
         if not isinstance(timelapse_param, dict):
@@ -1076,6 +1082,7 @@ HANDLERS: dict[str, Route] = {
     "project.set_target_branch": Route(_dispatch_project_rpc),
     "project.set_seed_paths": Route(_dispatch_project_rpc),
     "project.set_budget": Route(_dispatch_project_rpc),
+    "project.set_trusted_issue_enforcement": Route(_dispatch_project_rpc),
     "project.set_timelapse": Route(_dispatch_project_rpc),
     "project.install_timelapse": Route(_dispatch_project_rpc),
     "project.deselect": Route(_dispatch_project_rpc),
