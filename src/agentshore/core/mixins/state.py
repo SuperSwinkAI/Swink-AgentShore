@@ -10,6 +10,7 @@ import aiosqlite
 
 from agentshore.core.context import _StateData
 from agentshore.core.helpers import _logger
+from agentshore.github.trust import trusted_issue_author_logins
 from agentshore.rl.action_space import ACTION_SPACE_VERSION
 from agentshore.state import (
     INTERNAL_PLAY_TYPES,
@@ -496,6 +497,12 @@ class StateBuilder:
             in_flight_plays=in_flight_plays,
             in_flight_issues=list(self._executor.inflight_issues),
             planned_issues=self._executor.planned_issues,
+            restrict_issues_to_trusted_authors=cfg.trusted_ids.restrict_issues_to_trusted_authors,
+            trusted_issue_authors=(
+                trusted_issue_author_logins(cfg)
+                if cfg.trusted_ids.restrict_issues_to_trusted_authors
+                else frozenset()
+            ),
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,

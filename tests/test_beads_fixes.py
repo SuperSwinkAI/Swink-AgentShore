@@ -99,6 +99,10 @@ def _make_state(
     state.open_issues = [_make_issue(n) for n in issue_numbers]
     state.agents = [_make_agent()]
     state.pull_requests = []
+    # Issue-author trust gating is off here (a truthy MagicMock default would
+    # otherwise spuriously exclude every author-less issue).
+    state.restrict_issues_to_trusted_authors = False
+    state.trusted_issue_authors = frozenset()
     return state
 
 

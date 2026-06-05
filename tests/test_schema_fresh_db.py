@@ -59,8 +59,8 @@ async def test_fresh_db_has_agentshore_dev_v1_namespace(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_db_schema_version_is_3(tmp_path) -> None:
-    """schema_version table reflects the current version (3)."""
+async def test_fresh_db_schema_version_is_4(tmp_path) -> None:
+    """schema_version table reflects the current version (4)."""
     db_path = tmp_path / "fresh.db"
     store = DataStore(db_path)
     await store.initialize()
@@ -71,7 +71,7 @@ async def test_fresh_db_schema_version_is_3(tmp_path) -> None:
         await store.close()
 
     assert row is not None
-    assert int(row["v"]) == 3
+    assert int(row["v"]) == 4
 
 
 @pytest.mark.asyncio

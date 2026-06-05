@@ -56,6 +56,7 @@ def capabilities() -> list[str]:
         "project.branches",
         "project.set_target_branch",
         "project.set_budget",
+        "project.set_trusted_issue_enforcement",
         "project.set_timelapse",
         "project.install_timelapse",
         "project.deselect",

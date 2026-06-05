@@ -228,6 +228,7 @@ def _generate_default_config(
         f"  total: {budget_total:.2f}\n"
         "trusted_ids:\n"
         "  github_logins: []\n"
+        "  restrict_issues_to_trusted_authors: false\n"
         "rl:\n"
         "  policy_mode: learning\n"
         "  reverse_failsafe_enabled: false\n"

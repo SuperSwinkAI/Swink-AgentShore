@@ -40,6 +40,9 @@ export interface ProjectYamlHydration {
   identityLogins: string[];
   budget: BudgetHydration | null;
   timelapse: TimelapseHydration | null;
+  /** ``trusted_ids.restrict_issues_to_trusted_authors`` — gate issue pickup
+   *  to issues opened by trusted identities. ``null`` when the key is absent. */
+  trustedIssueEnforcement: boolean | null;
 }
 
 const EMPTY: ProjectYamlHydration = {
@@ -48,6 +51,7 @@ const EMPTY: ProjectYamlHydration = {
   identityLogins: [],
   budget: null,
   timelapse: null,
+  trustedIssueEnforcement: null,
 };
 
 interface ParsedLine {
@@ -114,11 +118,19 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     identityLogins: [],
     budget: null,
     timelapse: null,
+    trustedIssueEnforcement: null,
   };
 
   // Single pass; track which top-level section we are inside and, for the
   // ``agents`` block, which runner we are inside.
-  type TopSection = "project" | "agents" | "identities" | "budget" | "timelapse" | null;
+  type TopSection =
+    | "project"
+    | "agents"
+    | "identities"
+    | "budget"
+    | "timelapse"
+    | "trusted_ids"
+    | null;
   let topSection: TopSection = null;
   let currentAgent: string | null = null;
   let currentAgentEnabled: boolean | null = null;
@@ -160,6 +172,8 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
         topSection = "budget";
       } else if (line.key === "timelapse") {
         topSection = "timelapse";
+      } else if (line.key === "trusted_ids") {
+        topSection = "trusted_ids";
       } else {
         topSection = null;
       }
@@ -179,6 +193,14 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
           timelapseInstalled = v;
           timelapseSeen = true;
         }
+      }
+      continue;
+    }
+
+    if (topSection === "trusted_ids" && line.indent === 2) {
+      if (line.key === "restrict_issues_to_trusted_authors") {
+        const v = asBool(line.value);
+        if (v !== null) result.trustedIssueEnforcement = v;
       }
       continue;
     }

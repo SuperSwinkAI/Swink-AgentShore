@@ -19,6 +19,10 @@ Audit the project's design/spec corpus for concrete requirements that lack imple
 
 Closed issues, closed beads tasks, or PR titles are not proof of done. If any concrete requirement remains untracked without implementation evidence, return `success: false`.
 
+**There is no "found but unfiled" state.** Every concrete requirement you keep is exactly one of the three buckets above — never a bare gap with no tracker. `Later:` / deferred / phase-2 items are **not** an escape hatch: if shipped → `verified_done`; if already tracked → `represented_open`; if a genuine unmet requirement → you **must** file the tracker now (`gap_filled`). Deferral and sizing are `agentshore-refine-tasks` / `agentshore-groom-backlog`'s job — never a reason to skip filing. A requirement that fails the friction gates below is **dropped entirely** (not counted in any bucket and not in `gaps_found`).
+
+**Count invariants (the play fails validation otherwise).** `gaps_found` counts only requirements this play resolved by creating **or** linking a tracker, so it **must equal** `len(gap_issue_numbers)` = `len(issues_created) + len(issues_linked)`. Every number you put in `gaps_found` must have a matching issue number in `gap_issue_numbers`. `unresolved_gaps` (gaps you tried to file but a GH/beads mutation failed) and `unknown_requirements` must both be `0` for success; if either is non-zero, set `success: false` and name the requirement in `error`.
+
 **Filter for friction (gate every candidate finding):**
 - **Deletion test:** if removing the requirement collapses caller/test/UX complexity, file it; if it only removes a paragraph from a doc, drop it.
 - **Two-adapter rule:** a proposed seam isn't real work until a second concrete adapter needs it.
@@ -55,6 +59,8 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
 - Deleting beads nodes.
 - Creating duplicate issues for already-tracked open work.
 - `git worktree add/remove/prune` (AgentShore owns worktree lifecycle).
+
+**Before reporting, self-check the counts.** Verify `gaps_found == len(gap_issue_numbers) == len(issues_created) + len(issues_linked)`, and `unresolved_gaps == 0` and `unknown_requirements == 0`. If any gap could not be filed, return `success: false` and name it in `error` — do not under-report `gaps_found` to make the numbers line up.
 
 **Report — one fenced JSON block:**
 

@@ -577,6 +577,56 @@ def set_budget(payload: object) -> dict[str, object]:
     }
 
 
+def _write_trusted_issue_enforcement(yaml_text: str, enabled: bool) -> str:
+    """Round-trip *yaml_text* and set ``trusted_ids.restrict_issues_to_trusted_authors``.
+
+    Preserves comments and key ordering on every other section via
+    ruamel.yaml. Mirrors :func:`_write_budget`/:func:`_write_target_branch`;
+    get-or-creates the ``trusted_ids`` mapping if absent.
+    """
+    from ruamel.yaml import YAML
+
+    rt = YAML()
+    rt.preserve_quotes = True
+    data = rt.load(yaml_text) if yaml_text.strip() else None
+    if data is None:
+        data = {}
+    trusted_ids = data.get("trusted_ids")
+    if not isinstance(trusted_ids, dict):
+        trusted_ids = {}
+        data["trusted_ids"] = trusted_ids
+    trusted_ids["restrict_issues_to_trusted_authors"] = bool(enabled)
+    buf = io.StringIO()
+    rt.dump(data, buf)
+    return buf.getvalue()
+
+
+def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
+    """Persist ``trusted_ids.restrict_issues_to_trusted_authors`` in agentshore.yaml.
+
+    The desktop toggles "only work issues from trusted identities" via this
+    method. The dispatcher extracts ``enabled`` and passes the bare bool, so
+    *payload* must be a bool. Write is atomic (temp + fsync + rename); other
+    keys / comments / ordering are preserved via ruamel.yaml.
+
+    Returns ``{"enabled": bool, "yaml_path": str}``.
+    """
+    path = _require_active()
+    if not isinstance(payload, bool):
+        raise ProjectError("enabled must be a boolean")
+    enabled = payload
+    yaml_path = path / "agentshore.yaml"
+    try:
+        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+        new_text = _write_trusted_issue_enforcement(existing, enabled)
+        _atomic_write_text(yaml_path, new_text)
+    except ProjectError:
+        raise
+    except Exception as exc:
+        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    return {"enabled": enabled, "yaml_path": str(yaml_path)}
+
+
 # Accepted keys on the ``timelapse:`` mapping written to agentshore.yaml.
 # Mirrors the ``TimelapseConfig`` dataclass in
 # ``src/agentshore/config/models.py``.

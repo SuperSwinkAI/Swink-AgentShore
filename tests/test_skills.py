@@ -322,6 +322,10 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "bd create task" in text
     assert '"type": "design_audit"' in text
     assert "unresolved_gaps" in text
+    # Every counted gap must carry a tracker — the prompt must state the count
+    # invariant the validator enforces (no bare "found but unfiled" gaps).
+    assert 'There is no "found but unfiled" state.' in text
+    assert "gaps_found == len(gap_issue_numbers)" in text
 
 
 def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:
