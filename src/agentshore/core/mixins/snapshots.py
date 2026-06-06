@@ -488,14 +488,7 @@ class SnapshotProjector:
 
     @staticmethod
     def compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
-        """Aggregate full-session play stats for dashboard consumers.
-
-        Non-work plays (``_NON_WORK_PLAY_VALUES``) are filtered out of the
-        user-facing total/success/failure counters. The set is empty after
-        desktop-rni0 (idle waits and recovery are loop-side, not plays);
-        the filter is retained as the canonical seam for future bookkeeping
-        plays.
-        """
+        """Aggregate dashboard play counters, excluding non-work play values."""
         work_plays = [p for p in play_history if p.play_type not in _NON_WORK_PLAY_VALUES]
         # A play row is inserted with a ``success=False`` placeholder at dispatch
         # time (``_prepare_execution_context``) and only updated to its real

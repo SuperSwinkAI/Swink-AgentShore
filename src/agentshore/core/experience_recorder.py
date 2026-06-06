@@ -1,22 +1,4 @@
-"""Guarded RL experience recording + policy-update tail.
-
-Extracted from ``CompletionProcessor.process_completion``'s "Phase 3" block so a
-failure in any per-play bookkeeping or diagnostics step degrades to a skipped
-record / skipped update with a structured ERROR log, instead of propagating out
-of ``run_until_idle`` and killing the orchestrator loop.
-
-Background: the original inline block built the ``ExperienceRecord`` (and called
-``_mask_reason_summary``, ``encode_observation``, ``compute_reward``,
-``snapshot``) as *arguments* to a ``_safe_call``-wrapped coroutine. ``_safe_call``
-only guards the ``await`` — the argument expressions run first, unguarded — so any
-throw there (observed: a malformed ``mask_reasons`` in the WS2 diagnostics field)
-escaped to the loop and crashed the session with ``sidecar_orchestrator_run_failed``.
-Here every sub-step is wrapped in its own ``try/except Exception``; the loop can
-never die because a single experience row failed to encode or persist.
-
-This is a deterministic safety backstop, not a policy director — it changes
-nothing about *which* play the PPO selects.
-"""
+"""Guard RL experience recording so failures skip the row/update instead of crashing."""
 
 from __future__ import annotations
 

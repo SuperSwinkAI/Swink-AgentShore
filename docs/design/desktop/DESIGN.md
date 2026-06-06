@@ -1,11 +1,8 @@
 # AgentShore Desktop — Design Decisions
 
-Living companion to [LAYER_CAKE.html](LAYER_CAKE.html) (architectural overview)
-and [ONBOARDING_STARTUP_MOCKUPS.html](ONBOARDING_STARTUP_MOCKUPS.html) (UI
-flow). This document records the resolved design decisions for the AgentShore
-desktop app (version 0.2.1).
-
-When this document and the HTML companions disagree, this document wins.
+Resolved design decisions for the AgentShore desktop app (version 0.2.1).
+`ONBOARDING_STARTUP_MOCKUPS.html` remains a visual reference for the setup flow;
+this Markdown file is authoritative when they disagree.
 
 ## Scope
 
@@ -151,11 +148,10 @@ distribution `.pkg`.
 
 The sidecar ships as a pip-installable wheel embedded in the `.pkg`. A postinstall
 step provisions a managed venv (under Application Support) from that wheel, so the
-desktop's Python always matches the build the shell shipped from. This replaces an
-earlier PyInstaller frozen-bundle design that hit Tauri `externalBin` integration
-issues; install-time provisioning surfaces failures early and lets agentshore
-updates ship as a new wheel. PyTorch dominates installed size; trimming the venv
-to sidecar-relevant deps is a follow-up.
+desktop's Python always matches the build the shell shipped from. Install-time
+provisioning surfaces failures early and lets AgentShore updates ship as a new
+wheel. PyTorch dominates installed size; trimming the venv to sidecar-relevant
+deps is a follow-up.
 
 ### 6.3 Distribution package — three deliberate choices
 

@@ -65,10 +65,9 @@ shape or semantics change; mismatched-`policy_version` checkpoints are rejected.
 
 `Instantiate Agent` uses the config head to choose `(agent_type, model_tier)`.
 A type/tier config is spawnable only when the session is seeded, budget and
-cooldown gates pass, total live agents are below `agent_spawn.max_total`, live
-agents for that same type/tier are below `agent_spawn.max_per_config`, and no
-idle agent of that type/tier already exists. Busy agents do not block spawning
-additional same-config capacity.
+cooldown gates pass, live agents for that same type/tier are below
+`agent_spawn.max_per_config`, and no idle agent of that type/tier already exists.
+Busy agents do not block spawning additional same-config capacity.
 
 ## Observation Vector
 
@@ -141,39 +140,11 @@ Each PPO experience row must persist:
 
 Offline PPO training may only train on trajectories that include these fields.
 
-### Cold-Start Play Weights
+### Cold Start
 
 The actor bias is initialised from `DEFAULT_PLAY_WEIGHTS` in
-`src/agentshore/rl/cold_start.py`. The three reserved slots
-(`Future 4`, `Future 7`, `Future 8`) still carry the low anchor weight `0.0114`
-so the log-renormalization sums to ~1.0, but they are masked at runtime via
-preconditions and are never selected in practice. The weight on a reserved slot
-is a numerical anchor only, not a selection prior.
-
-| Play | Cold-Start Weight |
-|---|---:|
-| Issue Pickup | 0.2233 |
-| Code Review | 0.1365 |
-| Run QA | 0.0992 |
-| Merge Pull Request | 0.0992 |
-| Write Implementation Plan | 0.0744 |
-| Unblock PR | 0.0682 |
-| Refine Task Breakdown | 0.0496 |
-| Systematic Debugging | 0.0434 |
-| Instantiate Agent | 0.0285 |
-| Groom Backlog | 0.0248 |
-| Seed Project | 0.0186 |
-| Calibrate Alignment | 0.0186 |
-| Cleanup | 0.0120 |
-| Design Audit | 0.0114 |
-| End Agent | 0.0114 |
-| Reconcile State | 0.0114 |
-| Prune | 0.0114 |
-| Future 4 (reserved) | 0.0114 |
-| Future 7 (reserved) | 0.0114 |
-| Future 8 (reserved) | 0.0114 |
-| End Session | 0.0057 |
-| Take Break | 0.0057 |
+`src/agentshore/rl/cold_start.py`. Reserved slots carry low numerical anchor
+weights only and remain structurally masked at runtime.
 
 ## Autonomy And Hard Gates
 
@@ -240,7 +211,7 @@ It must include:
 
 ## V1 Persistence
 
-Schema version: 3. BEADS graph state is owned by the `bd` tool and is not
+Schema version: 4. BEADS graph state is owned by the `bd` tool and is not
 replicated into AgentShore SQLite. The schema (22 tables) must support the safety
 and PPO contracts, persisting at minimum: sessions; plays with params, output,
 artifacts, reward, failure category, and checkpoint id; agents and task history;

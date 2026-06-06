@@ -14,7 +14,7 @@ The action order is locked by `PlayType` in `src/agentshore/state.py` and `V1_AC
 
 **Anti-confirmation invariant (Code Review).** `CODE_REVIEW` is masked unless an idle `can_review` agent exists whose GitHub identity differs from the PR author. A reviewer cannot approve its own work. This is a hard invariant enforced in the precondition, not a soft preference. `RUN_QA` validates trunk/default-branch state and is deliberately *not* identity-blocked — any identity is a valid QA runner.
 
-**Reserved headroom.** Three slots (`FUTURE_4` @ 14, `FUTURE_7` @ 20, `FUTURE_8` @ 21) are permanent no-op placeholders. They keep the tensor shape and checkpoint layout fixed so the action space can grow without a mass migration or weight reset. Reserved plays always report `RESERVED_SLOT` from `preconditions()` and are therefore structurally masked; if ever selected they fail closed. Slot 14 previously hosted browser verification and was emptied back to reserved in place (no version bump — tensor shape unchanged). Slots 11 (`RECONCILE_STATE`) and 19 (`PRUNE`) were formerly `FUTURE_5`/`FUTURE_6` and were filled in place.
+**Reserved headroom.** Three slots (`FUTURE_4` @ 14, `FUTURE_7` @ 20, `FUTURE_8` @ 21) are permanent no-op placeholders. They keep the tensor shape and checkpoint layout fixed so the action space can grow without a mass migration or weight reset. Reserved plays always report `RESERVED_SLOT` from `preconditions()` and are therefore structurally masked; if ever selected they fail closed.
 
 ## The Play Contract
 
@@ -43,53 +43,13 @@ Skill-backed plays dispatch a project-local skill from `.agents/skills/<skill-na
 
 The result parser extracts the last valid result-shaped JSON object from raw agent output. The parsed `SkillResult` is mapped to `PlayOutcome`, persisted, and scored by the reward function.
 
-## Action Space
+## Action Space And Gates
 
-| Index | Play |
-|-------|------|
-| 0 | `INSTANTIATE_AGENT` |
-| 1 | `UNBLOCK_PR` |
-| 2 | `WRITE_IMPLEMENTATION_PLAN` |
-| 3 | `END_AGENT` |
-| 4 | `ISSUE_PICKUP` |
-| 5 | `CODE_REVIEW` |
-| 6 | `MERGE_PR` |
-| 7 | `RUN_QA` |
-| 8 | `SYSTEMATIC_DEBUGGING` |
-| 9 | `DESIGN_AUDIT` |
-| 10 | `END_SESSION` |
-| 11 | `RECONCILE_STATE` |
-| 12 | `REFINE_TASK_BREAKDOWN` |
-| 13 | `CLEANUP` |
-| 14 | `FUTURE_4` |
-| 15 | `TAKE_BREAK` |
-| 16 | `GROOM_BACKLOG` |
-| 17 | `SEED_PROJECT` |
-| 18 | `CALIBRATE_ALIGNMENT` |
-| 19 | `PRUNE` |
-| 20 | `FUTURE_7` |
-| 21 | `FUTURE_8` |
-
-`ACTION_SPACE_VERSION = 13`.
-
-## Skill-Backed Plays
-
-| Play | Skill | Key gates |
-|------|-------|-----------|
-| `SEED_PROJECT` | `agentshore-seed-project` | Not in-flight; 50-play cooldown (bypassed on failure) |
-| `GROOM_BACKLOG` | `agentshore-groom-backlog` | Beads has epics; idle `can_create_issues` agent; 20-play cooldown; urgent bypass for unlinked tasks |
-| `DESIGN_AUDIT` | `agentshore-design-audit` | Beads has epics; idle `can_create_issues` agent; 20-play cooldown |
-| `CALIBRATE_ALIGNMENT` | `agentshore-calibrate-alignment` | Beads has epics; 20-play cooldown; large-only |
-| `RECONCILE_STATE` | `agentshore-reconcile-state` | Beads has epics; idle agent; cooldown-gated |
-| `REFINE_TASK_BREAKDOWN` | `agentshore-refine-tasks` | Open issue with `agentshore/needs-refinement` |
-| `WRITE_IMPLEMENTATION_PLAN` | `agentshore-write-plan` | Idle `can_implement` agent; unplanned issue not covered by open PR |
-| `ISSUE_PICKUP` | `agentshore-issue-pickup` | Eligible open issue; idle `can_implement` agent; PR count below backpressure threshold; pre-session PRs drained |
-| `CODE_REVIEW` | `agentshore-code-review` | Pending review or unreviewed PR; idle `can_review` agent; reviewer identity differs from PR author |
-| `UNBLOCK_PR` | `agentshore-unblock-pr` | Idle `can_implement` agent; blocked PR exists; not manual-required |
-| `MERGE_PR` | `agentshore-merge-pr` | Idle `can_merge` agent; small/medium tier only; PR approved + `MERGEABLE` |
-| `RUN_QA` | `agentshore-run-qa` | Idle `can_test` agent; 25-play cooldown; <10 open issues; no anti-confirmation rule |
-| `SYSTEMATIC_DEBUGGING` | `agentshore-systematic-debugging` | Idle `can_implement` agent; open issue with debug trigger label; not root-cause-found |
-| `CLEANUP` | `agentshore-cleanup` | Idle `can_implement` agent; 20-play cooldown; <15 open issues |
+`ACTION_SPACE_VERSION = 13`. The canonical slot order is `PlayType` in
+`src/agentshore/state.py`, mirrored by `V1_ACTION_ORDER` in
+`src/agentshore/rl/action_space.py`. Per-play gates live with the play
+implementations under `src/agentshore/plays/` and are composed by
+`EligibilityAuthority`.
 
 ## Internal Plays
 

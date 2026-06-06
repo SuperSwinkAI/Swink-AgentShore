@@ -1,12 +1,7 @@
-"""Database migrations for the agentshore_dev_v1 schema generation.
+"""Forward-only migrations for the agentshore_dev_v1 schema generation.
 
-``src/agentshore/data/schema.sql`` is the authoritative baseline for the
-agentshore_dev_v1 schema (current schema_version 3).  Incremental migrations
-go here as numbered async functions (e.g. ``migrate_v1_to_v2``) and are
-invoked explicitly by ``DataStore.initialize()`` after the baseline schema
-script has been applied.
-
-No migration history exists prior to agentshore_dev_v1.
+``schema.sql`` is the authoritative baseline. ``DataStore.initialize()`` applies
+idempotent numbered migrations after the baseline script.
 
 Migration history
 -----------------

@@ -16,7 +16,7 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 
 **Defaults live in YAML, not just dataclasses.** The built-in default config is a YAML string parsed through the exact same path as a user file, so `agentshore start` runs with no config file and the no-file path can never diverge from the on-disk-file path. `agentshore init` writes that same YAML for the user to edit.
 
-**Tolerant of legacy keys, loud about them.** Removed fields are kept in the raw TypedDicts so old YAML still parses, but the parser ignores them and emits a `DeprecationWarning` (e.g. `agent_spawn.max_total`, `rl.deterministic`). This avoids hard-breaking existing project files on upgrade while steering users to the current schema.
+**Tolerant of legacy keys, loud about them.** Removed fields are kept in the raw TypedDicts so old YAML still parses, but the parser ignores them and emits a `DeprecationWarning`. This avoids hard-breaking existing project files on upgrade while steering users to the current schema.
 
 ## Files And Precedence
 

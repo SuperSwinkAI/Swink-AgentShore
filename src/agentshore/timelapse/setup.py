@@ -33,15 +33,9 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-#: Pinned npm-registry spec installed globally (auto-provisions the Playwright
-#: Chromium browser via the package's postinstall). Pinned for reproducible
-#: installs and to avoid a transient bad release. The driver relies on the
-#: no-``--duration`` indefinite capture mode (broken in 0.3.0, restored in
-#: 0.3.1) and reads the rendered MP4 path from the nested ``status.outputPath``
-#: in ``status --json`` (the schema since 0.3.1; see ``await_output``). 0.4.0 is
-#: verified to keep both. Note: 0.4.0 still prints ``VERSION = "0.3.1"`` from a
-#: stale constant — cosmetic; ``npm ls -g`` and ``package.json`` report 0.4.0.
-#: Bump deliberately when adopting a newer CLI.
+#: Pinned because the driver depends on indefinite capture and
+#: ``status.outputPath`` JSON compatibility. Bump only after doctor/status
+#: verification.
 _CLI_PACKAGE = "timelapse-capture@0.4.0"
 _MIN_NODE_MAJOR = 24
 _HOMEBREW_URL = "https://brew.sh"

@@ -24,37 +24,10 @@ run right now?", not "should it?".
 
 ## Observation
 
-`OBSERVATION_DIM = 246`, `OBSERVATION_VERSION = 13`.
-
-A 246-dim float32 vector encoding session state. High-level blocks (exact slot
-layout lives in `observation.py`):
-
-| Slots | Block | What |
-|-------|-------|------|
-| 0–1 | dependency | beads blocked- / ready-task ratios (v13) |
-| 2–7 | retired | permanently zero-filled |
-| 8–11 | epic | global + top-3 epic closure ratios (beads-native) |
-| 12–16 | issue | open/closed/created/net-velocity/scope-completion |
-| 17–32 | tier-fleet | 3 tiers × 5 stats + active-count |
-| 33–36 | budget | remaining/spent/avg-cost/sufficiency |
-| 37–52 | history | last-5 play types + successes + rolling stats + drift |
-| 53–55 | time | session / since-calibration / since-seed |
-| 56–58 | PR | open / awaiting-review / approved-unmerged |
-| 59–62 | health | stagnation / streak / loop-level / agents-in-error |
-| 63–64 | handoff | avg context-loss / avg rampup |
-| 65–67 | trajectory | projected alignment / est-plays / est-cost |
-| 68–70 | learnings | count / avg-confidence / injection-rate |
-| 71 | churn | issue churn over last 10 plays |
-| 72–167 | per-config | 32 configs × (idle, busy, success-rate), zero-padded |
-| 168–171 | PR-author | open + awaiting-review per claude_code / codex authorship |
-| 172–178 | pressure | velocity, busy-agents, unreviewed, mergeable, in-flight, skip-rate, PR-pressure |
-| 179–244 | specialization | 3 tiers × 22 plays success rates (0.5 default) |
-| 245 | version marker | stable per-version constant |
-
-The per-config block (slots 72–167) and the config policy head share one
-deterministic config index: configured agent order outer, model-tier priority
-inner, so every component (observation, mask, cold-start, selector, resolver)
-sees the same indices.
+`OBSERVATION_DIM = 246`, `OBSERVATION_VERSION = 13`. The exact slot layout lives
+in `src/agentshore/rl/observation.py` and is summarized in
+[V1_CONTRACT.md](../V1_CONTRACT.md). The per-config block and config policy head
+share the deterministic index built by `build_config_index()`.
 
 ## Action Space
 

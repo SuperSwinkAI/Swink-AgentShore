@@ -1,26 +1,4 @@
-"""Agent-recovery latches: take_break failure counts + rate-limit enqueue set.
-
-``RecoveryTracker`` owns the two short-lived per-agent recovery latches that the
-completion path maintains and the state/observation path reads:
-
-* ``_break_recovery_failures`` — consecutive ``take_break`` failures per agent.
-  Once an agent reaches :data:`BREAK_RECOVERY_FAILURE_LIMIT` the count is left
-  elevated so the core tick can unmask END_AGENT and let the PPO retire it
-  (desktop-s1u7). Cleared on a successful break or when the agent is ended.
-* ``_rate_limit_recovery_enqueued`` — agents the loop has already enqueued a
-  RATE_LIMIT_RECOVERY override for; cleared once the agent recovers so the next
-  rate_limit event re-arms the override.
-* ``_unknown_error_recovery_enqueued`` — the same latch for the distinct
-  UNKNOWN_ERROR_RECOVERY path (``unknown``/``codex_rollout`` errors). Kept
-  separate from the rate-limit latch so the two recovery types never clobber
-  each other's arm/clear state (#23/#24).
-
-It is a thin collaborator (mirroring :class:`agentshore.core.github_syncer.GitHubSyncer`):
-constructed in ``phases.py`` and held on the orchestrator as ``_recovery``.
-Hosting the :data:`BREAK_RECOVERY_FAILURE_LIMIT` constant and the
-:meth:`recovery_exhausted_agent_ids` query here dissolves the former
-state→completion import.
-"""
+"""Agent-recovery latches shared by completion and observation paths."""
 
 from __future__ import annotations
 
@@ -32,8 +10,7 @@ if TYPE_CHECKING:
     from agentshore.state import AgentSnapshot
 
 
-# Consecutive take_break failures after which END_AGENT is unmasked for the
-# wedged agent so the PPO can decide to retire it.
+# Consecutive take_break failures after which END_AGENT is unmasked.
 BREAK_RECOVERY_FAILURE_LIMIT = 2
 
 

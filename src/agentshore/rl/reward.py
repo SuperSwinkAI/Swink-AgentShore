@@ -53,35 +53,15 @@ _DEBUG_SUCCESS_BONUS: float = 0.05
 # *unsuccessful* reconcile stays negative so PPO doesn't farm the play.
 _RECONCILE_STATE_SUCCESS_BONUS: float = 0.05
 
-# Tiny success bonus for instantiate_agent. desktop-lyfb tuned this 0.05 → 0.01
-# so recycling (create → 5 plays → end → create) cannot farm reward — with the
-# end_agent floor at 5 plays, a 0.05 bonus turned recycling into +0.0083/play.
-# 0.01 is a faint nudge so PPO still learns to spawn when work is queueing, but
-# a 0.01 / 6-play cycle ≈ +0.0017/play sits well below the noise floor of
-# normal play rewards.
+# Small spawn bonus: enough to learn spawning when work is queued, below normal
+# play reward noise.
 _INSTANTIATE_SUCCESS_BONUS: float = 0.01
 
-# Flat success bonus for cleanup. desktop-lyfb raised this 0.03 → 0.05 because
-# cleanup is now load-bearing in the new bootstrap recipe (desktop-arph:
-# agent_1 runs cleanup INSTEAD of seed when open_issues >= 50) and drives the
-# mid-session unblocking when seed is masked at >= 10 issues (desktop-hzgb).
-# Cleanup is mechanical (formatter, lint --fix, type re-check, test re-run) and
-# cost/time penalties are NOT waived so PPO cannot spam it for free reward; the
-# 50-play cooldown caps the per-1000-plays cleanup contribution at ~1.0 reward
-# units. Net ranking: previously instantiate(0.05) > cleanup(0.03); now
-# cleanup(0.05) > instantiate(0.01), reflecting that cleanup moves the project
-# forward while instantiate just enables future work.
+# Cleanup moves project state forward but still pays cost/time penalties and
+# cooldown, so the bonus cannot be farmed cheaply.
 _CLEANUP_SUCCESS_BONUS: float = 0.05
 
-# desktop-8zzy reward shaping: bump merge_pr / code_review reward when the open
-# PR count approaches the soft cap. Pressure is ``max(0, open_pr_count /
-# max_open_prs - threshold)`` and the bonus is ``pressure * scale``. Threshold
-# is the ratio above which we want PPO to start prioritising drain over
-# new-work plays (default 0.7); scale is the maximum bonus achievable at full
-# saturation (``open_pr_count >= max_open_prs``, pressure = 1 - threshold).
-# 0.05 sized to overlap the cost-penalty band without competing with the much
-# larger merge_pr_bonus (2.5) — it's a tiebreaker for *when* to drain rather
-# than a primary driver. Symmetric with the cleanup / instantiate machinery.
+# Tiebreaker for draining PR pressure through review/merge near the open-PR cap.
 _PR_PRESSURE_THRESHOLD: float = 0.7
 _PR_PRESSURE_BONUS_SCALE: float = 0.05
 _PR_PRESSURE_PLAYS: frozenset[PlayType] = frozenset({PlayType.MERGE_PR, PlayType.CODE_REVIEW})

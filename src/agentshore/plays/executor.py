@@ -1,19 +1,6 @@
-"""PlayExecutor — shared flow for all play types.
+"""Shared play lifecycle.
 
-Execution order:
-  1. Retrieve play from registry.
-  2. Trust authority-confirmed override params, or resolve for legacy callers
-     (return a no_target skip if the legacy resolve finds no claimable target).
-     The EligibilityAuthority's confirm() owns validity, so the executor no
-     longer re-runs play.preconditions().
-  3. For skill-backed plays: select agent + anti-confirmation DB re-check.
-  4. Insert placeholder play row to obtain play_id (FK constraint).
-  5. Build PlayExecutionContext with play_id.
-  6. Execute the play.
-  7. Scope validation (skill-backed only).
-  8. Phase-1 deferral wiring (handoffs, PR authorship, branch tracking).
-  9. Persist requested_mutations if the play exposes a SkillResult.
- 10. Update play row with final outcome.
+Covers target confirmation, context creation, execution, validation, and persistence.
 """
 
 from __future__ import annotations

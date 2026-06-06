@@ -99,20 +99,11 @@ For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<
       "scope_gaps_found": 4,
       "unresolved_scope_gaps": 0,
       "unknown_requirements": 0,
-      "scope_gap_issue_numbers": [12, 13, 14, 15],
-      "requirement_samples": [
-        {"title": "Capture CLI", "status": "verified_done", "evidence": "src/... + tests/..."},
-        {"title": "Render command", "status": "represented_open", "issue": 14}
-      ]
+      "scope_gap_issue_numbers": [12, 13, 14, 15]
     }
   ],
-  "epics_created": [
-    {"bead_id": "bd-001", "title": "API & Backend", "stories": 3, "tasks": 8}
-  ],
   "issues_created": [12, 13, 14, 15],
-  "issues_mapped": [1, 2, 3, 5, 7, 12, 13, 14, 15],
   "issues_skipped": [],
-  "tasks_linked": ["bd-042", "bd-051"],
   "error": null
 }
 ```
