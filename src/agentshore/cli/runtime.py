@@ -57,6 +57,31 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             return
         if orch.adjust_budget(delta):
             await orch.resume()
+    elif command == "add_budget":
+        delta_usd_raw = cmd.get("delta_usd")
+        delta_minutes_raw = cmd.get("delta_minutes")
+        delta_usd: float | None = None
+        delta_minutes: int | None = None
+        if isinstance(delta_usd_raw, (int, float)) and not isinstance(delta_usd_raw, bool):
+            delta_usd = float(delta_usd_raw)
+        elif delta_usd_raw is not None:
+            _logger.warning("ipc.add_budget_invalid_usd", delta_usd=delta_usd_raw)
+        if isinstance(delta_minutes_raw, (int, float)) and not isinstance(delta_minutes_raw, bool):
+            delta_minutes = int(delta_minutes_raw)
+        elif delta_minutes_raw is not None:
+            _logger.warning("ipc.add_budget_invalid_minutes", delta_minutes=delta_minutes_raw)
+        if delta_usd is None and delta_minutes is None:
+            _logger.warning("ipc.add_budget_no_delta")
+            return
+        from agentshore.errors import OrchestratorError
+
+        try:
+            applied = await orch.add_budget(delta_usd=delta_usd, delta_minutes=delta_minutes)
+        except OrchestratorError as exc:
+            _logger.warning("ipc.add_budget_rejected", error=str(exc))
+            return
+        if isinstance(applied, dict) and applied.get("resumed") is True:
+            await orch.resume()
     elif command == "rescan_issues":
         await orch.refresh_issues()
     elif command == "feedback_response":
