@@ -11,12 +11,21 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import { DashboardCanvas, IdentitiesScreen, type IdentitiesSidecar } from "@agentshore/dashboard";
+import {
+  DashboardCanvas,
+  IdentitiesScreen,
+  type IdentitiesSidecar,
+  TrustedSourcesScreen,
+  type TrustedSourcesSidecar,
+} from "@agentshore/dashboard";
 import {
   addIdentity,
+  addTrustedSource,
   checkKeychainToken,
   listIdentities,
+  listTrustedSources,
   removeIdentity,
+  removeTrustedSource,
   updateIdentity,
 } from "./rpc/identitiesClient";
 import {
@@ -546,6 +555,14 @@ function SetupLayout({
     }),
     [],
   );
+  const trustedSourcesSidecar = useMemo<TrustedSourcesSidecar>(
+    () => ({
+      list: listTrustedSources,
+      add: addTrustedSource,
+      remove: removeTrustedSource,
+    }),
+    [],
+  );
   const onIdentityRowsChange = useCallback(
     (rows: Array<{ login: string }>) => {
       const identities = rows.map((row) => row.login);
@@ -650,6 +667,7 @@ function SetupLayout({
                   At least two identities are required to start.
                 </p>
               )}
+              <TrustedSourcesScreen sidecar={trustedSourcesSidecar} />
               <label className="id-screen-toggle">
                 <input
                   type="checkbox"

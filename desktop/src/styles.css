@@ -638,6 +638,19 @@ select:focus-visible {
   font-size: 22px;
 }
 
+/* Trusted sources — a distinct sub-section under the agent identities list. */
+.id-trusted-screen {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--fm-border, rgba(127, 127, 127, 0.25));
+}
+
+.id-subtitle {
+  margin: 0 0 6px;
+  color: var(--fm-text-strong);
+  font-size: 17px;
+}
+
 .id-description,
 .id-loading,
 .id-empty {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import styles from "./BudgetScreen.module.css";
@@ -93,6 +93,34 @@ export function BudgetScreen({
   const isCapped = selection.mode === "capped";
   const liveLabel = isCapped ? `Soft cap: ${formatDollars(sliderValue)}` : "Budget: Unlimited";
 
+  // The canonical selection to persist — identical to onContinue's payload.
+  const persistable: BudgetSelection = isCapped
+    ? { mode: "capped", total: sliderValue }
+    : { mode: "unlimited", total: selection.total };
+
+  // Flush the budget to agentshore.yaml when the user leaves this screen by
+  // ANY exit path. The left rail and Back navigate without clicking Continue,
+  // and onSave previously fired only from onContinue — so edits made then
+  // abandoned via the rail reached localStorage (onChange) but never the YAML.
+  // Keep the latest value + onSave in refs so the unmount cleanup writes the
+  // final selection without re-subscribing on every keystroke.
+  const persistableRef = useRef(persistable);
+  persistableRef.current = persistable;
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  // onContinue already awaited an explicit save (and surfaced any error), so
+  // the unmount flush must not double-write after a successful Continue.
+  const savedByContinueRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      if (savedByContinueRef.current) return;
+      const save = onSaveRef.current;
+      if (save) void save(persistableRef.current).catch(() => undefined);
+    },
+    [],
+  );
+
   const onContinue = useCallback(async () => {
     // Match TargetBranchScreen's save-then-navigate flow. When no
     // ``onSave`` adapter is supplied (the existing test renders), skip
@@ -112,6 +140,7 @@ export function BudgetScreen({
         ? { mode: "capped", total: sliderValue }
         : { mode: "unlimited", total: selection.total };
       await onSave(toPersist);
+      savedByContinueRef.current = true;
       navigate("/setup/start");
     } catch (err) {
       setSaveError(`Unable to save budget: ${err instanceof Error ? err.message : String(err)}`);
