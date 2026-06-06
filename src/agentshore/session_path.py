@@ -39,6 +39,11 @@ _logger = get_logger(__name__)
 
 _SESSIONS_DIR = GLOBAL_SESSIONS_DIR
 
+# Win32 constants for the no-side-effect liveness probe (_process_alive_windows).
+_WIN_SYNCHRONIZE = 0x00100000
+_WIN_WAIT_TIMEOUT = 0x00000102
+_WIN_ERROR_INVALID_PARAMETER = 87
+
 # Time we'll wait for SIGTERM to land before escalating to SIGKILL.
 _STOP_GRACE_SECONDS = 60.0
 _STOP_POLL_INTERVAL = 0.1
@@ -466,7 +471,48 @@ def is_session_running(project_path: Path) -> bool:
 # -- low-level process utilities --------------------------------------------
 
 
+def _process_alive_windows(pid: int) -> bool:
+    """Liveness probe for Windows that has no side effects.
+
+    ``os.kill(pid, 0)`` is **not** a null-signal probe on Windows: signal ``0``
+    is ``signal.CTRL_C_EVENT``, so CPython routes the call to
+    ``GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)``. That delivers a Ctrl+C to a
+    console process group and its success/failure depends on whether the caller
+    shares the target's console — not on whether the process is alive. For a
+    detached, no-window orchestrator a fresh ``agentshore stop`` shares no
+    console with it, so the call raises and the old probe wrongly reported the
+    live session as dead (it then cleaned up the PID/sidecar, so ``stop`` said
+    "no running session" and ``dashboard``/``add_budget`` lost the endpoint).
+
+    Probe via the Win32 API instead: open the process and wait zero seconds on
+    its handle. ``WAIT_TIMEOUT`` means the process object is unsignalled — still
+    running; ``WAIT_OBJECT_0`` means it has exited. If ``OpenProcess`` fails with
+    ``ERROR_INVALID_PARAMETER`` the PID does not exist (dead); any other failure
+    (e.g. access denied) means the process exists but we lack rights — treat as
+    alive so we never wrongly discard a running session.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+
+    handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, False, pid)
+    if not handle:
+        # No such PID -> dead. Any other failure (e.g. access denied) means the
+        # process exists but we lack rights -> treat as alive, never discard a
+        # live session.
+        return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
+    try:
+        return bool(kernel32.WaitForSingleObject(handle, 0) == _WIN_WAIT_TIMEOUT)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _process_alive(pid: int) -> bool:
+    if sys.platform.startswith("win"):
+        return _process_alive_windows(pid)
     try:
         os.kill(pid, 0)
         return True

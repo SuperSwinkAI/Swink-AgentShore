@@ -453,14 +453,10 @@ def test_stop_session_uses_taskkill_on_windows(
             alive.discard(7001)  # force kill takes effect
         return _Completed()
 
-    def fake_kill(pid: int, sig: int) -> None:
-        if sig == 0:
-            if pid not in alive:
-                raise OSError
-            return
-
+    # Drive liveness through _process_alive: on Windows the probe is the Win32
+    # OpenProcess path, not os.kill(pid, 0), so the test must mock the helper.
     monkeypatch.setattr(sp.subprocess, "run", fake_run)
-    monkeypatch.setattr(sp.os, "kill", fake_kill)
+    monkeypatch.setattr(sp, "_process_alive", lambda pid: pid in alive)
 
     assert sp.hard_stop_session(project) is True
     assert ["taskkill", "/PID", "7001", "/T"] in calls
@@ -734,3 +730,89 @@ def test_cleanup_session_preserves_dir_with_other_files(tmp_path: Path) -> None:
     assert log.exists()
     assert sd.exists()
     assert not sp.session_socket_path(project).exists()
+
+
+# ---------------------------------------------------------------------------
+# Windows liveness probe (#71 follow-up): os.kill(pid, 0) is CTRL_C_EVENT on
+# Windows, not a null-signal probe, so _process_alive must use the Win32 API.
+# ---------------------------------------------------------------------------
+
+
+def _fake_kernel32(*, open_returns: int, wait_returns: int | None = None) -> MagicMock:
+    kernel32 = MagicMock()
+    kernel32.OpenProcess.return_value = open_returns
+    if wait_returns is not None:
+        kernel32.WaitForSingleObject.return_value = wait_returns
+    return kernel32
+
+
+def test_process_alive_windows_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000102)  # WAIT_TIMEOUT
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    assert sp._process_alive_windows(4321) is True
+    kernel32.CloseHandle.assert_called_once()
+
+
+def test_process_alive_windows_exited(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000000)  # WAIT_OBJECT_0
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    assert sp._process_alive_windows(4321) is False
+    kernel32.CloseHandle.assert_called_once()
+
+
+def test_process_alive_windows_no_such_pid_is_dead(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    kernel32 = _fake_kernel32(open_returns=0)  # NULL handle
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87)  # ERROR_INVALID_PARAMETER
+    assert sp._process_alive_windows(4321) is False
+    kernel32.CloseHandle.assert_not_called()
+
+
+def test_process_alive_windows_access_denied_is_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live process we lack rights to open must never be discarded as dead."""
+    import ctypes
+
+    kernel32 = _fake_kernel32(open_returns=0)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)  # ERROR_ACCESS_DENIED
+    assert sp._process_alive_windows(4321) is True
+
+
+def test_process_alive_dispatches_to_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On win32, _process_alive routes to the Win32 probe, not os.kill."""
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("os.kill must not be used as a probe on Windows")
+
+    monkeypatch.setattr(sp.os, "kill", _boom)
+    monkeypatch.setattr(sp, "_process_alive_windows", lambda pid: pid == 4321)
+    assert sp._process_alive(4321) is True
+    assert sp._process_alive(9999) is False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows-only Win32 probe")
+def test_process_alive_windows_real_roundtrip() -> None:
+    """End-to-end: a detached, no-window child is seen alive, then dead, by an
+    unrelated probe — the exact path `agentshore stop` exercises."""
+    import subprocess
+    import time
+
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        creationflags=flags,
+    )
+    try:
+        assert sp._process_alive(proc.pid) is True
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+    time.sleep(0.3)
+    assert sp._process_alive(proc.pid) is False
