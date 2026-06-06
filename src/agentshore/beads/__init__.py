@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -250,15 +251,38 @@ class BdError(RuntimeError):
     """Raised when a bd subcommand exits with a non-zero return code."""
 
 
+def managed_bd_dir() -> Path:
+    """Directory where ``agentshore init`` installs an auto-provisioned bd."""
+    from agentshore.paths import GLOBAL_CONFIG_DIR
+
+    return GLOBAL_CONFIG_DIR / "bin"
+
+
+def _managed_bd_path() -> Path:
+    name = "bd.exe" if sys.platform.startswith("win") else "bd"
+    return managed_bd_dir() / name
+
+
 def resolve_bd_binary() -> str | None:
-    """Resolve the bd binary path from env override first, then PATH."""
+    """Resolve the bd binary: env override, then PATH, then the managed dir.
+
+    The managed dir (:func:`managed_bd_dir`) is where ``agentshore init``
+    drops an auto-provisioned bd, so a fresh CLI/pip install finds it without
+    any PATH change once init has run.
+    """
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
     if env_value:
         env_path = Path(env_value)
         if env_path.is_file() and os.access(env_path, os.X_OK):
             return str(env_path.resolve())
         _logger.warning("agentshore_bd_bin_invalid", env_path=env_value)
-    return shutil.which("bd")
+    on_path = shutil.which("bd")
+    if on_path:
+        return on_path
+    managed = _managed_bd_path()
+    if managed.is_file() and os.access(managed, os.X_OK):
+        return str(managed.resolve())
+    return None
 
 
 async def bd(

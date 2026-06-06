@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -501,12 +502,37 @@ def test_resolve_bd_binary_falls_back_to_path_when_env_unset(
 def test_resolve_bd_binary_returns_none_when_nothing_resolves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from pathlib import Path
+
     from agentshore.beads import resolve_bd_binary
 
     monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
 
-    with patch("shutil.which", return_value=None):
+    with (
+        patch("shutil.which", return_value=None),
+        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
+    ):
         assert resolve_bd_binary() is None
+
+
+def test_resolve_bd_binary_uses_managed_dir_when_path_empty(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With env unset and bd off PATH, the init-managed dir is the last resort."""
+    import sys
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import resolve_bd_binary
+
+    managed = Path(str(tmp_path)) / ("bd.exe" if sys.platform.startswith("win") else "bd")
+    managed.write_text("#!/bin/sh\necho bd\n", encoding="utf-8")
+    managed.chmod(0o755)
+
+    monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
+    monkeypatch.setattr(beads_mod, "_managed_bd_path", lambda: managed)
+    with patch("shutil.which", return_value=None):
+        assert resolve_bd_binary() == str(managed.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -525,15 +551,22 @@ def test_ensure_bd_installed_passes_when_on_path(monkeypatch: pytest.MonkeyPatch
 
 
 def test_ensure_bd_installed_raises_when_missing() -> None:
+    from pathlib import Path
+
     from agentshore.beads.setup import ensure_bd_installed
 
     with (
         patch("shutil.which", return_value=None),
+        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
+        patch("agentshore.beads.setup.provision_bd", return_value=None),
         pytest.raises(RuntimeError, match="bd.*not found"),
     ):
         ensure_bd_installed()
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
+)
 def test_ensure_bd_installed_accepts_env_var(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -553,6 +586,9 @@ def test_ensure_bd_installed_accepts_env_var(
         ensure_bd_installed()
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
+)
 def test_ensure_bd_installed_rejects_version_mismatch(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -574,6 +610,9 @@ def test_ensure_bd_installed_rejects_version_mismatch(
         ensure_bd_installed()
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
+)
 def test_ensure_bd_installed_version_override(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -594,11 +633,133 @@ def test_ensure_bd_installed_version_override(
 
 
 def test_ensure_bd_installed_error_mentions_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
     from agentshore.beads.setup import ensure_bd_installed
 
     monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
     with (
         patch("shutil.which", return_value=None),
+        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
+        patch("agentshore.beads.setup.provision_bd", return_value=None),
         pytest.raises(RuntimeError, match="AGENTSHORE_BD_BIN"),
     ):
         ensure_bd_installed()
+
+
+def test_ensure_bd_installed_auto_provisions_when_missing(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When bd is absent everywhere, ensure_bd_installed provisions it rather
+    than raising."""
+    from pathlib import Path
+
+    from agentshore.beads import setup as setup_mod
+
+    fake_bd = str(Path(str(tmp_path)) / "bd")
+    # Empty pin disables the version check so the fake path need not run.
+    monkeypatch.setenv("AGENTSHORE_BD_VERSION", "")
+    monkeypatch.setattr(setup_mod, "provision_bd", lambda **_k: fake_bd)
+    with (
+        patch("shutil.which", return_value=None),
+        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
+    ):
+        setup_mod.ensure_bd_installed()  # must not raise
+
+
+def _zip_with_bd(bd_name: str, payload: bytes) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(bd_name, payload)
+    return buf.getvalue()
+
+
+def _fake_httpx_client(archive_bytes: bytes, checksums_text: str) -> type:
+    class _Resp:
+        def __init__(self, content: bytes = b"", text: str = "") -> None:
+            self.content = content
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def __init__(self, *_a: object, **_k: object) -> None: ...
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *_a: object) -> bool:
+            return False
+
+        def get(self, url: str) -> _Resp:
+            if url.endswith("checksums.txt"):
+                return _Resp(text=checksums_text)
+            return _Resp(content=archive_bytes)
+
+    return _Client
+
+
+def test_provision_bd_downloads_verifies_and_installs(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: asset downloaded, sha256-verified, bd extracted to the
+    managed dir."""
+    import hashlib
+    import sys
+    from pathlib import Path
+
+    from agentshore.beads import setup as setup_mod
+
+    bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
+    archive = _zip_with_bd(bd_name, b"FAKE-BD-BINARY")
+    sha = hashlib.sha256(archive).hexdigest()
+    asset = "beads_test.zip"
+    checksums = f"{sha}  {asset}\n0000  other_asset.tar.gz\n"
+
+    managed_dir = Path(str(tmp_path)) / "bin"
+    monkeypatch.setattr(setup_mod, "_beads_release_asset", lambda _v: (asset, "zip"))
+    monkeypatch.setattr(setup_mod, "managed_bd_dir", lambda: managed_dir)
+    monkeypatch.setattr("httpx.Client", _fake_httpx_client(archive, checksums))
+
+    result = setup_mod.provision_bd(assume_yes=True)
+    assert result == str(managed_dir / bd_name)
+    assert (managed_dir / bd_name).read_bytes() == b"FAKE-BD-BINARY"
+
+
+def test_provision_bd_returns_none_on_sha_mismatch(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    from pathlib import Path
+
+    from agentshore.beads import setup as setup_mod
+
+    bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
+    archive = _zip_with_bd(bd_name, b"FAKE")
+    asset = "beads_test.zip"
+    checksums = f"{'0' * 64}  {asset}\n"  # deliberately wrong hash
+
+    managed_dir = Path(str(tmp_path)) / "bin"
+    monkeypatch.setattr(setup_mod, "_beads_release_asset", lambda _v: (asset, "zip"))
+    monkeypatch.setattr(setup_mod, "managed_bd_dir", lambda: managed_dir)
+    monkeypatch.setattr("httpx.Client", _fake_httpx_client(archive, checksums))
+
+    assert setup_mod.provision_bd(assume_yes=True) is None
+    assert not (managed_dir / bd_name).exists()
+
+
+def test_provision_bd_declined_does_not_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An interactive 'no' to the prompt skips the download entirely."""
+    from unittest.mock import MagicMock
+
+    from agentshore.beads import setup as setup_mod
+
+    download = MagicMock()
+    monkeypatch.setattr(setup_mod, "_download_bd", download)
+    with patch("click.confirm", return_value=False):
+        assert setup_mod.provision_bd(assume_yes=False) is None
+    download.assert_not_called()
