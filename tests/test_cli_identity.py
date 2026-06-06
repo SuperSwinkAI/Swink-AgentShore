@@ -459,9 +459,9 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(keyring, "set_password", fake_set_password)
 
     # New flow: Pass 1 picks claude_code → 1; Pass 2 prompts email "",
-    # name "", "Do you have a PAT?" → True (paste path), then paste
-    # "ghp_secret" — stored in keychain at the default service.
-    inputs = iter(["1", "", "", "ghp_secret"])
+    # name "", "Do you have a PAT?" → True (paste path), then the masked PAT
+    # paste "ghp_secret" (via beaupy) — stored in keychain at the default service.
+    inputs = iter(["1", "", ""])
     confirms = iter([True])  # paste-PAT-now → yes
 
     def fake_prompt(msg: str, default: str | None = None, **_: object) -> str:
@@ -479,6 +479,8 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mod.click, "prompt", fake_prompt)
     monkeypatch.setattr(mod.click, "confirm", fake_confirm)
+    # The PAT paste is a masked beaupy prompt, not click.prompt.
+    monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: "ghp_secret")
 
     accounts = [GhAccount(login="example-user", active=True)]
     result = mod.run_wizard(["claude_code"], accounts=accounts)
@@ -935,7 +937,7 @@ def test_prompt_token_strategy_paste_pat_stores_in_keychain(
     inputs = iter(["ghp_realtoken12345"])
     confirms = iter([True])  # accept paste-PAT
 
-    monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
+    monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
 
     strategy, fields = mod._prompt_token_strategy("newbot", is_new_account=True)
@@ -961,7 +963,7 @@ def test_prompt_token_strategy_paste_pat_stores_repo_specific_keychain(
     inputs = iter(["ghp_realtoken12345"])
     confirms = iter([True])  # accept paste-PAT
 
-    monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
+    monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
 
     strategy, fields = mod._prompt_token_strategy(
@@ -989,7 +991,7 @@ def test_prompt_token_strategy_keychain_service_uses_lowercase_login(
         "keyring.set_password",
         lambda service, _user, token: stored.__setitem__(service, token),
     )
-    monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: "ghp_realtoken12345")
+    monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: "ghp_realtoken12345")
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: True)
 
     strategy, fields = mod._prompt_token_strategy("unseriousAI", is_new_account=True)
