@@ -341,6 +341,7 @@ def build_argv(
     extra_flags: tuple[str, ...] = (),
     context_path: str | None = None,
     project_dir: str | None = None,
+    prompt_on_stdin: bool = False,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -348,6 +349,14 @@ def build_argv(
     `feedback_persistent_sessions` memory: ``--resume`` was buggy in
     production (silent state-rot late in long sessions) and is no longer
     used.
+
+    When *prompt_on_stdin* is set the prompt is delivered over the child's
+    stdin instead of as an argv element — on Windows the agent CLIs resolve to
+    npm ``.cmd`` shims, which expand a large prompt argument through cmd.exe and
+    hit its ~8191-char command-line limit ("The command line is too long.").
+    Each CLI is told to read the prompt from stdin: codex via the ``-`` prompt
+    placeholder, claude via ``-p`` with no prompt argument, gemini via an empty
+    ``-p`` (its ``--prompt`` value is appended to whatever arrives on stdin).
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -360,7 +369,8 @@ def build_argv(
         args.extend(extra_flags)
         if context_path:
             args += ["--append-system-prompt", f"Context file: {context_path}"]
-        args.append(prompt)
+        if not prompt_on_stdin:
+            args.append(prompt)
         return args
 
     if agent_type == AgentType.CODEX:
@@ -383,7 +393,8 @@ def build_argv(
         args.extend(extra_flags)
         if project_dir:
             args += ["-C", project_dir]
-        args.append(prompt)
+        # "-" tells `codex exec` to read the prompt from stdin.
+        args.append("-" if prompt_on_stdin else prompt)
         return args
 
     if agent_type == AgentType.GEMINI:
@@ -392,7 +403,8 @@ def build_argv(
         if model:
             args += ["--model", model]
         args.extend(extra_flags)
-        args += ["-p", prompt]
+        # Empty -p keeps headless mode while the real prompt arrives on stdin.
+        args += ["-p", "" if prompt_on_stdin else prompt]
         return args
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
@@ -438,6 +450,38 @@ def _resolve_executable(argv: list[str]) -> list[str]:
     return [resolved, *argv[1:]]
 
 
+def _prompt_on_stdin(python_executable: str | None) -> bool:
+    """Whether to deliver the prompt over stdin rather than as an argv element.
+
+    Windows only, and never for the python-shim test path (its argv carries no
+    prompt). See :func:`build_argv` for why: npm ``.cmd`` shims expand a large
+    prompt argument through cmd.exe and trip its ~8191-char command-line limit.
+    """
+    return python_executable is None and sys.platform == "win32"
+
+
+async def _feed_prompt_stdin(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write *prompt* to the child's stdin and close it.
+
+    Scheduled as a task that runs concurrently with the stdout reader so a
+    child which streams output while still consuming a large prompt can't
+    deadlock on a full pipe. All write errors are swallowed: a child that
+    exits before reading the whole prompt (BrokenPipe) is the reader's problem
+    to report, not this feeder's.
+    """
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
+
+
 def _build_dispatch_argv(
     handle: AgentHandle,
     prompt: str,
@@ -453,6 +497,7 @@ def _build_dispatch_argv(
     ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
     (desktop-dy2j).
     """
+    prompt_on_stdin = _prompt_on_stdin(python_executable)
     if python_executable is not None:
         # Test shim: invoke cfg.binary as a Python script.
         argv: list[str] = [python_executable, cfg.binary or ""]
@@ -465,6 +510,7 @@ def _build_dispatch_argv(
             reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
             extra_flags=cfg.extra_flags,
             project_dir=str(effective_cwd),
+            prompt_on_stdin=prompt_on_stdin,
         )
 
     # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
@@ -478,8 +524,11 @@ def _build_dispatch_argv(
             "--verbose",
             "--output-format",
             "stream-json",
-            prompt,
         ]
+        # On Windows the prompt rides stdin (see build_argv); elsewhere it is
+        # the trailing argv element.
+        if not prompt_on_stdin:
+            argv.append(prompt)
 
     prompt_bytes = len(prompt.encode("utf-8"))
 
@@ -728,9 +777,13 @@ async def dispatch_cli(
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.
     argv = _resolve_executable(argv)
 
+    # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
+    # limit (see build_argv); elsewhere stdin stays closed.
+    prompt_on_stdin = _prompt_on_stdin(python_executable)
+
     proc = await asyncio.create_subprocess_exec(
         *argv,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(effective_cwd),
@@ -740,6 +793,9 @@ async def dispatch_cli(
         env=env,
     )
     handle.process = proc
+    stdin_feeder: asyncio.Task[None] | None = None
+    if prompt_on_stdin and proc.stdin is not None:
+        stdin_feeder = asyncio.create_task(_feed_prompt_stdin(proc, prompt))
     if on_subprocess_spawned is not None and proc.pid is not None:
         await on_subprocess_spawned(proc.pid)
 
@@ -783,6 +839,10 @@ async def dispatch_cli(
         _close_process_transport(proc)
         raise
     finally:
+        if stdin_feeder is not None:
+            stdin_feeder.cancel()
+            with contextlib.suppress(Exception):
+                await stdin_feeder
         if on_subprocess_exited is not None and proc.pid is not None:
             with contextlib.suppress(Exception):
                 await on_subprocess_exited(proc.pid, proc.returncode)
