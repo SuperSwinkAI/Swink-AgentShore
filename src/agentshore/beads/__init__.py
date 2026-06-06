@@ -252,15 +252,56 @@ class BdError(RuntimeError):
 
 
 def managed_bd_dir() -> Path:
-    """Directory where ``agentshore init`` installs an auto-provisioned bd."""
-    from agentshore.paths import GLOBAL_CONFIG_DIR
+    r"""Canonical beads install directory.
 
-    return GLOBAL_CONFIG_DIR / "bin"
+    This is the *same* location beads' own ``install.ps1`` / ``install.sh`` use,
+    so an AgentShore-provisioned ``bd`` is indistinguishable from a user's
+    standalone beads install and lands on the conventional per-platform PATH:
+
+      * Windows — ``%LOCALAPPDATA%\Programs\bd`` (matches ``install.ps1``).
+      * macOS/Linux — ``/usr/local/bin`` when writable, else ``~/.local/bin``
+        (matches ``install.sh``).
+
+    Installing here (rather than a swink-private dir) means the binary is found
+    by any tool that respects PATH — including the ``bd`` the agent subprocesses
+    shell out to from the skills — not just by AgentShore's own absolute-path
+    resolution.
+    """
+    if sys.platform.startswith("win"):
+        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(local_app_data) / "Programs" / "bd"
+    usr_local_bin = Path("/usr/local/bin")
+    if os.access(usr_local_bin, os.W_OK):
+        return usr_local_bin
+    return Path.home() / ".local" / "bin"
 
 
 def _managed_bd_path() -> Path:
     name = "bd.exe" if sys.platform.startswith("win") else "bd"
     return managed_bd_dir() / name
+
+
+def ensure_bd_dir_on_path() -> None:
+    """Prepend the beads install dir to this process's ``PATH`` (idempotent).
+
+    Beads' own installers only *print* a PATH hint; they never modify PATH. So a
+    freshly provisioned ``bd`` in the canonical dir may not be on the PATH this
+    process inherited. Agent subprocesses inherit this process's environment, so
+    prepending the dir here makes a bare ``bd`` (the form the skills invoke)
+    resolve for every agent — without persisting any change to the user's shell.
+    """
+    bd_dir_path = managed_bd_dir()
+    if not bd_dir_path.is_dir():
+        # Nothing installed there yet — don't pollute PATH with a phantom dir.
+        return
+    bd_dir = str(bd_dir_path)
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    target = os.path.normcase(os.path.normpath(bd_dir))
+    if any(os.path.normcase(os.path.normpath(p)) == target for p in parts if p):
+        return
+    os.environ["PATH"] = (bd_dir + os.pathsep + current) if current else bd_dir
+    _logger.info("bd_dir_added_to_path", bd_dir=bd_dir)
 
 
 def resolve_bd_binary() -> str | None:

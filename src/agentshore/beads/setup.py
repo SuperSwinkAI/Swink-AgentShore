@@ -24,7 +24,13 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore.beads import BdError, bd, managed_bd_dir, resolve_bd_binary
+from agentshore.beads import (
+    BdError,
+    bd,
+    ensure_bd_dir_on_path,
+    managed_bd_dir,
+    resolve_bd_binary,
+)
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
@@ -235,6 +241,9 @@ def ensure_bd_installed() -> None:
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."
         )
     _check_bd_version(bd_binary)
+    # Beads' own installers only hint at PATH; make the canonical dir resolvable
+    # for this process (and any agent subprocess that inherits its env).
+    ensure_bd_dir_on_path()
     _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 
