@@ -726,9 +726,17 @@ def request_add_budget(
     return applied if isinstance(applied, dict) else {}
 
 
-def stop_dashboard_process(project_path: Path) -> bool:
-    """Terminate the recorded dashboard bridge process, if one exists."""
-    pid = read_dashboard_pid(project_path)
+def stop_dashboard_process(project_path: Path, *, pid: int | None = None) -> bool:
+    """Terminate the recorded dashboard bridge process, if one exists.
+
+    ``pid`` lets a caller terminate a specific, already-validated process
+    instead of re-reading ``dashboard.pid``. The supervisor path writes the new
+    child's pid into that file concurrently, so a caller superseding a *prior*
+    dashboard must pin the pid it checked to avoid killing the freshly-written
+    one (itself).
+    """
+    if pid is None:
+        pid = read_dashboard_pid(project_path)
     if pid is None:
         return False
 

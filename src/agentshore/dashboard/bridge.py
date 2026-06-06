@@ -83,6 +83,11 @@ class DashboardBridge:
         self._latest_state: str | None = None
         self._active_play: dict[str, object] | None = None
         self._event_history: list[dict[str, object]] = []
+        # Raw line of the most recent in-progress ``bootstrap_phase`` event so a
+        # browser that connects (or reloads) mid-bootstrap can render the loading
+        # modal immediately — these events are otherwise broadcast live-only, so a
+        # late/reconnecting tab would never see the modal (desktop-afp).
+        self._bootstrap_phase_raw: str | None = None
 
         self._ipc_writer: asyncio.StreamWriter | None = None
         self._state_task: asyncio.Task[None] | None = None
@@ -392,6 +397,18 @@ class DashboardBridge:
                 self._session_ended = True
                 self._session_ended_raw = raw_line
             return
+        if msg_type == "bootstrap_phase":
+            # Cache the current bootstrap phase (set during prime-from-disk and
+            # live tail alike) so it can be replayed to a connecting/reloading
+            # client. Clear it once bootstrap finishes (``ready``/``completed``)
+            # so a post-bootstrap connect shows no stale modal.
+            status = fields.get("status")
+            phase = fields.get("phase")
+            if phase == "ready" and status == "completed":
+                self._bootstrap_phase_raw = None
+            elif status == "started":
+                self._bootstrap_phase_raw = raw_line
+            return
 
         if msg_type != "play_event":
             return
@@ -461,6 +478,8 @@ class DashboardBridge:
         """Replay cached dashboard state to a newly connected WebSocket."""
         if self._latest_state is not None:
             await websocket.send_text(self._latest_state)
+        if self._bootstrap_phase_raw is not None and not self._session_ended:
+            await websocket.send_text(self._bootstrap_phase_raw)
         if self._active_play is not None:
             await websocket.send_text(
                 json.dumps({"type": "active_play_replay", "active_play": self._active_play})

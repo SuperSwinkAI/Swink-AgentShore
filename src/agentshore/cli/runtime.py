@@ -192,12 +192,26 @@ def _launch_dashboard_background(
     import time
     import webbrowser
 
-    from agentshore.session_path import IpcEndpoint, find_dashboard_port, session_dir
+    from agentshore.session_path import (
+        IpcEndpoint,
+        find_dashboard_port,
+        session_dir,
+        stop_dashboard_process,
+    )
 
     endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else IpcEndpoint.unix("")
     log_dir = session_dir(project_path)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "agentshore.log"
+
+    # Reap any prior dashboard bridge for this project BEFORE spawning the
+    # orchestrator. The dead-bridge holds dashboard_events.ndjson open (no
+    # FILE_SHARE_DELETE on Windows), so the orchestrator's StateWriter reset
+    # can't unlink it — leaving a prior session's `session_ended` in place,
+    # which the new bridge then ingests and self-exits on ("dies on its own").
+    # Reaping first releases the file so the reset succeeds; it also frees 9400.
+    if stop_dashboard_process(project_path):
+        click.echo("Reaped a stale dashboard process for this project.")
 
     cmd: list[str] = [
         sys.executable,
