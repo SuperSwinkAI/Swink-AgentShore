@@ -301,7 +301,7 @@ class DrainController:
             resumed=resumed,
             session_id=self._session_id,
         )
-        return await self._build_applied(resumed=resumed)
+        return await self._apply_and_publish(resumed=resumed)
 
     async def add_budget(
         self,
@@ -347,11 +347,12 @@ class DrainController:
             resumed=resumed,
             session_id=self._session_id,
         )
-        return await self._build_applied(resumed=resumed)
+        return await self._apply_and_publish(resumed=resumed)
 
     async def current_budget(self) -> dict[str, object]:
         """Return the live-effective caps + spend/remaining (prefill/echo)."""
-        return await self._build_applied(resumed=False)
+        state = await self._state_builder.build_state()
+        return self._applied_from_state(state, resumed=False)
 
     # --- live-budget helpers ----------------------------------------------
 
@@ -390,8 +391,21 @@ class DrainController:
 
         write_budget_to_config(config_path, persisted)
 
-    async def _build_applied(self, *, resumed: bool) -> dict[str, object]:
+    async def _apply_and_publish(self, *, resumed: bool) -> dict[str, object]:
+        """Build a fresh state, push it so the dashboard repaints immediately, echo it.
+
+        A live cap change must not wait for the next loop tick to surface — emit
+        ``on_state_update`` right away so the budget bar reflects the new caps the
+        instant the RPC/command returns.
+        """
         state = await self._state_builder.build_state()
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(state), "on_state_update_budget"
+        )
+        return self._applied_from_state(state, resumed=resumed)
+
+    @staticmethod
+    def _applied_from_state(state: OrchestratorState, *, resumed: bool) -> dict[str, object]:
         b = state.budget
         if b is None:
             return {"resumed": resumed}
