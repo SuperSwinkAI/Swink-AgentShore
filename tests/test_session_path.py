@@ -7,6 +7,7 @@ import socket
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -443,11 +444,14 @@ def test_stop_session_uses_taskkill_on_windows(
     calls: list[list[str]] = []
     alive = {7001}
 
-    def fake_run(args: list[str], **_kwargs: object) -> object:
+    class _Completed:
+        returncode = 0
+
+    def fake_run(args: list[str], **_kwargs: object) -> _Completed:
         calls.append(args)
         if "/F" in args:
             alive.discard(7001)  # force kill takes effect
-        return object()
+        return _Completed()
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
@@ -461,6 +465,34 @@ def test_stop_session_uses_taskkill_on_windows(
     assert sp.hard_stop_session(project) is True
     assert ["taskkill", "/PID", "7001", "/T"] in calls
     assert ["taskkill", "/PID", "7001", "/T", "/F"] in calls
+
+
+def test_terminate_process_tree_warns_on_taskkill_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero taskkill returncode is logged, not silently swallowed or raised."""
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+
+    class _Completed:
+        returncode = 128
+
+    def fake_run(args: list[str], **_kwargs: object) -> _Completed:
+        return _Completed()
+
+    mock_logger = MagicMock()
+    monkeypatch.setattr(sp.subprocess, "run", fake_run)
+    monkeypatch.setattr(sp, "_logger", mock_logger)
+
+    # Must not raise despite the taskkill failure.
+    sp._terminate_process_tree(7001, force=False)
+
+    warnings = [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].kwargs["pid"] == 7001
+    assert warnings[0].kwargs["returncode"] == 128
+    assert warnings[0].kwargs["force"] is False
 
 
 def test_is_unix_socket_path_returns_false_on_windows(

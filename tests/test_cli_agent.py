@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -882,6 +883,98 @@ async def test_dispatch_cli_cleans_up_process_for_cancellation(
 
     assert kill_calls == [handle.agent_id]
     assert handle.process is None
+
+
+# ---------------------------------------------------------------------------
+# _kill_process — Windows teardown path (no os.killpg / os.getpgid)
+# ---------------------------------------------------------------------------
+
+
+class _FakeKillProcess:
+    """Minimal proc stand-in for _kill_process: a pid and an awaitable wait()."""
+
+    def __init__(self, pid: int | None = 9999, *, returncode: int = 0) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._transport = None
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+class _FakeTaskkill:
+    def __init__(self, returncode: int = 0) -> None:
+        self.returncode = returncode
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+async def test_kill_process_uses_taskkill_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under Windows-simulation, _kill_process drives taskkill and never touches
+    os.killpg (which is absent on Windows -> AttributeError)."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    # Simulate Windows: hasattr(os, "killpg") is False, getpgid absent too.
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+
+    captured_argv: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
+        captured_argv.append(list(argv))
+        return _FakeTaskkill(returncode=0)
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    proc = _FakeKillProcess(pid=4321)
+    # Must not raise AttributeError despite os.killpg being absent.
+    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+
+    assert captured_argv, "taskkill was never invoked"
+    assert captured_argv[0][:3] == ["taskkill", "/PID", "4321"]
+    assert "/T" in captured_argv[0]
+    # Process exited within grace -> no force kill needed.
+    assert all("/F" not in argv for argv in captured_argv)
+
+
+async def test_kill_process_windows_warns_on_taskkill_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero taskkill returncode is logged, not raised."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
+        return _FakeTaskkill(returncode=128)
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ca, "_logger", mock_logger)
+
+    proc = _FakeKillProcess(pid=4321)
+    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+
+    warnings = [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].kwargs["returncode"] == 128
+    assert warnings[0].kwargs["pid"] == 4321
 
 
 # ---------------------------------------------------------------------------

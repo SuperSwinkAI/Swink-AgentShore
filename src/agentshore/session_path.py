@@ -32,7 +32,10 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from agentshore.logging import get_logger
 from agentshore.paths import GLOBAL_SESSIONS_DIR
+
+_logger = get_logger(__name__)
 
 _SESSIONS_DIR = GLOBAL_SESSIONS_DIR
 
@@ -500,12 +503,24 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
         args = ["taskkill", "/PID", str(pid), "/T"]
         if force:
             args.append("/F")
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(  # nosec B603
+        try:
+            completed = subprocess.run(  # nosec B603
                 args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # taskkill could not be launched at all — never raise from teardown.
+            return
+        if completed.returncode != 0:
+            # taskkill fails for already-dead PIDs or privilege reasons. Surface
+            # it, but never raise.
+            _logger.warning(
+                "taskkill_failed",
+                pid=pid,
+                returncode=completed.returncode,
+                force=force,
             )
         return
 
