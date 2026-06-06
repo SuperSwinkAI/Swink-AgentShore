@@ -40,7 +40,7 @@ The Main Dashboard composes seven widgets, each fed by the cached state snapshot
 | Agent Panel | Dense table of up to ten agents: status symbol, name, state, current play label + target (issue/PR/branch), elapsed, context size, cost. The active play is shown inline per agent rather than in a separate panel |
 | Play History | `DataTable` of recent completed plays (id, play, result, alignment Δ, cost, duration, message). Visible row count adapts to terminal width |
 | Epic Closure | Per-epic text progress bars and global closure ratio from the beads graph; colour reflects alignment level |
-| Budget | Spent / total with a 20-cell fill bar, percent remaining, avg cost per play, and trajectory projection (remaining plays/cost, projected alignment at budget end). Handles the unlimited-budget case |
+| Budget | Spent / total with a 20-cell fill bar, percent remaining, avg cost per play, and trajectory projection (remaining plays/cost, projected alignment at budget end). When a wall-clock time cap is set, also shows remaining time (`Nh Mm left`). Handles the unlimited case per dimension (dollars and time are independent soft caps) |
 | Work Queue | Counts of open/ready/in-progress issues, open/blocked/draft PRs, queued reviews, and the next issue |
 | RL / Session State | One compact block: session state, policy mode, play counts, success rate, total cost, failure/same-type streaks, last play, eligible vs. masked action count, drain reason, and loop warnings |
 

@@ -454,6 +454,55 @@ def test_serialize_state_disabled_budget_is_browser_json_safe() -> None:
     assert result["budget"]["enabled"] is False  # type: ignore[index]
     assert result["budget"]["total_budget"] is None  # type: ignore[index]
     assert result["budget"]["remaining"] is None  # type: ignore[index]
+    # Time fields default to disabled/None and stay JSON-safe.
+    assert result["budget"]["time_enabled"] is False  # type: ignore[index]
+    assert result["budget"]["time_remaining_minutes"] is None  # type: ignore[index]
+
+
+def test_serialize_state_time_budget_fields() -> None:
+    state = _minimal_state(
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=50.0,
+            remaining=150.0,
+            estimated_cost_per_play=0.5,
+            enabled=True,
+            time_enabled=True,
+            time_total_minutes=1440.0,
+            time_elapsed_minutes=100.0,
+            time_remaining_minutes=1340.0,
+        )
+    )
+
+    result = serialize_state(state)
+    budget = result["budget"]
+    assert budget is not None
+    assert budget["time_enabled"] is True  # type: ignore[index]
+    assert budget["time_total_minutes"] == 1440.0  # type: ignore[index]
+    assert budget["time_elapsed_minutes"] == 100.0  # type: ignore[index]
+    assert budget["time_remaining_minutes"] == 1340.0  # type: ignore[index]
+
+
+def test_serialize_state_time_disabled_nulls_time_fields() -> None:
+    # time_remaining inf must serialize to None (browser-JSON-safe), and all
+    # time fields null out when the dimension is disabled even if values leak in.
+    state = _minimal_state(
+        budget=BudgetSnapshot(
+            total_budget=200.0,
+            spent=50.0,
+            remaining=150.0,
+            estimated_cost_per_play=0.5,
+            enabled=True,
+            time_enabled=False,
+            time_remaining_minutes=float("inf"),
+        )
+    )
+
+    result = serialize_state(state)
+    budget = result["budget"]
+    assert budget is not None
+    assert budget["time_enabled"] is False  # type: ignore[index]
+    assert budget["time_remaining_minutes"] is None  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------

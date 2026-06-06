@@ -584,10 +584,15 @@ async def test_feedback_cadence_plays_pauses_after_configured_completed_plays(
 async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
     tmp_path: Path,
 ) -> None:
+    import time
+
     cfg = RuntimeConfig(feedback=FeedbackConfig(cadence_minutes=5))
     orch = _make_orch(tmp_path, cfg=cfg)
-    # 0.0 is far in the past; monotonic() is always well above 300 on any running system
-    orch._feedback_cadence_last_ack_monotonic = 0.0
+    # Anchor the last ack well in the past relative to the *current* monotonic
+    # clock so the 5-minute cadence is due regardless of the host's absolute
+    # monotonic() value — CLOCK_MONOTONIC (time since boot) can read below 300
+    # on a freshly-booted CI runner, which an absolute 0.0 baseline assumed away.
+    orch._feedback_cadence_last_ack_monotonic = time.monotonic() - 10_000.0
 
     paused_reasons: list[str] = []
     feedback_reasons: list[str] = []
