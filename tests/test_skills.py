@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -132,7 +133,10 @@ class TestInstallSkillFolders:
 
         script = project / ".agents" / "skills" / "fake-skill" / "scripts" / "detect.sh"
         assert script.is_file()
-        assert script.stat().st_mode & stat.S_IXUSR, "exec bit not preserved"
+        # Windows has no POSIX exec bit (scripts run via bash regardless), so the
+        # exec-mode guarantee only applies off-Windows.
+        if not sys.platform.startswith("win"):
+            assert script.stat().st_mode & stat.S_IXUSR, "exec bit not preserved"
 
     def test_user_customised_skill_blocks_reference_overwrite(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
