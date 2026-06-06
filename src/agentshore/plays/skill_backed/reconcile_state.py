@@ -39,7 +39,7 @@ class ReconcileStatePlay(SkillBackedPlay):
     """
 
     gates = (
-        CapabilityGate("can_create_issues"),
+        CapabilityGate("can_run_skill"),
         InFlightGate(PlayType.RECONCILE_STATE),
         ArmedByFailureGate(PlayType.RECONCILE_STATE),
     )
@@ -76,4 +76,4 @@ class ReconcileStatePlay(SkillBackedPlay):
     def capability(self) -> str | None:
         # The skill can ``gh issue create`` a follow-up for genuinely-new
         # bugs it can't classify, so it needs issue-creation capability.
-        return "can_create_issues"
+        return "can_run_skill"

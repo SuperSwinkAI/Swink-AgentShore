@@ -70,7 +70,7 @@ def test_play_registered_under_reconcile_state() -> None:
     play = build_default_registry().get(PlayType.RECONCILE_STATE)
     assert isinstance(play, ReconcileStatePlay)
     assert play.skill_name == "agentshore-reconcile-state"
-    assert play.capability == "can_create_issues"
+    assert play.capability == "can_run_skill"
 
 
 def test_slot_11_is_reconcile_state() -> None:
@@ -85,7 +85,7 @@ def test_play_declares_expected_gate_set() -> None:
     gates = ReconcileStatePlay.gates
     assert len(gates) == 3
     assert isinstance(gates[0], CapabilityGate)
-    assert gates[0].capability == "can_create_issues"
+    assert gates[0].capability == "can_run_skill"
     assert isinstance(gates[1], InFlightGate)
     assert gates[1].play_type == PlayType.RECONCILE_STATE
     assert isinstance(gates[2], ArmedByFailureGate)
