@@ -85,6 +85,23 @@ class _AsyncBytes:
         return self._read_bytes
 
 
+class _FakeStdin:
+    """Minimal StreamWriter stand-in so the Windows prompt-on-stdin path works."""
+
+    def __init__(self) -> None:
+        self.data = b""
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.data += data
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeProcess:
     def __init__(
         self,
@@ -95,6 +112,7 @@ class _FakeProcess:
     ) -> None:
         self.stdout = _AsyncBytes(lines)
         self.stderr = _AsyncBytes([], read_bytes=stderr)
+        self.stdin = _FakeStdin()
         self.returncode = returncode
         self.pid = 4242
 
@@ -277,6 +295,38 @@ def test_build_argv_gemini_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
+def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
+    """Windows: the prompt rides stdin to dodge the cmd.exe command-line limit,
+    so the (possibly huge) prompt text must never appear as an argv element."""
+    huge = "x" * 20000
+    claude = build_argv(AgentType.CLAUDE_CODE, huge, binary="claude", prompt_on_stdin=True)
+    codex = build_argv(
+        AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
+    )
+    gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
+
+    for argv in (claude, codex, gemini):
+        assert huge not in argv
+
+    # claude -p with no prompt arg reads stdin (last token stays a flag/value).
+    assert "-p" in claude
+    assert claude[-1] != huge
+    # codex exec reads the prompt from stdin when handed "-".
+    assert codex[-1] == "-"
+    # gemini stays headless via an empty -p while the prompt arrives on stdin.
+    assert gemini[-2:] == ["-p", ""]
+
+
+async def test_feed_prompt_stdin_writes_and_closes() -> None:
+    from agentshore.agents.cli_agent import _feed_prompt_stdin
+
+    proc = _FakeProcess(_codex_json_lines())
+    await _feed_prompt_stdin(proc, "the full prompt")  # type: ignore[arg-type]
+
+    assert proc.stdin.data == b"the full prompt"
+    assert proc.stdin.closed is True
+
+
 def test_build_argv_codex_inherits_env_to_shell_subprocesses() -> None:
     """desktop-pxg: codex's shell tool strips env vars by default, so the
     GH_TOKEN we inject doesn't reach gh/git subprocesses. We pass
@@ -390,6 +440,41 @@ async def test_dispatch_cli_does_not_resume_by_default(
     assert captured[0][:3] == ["codex", "exec", "--json"]
     assert "resume" not in captured[0]
     assert "-C" in captured[0]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="prompt-on-stdin is Windows-only")
+async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows a large prompt is delivered over stdin, not as an argv element,
+    so npm .cmd shims can't trip the cmd.exe command-line limit."""
+    captured_argv: list[list[str]] = []
+    captured_kwargs: list[dict[str, Any]] = []
+    procs: list[_FakeProcess] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_argv.append(list(argv))
+        captured_kwargs.append(kwargs)
+        proc = _FakeProcess(_codex_json_lines())
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    big_prompt = "groom the backlog " * 2000  # ~36 KB — over cmd.exe's ~8191 limit
+    result = await dispatch_cli(handle, big_prompt, cfg=cfg)
+
+    assert result.exit_code == 0
+    assert big_prompt not in captured_argv[0]
+    assert captured_argv[0][-1] == "-"  # codex reads the prompt from stdin
+    assert captured_kwargs[0]["stdin"] is asyncio.subprocess.PIPE
+    assert procs[0].stdin.data == big_prompt.encode("utf-8")
+    assert procs[0].stdin.closed is True
 
 
 async def test_dispatch_cli_never_resumes(
