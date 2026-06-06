@@ -1114,7 +1114,7 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
                 bypass_preconditions=True,
             ),
         ),
-        (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+        (PlayType.SEED_PROJECT, PlayParams(seed_path=str(Path("/tmp/seed.md")), bypass_preconditions=True)),
         (
             PlayType.INSTANTIATE_AGENT,
             PlayParams(
@@ -1201,7 +1201,7 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
                 bypass_preconditions=True,
             ),
         ),
-        (PlayType.SEED_PROJECT, PlayParams(seed_path="/tmp/seed.md", bypass_preconditions=True)),
+        (PlayType.SEED_PROJECT, PlayParams(seed_path=str(Path("/tmp/seed.md")), bypass_preconditions=True)),
         (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
     # Even with no medium spawn, groom still runs after the seed audit.

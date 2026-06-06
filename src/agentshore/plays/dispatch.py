@@ -254,7 +254,12 @@ def _json_safe_extras(extras: dict[str, object]) -> dict[str, object]:
 
     def _convert(value: object) -> object:
         if isinstance(value, Path):
-            return str(value)
+            # as_posix(), not str(): this dict is a JSON wire/replay format, so
+            # serialize paths deterministically with forward slashes rather than
+            # the host's native separator (backslash on Windows). Windows tools
+            # accept forward-slash paths, and the runtime cwd uses the private
+            # _runtime_allocation Path, never this serialized copy.
+            return value.as_posix()
         if isinstance(value, Enum):
             return value.value
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
