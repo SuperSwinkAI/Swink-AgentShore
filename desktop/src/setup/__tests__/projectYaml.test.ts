@@ -37,6 +37,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -45,6 +46,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -53,6 +55,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -119,6 +122,7 @@ rl:
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -239,6 +243,62 @@ describe("parseProjectYaml — trusted_ids.restrict_issues_to_trusted_authors", 
 `;
     expect(parseProjectYaml(yaml).trustedIssueEnforcement).toBeNull();
     expect(parseProjectYaml(FULL_YAML).trustedIssueEnforcement).toBeNull();
+  });
+});
+
+describe("parseProjectYaml — trusted_ids.github_logins", () => {
+  it("parses the github_logins sequence into trustedSources", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - dependabot[bot]
+    - renovate[bot]
+  restrict_issues_to_trusted_authors: true
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.trustedSources).toEqual(["dependabot[bot]", "renovate[bot]"]);
+    // Sibling enforcement flag still parses alongside the list.
+    expect(r.trustedIssueEnforcement).toBe(true);
+  });
+
+  it("canonicalizes (lowercase + trim) and dedupes logins", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - "  Example-User  "
+    - example-user
+    - EXAMPLE-USER
+    - OtherUser
+`;
+    expect(parseProjectYaml(yaml).trustedSources).toEqual([
+      "example-user",
+      "otheruser",
+    ]);
+  });
+
+  it("yields empty trustedSources when the block has no github_logins", () => {
+    const yaml = `trusted_ids:
+  restrict_issues_to_trusted_authors: false
+`;
+    expect(parseProjectYaml(yaml).trustedSources).toEqual([]);
+    expect(parseProjectYaml(FULL_YAML).trustedSources).toEqual([]);
+  });
+
+  it("does not bleed list items into other key-based sections", () => {
+    // An identities block following a trusted_ids list must not absorb the
+    // sequence entries as identity keys.
+    const yaml = `trusted_ids:
+  github_logins:
+    - bot-one
+identities:
+  example-user:
+    git_user_name: x
+agents:
+  codex:
+    enabled: true
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.trustedSources).toEqual(["bot-one"]);
+    expect(r.identityLogins).toEqual(["example-user"]);
+    expect(r.enabledAgents).toEqual(["codex"]);
   });
 });
 

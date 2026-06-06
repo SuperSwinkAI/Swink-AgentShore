@@ -25,7 +25,7 @@ class RefineTaskBreakdownPlay(SkillBackedPlay):
 
     @property
     def capability(self) -> str | None:
-        return "can_create_issues"
+        return "can_run_skill"
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         if not state.open_issues:
