@@ -553,6 +553,76 @@ def request_drain(
         return "error"
 
 
+def request_add_budget(
+    project_path: Path,
+    *,
+    delta_usd: float | None,
+    delta_minutes: int | None,
+) -> str | dict[str, object]:
+    """Additively top up / extend the live session budget over IPC.
+
+    The NDJSON control channel is fire-and-forget for mutating commands, but the
+    server replies to ``get_state`` on the same connection. So this sends the
+    ``add_budget`` command, then a ``get_state`` request on the same socket, reads
+    the single reply line, and returns the ``budget`` portion of the snapshot so
+    the CLI can report the applied caps.
+
+    Returns ``"no_session"`` when no IPC endpoint is discoverable, ``"error"`` /
+    ``"timeout"`` on transport failure, or the budget dict on success (which may
+    be ``{}`` if the snapshot carried no budget).
+    """
+    import json as _json
+    import socket as _socket
+
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return "no_session"
+
+    add_cmd: dict[str, object] = {"command": "add_budget"}
+    if delta_usd is not None:
+        add_cmd["delta_usd"] = delta_usd
+    if delta_minutes is not None:
+        add_cmd["delta_minutes"] = delta_minutes
+
+    try:
+        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            if endpoint.kind == "unix":
+                if endpoint.path is None:
+                    return "no_session"
+                sock.connect(str(endpoint.path))
+            else:
+                sock.connect((endpoint.host, endpoint.port))
+            sock.sendall((_json.dumps(add_cmd) + "\n").encode())
+            sock.sendall((_json.dumps({"command": "get_state"}) + "\n").encode())
+
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
+
+    line, _, _ = buffer.partition(b"\n")
+    if not line.strip():
+        return "error"
+    try:
+        snapshot = _json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError):
+        return "error"
+    if not isinstance(snapshot, dict):
+        return "error"
+    if snapshot.get("type") == "error":
+        return "error"
+    budget = snapshot.get("budget")
+    return budget if isinstance(budget, dict) else {}
+
+
 def stop_dashboard_process(project_path: Path) -> bool:
     """Terminate the recorded dashboard bridge process, if one exists."""
     pid = read_dashboard_pid(project_path)

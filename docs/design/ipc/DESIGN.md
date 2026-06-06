@@ -97,8 +97,10 @@ Commands are flat NDJSON objects (`src/agentshore/ipc/commands.py`); each must
 carry a `command` key drawn from the validated set:
 
 - **Lifecycle**: `start`, `pause`, `resume`, `shutdown`, `drain`, `hard_stop`
-- **Control**: `adjust_budget` (requires positive `delta_usd`), `abort_play`,
-  `rescan_issues`, `generate_report`
+- **Control**: `adjust_budget` (requires positive `delta_usd`), `add_budget`
+  (additive live budget; ≥1 of positive `delta_usd` / `delta_minutes` — backs
+  `agentshore add-budget`; the client follows with `get_state` to read the
+  applied caps), `abort_play`, `rescan_issues`, `generate_report`
 - **Responses**: `feedback_response` (requires `action`),
   `verification_response` (requires `checkpoint_id`, `passed`)
 - **Session/state**: `archive_session`, `list_archives`, `get_state`

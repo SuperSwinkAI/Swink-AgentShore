@@ -828,6 +828,77 @@ def _dispatch_project_rpc(
     return _result(req_id, result)
 
 
+def _dispatch_session_budget(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
+) -> DispatchResult:
+    """Route ``session.{set_budget,get_budget}`` to the LIVE orchestrator (issue #41).
+
+    Unlike ``project.set_budget`` (which only rewrites ``agentshore.yaml``), these
+    operate on ``state.orchestrator`` — the running engine instance — so cap
+    changes take effect mid-session. ``set_budget`` is absolute-set and persists;
+    ``get_budget`` is a read-only echo. Both require a live session.
+    """
+    if raw_params is not None and not isinstance(raw_params, dict):
+        return _error(req_id, INVALID_REQUEST, "params must be an object")
+
+    # ``state.orchestrator`` is typed ``object`` to keep the import lazy (the
+    # cold-start torch-free invariant), so the live methods are duck-typed here.
+    orch = state.orchestrator
+    if orch is None:
+        return _error(req_id, ERR_SESSION_ACTIVE, "no active session")
+
+    if method == "session.get_budget":
+
+        async def _run_get() -> JsonRpcResponse:
+            current = orch.current_budget  # type: ignore[attr-defined]
+            return _result(req_id, {"budget": await current()})
+
+        return _run_get()
+
+    if method == "session.set_budget":
+        try:
+            obj_params = _as_dict(raw_params)
+        except _ParamError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        budget = obj_params.get("budget")
+        if not isinstance(budget, dict):
+            return _error(req_id, INVALID_PARAMS, "session.set_budget requires object 'budget'")
+        if "enabled" not in budget:
+            return _error(req_id, INVALID_PARAMS, "budget.enabled is required")
+        enabled = budget["enabled"]
+        if not isinstance(enabled, bool):
+            return _error(req_id, INVALID_PARAMS, "budget.enabled must be a boolean")
+        time_enabled = budget.get("time_enabled", False)
+        if not isinstance(time_enabled, bool):
+            return _error(req_id, INVALID_PARAMS, "budget.time_enabled must be a boolean")
+
+        from agentshore.errors import OrchestratorError
+
+        async def _run_set() -> JsonRpcResponse:
+            set_budget = orch.set_budget  # type: ignore[attr-defined]
+            try:
+                applied = await set_budget(
+                    dollars_enabled=enabled,
+                    dollars=budget.get("total"),
+                    time_enabled=time_enabled,
+                    time_minutes=budget.get("time_total_minutes"),
+                    persist=True,
+                )
+            except OrchestratorError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+            return _result(req_id, {"budget": applied})
+
+        return _run_set()
+
+    raise KeyError(method)  # pragma: no cover — guarded by HANDLERS routing
+
+
 def _dispatch_install_timelapse(req_id: int | str | None) -> Awaitable[JsonRpcResponse]:
     """``project.install_timelapse`` — long-running auto-install, returns a coroutine."""
 
@@ -1100,6 +1171,8 @@ HANDLERS: dict[str, Route] = {
     "session.start": Route(_dispatch_session, notify_ok=True),
     "session.status": Route(_dispatch_session, notify_ok=True),
     "session.stop": Route(_dispatch_session, notify_ok=True),
+    "session.set_budget": Route(_dispatch_session_budget),
+    "session.get_budget": Route(_dispatch_session_budget),
     "project.select": Route(_dispatch_project_rpc),
     "project.inspect": Route(_dispatch_project_rpc),
     "project.branches": Route(_dispatch_project_rpc),

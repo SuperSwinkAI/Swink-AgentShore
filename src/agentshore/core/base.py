@@ -518,9 +518,7 @@ class _OrchestratorBase:
                 else b.enabled
             ),
             total=(
-                self._budget_override_total
-                if self._budget_override_total is not None
-                else b.total
+                self._budget_override_total if self._budget_override_total is not None else b.total
             ),
             warning_threshold=b.warning_threshold,
             time_enabled=(
