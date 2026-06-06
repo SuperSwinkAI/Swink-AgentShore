@@ -70,7 +70,9 @@ def dashboard(
     from agentshore.session_path import (
         IpcEndpoint,
         discover_ipc_endpoint,
+        read_dashboard_pid,
         session_dir,
+        stop_dashboard_process,
         write_dashboard_pid,
     )
 
@@ -105,6 +107,18 @@ def dashboard(
             err=True,
         )
         raise SystemExit(1)
+
+    # Supersede any prior dashboard bridge for this project so launches don't
+    # accumulate orphaned (often wedged) listeners. The self-guard matters on
+    # the supervisor path: _launch_dashboard_background writes *this* child's
+    # pid into dashboard.pid concurrently, and we must never kill ourselves.
+    prior_pid = read_dashboard_pid(project_path)
+    if (
+        prior_pid is not None
+        and prior_pid != os.getpid()
+        and stop_dashboard_process(project_path, pid=prior_pid)
+    ):
+        click.echo("Superseded a prior dashboard process for this project.")
 
     # Record this process's PID so a stale dashboard.pid from an earlier
     # supervisor-launched sidecar can be distinguished from a manual restart.

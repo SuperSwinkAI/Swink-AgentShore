@@ -233,6 +233,44 @@ def test_stop_dashboard_process_signals_recorded_dashboard(
     assert (8001, _signal.SIGTERM) in killed
 
 
+def test_stop_dashboard_process_pinned_pid_ignores_overwritten_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned ``pid`` terminates that process, not whatever dashboard.pid now
+    holds — the supersede path must not kill the freshly-written (self) pid."""
+    import signal as _signal
+
+    monkeypatch.setattr(sp.sys, "platform", "linux")
+    project = tmp_path / "repo"
+    project.mkdir()
+    # dashboard.pid has already been overwritten with the new/self pid (9999),
+    # but we want to reap the prior dashboard (8001) we validated earlier.
+    sp.write_dashboard_pid(project, 9999)
+
+    killed: list[tuple[int, int]] = []
+    alive = {8001, 9999}
+
+    def fake_killpg(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+        if sig == _signal.SIGTERM:
+            alive.discard(pid)
+
+    def fake_kill(pid: int, sig: int) -> None:
+        if sig == 0:
+            if pid not in alive:
+                raise OSError
+            return
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(sp.os, "killpg", fake_killpg, raising=False)
+    monkeypatch.setattr(sp.os, "kill", fake_kill)
+
+    assert sp.stop_dashboard_process(project, pid=8001) is True
+    assert (8001, _signal.SIGTERM) in killed
+    # The self pid in dashboard.pid was never touched.
+    assert all(pid != 9999 for pid, _ in killed)
+
+
 def test_is_session_running_stops_orphan_dashboard_when_pid_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

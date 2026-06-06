@@ -212,6 +212,76 @@ async def test_bridge_replay_to_new_client(
 
 
 @pytest.mark.asyncio
+async def test_bridge_caches_and_replays_bootstrap_phase(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """A live bootstrap_phase is cached and replayed so a (re)connecting tab
+    renders the loading modal instead of a blank screen (desktop-afp)."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    writer = StateWriter(session_dir)
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "init_github", "status": "started", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    for line in await asyncio.to_thread(bridge._read_new_events_sync):
+        bridge._ingest_event_line(line, broadcast=True)
+
+    assert bridge._bootstrap_phase_raw is not None
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    replayed = [json.loads(m) for m in ws.sent]
+    phase_msgs = [m for m in replayed if m.get("type") == "bootstrap_phase"]
+    assert len(phase_msgs) == 1
+    assert phase_msgs[0]["payload"]["phase"] == "init_github"
+
+
+@pytest.mark.asyncio
+async def test_bridge_clears_bootstrap_phase_when_ready(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """Once bootstrap reaches ready/completed the cached phase is dropped, so a
+    post-bootstrap connect does not show a stale loading modal."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    writer = StateWriter(session_dir)
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "init_github", "status": "started", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "ready", "status": "completed", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    for line in await asyncio.to_thread(bridge._read_new_events_sync):
+        bridge._ingest_event_line(line, broadcast=True)
+
+    assert bridge._bootstrap_phase_raw is None
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    types = [json.loads(m).get("type") for m in ws.sent]
+    assert "bootstrap_phase" not in types
+
+
+@pytest.mark.asyncio
 async def test_bridge_prime_from_disk_loads_existing_files(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path
 ) -> None:
