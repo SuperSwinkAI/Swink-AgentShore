@@ -326,6 +326,90 @@ def update_identity(project_path: Path, login: str, patch: dict[str, object]) ->
     _write_yaml_atomic(cfg_path, data)
 
 
+def _trusted_ids_mapping(data: dict[str, object]) -> dict[str, object]:
+    """Get-or-create the ``trusted_ids`` mapping inside *data* (in-place).
+
+    Raises ``ValueError`` if a non-mapping ``trusted_ids`` is already present.
+    """
+    trusted = data.get("trusted_ids")
+    if trusted is None:
+        trusted = {}
+        data["trusted_ids"] = trusted
+    if not isinstance(trusted, dict):
+        raise ValueError("trusted_ids block must be a mapping")
+    return trusted
+
+
+def _read_trusted_source_logins(trusted: dict[str, object]) -> list[str]:
+    """Return the canonicalized, de-duplicated ``github_logins`` list."""
+    raw = trusted.get("github_logins", [])
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("trusted_ids.github_logins must be a list")
+    logins: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("trusted_ids.github_logins contains a non-string value")
+        canonical = canonical_identity_name(value)
+        if canonical not in seen:
+            logins.append(canonical)
+            seen.add(canonical)
+    return logins
+
+
+def list_trusted_sources(project_path: Path) -> list[str]:
+    """List the no-auth trusted GitHub logins (``trusted_ids.github_logins``).
+
+    These are identities trusted as *sources* of issues/PRs only — they are
+    never assigned to an agent and carry no token. Returned sorted for a
+    stable UI ordering.
+    """
+    cfg_path = _config_path(project_path)
+    if not cfg_path.exists():
+        return []
+    data = _load_yaml(cfg_path)
+    trusted_raw = data.get("trusted_ids")
+    if not isinstance(trusted_raw, dict):
+        return []
+    return sorted(_read_trusted_source_logins(trusted_raw))
+
+
+def add_trusted_source(project_path: Path, login: str) -> None:
+    """Add *login* to ``trusted_ids.github_logins`` (idempotent).
+
+    Validates the GitHub login and canonicalizes it. Leaves ``pr_allow_list``
+    and ``restrict_issues_to_trusted_authors`` untouched.
+    """
+    if not is_valid_github_login(login):
+        raise ValueError(f"invalid GitHub login: {login!r}")
+    canonical = canonical_identity_name(login)
+    cfg_path = _config_path(project_path)
+    data = _load_yaml(cfg_path)
+    trusted = _trusted_ids_mapping(data)
+    logins = _read_trusted_source_logins(trusted)
+    if canonical not in logins:
+        logins.append(canonical)
+        trusted["github_logins"] = logins
+        _write_yaml_atomic(cfg_path, data)
+
+
+def remove_trusted_source(project_path: Path, login: str) -> None:
+    """Remove *login* from ``trusted_ids.github_logins`` (idempotent)."""
+    canonical = canonical_identity_name(login)
+    cfg_path = _config_path(project_path)
+    data = _load_yaml(cfg_path)
+    trusted_raw = data.get("trusted_ids")
+    if not isinstance(trusted_raw, dict):
+        return
+    logins = _read_trusted_source_logins(trusted_raw)
+    updated = [item for item in logins if item != canonical]
+    if updated != logins:
+        trusted_raw["github_logins"] = updated
+        _write_yaml_atomic(cfg_path, data)
+
+
 def remove_identity(project_path: Path, login: str) -> None:
     canonical = canonical_identity_name(login)
     cfg_path = _config_path(project_path)

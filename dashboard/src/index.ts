@@ -17,6 +17,11 @@ export type {
   IdentityRow,
   KeychainStatus,
 } from "./components/IdentitiesScreen";
+export { TrustedSourcesScreen } from "./components/TrustedSourcesScreen";
+export type {
+  TrustedSourcesScreenProps,
+  TrustedSourcesSidecar,
+} from "./components/TrustedSourcesScreen";
 export {
   BootstrapModal,
   notifyBootstrapModal,

@@ -95,6 +95,47 @@ describe("TargetBranchScreen", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Target branch set to main.");
   });
 
+  it("flushes the picked branch on unmount when leaving without Save (rail nav)", async () => {
+    const adapter = makeAdapter(BRANCHES);
+    const { unmount } = renderScreen(adapter);
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(adapter.list).toHaveBeenCalled());
+    // Pick a non-default branch, then leave via the rail (unmount) — no Save.
+    const featureRow = await screen.findByTestId("branch-row-feature/x");
+    await user.click(within(featureRow).getByRole("radio"));
+    unmount();
+
+    expect(adapter.setTarget).toHaveBeenCalledWith("feature/x");
+  });
+
+  it("does not flush on unmount when the user never changed the selection", async () => {
+    const adapter = makeAdapter(BRANCHES);
+    const { unmount } = renderScreen(adapter);
+
+    await waitFor(() => expect(adapter.list).toHaveBeenCalled());
+    // Passive visit: the default was auto-seeded, not user-picked. Leaving must
+    // not overwrite the configured target with the default.
+    unmount();
+
+    expect(adapter.setTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not double-save on unmount after an explicit Save", async () => {
+    const adapter = makeAdapter(BRANCHES);
+    const { unmount } = renderScreen(adapter);
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(adapter.list).toHaveBeenCalled());
+    const featureRow = await screen.findByTestId("branch-row-feature/x");
+    await user.click(within(featureRow).getByRole("radio"));
+    await user.click(screen.getByTestId("target-branch-save"));
+    await waitFor(() => expect(adapter.setTarget).toHaveBeenCalledWith("feature/x"));
+
+    unmount();
+    expect(adapter.setTarget).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces an error banner when listBranches rejects", async () => {
     const adapter: TargetBranchAdapter = {
       list: vi.fn().mockRejectedValue(new Error("git fetch failed")),
