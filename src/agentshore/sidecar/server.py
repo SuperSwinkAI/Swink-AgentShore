@@ -51,9 +51,12 @@ from agentshore.sidecar.esr import build_esr_payload
 from agentshore.sidecar.handshake import build_response, validate_params
 from agentshore.sidecar.identities import (
     add_identity,
+    add_trusted_source,
     keychain_status,
     list_identities,
+    list_trusted_sources,
     remove_identity,
+    remove_trusted_source,
     update_identity,
 )
 from agentshore.sidecar.recents import (
@@ -961,6 +964,27 @@ def _dispatch_identities_rpc(
             return _error(req_id, INVALID_PARAMS, str(exc))
         except OSError as exc:
             return _error(req_id, INTERNAL_ERROR, f"identities.remove: {exc}")
+        return _result(req_id, {})
+
+    if method == "identities.list_trusted":
+        try:
+            return _result(req_id, list_trusted_sources(_active_project_path(state)))
+        except (OSError, ValueError) as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.list_trusted: {exc}")
+
+    if method in ("identities.add_trusted", "identities.remove_trusted"):
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, f"{method} requires object params")
+        login = raw_params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, f"{method} requires login")
+        op = add_trusted_source if method == "identities.add_trusted" else remove_trusted_source
+        try:
+            op(_active_project_path(state), login)
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"{method}: {exc}")
         return _result(req_id, {})
 
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
