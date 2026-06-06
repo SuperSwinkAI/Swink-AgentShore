@@ -2384,3 +2384,61 @@ body.stats-active .agentshore-dashboard-canvas {
   color: var(--fm-text-muted);
   text-align: center;
 }
+
+/* Top-level ErrorBoundary fallback — shown when a render throws so the app
+ * degrades to a readable trace instead of a blank white screen. */
+.dashboard-error-boundary {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 32px;
+  overflow: auto;
+  background: var(--fm-bg, #14171c);
+  color: var(--fm-text, #e6e9ef);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+.dashboard-error-boundary h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.dashboard-error-boundary p {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--fm-text-muted, #9aa3b2);
+}
+
+.dashboard-error-boundary button {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 1px solid var(--fm-border, #3a4150);
+  border-radius: 6px;
+  background: var(--fm-surface, #1d2127);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dashboard-error-boundary button:hover {
+  border-color: var(--fm-accent, #6aa3ff);
+}
+
+.dashboard-error-boundary__detail {
+  margin: 0;
+  padding: 16px;
+  flex: 1;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--fm-surface, #1d2127);
+  color: var(--fm-text-muted, #9aa3b2);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

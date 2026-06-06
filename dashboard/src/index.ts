@@ -1,5 +1,6 @@
 export { Dashboard } from "./components/Dashboard";
 export type { DashboardProps } from "./components/Dashboard";
+export { ErrorBoundary } from "./components/ErrorBoundary";
 export { ThemeToggle } from "./components/ThemeToggle";
 export type { ThemeToggleProps } from "./components/ThemeToggle";
 export { DashboardCanvas } from "./components/DashboardCanvas";
