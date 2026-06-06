@@ -29,10 +29,7 @@ import type {
   PlayEventStarted,
   StateUpdate,
 } from "../src/types";
-import type {
-  ConnectionState,
-  DashboardTransport,
-} from "../src/ws";
+import type { ConnectionState, DashboardTransport } from "../src/ws";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -102,9 +99,15 @@ describe("Dashboard", () => {
       root.render(<Dashboard showThemeToggle />);
     });
 
-    expect(container.querySelector("#top-bar.dashboard-main-chrome")).not.toBeNull();
-    expect(container.querySelector("#topbar-left-mount .session-state")).not.toBeNull();
-    expect(container.querySelector("#topbar-left-mount #plays-count")).not.toBeNull();
+    expect(
+      container.querySelector("#top-bar.dashboard-main-chrome"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector("#topbar-left-mount .session-state"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector("#topbar-left-mount #plays-count"),
+    ).not.toBeNull();
     expect(container.querySelector("#left-panel")).not.toBeNull();
     expect(container.querySelector("#stage-tabs")).not.toBeNull();
     expect(container.querySelector("#side-panel")).not.toBeNull();
@@ -185,12 +188,8 @@ describe("PlaysPanel", () => {
       container.querySelector("[data-play-key='reconcile_state']"),
     ).not.toBeNull();
     // Slot 19 (formerly future_6) now hosts the active PRUNE play.
-    expect(
-      container.querySelector("[data-play-key='prune']"),
-    ).not.toBeNull();
-    expect(
-      container.querySelector("[data-play-key='future_6']"),
-    ).toBeNull();
+    expect(container.querySelector("[data-play-key='prune']")).not.toBeNull();
+    expect(container.querySelector("[data-play-key='future_6']")).toBeNull();
     expect(
       container.querySelector("[data-play-key='future_7']"),
     ).not.toBeNull();
@@ -260,8 +259,23 @@ describe("PlaysPanel", () => {
       );
     });
 
-    // 1354 minutes -> 22h 34m.
-    expect(container.textContent).toContain("$12.50 / $200.00 · 22h 34m left");
+    // 1354 minutes -> 22h 34m. Dollars and time-left are separate segments
+    // with the meter physically between them: $ · [meter] · time-left.
+    const bar = container.querySelector(".budget-bar") as HTMLElement;
+    const dollar = bar.querySelector("#budget-label") as HTMLElement;
+    const time = bar.querySelector(".budget-time") as HTMLElement;
+    expect(dollar.textContent).toBe("$12.50 / $200.00");
+    expect(time.textContent).toBe("22h 34m left");
+    // Meter renders between the two figures.
+    const kids = Array.from(bar.children);
+    expect(kids.indexOf(dollar)).toBeLessThan(
+      kids.indexOf(bar.querySelector(".budget-track") as HTMLElement),
+    );
+    expect(
+      kids.indexOf(bar.querySelector(".budget-track") as HTMLElement),
+    ).toBeLessThan(kids.indexOf(time));
+    // Hover tooltip carries the full combined breakdown.
+    expect(bar.getAttribute("title")).toBe("$12.50 / $200.00 · 22h 34m left");
   });
 
   it("omits the time suffix when no time cap is set (dollar-only)", async () => {
@@ -289,6 +303,79 @@ describe("PlaysPanel", () => {
 
     expect(container.textContent).toContain("$12.50 / $200.00");
     expect(container.textContent).not.toContain("left");
+  });
+
+  it("shows time-only runs without a dollar cap and fills the meter from elapsed time", async () => {
+    await act(async () => {
+      root.render(<PlaysPanel />);
+    });
+    await act(async () => {
+      notifyPlaysPanelUpdate(
+        stateUpdate({
+          total_cost: 0.05,
+          budget: {
+            enabled: false,
+            total_budget: null,
+            spent: 0.05,
+            remaining: null,
+            estimated_cost_per_play: 0.25,
+            time_enabled: true,
+            time_total_minutes: 60,
+            time_elapsed_minutes: 45,
+            time_remaining_minutes: 15,
+          },
+        }),
+      );
+    });
+
+    // Dollars uncapped (no "(unlimited)" verbosity, no "∞" since time is capped),
+    // and the time cap survives instead of being ellipsized.
+    expect(
+      (container.querySelector("#budget-label") as HTMLElement).textContent,
+    ).toBe("$0.05");
+    expect(
+      (container.querySelector(".budget-time") as HTMLElement).textContent,
+    ).toBe("15m left");
+    expect(container.textContent).not.toContain("unlimited");
+    // The meter tracks the binding (time) dimension: 45/60 = 75% -> warning.
+    const fill = container.querySelector("#budget-fill") as HTMLElement;
+    expect(fill.style.width).toBe("75%");
+    expect(fill.className).toContain("warning");
+  });
+
+  it("collapses a fully-uncapped run to a compact infinity marker", async () => {
+    await act(async () => {
+      root.render(<PlaysPanel />);
+    });
+    await act(async () => {
+      notifyPlaysPanelUpdate(
+        stateUpdate({
+          total_cost: 0.05,
+          budget: {
+            enabled: false,
+            total_budget: null,
+            spent: 0.05,
+            remaining: null,
+            estimated_cost_per_play: 0.25,
+            time_enabled: false,
+            time_total_minutes: null,
+            time_elapsed_minutes: null,
+            time_remaining_minutes: null,
+          },
+        }),
+      );
+    });
+
+    expect(
+      (container.querySelector("#budget-label") as HTMLElement).textContent,
+    ).toBe("$0.05");
+    expect(
+      (container.querySelector(".budget-time") as HTMLElement).textContent,
+    ).toBe("∞");
+    expect(container.textContent).not.toContain("unlimited");
+    expect(container.textContent).not.toContain("left");
+    const fill = container.querySelector("#budget-fill") as HTMLElement;
+    expect(fill.style.width).toBe("0%");
   });
 });
 
@@ -577,7 +664,9 @@ describe("EventDrawer", () => {
     });
 
     expect(container.textContent).toContain("Issue Pickup 44");
-    expect(container.textContent).not.toContain("Completed (status reconciled)");
+    expect(container.textContent).not.toContain(
+      "Completed (status reconciled)",
+    );
 
     // Agent goes idle with null current_play. Before: card flipped to
     // "Completed (status reconciled)". After: card stays as Running.
@@ -596,7 +685,9 @@ describe("EventDrawer", () => {
     });
 
     expect(container.textContent).toContain("Issue Pickup 44");
-    expect(container.textContent).not.toContain("Completed (status reconciled)");
+    expect(container.textContent).not.toContain(
+      "Completed (status reconciled)",
+    );
   });
 
   it("does NOT reconcile a Running card when the agent is still busy but current_play is transiently empty", async () => {
@@ -645,7 +736,9 @@ describe("EventDrawer", () => {
     });
 
     expect(container.textContent).toContain("Seed Project");
-    expect(container.textContent).not.toContain("Completed (status reconciled)");
+    expect(container.textContent).not.toContain(
+      "Completed (status reconciled)",
+    );
 
     // Transient empty current_play while the agent is still ``busy``.
     await act(async () => {
@@ -664,7 +757,9 @@ describe("EventDrawer", () => {
 
     // Card must still be running. No "(status reconciled)" ghost.
     expect(container.textContent).toContain("Seed Project");
-    expect(container.textContent).not.toContain("Completed (status reconciled)");
+    expect(container.textContent).not.toContain(
+      "Completed (status reconciled)",
+    );
   });
 });
 
@@ -708,7 +803,9 @@ describe("SidePanelComponent", () => {
     });
 
     const dots = Array.from(
-      container.querySelectorAll<HTMLElement>(".agent-status[data-agent-type='claude_code']"),
+      container.querySelectorAll<HTMLElement>(
+        ".agent-status[data-agent-type='claude_code']",
+      ),
     );
     expect(dots).toHaveLength(2);
     expect(dots[0].style.background).toBe(dots[1].style.background);
@@ -761,8 +858,8 @@ describe("SidePanelComponent", () => {
     );
     expect(badges).toHaveLength(2);
     // 0.6 → 60, 0.4 → 40
-    const values = badges.map(
-      (el) => el.getAttribute("data-agent-dispatch-share"),
+    const values = badges.map((el) =>
+      el.getAttribute("data-agent-dispatch-share"),
     );
     expect(values).toContain("60");
     expect(values).toContain("40");
