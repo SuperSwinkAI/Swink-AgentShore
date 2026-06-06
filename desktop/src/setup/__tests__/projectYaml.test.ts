@@ -152,7 +152,12 @@ project:
   target_branch: main
 `;
     const r = parseProjectYaml(yaml);
-    expect(r.budget).toEqual({ enabled: true, totalUsd: 250 });
+    expect(r.budget).toEqual({
+      enabled: true,
+      totalUsd: 250,
+      timeEnabled: false,
+      timeMinutes: null,
+    });
   });
 
   it("returns enabled=false with no total when budget block has only enabled:false", () => {
@@ -160,7 +165,28 @@ project:
   enabled: false
 `;
     const r = parseProjectYaml(yaml);
-    expect(r.budget).toEqual({ enabled: false, totalUsd: null });
+    expect(r.budget).toEqual({
+      enabled: false,
+      totalUsd: null,
+      timeEnabled: false,
+      timeMinutes: null,
+    });
+  });
+
+  it("parses the budget time cap when present", () => {
+    const yaml = `budget:
+  enabled: true
+  total: 100.0
+  time_enabled: true
+  time_total_minutes: 1440
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.budget).toEqual({
+      enabled: true,
+      totalUsd: 100,
+      timeEnabled: true,
+      timeMinutes: 1440,
+    });
   });
 
   it("ignores budget.warning_threshold and other unknown fields", () => {
@@ -222,28 +248,55 @@ describe("budgetHydrationToSelection", () => {
   });
 
   it("maps enabled=true to mode='capped' with totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: true, totalUsd: 300 })).toEqual({
-      mode: "capped",
-      total: 300,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: true,
+        totalUsd: 300,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "capped", total: 300, timeMode: "unlimited", timeMinutes: 0 });
   });
 
   it("maps enabled=false to mode='unlimited' regardless of totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: false, totalUsd: null })).toEqual({
-      mode: "unlimited",
-      total: 0,
-    });
-    expect(budgetHydrationToSelection({ enabled: false, totalUsd: 50 })).toEqual({
-      mode: "unlimited",
-      total: 0,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: null,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 0 });
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: 50,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 0 });
   });
 
   it("falls back to total=0 when capped hydration has no totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: true, totalUsd: null })).toEqual({
-      mode: "capped",
-      total: 0,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: true,
+        totalUsd: null,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "capped", total: 0, timeMode: "unlimited", timeMinutes: 0 });
+  });
+
+  it("maps the time dimension independently", () => {
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: null,
+        timeEnabled: true,
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "capped", timeMinutes: 1440 });
   });
 });
 
@@ -268,6 +321,8 @@ describe("budgetSelectionToConfig", () => {
     expect(budgetSelectionToConfig({ mode: "capped", total: 250 })).toEqual({
       enabled: true,
       total: 250,
+      time_enabled: false,
+      time_total_minutes: 0,
     });
   });
 
@@ -275,6 +330,30 @@ describe("budgetSelectionToConfig", () => {
     expect(budgetSelectionToConfig({ mode: "unlimited", total: 250 })).toEqual({
       enabled: false,
       total: 0,
+      time_enabled: false,
+      time_total_minutes: 0,
     });
+  });
+
+  it("serializes the time dimension independently", () => {
+    expect(
+      budgetSelectionToConfig({
+        mode: "capped",
+        total: 250,
+        timeMode: "capped",
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ enabled: true, total: 250, time_enabled: true, time_total_minutes: 1440 });
+  });
+
+  it("treats capped dollars + unlimited time as time disabled", () => {
+    expect(
+      budgetSelectionToConfig({
+        mode: "capped",
+        total: 250,
+        timeMode: "unlimited",
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ enabled: true, total: 250, time_enabled: false, time_total_minutes: 0 });
   });
 });

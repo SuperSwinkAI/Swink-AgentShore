@@ -603,6 +603,65 @@ def test_set_budget_round_trips_through_config_loader(tmp_path: Path) -> None:
     assert cfg.budget.warning_threshold == 0.25
 
 
+def test_set_budget_writes_time_cap(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    project_rpc.select(str(tmp_path))
+
+    result = project_rpc.set_budget(
+        {"enabled": True, "total": 100.0, "time_enabled": True, "time_total_minutes": 1440}
+    )
+
+    budget = cast("dict[str, object]", result["budget"])
+    assert budget["time_enabled"] is True
+    assert budget["time_total_minutes"] == 1440
+    text = yaml_path.read_text()
+    assert "time_enabled: true" in text
+    assert "time_total_minutes: 1440" in text
+
+
+def test_set_budget_time_round_trips_through_config_loader(tmp_path: Path) -> None:
+    from agentshore.config import load_config
+
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n")
+    project_rpc.select(str(tmp_path))
+
+    project_rpc.set_budget(
+        {"enabled": False, "total": 0, "time_enabled": True, "time_total_minutes": 720}
+    )
+
+    cfg = load_config(yaml_path)
+    assert cfg.budget.time_enabled is True
+    assert cfg.budget.time_total_minutes == 720
+
+
+@pytest.mark.parametrize("minutes", [59, 4321, 30])
+def test_set_budget_rejects_time_out_of_range(tmp_path: Path, minutes: int) -> None:
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError) as info:
+        project_rpc.set_budget(
+            {"enabled": False, "total": 0, "time_enabled": True, "time_total_minutes": minutes}
+        )
+    assert "time_total_minutes" in str(info.value)
+
+
+def test_set_budget_rejects_non_int_time(tmp_path: Path) -> None:
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError):
+        project_rpc.set_budget(
+            {"enabled": False, "total": 0, "time_enabled": True, "time_total_minutes": "1440"}
+        )
+
+
+def test_set_budget_rejects_bool_time_total(tmp_path: Path) -> None:
+    """``True`` is an ``int`` subclass — reject it as a minutes value."""
+    project_rpc.select(str(tmp_path))
+    with pytest.raises(project_rpc.ProjectError):
+        project_rpc.set_budget(
+            {"enabled": False, "total": 0, "time_enabled": True, "time_total_minutes": True}
+        )
+
+
 # ---------------------------------------------------------------------------
 # project.set_trusted_issue_enforcement
 # ---------------------------------------------------------------------------

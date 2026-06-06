@@ -25,7 +25,7 @@ class BudgetWidget(Widget):
             return "  Budget: N/A\n  Waiting for session snapshot"
         if not self.budget.enabled:
             lines = [f"  ${self.budget.spent:.2f} spent  Budget: unlimited"]
-            return "\n".join(lines + self._trajectory_lines())
+            return "\n".join(lines + self._time_lines() + self._trajectory_lines())
         pct = self.budget.remaining / max(self.budget.total_budget, 0.01)
         pct = max(0.0, min(1.0, pct))
         filled = round(pct * 20)
@@ -35,7 +35,7 @@ class BudgetWidget(Widget):
             f"  {bar}  {pct:.0%} remaining (${self.budget.remaining:.2f})",
             f"  avg/play ${self.budget.estimated_cost_per_play:.2f}",
         ]
-        return "\n".join(lines + self._trajectory_lines())
+        return "\n".join(lines + self._time_lines() + self._trajectory_lines())
 
     def watch_budget(self, budget: BudgetSnapshot | None) -> None:
         """React to budget changes by updating the CSS health class."""
@@ -61,6 +61,16 @@ class BudgetWidget(Widget):
         """Convenience method to set a new budget snapshot."""
         self.budget = budget
         self.trajectory = trajectory
+
+    def _time_lines(self) -> list[str]:
+        """Render the wall-clock soft-cap line when a time budget is set."""
+        budget = self.budget
+        if budget is None or not budget.time_enabled or budget.time_remaining_minutes is None:
+            return []
+        remaining = max(0, int(round(budget.time_remaining_minutes)))
+        hours, mins = divmod(remaining, 60)
+        disp = f"{hours}h {mins}m" if hours else f"{mins}m"
+        return [f"  time {disp} left"]
 
     def _trajectory_lines(self) -> list[str]:
         if self.trajectory is None:

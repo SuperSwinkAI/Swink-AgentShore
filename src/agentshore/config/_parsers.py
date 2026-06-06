@@ -6,7 +6,11 @@ import warnings
 from pathlib import Path
 from typing import TypedDict, cast, overload
 
-from agentshore.budget import MIN_ENABLED_BUDGET_USD
+from agentshore.budget import (
+    MAX_TIME_BUDGET_MINUTES,
+    MIN_ENABLED_BUDGET_USD,
+    MIN_TIME_BUDGET_MINUTES,
+)
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
@@ -73,6 +77,8 @@ class _RawBudget(TypedDict, total=False):
     enabled: bool
     total: _RawStrictNumber
     warning_threshold: _RawStrictNumber
+    time_enabled: bool
+    time_total_minutes: int
 
 
 class _RawTrustedIds(TypedDict, total=False):
@@ -246,7 +252,6 @@ class _RawRL(TypedDict, total=False):
 
 class _RawSession(TypedDict, total=False):
     max_plays: int | None
-    timeout_minutes: int | None
     auto_alignment_check_every: int
     auto_archive: bool
     archive_dir: str
@@ -428,7 +433,34 @@ def _parse_budget(raw: _RawBudget) -> BudgetConfig:
         raise ConfigError(f"budget.total must be non-negative, got {total!r}")
     if not isinstance(warning, int | float) or not (0.0 <= warning <= 1.0):
         raise ConfigError(f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}")
-    return BudgetConfig(enabled=enabled, total=float(total), warning_threshold=float(warning))
+    time_enabled = raw.get("time_enabled", False)
+    time_total_minutes = raw.get("time_total_minutes", 0)
+    if not isinstance(time_enabled, bool):
+        raise ConfigError(f"budget.time_enabled must be a boolean, got {time_enabled!r}")
+    # ``bool`` is an ``int`` subclass — reject it so True/False can't pose as minutes.
+    if isinstance(time_total_minutes, bool) or not isinstance(time_total_minutes, int):
+        raise ConfigError(
+            f"budget.time_total_minutes must be an integer, got {time_total_minutes!r}"
+        )
+    if time_enabled and not (
+        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
+    ):
+        raise ConfigError(
+            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
+            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
+            f"got {time_total_minutes!r}"
+        )
+    if not time_enabled and time_total_minutes < 0:
+        raise ConfigError(
+            f"budget.time_total_minutes must be non-negative, got {time_total_minutes!r}"
+        )
+    return BudgetConfig(
+        enabled=enabled,
+        total=float(total),
+        warning_threshold=float(warning),
+        time_enabled=time_enabled,
+        time_total_minutes=time_total_minutes,
+    )
 
 
 def _parse_agent(name: str, raw: _RawAgent) -> AgentConfig:
@@ -876,7 +908,6 @@ def _parse_rl(raw: _RawRL) -> RLConfig:
 def _parse_session(raw: _RawSession) -> SessionConfig:
     return SessionConfig(
         max_plays=raw.get("max_plays"),
-        timeout_minutes=raw.get("timeout_minutes"),
         auto_alignment_check_every=raw.get("auto_alignment_check_every", 5),
         auto_archive=raw.get("auto_archive", True),
         archive_dir=raw.get("archive_dir", ".agentshore/archives"),

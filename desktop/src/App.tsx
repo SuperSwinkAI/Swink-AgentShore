@@ -148,7 +148,7 @@ const defaultSetupState: SetupState = {
   targetBranch: "main",
   enabledAgents: ["codex", "claude_code"],
   identities: [],
-  budget: { mode: "unlimited", total: 0 },
+  budget: { mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 1440 },
   startSelection: { seedInputPath: null },
   timelapseInstalled: false,
   trustedIssueEnforcement: false,
@@ -168,7 +168,16 @@ function parseBudgetSelection(value: unknown): BudgetSelection {
     typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw >= 0
       ? totalRaw
       : defaultSetupState.budget.total;
-  return { mode, total };
+  // Time dimension (independent). Older persisted snapshots predate these
+  // fields — fall back to the defaults so the wizard stays back-compatible.
+  const timeMode: BudgetSelection["timeMode"] =
+    value.timeMode === "capped" ? "capped" : "unlimited";
+  const timeMinutesRaw = value.timeMinutes;
+  const timeMinutes =
+    typeof timeMinutesRaw === "number" && Number.isFinite(timeMinutesRaw) && timeMinutesRaw >= 0
+      ? timeMinutesRaw
+      : defaultSetupState.budget.timeMinutes;
+  return { mode, total, timeMode, timeMinutes };
 }
 
 function parseStartSelection(value: unknown): StartSelection {

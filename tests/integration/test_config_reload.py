@@ -34,11 +34,19 @@ async def test_config_is_replaceable() -> None:
     # Nested replacement also works
     new_cfg2 = dataclasses.replace(
         cfg,
-        session=SessionConfig(max_plays=42, timeout_minutes=60),
+        session=SessionConfig(max_plays=42),
     )
     assert new_cfg2.session.max_plays == 42
-    assert new_cfg2.session.timeout_minutes == 60
     assert cfg.session.max_plays is None  # original untouched
+
+    # The wall-clock cap now lives on the budget dimension (migrated off the
+    # former session.timeout_minutes).
+    new_cfg3 = dataclasses.replace(
+        cfg,
+        budget=BudgetConfig(time_enabled=True, time_total_minutes=120),
+    )
+    assert new_cfg3.budget.time_enabled is True
+    assert new_cfg3.budget.time_total_minutes == 120
 
 
 @pytest.mark.asyncio
@@ -131,10 +139,11 @@ budget:
   enabled: true
   total: 25.0
   warning_threshold: 0.15
+  time_enabled: true
+  time_total_minutes: 120
 
 session:
   max_plays: 100
-  timeout_minutes: 120
 
 scope:
   strict_mode: true
@@ -146,8 +155,9 @@ scope:
     assert cfg.budget.enabled is True
     assert cfg.budget.total == 25.0
     assert cfg.budget.warning_threshold == 0.15
+    assert cfg.budget.time_enabled is True
+    assert cfg.budget.time_total_minutes == 120
     assert cfg.session.max_plays == 100
-    assert cfg.session.timeout_minutes == 120
     assert cfg.scope.strict_mode is True
     # Unspecified fields retain defaults
     assert cfg.mode == "solo"

@@ -375,9 +375,19 @@ class SnapshotProjector:
         *,
         budget_cfg: BudgetConfig,
         extra_budget: float,
+        elapsed_minutes: float,
     ) -> BudgetSnapshot:
         total_budget = budget_cfg.total + extra_budget
         remaining = max(0.0, total_budget - total_cost) if budget_cfg.enabled else float("inf")
+        time_total: float | None = None
+        time_elapsed: float | None = None
+        time_remaining: float | None = None
+        if budget_cfg.time_enabled:
+            total_minutes = float(budget_cfg.time_total_minutes)
+            elapsed = max(0.0, elapsed_minutes)
+            time_total = total_minutes
+            time_elapsed = elapsed
+            time_remaining = max(0.0, total_minutes - elapsed)
         return BudgetSnapshot(
             total_budget=total_budget,
             spent=total_cost,
@@ -387,6 +397,10 @@ class SnapshotProjector:
                 total_cost / total_plays if total_plays > 0 else COLD_START_COST_ESTIMATE
             ),
             enabled=budget_cfg.enabled,
+            time_enabled=budget_cfg.time_enabled,
+            time_total_minutes=time_total,
+            time_elapsed_minutes=time_elapsed,
+            time_remaining_minutes=time_remaining,
         )
 
     @staticmethod

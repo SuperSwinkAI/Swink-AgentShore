@@ -287,6 +287,8 @@ describe("ChooseProjectScreen", () => {
       expect(adapter.setBudgetImpl).toHaveBeenCalledWith({
         enabled: true,
         total: 42,
+        time_enabled: false,
+        time_total_minutes: 0,
       });
       // setBudget must fire BEFORE the helper — otherwise the
       // helper's ``project.inspect`` reads stale yaml.

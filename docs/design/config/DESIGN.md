@@ -83,7 +83,13 @@ The former global `max_total` cap was removed: per-(type, tier) gating is suffic
 
 ## Budget
 
-Budget enforcement is opt-in: `budget.enabled: false` disables the cap even when `budget.total` is set. When enabled, `budget.total` must be at least `MIN_ENABLED_BUDGET_USD` (validated at load). `warning_threshold` is the remaining-fraction trigger and must be in `[0, 1]`. CLI `--no-budget` disables enforcement for a single run.
+A session is bounded by two **independent soft caps** under the `budget` block — dollars and wall-clock time. Either cap reaching its reserve triggers the same graceful drain (stop assigning new plays, let in-flight agents finish); the cap itself is the hard-stop backstop.
+
+**Dollar cap.** `budget.enabled: false` disables the cap even when `budget.total` is set. When enabled, `budget.total` must be at least `MIN_ENABLED_BUDGET_USD` (validated at load). Drain begins at a `BUDGET_DRAIN_RESERVE_USD` ($5) reserve. `warning_threshold` is the remaining-fraction trigger and must be in `[0, 1]`.
+
+**Time cap.** `budget.time_enabled: false` disables the wall-clock cap. When enabled, `budget.time_total_minutes` must be in `[MIN_TIME_BUDGET_MINUTES, MAX_TIME_BUDGET_MINUTES]` = 60–4320 (1h–72h). Drain begins `TIME_BUDGET_DRAIN_RESERVE_MINUTES` (20 min) before the deadline; the deadline hard-stop emits a `time_budget` reason. This is a deterministic backstop only — it is **not** in the PPO observation vector (observation version unchanged). The former `session.timeout_minutes` field is migrated onto this one (a single wall-clock enforcement path).
+
+**CLI.** `--budget <$>` and `--time <DURATION>` (e.g. `24h`, `90m`, bare minutes) set each cap; `--unlimited` disables both. A "naked" `agentshore start` uses `agentshore.yaml` if a budget is configured there; on a fresh/unconfigured project it falls back to the $200 + 24h safety defaults, and naming one dimension on the CLI suppresses the other's bare default.
 
 ## RL
 

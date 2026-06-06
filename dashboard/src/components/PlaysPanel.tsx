@@ -1,5 +1,5 @@
 import React, { useEffect, useReducer } from "react";
-import type { AgentSnapshot, PlayEvent, StateUpdate } from "../types";
+import type { AgentSnapshot, BudgetSnapshot, PlayEvent, StateUpdate } from "../types";
 import {
   PLAY_DISPLAY_NAMES,
   PLAY_KEYS,
@@ -172,6 +172,31 @@ function PlayCard({
   );
 }
 
+function formatRemainingTime(minutes: number): string {
+  const safe = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(safe / 60);
+  const mins = safe % 60;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+/**
+ * Render the time soft-cap portion of the budget label. Time is an independent
+ * dimension: shown as "· Xh Ym left" when capped. When time is off (or the
+ * field is absent, e.g. a dollar-only session) nothing is appended, so the
+ * dollar "(unlimited)" marker alone conveys an uncapped run.
+ */
+function formatTimeBudgetSuffix(budget: BudgetSnapshot): string {
+  if (
+    budget.time_enabled &&
+    budget.time_remaining_minutes !== null &&
+    budget.time_remaining_minutes !== undefined
+  ) {
+    return ` · ${formatRemainingTime(budget.time_remaining_minutes)} left`;
+  }
+  return "";
+}
+
 function BudgetBar({
   state,
   drainStatus,
@@ -196,9 +221,10 @@ function BudgetBar({
       state.budget.remaining === null;
     const pct = !unlimited && total !== null ? (spent / total) * 100 : 0;
 
-    labelText = unlimited
+    const dollarLabel = unlimited
       ? `$${spent.toFixed(2)} (unlimited)`
       : `$${spent.toFixed(2)} / $${total!.toFixed(2)}`;
+    labelText = `${dollarLabel}${formatTimeBudgetSuffix(state.budget)}`;
     fillWidth = `${Math.min(pct, 100)}%`;
     fillClass =
       pct > 80
