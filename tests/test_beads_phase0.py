@@ -849,3 +849,30 @@ def test_provision_bd_declined_does_not_download(monkeypatch: pytest.MonkeyPatch
     with patch("click.confirm", return_value=False):
         assert setup_mod.provision_bd(assume_yes=False) is None
     download.assert_not_called()
+
+
+def test_drain_terminal_input_never_raises() -> None:
+    """Draining is best-effort — must not raise with no real console (e.g. CI)."""
+    from agentshore.beads import setup as setup_mod
+
+    setup_mod._drain_terminal_input()  # must not raise
+
+
+def test_provision_bd_drains_stdin_before_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Buffered keystrokes are flushed *before* the confirm so the prompt blocks
+    instead of consuming a stray newline left by the preceding wizards."""
+    from unittest.mock import MagicMock
+
+    from agentshore.beads import setup as setup_mod
+
+    order: list[str] = []
+    monkeypatch.setattr(setup_mod, "_drain_terminal_input", lambda: order.append("drain"))
+    monkeypatch.setattr(setup_mod, "_download_bd", MagicMock())
+
+    def _confirm(*_a: object, **_k: object) -> bool:
+        order.append("confirm")
+        return False
+
+    with patch("click.confirm", side_effect=_confirm):
+        assert setup_mod.provision_bd(assume_yes=False) is None
+    assert order == ["drain", "confirm"]
