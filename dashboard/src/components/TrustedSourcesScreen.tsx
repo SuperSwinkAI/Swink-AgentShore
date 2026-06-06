@@ -38,15 +38,22 @@ type ScreenAction =
   | { type: "remove_done"; login: string; logins: string[] }
   | { type: "remove_error"; login: string; message: string };
 
-const INITIAL: ScreenState = {
-  logins: [],
-  loading: true,
-  error: null,
-  adding: false,
-  addLogin: "",
-  addError: null,
-  busy: {},
-};
+function initialState(seed: readonly string[] | undefined): ScreenState {
+  const logins = seed && seed.length > 0 ? [...seed] : [];
+  return {
+    // Pre-paint the hydrated seed (if any) so the rail shows the previous
+    // session's trusted sources immediately. ``loading`` stays true so the
+    // sidecar ``list()`` still runs and reconciles authoritatively — the
+    // seed is parity chrome, not a replacement for the self-load.
+    logins,
+    loading: true,
+    error: null,
+    adding: false,
+    addLogin: "",
+    addError: null,
+    busy: {},
+  };
+}
 
 function reducer(state: ScreenState, action: ScreenAction): ScreenState {
   switch (action.type) {
@@ -55,15 +62,30 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
     case "load_error":
       return { ...state, loading: false, error: action.message };
     case "show_add":
-      return { ...state, adding: true, addLogin: "", addError: null, error: null };
+      return {
+        ...state,
+        adding: true,
+        addLogin: "",
+        addError: null,
+        error: null,
+      };
     case "cancel_add":
       return { ...state, adding: false, addLogin: "", addError: null };
     case "set_add_login":
       return { ...state, addLogin: action.value, addError: null };
     case "add_error":
-      return { ...state, busy: { ...state.busy, __add__: false }, addError: action.message };
+      return {
+        ...state,
+        busy: { ...state.busy, __add__: false },
+        addError: action.message,
+      };
     case "submit_add":
-      return { ...state, busy: { ...state.busy, __add__: true }, error: null, addError: null };
+      return {
+        ...state,
+        busy: { ...state.busy, __add__: true },
+        error: null,
+        addError: null,
+      };
     case "add_done":
       return {
         ...state,
@@ -73,7 +95,11 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
         logins: action.logins,
       };
     case "submit_remove":
-      return { ...state, busy: { ...state.busy, [action.login]: true }, error: null };
+      return {
+        ...state,
+        busy: { ...state.busy, [action.login]: true },
+        error: null,
+      };
     case "remove_done": {
       const next = { ...state.busy };
       delete next[action.login];
@@ -90,13 +116,19 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
 export interface TrustedSourcesScreenProps {
   sidecar: TrustedSourcesSidecar;
   onSourcesChange?: (logins: string[]) => void;
+  /** Optional hydrated trusted-source logins to pre-paint before the
+   *  sidecar ``list()`` resolves. The panel always self-loads from the
+   *  sidecar and reconciles to its result; this seed only avoids a blank
+   *  flash on re-entry (parity with localStorage-hydrated panels). */
+  initialLogins?: readonly string[];
 }
 
 export function TrustedSourcesScreen({
   sidecar,
   onSourcesChange,
+  initialLogins,
 }: TrustedSourcesScreenProps): React.ReactElement {
-  const [state, dispatch] = useReducer(reducer, INITIAL);
+  const [state, dispatch] = useReducer(reducer, initialLogins, initialState);
 
   const reload = useCallback(async () => {
     try {
@@ -143,21 +175,28 @@ export function TrustedSourcesScreen({
   }
 
   return (
-    <div className="id-screen id-trusted-screen" data-testid="trusted-sources-screen">
+    <div
+      className="id-screen id-trusted-screen"
+      data-testid="trusted-sources-screen"
+    >
       <h3 className="id-subtitle">Trusted sources</h3>
       <p className="id-description">
         GitHub logins trusted as a source of issues and pull requests, but never
-        assigned to an agent — no token required. AgentShore reads their issues/PRs
-        when "Only work issues opened by trusted identities" is on.
+        assigned to an agent — no token required. AgentShore reads their
+        issues/PRs when "Only work issues opened by trusted identities" is on.
       </p>
 
       {state.error && (
-        <div className="id-error" role="alert" data-testid="trusted-sources-error">
+        <div
+          className="id-error"
+          role="alert"
+          data-testid="trusted-sources-error"
+        >
           {state.error}
         </div>
       )}
 
-      {state.loading ? (
+      {state.loading && state.logins.length === 0 ? (
         <p className="id-loading" data-testid="trusted-sources-loading">
           Loading trusted sources…
         </p>
@@ -201,7 +240,11 @@ export function TrustedSourcesScreen({
           data-testid="add-trusted-source-form"
         >
           {state.addError && (
-            <div className="id-field-error" role="alert" data-testid="add-trusted-error">
+            <div
+              className="id-field-error"
+              role="alert"
+              data-testid="add-trusted-error"
+            >
               {state.addError}
             </div>
           )}
@@ -214,7 +257,9 @@ export function TrustedSourcesScreen({
               type="text"
               className="id-input"
               value={state.addLogin}
-              onChange={(e) => dispatch({ type: "set_add_login", value: e.target.value })}
+              onChange={(e) =>
+                dispatch({ type: "set_add_login", value: e.target.value })
+              }
               placeholder="dependabot[bot]"
               autoFocus
               data-testid="add-trusted-login-input"
