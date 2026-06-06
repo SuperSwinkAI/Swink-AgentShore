@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 import structlog
@@ -24,6 +24,26 @@ if TYPE_CHECKING:
     from agentshore.core import Orchestrator
 
 _logger = structlog.get_logger("agentshore.cli")
+
+
+def _background_spawn_kwargs() -> dict[str, Any]:
+    """Popen flags that detach a long-lived child from this console.
+
+    POSIX uses ``start_new_session`` (setsid). On Windows that flag is a no-op,
+    so the child stays in the launcher's console process group — and a console
+    Ctrl-C / close event then cascades across the orchestrator + dashboard (and
+    back into the launcher), aborting the "background" session within seconds
+    even though nobody pressed anything. ``CREATE_NEW_PROCESS_GROUP |
+    DETACHED_PROCESS`` gives the child its own group with no console: the
+    Windows equivalent of setsid.
+    """
+    if sys.platform == "win32":
+        import subprocess
+
+        return {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+        }
+    return {"start_new_session": True}
 
 
 async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
@@ -189,7 +209,7 @@ def _launch_dashboard_background(
             stdout=lf,
             stderr=lf,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **_background_spawn_kwargs(),
         )
 
     click.echo(f"AgentShore starting in background (log: {log_file})")
@@ -230,7 +250,7 @@ def _launch_dashboard_background(
             stdout=dl,
             stderr=dl,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **_background_spawn_kwargs(),
         )
 
     from agentshore.session_path import write_dashboard_pid

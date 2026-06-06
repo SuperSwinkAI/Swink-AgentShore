@@ -945,10 +945,11 @@ async def test_kill_process_uses_taskkill_on_windows(
     assert all("/F" not in argv for argv in captured_argv)
 
 
-async def test_kill_process_windows_warns_on_taskkill_failure(
+async def test_kill_process_windows_no_warn_when_process_already_gone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-zero taskkill returncode is logged, not raised."""
+    """A non-zero taskkill exit (e.g. 128 'process not found') for a process
+    that has already exited is benign and must NOT be logged as a failure."""
     import os as _os
 
     from agentshore.agents import cli_agent as ca
@@ -966,15 +967,15 @@ async def test_kill_process_windows_warns_on_taskkill_failure(
     mock_logger = MagicMock()
     monkeypatch.setattr(ca, "_logger", mock_logger)
 
+    # _FakeKillProcess.returncode is 0 -> the process exited, so even though
+    # taskkill returned non-zero, teardown succeeded and nothing is logged.
     proc = _FakeKillProcess(pid=4321)
     await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
     warnings = [
         c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
     ]
-    assert len(warnings) == 1
-    assert warnings[0].kwargs["returncode"] == 128
-    assert warnings[0].kwargs["pid"] == 4321
+    assert warnings == []
 
 
 async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
@@ -1008,7 +1009,9 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
             await asyncio.sleep(3600)  # never exits on its own
             return 0
 
-    proc = _HangingProc(pid=4321)
+    # returncode stays None — the process never dies, so taskkill genuinely
+    # failed and the warning must fire (unlike the already-gone benign case).
+    proc = _HangingProc(pid=4321, returncode=None)  # type: ignore[arg-type]
     # Guard the test itself: a regression would hang here instead of returning.
     await asyncio.wait_for(ca._kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
 

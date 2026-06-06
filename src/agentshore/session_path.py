@@ -513,9 +513,11 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
         except (OSError, subprocess.SubprocessError):
             # taskkill could not be launched at all — never raise from teardown.
             return
-        if completed.returncode != 0:
-            # taskkill fails for already-dead PIDs or privilege reasons. Surface
-            # it, but never raise.
+        # taskkill returns non-zero for an already-dead PID (e.g. 128 "process
+        # not found") as well as for genuine privilege failures. Only the
+        # latter is worth a warning — if the process is actually gone, teardown
+        # succeeded regardless of the exit code.
+        if completed.returncode != 0 and _process_alive(pid):
             _logger.warning(
                 "taskkill_failed",
                 pid=pid,

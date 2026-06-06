@@ -1412,9 +1412,10 @@ async def _kill_process_windows(proc: asyncio.subprocess.Process, agent_id: str)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
 
-    if returncode != 0:
-        # taskkill fails for already-dead PIDs or privilege reasons. Surface
-        # it, but never raise — teardown must always complete.
+    # taskkill returns non-zero for an already-dead PID (e.g. 128 "process not
+    # found") as well as for genuine failures. Only warn if the process is
+    # actually still running after the kill — otherwise teardown succeeded.
+    if returncode != 0 and proc.returncode is None:
         _logger.warning(
             "taskkill_failed",
             agent_id=agent_id,

@@ -467,10 +467,11 @@ def test_stop_session_uses_taskkill_on_windows(
     assert ["taskkill", "/PID", "7001", "/T", "/F"] in calls
 
 
-def test_terminate_process_tree_warns_on_taskkill_failure(
+def test_terminate_process_tree_warns_when_process_survives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-zero taskkill returncode is logged, not silently swallowed or raised."""
+    """A non-zero taskkill returncode for a process that is STILL alive is a
+    genuine failure — logged, not silently swallowed or raised."""
     monkeypatch.setattr(sp.sys, "platform", "win32")
 
     class _Completed:
@@ -482,6 +483,7 @@ def test_terminate_process_tree_warns_on_taskkill_failure(
     mock_logger = MagicMock()
     monkeypatch.setattr(sp.subprocess, "run", fake_run)
     monkeypatch.setattr(sp, "_logger", mock_logger)
+    monkeypatch.setattr(sp, "_process_alive", lambda _pid: True)  # kill failed, still running
 
     # Must not raise despite the taskkill failure.
     sp._terminate_process_tree(7001, force=False)
@@ -493,6 +495,28 @@ def test_terminate_process_tree_warns_on_taskkill_failure(
     assert warnings[0].kwargs["pid"] == 7001
     assert warnings[0].kwargs["returncode"] == 128
     assert warnings[0].kwargs["force"] is False
+
+
+def test_terminate_process_tree_quiet_when_process_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero taskkill exit (e.g. 128 'process not found') for an
+    already-dead PID is benign and must not be logged as a failure."""
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+
+    class _Completed:
+        returncode = 128
+
+    monkeypatch.setattr(sp.subprocess, "run", lambda args, **_kw: _Completed())
+    mock_logger = MagicMock()
+    monkeypatch.setattr(sp, "_logger", mock_logger)
+    monkeypatch.setattr(sp, "_process_alive", lambda _pid: False)  # already gone
+
+    sp._terminate_process_tree(7001, force=False)
+
+    assert [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ] == []
 
 
 def test_is_unix_socket_path_returns_false_on_windows(
