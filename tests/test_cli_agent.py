@@ -34,6 +34,19 @@ from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
 
 
+@pytest.fixture(autouse=True)
+def _identity_executable_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep dispatch argv deterministic across hosts. On Windows,
+    _resolve_executable() rewrites a bare 'codex' to the real codex.CMD path
+    via shutil.which; pin which() to identity so argv assertions (e.g.
+    argv[0] == 'codex') hold regardless of what npm shims are installed. The
+    dedicated _resolve_executable tests patch shutil.which themselves.
+    """
+    import agentshore.agents.cli_agent as ca
+
+    monkeypatch.setattr(ca.shutil, "which", lambda name: name)
+
+
 def _make_cfg(*, timeout: int | None = None, max_output_size: int = 10_000_000) -> AgentConfig:
     return AgentConfig(
         enabled=True,
@@ -1022,6 +1035,49 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     ]
     assert len(warnings) == 1
     assert warnings[0].kwargs["returncode"] == 128
+
+
+def test_resolve_executable_resolves_npm_shim_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex/claude/gemini are .cmd npm shims; CreateProcess only finds bare
+    names ending in .exe, so resolve to the full .cmd path via shutil.which."""
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(ca.sys, "platform", "win32")
+    monkeypatch.setattr(ca.shutil, "which", lambda _name: r"C:\npm\codex.CMD")
+
+    out = ca._resolve_executable(["codex", "exec", "--json"])
+    assert out == [r"C:\npm\codex.CMD", "exec", "--json"]
+
+
+def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(ca.sys, "platform", "linux")
+    assert ca._resolve_executable(["codex", "exec"]) == ["codex", "exec"]
+
+
+def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(ca.sys, "platform", "win32")
+    called: list[str] = []
+    monkeypatch.setattr(ca.shutil, "which", lambda n: called.append(n) or None)
+    abs_path = os.path.abspath("python")  # absolute on the test runner
+
+    assert ca._resolve_executable([abs_path, "script"]) == [abs_path, "script"]
+    assert called == []  # absolute paths are not re-resolved
+
+
+def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(ca.sys, "platform", "win32")
+    monkeypatch.setattr(ca.shutil, "which", lambda _name: None)
+    assert ca._resolve_executable(["missing", "arg"]) == ["missing", "arg"]
 
 
 # ---------------------------------------------------------------------------

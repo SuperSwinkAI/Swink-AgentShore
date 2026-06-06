@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import signal
 import sys
 import time
@@ -418,6 +419,25 @@ def _no_window_creationflags() -> int:
     return 0
 
 
+def _resolve_executable(argv: list[str]) -> list[str]:
+    """On Windows, resolve argv[0] to its full path so .cmd/.bat shims run.
+
+    Agent CLIs are usually npm shims (codex.cmd / claude.cmd / gemini.cmd) with
+    no .exe. ``create_subprocess_exec`` passes the bare name to CreateProcess,
+    which only appends ".exe" — so "codex" raises WinError 2 even though
+    codex.cmd is on PATH. ``shutil.which`` finds the shim via PATHEXT, and
+    subprocess can execute a .cmd directly when given the full path. No-op on
+    POSIX (PATH search there already resolves bare names) and when argv[0] is
+    already absolute or cannot be resolved.
+    """
+    if sys.platform != "win32" or not argv or os.path.isabs(argv[0]):
+        return argv
+    resolved = shutil.which(argv[0])
+    if resolved is None:
+        return argv
+    return [resolved, *argv[1:]]
+
+
 def _build_dispatch_argv(
     handle: AgentHandle,
     prompt: str,
@@ -703,6 +723,10 @@ async def dispatch_cli(
     t_start = time.monotonic()
 
     env = {**os.environ, **identity_env} if identity_env else None
+
+    # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
+    # spawn on Windows; CreateProcess only finds bare names ending in .exe.
+    argv = _resolve_executable(argv)
 
     proc = await asyncio.create_subprocess_exec(
         *argv,
