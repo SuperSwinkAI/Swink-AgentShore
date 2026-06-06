@@ -18,13 +18,14 @@ from agentshore.cli.commands.init import init
 from agentshore.cli.commands.start import start
 from agentshore.cli.commands.stop import stop
 from agentshore.cli.commands.trusted_ids import trusted_ids
-from agentshore.platform_compat import ensure_windows_event_loop_policy
+from agentshore.platform_compat import ensure_windows_event_loop_policy, force_utf8_stdio
 
 
 @click.group()
 @click.version_option(__version__, prog_name="agentshore")
 def main() -> None:
     """AgentShore -- RL-based multi-agent coding orchestrator."""
+    force_utf8_stdio()
     ensure_windows_event_loop_policy()
 
 

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, TypedDict
 
 from agentshore.ipc.wire import frame
-from agentshore.platform_compat import ensure_windows_event_loop_policy
+from agentshore.platform_compat import ensure_windows_event_loop_policy, force_utf8_stdio
 from agentshore.sidecar import archive_rpc
 from agentshore.sidecar import project as project_rpc
 from agentshore.sidecar.agents import (
@@ -1418,6 +1418,7 @@ def _configure_sidecar_logging() -> None:
 
 def run() -> None:
     """Sync entry point. Wraps :func:`serve` against the real stdio streams."""
+    force_utf8_stdio()
     ensure_windows_event_loop_policy()
     _configure_sidecar_logging()
     serve(sys.stdin, sys.stdout)
