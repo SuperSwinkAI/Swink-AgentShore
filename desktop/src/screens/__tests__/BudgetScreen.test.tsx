@@ -168,6 +168,33 @@ describe("BudgetScreen", () => {
     await waitFor(() => expect(screen.getByTestId("start-sentinel")).toBeInTheDocument());
   });
 
+  it("flushes onSave when leaving via Back (rail-style navigation, not Continue)", async () => {
+    // Regression: editing the budget then leaving via the left rail / Back
+    // used to skip onSave entirely, so the change reached localStorage but
+    // never agentshore.yaml. Leaving by any path must persist the selection.
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderScreen({ mode: "capped", total: 300 }, () => {}, onSave);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId("budget-back"));
+
+    // Back navigates to /setup/agents → BudgetScreen unmounts → flush fires.
+    await waitFor(() => expect(screen.getByTestId("agents-sentinel")).toBeInTheDocument());
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ mode: "capped", total: 300 }));
+  });
+
+  it("does not double-save on unmount after a successful Continue", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { unmount } = renderScreen({ mode: "capped", total: 250 }, () => {}, onSave);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId("budget-continue"));
+    await waitFor(() => expect(screen.getByTestId("start-sentinel")).toBeInTheDocument());
+    // Continue already saved once; unmounting must not trigger a second write.
+    unmount();
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces an inline error and stays on screen when onSave rejects", async () => {
     const onSave = vi.fn().mockRejectedValue(new Error("rpc boom"));
     renderScreen({ mode: "capped", total: 200 }, () => {}, onSave);
