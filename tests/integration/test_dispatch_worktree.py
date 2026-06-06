@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -109,6 +110,12 @@ def _write_fake_cli(
     saw plus the ``AGENTSHORE_PROJECT_PATH`` env var, then emits a success
     skill-result on stdout so ``parse_skill_result`` is happy.
     """
+    if sys.platform.startswith("win"):
+        pytest.skip(
+            "fake CLI is a bash script (#!/usr/bin/env bash, pwd, heredocs); "
+            "create_subprocess_exec can't run a .sh on Windows. Worktree cwd/env "
+            "pinning is POSIX-covered; reaper logic is unit-tested cross-platform."
+        )
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
 sentinel="{sentinel_path}"
