@@ -92,6 +92,12 @@ class BudgetConfig:
     enabled: bool = False
     total: float = 0.0
     warning_threshold: float = 0.20
+    # Wall-clock time cap, an independent soft-cap dimension parallel to the
+    # dollar cap above. ``time_enabled`` off ⇒ no wall-clock limit. When on,
+    # ``time_total_minutes`` is validated to 60–4320 (1h–72h). A 20-minute
+    # graceful drain mirrors the dollar reserve; the deadline is the backstop.
+    time_enabled: bool = False
+    time_total_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -365,7 +371,6 @@ class RLConfig:
 @dataclass(frozen=True)
 class SessionConfig:
     max_plays: int | None = None
-    timeout_minutes: int | None = None
     auto_alignment_check_every: int = 5
     auto_archive: bool = True
     archive_dir: str = ".agentshore/archives"

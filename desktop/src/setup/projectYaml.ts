@@ -25,6 +25,10 @@ export interface BudgetHydration {
   /** Dollars from ``budget.total``; null when absent or not a finite
    *  non-negative number. */
   totalUsd: number | null;
+  /** ``true`` when ``budget.time_enabled: true`` parsed cleanly. */
+  timeEnabled: boolean;
+  /** Minutes from ``budget.time_total_minutes``; null when absent/invalid. */
+  timeMinutes: number | null;
 }
 
 export interface TimelapseHydration {
@@ -142,6 +146,8 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
   let budgetSeen = false;
   let budgetEnabled = false;
   let budgetTotal: number | null = null;
+  let budgetTimeEnabled = false;
+  let budgetTimeMinutes: number | null = null;
   let timelapseSeen = false;
   let timelapseEnabled = false;
   let timelapseInstalled = false;
@@ -218,6 +224,18 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
           budgetTotal = n;
           budgetSeen = true;
         }
+      } else if (line.key === "time_enabled") {
+        const v = asBool(line.value);
+        if (v !== null) {
+          budgetTimeEnabled = v;
+          budgetSeen = true;
+        }
+      } else if (line.key === "time_total_minutes" && line.value !== null) {
+        const n = Number.parseInt(line.value, 10);
+        if (Number.isFinite(n) && n >= 0) {
+          budgetTimeMinutes = n;
+          budgetSeen = true;
+        }
       }
       continue;
     }
@@ -254,6 +272,8 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     result.budget = {
       enabled: budgetEnabled,
       totalUsd: budgetTotal,
+      timeEnabled: budgetTimeEnabled,
+      timeMinutes: budgetTimeMinutes,
     };
   }
 
@@ -273,17 +293,24 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
  * of localStorage state. Returns ``null`` when the input has nothing
  * actionable (the caller should keep its current value).
  */
-export function budgetHydrationToSelection(
-  hydration: BudgetHydration | null,
-): { mode: "capped" | "unlimited"; total: number } | null {
+export function budgetHydrationToSelection(hydration: BudgetHydration | null): {
+  mode: "capped" | "unlimited";
+  total: number;
+  timeMode: "capped" | "unlimited";
+  timeMinutes: number;
+} | null {
   if (hydration === null) return null;
-  if (hydration.enabled) {
-    // total <= 0 is invalid for an enabled budget (the backend enforces
-    // MIN_ENABLED_BUDGET_USD=20). Surface enabled but let the screen
-    // clamp the value into the slider's range.
-    return { mode: "capped", total: hydration.totalUsd ?? 0 };
-  }
-  return { mode: "unlimited", total: 0 };
+  // Dollar dimension. total <= 0 is invalid for an enabled budget (the backend
+  // enforces MIN_ENABLED_BUDGET_USD=20). Surface enabled but let the screen
+  // clamp the value into the slider's range.
+  const dollar = hydration.enabled
+    ? { mode: "capped" as const, total: hydration.totalUsd ?? 0 }
+    : { mode: "unlimited" as const, total: 0 };
+  // Time dimension (independent).
+  const time = hydration.timeEnabled
+    ? { timeMode: "capped" as const, timeMinutes: hydration.timeMinutes ?? 0 }
+    : { timeMode: "unlimited" as const, timeMinutes: 0 };
+  return { ...dollar, ...time };
 }
 
 /**
@@ -296,9 +323,22 @@ export function budgetHydrationToSelection(
 export function budgetSelectionToConfig(selection: {
   mode: "capped" | "unlimited";
   total: number;
-}): { enabled: boolean; total: number } {
-  if (selection.mode === "capped") {
-    return { enabled: true, total: selection.total };
-  }
-  return { enabled: false, total: 0.0 };
+  timeMode?: "capped" | "unlimited";
+  timeMinutes?: number;
+}): {
+  enabled: boolean;
+  total: number;
+  time_enabled: boolean;
+  time_total_minutes: number;
+} {
+  const dollar =
+    selection.mode === "capped"
+      ? { enabled: true, total: selection.total }
+      : { enabled: false, total: 0.0 };
+  const timeCapped = selection.timeMode === "capped";
+  return {
+    ...dollar,
+    time_enabled: timeCapped,
+    time_total_minutes: timeCapped ? (selection.timeMinutes ?? 0) : 0,
+  };
 }

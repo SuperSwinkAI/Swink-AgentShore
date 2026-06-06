@@ -71,6 +71,10 @@ export interface BudgetRpcInput {
   enabled: boolean;
   total: number;
   warning_threshold?: number;
+  // Wall-clock soft cap (independent of the dollar cap). Optional; the sidecar
+  // defaults both to off when omitted. Validated to 60–4320 when time_enabled.
+  time_enabled?: boolean;
+  time_total_minutes?: number;
 }
 
 export interface BudgetRpcResult {
@@ -78,6 +82,8 @@ export interface BudgetRpcResult {
     enabled: boolean;
     total: number;
     warning_threshold: number;
+    time_enabled: boolean;
+    time_total_minutes: number;
   };
   yaml_path: string;
 }

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.config.models import BudgetConfig
     from agentshore.core import Orchestrator
 
 _logger = structlog.get_logger("agentshore.cli")
@@ -122,7 +123,7 @@ def _launch_dashboard_background(
     ipc_endpoint: object,
     session_id: str,
     seed: str | None,
-    budget: float | None,
+    budget_cfg: BudgetConfig,
     policy_mode: PolicyMode,
     policy: str | None,
     strict: bool | None,
@@ -164,10 +165,17 @@ def _launch_dashboard_background(
         cmd.extend(["--socket", str(endpoint.path)])
     else:
         cmd.extend(["--ipc-host", endpoint.host, "--ipc-port", str(endpoint.port)])
-    if budget is not None:
-        cmd.extend(["--budget", str(budget)])
+    # Reproduce the parent's resolved soft caps on the detached orchestrator.
+    # The child re-reads the same agentshore.yaml (via --config), so explicit
+    # flags here only need to pin the resolved dimensions: both off → --unlimited;
+    # otherwise --budget / --time for whichever dimension is enabled.
+    if not budget_cfg.enabled and not budget_cfg.time_enabled:
+        cmd.append("--unlimited")
     else:
-        cmd.append("--no-budget")
+        if budget_cfg.enabled:
+            cmd.extend(["--budget", str(budget_cfg.total)])
+        if budget_cfg.time_enabled:
+            cmd.extend(["--time", f"{budget_cfg.time_total_minutes}m"])
     if seed:
         cmd.extend(["--seed", seed])
     cmd.extend(["--policy-mode", policy_mode.value])

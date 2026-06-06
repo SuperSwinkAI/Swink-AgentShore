@@ -81,7 +81,12 @@ export function persistedSetupExists(
  * caller is expected to skip the set_budget round-trip in that case and
  * fall back to whatever ``agentshore.yaml`` already records.
  */
-export function readPersistedBudget(): { mode: "capped" | "unlimited"; total: number } | null {
+export function readPersistedBudget(): {
+  mode: "capped" | "unlimited";
+  total: number;
+  timeMode: "capped" | "unlimited";
+  timeMinutes: number;
+} | null {
   if (typeof localStorage === "undefined") return null;
   try {
     const raw = localStorage.getItem(SETUP_STORAGE_KEY);
@@ -102,7 +107,14 @@ export function readPersistedBudget(): { mode: "capped" | "unlimited"; total: nu
       typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw >= 0
         ? totalRaw
         : 0;
-    return { mode, total };
+    // Time dimension. Absent on older snapshots — default to unlimited.
+    const timeMode = v.timeMode === "capped" ? "capped" : "unlimited";
+    const timeMinutesRaw = v.timeMinutes;
+    const timeMinutes =
+      typeof timeMinutesRaw === "number" && Number.isFinite(timeMinutesRaw) && timeMinutesRaw >= 0
+        ? timeMinutesRaw
+        : 0;
+    return { mode, total, timeMode, timeMinutes };
   } catch {
     return null;
   }
