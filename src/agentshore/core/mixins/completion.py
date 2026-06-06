@@ -1406,10 +1406,19 @@ class CompletionProcessor:
             await self._ensure_ssh_key_fresh()
 
     async def _ensure_ssh_key_fresh(self) -> None:
-        """Re-check the SSH signing key periodically so merge_pr doesn't fail."""
-        try:
-            from agentshore.core.git_safety import ensure_ssh_signing_key_loaded
+        """Re-check the SSH signing key periodically so merge_pr doesn't fail.
 
+        No-op when the repo doesn't SSH-sign commits — there is no key to keep
+        fresh, and warning about it would be a false alarm.
+        """
+        try:
+            from agentshore.core.git_safety import (
+                ensure_ssh_signing_key_loaded,
+                ssh_signing_enabled,
+            )
+
+            if not await asyncio.to_thread(ssh_signing_enabled, self._repo_root):
+                return
             loaded, detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
             if not loaded:
                 _logger.warning("ssh_signing_key_refresh_failed", detail=detail)

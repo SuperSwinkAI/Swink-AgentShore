@@ -27,6 +27,7 @@ from agentshore.core.git_safety import (
     find_path_escape_siblings,
     resolve_default_branch,
     restore_default_branch,
+    ssh_signing_enabled,
     ssh_signing_setup_hint,
     untrack_ignored_entries,
 )
@@ -490,19 +491,22 @@ async def _phase_git_safety_sweep(
                 untracked=untracked,
             )
 
-        ssh_loaded, ssh_detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
-        if ssh_loaded:
-            _logger.info("ssh_signing_key_loaded", session_id=sid, detail=ssh_detail)
-        else:
-            _logger.warning(
-                "ssh_signing_key_not_loaded",
-                session_id=sid,
-                detail=ssh_detail,
-                note=(
-                    "merge_pr plays will fail with 'ssh-signing-key-not-loaded'. "
-                    f"Run: {ssh_signing_setup_hint()}"
-                ),
-            )
+        # Only relevant when the repo actually SSH-signs commits — otherwise
+        # the empty-agent warning is a false alarm (see desktop-l7i follow-up).
+        if await asyncio.to_thread(ssh_signing_enabled, repo_root):
+            ssh_loaded, ssh_detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
+            if ssh_loaded:
+                _logger.info("ssh_signing_key_loaded", session_id=sid, detail=ssh_detail)
+            else:
+                _logger.warning(
+                    "ssh_signing_key_not_loaded",
+                    session_id=sid,
+                    detail=ssh_detail,
+                    note=(
+                        "merge_pr plays will fail with 'ssh-signing-key-not-loaded'. "
+                        f"Run: {ssh_signing_setup_hint()}"
+                    ),
+                )
 
         default_branch, assumed = await asyncio.to_thread(resolve_default_branch, repo_root)
         orch._main_repo.default_branch = default_branch

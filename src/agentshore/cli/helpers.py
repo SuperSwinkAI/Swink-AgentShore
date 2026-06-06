@@ -103,15 +103,24 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
     return True, first_line
 
 
-def report_ssh_signing_status() -> bool:
+def report_ssh_signing_status(repo_root: Path) -> bool:
     """Print SSH-signing-key status with platform-correct fix guidance.
 
     Shared by ``agentshore init`` (so a missing key surfaces at setup, which
-    always precedes a session) and session bootstrap. Returns True when a key
-    is loaded. Non-fatal: identity-configured runs sign commits, so an empty
-    agent would fail merge_pr plays mid-session — but we warn rather than block.
+    always precedes a session) and session bootstrap. Returns True when signing
+    is not required or a key is loaded; False only when SSH signing is enabled
+    for the repo but no key is loaded.
+
+    The ssh-add check only runs when the repo actually SSH-signs commits
+    (``commit.gpgsign`` + ``gpg.format == ssh``). Repos that commit unsigned —
+    the common case, and every Windows box without a signing setup — get a
+    quiet one-liner instead of a false-alarm warning. Non-fatal either way.
     """
-    from agentshore.core.git_safety import ssh_signing_setup_hint
+    from agentshore.core.git_safety import ssh_signing_enabled, ssh_signing_setup_hint
+
+    if not ssh_signing_enabled(repo_root):
+        click.echo("SSH signing: not configured (commits will be unsigned)")
+        return True
 
     loaded, detail = _check_ssh_signing_key_loaded()
     if loaded:

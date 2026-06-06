@@ -364,7 +364,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     # ssh-agent means merge_pr plays will fail mid-session with
     # 'ssh-signing-key-not-loaded' (observed as 3 failures + 1 false-positive
     # loop_detected).
-    report_ssh_signing_status()
+    report_ssh_signing_status(repo_root)
     click.echo()
 
     blocked_repo_access = [r for r in repo_access_rows if not r.ok]
