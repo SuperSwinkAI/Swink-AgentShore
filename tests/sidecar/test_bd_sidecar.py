@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,9 +49,15 @@ def test_build_bd_sidecar_rejects_missing_binary(capsys: pytest.CaptureFixture[s
         build_bd_sidecar.main(["--bd", "/no/such/path"])
 
     captured = capsys.readouterr()
-    assert "/no/such/path" in captured.err
+    # The script prints the resolved absolute path; on Windows that becomes
+    # e.g. D:\no\such\path, so compare against the same resolution.
+    assert str(Path("/no/such/path").resolve()) in captured.err
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="no POSIX exec bit on Windows; os.access(X_OK) is True for any readable file",
+)
 def test_build_bd_sidecar_rejects_non_executable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

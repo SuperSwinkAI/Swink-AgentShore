@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,8 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 @pytest.fixture
 def parent_with_escape(tmp_path: Path) -> tuple[Path, Path]:
     """Parent dir with a healthy project + a backslash-space leaked sibling."""
+    if sys.platform.startswith("win"):
+        pytest.skip("a backslash in a filename is impossible on Windows ('\\' is a path separator)")
     parent = tmp_path / "Development"
     parent.mkdir()
     project = parent / "example-repo"

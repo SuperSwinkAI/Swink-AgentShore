@@ -30,10 +30,14 @@ PACKAGING_DIR = Path(__file__).resolve().parent
 DEFAULT_DIST = PACKAGING_DIR / "dist"
 
 
-def _target_parts() -> tuple[str, str]:
-    if sys.platform.startswith("win"):
-        return "agentshore-bd", ".exe"
-    return "agentshore-bd", ""
+def _extension_for_triple(triple: str) -> str:
+    """Sidecar binary extension for the *target* triple, not the build host.
+
+    Tauri names the sidecar after the target platform, so a Windows target
+    gets ``.exe`` even when cross-built from Linux/macOS (and a Linux target
+    gets no extension even when built on a Windows host).
+    """
+    return ".exe" if "windows" in triple else ""
 
 
 def _resolve_target_triple() -> str:
@@ -57,7 +61,9 @@ def _validate_source(path: Path) -> Path:
     if not resolved.is_file():
         print(f"bd binary not found: {resolved}", file=sys.stderr)
         raise SystemExit(2)
-    if not os.access(resolved, os.X_OK):
+    # The POSIX exec bit doesn't exist on Windows (os.access(X_OK) is True for
+    # any readable file), so the check is meaningful only off-Windows.
+    if not sys.platform.startswith("win") and not os.access(resolved, os.X_OK):
         print(f"bd binary is not executable: {resolved}", file=sys.stderr)
         raise SystemExit(2)
     return resolved
@@ -93,9 +99,10 @@ def main(argv: list[str] | None = None) -> int:
 
     bundle_dir = args.out / "agentshore-bd"
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    base_name, extension = _target_parts()
-    target = bundle_dir / f"{base_name}{extension}"
     triple = args.target_triple or _resolve_target_triple()
+    base_name = "agentshore-bd"
+    extension = _extension_for_triple(triple)
+    target = bundle_dir / f"{base_name}{extension}"
     target_with_triple = bundle_dir / f"{base_name}-{triple}{extension}"
 
     shutil.copy2(source, target)
