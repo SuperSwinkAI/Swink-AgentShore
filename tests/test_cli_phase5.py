@@ -513,15 +513,19 @@ def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
     """No deadline: the wait polls across many ticks until the process exits."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        # Stays alive for several polls, then the orchestrator exits on its own.
-        patch("os.kill", side_effect=[None, None, None, ProcessLookupError()]) as kill,
+        # Liveness is probed via _process_alive (never os.kill(pid, 0), which is
+        # CTRL_C_EVENT on Windows): alive for several polls, then it exits.
+        patch(
+            "agentshore.session_path._process_alive",
+            side_effect=[True, True, True, False],
+        ) as alive,
         patch("time.sleep") as sleep,
         patch("agentshore.session_path.hard_stop_session") as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
 
     assert clean_exit is True
-    assert kill.call_count == 4
+    assert alive.call_count == 4
     sleep.assert_called_with(_DRAIN_WAIT_POLL_INTERVAL_S)
     hard_stop.assert_not_called()
 
@@ -533,8 +537,8 @@ def test_wait_for_session_exit_escalates_on_keyboard_interrupt(
     """Ctrl+C during the drain wait escalates to a hard stop (the only deadline)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill", side_effect=KeyboardInterrupt),
-        patch("time.sleep"),
+        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("time.sleep", side_effect=KeyboardInterrupt),
         patch("agentshore.session_path.hard_stop_session", return_value=True) as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
@@ -551,8 +555,8 @@ def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
     """When the escalated hard stop can't kill the process, return None (#31)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill", side_effect=KeyboardInterrupt),
-        patch("time.sleep"),
+        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("time.sleep", side_effect=KeyboardInterrupt),
         patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
     ):
         outcome = _wait_for_session_exit(tmp_path)
