@@ -4,11 +4,13 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { SessionContext, type EsrPayload } from "../../services/sessionContext";
 
-const { dashboardMock, listenMock, stopSessionMock } = vi.hoisted(() => ({
-  dashboardMock: vi.fn(),
-  listenMock: vi.fn(),
-  stopSessionMock: vi.fn(),
-}));
+const { dashboardMock, listenMock, stopSessionMock, adjustBudgetDialogMock } =
+  vi.hoisted(() => ({
+    dashboardMock: vi.fn(),
+    listenMock: vi.fn(),
+    stopSessionMock: vi.fn(),
+    adjustBudgetDialogMock: vi.fn(),
+  }));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: listenMock,
@@ -16,6 +18,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("../../services/sessionClient", () => ({
   stopSession: stopSessionMock,
+}));
+
+vi.mock("../../components/AdjustBudgetDialog", () => ({
+  AdjustBudgetDialog: (props: { onClose: () => void }) => {
+    adjustBudgetDialogMock(props);
+    return (
+      <div data-testid="adjust-budget-dialog-sentinel">
+        <button type="button" onClick={props.onClose}>
+          close
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("@agentshore/dashboard", () => ({
@@ -53,17 +68,28 @@ const ESR_PAYLOAD = {
   },
 } satisfies EsrPayload;
 
+/**
+ * Register a listen() mock that routes registered handlers by event name so
+ * the (order-independent) menu:adjust_budget and menu:stop_session effects
+ * can both subscribe. Returns a map from event name to its handler.
+ */
+function installListenRouter(): Map<string, (...args: unknown[]) => unknown> {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const unlisten = vi.fn();
+  listenMock.mockImplementation(
+    async (event: string, handler: (...args: unknown[]) => unknown) => {
+      handlers.set(event, handler);
+      return unlisten;
+    },
+  );
+  return handlers;
+}
+
 describe("SessionDashboardScreen", () => {
   it("stores the ESR payload and routes to the report when File > Stop Session fires", async () => {
-    let menuStopHandler: (() => void | Promise<void>) | null = null;
+    const handlers = installListenRouter();
     const setEsr = vi.fn();
-    const unlisten = vi.fn();
     stopSessionMock.mockResolvedValueOnce(ESR_PAYLOAD);
-    listenMock.mockImplementationOnce(async (event, handler) => {
-      expect(event).toBe("menu:stop_session");
-      menuStopHandler = handler;
-      return unlisten;
-    });
 
     render(
       <SessionContext.Provider
@@ -80,8 +106,14 @@ describe("SessionDashboardScreen", () => {
       >
         <MemoryRouter initialEntries={["/session/dashboard"]}>
           <Routes>
-            <Route path="/session/dashboard" element={<SessionDashboardScreen />} />
-            <Route path="/session/esr" element={<div data-testid="esr-sentinel" />} />
+            <Route
+              path="/session/dashboard"
+              element={<SessionDashboardScreen />}
+            />
+            <Route
+              path="/session/esr"
+              element={<div data-testid="esr-sentinel" />}
+            />
           </Routes>
         </MemoryRouter>
       </SessionContext.Provider>,
@@ -94,13 +126,65 @@ describe("SessionDashboardScreen", () => {
       }),
     );
 
-    await waitFor(() => expect(menuStopHandler).toBeTruthy());
+    await waitFor(() => expect(handlers.get("menu:stop_session")).toBeTruthy());
     await act(async () => {
-      await menuStopHandler?.();
+      await handlers.get("menu:stop_session")?.();
     });
 
     expect(stopSessionMock).toHaveBeenCalledWith({ mode: "drain" });
     expect(setEsr).toHaveBeenCalledWith(ESR_PAYLOAD);
     expect(await screen.findByTestId("esr-sentinel")).toBeInTheDocument();
+  });
+
+  it("opens the Adjust Budget dialog when File > Adjust Budget… fires", async () => {
+    const handlers = installListenRouter();
+
+    render(
+      <SessionContext.Provider
+        value={{
+          dashboardUrl: "http://127.0.0.1:8123/",
+          esr: null,
+          lastProjectPath: "/tmp/proj",
+          sessionStarting: false,
+          setDashboardUrl: () => undefined,
+          setEsr: () => undefined,
+          setLastProjectPath: () => undefined,
+          setSessionStarting: () => undefined,
+        }}
+      >
+        <MemoryRouter initialEntries={["/session/dashboard"]}>
+          <Routes>
+            <Route
+              path="/session/dashboard"
+              element={<SessionDashboardScreen />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    );
+
+    expect(
+      screen.queryByTestId("adjust-budget-dialog-sentinel"),
+    ).not.toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(handlers.get("menu:adjust_budget")).toBeTruthy(),
+    );
+    await act(async () => {
+      handlers.get("menu:adjust_budget")?.();
+    });
+
+    expect(
+      await screen.findByTestId("adjust-budget-dialog-sentinel"),
+    ).toBeInTheDocument();
+    expect(adjustBudgetDialogMock).toHaveBeenCalled();
+
+    // Closing via the dialog's onClose unmounts it.
+    await act(async () => {
+      screen.getByRole("button", { name: "close" }).click();
+    });
+    expect(
+      screen.queryByTestId("adjust-budget-dialog-sentinel"),
+    ).not.toBeInTheDocument();
   });
 });

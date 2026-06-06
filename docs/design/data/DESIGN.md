@@ -27,10 +27,10 @@ Because repo + GitHub are authoritative, `reset_session_scoped_tables()` truncat
 ## Schema
 
 - **Namespace:** `agentshore_dev_v1` (validated at startup; a mismatched or namespace-less DB is rejected).
-- **Schema version:** **3** (seeded by `schema.sql`, pinned by `tests/test_schema_fresh_db.py`).
+- **Schema version:** **4** (seeded by `schema.sql`, pinned by `tests/test_schema_fresh_db.py`).
 - **Tables:** **22** (two meta tables + 20 domain tables), pinned by the same test.
 
-The source of truth is `src/agentshore/data/schema.sql`. Pre-existing databases are carried forward by forward-only, individually idempotent migrations in `src/agentshore/data/migrations/` (`v1→v2`, `v2→v3`), applied after the baseline script during `initialize`.
+The source of truth is `src/agentshore/data/schema.sql`. Pre-existing databases are carried forward by forward-only, individually idempotent migrations in `src/agentshore/data/migrations/`, applied after the baseline script during `initialize`.
 
 ### Table groups by purpose
 

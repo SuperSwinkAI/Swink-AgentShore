@@ -20,7 +20,7 @@ masked when every enabled type/tier already has an idle agent available.
 
 ## Implementation Status
 
-Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, dashboard bridge, and packaged desktop app (version 0.2.1) are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 246-dim (observation version 13). Policy version 5. SQLite schema version 3 with 22 tables.
+Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, dashboard bridge, and packaged desktop app (version 0.2.1) are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 246-dim (observation version 13). Policy version 5. SQLite schema version 4 with 22 tables.
 
 ## Tech Stack
 
@@ -41,90 +41,11 @@ Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestra
 
 ## Architecture Overview
 
-```
-+---------------------------------------------------------------------------+
-|                              Human                                        |
-|            (steers via GH issue triage, specs, overrides)                 |
-+--------+-----------------+-------------------+----------------------------+
-         |                 |                   |
-         v                 v                   v
-+------------------+ +-------------------------+ +---------------------------+
-| Solo Mode (TUI)  | | GitHub                  | | Embedded Mode (IPC)       |
-| +--------------+  | | (shared control surface)| | +---------------------+  |
-| | Textual TUI  |  | |                         | | | Local IPC API       |  |
-| | (terminal UI)|  | | Issues  (work queue)    | | | (NDJSON protocol)   |  |
-| +------+-------+  | | PRs     (code review)   | | +---------+-----------+  |
-+--------+----------+ | Labels  (agentshore/*)     | +------------+-------------+
-         |             +------+--+---------------+              |
-         |                    |  ^                              |
-         |                    |  | AgentShore reads/writes         |
-         +----------+---------+  | issues, PRs, labels          |
-                    |            | via `gh` CLI                  |
-                    v            |                               |
-+---------------------------------------------------------------------------+
-|                          AgentShore Core                                      |
-|                                                                           |
-| +----------------+  +----------------+  +------------------------------+  |
-| | Session        |  | Play           |  | Config Manager               |  |
-| | Manager        +->| Executor       |  | (auto-config, YAML,         |  |
-| +-------+--------+  +-------+--------+  |  hot-reload / SIGHUP)       |  |
-|         |                    |           +------------------------------+  |
-|         v                    v                                             |
-| +----------------+  +----------------+                                    |
-| | RL Engine      |  | Agent          |                                    |
-| | (PyTorch)      +->| Manager        |                                    |
-| +-------+--------+  +-------+--------+                                    |
-|         |                    |                                             |
-|         v                    v                                             |
-| +----------------+  +------------------------------------------------+   |
-| | Metrics        |  | Coding Agents                                   |   |
-| | Collector      |  | +--------+ +-------+ +--------+ +--------+    |   |
-| +-------+--------+  | | Claude | | Codex | | Gemini | | API    |    |   |
-|         |           | | Code   | | CLI   | | CLI    | | (httpx)|    |   |
-|         |           | +--------+ +-------+ +--------+ +--------+    |   |
-|         |           +------------------------------------------------+   |
-|         |                                                                 |
-| +----------------+  +----------------+                                    |
-| | Session        |  | Scope          |                                    |
-| | Knowledge /    |  | Validation     |                                    |
-| | Learnings      |  | (logging-only  |                                    |
-| +----------------+  |  by default)   |                                    |
-|                     +----------------+                                    |
-|                                                                           |
-|         +-------------------------------------------------------------+   |
-|         | Data Layer                                                  |   |
-|         | +----------+ +----------+ +----------+ +-----------------+  |   |
-|         | | SQLite   | | structlog| | Report   | | Error           |  |   |
-|         | | (state)  | | (NDJSON) | | Gen      | | Handler         |  |   |
-|         | +----------+ +----------+ +----------+ +-----------------+  |   |
-|         |                                                             |   |
-|         | +--------------------+ +--------------------+               |   |
-|         | | Session Archives   | | Session Learnings  |               |   |
-|         | | (project indexed)  | | (JSON + SQLite)    |               |   |
-|         | +--------------------+ +--------------------+               |   |
-|         +-------------------------------------------------------------+   |
-+---------------------------------------------------------------------------+
-```
+GitHub and beads are the external control planes. AgentShore observes them, encodes a state vector, lets the PPO selector choose a play, resolves concrete parameters, dispatches the play to a coding agent or internal lifecycle handler, records the result in SQLite, and updates rewards/checkpoints. Solo TUI, dashboard, desktop, and embedded IPC all sit on top of that same core loop.
 
 ### Skill Architecture
 
-AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding skill template that is rendered with minimal parameters (issue number, PR URL, branch name, etc.) and invoked on a coding agent via its CLI. The 15 current skill templates are:
-
-- `agentshore-calibrate-alignment`
-- `agentshore-cleanup`
-- `agentshore-code-review`
-- `agentshore-design-audit`
-- `agentshore-groom-backlog`
-- `agentshore-issue-pickup`
-- `agentshore-merge-pr`
-- `agentshore-prune`
-- `agentshore-reconcile-state`
-- `agentshore-refine-tasks`
-- `agentshore-run-qa`
-- `agentshore-seed-project`
-- `agentshore-systematic-debugging`
-- `agentshore-unblock-pr`
-- `agentshore-write-plan`
+AgentShore dispatches pre-built prompt templates ("skills") to coding agents rather than generating natural-language instructions at runtime. Each skill-backed play has a corresponding template under `src/agentshore/skills/templates/` that is rendered with minimal parameters and invoked on a coding agent via its CLI.
 
 Skills ship as project-scoped files in `.agents/skills/`, making them version-controlled, human-invokable, and portable with the project. AgentShore itself is not an LLM — it is a pure RL agent that selects skills by name and passes parameters. All discovery, reasoning, and code execution happen inside the coding agents.
 
@@ -153,11 +74,9 @@ Skills ship as project-scoped files in `.agents/skills/`, making them version-co
 
 AgentShore operates across three interlocking layers:
 
-```
-BEADS (project graph)          ↔   the "what" — epics, stories, tasks
-GITHUB (conversation)          ↔   mirrored via external_ref="gh-N"
-AGENTSHORE SQLITE (RL state)      ↔   plays, rewards, policy checkpoints
-```
+- **BEADS**: the canonical project graph, including epics, stories, and tasks.
+- **GitHub**: the human conversation surface, mirrored with `external_ref="gh-N"`.
+- **AgentShore SQLite**: session-scoped RL state, including plays, rewards, and policy checkpoints.
 
 SEED_PROJECT is the first play of any new session. It invokes the `agentshore-seed-project` skill, which calls `bd` to build an epic→story→task graph from the open GitHub issues. Subsequent work is driven by `bd ready` output via ISSUE_PICKUP — each ready task maps to a GitHub issue referenced by `external_ref`. GITHUB is therefore the shared conversation layer between the human and AgentShore: the human steers by triaging issues; AgentShore acts by creating/closing issues and PRs; BEADS tracks the structural project graph; and AgentShore SQLite records all RL state (plays, rewards, experience, checkpoints).
 

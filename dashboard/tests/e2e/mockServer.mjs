@@ -63,10 +63,15 @@ const state = {
   ],
   pull_requests: [],
   budget: {
+    enabled: true,
     total_budget: 5,
     spent: 1.24,
     remaining: 3.76,
     estimated_cost_per_play: 0.2,
+    time_enabled: true,
+    time_total_minutes: 1440,
+    time_elapsed_minutes: 120,
+    time_remaining_minutes: 1320,
   },
   trajectory: {
     projected_alignment_at_budget_end: 0.81,

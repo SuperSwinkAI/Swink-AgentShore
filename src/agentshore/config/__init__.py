@@ -118,6 +118,12 @@ budget:
   enabled: false
   total: 0.00
   warning_threshold: 0.20
+  # Wall-clock soft cap (independent of the dollar cap above). When
+  # time_enabled is true, time_total_minutes is validated to 60–4320 (1h–72h).
+  # AgentShore stops assigning new plays 20 minutes before the cap and lets
+  # in-flight agents finish; the deadline is the hard-stop backstop.
+  time_enabled: false
+  time_total_minutes: 0
 
 trusted_ids:
   github_logins: []

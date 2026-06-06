@@ -92,6 +92,12 @@ class BudgetConfig:
     enabled: bool = False
     total: float = 0.0
     warning_threshold: float = 0.20
+    # Wall-clock time cap, an independent soft-cap dimension parallel to the
+    # dollar cap above. ``time_enabled`` off ⇒ no wall-clock limit. When on,
+    # ``time_total_minutes`` is validated to 60–4320 (1h–72h). A 20-minute
+    # graceful drain mirrors the dollar reserve; the deadline is the backstop.
+    time_enabled: bool = False
+    time_total_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -152,11 +158,7 @@ class AgentConfig:
     cost_per_1k_cache_write_input: float | None = None
     cost_per_1k_output: float = 0.015
     timeout: int | None = None
-    # 10-minute silence was killing claude_code/codex/gemini agents mid-think
-    # on v0.15.2 (desktop-awc) — 3 plays of session 3862999e timed out
-    # producing-no-stdout-for-600s. Bumped to 30 minutes so legitimate
-    # long-think + tool-loop windows survive while still detecting
-    # genuinely-hung agents.
+    # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
     max_output_size: int = 10_000_000
     # Per-line buffer size for asyncio.create_subprocess_exec. CLI agents emit
@@ -365,7 +367,6 @@ class RLConfig:
 @dataclass(frozen=True)
 class SessionConfig:
     max_plays: int | None = None
-    timeout_minutes: int | None = None
     auto_alignment_check_every: int = 5
     auto_archive: bool = True
     archive_dir: str = ".agentshore/archives"

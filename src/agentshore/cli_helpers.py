@@ -17,6 +17,9 @@ from agentshore.state import AgentType
 # ---------------------------------------------------------------------------
 
 _DEFAULT_BUDGET: float = 200.0
+# Wall-clock safety default (24h) injected for a fresh/unconfigured session,
+# parallel to the $200 dollar safety default above.
+_DEFAULT_TIME_MINUTES: int = 1440
 _PROJECT_DIR = ".agentshore"
 _AGENT_PRICING_LINES: dict[str, tuple[str, ...]] = {
     "claude_code": (
@@ -181,10 +184,17 @@ def _generate_default_config(
     agents: list[str],
     budget: float | None,
     strict: bool,
+    time_minutes: int | None = None,
 ) -> str:
-    """Render a minimal ``agentshore.yaml`` as a YAML string."""
+    """Render a minimal ``agentshore.yaml`` as a YAML string.
+
+    ``budget`` seeds the dollar soft cap (``None`` ⇒ disabled). ``time_minutes``
+    seeds the independent wall-clock soft cap (``None`` ⇒ disabled).
+    """
     budget_enabled = budget is not None and budget > 0
     budget_total = budget if budget is not None else 0.0
+    time_enabled = time_minutes is not None and time_minutes > 0
+    time_total_minutes = time_minutes if time_minutes is not None else 0
     agent_blocks = []
     for binary in agents:
         agent = "claude_code" if binary == "claude" else binary
@@ -226,6 +236,8 @@ def _generate_default_config(
         "budget:\n"
         f"  enabled: {'true' if budget_enabled else 'false'}\n"
         f"  total: {budget_total:.2f}\n"
+        f"  time_enabled: {'true' if time_enabled else 'false'}\n"
+        f"  time_total_minutes: {time_total_minutes}\n"
         "trusted_ids:\n"
         "  github_logins: []\n"
         "  restrict_issues_to_trusted_authors: false\n"

@@ -64,18 +64,10 @@ PlaySkipReason = Literal[
 
 
 class PlayType(enum.Enum):
-    """The 22 plays in AgentShore's action space (v13).
+    """Canonical 22-slot action space aligned with ``V1_ACTION_ORDER``.
 
-    Slots 14/20/21 (``FUTURE_4``, ``FUTURE_7`` and ``FUTURE_8``) are
-    permanently reserved headroom — never selected (structurally masked), kept
-    so the action space can grow without another mass migration. Slot 14
-    previously hosted browser verification; it was emptied back to reserved
-    headroom in place (no ``ACTION_SPACE_VERSION`` bump — the tensor shape is
-    unchanged per ``src/agentshore/rl/action_space.py:1-7``). Slot 19 was
-    previously ``FUTURE_6``; it now hosts ``PRUNE`` (filled in place, same
-    contract). Slot 11 was previously ``FUTURE_5``; it now hosts
-    ``RECONCILE_STATE``. Idle waits and recovery from an agent's
-    ``rate_limit``/``unknown`` error are owned by the loop, not the policy head.
+    ``FUTURE_4``, ``FUTURE_7``, and ``FUTURE_8`` are reserved and structurally
+    masked.
     """
 
     INSTANTIATE_AGENT = "instantiate_agent"
@@ -399,13 +391,22 @@ class PendingReviewSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class BudgetSnapshot:
-    """Current budget state for display and decision-making."""
+    """Current budget state for display and decision-making.
+
+    Two independent soft-cap dimensions: dollars (``total_budget``/``spent``/
+    ``remaining``) and wall-clock time (``time_*`` fields, in minutes). The time
+    fields are ``None`` when ``time_enabled`` is False (no wall-clock cap).
+    """
 
     total_budget: float
     spent: float
     remaining: float
     estimated_cost_per_play: float
     enabled: bool = True
+    time_enabled: bool = False
+    time_total_minutes: float | None = None
+    time_elapsed_minutes: float | None = None
+    time_remaining_minutes: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentshore.config import RuntimeConfig, SessionConfig
+from agentshore.config import BudgetConfig, RuntimeConfig, SessionConfig
 from agentshore.data.models import PlayRecord
 from agentshore.plays.base import PlayParams
 from agentshore.state import BudgetSnapshot, OrchestratorState, PlayOutcome, PlayType, SessionState
@@ -24,7 +24,15 @@ def _make_state(
     total_budget: float = 20.0,
     last_play_type: PlayType | None = None,
     session_state: SessionState = SessionState.RUNNING,
+    time_enabled: bool = False,
+    time_total_minutes: float | None = None,
+    time_elapsed_minutes: float | None = None,
 ) -> OrchestratorState:
+    time_remaining = (
+        max(0.0, time_total_minutes - time_elapsed_minutes)
+        if time_enabled and time_total_minutes is not None and time_elapsed_minutes is not None
+        else None
+    )
     return OrchestratorState(
         session_id="test",
         session_state=session_state,
@@ -37,6 +45,10 @@ def _make_state(
             spent=total_budget - remaining,
             remaining=remaining,
             estimated_cost_per_play=0.05,
+            time_enabled=time_enabled,
+            time_total_minutes=time_total_minutes if time_enabled else None,
+            time_elapsed_minutes=time_elapsed_minutes if time_enabled else None,
+            time_remaining_minutes=time_remaining,
         ),
     )
 
@@ -161,16 +173,55 @@ async def test_budget_reserve_reached_begins_drain(tmp_path: Path) -> None:
     orch._store.update_session_state.assert_awaited_once_with("test-session", "draining")
 
 
-def test_should_terminate_on_timeout(monkeypatch: Any) -> None:
+@pytest.mark.asyncio
+async def test_time_reserve_not_reached_keeps_running(tmp_path: Path) -> None:
+    cfg = RuntimeConfig()
+    orch = _make_orch(tmp_path, cfg)
+    # 1440-min cap, 100 min elapsed -> well outside the 20-min reserve window.
+    state = _make_state(time_enabled=True, time_total_minutes=1440, time_elapsed_minutes=100)
+
+    result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
+
+    assert result is state
+    assert orch._store.update_session_state.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_time_reserve_reached_begins_drain(tmp_path: Path) -> None:
+    cfg = RuntimeConfig()
+    orch = _make_orch(tmp_path, cfg)
+    # Dollars are fine; time is inside the 20-min reserve (1425 of 1440 elapsed),
+    # so the time dimension alone must trigger the graceful drain.
+    state = _make_state(
+        remaining=10.0,
+        time_enabled=True,
+        time_total_minutes=1440,
+        time_elapsed_minutes=1425,
+    )
+    draining_state = _make_state(session_state=SessionState.DRAINING)
+    orch._state_builder.build_state = AsyncMock(return_value=draining_state)
+
+    result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
+
+    assert result is draining_state
+    assert orch._draining is True
+    assert orch._drain_reason == "time_budget_reserve_reached"
+
+
+def test_should_terminate_on_time_budget(monkeypatch: Any) -> None:
     import dataclasses
 
-    cfg = dataclasses.replace(RuntimeConfig(), session=SessionConfig(timeout_minutes=1))
+    # The wall-clock cap is now a budget dimension; the deadline hard-stop emits
+    # the "time_budget" reason (the former session.timeout_minutes path).
+    cfg = dataclasses.replace(
+        RuntimeConfig(), budget=BudgetConfig(time_enabled=True, time_total_minutes=1)
+    )
     orch = _make_orch(Path("/tmp"), cfg)
-    orch._loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min timeout
+    orch._loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min cap
     state = _make_state()
     should_stop, reason = orch._lifecycle.should_terminate(state)
     assert should_stop
-    assert reason == "timeout"
+    assert reason == "time_budget"
 
 
 def test_compute_trajectory_record_uses_budget_and_graph(tmp_path: Path) -> None:

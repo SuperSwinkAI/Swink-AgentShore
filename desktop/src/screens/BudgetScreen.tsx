@@ -4,19 +4,31 @@ import { useNavigate } from "react-router-dom";
 import styles from "./BudgetScreen.module.css";
 
 /**
- * Session budget surface for the Setup rail (issue #571). The slider's
- * range matches the backend ``BudgetConfig`` constraint:
- * ``MIN_ENABLED_BUDGET_USD = 20.0`` (``src/agentshore/budget.py``). The
- * upper bound is a UX cap — the dataclass itself accepts any non-negative
- * float, so the $1,000 ceiling here is the safe per-session range we let
- * users pick from the desktop. A user who really wants more can still
- * edit ``agentshore.yaml`` directly.
+ * Session budget surface for the Setup rail (issue #571). Two independent
+ * soft caps:
+ *
+ * - **Dollars** — slider range matches the backend ``BudgetConfig`` constraint
+ *   ``MIN_ENABLED_BUDGET_USD = 20.0`` (``src/agentshore/budget.py``). The
+ *   $1,000 ceiling is a UX cap; the dataclass accepts any non-negative float,
+ *   so a user who wants more can edit ``agentshore.yaml`` directly.
+ * - **Time** — wall-clock soft cap, validated 1h–72h by the backend
+ *   (``MIN/MAX_TIME_BUDGET_MINUTES``). AgentShore stops assigning new plays 20
+ *   minutes before the cap and lets in-flight agents finish.
+ *
+ * Each dimension can be capped or Unlimited on its own (you can cap dollars
+ * but leave time unlimited, or vice versa).
  */
 export const BUDGET_MIN_USD = 20;
 export const BUDGET_MAX_USD = 1000;
 export const BUDGET_STEP_USD = 5;
 export const BUDGET_DEFAULT_USD = 200;
 export const BUDGET_DRAIN_RESERVE_USD = 5;
+
+export const TIME_MIN_MINUTES = 60;
+export const TIME_MAX_MINUTES = 4320;
+export const TIME_STEP_MINUTES = 60;
+export const TIME_DEFAULT_MINUTES = 1440;
+export const TIME_DRAIN_RESERVE_MINUTES = 20;
 
 export type BudgetMode = "capped" | "unlimited";
 
@@ -25,6 +37,11 @@ export interface BudgetSelection {
   /** Dollars when ``mode === "capped"``; ignored when unlimited (kept on
    *  state so toggling back to ``capped`` restores the last picked value). */
   total: number;
+  /** Time dimension, independent of the dollar dimension. */
+  timeMode: BudgetMode;
+  /** Minutes when ``timeMode === "capped"``; kept on state when unlimited so
+   *  toggling back to ``capped`` restores the last picked value. */
+  timeMinutes: number;
 }
 
 export interface BudgetScreenProps {
@@ -49,8 +66,23 @@ function clampToSlider(value: number): number {
   return BUDGET_MIN_USD + steps * BUDGET_STEP_USD;
 }
 
+function clampTimeToSlider(value: number): number {
+  if (!Number.isFinite(value)) return TIME_DEFAULT_MINUTES;
+  if (value < TIME_MIN_MINUTES) return TIME_MIN_MINUTES;
+  if (value > TIME_MAX_MINUTES) return TIME_MAX_MINUTES;
+  const steps = Math.round((value - TIME_MIN_MINUTES) / TIME_STEP_MINUTES);
+  return TIME_MIN_MINUTES + steps * TIME_STEP_MINUTES;
+}
+
 function formatDollars(amount: number): string {
   return `$${amount.toLocaleString("en-US")}`;
+}
+
+function formatHours(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (mins === 0) return `${hours}h`;
+  return `${hours}h ${mins}m`;
 }
 
 export function BudgetScreen({
@@ -62,41 +94,64 @@ export function BudgetScreen({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // When mode === "unlimited" we keep ``selection.total`` around so the
-  // slider snaps back to the user's last pick rather than the default
-  // when they re-select Capped. If ``total`` is below the minimum (the
-  // default-state case from App.tsx, which seeds total=0 for unlimited),
-  // surface the typical starting point instead.
+  // When a dimension is unlimited we keep its last picked value around so the
+  // slider snaps back to it (rather than the default) when re-selecting Capped.
+  // If it is below the minimum (the default-state case from App.tsx, which
+  // seeds 0 for unlimited), surface the typical starting point instead.
   const sliderValue =
     selection.total >= BUDGET_MIN_USD ? clampToSlider(selection.total) : BUDGET_DEFAULT_USD;
+  const timeSliderValue =
+    selection.timeMinutes >= TIME_MIN_MINUTES
+      ? clampTimeToSlider(selection.timeMinutes)
+      : TIME_DEFAULT_MINUTES;
+
+  const isCapped = selection.mode === "capped";
+  const isTimeCapped = selection.timeMode === "capped";
 
   const setMode = useCallback(
     (mode: BudgetMode) => {
       if (mode === selection.mode) return;
-      if (mode === "capped") {
-        onChange({ mode: "capped", total: sliderValue });
-      } else {
-        onChange({ mode: "unlimited", total: sliderValue });
-      }
+      onChange({ ...selection, mode, total: sliderValue });
     },
-    [onChange, selection.mode, sliderValue],
+    [onChange, selection, sliderValue],
   );
 
   const onSliderChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const next = clampToSlider(Number.parseInt(event.target.value, 10));
-      onChange({ mode: "capped", total: next });
+      onChange({ ...selection, mode: "capped", total: next });
     },
-    [onChange],
+    [onChange, selection],
   );
 
-  const isCapped = selection.mode === "capped";
+  const setTimeMode = useCallback(
+    (mode: BudgetMode) => {
+      if (mode === selection.timeMode) return;
+      onChange({ ...selection, timeMode: mode, timeMinutes: timeSliderValue });
+    },
+    [onChange, selection, timeSliderValue],
+  );
+
+  const onTimeSliderChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const next = clampTimeToSlider(Number.parseInt(event.target.value, 10));
+      onChange({ ...selection, timeMode: "capped", timeMinutes: next });
+    },
+    [onChange, selection],
+  );
+
   const liveLabel = isCapped ? `Soft cap: ${formatDollars(sliderValue)}` : "Budget: Unlimited";
+  const timeLiveLabel = isTimeCapped
+    ? `Time cap: ${formatHours(timeSliderValue)}`
+    : "Time: Unlimited";
 
   // The canonical selection to persist — identical to onContinue's payload.
-  const persistable: BudgetSelection = isCapped
-    ? { mode: "capped", total: sliderValue }
-    : { mode: "unlimited", total: selection.total };
+  const persistable: BudgetSelection = {
+    mode: isCapped ? "capped" : "unlimited",
+    total: isCapped ? sliderValue : selection.total,
+    timeMode: isTimeCapped ? "capped" : "unlimited",
+    timeMinutes: isTimeCapped ? timeSliderValue : selection.timeMinutes,
+  };
 
   // Flush the budget to agentshore.yaml when the user leaves this screen by
   // ANY exit path. The left rail and Back navigate without clicking Continue,
@@ -132,13 +187,15 @@ export function BudgetScreen({
     setSaving(true);
     setSaveError(null);
     try {
-      // Persist the selection the user actually sees — if mode is capped
-      // the displayed ``sliderValue`` may differ from ``selection.total``
-      // when ``selection.total`` is below the slider floor (issue #571
-      // unlimited→capped default-restore path).
-      const toPersist: BudgetSelection = isCapped
-        ? { mode: "capped", total: sliderValue }
-        : { mode: "unlimited", total: selection.total };
+      // Persist the selection the user actually sees — if a dimension is capped
+      // the displayed slider value may differ from ``selection`` when the
+      // stored value is below the slider floor (unlimited→capped restore path).
+      const toPersist: BudgetSelection = {
+        mode: isCapped ? "capped" : "unlimited",
+        total: isCapped ? sliderValue : selection.total,
+        timeMode: isTimeCapped ? "capped" : "unlimited",
+        timeMinutes: isTimeCapped ? timeSliderValue : selection.timeMinutes,
+      };
       await onSave(toPersist);
       savedByContinueRef.current = true;
       navigate("/setup/start");
@@ -147,20 +204,21 @@ export function BudgetScreen({
     } finally {
       setSaving(false);
     }
-  }, [isCapped, navigate, onSave, selection.total, sliderValue]);
+  }, [isCapped, isTimeCapped, navigate, onSave, selection, sliderValue, timeSliderValue]);
 
   return (
     <main className={styles.screen} data-testid="budget-screen">
       <header className={styles.header}>
         <h1>Budget</h1>
         <p>
-          Set a soft cap for this session. AgentShore stops assigning new plays within{" "}
-          {formatDollars(BUDGET_DRAIN_RESERVE_USD)} of the cap, while agents already working can
-          finish so their work is not wasted. Final spend may land slightly above the cap.
+          Set soft caps for this session. AgentShore stops assigning new plays within{" "}
+          {formatDollars(BUDGET_DRAIN_RESERVE_USD)} of the dollar cap and{" "}
+          {TIME_DRAIN_RESERVE_MINUTES} minutes before the time cap, while agents already working can
+          finish so their work is not wasted. Final spend and runtime may land slightly above a cap.
         </p>
       </header>
 
-      <section className={styles.panel} aria-label="Budget selection">
+      <section className={styles.panel} aria-label="Dollar budget selection">
         <label className={styles.modeRow}>
           <input
             type="radio"
@@ -212,6 +270,61 @@ export function BudgetScreen({
 
         <p className={styles.liveLabel} data-testid="budget-live-label">
           <strong>{liveLabel}</strong>
+        </p>
+      </section>
+
+      <section className={styles.panel} aria-label="Time budget selection">
+        <label className={styles.modeRow}>
+          <input
+            type="radio"
+            name="budget-time-mode"
+            value="capped"
+            checked={isTimeCapped}
+            onChange={() => setTimeMode("capped")}
+            data-testid="budget-time-mode-capped"
+          />
+          <span>Time soft cap</span>
+        </label>
+
+        <div
+          className={`${styles.cappedBlock} ${isTimeCapped ? "" : styles["cappedBlock--disabled"]}`}
+          aria-hidden={!isTimeCapped}
+        >
+          <span className={styles.sliderBounds}>{formatHours(TIME_MIN_MINUTES)}</span>
+          <input
+            type="range"
+            min={TIME_MIN_MINUTES}
+            max={TIME_MAX_MINUTES}
+            step={TIME_STEP_MINUTES}
+            value={timeSliderValue}
+            disabled={!isTimeCapped}
+            onChange={onTimeSliderChange}
+            aria-label="Session time soft cap in hours"
+            data-testid="budget-time-slider"
+            className={styles.slider}
+          />
+          <span className={`${styles.sliderBounds} ${styles.sliderBoundsRight}`}>
+            {formatHours(TIME_MAX_MINUTES)}
+          </span>
+          <span className={styles.valueRow}>
+            <strong data-testid="budget-time-slider-value">{formatHours(timeSliderValue)}</strong>
+          </span>
+        </div>
+
+        <label className={styles.modeRow}>
+          <input
+            type="radio"
+            name="budget-time-mode"
+            value="unlimited"
+            checked={!isTimeCapped}
+            onChange={() => setTimeMode("unlimited")}
+            data-testid="budget-time-mode-unlimited"
+          />
+          <span>Unlimited</span>
+        </label>
+
+        <p className={styles.liveLabel} data-testid="budget-time-live-label">
+          <strong>{timeLiveLabel}</strong>
         </p>
       </section>
 

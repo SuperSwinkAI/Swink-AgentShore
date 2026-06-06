@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 from typing import TYPE_CHECKING, Protocol
 
 import aiosqlite
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
+    from agentshore.config.models import BudgetConfig
     from agentshore.core.context import _DispatchContext
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.snapshots import SnapshotProjector
@@ -140,6 +142,12 @@ class _StateBuilderHost(Protocol):
 
     _cfg: RuntimeConfig
     _extra_budget: float
+    _loop_started_at: float
+
+    def effective_budget_caps(self) -> BudgetConfig:
+        """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        ...
+
     _selector: PlaySelector | None
     _registry: object | None
     _policy_version: str
@@ -492,11 +500,16 @@ class StateBuilder:
             seed_freshness,
             consecutive_nonproductive_by_type,
         ) = self._snapshots.compute_play_recency(data.play_history)
+        loop_started_at = self._host._loop_started_at
+        elapsed_minutes = (
+            (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
+        )
         budget = self._snapshots.build_budget_snapshot(
             total_plays,
             total_cost,
-            budget_cfg=cfg.budget,
+            budget_cfg=self._host.effective_budget_caps(),
             extra_budget=self._host._extra_budget,
+            elapsed_minutes=elapsed_minutes,
         )
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)

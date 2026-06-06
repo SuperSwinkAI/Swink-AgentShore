@@ -48,22 +48,6 @@ Reconcile beads task states against GitHub PR/issue state from `$AGENTSHORE_PROJ
       "new_status": "in_progress",
       "pr_number": 34,
       "pr_state": "open"
-    },
-    {
-      "bead_id": "bd-019",
-      "external_ref": "gh-9",
-      "old_status": "in_progress",
-      "new_status": "closed",
-      "pr_number": 28,
-      "pr_state": "merged"
-    },
-    {
-      "bead_id": "bd-006",
-      "external_ref": "gh-6",
-      "old_status": "in_progress",
-      "new_status": "open",
-      "pr_number": null,
-      "pr_state": null
     }
   ],
   "tasks_unchanged": 12,
@@ -71,4 +55,4 @@ Reconcile beads task states against GitHub PR/issue state from `$AGENTSHORE_PROJ
 }
 ```
 
-`artifacts` includes one entry per epic with non-zero delta (zero-delta epics may be omitted). `tasks_updated` lists every state change with old/new status and triggering PR. `tasks_unchanged` counts tasks skipped because no PR referenced them or state was already correct. On any failure, `success: false` with `error` populated. Never omit the result block.
+`artifacts` includes one entry per epic with non-zero delta (zero-delta epics may be omitted). `tasks_updated` lists every state change with old/new status and triggering PR; `pr_number` / `pr_state` may be null. `tasks_unchanged` counts tasks skipped because no PR referenced them or state was already correct. On any failure, `success: false` with `error` populated. Never omit the result block.

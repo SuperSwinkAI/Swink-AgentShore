@@ -29,21 +29,13 @@ Also snapshot project shape from manifests, lockfiles, version files, CI config,
 
 ### 3e–3g — Slop & quality audit (your judgment, with evidence)
 
-Cover the same known slop categories every run so coverage stays deterministic, but use your judgment for what's actually wrong here — apply concrete project requirements from the docs, ignore vague advice. Read files in full when it matters. Cluster hits by root cause. Every finding carries severity (`critical`/`high`/`medium`/`low`), file/line evidence, impact, and a concrete remediation. No speculative style preferences.
+Cover the known categories every run, but only report concrete problems with
+file/line evidence, impact, severity, and a specific remediation. Cluster by
+root cause; avoid speculative style preferences.
 
-Audit for:
-
-- **Placeholder / stub hallucinations:** unfinished bodies, "not implemented" raises, AI praise debris (`production-ready`, "Add logic here") outside tests.
-- **Insecure defaults & security:** TLS/cert bypass, hardcoded credentials in non-test paths, SQL/shell/path injection, unsafe deserialization, weak crypto, untrusted shell-outs, missing secret-ignore patterns.
-- **Suboptimal patterns:** O(n²) where a set/map suffices, N+1 (DB/API/file I/O in a loop), blocking calls inside async, lazy over-copying, ghost dependencies (heavy lib for a stdlib-covered task).
-- **Error-handling laziness & correctness:** swallowed/empty catches, ignored errors, panics/unwraps outside tests, missing context on rethrows, missing timeout/cancellation/cleanup, edge-case gaps on critical paths (empty/`None`/`Err`, overflow, off-by-one).
-- **Type cowardice:** untyped escape hatches (`any`/`as`/`// @ts-ignore`, `interface{}`, `dynamic`, `unsafe` without a `// SAFETY:` note) where concrete types exist.
-- **Duplication & shape:** near-identical blocks a shared helper would collapse, shadow utilities reimplementing existing `utils/`/`helpers/`, over-abstraction (factory/wrapper for one use), logic bloat / meta-comments restating the next line, property drilling through many layers. Where a clear restructure would delete a whole complexity category (not just rearrange it), include the proposed move in the remediation.
-- **Module size & layer discipline:** source files past ~1500 lines that could split into focused modules; feature-specific logic living in shared/general-purpose paths or the wrong layer when a more central owner exists. Cluster by file; remediation names the extraction or the correct home.
-- **Project & dependency health:** manifest/CI/Docker/runtime drift, stale lockfiles or package-manager refs, vulnerable/unpinned deps, tracked generated artifacts or large binaries, missing license/CODEOWNERS/contributing/security policy where expected.
-- **Tests:** untested or assertion-light public surface, snapshot-only or mock-only tests, flaky sleeps/time, missing negative paths or coverage config, missing critical-path coverage.
-- **CI/CD correctness:** inspect, never edit. Missing build/lint/typecheck/test/security stages, command/runtime drift from docs, secrets exposure, unpinned/over-permissive actions, bypassable release gates.
-- **Documentation accuracy:** README/setup/usage claims vs. actual manifests/CLI/API, stale paths or command names, AGENTS/CLAUDE convention drift.
+Categories: placeholders/stubs, security, inefficient patterns, error handling,
+type escape hatches, duplication/shape, module size/layering, project/dependency
+health, tests, CI/CD correctness, and documentation accuracy.
 
 Drop categories where every hit lives in `legacy/`/`deprecated/`/`old_*` paths.
 
@@ -69,14 +61,9 @@ File substantive issues by impact — dedup first (below) so one root cause is o
     {"type": "lint", "status": "pass", "violations": 0},
     {"type": "typecheck", "status": "fail", "errors": 3},
     {"type": "test", "status": "pass", "passed": 42, "failed": 0, "skipped": 3},
-    {"type": "slop_mechanical", "status": "fail", "violations": 12, "categories": ["n1_trap", "placeholder_comment"]},
-    {"type": "slop_shape", "status": "fail", "findings": 4, "categories": ["logic_bloat", "edge_case_gap"]},
-    {"type": "project_quality_audit", "status": "fail", "findings": 5, "categories": ["security", "docs", "ci"]}
+    {"type": "project_quality_audit", "status": "fail", "findings": 5}
   ],
-  "issues_created": [
-    {"number": 101, "title": "QA: mypy errors in src/auth.py", "url": "...", "label": "agentshore/qa"},
-    {"number": 102, "title": "Slop: n1_trap in src/agents/manager.py", "url": "...", "label": "agentshore/slop"}
-  ],
+  "issues_created": [{"number": 101, "title": "QA: mypy errors", "url": "..."}],
   "issues_existing": [88],
   "tools_detected": ["pytest", "ruff", "mypy", "ruff-format"],
   "tools_skipped": [],

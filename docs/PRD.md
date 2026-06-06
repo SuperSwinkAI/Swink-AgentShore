@@ -6,7 +6,7 @@ AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agen
 
 The RL agent does not write code. It decides *what to do next* and *which agent does it*. The PPO policy drives all direction; deterministic code only backstops invalid plays and never gates with human-in-the-loop.
 
-AgentShore spans three layers: **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface (each issue/PR mirrored via `external_ref="gh-N"`); **AgentShore SQLite** holds session-scoped RL state. The RL stack pins action-space version 13 (22-slot head), observation version 13 (246 features), policy version 5, and SQLite schema version 3.
+AgentShore spans three layers: **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface (each issue/PR mirrored via `external_ref="gh-N"`); **AgentShore SQLite** holds session-scoped RL state. The RL stack pins action-space version 13 (22-slot head), observation version 13 (246 features), policy version 5, and SQLite schema version 4.
 
 > **Design documentation**: [High-Level Design](design/HLD.md) — architecture overview, tech stack, data flow diagrams, and component map linking to all 13 component design docs.
 
@@ -32,15 +32,9 @@ AgentShore spans three layers: **BEADS** is the canonical project graph (epics �
 
 > Design doc: [Agent Manager](design/agents/DESIGN.md)
 
-Coding agents are organized into three cost/capability tiers so the policy can match work to the cheapest sufficient agent. Tiers default to:
+Coding agents are organized into `small`, `medium`, and `large` tiers so the policy can match work to the cheapest sufficient agent. Exact model defaults live in `src/agentshore/agents/model_catalog.py` and `src/agentshore/agents/model_tiers.py`.
 
-| Tier | Claude Code | Codex | Gemini | Typical use |
-|------|-------------|-------|--------|-------------|
-| `small` | Haiku | `gpt-5.4-mini` | `flash-lite` | Cheap mechanical checks — cleanup |
-| `medium` | Sonnet | `gpt-5.3-codex` | `auto` | Default workhorse — implementation, code review, refinement, debugging, groom backlog |
-| `large` | Opus | `gpt-5.5` with high reasoning | `pro` | Heavy validation and project graph work — QA, planning, seed project, design audit, calibrate alignment |
-
-Per-play tier eligibility is a hard constraint enforced at agent selection time. Plays declare which tier band they accept; the parameter resolver only considers idle agents within that band, then PPO learns affinity *within* the band over time.
+Per-play tier eligibility is a hard constraint enforced at agent selection time. The parameter resolver only considers idle agents within the eligible band, then PPO learns affinity *within* the band over time.
 
 Agent expansion follows the same type/tier lifecycle. `Instantiate Agent` is masked when budget, cooldown, auth/model, or slot limits fail, or when every enabled type/tier already has an idle agent. Busy agents do not block spawning another agent of the same type/tier under the configured caps.
 
@@ -48,34 +42,7 @@ Agent expansion follows the same type/tier lifecycle. `Instantiate Agent` is mas
 
 > Design docs: [Play System](design/plays/DESIGN.md) | [RL Engine](design/rl/DESIGN.md) | [Agent Manager](design/agents/DESIGN.md)
 
-Each play is an atomic action the RL agent can select. Plays are the unit of decision-making. The action space has 22 slots (action-space version 13); 19 are active plays and 3 remain permanently reserved/masked (FUTURE_4, FUTURE_7, FUTURE_8).
-
-### Complete Play Table (declaration order, idx 0–21)
-
-| Idx | Play | Tier | Description |
-|-----|------|------|-------------|
-| 0 | **Instantiate Agent** | any | Spin up a new coding agent instance when no idle agent of the requested type/tier is available. |
-| 1 | **Unblock PR** | medium+ | Resolve a PR that is blocked on review feedback, merge conflicts, or CI failures. |
-| 2 | **Write Implementation Plan** | large | Write a detailed implementation plan comment on a GitHub issue before pickup begins. |
-| 3 | **End Agent** | any | Terminate an agent instance and release its resources. |
-| 4 | **Issue Pickup** | medium+ | Fetch highest-priority `bd ready` issue, implement solution, write tests, open PR. |
-| 5 | **Code Review** | medium+ | Review a PR using a *different* GitHub identity than the PR author. May create follow-up GH issues labeled `agentshore/review`. |
-| 6 | **Merge PR** | small/medium | Merge an approved PR into the target branch. Close the associated issue. |
-| 7 | **Run QA** | large | Execute an independent quality assurance cycle. May create bug/regression GH issues labeled `agentshore/qa`. |
-| 8 | **Systematic Debugging** | medium+ | Methodically diagnose and fix a persistent failure across multiple files or components. |
-| 9 | **Design Audit** | large | Audit project design files/specs/PRDs against source/tests/GitHub/beads and create/link issues for unmet requirements. |
-| 10 | **End Session** | any | Gracefully shut down all agents, persist state, and produce a session summary. |
-| 11 | **Reconcile State** | medium+ | Parse recent failure logs and reconcile local state (branches, worktrees, stale locks) to unblock subsequent plays. Armed by prior play failures. |
-| 12 | **Refine Task Breakdown** | medium+ | Re-analyze open issues, decompose oversized ones into sub-issues, re-prioritize based on current state. |
-| 13 | **Cleanup** | small/medium/large | Remove stale branches, tidy transient artifacts, and close obsolete issues. |
-| 14 | **FUTURE_4** | — | Reserved / permanently masked. |
-| 15 | **Take Break** | any | Brief pause between intensive plays to avoid rate limits or context degradation. |
-| 16 | **Groom Backlog** | medium+ | Review and re-prioritize the open issue queue in the beads graph. |
-| 17 | **Seed Project** | large | Call `bd` to build the full epic → story → task hierarchy from seed material; bootstrap the beads graph for a new session. |
-| 18 | **Calibrate Alignment** | large | Measure `global_closure_ratio` against the beads graph and emit an `alignment_delta` signal. |
-| 19 | **Prune** | small/medium/large | Retire stale worktrees, merged/closed branches, and dead beads to clear accumulated infrastructure debt. Armed only when measurable debt exists. |
-| 20 | **FUTURE_7** | — | Reserved / permanently masked. |
-| 21 | **FUTURE_8** | — | Reserved / permanently masked. |
+Each play is an atomic action the RL agent can select. The action space has 22 slots (action-space version 13); 19 are active plays and 3 remain permanently reserved/masked. The canonical declaration order is `PlayType` in `src/agentshore/state.py`; the human-readable contract is [V1_CONTRACT.md](design/V1_CONTRACT.md).
 
 ## Reward Function
 
@@ -95,23 +62,7 @@ Reward weights and shaping knobs are configurable in `agentshore.yaml`.
 
 ## Issue Lifecycle
 
-```
-Seed material (PRD / spec / existing issues / repo with no issues)
-    ↓
-Seed Project (bd builds epic → story → task hierarchy; mirrors to GH issues)
-    ↓
-Refine Task Breakdown (decompose oversized stories → sub-tasks as needed)
-    ↓
-Issue Pickup (bd ready → implement → test → PR)
-    ↓
-Code Review (may create follow-up issues: agentshore/review)
-    ↓
-Run QA (may create bug issues: agentshore/qa)
-    ↓
-Merge PR & close issue
-    ↓
-New issues feed back into the queue; Calibrate Alignment updates global_closure_ratio
-```
+Seed material, existing issues, and design docs become a beads graph through Seed Project. Ready beads drive Issue Pickup, which produces PRs; Code Review, QA, and Merge PR feed new or closed issues back into the same GitHub/beads queue. Calibrate Alignment updates `global_closure_ratio` as the graph changes.
 
 ## Observability & Metrics
 
@@ -143,7 +94,7 @@ The system must track the following to inform RL decisions and enable human over
 
 ## CLI Design
 
-AgentShore ships a flat CLI under a single binary: `agentshore <subcommand>`. Current subcommands: `init`, `start`, `stop`, `status`, `dashboard`, `configure`, `identity`, `archive`, `report`, `train`, `trusted-ids`.
+AgentShore ships a flat CLI under a single binary: `agentshore <subcommand>`. Current registered subcommands are `init`, `start`, `stop`, `dashboard`, `identity`, and `trusted-ids`; `src/agentshore/cli/__init__.py` is authoritative.
 
 **`dev` namespace decision:** A nested `dev` namespace (e.g. `agentshore dev start`) was considered but rejected for v0.1.0. A second vertical (`ops`, `support`) would justify namespacing, but forcing one namespace before it has a sibling adds ceremony without clarity. The CLI stays flat until a second distinct operator surface exists.
 

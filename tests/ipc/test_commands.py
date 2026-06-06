@@ -88,7 +88,7 @@ def test_validate_pause_no_extras_needed() -> None:
 
 
 def test_valid_commands_has_expected_entries() -> None:
-    assert len(VALID_COMMANDS) == 15
+    assert len(VALID_COMMANDS) == 16
 
 
 def test_get_state_is_valid_command() -> None:
@@ -139,3 +139,57 @@ def test_adjust_budget_rejects_negative() -> None:
 
 def test_adjust_budget_accepts_positive_float() -> None:
     validate_command({"command": "adjust_budget", "delta_usd": 5.0})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# add_budget validation tests
+# ---------------------------------------------------------------------------
+
+
+def test_add_budget_is_valid_command() -> None:
+    assert "add_budget" in VALID_COMMANDS
+
+
+def test_add_budget_accepts_dollar_only() -> None:
+    validate_command({"command": "add_budget", "delta_usd": 25.0})  # must not raise
+
+
+def test_add_budget_accepts_minutes_only() -> None:
+    validate_command({"command": "add_budget", "delta_minutes": 30})  # must not raise
+
+
+def test_add_budget_accepts_both() -> None:
+    validate_command(
+        {"command": "add_budget", "delta_usd": 25.0, "delta_minutes": 120}
+    )  # must not raise
+
+
+def test_add_budget_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        validate_command({"command": "add_budget"})
+
+
+def test_add_budget_rejects_non_positive_usd() -> None:
+    with pytest.raises(ValueError, match="delta_usd"):
+        validate_command({"command": "add_budget", "delta_usd": 0})
+
+
+def test_add_budget_rejects_negative_minutes() -> None:
+    with pytest.raises(ValueError, match="delta_minutes"):
+        validate_command({"command": "add_budget", "delta_minutes": -5})
+
+
+def test_add_budget_rejects_nan_usd() -> None:
+    import math
+
+    with pytest.raises(ValueError, match="delta_usd"):
+        validate_command({"command": "add_budget", "delta_usd": math.nan})
+
+
+def test_add_budget_rejects_non_integer_minutes() -> None:
+    with pytest.raises(ValueError, match="whole number of minutes"):
+        validate_command({"command": "add_budget", "delta_minutes": 30.5})
+
+
+def test_add_budget_accepts_integer_valued_float_minutes() -> None:
+    validate_command({"command": "add_budget", "delta_minutes": 30.0})  # must not raise

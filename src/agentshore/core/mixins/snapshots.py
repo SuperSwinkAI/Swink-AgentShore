@@ -375,9 +375,19 @@ class SnapshotProjector:
         *,
         budget_cfg: BudgetConfig,
         extra_budget: float,
+        elapsed_minutes: float,
     ) -> BudgetSnapshot:
         total_budget = budget_cfg.total + extra_budget
         remaining = max(0.0, total_budget - total_cost) if budget_cfg.enabled else float("inf")
+        time_total: float | None = None
+        time_elapsed: float | None = None
+        time_remaining: float | None = None
+        if budget_cfg.time_enabled:
+            total_minutes = float(budget_cfg.time_total_minutes)
+            elapsed = max(0.0, elapsed_minutes)
+            time_total = total_minutes
+            time_elapsed = elapsed
+            time_remaining = max(0.0, total_minutes - elapsed)
         return BudgetSnapshot(
             total_budget=total_budget,
             spent=total_cost,
@@ -387,6 +397,10 @@ class SnapshotProjector:
                 total_cost / total_plays if total_plays > 0 else COLD_START_COST_ESTIMATE
             ),
             enabled=budget_cfg.enabled,
+            time_enabled=budget_cfg.time_enabled,
+            time_total_minutes=time_total,
+            time_elapsed_minutes=time_elapsed,
+            time_remaining_minutes=time_remaining,
         )
 
     @staticmethod
@@ -474,14 +488,7 @@ class SnapshotProjector:
 
     @staticmethod
     def compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
-        """Aggregate full-session play stats for dashboard consumers.
-
-        Non-work plays (``_NON_WORK_PLAY_VALUES``) are filtered out of the
-        user-facing total/success/failure counters. The set is empty after
-        desktop-rni0 (idle waits and recovery are loop-side, not plays);
-        the filter is retained as the canonical seam for future bookkeeping
-        plays.
-        """
+        """Aggregate dashboard play counters, excluding non-work play values."""
         work_plays = [p for p in play_history if p.play_type not in _NON_WORK_PLAY_VALUES]
         # A play row is inserted with a ``success=False`` placeholder at dispatch
         # time (``_prepare_execution_context``) and only updated to its real

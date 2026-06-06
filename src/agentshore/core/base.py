@@ -19,6 +19,7 @@ import collections
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.config.models import BudgetConfig
 from agentshore.core.helpers import _logger
 from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.mixins.completion import CompletionProcessor
@@ -159,6 +160,17 @@ class _OrchestratorBase:
     # can see an alternating no_target/masked spin the masked-only rate misses.
     _recent_play_outcomes: collections.deque[tuple[bool, str]]
     _budget_override: bool
+    # Live budget-cap overrides applied mid-session (Feature B, #41/#42). Each is
+    # ``None`` until a live control RPC/command sets it, in which case it shadows
+    # the corresponding ``_cfg.budget`` field without mutating the frozen config.
+    # ``effective_budget_caps`` resolves overrides → cfg as the single source of
+    # truth read by the snapshot builder and the time hard-stop.
+    # Class-level ``None`` defaults so __new__-bypass test stubs (which skip
+    # __init__) still resolve overrides as "fall through to _cfg.budget".
+    _budget_override_enabled: bool | None = None
+    _budget_override_total: float | None = None
+    _time_override_enabled: bool | None = None
+    _time_override_minutes: int | None = None
     _stop_done: asyncio.Event
     _config_path: Path | None
     # In-memory snapshot of recently-completed plays, used to bridge the SQLite
@@ -306,6 +318,11 @@ class _OrchestratorBase:
         # Retained for IPC compatibility with older feedback responses. Budget
         # reserve drain itself is not bypassable once reached.
         self._budget_override = False
+        # Live mid-session cap overrides (None ⇒ fall through to _cfg.budget).
+        self._budget_override_enabled = None
+        self._budget_override_total = None
+        self._time_override_enabled = None
+        self._time_override_minutes = None
         # Concurrent stop() callers wait on this event; first caller does the cleanup
         self._stop_done = asyncio.Event()
         self._config_path = None
@@ -483,6 +500,38 @@ class _OrchestratorBase:
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
     # ------------------------------------------------------------------
+
+    def effective_budget_caps(self) -> BudgetConfig:
+        """Resolve the live-effective budget caps (overrides shadowing ``_cfg``).
+
+        Single source of truth for the *base* caps (before ``_extra_budget`` is
+        added by the snapshot builder). A live ``set_budget``/``add_*`` call sets
+        the override fields; until then each falls through to ``_cfg.budget``.
+        Returns a fresh frozen ``BudgetConfig`` so the config-immutability
+        invariant is preserved (no in-place mutation of ``_cfg``).
+        """
+        b = self._cfg.budget
+        return BudgetConfig(
+            enabled=(
+                self._budget_override_enabled
+                if self._budget_override_enabled is not None
+                else b.enabled
+            ),
+            total=(
+                self._budget_override_total if self._budget_override_total is not None else b.total
+            ),
+            warning_threshold=b.warning_threshold,
+            time_enabled=(
+                self._time_override_enabled
+                if self._time_override_enabled is not None
+                else b.time_enabled
+            ),
+            time_total_minutes=(
+                self._time_override_minutes
+                if self._time_override_minutes is not None
+                else b.time_total_minutes
+            ),
+        )
 
     def _weights_dir(self) -> Path:
         """Canonical per-project PPO weights directory."""

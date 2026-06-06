@@ -37,6 +37,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -45,6 +46,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -53,6 +55,7 @@ describe("parseProjectYaml", () => {
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -119,6 +122,7 @@ rl:
       targetBranch: null,
       enabledAgents: [],
       identityLogins: [],
+      trustedSources: [],
       budget: null,
       timelapse: null,
       trustedIssueEnforcement: null,
@@ -152,7 +156,12 @@ project:
   target_branch: main
 `;
     const r = parseProjectYaml(yaml);
-    expect(r.budget).toEqual({ enabled: true, totalUsd: 250 });
+    expect(r.budget).toEqual({
+      enabled: true,
+      totalUsd: 250,
+      timeEnabled: false,
+      timeMinutes: null,
+    });
   });
 
   it("returns enabled=false with no total when budget block has only enabled:false", () => {
@@ -160,7 +169,28 @@ project:
   enabled: false
 `;
     const r = parseProjectYaml(yaml);
-    expect(r.budget).toEqual({ enabled: false, totalUsd: null });
+    expect(r.budget).toEqual({
+      enabled: false,
+      totalUsd: null,
+      timeEnabled: false,
+      timeMinutes: null,
+    });
+  });
+
+  it("parses the budget time cap when present", () => {
+    const yaml = `budget:
+  enabled: true
+  total: 100.0
+  time_enabled: true
+  time_total_minutes: 1440
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.budget).toEqual({
+      enabled: true,
+      totalUsd: 100,
+      timeEnabled: true,
+      timeMinutes: 1440,
+    });
   });
 
   it("ignores budget.warning_threshold and other unknown fields", () => {
@@ -216,34 +246,117 @@ describe("parseProjectYaml — trusted_ids.restrict_issues_to_trusted_authors", 
   });
 });
 
+describe("parseProjectYaml — trusted_ids.github_logins", () => {
+  it("parses the github_logins sequence into trustedSources", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - dependabot[bot]
+    - renovate[bot]
+  restrict_issues_to_trusted_authors: true
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.trustedSources).toEqual(["dependabot[bot]", "renovate[bot]"]);
+    // Sibling enforcement flag still parses alongside the list.
+    expect(r.trustedIssueEnforcement).toBe(true);
+  });
+
+  it("canonicalizes (lowercase + trim) and dedupes logins", () => {
+    const yaml = `trusted_ids:
+  github_logins:
+    - "  Example-User  "
+    - example-user
+    - EXAMPLE-USER
+    - OtherUser
+`;
+    expect(parseProjectYaml(yaml).trustedSources).toEqual([
+      "example-user",
+      "otheruser",
+    ]);
+  });
+
+  it("yields empty trustedSources when the block has no github_logins", () => {
+    const yaml = `trusted_ids:
+  restrict_issues_to_trusted_authors: false
+`;
+    expect(parseProjectYaml(yaml).trustedSources).toEqual([]);
+    expect(parseProjectYaml(FULL_YAML).trustedSources).toEqual([]);
+  });
+
+  it("does not bleed list items into other key-based sections", () => {
+    // An identities block following a trusted_ids list must not absorb the
+    // sequence entries as identity keys.
+    const yaml = `trusted_ids:
+  github_logins:
+    - bot-one
+identities:
+  example-user:
+    git_user_name: x
+agents:
+  codex:
+    enabled: true
+`;
+    const r = parseProjectYaml(yaml);
+    expect(r.trustedSources).toEqual(["bot-one"]);
+    expect(r.identityLogins).toEqual(["example-user"]);
+    expect(r.enabledAgents).toEqual(["codex"]);
+  });
+});
+
 describe("budgetHydrationToSelection", () => {
   it("returns null when hydration is null", () => {
     expect(budgetHydrationToSelection(null)).toBeNull();
   });
 
   it("maps enabled=true to mode='capped' with totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: true, totalUsd: 300 })).toEqual({
-      mode: "capped",
-      total: 300,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: true,
+        totalUsd: 300,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "capped", total: 300, timeMode: "unlimited", timeMinutes: 0 });
   });
 
   it("maps enabled=false to mode='unlimited' regardless of totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: false, totalUsd: null })).toEqual({
-      mode: "unlimited",
-      total: 0,
-    });
-    expect(budgetHydrationToSelection({ enabled: false, totalUsd: 50 })).toEqual({
-      mode: "unlimited",
-      total: 0,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: null,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 0 });
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: 50,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 0 });
   });
 
   it("falls back to total=0 when capped hydration has no totalUsd", () => {
-    expect(budgetHydrationToSelection({ enabled: true, totalUsd: null })).toEqual({
-      mode: "capped",
-      total: 0,
-    });
+    expect(
+      budgetHydrationToSelection({
+        enabled: true,
+        totalUsd: null,
+        timeEnabled: false,
+        timeMinutes: null,
+      }),
+    ).toEqual({ mode: "capped", total: 0, timeMode: "unlimited", timeMinutes: 0 });
+  });
+
+  it("maps the time dimension independently", () => {
+    expect(
+      budgetHydrationToSelection({
+        enabled: false,
+        totalUsd: null,
+        timeEnabled: true,
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ mode: "unlimited", total: 0, timeMode: "capped", timeMinutes: 1440 });
   });
 });
 
@@ -268,6 +381,8 @@ describe("budgetSelectionToConfig", () => {
     expect(budgetSelectionToConfig({ mode: "capped", total: 250 })).toEqual({
       enabled: true,
       total: 250,
+      time_enabled: false,
+      time_total_minutes: 0,
     });
   });
 
@@ -275,6 +390,30 @@ describe("budgetSelectionToConfig", () => {
     expect(budgetSelectionToConfig({ mode: "unlimited", total: 250 })).toEqual({
       enabled: false,
       total: 0,
+      time_enabled: false,
+      time_total_minutes: 0,
     });
+  });
+
+  it("serializes the time dimension independently", () => {
+    expect(
+      budgetSelectionToConfig({
+        mode: "capped",
+        total: 250,
+        timeMode: "capped",
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ enabled: true, total: 250, time_enabled: true, time_total_minutes: 1440 });
+  });
+
+  it("treats capped dollars + unlimited time as time disabled", () => {
+    expect(
+      budgetSelectionToConfig({
+        mode: "capped",
+        total: 250,
+        timeMode: "unlimited",
+        timeMinutes: 1440,
+      }),
+    ).toEqual({ enabled: true, total: 250, time_enabled: false, time_total_minutes: 0 });
   });
 });

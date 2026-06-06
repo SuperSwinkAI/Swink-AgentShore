@@ -16,7 +16,7 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 
 **Defaults live in YAML, not just dataclasses.** The built-in default config is a YAML string parsed through the exact same path as a user file, so `agentshore start` runs with no config file and the no-file path can never diverge from the on-disk-file path. `agentshore init` writes that same YAML for the user to edit.
 
-**Tolerant of legacy keys, loud about them.** Removed fields are kept in the raw TypedDicts so old YAML still parses, but the parser ignores them and emits a `DeprecationWarning` (e.g. `agent_spawn.max_total`, `rl.deterministic`). This avoids hard-breaking existing project files on upgrade while steering users to the current schema.
+**Tolerant of legacy keys, loud about them.** Removed fields are kept in the raw TypedDicts so old YAML still parses, but the parser ignores them and emits a `DeprecationWarning`. This avoids hard-breaking existing project files on upgrade while steering users to the current schema.
 
 ## Files And Precedence
 
@@ -83,7 +83,15 @@ The former global `max_total` cap was removed: per-(type, tier) gating is suffic
 
 ## Budget
 
-Budget enforcement is opt-in: `budget.enabled: false` disables the cap even when `budget.total` is set. When enabled, `budget.total` must be at least `MIN_ENABLED_BUDGET_USD` (validated at load). `warning_threshold` is the remaining-fraction trigger and must be in `[0, 1]`. CLI `--no-budget` disables enforcement for a single run.
+A session is bounded by two **independent soft caps** under the `budget` block — dollars and wall-clock time. Either cap reaching its reserve triggers the same graceful drain (stop assigning new plays, let in-flight agents finish); the cap itself is the hard-stop backstop.
+
+**Dollar cap.** `budget.enabled: false` disables the cap even when `budget.total` is set. When enabled, `budget.total` must be at least `MIN_ENABLED_BUDGET_USD` (validated at load). Drain begins at a `BUDGET_DRAIN_RESERVE_USD` ($5) reserve. `warning_threshold` is the remaining-fraction trigger and must be in `[0, 1]`.
+
+**Time cap.** `budget.time_enabled: false` disables the wall-clock cap. When enabled, `budget.time_total_minutes` must be in `[MIN_TIME_BUDGET_MINUTES, MAX_TIME_BUDGET_MINUTES]` = 60–4320 (1h–72h). Drain begins `TIME_BUDGET_DRAIN_RESERVE_MINUTES` (20 min) before the deadline; the deadline hard-stop emits a `time_budget` reason. This is a deterministic backstop only — it is **not** in the PPO observation vector (observation version unchanged). The former `session.timeout_minutes` field is migrated onto this one (a single wall-clock enforcement path).
+
+**CLI.** `--budget <$>` and `--time <DURATION>` (e.g. `24h`, `90m`, bare minutes) set each cap; `--unlimited` disables both. A "naked" `agentshore start` uses `agentshore.yaml` if a budget is configured there; on a fresh/unconfigured project it falls back to the $200 + 24h safety defaults, and naming one dimension on the CLI suppresses the other's bare default.
+
+**Live mid-session control (Feature B).** Both caps can change on a *running* session without a restart, applied within one tick and persisted back to `agentshore.yaml` so they survive one. The shared core lives on the orchestrator: `set_budget` (absolute-set, per-dimension enable, incl. "unlimited") and `add_budget` (additive top-up / time extension); `effective_budget_caps()` resolves live overrides over the frozen `_cfg.budget` as the single source of truth (config stays immutable — overrides shadow it). Raising a cap that moves the session back outside its reserve resumes a budget pause or reverses an in-progress reserve drain. Two thin transports reach the same core: the **sidecar JSON-RPC** `session.set_budget` / `session.get_budget` (desktop "Adjust Budget…" dialog, absolute-set) and the **NDJSON line-IPC** `add_budget` command behind `agentshore add-budget --budget N --time DUR` (additive). Bounds are validated client- and server-side (the same $20 / 1h–72h rules as load). See `docs/design/ipc/DESIGN.md` for the wire formats.
 
 ## RL
 
