@@ -1327,6 +1327,12 @@ def _safe_int(value: object) -> int:
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
     """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
+    if not hasattr(os, "killpg"):
+        # Windows: no process groups. ``start_new_session=True`` is a no-op
+        # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
+        # absent entirely. Tear the tree down by PID via taskkill instead.
+        await _kill_process_windows(proc, agent_id)
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, TypeError):
@@ -1373,6 +1379,45 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
         except ProcessLookupError:
             pass
         _close_process_transport(proc)
+
+
+async def _kill_process_windows(proc: asyncio.subprocess.Process, agent_id: str) -> None:
+    """Terminate a process tree on Windows via ``taskkill`` (no process groups)."""
+    if proc.pid is None:
+        # Subprocess never spawned — nothing to kill.
+        _close_process_transport(proc)
+        return
+
+    async def _taskkill(*, force: bool) -> int:
+        args = ["taskkill", "/PID", str(proc.pid), "/T"]
+        if force:
+            args.append("/F")
+        tk = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await tk.wait()
+        return tk.returncode if tk.returncode is not None else 0
+
+    returncode = await _taskkill(force=False)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+    except TimeoutError:
+        _logger.warning("sending_sigkill", agent_id=agent_id)
+        returncode = await _taskkill(force=True)
+        await proc.wait()
+
+    if returncode != 0:
+        # taskkill fails for already-dead PIDs or privilege reasons. Surface
+        # it, but never raise — teardown must always complete.
+        _logger.warning(
+            "taskkill_failed",
+            agent_id=agent_id,
+            pid=proc.pid,
+            returncode=returncode,
+        )
+    _close_process_transport(proc)
 
 
 def _close_streams(proc: asyncio.subprocess.Process) -> None:
