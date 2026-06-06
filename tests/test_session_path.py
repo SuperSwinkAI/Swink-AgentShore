@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import socket
+import sys
 import tempfile
 from pathlib import Path
 
@@ -13,6 +14,8 @@ import agentshore.session_path as sp
 
 
 def _create_unix_socket_file(path: Path) -> None:
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX sockets are POSIX-only")
     path.parent.mkdir(parents=True, exist_ok=True)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -24,7 +27,10 @@ def _create_unix_socket_file(path: Path) -> None:
 @pytest.fixture(autouse=True)
 def isolated_sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect session metadata into a temp directory."""
-    sessions_dir = Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+    # POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char
+    # sun_path limit (macOS). Windows has neither AF_UNIX nor /tmp.
+    tmp_root = None if sys.platform.startswith("win") else "/tmp"
+    sessions_dir = Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=tmp_root))
     monkeypatch.setattr(sp, "_SESSIONS_DIR", sessions_dir)
     try:
         yield sessions_dir
@@ -134,6 +140,7 @@ def test_cleanup_session_removes_pid_and_socket(tmp_path: Path) -> None:
     assert not socket_path.exists()
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only")
 def test_cleanup_session_preserves_socket_with_live_listener(tmp_path: Path) -> None:
     """Regression for desktop-6e1.
 
@@ -454,6 +461,35 @@ def test_stop_session_uses_taskkill_on_windows(
     assert sp.hard_stop_session(project) is True
     assert ["taskkill", "/PID", "7001", "/T"] in calls
     assert ["taskkill", "/PID", "7001", "/T", "/F"] in calls
+
+
+def test_is_unix_socket_path_returns_false_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows there are no Unix sockets, so this must return False, not raise."""
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+
+    existing = tmp_path / "plain_file"
+    existing.write_text("not a socket", encoding="utf-8")
+    missing = tmp_path / "does_not_exist"
+
+    assert sp.is_unix_socket_path(existing) is False
+    assert sp.is_unix_socket_path(missing) is False
+
+
+def test_has_live_unix_socket_listener_returns_false_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows ``socket.AF_UNIX`` is absent; the helper must short-circuit to
+    False before touching it rather than raising ``AttributeError``."""
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+
+    existing = tmp_path / "plain_file"
+    existing.write_text("not a socket", encoding="utf-8")
+    missing = tmp_path / "does_not_exist"
+
+    assert sp._has_live_unix_socket_listener(existing) is False
+    assert sp._has_live_unix_socket_listener(missing) is False
 
 
 def test_project_hash_differs_for_different_paths(tmp_path: Path) -> None:
