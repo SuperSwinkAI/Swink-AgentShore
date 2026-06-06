@@ -59,7 +59,7 @@ class GroomBacklogPlay(SkillBackedPlay):
 
     @property
     def capability(self) -> str | None:
-        return "can_create_issues"
+        return "can_run_skill"
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         reasons = super().preconditions(state)
@@ -67,7 +67,7 @@ class GroomBacklogPlay(SkillBackedPlay):
             return reasons
         # Evaluate bypass conditions BEFORE the capability gate so that urgent
         # deadlock-recovery scenarios are not silently masked when the only idle
-        # agent happens to lack can_create_issues.
+        # agent happens to lack can_run_skill.
         #
         # Bypass 1: No open GH issues but ready beads tasks have no issue links —
         #   without this bypass the session spins on selector_idle forever

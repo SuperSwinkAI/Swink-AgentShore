@@ -93,7 +93,7 @@ def test_play_identity() -> None:
     play = DesignAuditPlay()
     assert play.play_type == PlayType.DESIGN_AUDIT
     assert play.skill_name == "agentshore-design-audit"
-    assert play.capability == "can_create_issues"
+    assert play.capability == "can_run_skill"
 
 
 def test_preconditions_block_when_graph_missing() -> None:
@@ -113,7 +113,7 @@ def test_preconditions_block_without_idle_issue_creator() -> None:
         _state(graph=_graph_with_epics(), agents=[_idle_agent(status=AgentStatus.BUSY)])
     )
     assert errors
-    assert any("can_create_issues" in error.text for error in errors)
+    assert any("can_run_skill" in error.text for error in errors)
 
 
 def test_preconditions_block_when_in_flight() -> None:
