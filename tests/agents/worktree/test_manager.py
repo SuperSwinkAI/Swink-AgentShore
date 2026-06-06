@@ -337,11 +337,12 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
         base_ref="origin/HEAD",
         head_sha=None,
     )
-    # Sanity: it's registered before finalize.
+    # Sanity: it's registered before finalize. git prints forward-slash paths
+    # (even on Windows), so compare in posix form rather than the native str.
     listing_before = subprocess.check_output(
         ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
     )
-    assert str(src) in listing_before
+    assert src.as_posix() in listing_before
 
     wm = _make_manager(store, main_repo, worktree_root)
     alloc = WorktreeAllocation(
