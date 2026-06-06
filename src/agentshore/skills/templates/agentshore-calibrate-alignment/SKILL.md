@@ -24,6 +24,8 @@ Reconcile beads task states against GitHub PR/issue state from `$AGENTSHORE_PROJ
 
 **Forbidden:** creating, modifying, deleting, or renaming `.github/workflows/**` or any CI/CD config; source/test/config files; `package.json`, `pyproject.toml`, or any dependency manifest; GitHub issues (no create/edit/close); `git worktree add/remove/prune`. This skill updates beads task states only — nothing else.
 
+**Persistence is local — never push.** Your `bd close`/`bd update` calls auto-commit to the **local** beads DB; that local state is the authoritative result of this play and is all the next play reads. AgentShore does not require or configure a Dolt remote and never pushes one. Treat any Dolt sync/remote notice `bd` prints — e.g. `bd dolt push skipped because no Dolt remote`, "no remote configured", "could not push" — as an expected, environmental no-op. **Do not run `bd dolt push` yourself, and never set `success: false` because of a Dolt push/sync/remote message.** `success` is determined *solely* by the task-state reconciliation and the after-snapshot validation above.
+
 **Report — one fenced JSON block, nothing else:**
 
 ```json
