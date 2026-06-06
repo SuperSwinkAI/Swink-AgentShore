@@ -103,6 +103,30 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
     return True, first_line
 
 
+def report_ssh_signing_status() -> bool:
+    """Print SSH-signing-key status with platform-correct fix guidance.
+
+    Shared by ``agentshore init`` (so a missing key surfaces at setup, which
+    always precedes a session) and session bootstrap. Returns True when a key
+    is loaded. Non-fatal: identity-configured runs sign commits, so an empty
+    agent would fail merge_pr plays mid-session — but we warn rather than block.
+    """
+    from agentshore.core.git_safety import ssh_signing_setup_hint
+
+    loaded, detail = _check_ssh_signing_key_loaded()
+    if loaded:
+        click.echo(f"SSH signing key: ok ({detail})")
+        return True
+    click.echo("⚠ SSH signing key: NOT LOADED")
+    click.echo(f"  Detail: {detail}")
+    click.echo(f"  Fix: {ssh_signing_setup_hint()}")
+    click.echo(
+        "  Without it, merge_pr plays will fail with 'ssh-signing-key-not-loaded' "
+        "and PPO will trip loop_detected (see desktop-l7i)."
+    )
+    return False
+
+
 def _resolve_policy_mode_override(
     *, policy_mode: str | None, legacy_deterministic: bool
 ) -> PolicyMode | None:

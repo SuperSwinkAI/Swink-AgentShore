@@ -19,9 +19,9 @@ import click
 from agentshore import cli_helpers
 from agentshore.budget import MIN_ENABLED_BUDGET_USD
 from agentshore.cli.helpers import (
-    _check_ssh_signing_key_loaded,
     _display_run_mode,
     _resolve_seed_input_path,
+    report_ssh_signing_status,
 )
 from agentshore.cli_helpers import _PROJECT_DIR
 from agentshore.errors import OrchestratorError
@@ -364,21 +364,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     # ssh-agent means merge_pr plays will fail mid-session with
     # 'ssh-signing-key-not-loaded' (observed as 3 failures + 1 false-positive
     # loop_detected).
-    ssh_loaded, ssh_detail = _check_ssh_signing_key_loaded()
-    if ssh_loaded:
-        click.echo(f"SSH signing key: ok ({ssh_detail})")
-    else:
-        click.echo("⚠ SSH signing key: NOT LOADED")
-        click.echo(f"  Detail: {ssh_detail}")
-        click.echo(
-            "  Fix: run `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` "
-            "in your terminal before starting AgentShore."
-        )
-        click.echo(
-            "  Without it, merge_pr plays will fail with "
-            "'ssh-signing-key-not-loaded' and PPO will trip loop_detected "
-            "(see desktop-l7i)."
-        )
+    report_ssh_signing_status()
     click.echo()
 
     blocked_repo_access = [r for r in repo_access_rows if not r.ok]
