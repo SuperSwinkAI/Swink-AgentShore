@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,10 @@ from agentshore.config.models import (
     PolicyMode,
     RuntimeConfig,
 )
+
+# POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char sun_path
+# limit (macOS). Windows has neither AF_UNIX nor /tmp -> use the system temp.
+_TMP_ROOT = None if sys.platform.startswith("win") else "/tmp"
 
 
 def _close_asyncio_run_arg(coro: object) -> None:
@@ -148,7 +153,7 @@ def test_start_validation_failure_does_not_write_session_metadata(
     project = tmp_path / "not-a-repo"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     result = runner.invoke(main, ["start", "--project", str(project), "--headless"])
@@ -239,17 +244,15 @@ def test_start_rejects_existing_session_without_overwriting_pid(
 ) -> None:
     repo = _make_git_repo(tmp_path)
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
     pid_path = sp.session_pid_path(repo)
     pid_path.parent.mkdir(parents=True)
     pid_path.write_text("12345", encoding="utf-8")
 
-    def fake_kill(pid: int, signal_number: int) -> None:
-        assert pid == 12345
-        assert signal_number == 0
-
-    monkeypatch.setattr(sp.os, "kill", fake_kill)
+    # Liveness goes through _process_alive (not a bare os.kill, which is
+    # CTRL_C_EVENT on Windows) — mock it so the recorded PID reads as alive.
+    monkeypatch.setattr(sp, "_process_alive", lambda pid: pid == 12345)
 
     result = runner.invoke(main, ["start", "--project", str(repo), "--headless"])
 
@@ -264,7 +267,7 @@ def test_start_runtime_error_cleans_session_metadata(
     repo = _make_git_repo(tmp_path)
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     def fail_asyncio_run(coro: object) -> None:
@@ -653,7 +656,7 @@ def test_phase2_warning_removed(
     sock = str(tmp_path / "test.sock")
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     with (
@@ -678,7 +681,7 @@ def test_start_cleanup_stops_recorded_dashboard_process(
     repo = _make_git_repo(tmp_path)
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     with (
@@ -791,6 +794,9 @@ def test_explicit_socket_matching_well_known_path_does_not_self_symlink(
     assert captured["exists"] is False, "no socket file should exist before bind()"
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only; Windows uses TCP discovery"
+)
 def test_dashboard_auto_discovers_socket_for_project(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -801,7 +807,7 @@ def test_dashboard_auto_discovers_socket_for_project(
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     # Pretend a session is running by writing a live PID and the socket file.
@@ -824,6 +830,9 @@ def test_dashboard_auto_discovers_socket_for_project(
     assert kwargs["ipc_endpoint"].path == sock_path
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only; Windows uses TCP discovery"
+)
 def test_dashboard_reports_no_session_when_socket_stale(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -834,7 +843,7 @@ def test_dashboard_reports_no_session_when_socket_stale(
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     _create_unix_socket(sp.session_socket_path(project))
