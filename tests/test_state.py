@@ -240,6 +240,7 @@ def test_session_stats_aggregate_play_history() -> None:
             session_id="s",
             play_type=PlayType.ISSUE_PICKUP.value,
             started_at="2026-01-01T00:00:00Z",
+            ended_at="2026-01-01T00:00:10Z",
             success=True,
             duration_ms=10_000,
             token_cost=100,
@@ -250,6 +251,7 @@ def test_session_stats_aggregate_play_history() -> None:
             session_id="s",
             play_type=PlayType.ISSUE_PICKUP.value,
             started_at="2026-01-01T00:01:00Z",
+            ended_at="2026-01-01T00:01:20Z",
             success=False,
             duration_ms=20_000,
             token_cost=200,
@@ -260,16 +262,31 @@ def test_session_stats_aggregate_play_history() -> None:
             session_id="s",
             play_type=PlayType.RUN_QA.value,
             started_at="2026-01-01T00:02:00Z",
+            ended_at="2026-01-01T00:02:30Z",
             success=True,
             duration_ms=30_000,
             token_cost=300,
             dollar_cost=0.50,
             agent_id="agent-a",
         ),
+        # In-flight placeholder: dispatched but not yet finalized. The
+        # success=False default must NOT be counted as a failure — the agent is
+        # still doing the work. Mirrors the real placeholder row
+        # (``ended_at``/``agent_id``/``duration_ms`` all unset).
+        PlayRecord(
+            session_id="s",
+            play_type=PlayType.ISSUE_PICKUP.value,
+            started_at="2026-01-01T00:03:00Z",
+            success=False,
+        ),
     ]
 
     stats = SnapshotProjector.compute_session_stats(history)
 
+    # The 4th row is an in-flight placeholder (ended_at unset): it must be
+    # excluded from every ok/fail/total counter so a running play is never
+    # mislabelled a failure. If it leaked in, total_plays would be 4 and
+    # failed_plays would be 2.
     assert stats.total_plays == 3
     assert stats.successful_plays == 2
     assert stats.failed_plays == 1
@@ -281,6 +298,8 @@ def test_session_stats_aggregate_play_history() -> None:
 
     by_type = {row.play_type: row for row in stats.by_play_type}
     issue_pickup = by_type[PlayType.ISSUE_PICKUP]
+    # 3 issue_pickup rows exist but one is in-flight, so the per-type table
+    # counts only the 2 finalized ones (not 3 total / 2 failed).
     assert issue_pickup.total == 2
     assert issue_pickup.successful == 1
     assert issue_pickup.failed == 1

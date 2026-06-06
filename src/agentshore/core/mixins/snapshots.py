@@ -483,12 +483,21 @@ class SnapshotProjector:
         plays.
         """
         work_plays = [p for p in play_history if p.play_type not in _NON_WORK_PLAY_VALUES]
-        total_plays = len(work_plays)
+        # A play row is inserted with a ``success=False`` placeholder at dispatch
+        # time (``_prepare_execution_context``) and only updated to its real
+        # outcome once it finalizes — at which point ``ended_at`` is set
+        # (``update_play`` requires it). While a play is still in flight the
+        # placeholder must NOT be read as a failure: the agent is mid-work and
+        # the play simply hasn't finished. Count only finalized plays
+        # (``ended_at`` populated) in the user-facing ok/fail/total counters so
+        # running plays never show up as fails on the stats surface.
+        finalized_plays = [p for p in work_plays if p.ended_at is not None]
+        total_plays = len(finalized_plays)
         _gate_categories = ("gate_rejection", "skip:")
-        successful_plays = sum(1 for play in work_plays if play.success)
+        successful_plays = sum(1 for play in finalized_plays if play.success)
         gate_rejected_plays = sum(
             1
-            for play in work_plays
+            for play in finalized_plays
             if not play.success and (play.failure_category or "").startswith(_gate_categories)
         )
         failed_plays = total_plays - successful_plays - gate_rejected_plays
@@ -500,7 +509,7 @@ class SnapshotProjector:
         total_duration_seconds = sum((play.duration_ms or 0) / 1000 for play in play_history)
 
         by_type: dict[str, dict[str, float | int]] = {}
-        for play in play_history:
+        for play in finalized_plays:
             is_gate = (play.failure_category or "").startswith(_gate_categories)
             bucket = by_type.setdefault(
                 play.play_type,
