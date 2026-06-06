@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
@@ -33,6 +33,36 @@ export function TargetBranchScreen({
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Track whether the user actually picked a different branch, so the
+  // leave-flush (below) never silently overwrites the configured target with
+  // the auto-seeded default on a passive visit. ``savedRef`` suppresses a
+  // double-write after an explicit "Set target branch" click.
+  const dirtyRef = useRef(false);
+  const savedRef = useRef(false);
+  const selectedBranchRef = useRef("");
+  selectedBranchRef.current = selectedBranch;
+  const setTargetRef = useRef(adapter.setTarget);
+  setTargetRef.current = adapter.setTarget;
+
+  const onSelectBranch = useCallback((name: string) => {
+    dirtyRef.current = true;
+    setSelectedBranch(name);
+  }, []);
+
+  // Persist the selection when the user leaves this screen by ANY exit path.
+  // "Set target branch" saves explicitly, but the left rail and Back navigate
+  // away without it — and the selection lives only in local state, so without
+  // this flush a rail-navigated change is lost entirely (not even localStorage
+  // holds it). Only flush a user-made, not-yet-saved selection.
+  useEffect(
+    () => () => {
+      if (savedRef.current || !dirtyRef.current) return;
+      const branch = selectedBranchRef.current;
+      if (branch) void setTargetRef.current(branch).catch(() => undefined);
+    },
+    [],
+  );
 
   const sortedBranches = useMemo(() => {
     if (branches === null) return [];
@@ -75,6 +105,7 @@ export function TargetBranchScreen({
     setStatus(null);
     try {
       await adapter.setTarget(selectedBranch);
+      savedRef.current = true;
       setStatus(`Target branch set to ${selectedBranch}.`);
       navigate("/setup/identities");
     } catch (err) {
@@ -163,7 +194,7 @@ export function TargetBranchScreen({
                         type="radio"
                         name="target-branch"
                         checked={isSelected}
-                        onChange={() => setSelectedBranch(branch.name)}
+                        onChange={() => onSelectBranch(branch.name)}
                         aria-label={`Select ${branch.name}`}
                       />
                     </td>
