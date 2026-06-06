@@ -33,15 +33,20 @@ def _background_spawn_kwargs() -> dict[str, Any]:
     so the child stays in the launcher's console process group — and a console
     Ctrl-C / close event then cascades across the orchestrator + dashboard (and
     back into the launcher), aborting the "background" session within seconds
-    even though nobody pressed anything. ``CREATE_NEW_PROCESS_GROUP |
-    DETACHED_PROCESS`` gives the child its own group with no console: the
-    Windows equivalent of setsid.
+    even though nobody pressed anything.
+
+    ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`` gives the child its own
+    process group and a hidden console: isolated from the launcher's console
+    signals, with no visible window. (``DETACHED_PROCESS`` also isolates, but a
+    detached console-less process makes its own console children — e.g. spawned
+    agent CLIs — allocate fresh *visible* windows, so we use the hidden-console
+    flag instead, which grandchildren inherit.)
     """
     if sys.platform == "win32":
         import subprocess
 
         return {
-            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
         }
     return {"start_new_session": True}
 

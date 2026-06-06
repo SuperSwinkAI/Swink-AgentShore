@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import signal
+import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
@@ -402,6 +403,21 @@ def build_argv(
 # ---------------------------------------------------------------------------
 
 
+def _no_window_creationflags() -> int:
+    """``CREATE_NO_WINDOW`` on Windows so spawned agent CLIs don't pop a console.
+
+    The detached background orchestrator runs with a hidden console that its
+    children inherit, but set the flag explicitly here too so agent CLIs never
+    flash a terminal window in any launch mode (foreground TUI included). 0 on
+    POSIX (the param is Windows-only and ignored there).
+    """
+    if sys.platform == "win32":
+        import subprocess
+
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
 def _build_dispatch_argv(
     handle: AgentHandle,
     prompt: str,
@@ -696,6 +712,7 @@ async def dispatch_cli(
         cwd=str(effective_cwd),
         limit=cfg.line_limit_bytes,
         start_new_session=True,
+        creationflags=_no_window_creationflags(),
         env=env,
     )
     handle.process = proc
