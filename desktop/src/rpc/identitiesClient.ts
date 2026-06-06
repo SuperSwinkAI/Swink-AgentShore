@@ -41,3 +41,20 @@ export async function updateIdentity(
 export async function removeIdentity(login: string): Promise<void> {
   await callJsonRpc("identities.remove", { login });
 }
+
+// ---- trusted sources (no-auth, issues/PRs only) ---------------------------
+// These map to trusted_ids.github_logins: GitHub logins trusted as a source of
+// issues/PRs but never assigned to an agent and carrying no token.
+
+export async function listTrustedSources(): Promise<string[]> {
+  const result = await callJsonRpc<string[] | null>("identities.list_trusted");
+  return result ?? [];
+}
+
+export async function addTrustedSource(login: string): Promise<void> {
+  await callJsonRpc("identities.add_trusted", { login });
+}
+
+export async function removeTrustedSource(login: string): Promise<void> {
+  await callJsonRpc("identities.remove_trusted", { login });
+}
