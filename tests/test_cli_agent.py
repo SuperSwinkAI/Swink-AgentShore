@@ -977,6 +977,50 @@ async def test_kill_process_windows_warns_on_taskkill_failure(
     assert warnings[0].kwargs["pid"] == 4321
 
 
+async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``taskkill /F`` cannot stop the process, teardown still completes via a
+    bounded wait instead of hanging the session forever (codex review P2)."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.01)
+
+    captured_argv: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
+        captured_argv.append(list(argv))
+        return _FakeTaskkill(returncode=128)  # every taskkill fails
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ca, "_logger", mock_logger)
+
+    class _HangingProc(_FakeKillProcess):
+        async def wait(self) -> int:
+            await asyncio.sleep(3600)  # never exits on its own
+            return 0
+
+    proc = _HangingProc(pid=4321)
+    # Guard the test itself: a regression would hang here instead of returning.
+    await asyncio.wait_for(ca._kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
+
+    # The forced kill was attempted, and the failure was surfaced (not raised).
+    assert any("/F" in argv for argv in captured_argv), "forced taskkill never attempted"
+    warnings = [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].kwargs["returncode"] == 128
+
+
 # ---------------------------------------------------------------------------
 # multi_block — parser uses last result block
 # ---------------------------------------------------------------------------
