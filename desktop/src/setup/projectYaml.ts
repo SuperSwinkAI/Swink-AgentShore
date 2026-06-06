@@ -42,6 +42,10 @@ export interface ProjectYamlHydration {
   targetBranch: string | null;
   enabledAgents: string[];
   identityLogins: string[];
+  /** ``trusted_ids.github_logins`` — GitHub logins trusted as a *source* of
+   *  issues/PRs (no token, never assigned to an agent). Canonicalized
+   *  (lowercase + trimmed) and deduped. Empty when the key is absent. */
+  trustedSources: string[];
   budget: BudgetHydration | null;
   timelapse: TimelapseHydration | null;
   /** ``trusted_ids.restrict_issues_to_trusted_authors`` — gate issue pickup
@@ -53,10 +57,17 @@ const EMPTY: ProjectYamlHydration = {
   targetBranch: null,
   enabledAgents: [],
   identityLogins: [],
+  trustedSources: [],
   budget: null,
   timelapse: null,
   trustedIssueEnforcement: null,
 };
+
+/** Canonicalize a GitHub login for the trusted-source set: trim surrounding
+ *  whitespace and lowercase (GitHub logins are case-insensitive). */
+function canonicalizeLogin(login: string): string {
+  return login.trim().toLowerCase();
+}
 
 interface ParsedLine {
   indent: number;
@@ -64,6 +75,11 @@ interface ParsedLine {
   /** Inline scalar after ``key:``; null when the value continues on a
    *  child block. */
   value: string | null;
+  /** ``true`` for ``- item`` sequence entries. List items are ignored by
+   *  every walker except the ``trusted_ids.github_logins`` collector — the
+   *  key-based walkers (agents/identities) must skip them so a ``-`` entry
+   *  is never mistaken for an agent or identity key. */
+  listItem: boolean;
 }
 
 function parseLine(raw: string): ParsedLine | null {
@@ -73,9 +89,16 @@ function parseLine(raw: string): ParsedLine | null {
   const trimmedLeft = noTrail.replace(/^\s+/u, "");
   if (trimmedLeft.startsWith("#")) return null;
   const indent = noTrail.length - trimmedLeft.length;
-  // Skip array items — they never appear at the depths we care about
-  // for the hydrated fields and would confuse the indent walker.
-  if (trimmedLeft.startsWith("-")) return null;
+  // Sequence entries (``- value``) are surfaced as list items so the
+  // trusted_ids.github_logins collector can read them; every other walker
+  // is key-based and skips them (see ParsedLine.listItem).
+  if (trimmedLeft.startsWith("-")) {
+    const after = trimmedLeft.slice(1);
+    const commentIdx = after.indexOf("#");
+    const rhs = (commentIdx === -1 ? after : after.slice(0, commentIdx)).trim();
+    if (rhs.length === 0) return null;
+    return { indent, key: "", value: stripQuotes(rhs), listItem: true };
+  }
   const colon = trimmedLeft.indexOf(":");
   if (colon === -1) return null;
   const key = trimmedLeft.slice(0, colon).trim();
@@ -84,7 +107,12 @@ function parseLine(raw: string): ParsedLine | null {
   const after = trimmedLeft.slice(colon + 1);
   const commentIdx = after.indexOf("#");
   const rhs = (commentIdx === -1 ? after : after.slice(0, commentIdx)).trim();
-  return { indent, key, value: rhs.length === 0 ? null : stripQuotes(rhs) };
+  return {
+    indent,
+    key,
+    value: rhs.length === 0 ? null : stripQuotes(rhs),
+    listItem: false,
+  };
 }
 
 function stripQuotes(s: string): string {
@@ -120,6 +148,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     targetBranch: null,
     enabledAgents: [],
     identityLogins: [],
+    trustedSources: [],
     budget: null,
     timelapse: null,
     trustedIssueEnforcement: null,
@@ -151,6 +180,9 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
   let timelapseSeen = false;
   let timelapseEnabled = false;
   let timelapseInstalled = false;
+  // ``true`` while walking the ``trusted_ids.github_logins`` sequence so the
+  // indent-4 ``- login`` items below it are collected as trusted sources.
+  let inTrustedLogins = false;
 
   const closeAgent = () => {
     if (currentAgent && currentAgentEnabled === true) {
@@ -168,6 +200,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     if (line.indent === 0) {
       // Closing the previous agent (if any) before changing sections.
       closeAgent();
+      inTrustedLogins = false;
       if (line.key === "project") {
         topSection = "project";
       } else if (line.key === "agents") {
@@ -203,10 +236,25 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
       continue;
     }
 
-    if (topSection === "trusted_ids" && line.indent === 2) {
-      if (line.key === "restrict_issues_to_trusted_authors") {
-        const v = asBool(line.value);
-        if (v !== null) result.trustedIssueEnforcement = v;
+    if (topSection === "trusted_ids") {
+      if (line.indent === 2 && !line.listItem) {
+        // Any indent-2 key ends the github_logins sequence (e.g. an inline
+        // ``github_logins: []`` or the sibling enforcement flag).
+        inTrustedLogins = line.key === "github_logins" && line.value === null;
+        if (line.key === "restrict_issues_to_trusted_authors") {
+          const v = asBool(line.value);
+          if (v !== null) result.trustedIssueEnforcement = v;
+        }
+      } else if (
+        line.indent === 4 &&
+        line.listItem &&
+        inTrustedLogins &&
+        line.value !== null
+      ) {
+        const login = canonicalizeLogin(line.value);
+        if (login.length > 0 && !result.trustedSources.includes(login)) {
+          result.trustedSources.push(login);
+        }
       }
       continue;
     }
@@ -246,6 +294,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     }
 
     if (topSection === "agents") {
+      if (line.listItem) continue;
       if (line.indent === 2) {
         closeAgent();
         currentAgent = line.key;
@@ -257,7 +306,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
       continue;
     }
 
-    if (topSection === "identities" && line.indent === 2) {
+    if (topSection === "identities" && line.indent === 2 && !line.listItem) {
       if (!result.identityLogins.includes(line.key)) {
         result.identityLogins.push(line.key);
       }

@@ -26,7 +26,7 @@ class DesignAuditPlay(SkillBackedPlay):
     gates = (
         BeadsInitializedGate(),
         InFlightGate(PlayType.DESIGN_AUDIT),
-        CapabilityGate("can_create_issues"),
+        CapabilityGate("can_run_skill"),
         CooldownGate(PlayType.DESIGN_AUDIT, plays=DESIGN_AUDIT_COOLDOWN_PLAYS),
     )
 
@@ -40,7 +40,7 @@ class DesignAuditPlay(SkillBackedPlay):
 
     @property
     def capability(self) -> str | None:
-        return "can_create_issues"
+        return "can_run_skill"
 
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.08
