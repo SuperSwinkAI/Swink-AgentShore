@@ -109,6 +109,10 @@ def make_test_orchestrator(
     orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = collections.deque(maxlen=50)
     orch._budget_override = False
+    orch._budget_override_enabled = None
+    orch._budget_override_total = None
+    orch._time_override_enabled = None
+    orch._time_override_minutes = None
     orch._stop_done = asyncio.Event()
     orch._config_path = None
     orch._recent_play_completions = collections.deque(maxlen=64)
