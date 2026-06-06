@@ -13,6 +13,7 @@ import structlog
 
 from agentshore.beads import BeadStatus, bd
 from agentshore.command import CommandTimeoutError, run_command
+from agentshore.core.branch_sync import fast_forward_local_branch
 from agentshore.github.pr_links import infer_pr_issue_links
 from agentshore.plays.scope import _PR_BODY_ISSUE_RE
 from agentshore.plays.skill_backed.base import SkillBackedPlay
@@ -209,6 +210,16 @@ class MergePRPlay(SkillBackedPlay):
         if outcome.success and params.pr_number is not None:
             await ctx.store.mark_pr_merged(params.pr_number, ctx.session_id)
             await ctx.store.complete_reviews_for_pr(ctx.session_id, params.pr_number)
+            # Fast-forward the local target branch to the just-merged remote
+            # tip. The merge landed on origin/<target>; nothing else advances
+            # the local ref, so without this it drifts behind the remote. The
+            # primary checkout is often on a *different* branch than the target
+            # (e.g. main vs integration), so the helper advances the ref
+            # directly rather than merging — see core/branch_sync.py. Best-effort
+            # housekeeping: never raises, never blocks the merge outcome.
+            target_branch = ctx.cfg.project.target_branch
+            if target_branch:
+                await fast_forward_local_branch(ctx.project_path, target_branch)
             # Mark referenced issues closed in the local cache. Without this
             # they sit at state='open' forever — _refresh_issues only fetches
             # state="open" from GitHub, so closed issues are never seen by

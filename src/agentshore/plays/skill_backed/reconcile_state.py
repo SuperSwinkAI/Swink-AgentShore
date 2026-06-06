@@ -14,13 +14,20 @@ resets via interleaved successes.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from agentshore.core.branch_sync import fast_forward_local_branch
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     ArmedByFailureGate,
     CapabilityGate,
     InFlightGate,
 )
-from agentshore.state import PlayType
+from agentshore.state import PlayOutcome, PlayType
+
+if TYPE_CHECKING:
+    from agentshore.plays.base import PlayExecutionContext, PlayParams
+    from agentshore.state import OrchestratorState
 
 
 class ReconcileStatePlay(SkillBackedPlay):
@@ -36,6 +43,26 @@ class ReconcileStatePlay(SkillBackedPlay):
         InFlightGate(PlayType.RECONCILE_STATE),
         ArmedByFailureGate(PlayType.RECONCILE_STATE),
     )
+
+    async def execute(
+        self,
+        state: OrchestratorState,
+        params: PlayParams,
+        *,
+        ctx: PlayExecutionContext,
+    ) -> PlayOutcome:
+        """Run the reconcile skill, then fast-forward the local target branch.
+
+        The post-skill sync is a deterministic safety net for drift the
+        immediate post-merge hook can't catch — e.g. a human or remote merge
+        into the target branch that AgentShore never executed. Fast-forward
+        only and best-effort; it never raises and never alters the outcome.
+        """
+        outcome = await super().execute(state, params, ctx=ctx)
+        target_branch = ctx.cfg.project.target_branch
+        if target_branch:
+            await fast_forward_local_branch(ctx.project_path, target_branch)
+        return outcome
 
     @property
     def play_type(self) -> PlayType:
