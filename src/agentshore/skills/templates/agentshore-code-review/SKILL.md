@@ -74,11 +74,10 @@ non_blocking_findings: <int>
 {
   "success": true,
   "artifacts": [{"type": "review", "pr": 42, "verdict": "APPROVE", "head_sha": "abc123"}],
-  "issues_created": [{"number": 55, "title": "Follow-up: add input validation", "url": "..."}],
+  "issues_created": [],
   "issues_existing": [],
   "findings_count": {"blocking": 0, "non_blocking": 2},
   "spec_compliance": "PASS",
-  "hard_checks": {"diff_size": "pass", "credentials": "pass", "dangerous_patterns": "pass", "dependencies": "pass"},
   "error": null
 }
 ```

@@ -26,44 +26,14 @@ Slot layout (OBSERVATION_DIM=246, OBSERVATION_VERSION=13):
   177     skip-rate  ( 1)  fraction of recent selection cycles that hit a clean
                           confirm/claim re-pick (live-drift signal; slot repointed
                           from the removed executor masked-skip path)
-  178     pr-pressure( 1)  desktop-8zzy — open_pr_count / SAT_OPEN_PRS_COUNT, clamped
-                          to [0, 1]. PPO can learn "press harder near the cap"
-                          directly from this ratio rather than inferring it from
-                          slot 56 (raw open-prs count).
+  178     pr-pressure( 1)  open_pr_count / SAT_OPEN_PRS_COUNT, clamped to [0, 1]
   179-244 spec       (66)  3 tiers × 22 plays specialization success rates (0.5 default)
   245     reserved   ( 1)  version marker = 1.0 (a stable per-version constant)
 
 Tier order is (small, medium, large) — index 0/1/2 — matching `cheapest-first`
 across the tier-fleet block (17-32) and the specialization block (179-244).
-This shape replaces the v8 per-instance encoding (5 agents × N) so the obs
-vector tracks the architectural decision granularity (tier eligibility masks)
-instead of ephemeral agent_ids, and so a fully expanded fleet is no longer
-silently truncated. Fleet-wide counts saturate at ``_MAX_TOTAL_AGENTS`` —
-deliberately picked to cover a typical mix of cells (4 types × 3 tiers ×
-``max_per_config`` 2) without forcing PPO to re-learn scaling if the user
-raises the per-(type, tier) cap.
-
-OBSERVATION_VERSION 10 → 11 (desktop-rni0):
-  - IDLE_TICK and RECOVER demoted out of the policy head into reserved
-    ``FUTURE_5`` / ``FUTURE_6`` slots. Action-space tensor shape is unchanged
-    (22 slots), so the SPEC block stays at 66 slots; only the version marker
-    moves.
-  - The executor-skip-rate slot at 177 is retained as a diagnostic signal —
-    PPO sees the state-divergence rate but no longer has an action to "recover".
-
-OBSERVATION_VERSION 11 → 12 (desktop-8zzy):
-  - Added ``pr_pressure_ratio`` at slot 178: ``open_pr_count / max_open_prs``
-    (with ``max_open_prs == SAT_OPEN_PRS_COUNT == 10.0``), clamped to [0, 1].
-    Mirrors the ``_PR_PRESSURE_BONUS`` reward shaping in reward.py.
-  - The specialization block slid one slot down (178→179..243→244) and the
-    version marker moved 244→245. Spec block size and shape unchanged.
-
-OBSERVATION_VERSION 12 → 13:
-  - Repurposed retired cluster slots 0-1 for beads dependency features:
-    slot 0 = ``blocked_task_ratio`` (tasks with unresolved depends-on / total),
-    slot 1 = ``ready_task_ratio`` (truly ready tasks / total).
-    Gives PPO direct signal about work ordering constraints.
-  - OBSERVATION_DIM unchanged (246). Slots 2-7 remain zero-filled.
+Fleet-wide counts saturate at ``_MAX_TOTAL_AGENTS`` to cover typical
+multi-cell expansion without making the vector sensitive to very high caps.
 """
 
 from __future__ import annotations

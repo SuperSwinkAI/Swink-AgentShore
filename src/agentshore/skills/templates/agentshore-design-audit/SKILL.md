@@ -76,19 +76,11 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
       "issues_linked": 1,
       "unresolved_gaps": 0,
       "unknown_requirements": 0,
-      "gap_issue_numbers": [212, 213, 214],
-      "requirement_samples": [
-        {"title": "Render preview cancellation", "status": "gap_filled", "issue": 212},
-        {"title": "Status command JSON output", "status": "verified_done", "evidence": "src/... + tests/..."}
-      ]
+      "gap_issue_numbers": [212, 213, 214]
     }
   ],
   "issues_created": [212, 213],
   "issues_linked": [214],
-  "issues_closed_stale": [],
-  "beads_closed_stale": [],
-  "tasks_linked": ["tlc-abc.1", "tlc-def.2"],
-  "open_work_after": {"issues": 0, "prs": 0},
   "error": null
 }
 ```

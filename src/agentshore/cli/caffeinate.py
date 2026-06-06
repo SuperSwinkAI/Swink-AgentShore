@@ -1,4 +1,4 @@
-"""macOS power-assertion wrapper for ``agentshore start`` (desktop-n7ci).
+"""macOS launch-level power-assertion fallback for ``agentshore start``.
 
 When the screen locks on macOS, the OS demotes disk I/O priority and
 coalesces writes. ``fsync()`` returns before the deferred writes physically
@@ -7,8 +7,7 @@ DB corruption (desktop-tvsb). The simplest robust mitigation is to re-exec
 ``agentshore start`` under ``caffeinate -i`` so the OS keeps AgentShore's I/O
 at normal priority for the lifetime of the session.
 
-This is a stopgap. A proper in-process IOKit power assertion lives in
-desktop-gkku; once that lands this wrapper becomes redundant.
+Retained alongside the in-process PowerAssertion path as a launch-level fallback.
 """
 
 from __future__ import annotations

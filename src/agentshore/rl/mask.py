@@ -221,32 +221,7 @@ def compute_reverse_failsafe_mask(
     allow_control_plays: bool = False,
     base_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.bool_]:
-    """Compute the reverse-failsafe overlay.
-
-    Phase 3 of the v0.15 architecture refactor: this function now models
-    reverse failsafe as an *overlay* on the base mask, not a replacement.
-    The returned mask is a structural superset of ``base_mask`` — any
-    action enabled by the base mask is preserved. The "lift" opens a
-    constrained set of additional actions per the gate logic below.
-
-    Lift gates (applied in order, each a subtractive constraint on the
-    initial all-ones mask):
-
-    1. Hard masks: SEED_PROJECT, END_AGENT, END_SESSION, TAKE_BREAK,
-       FUTURE_7/8 stay False (END_AGENT and END_SESSION conditionally
-       opened by ``allow_control_plays``).
-    2. END_SESSION evidence: terminal audits + recent QA + idle fleet.
-    3. INSTANTIATE_AGENT config viability: at least one eligible config
-       must exist.
-    4. Candidate-required plays (WIP, PICKUP, REVIEW, MERGE, UNBLOCK,
-       DEBUG, REFINE, GROOM): stays False if the candidate set is empty.
-       Reverse failsafe cannot conjure a target out of nothing —
-       v0.14.4 fix for desktop-wwr.
-
-    Passing ``base_mask`` is recommended for callers that want the strict
-    overlay contract. When omitted, behaviour matches v0.14.4 (lift mask
-    only).
-    """
+    """Return an overlay that preserves ``base_mask`` and opens gated fallback actions."""
     lifted = np.ones(NUM_ACTIONS, dtype=bool)
     hard_masks = _REVERSE_FAILSAFE_HARD_MASKS
     if allow_control_plays:

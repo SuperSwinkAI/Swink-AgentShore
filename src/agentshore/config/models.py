@@ -158,11 +158,7 @@ class AgentConfig:
     cost_per_1k_cache_write_input: float | None = None
     cost_per_1k_output: float = 0.015
     timeout: int | None = None
-    # 10-minute silence was killing claude_code/codex/gemini agents mid-think
-    # on v0.15.2 (desktop-awc) — 3 plays of session 3862999e timed out
-    # producing-no-stdout-for-600s. Bumped to 30 minutes so legitimate
-    # long-think + tool-loop windows survive while still detecting
-    # genuinely-hung agents.
+    # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
     max_output_size: int = 10_000_000
     # Per-line buffer size for asyncio.create_subprocess_exec. CLI agents emit

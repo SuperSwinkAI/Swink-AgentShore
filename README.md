@@ -2,8 +2,6 @@
 
 **RL-based multi-agent coding orchestrator.** AgentShore runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, or Gemini agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
 
-> **Agent Shoring:** offloading coding work to a coordinated fleet of LLM agents, the way nearshoring offloads work to a coordinated team in another timezone. The RL layer is the engagement manager.
-
 ## What it does
 
 - Picks up GitHub issues, implements them, opens PRs, reviews them, runs QA, and merges
@@ -13,9 +11,7 @@
 
 ## Install
 
-```bash
-uv tool install --editable .   # install the `agentshore` CLI from a checkout
-```
+Install the CLI from a checkout with `uv tool install --editable .`.
 
 For development, `uv sync --group dev` sets up the full toolchain in `.venv/` and you can run the CLI with `uv run agentshore`.
 
@@ -23,11 +19,7 @@ The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is bui
 
 ## Quick start
 
-```bash
-# In your project directory
-agentshore init            # scaffold config, wire BEADS + GitHub, set up identity
-agentshore start           # start a supervised session (TUI)
-```
+From the target project directory, run `agentshore init`, then `agentshore start`.
 
 ## Requirements
 
@@ -38,42 +30,14 @@ agentshore start           # start a supervised session (TUI)
 
 ## Configuration
 
-`agentshore init` generates `agentshore.yaml` in your project root. Key sections:
-
-```yaml
-project:
-  path: .
-  goals: null        # optional plain-text goal for the seed play
-
-agents:
-  claude_code:
-    enabled: true
-    model: sonnet    # haiku / sonnet / opus
-  codex:
-    enabled: true
-    reasoning_effort: medium
-
-budget:
-  enabled: true
-  total: 5.00        # USD hard cap for the session
-
-rl:
-  policy_mode: learning   # learning | frozen | random
-```
+`agentshore init` generates `agentshore.yaml` in your project root. The source of truth for fields and defaults is `src/agentshore/config/models.py` plus `_DEFAULT_YAML` in `src/agentshore/config/__init__.py`.
 
 Re-run `agentshore init` at any time to refresh settings via the setup wizards (it
 preserves your existing `agentshore.yaml` unless you pass `--force`).
 
 ## CLI reference
 
-```
-agentshore init              scaffold config, wire BEADS + GitHub, set up identity
-agentshore start             start an RL session (TUI or headless)
-agentshore stop              gracefully drain and stop a running session
-agentshore dashboard         open the browser dashboard for a running session
-agentshore identity          manage and verify per-agent GitHub identities
-agentshore trusted-ids       manage GitHub logins allowed to unblock plays
-```
+Registered subcommands are `init`, `start`, `stop`, `dashboard`, `identity`, and `trusted-ids`. Use `agentshore <subcommand> --help` for option details.
 
 ## Architecture
 
@@ -89,17 +53,7 @@ Design documentation: [`docs/design/HLD.md`](docs/design/HLD.md)
 
 ## Dashboard
 
-```bash
-agentshore start --headless   # start without TUI
-agentshore dashboard          # open browser dashboard
-```
-
-Or for development:
-
-```bash
-cd dashboard && npm run dev   # run yourself
-# Open: http://localhost:5173/?demo=1&scenario=active
-```
+Run `agentshore start --headless`, then `agentshore dashboard` for a live session. For dashboard-only development, run the Vite app in `dashboard/` and open the demo transport with `?demo=1`.
 
 ## Contributing
 

@@ -77,29 +77,9 @@ class _CompletionVerdict(enum.Enum):
     RETRIED = "retried"
 
 
-# Error classes that trigger a system-side take_break override. Same membership
-# the take_break play uses for its preconditions — kept here so the loop's
-# override producer doesn't have to import from the play.
-#
-# Recovery-eligible ERROR classes, split into two paths (#23/#24):
-#   * rate_limit → RATE_LIMIT_RECOVERY + rate_limit_recovery_enqueued
-#   * unknown / codex_rollout → UNKNOWN_ERROR_RECOVERY + unknown_error_recovery_enqueued
-# Both enqueue a take_break (the backoff behavior is the same for now), but under
-# distinct kinds/telemetry so a genuine rate limit is never conflated with an
-# unclassified failure. Before this split, "unknown"/"codex_rollout" rode the
-# rate-limit path and logged rate_limit_recovery_enqueued — which read as "the
-# agent was rate-limited" when no rate limit occurred and caused a live
-# misdiagnosis.
-#
-# "codex_rollout" carved out of "unknown" by desktop-yxlj — same recovery path
-# (fresh codex exec gets a new rollout thread), just under a typed name.
-# NOTE (#7): the crash classes "crash_signal" (SIGKILL/-9, e.g. OS OOM kill) and
-# "crash_oom" are deliberately in NEITHER set — a crashed/OOM-killed agent is not
-# recoverable via take_break backoff, so it must not get one.
+# Error classes that trigger loop-produced take_break overrides. Crash, auth,
+# invalid-model, and timeout classes are intentionally excluded.
 _RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMIT})
-# Non-rate-limit recoverable classes. "transient_network" is a precise carve-out
-# of the old "unknown" bucket (socket close / connection reset) — still transient,
-# still gets the take_break, just under an honest name.
 _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
     {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
 )
@@ -1012,20 +992,7 @@ class CompletionProcessor:
         agent_id: str,
         final_status: AgentStatus,
     ) -> None:
-        """Enqueue a take_break override when an agent enters a recoverable ERROR.
-
-        Two distinct paths (#23/#24), each with its own kind, telemetry event,
-        and enqueue latch so a true rate limit is never conflated with an
-        unclassified failure:
-          * ``rate_limit`` → RATE_LIMIT_RECOVERY / ``rate_limit_recovery_enqueued``
-          * ``unknown`` / ``codex_rollout`` → UNKNOWN_ERROR_RECOVERY /
-            ``unknown_error_recovery_enqueued``
-
-        Either way the override bypasses PPO entirely (desktop-ctnl): if PPO
-        learned to prefer idle plays under rate_limit, the work plays for healthy
-        agents could never get dispatched. With idle_tick / recover gone from the
-        policy head, the loop is the only producer of take_break.
-        """
+        """Enqueue a take_break override for recoverable agent errors."""
 
         if final_status != AgentStatus.ERROR:
             self._recovery.clear_rate_limit_enqueued(agent_id)
@@ -1076,17 +1043,7 @@ class CompletionProcessor:
         )
 
     def _handle_take_break_outcome(self, outcome: PlayOutcome) -> None:
-        """Track consecutive take_break failures so the PPO can end a wedged agent.
-
-        Item 6 (extreme-bypass): this handler no longer force-enqueues an
-        END_AGENT override. It only maintains ``_break_recovery_failures``. Once
-        the count reaches :data:`BREAK_RECOVERY_FAILURE_LIMIT` it is left
-        ELEVATED (never popped here) so the core tick can read
-        ``_break_recovery_failures[agent_id] >= BREAK_RECOVERY_FAILURE_LIMIT``
-        to unmask END_AGENT and let the PPO decide to retire the agent. The
-        counter is cleared on a successful recovery (below) and when the agent
-        is actually ended (see END_AGENT cleanup in ``harvest_completed``).
-        """
+        """Track consecutive take_break failures for END_AGENT eligibility."""
 
         agent_id = outcome.agent_id
         if agent_id is None:
@@ -1109,10 +1066,7 @@ class CompletionProcessor:
                 limit=BREAK_RECOVERY_FAILURE_LIMIT,
             )
             return
-        # Recovery exhausted. Leave the counter at/above the limit (do NOT pop)
-        # so the core tick can build its recovery_exhausted_agent_ids set and
-        # unmask END_AGENT for the PPO. The PPO — not this handler — decides to
-        # end the agent.
+        # Leave the counter elevated so the core tick can unmask END_AGENT.
         _logger.warning(
             "break_recovery_exhausted",
             session_id=self._session_id,

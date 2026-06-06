@@ -1,11 +1,4 @@
-"""Session-bootstrap policy extracted from the ``agentshore start`` command.
-
-The Click handler used to inline ~360 lines of budget/socket/config/identity
-resolution between argument parsing and orchestrator dispatch. That logic is
-session-bootstrap policy, not CLI plumbing: it is the same work the desktop
-sidecar performs before launching a run. This module owns it so ``start()``
-reduces to *parse → bootstrap → summary → dispatch*.
-"""
+"""Resolve start-session config, budget, identity, seed, and IPC settings."""
 
 from __future__ import annotations
 

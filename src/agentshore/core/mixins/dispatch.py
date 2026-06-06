@@ -571,20 +571,9 @@ class Dispatcher:
         before launching the task so IPC/TUI consumers see the new active play
         immediately.
 
-        Phase 4 of the v0.15 architecture refactor: this method now takes the
-        same state the selector used for the selection decision. State is no
-        longer rebuilt at dispatch time — that rebuild was the structural
-        cause of the cross-tick divergence (HOTSPOT 1 in
-        docs/design/play_lifecycle.html) and produced the
-        ``play_skipped_masked_at_executor`` events fixed in v0.14.4.
-
-        Eligibility refactor (Wave 1): this method is now purely
-        side-effecting (worktree alloc, ``active_play`` snapshot, dispatch
-        context + task creation). Play validity is settled upstream by the
-        ``EligibilityAuthority`` — the action mask presents only valid plays
-        to PPO, and ``_consume_override`` confirms overrides against the same
-        authority. The dispatch-time revalidation pass is gone, so there is no
-        ``revalidate`` parameter to thread through.
+        Play validity is settled upstream by EligibilityAuthority. Dispatch owns
+        worktree allocation, active-play state, context creation, and task launch
+        using the selector snapshot.
         """
         # desktop-kqo5: hard pause when auto-restore failed. Refuse to spawn
         # further work until the trunk is healed. END_AGENT is still allowed so a

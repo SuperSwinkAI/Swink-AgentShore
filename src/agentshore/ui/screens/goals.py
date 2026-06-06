@@ -1,7 +1,4 @@
-"""GoalsScreen -- modal showing beads graph epic closure details.
-
-v0.10.0: uses ProjectGraph for all alignment tracking.
-"""
+"""Modal showing beads graph epic closure details."""
 
 from __future__ import annotations
 
