@@ -524,7 +524,12 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .accelerator("CmdOrCtrl+Shift+.")
         .build(app)?;
 
+    let adjust_budget = MenuItemBuilder::with_id("adjust_budget", "Adjust Budget…")
+        .accelerator("CmdOrCtrl+B")
+        .build(app)?;
+
     let file = SubmenuBuilder::new(app, "File")
+        .item(&adjust_budget)
         .item(&stop_session)
         .separator()
         .item(&PredefinedMenuItem::close_window(
@@ -591,6 +596,12 @@ pub fn run() {
                 // unconditionally — React decides what to do based on
                 // current session state. No-op outside a session.
                 let _ = app.emit("menu:stop_session", ());
+            } else if event.id().as_ref() == "adjust_budget" {
+                // React's SessionDashboardScreen listens for this event
+                // and opens the live Adjust Budget dialog (session.get_budget
+                // / session.set_budget). Emitting unconditionally — React
+                // decides what to do based on current session state.
+                let _ = app.emit("menu:adjust_budget", ());
             }
         })
         .setup(|app| {

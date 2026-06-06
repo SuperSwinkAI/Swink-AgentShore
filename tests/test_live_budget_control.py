@@ -1,0 +1,262 @@
+"""Wave-1 core coverage for live budget control (#41/#42 foundation).
+
+Exercises the shared Orchestrator core that both transports build on:
+``effective_budget_caps`` resolution, absolute ``set_budget``, additive
+``add_budget``, bounds validation, persistence to ``agentshore.yaml``, the
+``current_budget`` echo, and drain re-arm / reversal. Transport-specific tests
+(sidecar RPC, CLI command, desktop dialog) live with each transport.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from agentshore.config import load_config
+from agentshore.config.models import BudgetConfig, RuntimeConfig
+from agentshore.errors import OrchestratorError
+from agentshore.state import BudgetSnapshot
+
+from .orchestrator_factory import make_test_orchestrator
+
+
+def _snap(
+    *,
+    total: float = 200.0,
+    spent: float = 10.0,
+    enabled: bool = True,
+    time_enabled: bool = False,
+    time_total: float | None = None,
+    time_elapsed: float | None = None,
+) -> SimpleNamespace:
+    remaining = max(0.0, total - spent) if enabled else float("inf")
+    time_remaining = (
+        max(0.0, time_total - time_elapsed)
+        if (time_enabled and time_total is not None and time_elapsed is not None)
+        else None
+    )
+    snap = BudgetSnapshot(
+        total_budget=total,
+        spent=spent,
+        remaining=remaining,
+        estimated_cost_per_play=0.25,
+        enabled=enabled,
+        time_enabled=time_enabled,
+        time_total_minutes=time_total,
+        time_elapsed_minutes=time_elapsed,
+        time_remaining_minutes=time_remaining,
+    )
+    return SimpleNamespace(budget=snap)
+
+
+def _mock_state(orch: object, snap: SimpleNamespace) -> None:
+    orch._state_builder.build_state = AsyncMock(return_value=snap)  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------- #
+# effective_budget_caps
+# --------------------------------------------------------------------------- #
+
+
+def test_effective_caps_fall_through_to_cfg(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(
+        budget=BudgetConfig(enabled=True, total=150.0, time_enabled=True, time_total_minutes=1440)
+    )
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    caps = orch.effective_budget_caps()
+    assert caps.enabled is True
+    assert caps.total == 150.0
+    assert caps.time_enabled is True
+    assert caps.time_total_minutes == 1440
+
+
+def test_effective_caps_overrides_shadow_cfg(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(budget=BudgetConfig(enabled=True, total=150.0))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    orch._budget_override_enabled = True
+    orch._budget_override_total = 500.0
+    orch._time_override_enabled = True
+    orch._time_override_minutes = 720
+    caps = orch.effective_budget_caps()
+    assert caps.total == 500.0
+    assert caps.time_enabled is True
+    assert caps.time_total_minutes == 720
+    # cfg itself is never mutated.
+    assert orch._cfg.budget.total == 150.0
+
+
+# --------------------------------------------------------------------------- #
+# set_budget (absolute) + persistence
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_set_budget_applies_and_echoes(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    _mock_state(
+        orch, _snap(total=300.0, spent=12.5, time_enabled=True, time_total=1440, time_elapsed=100)
+    )
+    applied = await orch.set_budget(
+        dollars_enabled=True, dollars=300.0, time_enabled=True, time_minutes=1440, persist=False
+    )
+    assert orch._budget_override_total == 300.0
+    assert orch._time_override_minutes == 1440
+    assert applied["total"] == 300.0
+    assert applied["time_remaining_minutes"] == 1340.0
+
+
+@pytest.mark.asyncio
+async def test_set_budget_persists_to_yaml(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "agentshore.yaml"
+    orch = make_test_orchestrator(tmp_path)
+    orch._config_path = cfg_path
+    _mock_state(orch, _snap(total=250.0, time_enabled=True, time_total=720, time_elapsed=0))
+    await orch.set_budget(
+        dollars_enabled=True, dollars=250.0, time_enabled=True, time_minutes=720, persist=True
+    )
+    assert cfg_path.exists()
+    reloaded = load_config(cfg_path)
+    assert reloaded.budget.enabled is True
+    assert reloaded.budget.total == 250.0
+    assert reloaded.budget.time_enabled is True
+    assert reloaded.budget.time_total_minutes == 720
+
+
+@pytest.mark.asyncio
+async def test_set_budget_unlimited_disables_both(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    _mock_state(orch, _snap(enabled=False, time_enabled=False))
+    applied = await orch.set_budget(
+        dollars_enabled=False, dollars=None, time_enabled=False, time_minutes=None, persist=False
+    )
+    assert orch._budget_override_enabled is False
+    assert orch._time_override_enabled is False
+    assert applied["enabled"] is False
+    assert applied["time_enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"dollars_enabled": True, "dollars": 5.0, "time_enabled": False, "time_minutes": None},
+            "dollar cap",
+        ),
+        (
+            {"dollars_enabled": False, "dollars": None, "time_enabled": True, "time_minutes": 30},
+            "time cap",
+        ),
+        (
+            {"dollars_enabled": False, "dollars": None, "time_enabled": True, "time_minutes": 5000},
+            "time cap",
+        ),
+    ],
+)
+async def test_set_budget_bounds_rejected(tmp_path: Path, kwargs: dict, match: str) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    with pytest.raises(OrchestratorError, match=match):
+        await orch.set_budget(persist=False, **kwargs)
+    # No override applied on rejection.
+    assert orch._budget_override_enabled is None or kwargs["dollars_enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# add_budget (additive)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_add_budget_tops_up_dollars(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(budget=BudgetConfig(enabled=True, total=50.0))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    _mock_state(orch, _snap(total=100.0, spent=10.0))
+    await orch.add_budget(delta_usd=50.0, persist=False)
+    assert orch._budget_override_total == 100.0
+
+
+@pytest.mark.asyncio
+async def test_add_budget_extends_time(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(budget=BudgetConfig(time_enabled=True, time_total_minutes=60))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    _mock_state(orch, _snap(time_enabled=True, time_total=180, time_elapsed=0))
+    await orch.add_budget(delta_minutes=120, persist=False)
+    assert orch._time_override_minutes == 180
+
+
+@pytest.mark.asyncio
+async def test_add_budget_requires_a_positive_delta(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    with pytest.raises(OrchestratorError, match="positive"):
+        await orch.add_budget(persist=False)
+
+
+@pytest.mark.asyncio
+async def test_add_budget_rejects_over_max_time(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(budget=BudgetConfig(time_enabled=True, time_total_minutes=4200))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    with pytest.raises(OrchestratorError, match="outside"):
+        await orch.add_budget(delta_minutes=600, persist=False)
+
+
+# --------------------------------------------------------------------------- #
+# current_budget echo
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    _mock_state(
+        orch, _snap(total=200.0, spent=42.0, time_enabled=True, time_total=1440, time_elapsed=240)
+    )
+    echo = await orch.current_budget()
+    assert echo["total"] == 200.0
+    assert echo["spent"] == 42.0
+    assert echo["time_remaining_minutes"] == 1200.0
+    assert echo["resumed"] is False
+
+
+# --------------------------------------------------------------------------- #
+# drain re-arm / reversal
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_raising_time_cap_reverses_drain(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    orch._config_path = None
+    # Session is draining because the 1h time reserve was reached.
+    orch._draining = True
+    orch._drain_initialized = True
+    orch._drain_reason = "time_budget_reserve_reached"
+    orch._end_session_report_requested = True
+    # After raising to 4h with only ~45m elapsed, the reserve is no longer hit.
+    _mock_state(orch, _snap(time_enabled=True, time_total=240, time_elapsed=45))
+    applied = await orch.set_budget(
+        dollars_enabled=False, dollars=None, time_enabled=True, time_minutes=240, persist=False
+    )
+    assert applied["resumed"] is True
+    assert orch._draining is False
+    assert orch._drain_reason is None
+    assert orch._end_session_report_requested is False
+    orch._store.update_session_state.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_raising_cap_while_still_in_reserve_does_not_reverse(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    orch._config_path = None
+    orch._draining = True
+    orch._drain_initialized = True
+    orch._drain_reason = "time_budget_reserve_reached"
+    # Still within the 20-min reserve even after the bump (55m elapsed of 60m).
+    _mock_state(orch, _snap(time_enabled=True, time_total=60, time_elapsed=55))
+    applied = await orch.set_budget(
+        dollars_enabled=False, dollars=None, time_enabled=True, time_minutes=60, persist=False
+    )
+    assert applied["resumed"] is False
+    assert orch._draining is True

@@ -70,3 +70,32 @@ def parse_duration(text: str) -> int:
             f"{MAX_TIME_BUDGET_MINUTES} minutes (1h–72h), got {minutes} minutes"
         )
     return minutes
+
+
+def parse_duration_delta(text: str) -> int:
+    """Parse a human duration into a positive whole-minute additive delta.
+
+    Like :func:`parse_duration` (same ``"2h"`` / ``"30m"`` / bare-minutes
+    grammar, fractional hours allowed) but WITHOUT the 60-minute floor — it is
+    an additive *extension* of an existing cap, so ``"30m"`` is valid. Only the
+    upper bound (``MAX_TIME_BUDGET_MINUTES``) constrains a single delta; the
+    orchestrator re-validates the resulting total against the full 1h–72h band.
+
+    Raises :class:`ValueError` for an unparseable string, a non-positive value,
+    or a delta larger than ``MAX_TIME_BUDGET_MINUTES``.
+    """
+    match = _DURATION_RE.match(text or "")
+    if match is None:
+        raise ValueError(f"invalid duration {text!r}; use e.g. '2h', '30m', or a number of minutes")
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    minutes_f = value * 60.0 if unit == "h" else value
+    minutes = int(round(minutes_f))
+    if minutes <= 0:
+        raise ValueError(f"time delta must be a positive number of minutes, got {minutes}")
+    if minutes > MAX_TIME_BUDGET_MINUTES:
+        raise ValueError(
+            f"time delta must be at most {MAX_TIME_BUDGET_MINUTES} minutes (72h), "
+            f"got {minutes} minutes"
+        )
+    return minutes
