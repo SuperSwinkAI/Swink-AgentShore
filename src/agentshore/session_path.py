@@ -208,6 +208,8 @@ def dashboard_pid_path(project_path: Path) -> Path:
 
 def is_unix_socket_path(path: Path) -> bool:
     """Return True only for a real Unix socket path, not symlinks or files."""
+    if sys.platform.startswith("win"):
+        return False
     try:
         return stat.S_ISSOCK(path.lstat().st_mode)
     except OSError:
@@ -232,6 +234,9 @@ def _has_live_unix_socket_listener(path: Path, *, connect_timeout: float = 0.3) 
     unlinking the file made the running session unreachable to ``agentshore
     dashboard``.
     """
+    if sys.platform.startswith("win"):
+        return False
+
     import socket as _socket
 
     if not is_unix_socket_path(path):
