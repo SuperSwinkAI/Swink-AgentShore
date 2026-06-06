@@ -122,6 +122,11 @@ type SetupState = {
   /** Gate issue pickup to issues opened by trusted identities
    *  (``trusted_ids.restrict_issues_to_trusted_authors``). */
   trustedIssueEnforcement: boolean;
+  /** Trusted-source GitHub logins (``trusted_ids.github_logins``), mirrored
+   *  from the sidecar so the panel can pre-paint before its own ``list()``
+   *  resolves. The TrustedSourcesScreen still self-loads — this is the
+   *  hydration parity copy, not a replacement. */
+  trustedSources: string[];
 };
 
 type SetupScreen =
@@ -152,6 +157,7 @@ const defaultSetupState: SetupState = {
   startSelection: { seedInputPath: null },
   timelapseInstalled: false,
   trustedIssueEnforcement: false,
+  trustedSources: [],
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -241,6 +247,11 @@ function loadStoredSetup(): SetupState {
       startSelection: parseStartSelection(parsed.startSelection),
       timelapseInstalled: parsed.timelapseInstalled === true,
       trustedIssueEnforcement: parsed.trustedIssueEnforcement === true,
+      trustedSources: Array.isArray(parsed.trustedSources)
+        ? parsed.trustedSources.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : defaultSetupState.trustedSources,
     };
   } catch {
     return defaultSetupState;
@@ -588,6 +599,21 @@ function SetupLayout({
     [setSetup],
   );
 
+  const onTrustedSourcesChange = useCallback(
+    (logins: string[]) => {
+      setSetup((prev) => {
+        const unchanged =
+          prev.trustedSources.length === logins.length &&
+          prev.trustedSources.every((login, index) => login === logins[index]);
+        if (unchanged) return prev;
+        const next = { ...prev, trustedSources: logins };
+        persistSetup(next);
+        return next;
+      });
+    },
+    [setSetup],
+  );
+
   const onAgentRowsChange = useCallback(
     (rows: AgentRow[]) => {
       const enabledAgents = rows.filter((r) => r.enabled).map((r) => r.type);
@@ -676,7 +702,11 @@ function SetupLayout({
                   At least two identities are required to start.
                 </p>
               )}
-              <TrustedSourcesScreen sidecar={trustedSourcesSidecar} />
+              <TrustedSourcesScreen
+                sidecar={trustedSourcesSidecar}
+                initialLogins={setup.trustedSources}
+                onSourcesChange={onTrustedSourcesChange}
+              />
               <label className="id-screen-toggle">
                 <input
                   type="checkbox"
@@ -980,6 +1010,9 @@ export function App() {
           ...(budgetSelection !== null ? { budget: budgetSelection } : {}),
           ...(hydration.trustedIssueEnforcement !== null
             ? { trustedIssueEnforcement: hydration.trustedIssueEnforcement }
+            : {}),
+          ...(hydration.trustedSources.length > 0
+            ? { trustedSources: hydration.trustedSources }
             : {}),
           timelapseInstalled: hydration.timelapse?.installed ?? false,
         };

@@ -37,7 +37,9 @@ function makeSidecar(logins: string[] = []): TrustedSourcesSidecar & {
     },
     async remove(login: string) {
       sidecar.removeCalls.push(login);
-      sidecar._logins = sidecar._logins.filter((l) => l !== login.toLowerCase());
+      sidecar._logins = sidecar._logins.filter(
+        (l) => l !== login.toLowerCase(),
+      );
     },
   };
   return sidecar;
@@ -77,7 +79,10 @@ async function render(
 ): Promise<void> {
   await act(async () => {
     root.render(
-      <TrustedSourcesScreen sidecar={sidecar} onSourcesChange={onSourcesChange} />,
+      <TrustedSourcesScreen
+        sidecar={sidecar}
+        onSourcesChange={onSourcesChange}
+      />,
     );
   });
 }
@@ -103,7 +108,10 @@ describe("TrustedSourcesScreen", () => {
   it("reports loaded logins to the parent", async () => {
     const onSourcesChange = vi.fn();
     await render(makeSidecar(["dependabot[bot]", "octocat"]), onSourcesChange);
-    expect(onSourcesChange).toHaveBeenCalledWith(["dependabot[bot]", "octocat"]);
+    expect(onSourcesChange).toHaveBeenCalledWith([
+      "dependabot[bot]",
+      "octocat",
+    ]);
   });
 
   it("renders a row per trusted source", async () => {
@@ -111,7 +119,9 @@ describe("TrustedSourcesScreen", () => {
     const list = requireTestId(container, "trusted-sources-list");
     expect(list.querySelectorAll("li")).toHaveLength(2);
     expect(getTestId(container, "trusted-source-row-octocat")).not.toBeNull();
-    expect(getTestId(container, "trusted-source-row-renovate[bot]")).not.toBeNull();
+    expect(
+      getTestId(container, "trusted-source-row-renovate[bot]"),
+    ).not.toBeNull();
   });
 
   it("adds a trusted source via the add form", async () => {
@@ -121,7 +131,10 @@ describe("TrustedSourcesScreen", () => {
     await act(async () => {
       requireTestId(container, "show-add-trusted-btn").click();
     });
-    const input = requireTestId(container, "add-trusted-login-input") as HTMLInputElement;
+    const input = requireTestId(
+      container,
+      "add-trusted-login-input",
+    ) as HTMLInputElement;
     await act(async () => {
       setInputValue(input, "octocat");
     });
@@ -158,5 +171,72 @@ describe("TrustedSourcesScreen", () => {
 
     expect(sidecar.removeCalls).toEqual(["octocat"]);
     expect(getTestId(container, "trusted-source-row-octocat")).toBeNull();
+  });
+
+  it("pre-paints hydrated initialLogins before the sidecar list() resolves", async () => {
+    // A sidecar whose list() never settles during the assertion window —
+    // proves the seeded rows paint from the hydrated SetupState mirror, not
+    // from the self-load.
+    let resolveList!: (logins: string[]) => void;
+    const lazySidecar: TrustedSourcesSidecar = {
+      list: () =>
+        new Promise<string[]>((res) => {
+          resolveList = res;
+        }),
+      add: vi.fn(),
+      remove: vi.fn(),
+    };
+
+    await act(async () => {
+      root.render(
+        <TrustedSourcesScreen
+          sidecar={lazySidecar}
+          initialLogins={["dependabot[bot]", "renovate[bot]"]}
+        />,
+      );
+    });
+
+    // list() is still pending, yet the seeded rows are on screen and there
+    // is no blank loading flash.
+    expect(getTestId(container, "trusted-sources-loading")).toBeNull();
+    expect(getTestId(container, "trusted-sources-list")).not.toBeNull();
+    expect(
+      getTestId(container, "trusted-source-row-dependabot[bot]"),
+    ).not.toBeNull();
+    expect(
+      getTestId(container, "trusted-source-row-renovate[bot]"),
+    ).not.toBeNull();
+
+    // When the sidecar finally resolves, the panel reconciles to its truth.
+    await act(async () => {
+      resolveList(["octocat"]);
+    });
+    expect(getTestId(container, "trusted-source-row-octocat")).not.toBeNull();
+    expect(getTestId(container, "trusted-source-row-renovate[bot]")).toBeNull();
+  });
+
+  it("still shows the loading placeholder when no seed is provided", async () => {
+    let resolveList!: (logins: string[]) => void;
+    const lazySidecar: TrustedSourcesSidecar = {
+      list: () =>
+        new Promise<string[]>((res) => {
+          resolveList = res;
+        }),
+      add: vi.fn(),
+      remove: vi.fn(),
+    };
+
+    await act(async () => {
+      root.render(<TrustedSourcesScreen sidecar={lazySidecar} />);
+    });
+
+    expect(getTestId(container, "trusted-sources-loading")).not.toBeNull();
+    expect(getTestId(container, "trusted-sources-list")).toBeNull();
+
+    await act(async () => {
+      resolveList([]);
+    });
+    expect(getTestId(container, "trusted-sources-loading")).toBeNull();
+    expect(getTestId(container, "trusted-sources-empty")).not.toBeNull();
   });
 });
