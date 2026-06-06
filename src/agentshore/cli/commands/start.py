@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 
+from agentshore.budget import parse_duration
 from agentshore.cli.caffeinate import maybe_re_exec_under_caffeinate
 from agentshore.cli.constants import _START_MODE_AGENT, _START_MODE_TUI
 from agentshore.cli.helpers import (
@@ -30,6 +31,7 @@ from agentshore.session.bootstrap import (
     echo_bootstrap_summary,
     preflight_identities,
     validate_budget_flag,
+    validate_time_flag,
 )
 
 
@@ -48,17 +50,29 @@ from agentshore.session.bootstrap import (
     type=float,
     default=None,
     help=(
-        "Total dollar budget for this session. When omitted, the budget from "
-        "agentshore.yaml is used (falling back to a $200 default only when the "
-        "config defines no budget)."
+        "Dollar soft cap for this session. AgentShore stops assigning new plays "
+        "within $5 of the cap and lets in-flight agents finish, so final spend "
+        "may land slightly above it. When omitted, agentshore.yaml is used "
+        "(falling back to a $200 default only when the config defines no budget)."
     ),
 )
 @click.option(
-    "--no-budget",
-    "no_budget",
+    "--time",
+    "time_budget",
+    type=str,
+    default=None,
+    help=(
+        "Wall-clock soft cap (e.g. '24h', '90m', or bare minutes), 1h–72h. "
+        "AgentShore stops assigning new plays 20 minutes before the cap and "
+        "lets in-flight agents finish. When omitted, agentshore.yaml is used."
+    ),
+)
+@click.option(
+    "--unlimited",
+    "unlimited",
     is_flag=True,
     default=False,
-    help="Disable budget enforcement (run without a spending cap)",
+    help="Disable both the dollar and time soft caps (run with no budget).",
 )
 @click.option(
     "--mode",
@@ -138,7 +152,8 @@ from agentshore.session.bootstrap import (
 def start(
     seed: str | None,
     budget: float | None,
-    no_budget: bool,
+    time_budget: str | None,
+    unlimited: bool,
     mode: str,
     tui: bool,
     socket: str | None,
@@ -176,11 +191,21 @@ def start(
     # desktop-n7ci). No-op on Linux/Windows and inside pytest.
     maybe_re_exec_under_caffeinate()
 
-    # Parse: validate flag-level options the bootstrap needs. Budget itself is
-    # resolved against the loaded config inside bootstrap (so an omitted
-    # --budget can defer to agentshore.yaml); validate the explicit value here
-    # so a bad --budget surfaces as a usage error before any work happens.
+    # Parse: validate flag-level options the bootstrap needs. The caps are
+    # resolved against the loaded config inside bootstrap (so omitted flags can
+    # defer to agentshore.yaml); validate the explicit values here so a bad flag
+    # surfaces as a usage error before any work happens.
+    if unlimited and (budget is not None or time_budget is not None):
+        raise click.BadParameter("--unlimited cannot be combined with --budget or --time.")
     validate_budget_flag(budget)
+    if time_budget is not None:
+        try:
+            time_override: int | None = parse_duration(time_budget)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--time") from exc
+    else:
+        time_override = None
+    validate_time_flag(time_override)
     policy_mode_override = _resolve_policy_mode_override(
         policy_mode=policy_mode,
         legacy_deterministic=legacy_deterministic,
@@ -199,7 +224,8 @@ def start(
             run_session_id=session_id or str(uuid.uuid4()),
             seed=seed,
             budget_override=budget,
-            no_budget=no_budget,
+            time_override=time_override,
+            unlimited=unlimited,
             policy_mode_override=policy_mode_override,
             run_mode=run_mode,
             socket=socket,
@@ -245,7 +271,7 @@ def start(
             ipc_endpoint=ipc_endpoint,
             session_id=run_session_id,
             seed=seed,
-            budget=resolved.effective_budget,
+            budget_cfg=cfg.budget,
             policy_mode=effective_policy_mode,
             policy=policy,
             strict=strict,

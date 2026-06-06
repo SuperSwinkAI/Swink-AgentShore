@@ -236,6 +236,60 @@ describe("PlaysPanel", () => {
     expect(container.textContent).toContain("$55.01 / $60.00");
     expect(container.textContent).toContain("waiting for agents to finish");
   });
+
+  it("appends remaining time to the budget label when a time cap is set", async () => {
+    await act(async () => {
+      root.render(<PlaysPanel />);
+    });
+    await act(async () => {
+      notifyPlaysPanelUpdate(
+        stateUpdate({
+          total_cost: 12.5,
+          budget: {
+            enabled: true,
+            total_budget: 200,
+            spent: 12.5,
+            remaining: 187.5,
+            estimated_cost_per_play: 0.25,
+            time_enabled: true,
+            time_total_minutes: 1440,
+            time_elapsed_minutes: 86,
+            time_remaining_minutes: 1354,
+          },
+        }),
+      );
+    });
+
+    // 1354 minutes -> 22h 34m.
+    expect(container.textContent).toContain("$12.50 / $200.00 · 22h 34m left");
+  });
+
+  it("omits the time suffix when no time cap is set (dollar-only)", async () => {
+    await act(async () => {
+      root.render(<PlaysPanel />);
+    });
+    await act(async () => {
+      notifyPlaysPanelUpdate(
+        stateUpdate({
+          total_cost: 12.5,
+          budget: {
+            enabled: true,
+            total_budget: 200,
+            spent: 12.5,
+            remaining: 187.5,
+            estimated_cost_per_play: 0.25,
+            time_enabled: false,
+            time_total_minutes: null,
+            time_elapsed_minutes: null,
+            time_remaining_minutes: null,
+          },
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("$12.50 / $200.00");
+    expect(container.textContent).not.toContain("left");
+  });
 });
 
 describe("FeedbackModal", () => {
