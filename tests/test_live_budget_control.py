@@ -208,6 +208,39 @@ async def test_add_budget_rejects_over_max_time(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_budget_pushes_state_update_for_live_dashboard(tmp_path: Path) -> None:
+    # A live cap change must repaint the dashboard immediately, not wait for the
+    # next loop tick — set_budget pushes on_state_update.
+    orch = make_test_orchestrator(tmp_path)
+    orch._state_provider = AsyncMock()
+    _mock_state(orch, _snap(total=40.0, time_enabled=True, time_total=120, time_elapsed=0))
+    await orch.set_budget(
+        dollars_enabled=True, dollars=40.0, time_enabled=True, time_minutes=120, persist=False
+    )
+    orch._state_provider.on_state_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_add_budget_pushes_state_update(tmp_path: Path) -> None:
+    cfg = RuntimeConfig(budget=BudgetConfig(enabled=True, total=50.0))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    orch._state_provider = AsyncMock()
+    _mock_state(orch, _snap(total=100.0, spent=10.0))
+    await orch.add_budget(delta_usd=50.0, persist=False)
+    orch._state_provider.on_state_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_current_budget_does_not_push_state(tmp_path: Path) -> None:
+    # Read-only prefill must not emit a state_update.
+    orch = make_test_orchestrator(tmp_path)
+    orch._state_provider = AsyncMock()
+    _mock_state(orch, _snap(total=200.0, spent=10.0))
+    await orch.current_budget()
+    orch._state_provider.on_state_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
     orch = make_test_orchestrator(tmp_path)
     _mock_state(

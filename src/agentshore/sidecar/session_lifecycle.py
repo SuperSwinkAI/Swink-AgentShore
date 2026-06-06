@@ -491,6 +491,11 @@ async def _start_orchestrator(
         # session takes the seed bootstrap path instead of silently falling
         # back to open-start (no_seed_input). None ⇒ open-start, as before.
         seed_path=Path(seed_path) if seed_path else None,
+        # Persist live budget changes (and SIGHUP reloads) to the project's
+        # agentshore.yaml — without this the orchestrator's _config_path stays
+        # None and Orchestrator.set_budget(persist=True) silently no-ops, so a
+        # desktop "Adjust Budget…" change would not survive a restart.
+        config_path=project_path / "agentshore.yaml",
         # Issue #561: tell the engine it's hosted inside the desktop sidecar
         # so drain.py skips ``webbrowser.open`` and instead fires the
         # esr_ready callback wired below.
