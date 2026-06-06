@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from agentshore.cli import main
+from agentshore.session_path import budget_from_state_line
 
 _APPLIED: dict[str, object] = {
     "enabled": True,
@@ -148,3 +149,41 @@ def test_add_budget_command_name_is_hyphenated() -> None:
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "add-budget" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# budget_from_state_line — get_state envelope parsing (the readback that fed the
+# CLI's resulting-caps echo; budget lives under payload, not top-level).
+# --------------------------------------------------------------------------- #
+
+
+def test_budget_from_state_line_reads_payload_nesting() -> None:
+    import json
+
+    env = json.dumps(
+        {"type": "state_update", "payload": {"budget": {"enabled": True, "total": 45.0}}}
+    ).encode()
+    budget = budget_from_state_line(env)
+    assert budget == {"enabled": True, "total": 45.0}
+
+
+def test_budget_from_state_line_tolerates_flat_shape() -> None:
+    import json
+
+    env = json.dumps({"type": "state_update", "budget": {"enabled": False}}).encode()
+    assert budget_from_state_line(env) == {"enabled": False}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        None,
+        b"",
+        b"   ",
+        b"not json",
+        b'{"type": "error", "error": "boom"}',
+        b'{"type": "state_update", "payload": {}}',
+    ],
+)
+def test_budget_from_state_line_returns_none_on_no_budget(line: bytes | None) -> None:
+    assert budget_from_state_line(line) is None
