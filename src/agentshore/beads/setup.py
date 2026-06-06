@@ -185,6 +185,31 @@ def _download_bd(version: str, asset: str, kind: str) -> str:
     return str(dest)
 
 
+def _drain_terminal_input() -> None:
+    """Discard any buffered terminal input before an interactive prompt.
+
+    The identity / agent-select wizards that run earlier in ``agentshore init``
+    use raw-mode keypress readers (beaupy/questo) and can leave the Enter that
+    submitted them queued in the console input buffer. Without draining it,
+    ``click.confirm`` below reads that stray newline immediately and resolves to
+    its default instead of waiting for the user — so the prompt appears but
+    never blocks. Best-effort and never raises (no console / piped stdin ⇒
+    nothing to drain).
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import msvcrt
+
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        else:
+            import termios
+
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
 def provision_bd(*, assume_yes: bool = False) -> str | None:
     """Best-effort download of the pinned bd into the managed dir.
 
@@ -208,6 +233,8 @@ def provision_bd(*, assume_yes: bool = False) -> str | None:
     if not assume_yes:
         import click
 
+        # Flush any leftover keystrokes so the prompt actually waits for input.
+        _drain_terminal_input()
         if not click.confirm(
             f"  bd {version} is required but not installed. "
             f"Download it from github.com/{_BEADS_REPO} now?",
