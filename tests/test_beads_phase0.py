@@ -141,6 +141,157 @@ async def test_load_graph_returns_none_when_bd_command_fails(tmp_path: object) -
 
 
 @pytest.mark.asyncio
+async def test_load_graph_retries_empty_stdout_then_returns_none(tmp_path: object) -> None:
+    """Empty stdout (contended Dolt read) is retried, then yields None — not an
+    empty graph — when no populated graph was ever cached.
+
+    ``bd list --json`` always prints at least ``[]`` on a real read, so empty
+    stdout signals a lock-contended read (Windows mandatory file locks), never a
+    truthful empty store. Treating it as empty would flip ``has_epics`` off and
+    re-trigger seed_project.
+    """
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import load_graph
+
+    beads_mod._reset_graph_cache()
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+
+    bd = AsyncMock(return_value="   ")  # whitespace-only == empty
+    with (
+        patch("agentshore.beads.bd", bd),
+        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock) as sleep,
+    ):
+        result = await load_graph(p)
+
+    assert result is None  # NOT an empty ProjectGraph
+    # One initial read + the full retry budget.
+    assert bd.await_count == beads_mod._BD_EMPTY_READ_RETRIES + 1
+    assert sleep.await_count == beads_mod._BD_EMPTY_READ_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_load_graph_empty_read_reuses_last_good_graph(tmp_path: object) -> None:
+    """A contended empty read after a populated load reuses the cached graph,
+    so a momentary lock contention never downgrades a seeded project."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import load_graph
+
+    beads_mod._reset_graph_cache()
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+    populated = [
+        {"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"},
+        {
+            "id": "task-1",
+            "title": "Login",
+            "type": "task",
+            "status": "open",
+            "parent_id": "epic-1",
+        },
+    ]
+
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
+        good = await load_graph(p)
+    assert good is not None and good.has_epics
+
+    # Next tick: bd returns empty stdout on every attempt (full contention).
+    with (
+        patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=""),
+        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        reused = await load_graph(p)
+
+    assert reused is good  # exact cached instance, not a fresh empty graph
+    assert reused.has_epics
+
+
+@pytest.mark.asyncio
+async def test_load_graph_transient_bderror_reuses_last_good_graph(tmp_path: object) -> None:
+    """A transient BdError after a populated load reuses the cached graph too."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import BdError, load_graph
+
+    beads_mod._reset_graph_cache()
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+    populated = [{"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"}]
+
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
+        good = await load_graph(p)
+    assert good is not None and good.has_epics
+
+    with patch("agentshore.beads.bd", side_effect=BdError("dolt lock held")):
+        reused = await load_graph(p)
+
+    assert reused is good
+
+
+@pytest.mark.asyncio
+async def test_load_graph_valid_empty_list_is_truthful_empty_graph(tmp_path: object) -> None:
+    """A valid empty ``[]`` response is a real empty store: an empty graph (not
+    None), and it is NOT cached so it never masks a later real read."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import load_graph
+
+    beads_mod._reset_graph_cache()
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value="[]"):
+        result = await load_graph(p)
+
+    assert result is not None
+    assert not result.has_epics
+    assert result.tasks_total == 0
+    key = os.path.normcase(os.path.normpath(str(p.resolve())))
+    assert key not in beads_mod._LAST_GOOD_GRAPH
+
+
+@pytest.mark.asyncio
+async def test_load_graph_valid_empty_clears_stale_last_good_cache(tmp_path: object) -> None:
+    """A genuine wipe (valid ``[]`` after a populated load) both reports empty
+    now AND drops the stale cache, so a later contended read can't resurrect the
+    wiped graph."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+    from agentshore.beads import load_graph
+
+    beads_mod._reset_graph_cache()
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+    key = os.path.normcase(os.path.normpath(str(p.resolve())))
+
+    populated = [{"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"}]
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
+        await load_graph(p)
+    assert key in beads_mod._LAST_GOOD_GRAPH  # cached while populated
+
+    # Genuine wipe: bd now reports a valid empty store.
+    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value="[]"):
+        empty = await load_graph(p)
+    assert empty is not None and not empty.has_epics
+    assert key not in beads_mod._LAST_GOOD_GRAPH  # stale entry cleared
+
+    # A subsequent contended read must NOT resurrect the wiped graph.
+    with (
+        patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=""),
+        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        after_wipe = await load_graph(p)
+    assert after_wipe is None
+
+
+@pytest.mark.asyncio
 async def test_load_graph_populates_tasks_and_resolves_epic(tmp_path: object) -> None:
     from pathlib import Path
 

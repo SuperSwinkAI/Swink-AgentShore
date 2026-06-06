@@ -619,25 +619,103 @@ def _graph_task_from_bead(
     )
 
 
+# Retry budget for a contended graph read. On Windows the embedded-Dolt store
+# uses *mandatory* file locks (POSIX locks are advisory), so a per-tick
+# ``bd list`` issued while an agent subprocess holds the lock can return rc=0
+# with empty stdout. ``bd list --json`` always prints at least ``[]`` on a real
+# read, so empty stdout is treated as a transient contended read and retried —
+# never accepted as a truthful empty graph (which would falsely flip
+# ``has_epics`` off, re-triggering seed_project and unmasking fleet expansion).
+_BD_EMPTY_READ_RETRIES = 4
+_BD_EMPTY_READ_BACKOFF_SECONDS = 0.2
+
+# Last successfully-loaded *populated* graph, keyed by ``str(project_path)``. A
+# contended read (empty stdout after the full retry budget, or a transient bd
+# failure) reuses this instead of synthesising a false-empty graph, so a
+# momentary lock contention can never downgrade a seeded project to "unseeded".
+# Only graphs with epics are cached, so a genuinely empty store (valid ``[]``)
+# is reported truthfully and never masked.
+_LAST_GOOD_GRAPH: dict[str, ProjectGraph] = {}
+
+
+def _reset_graph_cache() -> None:
+    """Clear the last-known-good graph cache. Test hook — not used in prod."""
+    _LAST_GOOD_GRAPH.clear()
+
+
+async def _read_graph_raw(project_path: Path) -> str | None:
+    """Run the graph ``bd list`` and return stdout, retrying on empty output.
+
+    ``bd list --json`` prints a JSON document on every successful read — at
+    minimum ``[]`` for an empty store. Empty stdout is therefore never a
+    truthful "no beads"; it signals a contended/aborted read (on Windows an
+    agent subprocess holds the embedded-Dolt store's mandatory file lock while
+    running its own ``bd``). We retry a few times so a transient lock-holder
+    clears. Returns the raw JSON on success, or ``None`` if stdout stays empty
+    across the whole retry budget. ``BdError`` propagates to the caller.
+    """
+    for attempt in range(_BD_EMPTY_READ_RETRIES + 1):
+        raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+        if raw.strip():
+            return raw
+        if attempt < _BD_EMPTY_READ_RETRIES:
+            await asyncio.sleep(_BD_EMPTY_READ_BACKOFF_SECONDS)
+    return None
+
+
 async def load_graph(project_path: Path) -> ProjectGraph | None:
     """Load the beads project graph for *project_path*.
 
     Returns ``None`` when beads is not initialised for the project
     (no ``.beads/`` directory). Returns an empty ``ProjectGraph`` when
-    beads is present but has no epics yet.
+    beads is present but genuinely has no epics yet (a valid empty ``bd list``
+    response). A *contended* read — empty stdout, a parse error, or a transient
+    ``bd`` failure — never downgrades a known-populated graph to empty: it
+    reuses the last cached populated graph (or ``None`` if we have never seen
+    one), so transient Windows file-lock contention cannot flip ``has_epics``.
     """
     if not (project_path / ".beads").exists():
         return None
 
+    # Canonicalise so the same project keyed by different casing / relative
+    # spelling / symlink (Windows path case is not normalised) shares one cache
+    # entry and one set of consumers can't desync on spelling.
+    cache_key = os.path.normcase(os.path.normpath(str(project_path.resolve())))
     try:
-        raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
-        bead_items = _as_json_list(raw)
+        raw = await _read_graph_raw(project_path)
     except BdError as exc:
-        _logger.warning("beads_graph_load_failed", project_path=str(project_path), error=str(exc))
-        return None
+        _logger.warning(
+            "beads_graph_load_failed",
+            project_path=cache_key,
+            error=str(exc),
+            reused_cache=cache_key in _LAST_GOOD_GRAPH,
+        )
+        return _LAST_GOOD_GRAPH.get(cache_key)
+
+    if raw is None:
+        # Empty stdout after the full retry budget: a contended read, not an
+        # empty store. Reuse the last populated graph so a momentary lock
+        # contention cannot re-trigger seed_project. Falls through to None only
+        # when we have never seen a populated graph for this project (e.g. a
+        # truly fresh, pre-seed boot where bd legitimately has nothing yet —
+        # though that path normally returns a valid ``[]``, not empty stdout).
+        _logger.warning(
+            "beads_graph_empty_read",
+            project_path=cache_key,
+            reused_cache=cache_key in _LAST_GOOD_GRAPH,
+        )
+        return _LAST_GOOD_GRAPH.get(cache_key)
+
+    try:
+        bead_items = _as_json_list(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        _logger.warning("beads_graph_parse_failed", project_path=str(project_path), error=str(exc))
-        return None
+        _logger.warning(
+            "beads_graph_parse_failed",
+            project_path=cache_key,
+            error=str(exc),
+            reused_cache=cache_key in _LAST_GOOD_GRAPH,
+        )
+        return _LAST_GOOD_GRAPH.get(cache_key)
 
     beads = [_parse_bead(item) for item in bead_items]
     beads_by_id = {bead.bead_id: bead for bead in beads if bead.bead_id}
@@ -688,7 +766,7 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
     tasks_ready = sum(1 for task in tasks if task.ready)
     tasks_blocked = sum(1 for task in tasks if task.blocked_by_ids)
 
-    return ProjectGraph(
+    graph = ProjectGraph(
         epics=epics,
         tasks=tasks,
         tasks_ready=tasks_ready,
@@ -696,6 +774,16 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
         tasks_total=total_tasks,
         global_closure_ratio=global_ratio,
     )
+    # Cache only populated graphs, and *clear* the entry on a truthful empty
+    # read. A known epic graph then survives a later contended read (reused
+    # above instead of a false-empty downgrade), while a genuine wipe/reinit
+    # (valid ``[]``) both reports empty now and drops the stale cache so a
+    # subsequent contended read can't resurrect the wiped graph.
+    if graph.has_epics:
+        _LAST_GOOD_GRAPH[cache_key] = graph
+    else:
+        _LAST_GOOD_GRAPH.pop(cache_key, None)
+    return graph
 
 
 # ---------------------------------------------------------------------------
