@@ -1406,7 +1406,11 @@ async def _kill_process_windows(proc: asyncio.subprocess.Process, agent_id: str)
     except TimeoutError:
         _logger.warning("sending_sigkill", agent_id=agent_id)
         returncode = await _taskkill(force=True)
-        await proc.wait()
+        # Bound this wait: ``taskkill /F`` can still fail (elevation, a child
+        # that refuses to die), and an unbounded wait would hang session
+        # teardown forever. Wait briefly, then fall through to log and close.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
 
     if returncode != 0:
         # taskkill fails for already-dead PIDs or privilege reasons. Surface
