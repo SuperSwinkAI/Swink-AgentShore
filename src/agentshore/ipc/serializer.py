@@ -126,6 +126,9 @@ def _serialize_pull_request(pr: PullRequestSnapshot) -> dict[str, object]:
 
 
 def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
+    def _finite_or_none(value: float | None) -> float | None:
+        return value if value is not None and math.isfinite(value) else None
+
     return {
         "enabled": budget.enabled,
         "total_budget": budget.total_budget if budget.enabled else None,
@@ -134,6 +137,16 @@ def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
             budget.remaining if budget.enabled and math.isfinite(budget.remaining) else None
         ),
         "estimated_cost_per_play": budget.estimated_cost_per_play,
+        "time_enabled": budget.time_enabled,
+        "time_total_minutes": _finite_or_none(budget.time_total_minutes)
+        if budget.time_enabled
+        else None,
+        "time_elapsed_minutes": _finite_or_none(budget.time_elapsed_minutes)
+        if budget.time_enabled
+        else None,
+        "time_remaining_minutes": _finite_or_none(budget.time_remaining_minutes)
+        if budget.time_enabled
+        else None,
     }
 
 

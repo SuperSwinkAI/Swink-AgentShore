@@ -49,11 +49,7 @@ To provision them:
 1. Enroll in the Apple Developer Program (~$99/yr).
 2. In Xcode → Settings → Accounts → Manage Certificates, create both a
    "Developer ID Application" and a "Developer ID Installer" certificate.
-3. Confirm they resolve from the login Keychain:
-   ```sh
-   security find-identity -v -p codesigning   # Application cert
-   security find-identity -v                   # Installer cert (any policy)
-   ```
+3. Confirm they resolve from the login Keychain with `security find-identity`.
    The build script auto-detects the first matching identity of each kind —
    no env var or config edit is required. If no Application cert is present
    the build proceeds **unsigned** (Gatekeeper right-click-Open expected on
@@ -62,23 +58,9 @@ To provision them:
 ### 2.2 Notarization profile
 
 Notarization is opt-in via the `--notarize` flag and uses a stored `notarytool`
-keychain profile (default name `agentshore-notary`). Create it once with either
-an App Store Connect API key (preferred) or an Apple ID + app-specific
-password:
-
-```sh
-# API-key path (App Store Connect → Users and Access → Keys, Developer role)
-xcrun notarytool store-credentials agentshore-notary \
-  --key /path/to/AuthKey_XXXX.p8 \
-  --key-id <KEY_ID> \
-  --issuer <ISSUER_ID>
-
-# Apple ID fallback (app-specific password from account.apple.com)
-xcrun notarytool store-credentials agentshore-notary \
-  --apple-id you@example.com \
-  --team-id <TEAM_ID> \
-  --password <app-specific-password>
-```
+keychain profile (default name `agentshore-notary`). Create it once with
+`xcrun notarytool store-credentials`, using either an App Store Connect API key
+(preferred) or an Apple ID + app-specific password.
 
 The build then runs `xcrun notarytool submit "$PKG" --keychain-profile
 agentshore-notary --wait` followed by `xcrun stapler staple "$PKG"`. Use
@@ -93,7 +75,7 @@ required by the embedded Python sidecar:
 | Key | Reason |
 | --- | --- |
 | `com.apple.security.cs.allow-jit` | CPython's regex engine and downstream libraries may JIT |
-| `com.apple.security.cs.allow-unsigned-executable-memory` | The frozen Python runtime maps executable archives as RWX |
+| `com.apple.security.cs.allow-unsigned-executable-memory` | Python and native dependencies may map executable memory |
 | `com.apple.security.cs.disable-library-validation` | Allows loading Python dylibs not signed by the same team |
 | `com.apple.security.cs.allow-dyld-environment-variables` | Lets the sidecar set `DYLD_*` for its managed venv |
 
@@ -103,11 +85,8 @@ If a signed build is rejected, inspect `Console.app` for
 ## 3. Tauri updater keypair
 
 Tauri's auto-updater verifies `latest.json` against a public key embedded in
-the application. Generate the keypair once and store it long-term:
-
-```sh
-tauri signer generate -w ~/.tauri/agentshore.key
-```
+the application. Generate the keypair once with `tauri signer generate` and
+store it long-term.
 
 Put the printed public key in `desktop/src-tauri/tauri.conf.json` at
 `plugins.updater.pubkey` (replacing the `TAURI_SIGNING_PUBLIC_KEY`
@@ -117,15 +96,8 @@ losing it forces every existing install to re-bootstrap.
 The updater fetches its manifest from
 `https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/latest.json`
 (`plugins.updater.endpoints`). After a `tauri build`, sign each artifact with
-`tauri signer sign` and assemble the manifest:
-
-```sh
-python scripts/generate_update_manifest.py \
-  --version 0.2.1 --tag v0.2.1 \
-  --notes "…" \
-  --sig-darwin-aarch64 "$(cat <artifact>.app.tar.gz.sig)" \
-  --output latest.json
-```
+`tauri signer sign` and assemble the manifest with
+`scripts/generate_update_manifest.py`.
 
 `generate_update_manifest.py` is a multi-platform helper and still accepts
 `--sig-windows-x64` / `--sig-linux-x64` flags, but only the macOS signatures
@@ -151,15 +123,9 @@ and timelapse components also patch their `pkgbuild` postinstall timeout from
 
 ## 5. Building a signed release
 
-The whole pipeline is the build script with no flags (per repo convention,
-"build" always means this). Useful variants:
-
-```sh
-./scripts/build-macos.sh             # build + sign .app/.dmg/.pkg, reveal in Finder
-./scripts/build-macos.sh --notarize  # additionally notarize + staple the .pkg
-./scripts/build-macos.sh --no-sign   # force unsigned output (local dev iteration)
-./scripts/build-macos.sh --no-pkg    # only .app + .dmg, skip the .pkg
-```
+The whole pipeline is `scripts/build-macos.sh` with no flags (per repo
+convention, "build" always means this). Useful variants are `--notarize`,
+`--no-sign`, and `--no-pkg`.
 
 Signing is automatic whenever the Developer ID certs are in the Keychain
 (phases 6 and 9 of the script); no env vars are required. `--notarize`

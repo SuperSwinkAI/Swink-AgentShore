@@ -12,6 +12,7 @@ from __future__ import annotations
 import click
 
 from agentshore import __version__
+from agentshore.cli.commands.add_budget import add_budget
 from agentshore.cli.commands.dashboard import dashboard
 from agentshore.cli.commands.identity import identity
 from agentshore.cli.commands.init import init
@@ -38,6 +39,7 @@ main.add_command(identity)
 main.add_command(trusted_ids)
 main.add_command(dashboard)
 main.add_command(stop)
+main.add_command(add_budget)
 
 
 __all__ = ["main"]

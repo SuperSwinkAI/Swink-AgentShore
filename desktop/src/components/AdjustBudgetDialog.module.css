@@ -1,0 +1,79 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.dialog {
+  background: var(--fm-panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.25);
+  width: min(640px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 24px;
+}
+
+.header {
+  margin-bottom: 16px;
+}
+
+.header h2 {
+  margin: 0 0 4px 0;
+  font-size: 20px;
+}
+
+.header p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+  max-width: 60ch;
+}
+
+.body {
+  display: grid;
+  gap: 16px;
+}
+
+.error {
+  color: var(--danger, #b91c1c);
+  font-size: 14px;
+  margin: 12px 0 0 0;
+}
+
+.applied {
+  display: none;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, #ffffff);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #ffffff;
+}

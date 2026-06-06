@@ -240,12 +240,7 @@ def compute_play_timeline(plays: list[PlayRecord]) -> list[PlayTimelineEntry]:
 
 
 def compute_play_stats(plays: list[PlayRecord]) -> list[PlayStatsEntry]:
-    """Aggregate play counts, success rates, cost, and average duration by play type.
-
-    Plays whose ``play_type`` is in ``INTERNAL_PLAY_TYPES`` are excluded.
-    The set is empty after desktop-rni0; the filter is retained for any
-    future bookkeeping plays that should stay out of the ESR.
-    """
+    """Aggregate user-facing play stats, excluding ``INTERNAL_PLAY_TYPES``."""
     internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     by_type: dict[str, _PlayStatsAccumulator] = defaultdict(_PlayStatsAccumulator)
     for play in plays:
@@ -315,12 +310,7 @@ def compute_control_rejections(
 
 
 def compute_play_log_columns() -> list[PlayLogColumnEntry]:
-    """Return the lifecycle-ordered play columns used by the ESR play log.
-
-    Internal plays (``INTERNAL_PLAY_TYPES``) are excluded — the play log
-    is user-facing agent activity. After desktop-rni0 the registry has
-    22 entries with 19 active and 3 reserved FUTURE_N slots.
-    """
+    """Return lifecycle-ordered ESR play-log columns."""
     internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     result: list[PlayLogColumnEntry] = []
     previous_phase: int | None = None
@@ -345,19 +335,7 @@ def compute_play_log_rows(
     plays: list[PlayRecord],
     agents: Sequence[AgentRecord] | None = None,
 ) -> list[PlayLogRowEntry]:
-    """Convert play records into compact one-row play-log entries.
-
-    Internal plays (``INTERNAL_PLAY_TYPES``) are filtered out — they are
-    orchestrator-only activity. The set is empty after desktop-rni0.
-
-    Agent display names (desktop-j8b): renders ``<Type>/<tier>:
-    <Name>`` (e.g. "Claude/large: Ember Raven") when the agents table
-    has model_tier + display_name persisted; falls back to
-    ``<Type>:<6-char-uuid-suffix>`` for old DBs whose agents were
-    registered before the schema migration, and the bare agent_id as
-    last resort. Empty agent_id (internal play) is impossible here
-    because internals are already filtered above.
-    """
+    """Convert play records into ESR rows with best-known agent display names."""
     internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     agent_lookup: dict[str, AgentRecord] = {}
     if agents is not None:

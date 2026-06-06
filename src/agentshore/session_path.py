@@ -575,6 +575,111 @@ def request_drain(
         return "error"
 
 
+def budget_from_state_line(line: bytes | None) -> dict[str, object] | None:
+    """Extract the ``budget`` mapping from a single ``state_update`` reply line.
+
+    ``get_state`` replies with the enveloped ``state_update`` message
+    (``{"type": "state_update", ..., "payload": {..., "budget": {...}}}``), so the
+    budget lives under ``payload``. Tolerates a flat shape too. Returns ``None``
+    for a blank/unparseable/error line or a missing budget.
+    """
+    import json as _json
+
+    if line is None or not line.strip():
+        return None
+    try:
+        env = _json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError):
+        return None
+    if not isinstance(env, dict) or env.get("type") == "error":
+        return None
+    payload = env.get("payload")
+    container = payload if isinstance(payload, dict) else env
+    budget = container.get("budget")
+    return budget if isinstance(budget, dict) else None
+
+
+def request_add_budget(
+    project_path: Path,
+    *,
+    delta_usd: float | None,
+    delta_minutes: int | None,
+) -> str | dict[str, object]:
+    """Additively top up / extend the live session budget over IPC.
+
+    The NDJSON control channel is fire-and-forget for mutating commands, but the
+    server answers ``get_state`` from its cached ``state_update``. Because
+    ``add_budget`` is applied asynchronously by the orchestrator's command pump,
+    a single immediate ``get_state`` can race ahead of the change. So this reads a
+    baseline, sends ``add_budget``, then polls ``get_state`` until the cached
+    budget reflects the new caps (or a short deadline elapses) and returns it, so
+    the CLI reports the *applied* caps rather than the pre-change snapshot.
+
+    Returns ``"no_session"`` when no IPC endpoint is discoverable, ``"error"`` /
+    ``"timeout"`` on transport failure, or the budget dict on success (``{}`` if
+    the snapshot never carried a budget).
+    """
+    import json as _json
+    import socket as _socket
+    import time as _time
+
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return "no_session"
+
+    add_cmd: dict[str, object] = {"command": "add_budget"}
+    if delta_usd is not None:
+        add_cmd["delta_usd"] = delta_usd
+    if delta_minutes is not None:
+        add_cmd["delta_minutes"] = delta_minutes
+    get_state = (_json.dumps({"command": "get_state"}) + "\n").encode()
+
+    def _read_line(sock: _socket.socket, buf: bytes) -> tuple[bytes | None, bytes]:
+        while b"\n" not in buf:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return None, buf
+            buf += chunk
+        line, _, rest = buf.partition(b"\n")
+        return line, rest
+
+    try:
+        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            if endpoint.kind == "unix":
+                if endpoint.path is None:
+                    return "no_session"
+                sock.connect(str(endpoint.path))
+            else:
+                sock.connect((endpoint.host, endpoint.port))
+
+            buf = b""
+            # Baseline so we can tell when the async apply lands.
+            sock.sendall(get_state)
+            line, buf = _read_line(sock, buf)
+            baseline = budget_from_state_line(line)
+
+            sock.sendall((_json.dumps(add_cmd) + "\n").encode())
+
+            applied = baseline
+            deadline = _time.monotonic() + 3.0
+            while _time.monotonic() < deadline:
+                _time.sleep(0.15)
+                sock.sendall(get_state)
+                line, buf = _read_line(sock, buf)
+                current = budget_from_state_line(line)
+                if current is not None and current != baseline:
+                    applied = current
+                    break
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
+
+    return applied if isinstance(applied, dict) else {}
+
+
 def stop_dashboard_process(project_path: Path) -> bool:
     """Terminate the recorded dashboard bridge process, if one exists."""
     pid = read_dashboard_pid(project_path)

@@ -40,26 +40,11 @@ If you spam the tracker with agent-generated issues or PRs, your GitHub account 
 
 ## Development Setup
 
-```bash
-git clone https://github.com/SuperSwinkAI/Swink-AgentShore.git
-cd Swink-AgentShore
-uv sync --group dev
-uv run agentshore --help
-```
-
-The virtualenv is created automatically at `.venv/` by `uv sync`.
+Clone the repository, run `uv sync --group dev`, and use `uv run ...` for local commands. The virtualenv is created automatically at `.venv/`.
 
 ## Running Tests
 
-```bash
-uv run pytest tests/            # full suite (~75s on 8-core, 80% coverage gate)
-uv run pytest tests/test_cli.py # single file
-uv run ruff check src/ tests/   # lint
-uv run ruff format src/ tests/  # format
-uv run mypy src/                # type check
-```
-
-The full suite runs under `pytest-xdist` (`-n auto`) by default. Do not disable it with `-o addopts=''` — use `--override-ini="addopts="` for a single targeted test run if startup time would exceed the test time.
+The standard checks are `uv run pytest tests/`, `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`, and `uv run mypy src/`. The full suite runs under `pytest-xdist` (`-n auto`) by default; use `-p no:xdist` for serial debugging.
 
 ## Submitting a PR
 
@@ -73,12 +58,6 @@ The full suite runs under `pytest-xdist` (`-n auto`) by default. Do not disable 
 ## Commit Messages
 
 Concise, imperative-mood subject lines:
-
-```
-Add WarmupGate prerequisite override
-Fix config_index type mismatch in selector mixin
-Refactor _ensure_* methods into schema.sql baseline
-```
 
 No ticket numbers in commit messages — link issues in the PR description.
 

@@ -19,7 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
-from agentshore.budget import MIN_ENABLED_BUDGET_USD
+from agentshore.budget import (
+    MAX_TIME_BUDGET_MINUTES,
+    MIN_ENABLED_BUDGET_USD,
+    MIN_TIME_BUDGET_MINUTES,
+)
 from agentshore.config.models import BudgetConfig, TimelapseConfig
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
@@ -457,32 +461,21 @@ def set_seed_paths(payload: object) -> dict[str, object]:
 
 # Accepted keys on the ``budget:`` mapping written to agentshore.yaml. Mirrors
 # the ``BudgetConfig`` dataclass in ``src/agentshore/config/models.py``.
-_BUDGET_KEYS: frozenset[str] = frozenset({"enabled", "total", "warning_threshold"})
+_BUDGET_KEYS: frozenset[str] = frozenset(
+    {"enabled", "total", "warning_threshold", "time_enabled", "time_total_minutes"}
+)
 
 
 def _write_budget(yaml_text: str, budget: BudgetConfig) -> str:
     """Round-trip *yaml_text* and set the top-level ``budget`` mapping.
 
-    Preserves comments and key ordering on every other section via
-    ruamel.yaml. Mirrors :func:`_write_target_branch` so the two writers
-    share a code shape and a serialiser.
+    Delegates to :func:`agentshore.config.budget_writer.render_budget_yaml` so
+    the sidecar RPC and the live ``Orchestrator.set_budget`` path share one
+    serialiser. Preserves comments / key ordering on every other section.
     """
-    from ruamel.yaml import YAML
+    from agentshore.config.budget_writer import render_budget_yaml
 
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    existing = data.get("budget")
-    budget_block: dict[str, object] = existing if isinstance(existing, dict) else {}
-    budget_block["enabled"] = bool(budget.enabled)
-    budget_block["total"] = float(budget.total)
-    budget_block["warning_threshold"] = float(budget.warning_threshold)
-    data["budget"] = budget_block
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
+    return render_budget_yaml(yaml_text, budget)
 
 
 def _validate_budget_payload(payload: object) -> BudgetConfig:
@@ -539,7 +532,33 @@ def _validate_budget_payload(payload: object) -> BudgetConfig:
             raise ProjectError("budget.warning_threshold must be finite")
         if threshold < 0 or threshold > 1:
             raise ProjectError("budget.warning_threshold must be between 0 and 1")
-    return BudgetConfig(enabled=enabled, total=total, warning_threshold=threshold)
+    # Time soft cap (independent dimension). Both fields optional; default off.
+    time_enabled = payload.get("time_enabled", False)
+    if not isinstance(time_enabled, bool):
+        raise ProjectError("budget.time_enabled must be a boolean")
+    time_total_minutes_raw = payload.get("time_total_minutes", 0)
+    if isinstance(time_total_minutes_raw, bool) or not isinstance(time_total_minutes_raw, int):
+        raise ProjectError("budget.time_total_minutes must be an integer")
+    time_total_minutes = int(time_total_minutes_raw)
+    # Mirror ``_parse_budget``: an enabled time cap outside 1h–72h is rejected by
+    # ``load_config`` on the next round-trip, so reject it here to stay in sync.
+    if time_enabled and not (
+        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
+    ):
+        raise ProjectError(
+            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
+            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
+            f"got {time_total_minutes!r}"
+        )
+    if not time_enabled and time_total_minutes < 0:
+        raise ProjectError("budget.time_total_minutes must be non-negative")
+    return BudgetConfig(
+        enabled=enabled,
+        total=total,
+        warning_threshold=threshold,
+        time_enabled=time_enabled,
+        time_total_minutes=time_total_minutes,
+    )
 
 
 def set_budget(payload: object) -> dict[str, object]:
@@ -551,7 +570,8 @@ def set_budget(payload: object) -> dict[str, object]:
     The payload shape mirrors :class:`BudgetConfig` in
     ``src/agentshore/config/models.py``::
 
-        {"enabled": bool, "total": float, "warning_threshold": float?}
+        {"enabled": bool, "total": float, "warning_threshold": float?,
+         "time_enabled": bool?, "time_total_minutes": int?}
 
     Returns the persisted values (echoing what was written) plus the
     resolved ``yaml_path``.
@@ -572,6 +592,8 @@ def set_budget(payload: object) -> dict[str, object]:
             "enabled": budget.enabled,
             "total": budget.total,
             "warning_threshold": budget.warning_threshold,
+            "time_enabled": budget.time_enabled,
+            "time_total_minutes": budget.time_total_minutes,
         },
         "yaml_path": str(yaml_path),
     }

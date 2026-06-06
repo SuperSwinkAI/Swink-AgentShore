@@ -365,6 +365,40 @@ class Orchestrator(_OrchestratorBase):
         """Increase session budget; return True when a budget pause should resume."""
         return self._drain.adjust_budget(delta_usd)
 
+    async def set_budget(
+        self,
+        *,
+        dollars_enabled: bool,
+        dollars: float | None,
+        time_enabled: bool,
+        time_minutes: int | None,
+        persist: bool = True,
+    ) -> dict[str, object]:
+        """Absolute-set the live dollar/time caps (sidecar RPC + desktop dialog)."""
+        return await self._drain.set_budget(
+            dollars_enabled=dollars_enabled,
+            dollars=dollars,
+            time_enabled=time_enabled,
+            time_minutes=time_minutes,
+            persist=persist,
+        )
+
+    async def add_budget(
+        self,
+        *,
+        delta_usd: float | None = None,
+        delta_minutes: int | None = None,
+        persist: bool = True,
+    ) -> dict[str, object]:
+        """Additively top up the dollar cap and/or extend the time cap (CLI)."""
+        return await self._drain.add_budget(
+            delta_usd=delta_usd, delta_minutes=delta_minutes, persist=persist
+        )
+
+    async def current_budget(self) -> dict[str, object]:
+        """Return the live-effective caps + spend/remaining (prefill/echo)."""
+        return await self._drain.current_budget()
+
     async def stop(self, grace_period_s: float = SHUTDOWN_GRACE_PERIOD_SECONDS) -> None:
         """Gracefully shut down the orchestrator."""
         await self._drain.stop(grace_period_s)

@@ -78,7 +78,7 @@ Partial evidence → **keep**, not Shipped. Record per-item verdicts in `groomin
 
 ## Phase 3 — Bounded frontier dependency edges (capped, sequential)
 
-Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can see them — otherwise an agent is dispatched to a blocked issue only to be rejected agent-side (~$0.19 / 6.8 min wasted per hit — #14). **Do not reconcile the whole graph** — that does not scale and is the source of the lock-pileup failure. Reconcile only the **pickup frontier**, the small set of issues a dispatch could actually hit next, capped per run; later runs cover the rest.
+Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can see them. **Do not reconcile the whole graph** — that does not scale and is the source of the lock-pileup failure. Reconcile only the **pickup frontier**, the small set of issues a dispatch could actually hit next, capped per run; later runs cover the rest.
 
 **Select the frontier (from the GH list — no bd calls).** Take open GH issues that are `ready-for-agent` (have `priority/*` + `size/*`, no blocker label) **and** whose body declares `depends on #N` / `blocked by #N` with **#N still open**. Order by priority then oldest number. **Cap K = 15.**
 
@@ -100,22 +100,14 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "success": true,
   "artifacts": [],
   "beads_closed": [],
-  "beads_closed_stale": [],
   "beads_relinked": [],
-  "beads_relabeled": [],
-  "duplicates_removed": [],
   "issues_created": [],
-  "issues_closed_stale": [],
   "issues_flagged_for_refinement": [],
   "blocks_cleared": [],
-  "blocks_clear_deferred": [],
   "trackers_closed": [],
   "epics_closed": [],
-  "ambiguous_links_resolved": [],
   "dependency_edges_added": [],
   "dependency_edges_deferred": [],
-  "epics_before": [],
-  "epics_after": [],
   "open_work_after": {"issues": 0, "prs": 0},
   "verification_failures": [],
   "error": null

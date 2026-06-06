@@ -1,5 +1,10 @@
 import React, { useEffect, useReducer } from "react";
-import type { AgentSnapshot, PlayEvent, StateUpdate } from "../types";
+import type {
+  AgentSnapshot,
+  BudgetSnapshot,
+  PlayEvent,
+  StateUpdate,
+} from "../types";
 import {
   PLAY_DISPLAY_NAMES,
   PLAY_KEYS,
@@ -172,6 +177,69 @@ function PlayCard({
   );
 }
 
+function formatRemainingTime(minutes: number): string {
+  const safe = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(safe / 60);
+  const mins = safe % 60;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+/**
+ * Resolve the budget label segments, meter fill %, and tooltip from a snapshot.
+ *
+ * Dollars and wall-clock time are independent soft caps; either may be off.
+ * The single meter tracks whichever cap is *closest to triggering the drain*
+ * (the binding constraint) so a time-only run shows real progress instead of
+ * an empty dollar bar. The meter renders *between* the two figures — dollars
+ * on the left, time-left on the right — so each segment reads cleanly and the
+ * bar visually separates them. A fully-uncapped run collapses the right
+ * segment to a compact "∞" rather than a verbose "(unlimited)" string.
+ */
+function describeBudget(b: BudgetSnapshot): {
+  dollarLabel: string;
+  timeLabel: string;
+  title: string;
+  pct: number;
+} {
+  const spent = b.spent;
+  const total = b.total_budget;
+  const dollarCapped = b.enabled && total !== null && b.remaining !== null;
+  const timeCapped =
+    !!b.time_enabled &&
+    b.time_total_minutes !== null &&
+    b.time_total_minutes !== undefined &&
+    b.time_remaining_minutes !== null &&
+    b.time_remaining_minutes !== undefined;
+
+  const dollarPct = dollarCapped && total ? (spent / total) * 100 : 0;
+  const timePct =
+    timeCapped && b.time_total_minutes
+      ? ((b.time_total_minutes - (b.time_remaining_minutes as number)) /
+          b.time_total_minutes) *
+        100
+      : 0;
+
+  const dollarLabel = dollarCapped
+    ? `$${spent.toFixed(2)} / $${(total as number).toFixed(2)}`
+    : `$${spent.toFixed(2)}`;
+  // Right segment: remaining time when capped; "∞" only when nothing is
+  // capped at all (a dollar-only run leaves the right side empty).
+  const timeLabel = timeCapped
+    ? `${formatRemainingTime(b.time_remaining_minutes as number)} left`
+    : !dollarCapped
+      ? "∞"
+      : "";
+
+  const sep = timeLabel ? " · " : "";
+  return {
+    dollarLabel,
+    timeLabel,
+    title: `${dollarLabel}${sep}${timeLabel}`,
+    pct: Math.max(dollarPct, timePct),
+  };
+}
+
 function BudgetBar({
   state,
   drainStatus,
@@ -179,43 +247,40 @@ function BudgetBar({
   state: StateUpdate | null;
   drainStatus?: DrainStatus;
 }): React.ReactElement {
-  let labelText: string;
+  let dollarLabel: string;
+  let timeLabel = "";
+  let titleText: string;
   let fillWidth: string;
   let fillClass: string;
 
   if (!state) {
-    labelText = "$0.00";
+    dollarLabel = "$0.00";
+    titleText = "$0.00";
     fillWidth = "0%";
     fillClass = "budget-fill ok";
   } else if (state.budget) {
-    const spent = state.budget.spent;
-    const total = state.budget.total_budget;
-    const unlimited =
-      !state.budget.enabled ||
-      total === null ||
-      state.budget.remaining === null;
-    const pct = !unlimited && total !== null ? (spent / total) * 100 : 0;
-
-    labelText = unlimited
-      ? `$${spent.toFixed(2)} (unlimited)`
-      : `$${spent.toFixed(2)} / $${total!.toFixed(2)}`;
-    fillWidth = `${Math.min(pct, 100)}%`;
+    const desc = describeBudget(state.budget);
+    dollarLabel = desc.dollarLabel;
+    timeLabel = desc.timeLabel;
+    titleText = desc.title;
+    fillWidth = `${Math.min(desc.pct, 100)}%`;
     fillClass =
-      pct > 80
+      desc.pct > 80
         ? "budget-fill critical"
-        : pct > 60
+        : desc.pct > 60
           ? "budget-fill warning"
           : "budget-fill ok";
   } else {
-    labelText = `$${state.total_cost.toFixed(2)}`;
+    dollarLabel = `$${state.total_cost.toFixed(2)}`;
+    titleText = dollarLabel;
     fillWidth = "0%";
     fillClass = "budget-fill ok";
   }
 
   const budgetMeter = (
-    <div className="hud-chip budget-bar">
-      <span id="budget-label" className="budget-label-text">
-        {labelText}
+    <div className="hud-chip budget-bar" title={titleText}>
+      <span id="budget-label" className="budget-label-text budget-dollar">
+        {dollarLabel}
       </span>
       <div className="budget-track">
         <div
@@ -224,6 +289,9 @@ function BudgetBar({
           style={{ width: fillWidth }}
         />
       </div>
+      {timeLabel && (
+        <span className="budget-label-text budget-time">{timeLabel}</span>
+      )}
     </div>
   );
 

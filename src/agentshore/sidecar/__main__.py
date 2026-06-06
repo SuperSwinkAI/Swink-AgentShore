@@ -1,9 +1,4 @@
-"""Allow running as ``python -m agentshore.sidecar``.
-
-PyInstaller targets ``packaging/desktop/sidecar_entrypoint.py``, which calls
-:func:`agentshore.sidecar.server.run` directly. This ``__main__`` exists so the
-unfrozen package is invokable identically during development.
-"""
+"""Allow running the sidecar with ``python -m agentshore.sidecar``."""
 
 from __future__ import annotations
 

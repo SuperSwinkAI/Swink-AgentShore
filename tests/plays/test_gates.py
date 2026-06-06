@@ -80,24 +80,24 @@ def _state(
 
 
 def test_capability_gate_passes_when_capable_idle_agent_present() -> None:
-    # CLAUDE_CODE has can_create_issues=True per capabilities defaults.
-    gate = CapabilityGate("can_create_issues")
+    # CLAUDE_CODE has can_run_skill=True per capabilities defaults.
+    gate = CapabilityGate("can_run_skill")
     assert gate(_state()) is None
 
 
 def test_capability_gate_masks_when_no_idle_agents() -> None:
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     busy = _agent(status=AgentStatus.BUSY)
     reason = gate(_state(agents=[busy]))
     assert reason is not None
-    assert "no IDLE agent with can_create_issues" in reason.text
+    assert "no IDLE agent with can_run_skill" in reason.text
     assert reason.classification == MaskClassification.TRANSIENT
     assert reason.source == MaskSource.ELIGIBILITY
 
 
 def test_capability_gate_excludes_rate_limited_agent_type() -> None:
     """Idle agent whose type is rate-limited doesn't count as capable."""
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     idle = _agent()
     rate_limited = _agent(
         status=AgentStatus.ERROR,
@@ -111,16 +111,16 @@ def test_capability_gate_excludes_rate_limited_agent_type() -> None:
 
 def test_capability_gate_masks_circuit_broken_agent() -> None:
     """A circuit-broken agent (0 successes + a timeout) is not counted capable (#22)."""
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     broken = _agent(tasks_completed=0, timeout_count=1)
     reason = gate(_state(agents=[broken]))
     assert reason is not None
-    assert "no IDLE agent with can_create_issues" in reason.text
+    assert "no IDLE agent with can_run_skill" in reason.text
 
 
 def test_capability_gate_prefers_healthy_over_circuit_broken() -> None:
     """With one dead and one healthy agent, the play stays available (#22)."""
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     broken = _agent(agent_id="dead", tasks_completed=0, timeout_count=3)
     healthy = _agent(agent_id="ok", tasks_completed=2)
     assert gate(_state(agents=[broken, healthy])) is None
@@ -128,14 +128,14 @@ def test_capability_gate_prefers_healthy_over_circuit_broken() -> None:
 
 def test_capability_gate_repeated_failures_circuit_break() -> None:
     """0 successes + >= CIRCUIT_BREAKER_FAILURE_LIMIT failures also benches."""
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     broken = _agent(tasks_completed=0, tasks_failed=2, timeout_count=0)
     assert gate(_state(agents=[broken])) is not None
 
 
 def test_capability_gate_one_failure_not_circuit_broken() -> None:
     """A single non-timeout failure with 0 successes is below the limit — not benched."""
-    gate = CapabilityGate("can_create_issues")
+    gate = CapabilityGate("can_run_skill")
     agent = _agent(tasks_completed=0, tasks_failed=1, timeout_count=0)
     assert gate(_state(agents=[agent])) is None
 

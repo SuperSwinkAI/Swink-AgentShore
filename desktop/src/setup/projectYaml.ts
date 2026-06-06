@@ -25,6 +25,10 @@ export interface BudgetHydration {
   /** Dollars from ``budget.total``; null when absent or not a finite
    *  non-negative number. */
   totalUsd: number | null;
+  /** ``true`` when ``budget.time_enabled: true`` parsed cleanly. */
+  timeEnabled: boolean;
+  /** Minutes from ``budget.time_total_minutes``; null when absent/invalid. */
+  timeMinutes: number | null;
 }
 
 export interface TimelapseHydration {
@@ -38,6 +42,10 @@ export interface ProjectYamlHydration {
   targetBranch: string | null;
   enabledAgents: string[];
   identityLogins: string[];
+  /** ``trusted_ids.github_logins`` — GitHub logins trusted as a *source* of
+   *  issues/PRs (no token, never assigned to an agent). Canonicalized
+   *  (lowercase + trimmed) and deduped. Empty when the key is absent. */
+  trustedSources: string[];
   budget: BudgetHydration | null;
   timelapse: TimelapseHydration | null;
   /** ``trusted_ids.restrict_issues_to_trusted_authors`` — gate issue pickup
@@ -49,10 +57,17 @@ const EMPTY: ProjectYamlHydration = {
   targetBranch: null,
   enabledAgents: [],
   identityLogins: [],
+  trustedSources: [],
   budget: null,
   timelapse: null,
   trustedIssueEnforcement: null,
 };
+
+/** Canonicalize a GitHub login for the trusted-source set: trim surrounding
+ *  whitespace and lowercase (GitHub logins are case-insensitive). */
+function canonicalizeLogin(login: string): string {
+  return login.trim().toLowerCase();
+}
 
 interface ParsedLine {
   indent: number;
@@ -60,6 +75,11 @@ interface ParsedLine {
   /** Inline scalar after ``key:``; null when the value continues on a
    *  child block. */
   value: string | null;
+  /** ``true`` for ``- item`` sequence entries. List items are ignored by
+   *  every walker except the ``trusted_ids.github_logins`` collector — the
+   *  key-based walkers (agents/identities) must skip them so a ``-`` entry
+   *  is never mistaken for an agent or identity key. */
+  listItem: boolean;
 }
 
 function parseLine(raw: string): ParsedLine | null {
@@ -69,9 +89,16 @@ function parseLine(raw: string): ParsedLine | null {
   const trimmedLeft = noTrail.replace(/^\s+/u, "");
   if (trimmedLeft.startsWith("#")) return null;
   const indent = noTrail.length - trimmedLeft.length;
-  // Skip array items — they never appear at the depths we care about
-  // for the hydrated fields and would confuse the indent walker.
-  if (trimmedLeft.startsWith("-")) return null;
+  // Sequence entries (``- value``) are surfaced as list items so the
+  // trusted_ids.github_logins collector can read them; every other walker
+  // is key-based and skips them (see ParsedLine.listItem).
+  if (trimmedLeft.startsWith("-")) {
+    const after = trimmedLeft.slice(1);
+    const commentIdx = after.indexOf("#");
+    const rhs = (commentIdx === -1 ? after : after.slice(0, commentIdx)).trim();
+    if (rhs.length === 0) return null;
+    return { indent, key: "", value: stripQuotes(rhs), listItem: true };
+  }
   const colon = trimmedLeft.indexOf(":");
   if (colon === -1) return null;
   const key = trimmedLeft.slice(0, colon).trim();
@@ -80,7 +107,12 @@ function parseLine(raw: string): ParsedLine | null {
   const after = trimmedLeft.slice(colon + 1);
   const commentIdx = after.indexOf("#");
   const rhs = (commentIdx === -1 ? after : after.slice(0, commentIdx)).trim();
-  return { indent, key, value: rhs.length === 0 ? null : stripQuotes(rhs) };
+  return {
+    indent,
+    key,
+    value: rhs.length === 0 ? null : stripQuotes(rhs),
+    listItem: false,
+  };
 }
 
 function stripQuotes(s: string): string {
@@ -116,6 +148,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     targetBranch: null,
     enabledAgents: [],
     identityLogins: [],
+    trustedSources: [],
     budget: null,
     timelapse: null,
     trustedIssueEnforcement: null,
@@ -142,9 +175,14 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
   let budgetSeen = false;
   let budgetEnabled = false;
   let budgetTotal: number | null = null;
+  let budgetTimeEnabled = false;
+  let budgetTimeMinutes: number | null = null;
   let timelapseSeen = false;
   let timelapseEnabled = false;
   let timelapseInstalled = false;
+  // ``true`` while walking the ``trusted_ids.github_logins`` sequence so the
+  // indent-4 ``- login`` items below it are collected as trusted sources.
+  let inTrustedLogins = false;
 
   const closeAgent = () => {
     if (currentAgent && currentAgentEnabled === true) {
@@ -162,6 +200,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     if (line.indent === 0) {
       // Closing the previous agent (if any) before changing sections.
       closeAgent();
+      inTrustedLogins = false;
       if (line.key === "project") {
         topSection = "project";
       } else if (line.key === "agents") {
@@ -197,10 +236,25 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
       continue;
     }
 
-    if (topSection === "trusted_ids" && line.indent === 2) {
-      if (line.key === "restrict_issues_to_trusted_authors") {
-        const v = asBool(line.value);
-        if (v !== null) result.trustedIssueEnforcement = v;
+    if (topSection === "trusted_ids") {
+      if (line.indent === 2 && !line.listItem) {
+        // Any indent-2 key ends the github_logins sequence (e.g. an inline
+        // ``github_logins: []`` or the sibling enforcement flag).
+        inTrustedLogins = line.key === "github_logins" && line.value === null;
+        if (line.key === "restrict_issues_to_trusted_authors") {
+          const v = asBool(line.value);
+          if (v !== null) result.trustedIssueEnforcement = v;
+        }
+      } else if (
+        line.indent === 4 &&
+        line.listItem &&
+        inTrustedLogins &&
+        line.value !== null
+      ) {
+        const login = canonicalizeLogin(line.value);
+        if (login.length > 0 && !result.trustedSources.includes(login)) {
+          result.trustedSources.push(login);
+        }
       }
       continue;
     }
@@ -218,6 +272,18 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
           budgetTotal = n;
           budgetSeen = true;
         }
+      } else if (line.key === "time_enabled") {
+        const v = asBool(line.value);
+        if (v !== null) {
+          budgetTimeEnabled = v;
+          budgetSeen = true;
+        }
+      } else if (line.key === "time_total_minutes" && line.value !== null) {
+        const n = Number.parseInt(line.value, 10);
+        if (Number.isFinite(n) && n >= 0) {
+          budgetTimeMinutes = n;
+          budgetSeen = true;
+        }
       }
       continue;
     }
@@ -228,6 +294,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     }
 
     if (topSection === "agents") {
+      if (line.listItem) continue;
       if (line.indent === 2) {
         closeAgent();
         currentAgent = line.key;
@@ -239,7 +306,7 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
       continue;
     }
 
-    if (topSection === "identities" && line.indent === 2) {
+    if (topSection === "identities" && line.indent === 2 && !line.listItem) {
       if (!result.identityLogins.includes(line.key)) {
         result.identityLogins.push(line.key);
       }
@@ -254,6 +321,8 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
     result.budget = {
       enabled: budgetEnabled,
       totalUsd: budgetTotal,
+      timeEnabled: budgetTimeEnabled,
+      timeMinutes: budgetTimeMinutes,
     };
   }
 
@@ -273,17 +342,24 @@ export function parseProjectYaml(raw: string | null | undefined): ProjectYamlHyd
  * of localStorage state. Returns ``null`` when the input has nothing
  * actionable (the caller should keep its current value).
  */
-export function budgetHydrationToSelection(
-  hydration: BudgetHydration | null,
-): { mode: "capped" | "unlimited"; total: number } | null {
+export function budgetHydrationToSelection(hydration: BudgetHydration | null): {
+  mode: "capped" | "unlimited";
+  total: number;
+  timeMode: "capped" | "unlimited";
+  timeMinutes: number;
+} | null {
   if (hydration === null) return null;
-  if (hydration.enabled) {
-    // total <= 0 is invalid for an enabled budget (the backend enforces
-    // MIN_ENABLED_BUDGET_USD=20). Surface enabled but let the screen
-    // clamp the value into the slider's range.
-    return { mode: "capped", total: hydration.totalUsd ?? 0 };
-  }
-  return { mode: "unlimited", total: 0 };
+  // Dollar dimension. total <= 0 is invalid for an enabled budget (the backend
+  // enforces MIN_ENABLED_BUDGET_USD=20). Surface enabled but let the screen
+  // clamp the value into the slider's range.
+  const dollar = hydration.enabled
+    ? { mode: "capped" as const, total: hydration.totalUsd ?? 0 }
+    : { mode: "unlimited" as const, total: 0 };
+  // Time dimension (independent).
+  const time = hydration.timeEnabled
+    ? { timeMode: "capped" as const, timeMinutes: hydration.timeMinutes ?? 0 }
+    : { timeMode: "unlimited" as const, timeMinutes: 0 };
+  return { ...dollar, ...time };
 }
 
 /**
@@ -296,9 +372,22 @@ export function budgetHydrationToSelection(
 export function budgetSelectionToConfig(selection: {
   mode: "capped" | "unlimited";
   total: number;
-}): { enabled: boolean; total: number } {
-  if (selection.mode === "capped") {
-    return { enabled: true, total: selection.total };
-  }
-  return { enabled: false, total: 0.0 };
+  timeMode?: "capped" | "unlimited";
+  timeMinutes?: number;
+}): {
+  enabled: boolean;
+  total: number;
+  time_enabled: boolean;
+  time_total_minutes: number;
+} {
+  const dollar =
+    selection.mode === "capped"
+      ? { enabled: true, total: selection.total }
+      : { enabled: false, total: 0.0 };
+  const timeCapped = selection.timeMode === "capped";
+  return {
+    ...dollar,
+    time_enabled: timeCapped,
+    time_total_minutes: timeCapped ? (selection.timeMinutes ?? 0) : 0,
+  };
 }

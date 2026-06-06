@@ -1,11 +1,4 @@
-"""Session-bootstrap policy extracted from the ``agentshore start`` command.
-
-The Click handler used to inline ~360 lines of budget/socket/config/identity
-resolution between argument parsing and orchestrator dispatch. That logic is
-session-bootstrap policy, not CLI plumbing: it is the same work the desktop
-sidecar performs before launching a run. This module owns it so ``start()``
-reduces to *parse → bootstrap → summary → dispatch*.
-"""
+"""Resolve start-session config, budget, identity, seed, and IPC settings."""
 
 from __future__ import annotations
 
@@ -17,7 +10,11 @@ from typing import TYPE_CHECKING
 import click
 
 from agentshore import cli_helpers
-from agentshore.budget import MIN_ENABLED_BUDGET_USD
+from agentshore.budget import (
+    MAX_TIME_BUDGET_MINUTES,
+    MIN_ENABLED_BUDGET_USD,
+    MIN_TIME_BUDGET_MINUTES,
+)
 from agentshore.cli.helpers import (
     _display_run_mode,
     _resolve_seed_input_path,
@@ -33,7 +30,7 @@ from agentshore.session_path import (
 )
 
 if TYPE_CHECKING:
-    from agentshore.config.models import PolicyMode, RunMode, RuntimeConfig
+    from agentshore.config.models import BudgetConfig, PolicyMode, RunMode, RuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -44,7 +41,8 @@ class StartOptions:
     run_session_id: str
     seed: str | None
     budget_override: float | None
-    no_budget: bool
+    time_override: int | None
+    unlimited: bool
     policy_mode_override: PolicyMode | None
     run_mode: RunMode
     socket: str | None
@@ -83,25 +81,94 @@ def validate_budget_flag(budget: float | None) -> None:
     to the config and is always valid here. Raises :class:`click.BadParameter`
     for non-positive or below-floor caps so the error surfaces at the CLI layer
     with the usual usage hint. The actual budget resolution (config vs override
-    vs ``--no-budget``) happens in :func:`_load_config_with_overrides`, which has
+    vs ``--unlimited``) happens in :func:`_load_config_with_overrides`, which has
     the loaded config in hand.
     """
     if budget is None:
         return
     if budget <= 0:
-        raise click.BadParameter("Budget must be positive. Use --no-budget to disable budgeting.")
+        raise click.BadParameter("Budget must be positive. Use --unlimited to disable budgeting.")
     if budget < MIN_ENABLED_BUDGET_USD:
         raise click.BadParameter(
             f"Budget must be at least ${MIN_ENABLED_BUDGET_USD:.2f}. "
-            "Use --no-budget to disable budgeting."
+            "Use --unlimited to disable budgeting."
         )
+
+
+def validate_time_flag(time_minutes: int | None) -> None:
+    """Validate an explicit ``--time`` value (already parsed to minutes).
+
+    ``None`` (flag omitted) defers to the config. An out-of-range value raises
+    :class:`click.BadParameter` mirroring :func:`validate_budget_flag`.
+    """
+    if time_minutes is None:
+        return
+    if not (MIN_TIME_BUDGET_MINUTES <= time_minutes <= MAX_TIME_BUDGET_MINUTES):
+        raise click.BadParameter(
+            f"Time budget must be between {MIN_TIME_BUDGET_MINUTES} and "
+            f"{MAX_TIME_BUDGET_MINUTES} minutes (1h–72h). "
+            "Use --unlimited to disable budgeting."
+        )
+
+
+def resolve_budget_config(
+    base: BudgetConfig,
+    *,
+    budget_override: float | None,
+    time_override: int | None,
+    unlimited: bool,
+) -> BudgetConfig:
+    """Resolve the effective dual-dimension :class:`BudgetConfig`.
+
+    ``base`` is the loaded config's ``budget`` block (or ``BudgetConfig()`` when
+    seeding a fresh project). Resolution:
+
+    * ``--unlimited`` → both caps off (overrides everything).
+    * A **configured** ``base`` (``!= BudgetConfig()``) is respected as-is, with
+      ``--budget`` / ``--time`` overriding their own dimension only. Existing
+      configured sessions therefore see zero behavior change.
+    * An **empty** ``base`` (fresh/unconfigured) gets the safety defaults
+      ($200 + 24h) only when neither flag is given; naming one dimension
+      suppresses the other dimension's bare default (leaves it off).
+    """
+    from agentshore.config.models import BudgetConfig
+
+    if unlimited:
+        return dataclasses.replace(base, enabled=False, time_enabled=False)
+
+    if base != BudgetConfig():
+        resolved = base
+        if budget_override is not None:
+            resolved = dataclasses.replace(resolved, enabled=True, total=budget_override)
+        if time_override is not None:
+            resolved = dataclasses.replace(
+                resolved, time_enabled=True, time_total_minutes=time_override
+            )
+        return resolved
+
+    if budget_override is None and time_override is None:
+        return dataclasses.replace(
+            base,
+            enabled=True,
+            total=cli_helpers._DEFAULT_BUDGET,
+            time_enabled=True,
+            time_total_minutes=cli_helpers._DEFAULT_TIME_MINUTES,
+        )
+    return dataclasses.replace(
+        base,
+        enabled=budget_override is not None,
+        total=budget_override if budget_override is not None else 0.0,
+        time_enabled=time_override is not None,
+        time_total_minutes=time_override if time_override is not None else 0,
+    )
 
 
 def _load_config_with_overrides(
     cfg_path: Path,
     *,
     budget_override: float | None,
-    no_budget: bool,
+    time_override: int | None,
+    unlimited: bool,
     policy_mode_override: PolicyMode | None,
     strict: bool | None,
 ) -> tuple[RuntimeConfig, PolicyMode]:
@@ -111,7 +178,6 @@ def _load_config_with_overrides(
     and exits 1. Other load failures fall back to defaults with a warning.
     """
     from agentshore.config import load_config
-    from agentshore.config.models import BudgetConfig
     from agentshore.errors import ConfigError
 
     try:
@@ -137,21 +203,16 @@ def _load_config_with_overrides(
 
     effective_policy_mode = policy_mode_override or cfg.rl.policy_mode
 
-    # Budget: only override the loaded config when the user actually asked.
-    #   --no-budget        -> disable enforcement
-    #   --budget X         -> enable with total X
-    #   (neither) + config -> respect agentshore.yaml as-is
-    #   (neither) + no cfg -> keep a $200 safety cap (config defines no budget)
-    if no_budget:
-        budget_cfg = dataclasses.replace(cfg.budget, enabled=False)
-    elif budget_override is not None:
-        budget_cfg = dataclasses.replace(cfg.budget, enabled=True, total=budget_override)
-    elif cfg.budget == BudgetConfig():
-        budget_cfg = dataclasses.replace(
-            cfg.budget, enabled=True, total=cli_helpers._DEFAULT_BUDGET
-        )
-    else:
-        budget_cfg = cfg.budget
+    # Budget: resolve both soft-cap dimensions (dollars + time) against the
+    # loaded config. See :func:`resolve_budget_config` for the precedence rules
+    # (configured yaml respected as-is; safety defaults only on empty config;
+    # naming one dimension suppresses the other's bare default; --unlimited off).
+    budget_cfg = resolve_budget_config(
+        cfg.budget,
+        budget_override=budget_override,
+        time_override=time_override,
+        unlimited=unlimited,
+    )
 
     # Scope strict mode: only override when --strict/--no-strict was given.
     scope_cfg = cfg.scope if strict is None else dataclasses.replace(cfg.scope, strict_mode=strict)
@@ -235,18 +296,23 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     agentshore_dir.mkdir(exist_ok=True)
 
     # Ensure agentshore.yaml exists. Seed a fresh config from the resolved CLI
-    # intent: an explicit --budget, None for --no-budget, else the $200 default.
+    # intent so both soft-cap dimensions land in the file exactly as the run
+    # will use them (naked start → $200 + 24h; --unlimited → both off; etc.).
     default_config_path = repo_root / "agentshore.yaml"
     if not default_config_path.exists():
+        from agentshore.config.models import BudgetConfig
+
         name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
-        if opts.no_budget:
-            seed_budget: float | None = None
-        elif opts.budget_override is not None:
-            seed_budget = opts.budget_override
-        else:
-            seed_budget = cli_helpers._DEFAULT_BUDGET
+        seeded = resolve_budget_config(
+            BudgetConfig(),
+            budget_override=opts.budget_override,
+            time_override=opts.time_override,
+            unlimited=opts.unlimited,
+        )
+        seed_budget = seeded.total if seeded.enabled else None
+        seed_time = seeded.time_total_minutes if seeded.time_enabled else None
         config_text = cli_helpers._generate_default_config(
-            name_with_owner, agents, seed_budget, bool(opts.strict)
+            name_with_owner, agents, seed_budget, bool(opts.strict), time_minutes=seed_time
         )
         default_config_path.write_text(config_text)
         click.echo(f"Generated {default_config_path}")
@@ -256,7 +322,8 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     cfg, effective_policy_mode = _load_config_with_overrides(
         cfg_path,
         budget_override=opts.budget_override,
-        no_budget=opts.no_budget,
+        time_override=opts.time_override,
+        unlimited=opts.unlimited,
         policy_mode_override=opts.policy_mode_override,
         strict=opts.strict,
     )
@@ -302,6 +369,13 @@ def echo_bootstrap_summary(resolved: ResolvedSession) -> None:
         "disabled" if resolved.effective_budget is None else f"${resolved.effective_budget:.2f}"
     )
     click.echo(f"  Budget         : {budget_display}")
+    budget_cfg = resolved.cfg.budget
+    if budget_cfg.time_enabled:
+        hours, minutes = divmod(int(budget_cfg.time_total_minutes), 60)
+        time_display = f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    else:
+        time_display = "disabled"
+    click.echo(f"  Time budget    : {time_display}")
     click.echo(f"  Policy mode    : {resolved.effective_policy_mode.summary_label}")
     if resolved.seed_path is not None:
         click.echo(f"  Seed input     : {resolved.seed_path} ({resolved.seed_kind})")

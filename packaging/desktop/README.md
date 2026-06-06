@@ -11,26 +11,12 @@ sidecar (`agentshore.sidecar`) is **not** bundled inside the `.app`. Instead the
 pip-installs a bundled agentshore wheel into it. The Rust supervisor then
 spawns `<venv>/bin/python -m agentshore.sidecar`.
 
-| Platform | Managed venv path                                       |
-| -------- | ------------------------------------------------------- |
-| macOS    | `$HOME/Library/Application Support/AgentShore/venv`        |
-| Linux    | `$HOME/.local/share/agentshore/venv`                       |
-| Windows  | `%USERPROFILE%\AppData\Local\AgentShore\venv`              |
+Current packaging is macOS-only. The managed venv lives at
+`$HOME/Library/Application Support/AgentShore/venv`.
 
-Rationale: avoids bundling a 350+MB PyInstaller `--onedir` (CPython +
-libtorch + numpy), keeps the installer artifact small, allows agentshore code
-updates to ship as a new wheel without re-downloading PyTorch, and shifts
-dependency-install failures to install-time UX where they can be surfaced
-loudly instead of producing broken-but-runnable `.app` bundles.
-
-## Layout
-
-```
-packaging/desktop/
-├── README.md               (this file)
-├── build_bd_sidecar.py     (build the bundled bd sidecar binary)
-└── src-tauri/binaries/     (generated; .gitignored)
-```
+Rationale: keeps the `.app` thin, allows AgentShore updates to ship as a new
+wheel without re-downloading PyTorch, and surfaces dependency-install failures
+during installation instead of first launch.
 
 The bundled `bd` CLI (a single static Go binary) is the only externalBin
 that stays inside the `.app`. The Rust supervisor passes its path to the
@@ -38,25 +24,14 @@ Python sidecar via `AGENTSHORE_BD_BIN` so the sidecar can shell out to `bd`.
 
 ## bd sidecar build
 
-```bash
-python packaging/desktop/build_bd_sidecar.py --bd "$(which bd)" --out desktop/src-tauri/binaries
-```
-
-Output: `desktop/src-tauri/binaries/agentshore-bd/agentshore-bd` (and a
-`agentshore-bd-<target-triple>` copy that Tauri's `externalBin` expects).
+`packaging/desktop/build_bd_sidecar.py` builds the bundled `bd` binary into
+`desktop/src-tauri/binaries/`.
 
 ## agentshore wheel build
 
-The wheel that the `.pkg` postinstall pip-installs is built from the repo
-root with `uv`:
-
-```bash
-uv build --wheel
-```
-
-Output: `dist/agentshore-<version>-py3-none-any.whl`. The `.pkg` payload
-includes that wheel in both component payloads — the desktop sidecar
-component (`install-agentshore-venv.sh`) and the CLI component
+The wheel that the `.pkg` postinstall pip-installs is built from the repo root
+with `uv build --wheel`. The `.pkg` payload includes that wheel in both the
+desktop sidecar component (`install-agentshore-venv.sh`) and the CLI component
 (`install-agentshore-cli.sh`).
 
 ## Installer flow
@@ -113,13 +88,9 @@ identifier of what's installed.
 
 ## Running the sidecar in development
 
-```bash
-python -m agentshore.sidecar
-```
-
-The Rust supervisor's `sidecar_command()` falls back to `uv run python -m
-agentshore.sidecar` when the managed venv path is absent — running
-`npm run tauri:dev` from `desktop/` against a clean clone Just Works.
+The Rust supervisor's `sidecar_command()` falls back to
+`uv run python -m agentshore.sidecar` when the managed venv path is absent, so
+`npm run tauri:dev` from `desktop/` works against a clean clone.
 
 ## Verification
 

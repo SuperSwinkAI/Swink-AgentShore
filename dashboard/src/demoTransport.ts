@@ -393,6 +393,10 @@ export class DemoTransport implements DashboardTransport {
         spent: 12.5,
         remaining: 37.5,
         estimated_cost_per_play: 0.32,
+        time_enabled: true,
+        time_total_minutes: 4320,
+        time_elapsed_minutes: 540,
+        time_remaining_minutes: 3780,
       },
       trajectory: {
         projected_alignment_at_budget_end: 0.85,
@@ -541,6 +545,10 @@ export class DemoTransport implements DashboardTransport {
         spent: 1.84,
         remaining: 3.16,
         estimated_cost_per_play: 0.32,
+        time_enabled: true,
+        time_total_minutes: 1440,
+        time_elapsed_minutes: 86,
+        time_remaining_minutes: 1354,
       },
       trajectory: {
         projected_alignment_at_budget_end: 0.72,

@@ -112,14 +112,8 @@ class SeedProjectPlay(SkillBackedPlay):
         )
 
 
+# Fail seed_project when it creates an implausible number of new issues.
 _SEED_PROJECT_MAX_NEW_ISSUES_PER_RUN = 25
-"""Hard cap on new GH issues per seed_project run.
-
-A healthy seed_project on a reconciled project creates 0-5 issues per run.
-Anything past 25 indicates a misclassification feedback loop (the
-17-runs-creating-dozens-of-bad-issues failure mode in v0.15.2). Past this
-cap we fail the play so a human can review before the backlog explodes.
-"""
 
 
 def _validate_seed_audit_artifact(artifacts: list[JsonArtifact]) -> str | None:

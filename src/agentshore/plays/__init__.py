@@ -1,4 +1,4 @@
-"""Play system — 20 play definitions, execution contracts, parameter resolution."""
+"""Play system exports: contracts, registry, selection, and execution."""
 
 from __future__ import annotations
 

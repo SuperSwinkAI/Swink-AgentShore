@@ -7,7 +7,7 @@ import dataclasses
 import time
 from typing import TYPE_CHECKING, Protocol
 
-from agentshore.budget import budget_reserve_reached
+from agentshore.budget import budget_reserve_reached, time_budget_reserve_reached
 from agentshore.config import load_config
 from agentshore.core.git_safety import resolve_default_branch
 from agentshore.core.helpers import _logger, _ppo_selector_cls
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.config.models import BudgetConfig
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.drain import DrainController
     from agentshore.core.mixins.state import StateBuilder
@@ -78,6 +79,10 @@ class _LifecycleHost(Protocol):
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
+    def effective_budget_caps(self) -> BudgetConfig:
+        """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        ...
+
 
 class LifecycleController:
     """Pause, resume, config reload, budget-drain initiation, and feedback cadence.
@@ -129,11 +134,16 @@ class LifecycleController:
         if max_plays is not None and state.total_plays >= max_plays:
             return True, "max_plays"
 
-        timeout_minutes = self._host._cfg.session.timeout_minutes
-        if timeout_minutes is not None and self._host._loop_started_at > 0:
+        # Wall-clock time budget hard-stop backstop. The primary path is the
+        # 20-minute graceful drain in ``begin_budget_reserve_drain_if_needed``;
+        # this fires only if the deadline is reached anyway (e.g. a single play
+        # ran past the reserve window). Reads config + the monotonic loop clock
+        # so it is independent of snapshot population order.
+        budget_cfg = self._host.effective_budget_caps()
+        if budget_cfg.time_enabled and self._host._loop_started_at > 0:
             elapsed_minutes = (time.monotonic() - self._host._loop_started_at) / 60
-            if elapsed_minutes >= timeout_minutes:
-                return True, "timeout"
+            if elapsed_minutes >= budget_cfg.time_total_minutes:
+                return True, "time_budget"
 
         return False, None
 
@@ -144,12 +154,26 @@ class LifecycleController:
         if self._host._draining or self._host._stop_requested:
             return state
         budget = state.budget
-        if budget is None or not budget.enabled:
+        if budget is None:
             return state
-        if not budget_reserve_reached(spent=budget.spent, total_budget=budget.total_budget):
+        # Two independent reserves — whichever is hit first begins the drain.
+        dollar_reserve = budget.enabled and budget_reserve_reached(
+            spent=budget.spent, total_budget=budget.total_budget
+        )
+        time_reserve = (
+            budget.time_enabled
+            and budget.time_total_minutes is not None
+            and budget.time_elapsed_minutes is not None
+            and time_budget_reserve_reached(
+                elapsed_minutes=budget.time_elapsed_minutes,
+                total_minutes=budget.time_total_minutes,
+            )
+        )
+        if not dollar_reserve and not time_reserve:
             return state
 
-        await self._host._drain.begin_drain("budget_reserve_reached")
+        reason = "budget_reserve_reached" if dollar_reserve else "time_budget_reserve_reached"
+        await self._host._drain.begin_drain(reason)
         return await self._host._state_builder.build_state()
 
     async def pause(self, reason: str = "user_request") -> None:
