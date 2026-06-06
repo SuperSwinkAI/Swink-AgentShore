@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.config.models import BudgetConfig
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.drain import DrainController
     from agentshore.core.mixins.state import StateBuilder
@@ -77,6 +78,10 @@ class _LifecycleHost(Protocol):
     _drain: DrainController
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
+
+    def effective_budget_caps(self) -> BudgetConfig:
+        """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        ...
 
 
 class LifecycleController:
@@ -134,7 +139,7 @@ class LifecycleController:
         # this fires only if the deadline is reached anyway (e.g. a single play
         # ran past the reserve window). Reads config + the monotonic loop clock
         # so it is independent of snapshot population order.
-        budget_cfg = self._host._cfg.budget
+        budget_cfg = self._host.effective_budget_caps()
         if budget_cfg.time_enabled and self._host._loop_started_at > 0:
             elapsed_minutes = (time.monotonic() - self._host._loop_started_at) / 60
             if elapsed_minutes >= budget_cfg.time_total_minutes:

@@ -469,28 +469,13 @@ _BUDGET_KEYS: frozenset[str] = frozenset(
 def _write_budget(yaml_text: str, budget: BudgetConfig) -> str:
     """Round-trip *yaml_text* and set the top-level ``budget`` mapping.
 
-    Preserves comments and key ordering on every other section via
-    ruamel.yaml. Mirrors :func:`_write_target_branch` so the two writers
-    share a code shape and a serialiser.
+    Delegates to :func:`agentshore.config.budget_writer.render_budget_yaml` so
+    the sidecar RPC and the live ``Orchestrator.set_budget`` path share one
+    serialiser. Preserves comments / key ordering on every other section.
     """
-    from ruamel.yaml import YAML
+    from agentshore.config.budget_writer import render_budget_yaml
 
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    existing = data.get("budget")
-    budget_block: dict[str, object] = existing if isinstance(existing, dict) else {}
-    budget_block["enabled"] = bool(budget.enabled)
-    budget_block["total"] = float(budget.total)
-    budget_block["warning_threshold"] = float(budget.warning_threshold)
-    budget_block["time_enabled"] = bool(budget.time_enabled)
-    budget_block["time_total_minutes"] = int(budget.time_total_minutes)
-    data["budget"] = budget_block
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
+    return render_budget_yaml(yaml_text, budget)
 
 
 def _validate_budget_payload(payload: object) -> BudgetConfig:
