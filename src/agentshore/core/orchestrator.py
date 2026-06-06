@@ -190,6 +190,14 @@ class Orchestrator(_OrchestratorBase):
                 orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
             )
             await phases._phase_session_start_worktree_sweep(orch=orch, sid=sid)
+            # Ensure the canonical beads install dir is on PATH for this process
+            # so agent subprocesses (which shell out to a bare ``bd`` from the
+            # skills) inherit it — beads' own installers only hint at PATH, so a
+            # provisioned bd is otherwise invisible to the agents even though the
+            # orchestrator resolves it by absolute path.
+            from agentshore.beads import ensure_bd_dir_on_path as _ensure_bd_on_path
+
+            _ensure_bd_on_path()
             await phases._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
             # Snapshot pre-session dirty trunk state before _phase_git_safety_sweep
             # restores any branch state — RECONCILE_STATE uses this sidecar to

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -533,6 +535,90 @@ def test_resolve_bd_binary_uses_managed_dir_when_path_empty(
     monkeypatch.setattr(beads_mod, "_managed_bd_path", lambda: managed)
     with patch("shutil.which", return_value=None):
         assert resolve_bd_binary() == str(managed.resolve())
+
+
+# ---------------------------------------------------------------------------
+# managed_bd_dir / ensure_bd_dir_on_path — install to the canonical beads
+# location and make it resolvable for agent subprocesses.
+# ---------------------------------------------------------------------------
+
+
+def test_managed_bd_dir_is_canonical_beads_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """managed_bd_dir mirrors beads' own install.ps1 / install.sh targets so a
+    provisioned bd is a normal, on-PATH beads install (not a swink-private dir)."""
+    import agentshore.beads as beads_mod
+
+    # Windows → %LOCALAPPDATA%\Programs\bd (matches install.ps1).
+    monkeypatch.setattr(beads_mod.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
+    win_dir = beads_mod.managed_bd_dir()
+    assert win_dir.parts[-2:] == ("Programs", "bd")
+    assert "AppData" in str(win_dir)
+
+    # POSIX with /usr/local/bin writable → that (matches install.sh first choice).
+    monkeypatch.setattr(beads_mod.sys, "platform", "linux")
+    with patch("agentshore.beads.os.access", return_value=True):
+        assert beads_mod.managed_bd_dir() == Path("/usr/local/bin")
+
+    # POSIX with /usr/local/bin not writable → ~/.local/bin fallback.
+    with patch("agentshore.beads.os.access", return_value=False):
+        assert beads_mod.managed_bd_dir() == Path.home() / ".local" / "bin"
+
+
+def test_ensure_bd_dir_on_path_prepends_existing_dir(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the install dir exists and is off PATH, it is prepended for this
+    process (so inheriting agent subprocesses resolve a bare ``bd``)."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+
+    bd_dir = Path(str(tmp_path)) / "Programs" / "bd"
+    bd_dir.mkdir(parents=True)
+    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: bd_dir)
+    monkeypatch.setenv("PATH", "/already/here")
+
+    beads_mod.ensure_bd_dir_on_path()
+
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert parts[0] == str(bd_dir)
+    assert "/already/here" in parts
+
+
+def test_ensure_bd_dir_on_path_idempotent(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second call does not duplicate the entry."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+
+    bd_dir = Path(str(tmp_path)) / "bd"
+    bd_dir.mkdir(parents=True)
+    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: bd_dir)
+    monkeypatch.setenv("PATH", str(bd_dir) + os.pathsep + "/already/here")
+
+    beads_mod.ensure_bd_dir_on_path()
+
+    assert os.environ["PATH"].split(os.pathsep).count(str(bd_dir)) == 1
+
+
+def test_ensure_bd_dir_on_path_noop_when_dir_missing(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No PATH mutation when nothing is installed at the canonical dir."""
+    from pathlib import Path
+
+    import agentshore.beads as beads_mod
+
+    missing = Path(str(tmp_path)) / "nope"  # not created
+    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: missing)
+    monkeypatch.setenv("PATH", "/already/here")
+
+    beads_mod.ensure_bd_dir_on_path()
+
+    assert os.environ["PATH"] == "/already/here"
 
 
 # ---------------------------------------------------------------------------
