@@ -407,7 +407,7 @@ def init(
             from agentshore.cli.helpers import report_ssh_signing_status
 
             click.echo()
-            report_ssh_signing_status()
+            report_ssh_signing_status(project_path)
 
     # -- 4. Ensure artifact dirs are gitignored --------------------------
     if (project_path / ".git").exists():

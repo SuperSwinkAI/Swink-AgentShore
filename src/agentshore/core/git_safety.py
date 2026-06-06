@@ -305,6 +305,25 @@ def ssh_signing_setup_hint() -> str:
     return "ssh-add ~/.ssh/id_ed25519"
 
 
+def ssh_signing_enabled(repo_root: Path) -> bool:
+    """True when the repo's effective git config enables SSH commit signing.
+
+    Checks ``commit.gpgsign`` (truthy) and ``gpg.format == ssh`` via the merged
+    git config (repo + global + system). The SSH-key pre-flight should only
+    fire for setups that actually sign commits — otherwise it cries wolf on the
+    majority of repos (and every Windows box) that commit unsigned. Returns
+    False on any git error.
+    """
+    try:
+        gpgsign = _run_git(["config", "--type=bool", "--get", "commit.gpgsign"], repo_root)
+        if gpgsign.returncode != 0 or gpgsign.stdout.strip() != "true":
+            return False
+        fmt = _run_git(["config", "--get", "gpg.format"], repo_root)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return fmt.returncode == 0 and fmt.stdout.strip().lower() == "ssh"
+
+
 def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     """Attempt to load the SSH signing key from the macOS Keychain.
 
