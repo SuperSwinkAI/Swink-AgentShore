@@ -96,7 +96,10 @@ def resolve_seed_input(seed: str, repo_root: Path) -> tuple[Path, str]:
             continue
         take = min(len(encoded), remaining)
         snippet = encoded[:take].decode("utf-8", errors="ignore")
-        rel = path.relative_to(seed_path)
+        # Render with forward slashes: this bundle is markdown handed to the
+        # seed agent, so keep file headers portable/deterministic across OSes
+        # rather than emitting native backslashes on Windows.
+        rel = path.relative_to(seed_path).as_posix()
         chunks.append(f"\n## {rel}\n\n{snippet}\n")
         included += 1
         remaining -= len(snippet.encode("utf-8"))
