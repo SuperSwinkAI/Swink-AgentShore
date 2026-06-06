@@ -27,6 +27,7 @@ from agentshore.core.git_safety import (
     find_path_escape_siblings,
     resolve_default_branch,
     restore_default_branch,
+    ssh_signing_setup_hint,
     untrack_ignored_entries,
 )
 from agentshore.core.helpers import (
@@ -499,7 +500,7 @@ async def _phase_git_safety_sweep(
                 detail=ssh_detail,
                 note=(
                     "merge_pr plays will fail with 'ssh-signing-key-not-loaded'. "
-                    "Run: ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+                    f"Run: {ssh_signing_setup_hint()}"
                 ),
             )
 

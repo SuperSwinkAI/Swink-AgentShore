@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 from agentshore.logging import get_logger
@@ -285,6 +286,23 @@ def check_main_repo_branch_mutated(
         return False, post_ref, False
     restored = restore_default_branch(repo_root, default_branch)
     return True, post_ref, restored
+
+
+def ssh_signing_setup_hint() -> str:
+    """Platform-appropriate command(s) to load an SSH signing key into the agent.
+
+    The macOS ``--apple-use-keychain`` flag does not exist on Windows or Linux,
+    so the user-facing fix text must vary by platform. On Windows the usual
+    blocker is that the OpenSSH ``ssh-agent`` service is not running.
+    """
+    if sys.platform == "darwin":
+        return "ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+    if sys.platform.startswith("win"):
+        return (
+            "Start-Service ssh-agent; ssh-add $env:USERPROFILE\\.ssh\\id_ed25519  "
+            "(first time only: Set-Service ssh-agent -StartupType Manual)"
+        )
+    return "ssh-add ~/.ssh/id_ed25519"
 
 
 def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:

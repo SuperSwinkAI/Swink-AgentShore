@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from agentshore.cli.helpers import _check_ssh_signing_key_loaded
 from agentshore.config.coerce import str_or_none
 
@@ -83,3 +85,63 @@ class TestCheckSshSigningKeyLoaded:
             loaded, detail = _check_ssh_signing_key_loaded()
         assert loaded is False
         assert "probe failed" in detail
+
+
+class TestSshSigningSetupHint:
+    """The fix text must be platform-appropriate (#68): --apple-use-keychain is
+    macOS-only and invalid on Windows/Linux."""
+
+    def test_macos_hint_uses_apple_keychain(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with patch("sys.platform", "darwin"):
+            assert "--apple-use-keychain" in ssh_signing_setup_hint()
+
+    def test_windows_hint_starts_agent_service_not_apple(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with patch("sys.platform", "win32"):
+            hint = ssh_signing_setup_hint()
+        assert "ssh-agent" in hint
+        assert "--apple-use-keychain" not in hint
+
+    def test_linux_hint_is_plain_ssh_add(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with patch("sys.platform", "linux"):
+            assert ssh_signing_setup_hint() == "ssh-add ~/.ssh/id_ed25519"
+
+
+class TestReportSshSigningStatus:
+    """The init/bootstrap pre-flight printer surfaces a platform-correct hint."""
+
+    def test_loaded_prints_ok_and_returns_true(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from agentshore.cli import helpers
+
+        with patch.object(
+            helpers,
+            "_check_ssh_signing_key_loaded",
+            return_value=(True, "256 SHA256:abc (ED25519)"),
+        ):
+            result = helpers.report_ssh_signing_status()
+        out = capsys.readouterr().out
+        assert result is True
+        assert "SSH signing key: ok" in out
+
+    def test_not_loaded_prints_windows_hint_and_returns_false(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from agentshore.cli import helpers
+
+        with (
+            patch.object(
+                helpers, "_check_ssh_signing_key_loaded", return_value=(False, "agent unreachable")
+            ),
+            patch("sys.platform", "win32"),
+        ):
+            result = helpers.report_ssh_signing_status()
+        out = capsys.readouterr().out
+        assert result is False
+        assert "NOT LOADED" in out
+        assert "ssh-agent" in out
+        assert "--apple-use-keychain" not in out

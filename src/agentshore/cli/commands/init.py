@@ -400,6 +400,15 @@ def init(
                 repo_name_with_owner=_identity_repo_name_with_owner(project_path),
             )
 
+            # -- 3c. SSH signing pre-flight -----------------------------------
+            # init always precedes running a session, so surface a missing
+            # signing key here (with platform-correct guidance) rather than
+            # letting it first bite a merge_pr play mid-run.
+            from agentshore.cli.helpers import report_ssh_signing_status
+
+            click.echo()
+            report_ssh_signing_status()
+
     # -- 4. Ensure artifact dirs are gitignored --------------------------
     if (project_path / ".git").exists():
         gitignore = project_path / ".gitignore"
