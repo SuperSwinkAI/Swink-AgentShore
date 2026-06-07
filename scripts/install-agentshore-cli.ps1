@@ -45,7 +45,12 @@ Write-Info "Using uv: $uv"
 
 Write-Step "Installing agentshore CLI from bundled wheel"
 Write-Info "Wheel: $WheelPath"
-& $uv tool install --native-tls --force --reinstall "agentshore[all] @ $WheelUri"
+# Pin Python 3.12: agentshore requires >=3.12, but uv otherwise defaults to
+# whatever interpreter it discovers first (often a newer/older system Python),
+# which fails resolution. --python 3.12 finds a system 3.12 or bootstraps a
+# managed one, mirroring install-agentshore-venv.ps1. The wheel has no extras,
+# so install the bare package (an "agentshore[all]" request errors out).
+& $uv tool install --native-tls --force --reinstall --python 3.12 "agentshore @ $WheelUri"
 if ($LASTEXITCODE -ne 0) { Die "uv tool install failed with exit $LASTEXITCODE." }
 
 Write-Step "Ensuring uv's tool bin directory is on PATH"
@@ -60,7 +65,16 @@ if (-not (Test-Path $bin)) {
     Die "agentshore.exe not found after install. Restart the shell or check 'uv tool list'."
 }
 
-$version = (& $bin --version 2>&1 | Select-Object -First 1)
+# Capture the version WITHOUT `2>&1` (PS 5.1 wraps native stderr as an error
+# record under ErrorActionPreference=Stop) and WITHOUT `| Select-Object -First 1`
+# (which stops the pipeline early, killing agentshore.exe mid-write and leaving
+# $LASTEXITCODE = -1 — making a successful install report failure to the wizard).
+$version = (& $bin --version)
+if ($LASTEXITCODE -ne 0) { Die "agentshore --version failed with exit $LASTEXITCODE." }
 Write-Step "Installed CLI"
 Write-Info "binary:  $bin"
 Write-Info "version: $version"
+
+# Explicit success: never let a prior native command's exit code leak out as the
+# script's status.
+exit 0
