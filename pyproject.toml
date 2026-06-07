@@ -41,7 +41,7 @@ dependencies = [
     "keyring==25.7.0",
     "ruamel-yaml==0.19.1",
     "beaupy==3.11.0",
-    "platformdirs==4.9.6",
+    "platformdirs==4.10.0",
     "packaging==25.0",
 ]
 
