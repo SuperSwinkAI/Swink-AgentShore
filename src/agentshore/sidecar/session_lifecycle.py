@@ -37,7 +37,7 @@ import structlog
 
 from agentshore.session_path import (
     IpcEndpoint,
-    find_free_tcp_port,
+    find_ipc_tcp_port,
     session_dir,
     write_pid,
     write_session_info,
@@ -253,8 +253,14 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
 
 
 def _allocate_ipc_endpoint() -> dict[str, object]:
-    """Pick a free loopback TCP port for the orchestrator IPC channel."""
-    port = find_free_tcp_port("127.0.0.1")
+    """Pick a free loopback TCP port for the orchestrator IPC channel.
+
+    Uses the stable app-range finder, not an ephemeral port: on Windows the
+    ephemeral range is camped by loopback-proxying AV (Avast), which makes a
+    pre-resolved ephemeral bind crash the IPC server with WinError 10013. See
+    :func:`agentshore.session_path.find_ipc_tcp_port`.
+    """
+    port = find_ipc_tcp_port("127.0.0.1")
     endpoint = IpcEndpoint.tcp("127.0.0.1", port)
     return endpoint.to_json()
 
@@ -353,7 +359,16 @@ async def run_session_start(
     _emit(notify, progress_token, STEP_START_BRIDGE, "running")
     if start_bridge and project_path is not None and state.bridge is None:
         try:
-            bridge = _make_bridge(project_path, state.ipc_endpoint)
+            from agentshore.ipc.state_writer import reset_session_files
+
+            # Reset before the bridge primes. This stable session_dir may hold a
+            # prior session's state/event files, which the new bridge would
+            # otherwise prime before the orchestrator boots (phase 6) and resets
+            # them — the same prime-before-reset race as the CLI. The Tier 0
+            # session_id gate already rejects a stale snapshot; this makes the
+            # embedded path's ordering match the CLI's reset-before-prime.
+            reset_session_files(session_dir(project_path))
+            bridge = _make_bridge(project_path, state.ipc_endpoint, session_id=session_id)
             await bridge.start()
         except Exception as exc:
             msg = f"failed to start dashboard bridge: {exc}"
@@ -480,7 +495,7 @@ async def _start_orchestrator(
     sdir = _session_dir(project_path)
     sdir.mkdir(parents=True, exist_ok=True)
     writer = StateWriter(sdir)
-    provider = IpcStateProvider(writer)
+    provider = IpcStateProvider(writer, session_id=session_id)
 
     orch = await Orchestrator.bootstrap(
         cfg=cfg,
@@ -736,13 +751,21 @@ async def stop_timelapse_capture(state: ServerState) -> str | None:
     return await await_output(run_id, runs_cwd)
 
 
-def _make_bridge(project_path: Path, ipc_endpoint: dict[str, object]) -> EmbeddedBridge:
+def _make_bridge(
+    project_path: Path,
+    ipc_endpoint: dict[str, object],
+    *,
+    session_id: str | None = None,
+) -> EmbeddedBridge:
     """Construct an EmbeddedBridge bound to the session's IPC endpoint.
 
     The bridge's WebSocket listener must bind to the same host/port that
     ``session.start`` advertised back to the shell — otherwise the
     desktop dials a port nothing is listening on. Pass them through
     explicitly instead of letting ``EmbeddedBridge`` re-roll a free port.
+
+    ``session_id`` pins the bridge's session identity before the orchestrator
+    boots so it rejects any prior session's stale on-disk snapshot.
     """
     endpoint_kind = ipc_endpoint.get("kind")
     if endpoint_kind == "tcp":
@@ -757,4 +780,4 @@ def _make_bridge(project_path: Path, ipc_endpoint: dict[str, object]) -> Embedde
         raise SessionStartError(STEP_START_BRIDGE, -32603, msg)
     sdir = session_dir(project_path)
     sdir.mkdir(parents=True, exist_ok=True)
-    return EmbeddedBridge(ipc, session_dir=sdir, host=host, port=port)
+    return EmbeddedBridge(ipc, session_dir=sdir, host=host, port=port, session_id=session_id)

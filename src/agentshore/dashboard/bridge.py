@@ -65,9 +65,12 @@ class DashboardBridge:
         port: int = _DEFAULT_PORT,
         static_dir: Path | None = None,
         on_ready: Callable[[], None] | None = None,
+        session_id: str | None = None,
         state_poll_interval: float = _STATE_POLL_INTERVAL,
         events_poll_interval: float = _EVENTS_POLL_INTERVAL,
     ) -> None:
+        from agentshore.session_path import read_session_id_by_dir
+
         self._ipc_endpoint = ipc_endpoint
         self._port = port
         self._static_dir = static_dir or (Path(__file__).parent / "static")
@@ -78,6 +81,20 @@ class DashboardBridge:
         self._events_path = session_dir / EVENTS_FILENAME
         self._state_poll_interval = state_poll_interval
         self._events_poll_interval = events_poll_interval
+
+        # Session identity gate: a bridge serves exactly one session. The id is
+        # taken from the caller when known (sidecar threads it through before the
+        # orchestrator boots) or resolved from this session_dir's ``info.json``
+        # (the standalone ``agentshore dashboard`` attaches to a running session).
+        # When still unknown, it is adopted from the first observed snapshot.
+        # Any snapshot whose ``session_id`` differs is treated as a prior
+        # session's stale file and never adopted or replayed.
+        self._current_session_id: str | None = session_id or read_session_id_by_dir(session_dir)
+        # True once we've seen an on-disk/live snapshot for the session we serve.
+        # Until then we replay nothing on connect — replaying a prior session's
+        # cached snapshot would poison the client's monotonic seq de-dup and
+        # suppress the new session's low-seq bootstrap frames.
+        self._observed_current_state = False
 
         self._ws_clients: list[WebSocket] = []
         self._latest_state: str | None = None
@@ -247,6 +264,18 @@ class DashboardBridge:
     async def _prime_from_disk(self) -> None:
         """Best-effort load of existing state + tail of events on startup."""
         await self._poll_state_file()
+        # If the on-disk snapshot doesn't belong to the session we serve (or
+        # there's no snapshot yet), don't prime any event caches — they would be
+        # the prior session's bootstrap/play events. Still advance the events
+        # offset to the current end so the live tail starts after the stale
+        # backlog rather than replaying it (a truncating reset resets the offset
+        # back to 0 in _read_new_events_sync).
+        if not self._observed_current_state:
+            try:
+                self._events_offset = self._events_path.stat().st_size
+            except OSError:
+                self._events_offset = 0
+            return
         try:
             size = self._events_path.stat().st_size
         except OSError:
@@ -302,12 +331,31 @@ class DashboardBridge:
         except OSError:
             return False
         self._state_mtime = stat.st_mtime_ns
-        self._latest_state = raw.rstrip("\n")
+        candidate = raw.rstrip("\n")
         try:
-            parsed = json.loads(self._latest_state)
+            parsed = json.loads(candidate)
         except json.JSONDecodeError:
+            # Unattributable (malformed) snapshot: keep prior behaviour and let
+            # the watcher broadcast it, but don't treat it as proof we've seen
+            # the current session — it must not gate the replay or be cached.
+            self._latest_state = candidate
             return True
         payload = parsed.get("payload") if isinstance(parsed, dict) else None
+        snapshot_sid = payload.get("session_id") if isinstance(payload, dict) else None
+
+        # Session-aware gate. When the snapshot names a session different from
+        # the one we serve, it's a prior session's stale file (e.g. one the
+        # engine failed to unlink on Windows) — drop it without adopting or
+        # caching. A snapshot with no session_id (older engines) can't be gated,
+        # so fall back to serving it.
+        if isinstance(snapshot_sid, str):
+            if self._current_session_id is None:
+                self._current_session_id = snapshot_sid
+            elif snapshot_sid != self._current_session_id:
+                return False
+
+        self._latest_state = candidate
+        self._observed_current_state = True
         if isinstance(payload, dict) and "active_play" in payload:
             ap = payload.get("active_play")
             self._active_play = ap if isinstance(ap, dict) else None
@@ -384,6 +432,17 @@ class DashboardBridge:
         msg_type = msg.get("type")
         payload = msg.get("payload")
         fields: dict[str, object] = payload if isinstance(payload, dict) else msg
+
+        # Tier 1 backstop: with session_id stamped on every event, reject any
+        # that names a session other than the one we serve. Events without an id
+        # (older engines) fall through to the Tier 0 prime/replay gating.
+        event_sid = fields.get("session_id")
+        if (
+            isinstance(event_sid, str)
+            and self._current_session_id is not None
+            and event_sid != self._current_session_id
+        ):
+            return
 
         if msg_type == "session_draining":
             if broadcast:
@@ -475,7 +534,15 @@ class DashboardBridge:
             await websocket.send_text(json.dumps({"type": "error", "error": error}))
 
     async def _replay_to_ws(self, websocket: WebSocket) -> None:
-        """Replay cached dashboard state to a newly connected WebSocket."""
+        """Replay cached dashboard state to a newly connected WebSocket.
+
+        No session gate is needed here: ``_poll_state_file_sync`` never caches a
+        cross-session snapshot, and ``_prime_from_disk`` never primes the event
+        caches from a non-current on-disk state — so every cache below holds
+        only current-session data. (A ``bootstrap_phase`` cached live during the
+        current run is still replayed so a tab connecting mid-bootstrap renders
+        the loading modal — the desktop-afp behaviour.)
+        """
         if self._latest_state is not None:
             await websocket.send_text(self._latest_state)
         if self._bootstrap_phase_raw is not None and not self._session_ended:

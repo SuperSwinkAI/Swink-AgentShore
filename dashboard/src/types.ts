@@ -231,6 +231,11 @@ export interface MessageEnvelope {
    *  seq <= lastSeenSeq to prevent stale or out-of-order messages from corrupting
    *  state. May be absent on synthetic client-side messages (demo transport). */
   seq?: number;
+  /** Session this frame belongs to (Tier 1 contract). Stamped on every
+   *  server-emitted frame so the client can detect a session boundary on any
+   *  message type and reset cleanly. StateUpdate narrows this to required;
+   *  synthetic client messages (ConnectionLost/Restored) omit it. */
+  session_id?: string;
 }
 
 export interface StateUpdate extends MessageEnvelope {

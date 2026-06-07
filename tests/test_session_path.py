@@ -65,6 +65,48 @@ def test_session_paths_use_resolved_project_hash(
     assert sp.session_pid_path(project) == expected_dir / "agentshore.pid"
 
 
+def test_find_ipc_tcp_port_uses_stable_range() -> None:
+    """The IPC port must come from the fixed app range, not an ephemeral port.
+
+    On Windows the ephemeral range (49152+) is camped by loopback-proxying AV
+    (Avast), which crashes the orchestrator's pre-resolved bind with WinError
+    10013. The fixed range sidesteps that lottery.
+    """
+    port = sp.find_ipc_tcp_port()
+
+    assert 9411 <= port < 9512
+    # And it must be genuinely bindable, not just in-range.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def test_find_ipc_tcp_port_falls_back_to_ephemeral_when_range_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If every port in the stable range is occupied, fall back to an OS-assigned
+    port rather than raising — strictly no worse than the prior behaviour."""
+    monkeypatch.setattr(sp, "find_free_tcp_port", lambda host="127.0.0.1": 55555)
+
+    real_socket = socket.socket
+
+    class _BindAlwaysFails:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._sock = real_socket(*args, **kwargs)
+
+        def __enter__(self) -> _BindAlwaysFails:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._sock.close()
+
+        def bind(self, addr: tuple[str, int]) -> None:
+            raise OSError("simulated: stable range fully occupied")
+
+    monkeypatch.setattr(sp.socket, "socket", _BindAlwaysFails)
+
+    assert sp.find_ipc_tcp_port() == 55555
+
+
 def test_discover_socket_finds_existing_socket_path(tmp_path: Path) -> None:
     project = tmp_path / "repo"
     project.mkdir()
