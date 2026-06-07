@@ -38,7 +38,9 @@ def test_windows_build_script_stages_required_helpers() -> None:
     ]:
         assert helper in script
 
-    assert "agentshore-wheel.whl" in script
+    assert "agentshore-wheel.whl" not in script
+    assert "Split-Path -Leaf $WheelPath" in script
+    assert '"/DWheelFileName=$WheelFileName"' in script
     assert 'Invoke-Checked "uv" "--native-tls" "build"' in script
     assert "AgentShoreSetup-$Version-x64.exe" in script
 
@@ -55,3 +57,11 @@ def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
 
     assert "from agentshore.beads.setup import provision_bd" in script
     assert "provision_bd(assume_yes=True)" in script
+
+
+def test_windows_inno_template_uses_valid_wheel_filename_define() -> None:
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
+
+    assert "WheelFileName must be supplied" in template
+    assert r"{app}\installer\{#WheelFileName}" in template
+    assert "agentshore-wheel.whl" not in template

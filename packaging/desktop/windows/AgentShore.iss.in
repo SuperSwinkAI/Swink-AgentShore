@@ -12,6 +12,9 @@
 #ifndef OutputDir
   #error OutputDir must be supplied by build-windows.ps1
 #endif
+#ifndef WheelFileName
+  #error WheelFileName must be supplied by build-windows.ps1
+#endif
 #ifndef LicenseFile
   #error LicenseFile must be supplied by build-windows.ps1
 #endif
@@ -97,7 +100,7 @@ begin
 
   if NeedsWheel then
   begin
-    Params := Params + ' -Wheel ' + Quote(ExpandConstant('{app}\installer\agentshore-wheel.whl'));
+    Params := Params + ' -Wheel ' + Quote(ExpandConstant('{app}\installer\{#WheelFileName}'));
   end;
 
   WizardForm.StatusLabel.Caption := StepName + '...';
