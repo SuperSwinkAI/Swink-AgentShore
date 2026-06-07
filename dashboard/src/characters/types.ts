@@ -113,4 +113,5 @@ export const AGENT_COLORS: Record<string, AgentColors> = {
   claude_code: { fill: "#E07B39", label: "C" },
   codex: { fill: "#F4D44D", label: "X" },
   gemini: { fill: "#4285F4", label: "G" },
+  grok: { fill: "#14B8A6", label: "K" },
 };

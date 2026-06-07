@@ -106,6 +106,7 @@ class AgentType(enum.Enum):
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
     GEMINI = "gemini"
+    GROK = "grok"
 
 
 class AgentStatus(enum.Enum):

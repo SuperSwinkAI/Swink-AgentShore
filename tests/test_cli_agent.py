@@ -16,6 +16,7 @@ from agentshore.agents.cli_agent import (
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
     _extract_text_from_gemini_jsonl,
+    _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
     build_argv,
@@ -216,6 +217,35 @@ def _gemini_json_lines() -> list[bytes]:
     ]
 
 
+def _grok_json_lines() -> list[bytes]:
+    result = {
+        "schema_version": 1,
+        "success": True,
+        "artifacts": [],
+        "issues_created": [],
+        "requested_mutations": [],
+        "metrics": {},
+        "error": None,
+    }
+    content = f"```json\n{json.dumps(result)}\n```"
+    return [
+        b'{"type":"session.started","session_id":"grok-session"}\n',
+        b'{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ignored"}]}}\n',
+        json.dumps(
+            {
+                "type": "result",
+                "message": {"role": "assistant", "content": content},
+                "usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 40,
+                    "output_tokens": 30,
+                },
+            }
+        ).encode()
+        + b"\n",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_argv
 # ---------------------------------------------------------------------------
@@ -261,6 +291,101 @@ def test_build_argv_gemini_shape() -> None:
     assert "gemini-3-flash-preview" in argv
     assert "-p" in argv
     assert argv[-1] == "do the thing"
+
+
+def test_build_argv_grok_shape() -> None:
+    argv = build_argv(
+        AgentType.GROK,
+        "do the thing",
+        binary="grok",
+        model="grok-build",
+        reasoning_effort="medium",
+        project_dir="/worktree",
+    )
+
+    assert argv == [
+        "grok",
+        "--no-auto-update",
+        "--no-subagents",
+        "--verbatim",
+        "--cwd",
+        "/worktree",
+        "--output-format",
+        "streaming-json",
+        "-m",
+        "grok-build",
+        "--reasoning-effort",
+        "medium",
+        "--permission-mode",
+        "bypassPermissions",
+        "-p",
+        "do the thing",
+    ]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "grok-build-0.1",
+        "grok-code-fast-1",
+        "grok-code-fast",
+        "grok-code-fast-1-0825",
+    ],
+)
+def test_build_argv_grok_normalizes_cli_model_aliases(alias: str) -> None:
+    argv = build_argv(AgentType.GROK, "do the thing", binary="grok", model=alias)
+
+    assert argv[argv.index("-m") + 1] == "grok-build"
+
+
+def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_which(name: str) -> str | None:
+        return f"/usr/local/bin/{name}" if name in {"grok", "grok-build"} else None
+
+    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+
+    argv = build_argv(AgentType.GROK, "do the thing")
+
+    assert argv[0] == "grok"
+
+
+def test_build_argv_grok_falls_back_to_grok_build_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_which(name: str) -> str | None:
+        return "/usr/local/bin/grok-build" if name == "grok-build" else None
+
+    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+
+    argv = build_argv(AgentType.GROK, "do the thing")
+
+    assert argv[0] == "grok-build"
+
+
+def test_build_argv_grok_explicit_flags_replace_permission_default_only() -> None:
+    argv = build_argv(
+        AgentType.GROK,
+        "do the thing",
+        binary="grok",
+        project_dir="/worktree",
+        extra_flags=("--permission-mode", "readOnly"),
+    )
+
+    assert "--no-auto-update" in argv
+    assert "--no-subagents" in argv
+    assert "--verbatim" in argv
+    assert "--cwd" in argv
+    assert "--output-format" in argv
+    assert "streaming-json" in argv
+    assert "bypassPermissions" not in argv
+    assert "--permission-mode" in argv
+    assert "readOnly" in argv
+    assert "--worktree" not in argv
+    assert "--best-of-n" not in argv
+    assert "--agents" not in argv
+    assert "--resume" not in argv
+    assert "--continue" not in argv
+    assert "--session-id" not in argv
 
 
 def test_build_argv_codex_inherits_env_to_shell_subprocesses() -> None:
@@ -466,6 +591,38 @@ async def test_dispatch_cli_success_gemini_stream_json(
     assert result.tokens_in == 42
     assert result.tokens_out == 13
     assert result.cached_tokens_in == 7
+    sr = parse_skill_result(result.raw_output)
+    assert sr.success is True
+
+
+async def test_dispatch_cli_success_grok_streaming_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(_grok_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(
+        enabled=True,
+        binary="grok",
+        timeout=10,
+        cost_per_1k_input=0.001,
+        cost_per_1k_cached_input=0.0002,
+        cost_per_1k_output=0.002,
+    )
+    handle = _make_handle(agent_type=AgentType.GROK)
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    assert result.exit_code == 0
+    assert result.tokens_in == 120
+    assert result.cached_tokens_in == 40
+    assert result.tokens_out == 30
+    assert result.session_id == "grok-session"
+    expected = (80 / 1000) * 0.001 + (40 / 1000) * 0.0002 + (30 / 1000) * 0.002
+    assert result.dollar_cost == pytest.approx(expected)
     sr = parse_skill_result(result.raw_output)
     assert sr.success is True
 
@@ -1152,13 +1309,19 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
 
 
 def test_is_terminal_event_detects_each_agent_type() -> None:
-    """Claude/Gemini emit type:result; Codex emits turn.completed. All three
+    """Claude/Gemini emit type:result; Codex emits turn.completed. CLI agents
     must be recognized so the 60s post-response grace applies (not the 30-min
     stream_idle_timeout)."""
     assert _is_terminal_event(b'{"type":"result","result":"ok"}', AgentType.CLAUDE_CODE)
     assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GEMINI)
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
+    )
+    assert _is_terminal_event(b'{"event":"completed","response":"ok"}', AgentType.GROK)
+    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GROK)
+    assert _is_terminal_event(
+        b'{"type":"end","stopReason":"EndTurn","sessionId":"grok-session"}',
+        AgentType.GROK,
     )
 
 
@@ -1256,6 +1419,80 @@ def test_extract_text_from_gemini_jsonl_handles_whitespace_lines() -> None:
     assert text == "hi"
     assert session_id == "g-1"
     assert usage.tokens_out == 0
+
+
+def test_extract_text_from_grok_jsonl_handles_nested_events() -> None:
+    raw = (
+        '\n  {"type":"session.started","metadata":{"sessionId":"grok-1"}}  \n'
+        '  {"type":"message","role":"assistant","delta":{"text":"hel"}}  \n'
+        '  {"event":"completed","response":{"content":"hello"},'
+        '"usage":{"prompt_tokens":10,"cached_input_tokens":3,"completion_tokens":4}}  \n'
+    )
+    text, usage, session_id = _extract_text_from_grok_jsonl(raw)
+    assert text == "hello"
+    assert session_id == "grok-1"
+    assert usage.tokens_in == 10
+    assert usage.cached_tokens_in == 3
+    assert usage.tokens_out == 4
+
+
+def test_extract_text_from_grok_jsonl_reassembles_text_data_stream() -> None:
+    result = {
+        "schema_version": 1,
+        "success": True,
+        "artifacts": [],
+        "issues_created": [],
+        "requested_mutations": [],
+        "metrics": {},
+        "error": None,
+    }
+    raw = "\n".join(
+        [
+            json.dumps({"type": "text", "data": "```json\n"}),
+            json.dumps({"type": "text", "data": json.dumps(result)}),
+            json.dumps({"type": "text", "data": "\n```"}),
+            json.dumps(
+                {
+                    "type": "end",
+                    "stopReason": "EndTurn",
+                    "sessionId": "019ea33a-3fd4-7e52-845b-2df0c89494a0",
+                }
+            ),
+        ]
+    )
+
+    text, usage, session_id = _extract_text_from_grok_jsonl(raw)
+
+    assert session_id == "019ea33a-3fd4-7e52-845b-2df0c89494a0"
+    assert usage.tokens_in == 0
+    assert usage.cached_tokens_in == 0
+    assert usage.tokens_out == 0
+    assert parse_skill_result(text).success is True
+
+
+def test_extract_text_from_grok_jsonl_keeps_terminal_result_with_non_assistant_role() -> None:
+    raw = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "message",
+                    "role": "user",
+                    "message": {"content": "ignore user echo"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "role": "system",
+                    "result": {"content": "final answer"},
+                }
+            ),
+        ]
+    )
+
+    text, _, _ = _extract_text_from_grok_jsonl(raw)
+
+    assert text == "final answer"
 
 
 def test_extract_text_from_stream_json_handles_whitespace_lines() -> None:

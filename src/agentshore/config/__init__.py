@@ -180,6 +180,28 @@ agents:
     max_context: 1000000
     cost_per_1k_input: 0.0005
     cost_per_1k_output: 0.003
+  grok:
+    enabled: true
+    binary: grok
+    model: grok-build
+    reasoning_effort: medium
+    model_tiers:
+      small:
+        enabled: true
+        model: grok-build
+        reasoning_effort: low
+      medium:
+        enabled: true
+        model: grok-build
+        reasoning_effort: medium
+      large:
+        enabled: true
+        model: grok-build
+        reasoning_effort: high
+    max_context: 256000
+    cost_per_1k_input: 0.001
+    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_output: 0.002
   fresh_start:
     max_plays_before_reset: 20
     context_threshold: 0.80

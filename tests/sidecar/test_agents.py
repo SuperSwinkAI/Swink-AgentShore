@@ -5,7 +5,9 @@ from pathlib import Path
 import yaml
 
 from agentshore.sidecar.agents import (
+    agents_catalog,
     configure_agent,
+    detect_available_agents,
     get_spawn_limits,
     list_agents,
     set_spawn_limits,
@@ -144,6 +146,48 @@ def test_configure_agent_creates_new_entry(tmp_path: Path) -> None:
     assert data["agents"]["gemini"] == {"enabled": True, "identity": "example-user"}
     # Pre-existing keys are preserved.
     assert data["budget"] == {"enabled": True, "total": 5.0}
+
+
+def test_configure_agent_accepts_grok(tmp_path: Path) -> None:
+    cfg = tmp_path / "agentshore.yaml"
+    _write_config(cfg, {"agents": {}})
+
+    configure_agent(tmp_path, "grok", {"enabled": True, "identity": "example-user"})
+
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert data["agents"]["grok"] == {"enabled": True, "identity": "example-user"}
+
+
+def test_agents_catalog_includes_grok_defaults() -> None:
+    catalog = agents_catalog()
+
+    models = catalog["models"]
+    defaults = catalog["defaults"]
+    assert isinstance(models, dict)
+    assert isinstance(defaults, dict)
+    assert "grok-build" in models["grok"]
+    assert "grok-build-0.1" in models["grok"]
+    assert defaults["grok"]["small"] == {
+        "model": "grok-build",
+        "reasoning_effort": "low",
+    }
+    assert defaults["grok"]["medium"] == {
+        "model": "grok-build",
+        "reasoning_effort": "medium",
+    }
+    assert defaults["grok"]["large"] == {
+        "model": "grok-build",
+        "reasoning_effort": "high",
+    }
+
+
+def test_detect_available_agents_maps_grok_aliases(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agentshore.sidecar.agents.detect_agent_binaries",
+        lambda: ("grok-build", "grok"),
+    )
+
+    assert detect_available_agents() == ["grok"]
 
 
 def test_configure_agent_rejects_unknown_fields(tmp_path: Path) -> None:

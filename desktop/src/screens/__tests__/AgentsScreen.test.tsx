@@ -150,6 +150,13 @@ describe("AgentsScreen", () => {
     expect(await screen.findByText(/No agent runners configured/)).toBeInTheDocument();
   });
 
+  it("labels detected Grok runners for scaffolding", async () => {
+    const adapter = makeAdapter([], IDENTITIES, { detected: ["grok"] });
+    renderScreen(adapter);
+
+    expect(await screen.findByTestId("scaffold-grok")).toHaveTextContent("+ Grok CLI");
+  });
+
   it("flags a missing identity bound to an agent with a (missing) option", async () => {
     const orphan: AgentRow = {
       ...AGENTS[0],

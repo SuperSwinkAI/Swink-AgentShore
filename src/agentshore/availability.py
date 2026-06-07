@@ -42,6 +42,8 @@ _BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "claude": AgentType.CLAUDE_CODE,
     "codex": AgentType.CODEX,
     "gemini": AgentType.GEMINI,
+    "grok": AgentType.GROK,
+    "grok-build": AgentType.GROK,
 }
 
 
@@ -79,9 +81,15 @@ def refresh(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
     detected_binary_set = set(detected_binaries)
 
     agent_rows: list[AgentTypeAvailability] = []
-    for binary, agent_type in _BINARY_TO_AGENT_TYPE.items():
-        present = binary in detected_binary_set
-        binary_path = resolve_executable(binary) if present else None
+    seen_agent_types: set[AgentType] = set()
+    for _binary, agent_type in _BINARY_TO_AGENT_TYPE.items():
+        if agent_type in seen_agent_types:
+            continue
+        seen_agent_types.add(agent_type)
+        aliases = [name for name, mapped in _BINARY_TO_AGENT_TYPE.items() if mapped == agent_type]
+        detected_binary = next((name for name in aliases if name in detected_binary_set), None)
+        present = detected_binary is not None
+        binary_path = resolve_executable(detected_binary) if detected_binary is not None else None
         tiers = tuple(default_model_tiers_for(agent_type).keys()) if present else ()
         agent_rows.append(
             AgentTypeAvailability(

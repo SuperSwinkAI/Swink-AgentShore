@@ -24,11 +24,14 @@ _BYPASS_FLAGS: dict[str, tuple[str, ...]] = {
     "claude_code": ("--dangerously-skip-permissions",),
     "codex": ("--dangerously-bypass-approvals-and-sandbox",),
     "gemini": ("--approval-mode=yolo", "--skip-trust"),
+    "grok": ("--permission-mode", "bypassPermissions"),
 }
 _AGENT_KEY_BY_BINARY: dict[str, str] = {
     "claude": "claude_code",
     "codex": "codex",
     "gemini": "gemini",
+    "grok": "grok",
+    "grok-build": "grok",
 }
 _SUPPORTED_CLI_AGENT_KEYS: frozenset[str] = frozenset(_AGENT_KEY_BY_BINARY.values())
 
