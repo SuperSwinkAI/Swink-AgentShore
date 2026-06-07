@@ -26,7 +26,9 @@ def test_windows_build_script_stages_required_helpers() -> None:
 
     assert "build:tauri-sidecars" not in script
     assert "AGENTSHORE_SKIP_BD_SIDECAR" in script
+    assert "CARGO_HTTP_CHECK_REVOKE" in script
     assert "tauri.windows-installer.conf.json" in script
+    assert r"$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" in script
 
     for helper in [
         "install-agentshore-venv.ps1",
@@ -37,14 +39,14 @@ def test_windows_build_script_stages_required_helpers() -> None:
         assert helper in script
 
     assert "agentshore-wheel.whl" in script
+    assert 'Invoke-Checked "uv" "--native-tls" "build"' in script
     assert "AgentShoreSetup-$Version-x64.exe" in script
 
 
 def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
-    config = (
-        REPO_ROOT / "packaging/desktop/windows/tauri.windows-installer.conf.json"
-    ).read_text()
+    config = (REPO_ROOT / "packaging/desktop/windows/tauri.windows-installer.conf.json").read_text()
 
+    assert '"beforeBuildCommand": "npm run build:tauri-frontend"' in config
     assert '"externalBin": []' in config
 
 

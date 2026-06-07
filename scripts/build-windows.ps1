@@ -84,6 +84,7 @@ function Resolve-Iscc {
     if ($cmd) { return $cmd.Source }
 
     $candidates = @(
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
     )
@@ -142,14 +143,17 @@ $WheelStageDir = Join-Path $TauriDir "target\agentshore-wheel"
 Remove-Item -LiteralPath $WheelStageDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $WheelStageDir | Out-Null
 Push-Location $RepoRoot
-try { Invoke-Checked "uv" "build" "--wheel" "--out-dir" $WheelStageDir } finally { Pop-Location }
+try { Invoke-Checked "uv" "--native-tls" "build" "--wheel" "--out-dir" $WheelStageDir } finally { Pop-Location }
 $WheelPath = Get-NewestWheel $WheelStageDir
 Write-Info "Wheel: $(Split-Path -Leaf $WheelPath)"
 
 Write-Step "Building Tauri executable ($BuildMode)"
 Push-Location $DesktopDir
 try {
+    $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
     $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
+    $env:CARGO_HTTP_CHECK_REVOKE = "false"
+    Write-Info "Temporarily disabled Cargo Schannel revocation checks for crate downloads."
     if ($DebugBuild) {
         Invoke-Checked "npx" "tauri" "build" "--debug" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     } else {
@@ -157,6 +161,11 @@ try {
     }
 } finally {
     Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
+    if ($null -eq $PreviousCargoHttpCheckRevoke) {
+        Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
+    } else {
+        $env:CARGO_HTTP_CHECK_REVOKE = $PreviousCargoHttpCheckRevoke
+    }
     Pop-Location
 }
 

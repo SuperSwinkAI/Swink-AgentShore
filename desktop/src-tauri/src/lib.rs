@@ -674,6 +674,7 @@ pub fn run() {
                 // and has to minimize every other app to find the
                 // AgentShore window underneath. Mirror what
                 // tauri_plugin_single_instance does for relaunch.
+                #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen {
                     has_visible_windows,
                     ..
@@ -692,8 +693,7 @@ pub fn run() {
                 // running, confirm — quitting force-kills it with no drain and
                 // no end-of-session report.
                 tauri::RunEvent::ExitRequested { api, .. } => {
-                    let session_active =
-                        app_handle.state::<activity::ActivityHolder>().is_active();
+                    let session_active = app_handle.state::<activity::ActivityHolder>().is_active();
                     let already_confirmed = app_handle.state::<QuitConfirmed>().get();
                     if quit_requires_confirmation(session_active, already_confirmed) {
                         api.prevent_exit();
