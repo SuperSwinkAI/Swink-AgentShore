@@ -43,13 +43,55 @@ async def test_install_cli_uses_pinned_npm_package(
     assert seen["cmd"] == ["npm", "install", "-g", "timelapse-capture@0.4.0"]
 
 
-async def test_install_timelapse_non_macos_returns_failure(
+async def test_install_timelapse_linux_returns_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "linux")
     result = await setup.install_timelapse()
     assert result.success is False
-    assert "macOS" in result.message
+    assert "macOS and Windows" in result.message
+
+
+async def test_install_timelapse_windows_uses_npm_without_homebrew_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    calls: list[str] = []
+
+    async def fail_ffmpeg(cwd: object) -> None:
+        raise AssertionError("Windows installer must not require Homebrew ffmpeg preinstall")
+
+    async def record_node(cwd: object) -> None:
+        calls.append("node")
+
+    async def record_cli(cwd: object) -> None:
+        calls.append("cli")
+
+    async def record_doctor(cwd: object) -> None:
+        calls.append("doctor")
+
+    monkeypatch.setattr(setup, "_ensure_ffmpeg", fail_ffmpeg)
+    monkeypatch.setattr(setup, "_ensure_node", record_node)
+    monkeypatch.setattr(setup, "_install_cli", record_cli)
+    monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
+
+    result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
+
+    assert result.success is True
+    assert calls == ["node", "cli", "doctor"]
+
+
+async def test_ensure_node_windows_reports_node_install_instructions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    monkeypatch.setattr(setup.shutil, "which", lambda _name: None)
+
+    with pytest.raises(setup.TimelapseError) as exc:
+        await setup._ensure_node(tmp_path)  # type: ignore[arg-type]
+
+    assert "Node.js 24+" in str(exc.value)
+    assert "winget install OpenJS.NodeJS" in str(exc.value)
 
 
 async def test_install_timelapse_reports_step_failure(
