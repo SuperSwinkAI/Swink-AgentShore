@@ -91,7 +91,7 @@ type UiState = {
 
 type Tier = "small" | "medium" | "large";
 
-type AgentType = "codex" | "claude_code" | "gemini";
+type AgentType = "codex" | "claude_code" | "gemini" | "grok";
 
 interface TierEntry {
   model: string;
@@ -107,8 +107,9 @@ const AGENT_LABELS: Record<AgentType, string> = {
   codex: "Codex CLI",
   claude_code: "Claude Code",
   gemini: "Gemini CLI",
+  grok: "Grok CLI",
 };
-const AGENT_TYPES = new Set<string>(["codex", "claude_code", "gemini"]);
+const AGENT_TYPES = new Set<string>(["codex", "claude_code", "gemini", "grok"]);
 const TIERS: Tier[] = ["small", "medium", "large"];
 
 type SetupState = {
@@ -423,6 +424,7 @@ function AgentConfigScreen() {
           <option value="codex">{AGENT_LABELS.codex}</option>
           <option value="claude_code">{AGENT_LABELS.claude_code}</option>
           <option value="gemini">{AGENT_LABELS.gemini}</option>
+          <option value="grok">{AGENT_LABELS.grok}</option>
         </select>
       </section>
 

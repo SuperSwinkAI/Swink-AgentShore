@@ -43,6 +43,17 @@ AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
         "cost_per_1k_input": 0.0005,
         "cost_per_1k_output": 0.003,
     },
+    AgentType.GROK: {
+        "can_implement": True,
+        "can_review": True,
+        "can_test": True,
+        "can_create_pr": True,
+        "can_merge": True,
+        "can_run_skill": True,
+        "max_context": 256_000,
+        "cost_per_1k_input": 0.001,
+        "cost_per_1k_output": 0.002,
+    },
 }
 
 

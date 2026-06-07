@@ -60,11 +60,19 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ],
+    "grok": [
+        "grok-build",
+        "grok-build-0.1",
+        "grok-code-fast-1",
+        "grok-code-fast",
+        "grok-code-fast-1-0825",
+    ],
 }
 
 _ANTHROPIC_PREFIXES = ("claude-",)
 _OPENAI_PREFIXES = ("gpt-",)
 _GEMINI_PREFIXES = ("gemini-",)
+_XAI_PREFIXES = ("grok-",)
 
 
 async def _fetch_live_models(
@@ -168,6 +176,20 @@ async def _fetch_gemini_models(*, timeout: float = 5.0) -> list[str]:
     )
 
 
+async def _fetch_xai_models(*, timeout: float = 5.0) -> list[str]:
+    """GET /v1/models from xAI. Logs and returns [] on any failure."""
+    api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_CODE_XAI_API_KEY")
+    if not api_key:
+        return []
+    return await _fetch_live_models(
+        "https://api.x.ai/v1/models",
+        provider="xai",
+        timeout=timeout,
+        headers={"Authorization": f"Bearer {api_key}"},
+        extract=lambda body: _extract_data_model_ids(body, prefixes=_XAI_PREFIXES),
+    )
+
+
 async def models_for_agent_async(agent_key: str, *, timeout: float = 5.0) -> list[str]:
     """Return deduplicated model list: known first, then live extras.
 
@@ -184,6 +206,8 @@ async def models_for_agent_async(agent_key: str, *, timeout: float = 5.0) -> lis
         live = await _fetch_openai_models(timeout=timeout)
     elif agent_key == "gemini":
         live = await _fetch_gemini_models(timeout=timeout)
+    elif agent_key == "grok":
+        live = await _fetch_xai_models(timeout=timeout)
 
     return known + [m for m in live if m not in known_set]
 

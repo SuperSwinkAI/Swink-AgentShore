@@ -14,6 +14,9 @@ import codexSmallSpriteUrl from "../assets/agents/v2/codex-small-ball.png";
 import geminiLargeSpriteUrl from "../assets/agents/v2/gemini-large-humanoid.png";
 import geminiMediumSpriteUrl from "../assets/agents/v2/gemini-medium-humanoid.png";
 import geminiSmallSpriteUrl from "../assets/agents/v2/gemini-small-ball.png";
+import grokLargeSpriteUrl from "../assets/agents/v2/grok-large-humanoid.png";
+import grokMediumSpriteUrl from "../assets/agents/v2/grok-medium-humanoid.png";
+import grokSmallSpriteUrl from "../assets/agents/v2/grok-small-ball.png";
 import {
   type Character,
   type CharacterBubble,
@@ -83,6 +86,11 @@ const V2_AGENT_SPRITE_SPECS: Partial<
     small: v2SpriteSpec("gemini-small-ball", geminiSmallSpriteUrl),
     medium: v2SpriteSpec("gemini-medium-humanoid", geminiMediumSpriteUrl),
     large: v2SpriteSpec("gemini-large-humanoid", geminiLargeSpriteUrl),
+  },
+  grok: {
+    small: v2SpriteSpec("grok-small-ball", grokSmallSpriteUrl),
+    medium: v2SpriteSpec("grok-medium-humanoid", grokMediumSpriteUrl),
+    large: v2SpriteSpec("grok-large-humanoid", grokLargeSpriteUrl),
   },
 };
 

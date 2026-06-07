@@ -132,10 +132,16 @@ def test_refresh_picks_up_gh_accounts(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "binary, expected_type",
-    [("claude", "claude_code"), ("codex", "codex"), ("gemini", "gemini")],
+    [
+        ("claude", "claude_code"),
+        ("codex", "codex"),
+        ("gemini", "gemini"),
+        ("grok", "grok"),
+        ("grok-build", "grok"),
+    ],
 )
 def test_binary_to_agent_type_mapping(tmp_path: Path, binary: str, expected_type: str) -> None:
-    """All three known CLI binaries map to a known AgentType."""
+    """All known CLI binaries map to a known AgentType."""
     with (
         patch("agentshore.availability.detect_agent_binaries", return_value=(binary,)),
         patch("agentshore.availability.detect_gh_accounts", return_value=[]),
@@ -145,3 +151,19 @@ def test_binary_to_agent_type_mapping(tmp_path: Path, binary: str, expected_type
 
     by_type = {a.agent_type: a for a in record.agent_types}
     assert by_type[expected_type].available is True
+
+
+def test_grok_binary_preferred_over_grok_build(tmp_path: Path) -> None:
+    def resolve(binary: str) -> str:
+        return f"/usr/bin/{binary}"
+
+    with (
+        patch("agentshore.availability.detect_agent_binaries", return_value=("grok", "grok-build")),
+        patch("agentshore.availability.detect_gh_accounts", return_value=[]),
+        patch("agentshore.availability.resolve_executable", side_effect=resolve),
+    ):
+        record = availability.refresh(tmp_path / "availability.yaml")
+
+    by_type = {a.agent_type: a for a in record.agent_types}
+    assert by_type["grok"].available is True
+    assert by_type["grok"].binary == "/usr/bin/grok"

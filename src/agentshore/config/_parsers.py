@@ -364,6 +364,13 @@ _AGENT_DEFAULTS: dict[str, dict[str, float | int | None]] = {
         "cost_per_1k_cache_write_input": None,
         "cost_per_1k_output": 0.003,
     },
+    "grok": {
+        "max_context": 256_000,
+        "cost_per_1k_input": 0.001,
+        "cost_per_1k_cached_input": 0.0002,
+        "cost_per_1k_cache_write_input": None,
+        "cost_per_1k_output": 0.002,
+    },
 }
 
 
