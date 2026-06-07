@@ -136,14 +136,6 @@ export function Dashboard({
     };
   }, []);
 
-  // Track the last session_id we've seen so we can wipe accumulated
-  // state on session boundaries. If the previous session was killed
-  // hard (Tauri shell quit without session.stop), no session_ended
-  // fires — the next state_update arrives with a fresh session_id but
-  // the EventDrawer / PlayBar / AgentPlayStats still hold cards from
-  // the dead session, displayed as phantom hash-id agents.
-  const lastSessionIdRef = useRef<string | null>(null);
-
   // Fire onFirstAgentInstantiated exactly once per Dashboard mount.
   // The ref resets when wsUrl changes (different session), so a
   // subsequent session also gets one shot at firing the callback.
@@ -169,31 +161,25 @@ export function Dashboard({
       transport ?? new WebSocketClient(wsUrl as string);
     transportRef.current = client;
 
+    // Session-boundary reset (Tier 1): the manager detects a session_id change
+    // on any frame and calls this hook to wipe accumulators that carry
+    // per-session state but live outside the manager (play bar, agent stats,
+    // event drawer, bootstrap modal). resetSession() already drops the
+    // manager's own characters/seq/bootstrap; this clears the component DOM —
+    // the modal only re-evaluates when notified, so pushing the cleared phase
+    // hides a modal left up by the prior run before the new run re-shows it.
+    stateManager.onSessionReset = () => {
+      notifyPlayBarClear();
+      notifyAgentPlayStatsReset();
+      notifyEventDrawerReset();
+      notifyBootstrapModal({ phase: null, startedAt: null });
+    };
+
     client.onStateChange = (state) => {
       setConnectionState(state);
     };
 
     client.onMessage = (msg: AgentShoreMessage) => {
-      // Session-boundary reset: if a state_update arrives with a new
-      // session_id, wipe all accumulators that carry per-session state.
-      if (msg.type === "state_update") {
-        const incomingSid = (msg as { session_id?: string }).session_id ?? null;
-        if (
-          incomingSid !== null &&
-          lastSessionIdRef.current !== null &&
-          lastSessionIdRef.current !== incomingSid
-        ) {
-          notifyPlayBarClear();
-          notifyAgentPlayStatsReset();
-          notifyEventDrawerReset();
-          // Drop characters + previous-agents map from the dead
-          // session so the next handleMessage spawns a fresh set.
-          stateManager.resetSession();
-        }
-        if (incomingSid !== null) {
-          lastSessionIdRef.current = incomingSid;
-        }
-      }
       stateManager.handleMessage(msg);
       switch (msg.type) {
         case "state_update":

@@ -24,6 +24,10 @@ def test_windows_inno_template_matches_pkg_component_defaults() -> None:
 def test_windows_build_script_stages_required_helpers() -> None:
     script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
 
+    assert "build:tauri-sidecars" not in script
+    assert "AGENTSHORE_SKIP_BD_SIDECAR" in script
+    assert "tauri.windows-installer.conf.json" in script
+
     for helper in [
         "install-agentshore-venv.ps1",
         "install-agentshore-cli.ps1",
@@ -34,3 +38,18 @@ def test_windows_build_script_stages_required_helpers() -> None:
 
     assert "agentshore-wheel.whl" in script
     assert "AgentShoreSetup-$Version-x64.exe" in script
+
+
+def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
+    config = (
+        REPO_ROOT / "packaging/desktop/windows/tauri.windows-installer.conf.json"
+    ).read_text()
+
+    assert '"externalBin": []' in config
+
+
+def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
+    script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
+
+    assert "from agentshore.beads.setup import provision_bd" in script
+    assert "provision_bd(assume_yes=True)" in script

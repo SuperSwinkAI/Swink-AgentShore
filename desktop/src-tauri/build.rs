@@ -5,7 +5,11 @@ const SIDECAR_NAME: &str = "agentshore-bd";
 const SOURCE_BD_NAME: &str = "bd";
 
 fn main() {
-    ensure_bd_sidecar();
+    if std::env::var_os("AGENTSHORE_SKIP_BD_SIDECAR").is_none() {
+        ensure_bd_sidecar();
+    } else {
+        println!("cargo:rerun-if-env-changed=AGENTSHORE_SKIP_BD_SIDECAR");
+    }
     tauri_build::build()
 }
 

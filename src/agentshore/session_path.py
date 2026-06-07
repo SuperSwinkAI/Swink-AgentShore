@@ -140,6 +140,32 @@ def find_dashboard_port(start: int = 9400, end: int = 9410) -> int:
     return start
 
 
+def find_ipc_tcp_port(host: str = "127.0.0.1", start: int = 9411, end: int = 9512) -> int:
+    """Return the first free TCP port in a stable application range for IPC.
+
+    Deliberately scans a fixed low range (just above the dashboard's 9400-block)
+    instead of letting the OS hand out an ephemeral port via
+    :func:`find_free_tcp_port`. On Windows, security suites that proxy loopback
+    traffic (e.g. Avast's Web Shield) camp on freshly-freed ports in the
+    ephemeral range (49152+). An ephemeral ``bind(port=0)`` then loses a race to
+    such a proxy, and a later bind of that exact port fails with WSAEACCES
+    (WinError 10013, *not* the in-use 10048) — which crashes the orchestrator's
+    IPC server, since it binds a concrete pre-resolved port with no retry. A
+    fixed app-range port sidesteps the ephemeral lottery entirely; the dashboard
+    bridge already proves this range is reachable under the same AV. Falls back
+    to an ephemeral port only if the whole range is occupied (≈100 concurrent
+    sessions), which is strictly no worse than the prior behaviour.
+    """
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, port))
+                return port
+            except OSError:
+                continue
+    return find_free_tcp_port(host)
+
+
 def resolve_start_ipc_endpoint(
     project_path: Path,
     *,
@@ -165,7 +191,7 @@ def resolve_start_ipc_endpoint(
     if socket_override is None:
         ipc_endpoint = default_ipc_endpoint(project_path, host=ipc_host, port=ipc_port)
         if ipc_endpoint.kind == "tcp" and ipc_endpoint.port == 0:
-            ipc_endpoint = IpcEndpoint.tcp(ipc_endpoint.host, find_free_tcp_port(ipc_endpoint.host))
+            ipc_endpoint = IpcEndpoint.tcp(ipc_endpoint.host, find_ipc_tcp_port(ipc_endpoint.host))
         return ipc_endpoint, str(well_known_socket)
 
     resolved_socket = socket_override
@@ -383,6 +409,28 @@ def read_session_info(project_path: Path) -> dict[str, object] | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def read_session_id_by_dir(sdir: Path) -> str | None:
+    """Read ``session_id`` from a session directory's ``info.json``.
+
+    Like :func:`read_session_info` but keyed by the resolved session directory
+    rather than a project path: the dashboard bridge holds the ``session_dir``
+    it is tailing (not the project path) yet needs to know *which* session it
+    serves so it can reject a prior session's stale snapshot. Returns None when
+    the sidecar is absent, unreadable, or carries no string ``session_id``.
+    """
+    info_path = sdir / "info.json"
+    if not info_path.exists():
+        return None
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    return session_id if isinstance(session_id, str) else None
 
 
 def timelapse_info_path(project_path: Path) -> Path:

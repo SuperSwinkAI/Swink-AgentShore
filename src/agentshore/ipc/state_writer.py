@@ -72,12 +72,50 @@ def _replace_with_retry(src: str, dst: Path) -> None:
     assert last is not None
     raise last
 
+
 # Rotation: when the events file exceeds ``_EVENTS_ROTATE_BYTES``, keep
 # only the trailing ``_EVENTS_ROTATE_KEEP_BYTES`` (rounded to a line
 # boundary). Historical events are recoverable from agentshore.db; the file
 # is a tail consumed by the dashboard, so unbounded retention is wasted.
 _EVENTS_ROTATE_BYTES = 5 * 1024 * 1024
 _EVENTS_ROTATE_KEEP_BYTES = 1 * 1024 * 1024
+
+
+def _unlink_best_effort(path: Path) -> None:
+    """Remove a stale prior-session file without ever crashing boot.
+
+    On Windows an orphaned prior-session dashboard bridge can still hold the
+    file (no FILE_SHARE_DELETE), so ``unlink`` raises ``PermissionError`` rather
+    than ``FileNotFoundError`` — which a bare ``suppress`` would not catch,
+    taking the orchestrator down on startup. Retry briefly, then give up
+    quietly: the fresh session coalesces the latest state on its first write, so
+    a lingering stale file is self-correcting.
+    """
+    retries = _WIN_LOCK_RETRIES if sys.platform.startswith("win") else 1
+    for attempt in range(retries):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 < retries:
+                time.sleep(_WIN_LOCK_BACKOFF_S)
+                continue
+            _logger.warning("state_writer.reset_unlink_failed", path=str(path))
+            return
+
+
+def reset_session_files(session_dir: Path) -> None:
+    """Remove a prior session's dashboard state/event files (best-effort).
+
+    Exposed at module scope so the reset-before-prime ordering can run from the
+    sidecar's start_bridge phase — before the embedded bridge primes — without
+    prematurely constructing a :class:`StateWriter`. The ``StateWriter``
+    constructor calls this too, so the orchestrator path stays self-resetting.
+    """
+    _unlink_best_effort(session_dir / STATE_FILENAME)
+    _unlink_best_effort(session_dir / EVENTS_FILENAME)
 
 
 class StateWriter:
@@ -103,35 +141,7 @@ class StateWriter:
         # so prior sessions for the same project leave events behind. The
         # bridge's prime-from-disk would otherwise replay a prior session's
         # `session_ended` and trigger uvicorn `should_exit` on startup.
-        self._reset_session_files()
-
-    def _reset_session_files(self) -> None:
-        self._unlink_best_effort(self._state_path)
-        self._unlink_best_effort(self._events_path)
-
-    def _unlink_best_effort(self, path: Path) -> None:
-        """Remove a stale prior-session file without ever crashing boot.
-
-        On Windows an orphaned prior-session dashboard bridge can still hold
-        the file (no FILE_SHARE_DELETE), so ``unlink`` raises ``PermissionError``
-        rather than ``FileNotFoundError`` — which the old ``suppress`` did not
-        catch, taking the orchestrator down on startup. Retry briefly, then give
-        up quietly: the fresh session coalesces the latest state on its first
-        write, so a lingering stale file is self-correcting.
-        """
-        retries = _WIN_LOCK_RETRIES if sys.platform.startswith("win") else 1
-        for attempt in range(retries):
-            try:
-                path.unlink()
-                return
-            except FileNotFoundError:
-                return
-            except OSError:
-                if attempt + 1 < retries:
-                    time.sleep(_WIN_LOCK_BACKOFF_S)
-                    continue
-                _logger.warning("state_writer.reset_unlink_failed", path=str(path))
-                return
+        reset_session_files(session_dir)
 
     @property
     def state_path(self) -> Path:

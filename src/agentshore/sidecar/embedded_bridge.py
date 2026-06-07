@@ -23,7 +23,7 @@ import contextlib
 from typing import TYPE_CHECKING, TypedDict
 
 from agentshore.dashboard.bridge import DashboardBridge
-from agentshore.session_path import find_free_tcp_port
+from agentshore.session_path import find_dashboard_port
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,9 +51,13 @@ class EmbeddedBridge:
         host: str = "127.0.0.1",
         port: int | None = None,
         static_dir: Path | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._host = host
-        self._port = find_free_tcp_port(host) if port is None else port
+        # Stable 9400-range (not an ephemeral port) for a predictable browser URL
+        # and to dodge the Windows AV loopback-proxy that camps the ephemeral
+        # range — see agentshore.session_path.find_ipc_tcp_port.
+        self._port = find_dashboard_port() if port is None else port
         self._ready: asyncio.Event = asyncio.Event()
         self._bridge = DashboardBridge(
             ipc_endpoint=ipc_endpoint,
@@ -61,6 +65,11 @@ class EmbeddedBridge:
             port=self._port,
             static_dir=static_dir,
             on_ready=self._ready.set,
+            # Pin the session identity before the orchestrator boots: the bridge
+            # primes (phase 5) before the first snapshot is written (phase 6),
+            # and info.json isn't written until after, so without this the
+            # bridge could adopt a prior session's stale snapshot as "current".
+            session_id=session_id,
         )
         self._task: asyncio.Task[None] | None = None
 

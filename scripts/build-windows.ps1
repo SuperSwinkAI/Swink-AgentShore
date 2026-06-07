@@ -19,9 +19,6 @@
 .PARAMETER SkipDashboard
     Reuse existing dashboard build outputs.
 
-.PARAMETER SkipSidecar
-    Reuse existing bd sidecar binaries under desktop\src-tauri\binaries.
-
 .PARAMETER DebugBuild
     Build a debug Tauri executable instead of release.
 
@@ -34,12 +31,11 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-    .\scripts\build-windows.ps1 -SkipDashboard -SkipSidecar
+    .\scripts\build-windows.ps1 -SkipDashboard
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipDashboard,
-    [switch]$SkipSidecar,
     [switch]$DebugBuild,
     [switch]$Install,
     [string]$Iscc = ""
@@ -59,6 +55,7 @@ $AppStageDir = Join-Path $StageDir "app"
 $InstallerStageDir = Join-Path $StageDir "installer"
 $OutputDir = Join-Path $DesktopDir "dist"
 $TemplatePath = Join-Path $RepoRoot "packaging\desktop\windows\AgentShore.iss.in"
+$WindowsTauriConfig = Join-Path $RepoRoot "packaging\desktop\windows\tauri.windows-installer.conf.json"
 $LicensePath = Join-Path $RepoRoot "packaging\desktop\installer-resources\EULA.rtf"
 $IconPath = Join-Path $TauriDir "icons\icon.ico"
 
@@ -133,13 +130,8 @@ if (-not $SkipDashboard) {
     Write-Step "Skipping dashboard build (-SkipDashboard)"
 }
 
-if (-not $SkipSidecar) {
-    Write-Step "Building bundled bd sidecar binary"
-    Push-Location $DesktopDir
-    try { Invoke-Checked "npm" "run" "build:tauri-sidecars" } finally { Pop-Location }
-} else {
-    Write-Step "Skipping sidecar binary build (-SkipSidecar)"
-}
+Write-Step "Skipping bundled bd sidecar binary"
+Write-Info "Windows installer provisions bd during install via the managed sidecar venv."
 
 Write-Step "Building Tauri frontend"
 Push-Location $DesktopDir
@@ -157,19 +149,19 @@ Write-Info "Wheel: $(Split-Path -Leaf $WheelPath)"
 Write-Step "Building Tauri executable ($BuildMode)"
 Push-Location $DesktopDir
 try {
+    $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
     if ($DebugBuild) {
-        Invoke-Checked "npx" "tauri" "build" "--debug" "--no-bundle" "--" "--locked"
+        Invoke-Checked "npx" "tauri" "build" "--debug" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     } else {
-        Invoke-Checked "npx" "tauri" "build" "--no-bundle" "--" "--locked"
+        Invoke-Checked "npx" "tauri" "build" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     }
 } finally {
+    Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
     Pop-Location
 }
 
 $AppExe = Join-Path $TargetDir "agentshore-desktop.exe"
 if (-not (Test-Path $AppExe)) { Die "Tauri build finished but $AppExe does not exist" }
-$BdExe = Join-Path $TauriDir "binaries\agentshore-bd\agentshore-bd.exe"
-if (-not (Test-Path $BdExe)) { Die "bd sidecar missing at $BdExe" }
 
 Write-Step "Staging installer payload"
 Remove-Item -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -178,7 +170,6 @@ New-Item -ItemType Directory -Path $InstallerStageDir | Out-Null
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item -LiteralPath $AppExe -Destination (Join-Path $AppStageDir "agentshore-desktop.exe")
-Copy-Item -LiteralPath $BdExe -Destination (Join-Path $AppStageDir "agentshore-bd.exe")
 Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir "agentshore-wheel.whl")
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-venv.ps1") -Destination $InstallerStageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-cli.ps1") -Destination $InstallerStageDir

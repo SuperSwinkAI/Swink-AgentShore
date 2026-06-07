@@ -617,7 +617,9 @@ pub fn run() {
             let menu = build_app_menu(&app_handle)?;
             app.set_menu(menu)?;
 
-            let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd")).ok();
+            let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd"))
+                .ok()
+                .filter(|path| path.is_file());
 
             // DESIGN §2.6 — survive a supervisor-startup failure: store
             // the structured error in FatalShellState, emit an "app:fatal_error"

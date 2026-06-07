@@ -227,12 +227,11 @@ def _launch_dashboard_background(
     import time
     import webbrowser
 
-    from agentshore.session_path import (
-        IpcEndpoint,
-        find_dashboard_port,
-        session_dir,
-        stop_dashboard_process,
+    from agentshore.dashboard.lifecycle import (
+        reap_before_orchestrator_spawn,
+        select_dashboard_port,
     )
+    from agentshore.session_path import IpcEndpoint, session_dir
 
     endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else IpcEndpoint.unix("")
     log_dir = session_dir(project_path)
@@ -245,7 +244,7 @@ def _launch_dashboard_background(
     # can't unlink it — leaving a prior session's `session_ended` in place,
     # which the new bridge then ingests and self-exits on ("dies on its own").
     # Reaping first releases the file so the reset succeeds; it also frees 9400.
-    if stop_dashboard_process(project_path):
+    if reap_before_orchestrator_spawn(project_path):
         click.echo("Reaped a stale dashboard process for this project.")
 
     cmd: list[str] = [
@@ -304,7 +303,7 @@ def _launch_dashboard_background(
     if not _wait_for_ipc_endpoint_ready(endpoint, orchestrator_proc, log_file):
         return
 
-    port = find_dashboard_port()
+    port = select_dashboard_port()
     dashboard_cmd: list[str] = [
         sys.executable,
         "-m",
@@ -459,7 +458,7 @@ async def _run_agent_mode(
     # The StateWriter persists state snapshots + events into the session
     # directory for file-tailing consumers (next-gen dashboard sidecar).
     writer = StateWriter(session_dir(repo_root))
-    provider = IpcStateProvider(writer, server=server)
+    provider = IpcStateProvider(writer, server=server, session_id=session_id)
 
     orch = await Orchestrator.bootstrap(
         cfg=cfg,

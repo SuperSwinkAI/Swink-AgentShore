@@ -263,6 +263,111 @@ describe("AgentShoreStateManager — bootstrap_phase events (desktop-afp)", () =
   });
 });
 
+describe("AgentShoreStateManager — session reset (Tier 0)", () => {
+  it("resetSession clears bootstrap progress and the seq floor", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(40));
+    mgr.handleMessage({
+      type: "bootstrap_phase",
+      phase: "init_datastore",
+      status: "started",
+      elapsed_ms: 0,
+    });
+    expect(mgr.bootstrapPhase).toBe("init_datastore");
+
+    mgr.resetSession();
+
+    expect(mgr.bootstrapPhase).toBeNull();
+    expect(mgr.bootstrapStartedAt).toBeNull();
+    expect(mgr.latestState).toBeNull();
+    // The de-dup floor is cleared, so a fresh low-seq frame is accepted.
+    expect(mgr.handleMessage(stateUpdate(1))).toBe(true);
+  });
+
+  it("connection_restored drops the seq floor so a reconnect's fresh stream is accepted", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(20));
+    // Reconnect may attach to a new orchestrator whose seq restarts at 1.
+    mgr.handleMessage({ type: "connection_restored" } as AgentShoreMessage);
+    expect(mgr.handleMessage(stateUpdate(1, { total_plays: 3 }))).toBe(true);
+    expect(mgr.latestState?.total_plays).toBe(3);
+  });
+
+  it("session_ended drops the seq floor so the next run's seq=1 is accepted", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(20));
+    mgr.handleMessage({ type: "session_ended" } as AgentShoreMessage);
+    expect(mgr.handleMessage(stateUpdate(1))).toBe(true);
+  });
+
+  it("a stale high-seq frame can no longer suppress the next run's bootstrap modal", () => {
+    const mgr = new AgentShoreStateManager();
+    // The prior run left the de-dup floor high.
+    mgr.handleMessage(stateUpdate(50));
+    // Reconnect to the new orchestrator.
+    mgr.handleMessage({ type: "connection_restored" } as AgentShoreMessage);
+    // The new run's first bootstrap frame carries a low seq; it must be accepted
+    // (before the fix, seq<=50 was silently dropped → modal never appeared).
+    mgr.handleMessage({
+      type: "bootstrap_phase",
+      seq: 1,
+      phase: "init_datastore",
+      status: "started",
+      elapsed_ms: 0,
+    } as unknown as AgentShoreMessage);
+    expect(mgr.bootstrapPhase).toBe("init_datastore");
+  });
+});
+
+describe("AgentShoreStateManager — session boundary (Tier 1)", () => {
+  it("a state_update with a new session_id resets seq + bootstrap and adopts it", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(10, { session_id: "A", total_plays: 5 }));
+    mgr.handleMessage({
+      type: "bootstrap_phase",
+      phase: "init_datastore",
+      status: "started",
+      elapsed_ms: 0,
+    });
+    expect(mgr.currentSessionId).toBe("A");
+
+    // Lower seq than the prior session, but a new id must still be accepted.
+    const accepted = mgr.handleMessage(stateUpdate(1, { session_id: "B", total_plays: 2 }));
+    expect(accepted).toBe(true);
+    expect(mgr.currentSessionId).toBe("B");
+    expect(mgr.bootstrapPhase).toBeNull();
+    expect(mgr.latestState?.session_id).toBe("B");
+    expect(mgr.latestState?.total_plays).toBe(2);
+  });
+
+  it("a session_id change on a non-state frame also triggers the boundary", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(10, { session_id: "A" }));
+    expect(mgr.latestState).not.toBeNull();
+
+    // A play_event stamped with a new session_id flips the boundary (Tier 1
+    // detects on any frame, not just state_update).
+    mgr.handleMessage(playStarted(1, { session_id: "B" }));
+    expect(mgr.currentSessionId).toBe("B");
+    // resetSession wiped latestState; the play_event then no-ops (no snapshot).
+    expect(mgr.latestState).toBeNull();
+  });
+
+  it("fires onSessionReset on a boundary but not on first adoption or same session", () => {
+    const mgr = new AgentShoreStateManager();
+    let resets = 0;
+    mgr.onSessionReset = () => {
+      resets += 1;
+    };
+    mgr.handleMessage(stateUpdate(1, { session_id: "A" }));
+    expect(resets).toBe(0); // first adoption — nothing to reset
+    mgr.handleMessage(stateUpdate(2, { session_id: "A" }));
+    expect(resets).toBe(0); // same session
+    mgr.handleMessage(stateUpdate(1, { session_id: "B" }));
+    expect(resets).toBe(1); // boundary crossed
+  });
+});
+
 describe("AgentShoreStateManager — take_break routing (desktop-o9z1)", () => {
   beforeEach(() => {
     // Seat reservations live in module-scope state; clear before each test so

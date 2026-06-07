@@ -16,7 +16,8 @@ export type DemoScenario =
   | "feedback"
   | "disconnected"
   | "stress"
-  | "bootstrap";
+  | "bootstrap"
+  | "session_switch";
 
 export class DemoTransport implements DashboardTransport {
   state: ConnectionState = "closed";
@@ -172,6 +173,32 @@ export class DemoTransport implements DashboardTransport {
         }, 1500);
       };
       advance();
+    }
+
+    if (this.scenario === "session_switch") {
+      // Exercise the Tier 1 session boundary: a first session, then a second
+      // with a different session_id. The manager must clear the first
+      // session's agents/stats and re-show the bootstrap modal for the second.
+      this.onMessage?.({ ...state, session_id: "demo-session-a", total_plays: 7 });
+      window.setTimeout(() => {
+        this.onMessage?.({
+          type: "bootstrap_phase",
+          session_id: "demo-session-b",
+          phase: "init_datastore",
+          status: "started",
+          elapsed_ms: 0,
+        });
+        window.setTimeout(() => {
+          this.onMessage?.({
+            type: "bootstrap_phase",
+            session_id: "demo-session-b",
+            phase: "ready",
+            status: "completed",
+            elapsed_ms: 1500,
+          });
+          this.onMessage?.({ ...this.baseState(), session_id: "demo-session-b" });
+        }, 1500);
+      }, 1500);
     }
 
     if (this.scenario === "disconnected") {
@@ -669,7 +696,8 @@ export function createDemoTransport(params: URLSearchParams): DemoTransport {
     rawScenario === "feedback" ||
     rawScenario === "disconnected" ||
     rawScenario === "stress" ||
-    rawScenario === "bootstrap"
+    rawScenario === "bootstrap" ||
+    rawScenario === "session_switch"
       ? rawScenario
       : "active";
   return new DemoTransport(scenario);

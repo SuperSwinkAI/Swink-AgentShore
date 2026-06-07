@@ -72,6 +72,24 @@ Write-Step "Verifying agentshore.sidecar import"
 & $VenvPython -c "import agentshore.sidecar; print('agentshore.sidecar OK')"
 if ($LASTEXITCODE -ne 0) { Die "agentshore.sidecar import failed in managed venv." }
 
+Write-Step "Provisioning bd dependency"
+$bdCode = @"
+from agentshore.beads.setup import provision_bd
+
+path = provision_bd(assume_yes=True)
+if path is None:
+    raise SystemExit(1)
+print(path)
+"@
+$bdProbe = [System.IO.Path]::GetTempFileName() + ".py"
+try {
+    Set-Content -Path $bdProbe -Value $bdCode -Encoding UTF8
+    & $VenvPython $bdProbe
+    if ($LASTEXITCODE -ne 0) { Die "bd provisioning failed." }
+} finally {
+    Remove-Item -LiteralPath $bdProbe -Force -ErrorAction SilentlyContinue
+}
+
 $version = (& $VenvPython -m pip show agentshore | Select-String "^Version:" | Select-Object -First 1)
 Write-Step "Installed managed venv"
 Write-Info "python: $VenvPython"
