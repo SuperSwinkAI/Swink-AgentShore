@@ -145,7 +145,8 @@ New-Item -ItemType Directory -Path $WheelStageDir | Out-Null
 Push-Location $RepoRoot
 try { Invoke-Checked "uv" "--native-tls" "build" "--wheel" "--out-dir" $WheelStageDir } finally { Pop-Location }
 $WheelPath = Get-NewestWheel $WheelStageDir
-Write-Info "Wheel: $(Split-Path -Leaf $WheelPath)"
+$WheelFileName = Split-Path -Leaf $WheelPath
+Write-Info "Wheel: $WheelFileName"
 
 Write-Step "Building Tauri executable ($BuildMode)"
 Push-Location $DesktopDir
@@ -179,7 +180,7 @@ New-Item -ItemType Directory -Path $InstallerStageDir | Out-Null
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item -LiteralPath $AppExe -Destination (Join-Path $AppStageDir "agentshore-desktop.exe")
-Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir "agentshore-wheel.whl")
+Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir $WheelFileName)
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-venv.ps1") -Destination $InstallerStageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-cli.ps1") -Destination $InstallerStageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-timelapse.ps1") -Destination $InstallerStageDir
@@ -195,6 +196,7 @@ $isccArgs = @(
     "/DAppVersion=$Version",
     "/DStageDir=$StageDir",
     "/DOutputDir=$OutputDir",
+    "/DWheelFileName=$WheelFileName",
     "/DLicenseFile=$LicensePath",
     "/DIconFile=$IconPath",
     $IssOut
