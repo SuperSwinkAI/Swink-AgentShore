@@ -22,7 +22,7 @@
     "@tauri-apps/plugin-dialog": "2.7.1",
     "@agentshore/dashboard": "*",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react-dom": "19.2.7",
     "react-router-dom": "7.17.0"
   },
   "devDependencies": {
@@ -32,7 +32,7 @@
     "@testing-library/user-event": "14.6.1",
     "@types/node": "22.19.19",
     "@types/react": "18.3.28",
-    "@types/react-dom": "18.3.7",
+    "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "jsdom": "29.1.1",
     "typescript": "6.0.3",
