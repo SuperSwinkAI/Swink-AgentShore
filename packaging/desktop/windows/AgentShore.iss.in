@@ -1,0 +1,158 @@
+; Inno Setup template for the AgentShore Windows desktop installer.
+;
+; Built by scripts/build-windows.ps1. The wizard mirrors the macOS pkg
+; distribution choices: required Desktop, opt-in Timelapse, opt-out CLI.
+
+#ifndef AppVersion
+  #error AppVersion must be supplied by build-windows.ps1
+#endif
+#ifndef StageDir
+  #error StageDir must be supplied by build-windows.ps1
+#endif
+#ifndef OutputDir
+  #error OutputDir must be supplied by build-windows.ps1
+#endif
+#ifndef LicenseFile
+  #error LicenseFile must be supplied by build-windows.ps1
+#endif
+#ifndef IconFile
+  #error IconFile must be supplied by build-windows.ps1
+#endif
+
+[Setup]
+AppId={{7DD0F0F8-B88E-4CB4-A6D8-0F7E4B843F5A}
+AppName=AgentShore
+AppVersion={#AppVersion}
+AppPublisher=SuperSwink
+AppPublisherURL=https://github.com/SuperSwinkAI/Swink-AgentShore
+AppSupportURL=https://github.com/SuperSwinkAI/Swink-AgentShore/issues
+AppUpdatesURL=https://github.com/SuperSwinkAI/Swink-AgentShore/releases
+DefaultDirName={localappdata}\Programs\AgentShore
+DefaultGroupName=AgentShore
+DisableProgramGroupPage=yes
+DisableReadyPage=no
+LicenseFile={#LicenseFile}
+OutputDir={#OutputDir}
+OutputBaseFilename=AgentShoreSetup-{#AppVersion}-x64
+SetupIconFile={#IconFile}
+UninstallDisplayIcon={app}\agentshore-desktop.exe
+WizardStyle=modern
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+Compression=lzma2
+SolidCompression=yes
+CloseApplications=yes
+RestartIfNeededByRun=no
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Types]
+Name: "custom"; Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "desktop"; Description: "AgentShore Desktop"; Types: custom; Flags: fixed
+Name: "timelapse"; Description: "Timelapse Capture (optional)"; Types: custom
+Name: "cli"; Description: "AgentShore CLI"; Types: custom
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+[Files]
+Source: "{#StageDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: desktop
+Source: "{#StageDir}\installer\*"; DestDir: "{app}\installer"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: desktop
+
+[Icons]
+Name: "{autoprograms}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop
+Name: "{autodesktop}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop; Tasks: desktopicon
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\installer"
+
+[Run]
+Filename: "{app}\agentshore-desktop.exe"; Description: "Launch AgentShore"; Flags: nowait postinstall skipifsilent; Components: desktop
+
+[Code]
+function Quote(Value: String): String;
+begin
+  Result := '"' + Value + '"';
+end;
+
+function RunInstallerStep(StepName: String; ScriptName: String; NeedsWheel: Boolean; Optional: Boolean): Boolean;
+var
+  Params: String;
+  ResultCode: Integer;
+  PowerShellPath: String;
+  RunnerPath: String;
+  ScriptPath: String;
+begin
+  Result := False;
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  RunnerPath := ExpandConstant('{app}\installer\run-windows-installer-step.ps1');
+  ScriptPath := ExpandConstant('{app}\installer\' + ScriptName);
+  Params := '-NoProfile -ExecutionPolicy Bypass -File ' + Quote(RunnerPath) +
+    ' -StepName ' + Quote(StepName) +
+    ' -ScriptPath ' + Quote(ScriptPath);
+
+  if NeedsWheel then
+  begin
+    Params := Params + ' -Wheel ' + Quote(ExpandConstant('{app}\installer\agentshore-wheel.whl'));
+  end;
+
+  WizardForm.StatusLabel.Caption := StepName + '...';
+  if not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    MsgBox('Could not launch ' + StepName + '. See %LocalAppData%\AgentShore\install-logs for details.', mbError, MB_OK);
+    exit;
+  end;
+
+  if ResultCode <> 0 then
+  begin
+    if Optional then
+    begin
+      MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and Timelapse Capture can be installed later from the app. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
+      Result := True;
+      exit;
+    end;
+
+    MsgBox(StepName + ' failed. See %LocalAppData%\AgentShore\install-logs for details.', mbError, MB_OK);
+    exit;
+  end;
+
+  Result := True;
+end;
+
+procedure InitializeWizard();
+begin
+  { Desktop is fixed. CLI mirrors the macOS pkg's opt-out default; Timelapse
+    mirrors its opt-in default. }
+  WizardSelectComponents('desktop,cli');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not RunInstallerStep('Provisioning AgentShore Desktop sidecar', 'install-agentshore-venv.ps1', True, False) then
+    begin
+      RaiseException('AgentShore Desktop sidecar provisioning failed.');
+    end;
+
+    if WizardIsComponentSelected('cli') then
+    begin
+      if not RunInstallerStep('Installing AgentShore CLI', 'install-agentshore-cli.ps1', True, False) then
+      begin
+        RaiseException('AgentShore CLI installation failed.');
+      end;
+    end;
+
+    if WizardIsComponentSelected('timelapse') then
+    begin
+      if not RunInstallerStep('Provisioning Timelapse Capture', 'install-timelapse.ps1', False, True) then
+      begin
+        { Optional step already surfaced a warning. }
+      end;
+    end;
+  end;
+end;
