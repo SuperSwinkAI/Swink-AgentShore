@@ -172,7 +172,9 @@ async def test_action_show_learnings_four_columns(tmp_path: Path) -> None:
         # The modal should now be the top screen; query its Static widgets.
         assert len(app.screen_stack) == 2, "LearningsModal was not pushed"
         statics = app.screen.query("Static")
-        text = " ".join(str(w.renderable) for w in statics)
+        # textual 8 removed Static.renderable; render() returns the Content,
+        # whose str() is the plain text we assert against below.
+        text = " ".join(str(w.render()) for w in statics)
 
     # Header columns present.
     assert "Pattern" in text
