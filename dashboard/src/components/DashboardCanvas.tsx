@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 
 import { Camera } from "../engine/camera";
 import { OfficeRenderer, type WallSticky } from "../engine/renderer";
