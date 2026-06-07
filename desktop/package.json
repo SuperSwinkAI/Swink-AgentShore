@@ -23,7 +23,7 @@
     "@agentshore/dashboard": "*",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-router-dom": "6.30.3"
+    "react-router-dom": "6.30.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.1",
