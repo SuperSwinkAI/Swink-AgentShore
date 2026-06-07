@@ -35,7 +35,7 @@ dependencies = [
     "click==8.3.3",
     "numpy==2.4.4",
     "starlette==1.1.0",
-    "uvicorn==0.46.0",
+    "uvicorn==0.49.0",
     "websockets==14.2",
     "playwright==1.58.0",
     "keyring==25.7.0",
