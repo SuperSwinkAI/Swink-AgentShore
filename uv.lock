@@ -49,7 +49,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = "==0.22.1" },
-    { name = "beaupy", specifier = "==3.11.0" },
+    { name = "beaupy", specifier = "==3.12.0" },
     { name = "click", specifier = "==8.3.3" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "beaupy"
-version = "3.11.0"
+version = "3.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "emoji" },
@@ -130,9 +130,9 @@ dependencies = [
     { name = "questo" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/b2/1478a56b9669eda5fc6f9fed9e9aa47fbe73b564c5fb5cd55d719cf5b32e/beaupy-3.11.0.tar.gz", hash = "sha256:c264d13061c5741ceef5462b3752e572a0a7c3b8bd8dac870d10aec8a7d6b2ee", size = 16550, upload-time = "2026-01-08T14:03:33.794Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/65/6e501a432db02adb3c974473d73360880878797fbe25405c08024fa76bce/beaupy-3.12.0.tar.gz", hash = "sha256:e0ca6d2356b611ae734c8cf97b28ed9e3bb941d3207af2426e182da836a385d6", size = 16671, upload-time = "2026-05-21T19:10:01.649Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/0e/58181784f84f5944e2539e9605fdb1941bb2156c6382d5d11937a86128ec/beaupy-3.11.0-py3-none-any.whl", hash = "sha256:43dfa75f8a0ebb11c031426b481b27266f8623fbb28d695521ac6dc2c27479f0", size = 14860, upload-time = "2026-01-08T14:03:31.669Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/91/645739784ac1cda4eb4dfaeb7b31aa0fe949499e517c0a9616341bb8201d/beaupy-3.12.0-py3-none-any.whl", hash = "sha256:b3c1451c81ae329f91b27688faac0ae0f7ccbefc5ee97967a888582000d477c9", size = 15007, upload-time = "2026-05-21T19:10:00.595Z" },
 ]
 
 [[package]]
