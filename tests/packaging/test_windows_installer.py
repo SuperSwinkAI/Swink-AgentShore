@@ -58,6 +58,13 @@ def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> Non
     assert '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]' in main_rs
 
 
+def test_windows_sidecar_path_overlay_includes_npm_global_shims() -> None:
+    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+
+    assert 'std::env::var_os("APPDATA")' in sidecar_rs
+    assert '.join("npm")' in sidecar_rs
+
+
 def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
     script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
 

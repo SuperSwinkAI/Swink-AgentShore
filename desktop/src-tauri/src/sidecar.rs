@@ -439,6 +439,11 @@ fn apply_user_path_overlay(cmd: &mut Command) {
         candidates.push(std::path::PathBuf::from(&home).join(".local/bin"));
         candidates.push(std::path::PathBuf::from(&home).join(".cargo/bin"));
     }
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        // npm's Windows global shims live here by default, e.g.
+        // ``timelapse-capture.cmd`` after ``npm install -g``.
+        candidates.push(std::path::PathBuf::from(appdata).join("npm"));
+    }
 
     // Prepend (in reverse so the first candidate ends up first), skipping
     // any already-present entry to avoid PATH duplication.

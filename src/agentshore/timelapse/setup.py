@@ -1,13 +1,14 @@
 """Auto-install the optional ``timelapse-capture`` CLI and its dependencies.
 
-Triggered by the desktop "Timelapse capture" setup checkbox. Best-effort,
-macOS-only (the desktop build target), and uses Homebrew for system deps:
+Triggered by the desktop "Timelapse capture" setup checkbox. Best-effort:
+macOS uses Homebrew for missing system deps, while Windows uses an existing
+Node/npm installation and lets ``timelapse-capture doctor`` verify the npm
+toolchain.
 
-  1. ``ffmpeg`` / ``ffprobe`` — ``brew install ffmpeg`` if missing.
-  2. Node.js 24+ — ``brew install node`` if missing or too old.
-  3. ``timelapse-capture`` — ``npm install -g`` a pinned npm-registry version
+  1. Node.js 24+.
+  2. ``timelapse-capture`` via ``npm install -g`` a pinned npm-registry version
      (which auto-provisions the Playwright Chromium browser).
-  4. Verify with ``timelapse-capture doctor --json``.
+  3. Verify with ``timelapse-capture doctor --json``.
 
 Each step logs and raises :class:`agentshore.timelapse.TimelapseError` with an
 actionable message on failure so the desktop can surface it.
@@ -92,7 +93,16 @@ async def _ensure_node(cwd: Path) -> None:
         major = _node_major(result.stdout) if result.returncode == 0 else None
         if major is not None and major >= _MIN_NODE_MAJOR:
             return
+        found = result.stdout.strip() or "unknown"
+    else:
+        found = "missing"
     if shutil.which("brew") is None:
+        if sys.platform.startswith("win"):
+            raise TimelapseError(
+                f"Node.js {_MIN_NODE_MAJOR}+ is required but node is {found}. "
+                "Install Node.js from https://nodejs.org/ or via `winget install OpenJS.NodeJS`, "
+                "then retry Timelapse Capture setup."
+            )
         raise TimelapseError(
             f"Node.js {_MIN_NODE_MAJOR}+ is required but Homebrew was not found. "
             f"Install Homebrew from {_HOMEBREW_URL}, then `brew install node`."
@@ -123,6 +133,19 @@ async def _install_cli(cwd: Path) -> None:
         raise TimelapseError(f"`npm install -g timelapse-capture` failed: {result.stderr.strip()}")
 
 
+async def _install_timelapse_steps(work_dir: Path) -> None:
+    if sys.platform == "darwin":
+        await _ensure_ffmpeg(work_dir)
+    elif not sys.platform.startswith("win"):
+        raise TimelapseError(
+            "Timelapse capture auto-install is only supported on macOS and Windows."
+        )
+
+    await _ensure_node(work_dir)
+    await _install_cli(work_dir)
+    await _verify_doctor(work_dir)
+
+
 async def _verify_doctor(cwd: Path) -> None:
     binary = resolve_timelapse_binary()
     if binary is None:
@@ -143,23 +166,15 @@ async def _verify_doctor(cwd: Path) -> None:
 
 
 async def install_timelapse(cwd: Path | None = None) -> InstallResult:
-    """Provision ffmpeg, Node 24+, and the timelapse-capture CLI.
+    """Provision Node 24+ and the timelapse-capture CLI.
 
     Returns an :class:`InstallResult`; raises :class:`TimelapseError` only for
     unexpected internal errors (step failures are converted to a failed result
     with the actionable message).
     """
     work_dir = cwd or Path.home()
-    if sys.platform != "darwin":
-        return InstallResult(
-            success=False,
-            message="Timelapse capture auto-install is only supported on macOS.",
-        )
     try:
-        await _ensure_ffmpeg(work_dir)
-        await _ensure_node(work_dir)
-        await _install_cli(work_dir)
-        await _verify_doctor(work_dir)
+        await _install_timelapse_steps(work_dir)
     except TimelapseError as exc:
         _logger.warning("timelapse_install_failed", error=str(exc))
         return InstallResult(success=False, message=str(exc))
