@@ -52,6 +52,41 @@ def _background_spawn_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def _wait_for_ipc_endpoint_ready(endpoint: object, proc: Any, log_file: Path) -> bool:
+    """Wait for the detached orchestrator to publish a reachable IPC endpoint."""
+    import socket
+    import time
+
+    from agentshore.session_path import IpcEndpoint
+
+    ipc_endpoint = endpoint if isinstance(endpoint, IpcEndpoint) else IpcEndpoint.unix("")
+    for _ in range(_SOCKET_WAIT_RETRIES):
+        poll = getattr(proc, "poll", None)
+        if callable(poll) and poll() is not None:
+            click.echo(
+                f"Warning: AgentShore exited before IPC was ready - check the log: {log_file}",
+                err=True,
+            )
+            return False
+
+        if ipc_endpoint.kind == "tcp":
+            try:
+                with socket.create_connection(
+                    (ipc_endpoint.host, ipc_endpoint.port),
+                    timeout=_SOCKET_POLL_INTERVAL_S,
+                ):
+                    return True
+            except OSError:
+                pass
+        elif ipc_endpoint.path is not None and ipc_endpoint.path.exists():
+            return True
+
+        time.sleep(_SOCKET_POLL_INTERVAL_S)
+
+    click.echo("Warning: timed out waiting for IPC endpoint - check the log.", err=True)
+    return False
+
+
 async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
     """Dispatch a single IPC command dict to the orchestrator.
 
@@ -183,7 +218,7 @@ def _launch_dashboard_background(
     """Launch AgentShore + dashboard as two detached background processes and return.
 
     1. Starts the orchestrator (agent mode) with stdout/stderr → session log.
-    2. Waits up to 15 s for the Unix IPC socket to appear when using Unix IPC.
+    2. Waits up to 15 s for the IPC endpoint to become reachable.
     3. Starts ``agentshore dashboard`` (the bridge) with stdout/stderr → dashboard log.
     4. Opens the browser once the bridge is up.
     5. Returns immediately — terminal is freed.
@@ -256,7 +291,7 @@ def _launch_dashboard_background(
         cmd.extend(["--config", config_path])
 
     with log_file.open("w") as lf:
-        subprocess.Popen(  # nosec B603
+        orchestrator_proc = subprocess.Popen(  # nosec B603
             cmd,
             stdout=lf,
             stderr=lf,
@@ -266,17 +301,7 @@ def _launch_dashboard_background(
 
     click.echo(f"AgentShore starting in background (log: {log_file})")
 
-    # Sync-only wait: this runs pre-event-loop, before asyncio.run() is called.
-    # time.sleep is correct here; using asyncio.sleep would require an event loop
-    # that does not yet exist at this point in the process lifecycle.
-    for _ in range(_SOCKET_WAIT_RETRIES):
-        if endpoint.kind == "tcp":
-            break
-        if endpoint.path is not None and endpoint.path.exists():
-            break
-        time.sleep(_SOCKET_POLL_INTERVAL_S)
-    else:
-        click.echo("Warning: timed out waiting for IPC socket — check the log.", err=True)
+    if not _wait_for_ipc_endpoint_ready(endpoint, orchestrator_proc, log_file):
         return
 
     port = find_dashboard_port()
