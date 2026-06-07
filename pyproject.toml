@@ -56,7 +56,7 @@ dev = [
     "pytest-cov==7.1.0",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
-    "ruff==0.15.12",
+    "ruff==0.15.16",
     "types-pyyaml==6.0.12.20260408",
 ]
 
