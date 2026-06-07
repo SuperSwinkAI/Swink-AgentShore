@@ -30,3 +30,22 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # Tauri's Linux (gtk3) webview backend. AgentShore ships macOS + Windows
+    # only, neither of which compiles this stack (`cargo tree -i glib` is empty
+    # on the host graph). The gtk3-rs bindings are frozen at the glib 0.18
+    # generation — glib >= 0.20 exists only in gtk4 — so no Tauri/wry upgrade
+    # can advance them. Pinned here to stop unactionable alerts on code we never
+    # build. See dismissed alert #1 (glib VariantStrIter unsoundness, not_used).
+    ignore:
+      - dependency-name: "glib*"
+      - dependency-name: "gio*"
+      - dependency-name: "gtk*"
+      - dependency-name: "gdk*"
+      - dependency-name: "gdkx11*"
+      - dependency-name: "atk*"
+      - dependency-name: "pango*"
+      - dependency-name: "cairo-rs"
+      - dependency-name: "cairo-sys-rs"
+      - dependency-name: "webkit2gtk*"
+      - dependency-name: "soup*"
+      - dependency-name: "javascriptcore-rs*"
