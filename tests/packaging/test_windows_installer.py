@@ -52,6 +52,12 @@ def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
     assert '"externalBin": []' in config
 
 
+def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> None:
+    main_rs = (REPO_ROOT / "desktop/src-tauri/src/main.rs").read_text()
+
+    assert '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]' in main_rs
+
+
 def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
     script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
 
