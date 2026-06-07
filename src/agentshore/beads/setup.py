@@ -18,6 +18,7 @@ import os
 import platform
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -154,6 +155,19 @@ def _extract_bd(data: bytes, kind: str, bd_name: str, dest: Path) -> None:
             shutil.copyfileobj(src, out)
 
 
+def _httpx_verify_config() -> bool | ssl.SSLContext:
+    """Return TLS verification config for release downloads.
+
+    httpx defaults to certifi, which does not include enterprise roots installed
+    in the Windows certificate store. The Windows installer already uses
+    ``uv --native-tls`` for the same reason; use Python's native Windows trust
+    loading for the bd release download too.
+    """
+    if sys.platform.startswith("win"):
+        return ssl.create_default_context()
+    return True
+
+
 def _download_bd(version: str, asset: str, kind: str) -> str:
     """Download, checksum-verify, and install bd; return the installed path."""
     import hashlib
@@ -161,7 +175,9 @@ def _download_bd(version: str, asset: str, kind: str) -> str:
     import httpx
 
     base = f"https://github.com/{_BEADS_REPO}/releases/download/v{version}"
-    with httpx.Client(follow_redirects=True, timeout=120.0) as client:
+    with httpx.Client(
+        follow_redirects=True, timeout=120.0, verify=_httpx_verify_config()
+    ) as client:
         archive = client.get(f"{base}/{asset}")
         archive.raise_for_status()
         checksums = client.get(f"{base}/checksums.txt")

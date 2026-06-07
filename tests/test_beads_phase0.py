@@ -989,6 +989,16 @@ def test_provision_bd_returns_none_on_sha_mismatch(
     assert not (managed_dir / bd_name).exists()
 
 
+def test_provision_bd_uses_windows_native_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ssl
+
+    from agentshore.beads import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.sys, "platform", "win32")
+
+    assert isinstance(setup_mod._httpx_verify_config(), ssl.SSLContext)
+
+
 def test_provision_bd_declined_does_not_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """An interactive 'no' to the prompt skips the download entirely."""
     from unittest.mock import MagicMock
