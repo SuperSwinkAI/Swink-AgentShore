@@ -109,19 +109,26 @@ def dashboard(
         raise SystemExit(1)
 
     # Supersede any prior dashboard bridge for this project so launches don't
-    # accumulate orphaned (often wedged) listeners. The self-guard matters on
-    # the supervisor path: _launch_dashboard_background writes *this* child's
-    # pid into dashboard.pid concurrently, and we must never kill ourselves.
+    # accumulate orphaned (often wedged) listeners. The guard must exclude both
+    # our own pid AND our parent's: on Windows the uv-tool launcher is a
+    # Scripts\python.exe trampoline that spawns this bridge as a grandchild, so
+    # a launcher pid — or a stale pid the OS has since reused for our trampoline
+    # — read back from dashboard.pid would otherwise be reaped with taskkill /T,
+    # killing our own process tree before the server binds. getppid() is always
+    # a live process (our actual parent), so it can never collide with a live
+    # prior bridge we want to supersede — only with a dead/reused stale entry,
+    # where skipping the reap is a harmless no-op.
+    own_lineage = {os.getpid(), os.getppid()}
     prior_pid = read_dashboard_pid(project_path)
     if (
         prior_pid is not None
-        and prior_pid != os.getpid()
+        and prior_pid not in own_lineage
         and stop_dashboard_process(project_path, pid=prior_pid)
     ):
         click.echo("Superseded a prior dashboard process for this project.")
 
-    # Record this process's PID so a stale dashboard.pid from an earlier
-    # supervisor-launched sidecar can be distinguished from a manual restart.
+    # This bridge is the single source of truth for dashboard.pid: record our
+    # own (real) pid. The supervisor no longer pre-writes the trampoline pid.
     write_dashboard_pid(project_path, os.getpid())
 
     from agentshore.dashboard import DashboardBridge

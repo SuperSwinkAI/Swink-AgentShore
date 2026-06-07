@@ -86,7 +86,11 @@ def test_launch_dashboard_waits_for_tcp_ipc_before_dashboard_pid(
     runtime._launch_dashboard_background(**_launch_kwargs(tmp_path))
 
     assert events.index("connect:2") < events.index("popen:dashboard:202")
-    assert events.index("popen:dashboard:202") < events.index("dashboard-pid:202")
+    # The supervisor no longer writes dashboard.pid — the bridge records its own
+    # real pid on startup (avoids the Windows uv-trampoline self-kill). The
+    # browser open is the post-launch marker.
+    assert "dashboard-pid:202" not in events
+    assert events.index("popen:dashboard:202") < events.index("open:http://localhost:9400")
     assert "open:http://localhost:9400" in events
 
 

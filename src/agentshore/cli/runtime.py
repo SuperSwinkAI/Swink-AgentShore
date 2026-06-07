@@ -322,17 +322,21 @@ def _launch_dashboard_background(
         dashboard_cmd.extend(["--ipc-host", endpoint.host, "--ipc-port", str(endpoint.port)])
     dashboard_log = log_dir / "dashboard.log"
     with dashboard_log.open("w") as dl:
-        dashboard_proc = subprocess.Popen(  # nosec B603
+        # The dashboard child owns dashboard.pid: it records its *own*
+        # os.getpid() once started (see commands/dashboard.py). The supervisor
+        # must NOT pre-write dashboard_proc.pid here — on Windows agentshore is a
+        # uv tool whose Scripts\python.exe is a trampoline, so Popen's pid is the
+        # trampoline, not the bridge process. Recording it would make the bridge
+        # read its own launcher pid back as a "prior dashboard" and taskkill /T
+        # its own process tree on startup, so nothing ever binds the port. (Any
+        # genuinely-stale prior bridge is already reaped above before spawn.)
+        subprocess.Popen(  # nosec B603
             dashboard_cmd,
             stdout=dl,
             stderr=dl,
             stdin=subprocess.DEVNULL,
             **_background_spawn_kwargs(),
         )
-
-    from agentshore.session_path import write_dashboard_pid
-
-    write_dashboard_pid(project_path, dashboard_proc.pid)
 
     # Sync-only delay: give the dashboard bridge a moment to bind its port
     # before opening the browser.  This runs pre-event-loop (background launch

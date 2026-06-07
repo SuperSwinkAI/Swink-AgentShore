@@ -830,6 +830,62 @@ def test_dashboard_auto_discovers_socket_for_project(
     assert kwargs["ipc_endpoint"].path == sock_path
 
 
+def test_dashboard_does_not_reap_its_own_parent_pid(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r"""Regression: the startup self-guard must never reap the bridge's own
+    lineage. On Windows the uv-tool launcher is a Scripts\python.exe trampoline
+    that spawns the bridge as a grandchild, so dashboard.pid can hold the
+    bridge's *parent* pid; reaping it with taskkill /T would kill the bridge's
+    own process tree before the server binds (the Windows dashboard never
+    showed). The guard excludes both os.getpid() and os.getppid()."""
+    import os
+
+    from agentshore.cli import main as cli_main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
+    )
+
+    # Simulate a supervisor/trampoline having recorded our *parent's* pid.
+    sp.write_dashboard_pid(project, os.getppid())
+
+    reaped: list[int | None] = []
+
+    def fake_stop(_project: Path, *, pid: int | None = None) -> bool:
+        reaped.append(pid)
+        return True
+
+    bridge = MagicMock()
+    bridge.start = AsyncMock()
+
+    with (
+        patch("agentshore.session_path.stop_dashboard_process", side_effect=fake_stop),
+        patch("agentshore.dashboard.DashboardBridge", return_value=bridge),
+    ):
+        result = runner.invoke(
+            cli_main,
+            [
+                "dashboard",
+                "--project",
+                str(project),
+                "--ipc-host",
+                "127.0.0.1",
+                "--ipc-port",
+                "49999",
+                "--no-open",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    # The parent pid must NOT have been reaped (no self-kill)...
+    assert reaped == []
+    # ...and the bridge must record its OWN real pid, overwriting the parent's.
+    assert sp.read_dashboard_pid(project) == os.getpid()
+
+
 @pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only; Windows uses TCP discovery"
 )
