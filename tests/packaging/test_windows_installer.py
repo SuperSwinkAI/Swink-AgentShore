@@ -65,6 +65,14 @@ def test_windows_sidecar_path_overlay_includes_npm_global_shims() -> None:
     assert '.join("npm")' in sidecar_rs
 
 
+def test_windows_sidecar_venv_locator_uses_localappdata() -> None:
+    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+
+    assert 'std::env::var_os("LOCALAPPDATA")' in sidecar_rs
+    assert "managed_venv_python_path_in_local_appdata" in sidecar_rs
+    assert r"AgentShore\venv\Scripts\python.exe" in sidecar_rs
+
+
 def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
     script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
 

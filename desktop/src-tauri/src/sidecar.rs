@@ -466,6 +466,23 @@ fn apply_user_path_overlay(cmd: &mut Command) {
 /// in development builds where the .pkg has never been installed;
 /// ``sidecar_command()`` then falls back to ``uv run``.
 fn locate_managed_venv_python() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            let path =
+                managed_venv_python_path_in_local_appdata(std::path::Path::new(&local_appdata));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+            let path = managed_venv_python_path(std::path::Path::new(&userprofile));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+
     let home = std::env::var_os("HOME")?;
     locate_managed_venv_python_in_home(std::path::Path::new(&home))
 }
@@ -492,6 +509,13 @@ fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
     {
         home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
     }
+}
+
+#[cfg(target_os = "windows")]
+fn managed_venv_python_path_in_local_appdata(
+    local_appdata: &std::path::Path,
+) -> std::path::PathBuf {
+    local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
 }
 
 fn spawn_stdout_dispatcher(
@@ -725,6 +749,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
 
         assert_eq!(result, Some(python));
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn managed_venv_python_path_in_localappdata_matches_installer_layout() {
+        let local_appdata = std::path::Path::new(r"C:\Users\example\AppData\Local");
+        assert_eq!(
+            managed_venv_python_path_in_local_appdata(local_appdata),
+            local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
+        );
     }
 
     #[test]

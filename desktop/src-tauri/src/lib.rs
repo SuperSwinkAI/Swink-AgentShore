@@ -620,6 +620,11 @@ pub fn run() {
             let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd"))
                 .ok()
                 .filter(|path| path.is_file());
+            // Show the shell before sidecar startup. On Windows, process
+            // launch or handshake failures otherwise leave an invisible
+            // but still-running GUI process because the window starts hidden.
+            apply_restored_window_state(&app_handle);
+            attach_window_persistence(&app_handle);
 
             // DESIGN §2.6 — survive a supervisor-startup failure: store
             // the structured error in FatalShellState, emit an "app:fatal_error"
@@ -646,9 +651,6 @@ pub fn run() {
                     let _ = app_handle.emit("app:fatal_error", err);
                 }
             }
-
-            apply_restored_window_state(&app_handle);
-            attach_window_persistence(&app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
