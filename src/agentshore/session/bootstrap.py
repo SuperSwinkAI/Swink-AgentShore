@@ -285,7 +285,8 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
             "  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code\n"
             "  2. Install Codex CLI:    pip install codex-cli\n"
             "  3. Install Gemini CLI:   npm install -g @google/gemini-cli\n"
-            "  4. Set an API key:       export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  4. Install Grok CLI:     npm install -g @xai-official/grok\n"
+            "  5. Set an API key:       export ANTHROPIC_API_KEY=sk-ant-...\n"
             "                           export OPENAI_API_KEY=sk-...",
             err=True,
         )

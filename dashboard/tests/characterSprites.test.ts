@@ -3,6 +3,7 @@ import { Camera } from "../src/engine/camera";
 import { AXON_VERTICAL_SCALE, TILE_SIZE } from "../src/office/layout";
 import {
   agentHeightUnitsForTier,
+  agentSpriteSpecFor,
   agentVisibleFrameRatio,
   agentVisibleHeight,
   agentVisualSize,
@@ -88,6 +89,27 @@ describe("agent character sprites", () => {
         6,
       );
     }
+  });
+
+  it("uses sprite rendering for Grok agents", () => {
+    expect(agentSpriteSpecFor("grok", "small")).toMatchObject({
+      key: "grok-small-ball",
+    });
+    expect(agentSpriteSpecFor("grok", "small")?.url).toContain(
+      "grok-small-ball",
+    );
+    expect(agentSpriteSpecFor("grok", "medium")).toMatchObject({
+      key: "grok-medium-humanoid",
+    });
+    expect(agentSpriteSpecFor("grok", "medium")?.url).toContain(
+      "grok-medium-humanoid",
+    );
+    expect(agentSpriteSpecFor("grok", "large")).toMatchObject({
+      key: "grok-large-humanoid",
+    });
+    expect(agentSpriteSpecFor("grok", "large")?.url).toContain(
+      "grok-large-humanoid",
+    );
   });
 
   it("uses the character model tier when deriving hit bounds", () => {

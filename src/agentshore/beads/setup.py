@@ -78,6 +78,7 @@ def _check_bd_version(bd_binary: str) -> None:
 _BD_ACTOR_NAMES: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
+    AgentType.GROK: "grok",
 }
 
 

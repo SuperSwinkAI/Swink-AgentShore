@@ -811,6 +811,38 @@ describe("SidePanelComponent", () => {
     expect(dots[0].style.background).toBe(dots[1].style.background);
   });
 
+  it("uses the Grok side-panel color for Grok agents", async () => {
+    notifySidePanelUpdate(
+      stateUpdate({
+        agents: [
+          {
+            agent_id: "grok-medium",
+            agent_type: "grok",
+            display_name: "Grok: K",
+            model_tier: "medium",
+            status: "idle",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 0,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            current_play: null,
+          },
+        ],
+      }),
+    );
+
+    await act(async () => {
+      root.render(<SidePanelComponent />);
+    });
+
+    const dot = container.querySelector<HTMLElement>(
+      ".agent-status[data-agent-type='grok']",
+    );
+    expect(dot).not.toBeNull();
+    expect(dot?.style.background).toBe("rgb(20, 184, 166)");
+  });
+
   it("renders the desktop-31h2 dispatch-share badge per agent", async () => {
     notifySidePanelUpdate(
       stateUpdate({

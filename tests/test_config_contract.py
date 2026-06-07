@@ -16,7 +16,7 @@ from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default
 def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     config_text = _generate_default_config(
         name_with_owner="owner/repo",
-        agents=["claude", "codex", "gemini"],
+        agents=["claude", "codex", "gemini", "grok"],
         budget=25.0,
         strict=True,
     )
@@ -34,10 +34,11 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.rl.reverse_failsafe_after_idle_ticks == 3
     assert config.rl.stale_idle_claim_release_ticks == 3
     assert config.rl.update_every == 16
-    assert set(config.agents) == {"claude_code", "codex", "gemini"}
+    assert set(config.agents) == {"claude_code", "codex", "gemini", "grok"}
     assert config.agents["claude_code"].binary == "claude"
     assert config.agents["codex"].binary == "codex"
     assert config.agents["gemini"].binary == "gemini"
+    assert config.agents["grok"].binary == "grok"
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
@@ -50,6 +51,16 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"
     assert config.agents["gemini"].model_tiers["medium"].model == "auto"
     assert config.agents["gemini"].model_tiers["large"].model == "pro"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
+    assert config.agents["grok"].max_context == 256_000
+    assert config.agents["grok"].cost_per_1k_input == 0.001
+    assert config.agents["grok"].cost_per_1k_cached_input == 0.0002
+    assert config.agents["grok"].cost_per_1k_output == 0.002
     assert config.skills.path == ".agents/skills/"
 
 
@@ -201,6 +212,7 @@ def test_agent_config_has_timeout_and_output_size() -> None:
     assert config.agent_timeout == 3600
     assert config.agents["claude_code"].cost_per_1k_cached_input == 0.0003
     assert config.agents["codex"].cost_per_1k_cached_input == 0.000175
+    assert config.agents["grok"].cost_per_1k_cached_input == 0.0002
     assert config.skills.path == ".agents/skills/"
 
 
@@ -251,12 +263,30 @@ agents:
     assert gemini.cost_per_1k_output == 0.003
 
 
-def test_default_config_has_two_model_tiers() -> None:
+def test_partial_grok_config_uses_cli_pricing_defaults(tmp_path: Path) -> None:
+    yaml_text = """
+agents:
+  grok:
+    enabled: true
+    binary: grok
+"""
+    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
+    config = load_config(tmp_path / "agentshore.yaml")
+
+    grok = config.agents["grok"]
+    assert grok.max_context == 256_000
+    assert grok.cost_per_1k_input == 0.001
+    assert grok.cost_per_1k_cached_input == 0.0002
+    assert grok.cost_per_1k_output == 0.002
+
+
+def test_default_config_has_agent_model_tiers() -> None:
     config = load_config(None)
 
     assert set(config.agents["claude_code"].model_tiers) == {"small", "medium"}
     assert set(config.agents["codex"].model_tiers) == {"small", "medium"}
     assert set(config.agents["gemini"].model_tiers) == {"small", "medium", "large"}
+    assert set(config.agents["grok"].model_tiers) == {"small", "medium", "large"}
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
@@ -265,6 +295,12 @@ def test_default_config_has_two_model_tiers() -> None:
     assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"
     assert config.agents["gemini"].model_tiers["medium"].model == "auto"
     assert config.agents["gemini"].model_tiers["large"].model == "pro"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
 
 
 def test_agent_timeout_parses_from_yaml(tmp_path: Path) -> None:

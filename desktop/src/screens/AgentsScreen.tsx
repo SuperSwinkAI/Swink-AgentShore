@@ -19,6 +19,7 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   claude_code: "Claude Code",
   codex: "Codex CLI",
   gemini: "Gemini CLI",
+  grok: "Grok CLI",
 };
 
 function agentLabel(type: string): string {
@@ -280,7 +281,7 @@ export function AgentsScreen({
               </>
             ) : (
               <p className={styles.small}>
-                Install Claude Code, Codex CLI, or Gemini CLI, then re-open this screen.
+                Install Claude Code, Codex CLI, Gemini CLI, or Grok CLI, then re-open this screen.
               </p>
             )}
           </div>
