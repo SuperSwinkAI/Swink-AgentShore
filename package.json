@@ -4,5 +4,10 @@
   "workspaces": ["dashboard", "desktop"],
   "engines": {
     "node": ">=20"
+  },
+  "//overrides": "Force a single React 19 across the workspace. @testing-library/react and react-router otherwise drag a nested react@18, yielding two React copies and 'Objects are not valid as a React child' at render time.",
+  "overrides": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   }
 }

@@ -18,6 +18,10 @@ const FULL_YAML = `agents:
   gemini:
     binary: gemini
     enabled: false
+  grok:
+    binary: grok
+    enabled: true
+    model: grok-build
 github:
   repo: example-user/example-repo
 identities:
@@ -68,7 +72,7 @@ describe("parseProjectYaml", () => {
 
   it("collects only enabled: true agents", () => {
     const r = parseProjectYaml(FULL_YAML);
-    expect(r.enabledAgents.sort()).toEqual(["claude_code", "codex"]);
+    expect(r.enabledAgents.sort()).toEqual(["claude_code", "codex", "grok"]);
     expect(r.enabledAgents).not.toContain("gemini");
   });
 

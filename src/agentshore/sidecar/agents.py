@@ -68,16 +68,22 @@ _BINARY_TO_AGENT_TYPE: dict[str, str] = {
     "claude": "claude_code",
     "codex": "codex",
     "gemini": "gemini",
+    "grok": "grok",
+    "grok-build": "grok",
 }
 
 
 def detect_available_agents() -> list[str]:
     """Return agent type keys for CLI binaries found on PATH."""
-    return [
-        _BINARY_TO_AGENT_TYPE[name]
-        for name in detect_agent_binaries()
-        if name in _BINARY_TO_AGENT_TYPE
-    ]
+    detected = set(detect_agent_binaries())
+    available: list[str] = []
+    for name in _BINARY_TO_AGENT_TYPE:
+        if name not in detected:
+            continue
+        agent_type = _BINARY_TO_AGENT_TYPE.get(name)
+        if agent_type is not None and agent_type not in available:
+            available.append(agent_type)
+    return available
 
 
 _PATCHABLE_FIELDS = frozenset({"enabled", "identity", "tier_models"})

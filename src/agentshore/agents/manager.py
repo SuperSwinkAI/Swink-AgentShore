@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 _CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI}
+    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
 )
 
 

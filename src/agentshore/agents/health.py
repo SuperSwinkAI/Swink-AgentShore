@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-_CLI_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE_CODE, AgentType.CODEX})
+_CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
+)
 
 # Context is considered "pressured" when utilisation exceeds this ratio
 _CONTEXT_PRESSURE_THRESHOLD = 0.80

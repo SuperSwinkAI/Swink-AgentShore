@@ -70,6 +70,7 @@ GITHUB_PR_FETCH_LIMIT = 50
 _AUTHOR_LABEL_COLORS: dict[str, str] = {
     "claude_code": "6f42c1",
     "codex": "0052cc",
+    "grok": "111827",
 }
 _AUTHOR_LABEL_DEFAULT_COLOR = "cccccc"
 _AGENTSHORE_SYSTEM_LABELS: tuple[tuple[str, str], ...] = AGENTSHORE_WORKFLOW_LABELS

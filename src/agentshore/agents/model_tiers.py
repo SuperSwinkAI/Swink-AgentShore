@@ -31,6 +31,11 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "medium": ModelTierConfig(model="auto"),
         "large": ModelTierConfig(model="pro"),
     },
+    AgentType.GROK: {
+        "small": ModelTierConfig(model="grok-build", reasoning_effort="low"),
+        "medium": ModelTierConfig(model="grok-build", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="grok-build", reasoning_effort="high"),
+    },
 }
 
 
