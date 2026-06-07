@@ -50,6 +50,18 @@ def test_default_model_tiers_for_gemini() -> None:
     assert tiers["large"].model == "pro"
 
 
+def test_default_model_tiers_for_grok() -> None:
+    tiers = default_model_tiers_for(AgentType.GROK)
+
+    assert set(tiers) == {"small", "medium", "large"}
+    assert tiers["small"].model == "grok-build"
+    assert tiers["small"].reasoning_effort == "low"
+    assert tiers["medium"].model == "grok-build"
+    assert tiers["medium"].reasoning_effort == "medium"
+    assert tiers["large"].model == "grok-build"
+    assert tiers["large"].reasoning_effort == "high"
+
+
 def test_enabled_model_tiers_respects_agent_config() -> None:
     cfg = AgentConfig(
         model_tiers={

@@ -499,6 +499,7 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
         "experimental",
         "agent-gemini",
       ),
+      grokMedium: sprites.agentSpriteSpecFor("grok", "medium", "agent-grok"),
       apiGpt: sprites.agentSpriteSpecFor("api_gpt", "large", "agent-api"),
       apiOther: sprites.agentSpriteSpecFor("api_other", "small", "agent-other"),
       unknown: sprites.agentSpriteSpecFor(
@@ -519,6 +520,7 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
   expect(specs.codexMedium).toMatchObject({ key: "codex-medium-humanoid" });
   expect(specs.geminiSmall).toMatchObject({ key: "gemini-small-ball" });
   expect(specs.geminiDefault).toMatchObject({ key: "gemini-medium-humanoid" });
+  expect(specs.grokMedium).toMatchObject({ key: "grok-medium-humanoid" });
   expect(specs.apiGpt).toMatchObject({
     key: "api-gpt-large-humanoid",
     frameWidth: 416,

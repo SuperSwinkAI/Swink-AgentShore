@@ -88,6 +88,8 @@ function formatAgentKind(agentType: string): string {
       return "Codex";
     case "gemini":
       return "Gemini";
+    case "grok":
+      return "Grok";
     default:
       return titleCase(agentType.replace(/_/g, " "));
   }

@@ -2,7 +2,8 @@ export type AgentStatus = "idle" | "busy" | "error" | "terminated";
 export type AgentType =
   | "claude_code"
   | "codex"
-  | "gemini";
+  | "gemini"
+  | "grok";
 export type SessionState =
   | "initializing"
   | "running"

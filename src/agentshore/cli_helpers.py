@@ -40,6 +40,12 @@ _AGENT_PRICING_LINES: dict[str, tuple[str, ...]] = {
         "    cost_per_1k_input: 0.0005",
         "    cost_per_1k_output: 0.003",
     ),
+    "grok": (
+        "    max_context: 256000",
+        "    cost_per_1k_input: 0.001",
+        "    cost_per_1k_cached_input: 0.0002",
+        "    cost_per_1k_output: 0.002",
+    ),
 }
 
 
@@ -197,7 +203,9 @@ def _generate_default_config(
     time_total_minutes = time_minutes if time_minutes is not None else 0
     agent_blocks = []
     for binary in agents:
-        agent = "claude_code" if binary == "claude" else binary
+        agent = (
+            "claude_code" if binary == "claude" else ("grok" if binary == "grok-build" else binary)
+        )
         model_lines = ""
         try:
             agent_type = AgentType(agent)

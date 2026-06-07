@@ -1,4 +1,4 @@
-"""CLI agent adapter — asyncio subprocess dispatch for Claude Code, Codex, and Gemini."""
+"""CLI agent adapter — asyncio subprocess dispatch for supported CLI agents."""
 
 from __future__ import annotations
 
@@ -267,6 +267,13 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
         "--dangerously-bypass-approvals-and-sandbox",
     ),
     AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
+    AgentType.GROK: ("--permission-mode", "bypassPermissions"),
+}
+_GROK_CLI_MODEL_ALIASES: dict[str, str] = {
+    "grok-build-0.1": "grok-build",
+    "grok-code-fast-1": "grok-build",
+    "grok-code-fast": "grok-build",
+    "grok-code-fast-1-0825": "grok-build",
 }
 
 
@@ -324,6 +331,20 @@ def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> 
     if extra_flags:
         return extra_flags
     return _DEFAULT_YOLO_FLAGS.get(agent_type, ())
+
+
+def _default_grok_binary() -> str:
+    """Prefer ``grok`` but support hosts that only have the ``grok-build`` alias."""
+    if shutil.which("grok") is not None:
+        return "grok"
+    if shutil.which("grok-build") is not None:
+        return "grok-build"
+    return "grok"
+
+
+def _grok_cli_model(model: str) -> str:
+    """Return the model id accepted by the installed Grok CLI."""
+    return _GROK_CLI_MODEL_ALIASES.get(model, model)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +426,27 @@ def build_argv(
         args.extend(extra_flags)
         # Empty -p keeps headless mode while the real prompt arrives on stdin.
         args += ["-p", "" if prompt_on_stdin else prompt]
+        return args
+
+    if agent_type == AgentType.GROK:
+        binary = binary or _default_grok_binary()
+        if model:
+            model = _grok_cli_model(model)
+        args = [
+            binary,
+            "--no-auto-update",
+            "--no-subagents",
+            "--verbatim",
+        ]
+        if project_dir:
+            args += ["--cwd", project_dir]
+        args += ["--output-format", "streaming-json"]
+        if model:
+            args += ["-m", model]
+        if reasoning_effort:
+            args += ["--reasoning-effort", reasoning_effort]
+        args.extend(extra_flags)
+        args += ["-p", prompt]
         return args
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
@@ -1066,6 +1108,7 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
     AgentType.GEMINI: frozenset({"result"}),
+    AgentType.GROK: frozenset({"result", "done", "completed", "turn.completed", "end"}),
 }
 
 
@@ -1086,7 +1129,9 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
         event = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return False
-    return isinstance(event, dict) and event.get("type") in terminal_types
+    if not isinstance(event, dict):
+        return False
+    return event.get("type") in terminal_types or event.get("event") in terminal_types
 
 
 # ---------------------------------------------------------------------------
@@ -1159,13 +1204,19 @@ def _usage_totals_from_dict(
         turn_usage = last_usage
         input_includes_cache = True
 
-    input_tokens = _safe_int(usage.get("input_tokens"))
+    input_tokens = _first_int(
+        usage, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
+    )
     cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
         usage.get("cache_read_input_tokens")
     )
-    cache_write_tokens = _safe_int(usage.get("cache_creation_input_tokens"))
-    output_tokens = _safe_int(usage.get("output_tokens"))
-    reasoning_tokens = _safe_int(usage.get("reasoning_output_tokens"))
+    if cache_read_tokens == 0:
+        cache_read_tokens = _first_int(usage, "cachedContentTokenCount")
+    cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
+    output_tokens = _first_int(
+        usage, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
+    )
+    reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
 
     tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
     if not input_includes_cache:
@@ -1277,6 +1328,63 @@ def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | 
     return (final_response or "".join(messages) or raw), usage_totals, session_id
 
 
+def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    session_id: str | None = None
+    usage_totals = _UsageTotals()
+    messages: list[str] = []
+    final_response: str | None = None
+
+    for event in _iter_json_events(raw):
+        session_id = session_id or _extract_gemini_session_id(event)
+
+        usage = _extract_usage_dict(event)
+        if usage is not None:
+            usage_totals = _max_usage(
+                usage_totals,
+                _usage_totals_from_dict(usage, input_includes_cache=True),
+            )
+
+        event_type = str(event.get("type") or event.get("event") or "").lower()
+        if event_type == "text":
+            text = _extract_text_value(event.get("data"))
+            if text:
+                messages.append(text)
+            continue
+        if event_type == "end":
+            continue
+
+        role = event.get("role")
+        message = event.get("message")
+        if role is None and isinstance(message, dict):
+            role = message.get("role")
+        is_terminal = event_type in {"result", "done", "completed", "turn.completed"} or any(
+            key in event for key in ("result", "response", "final", "output")
+        )
+        if (
+            isinstance(role, str)
+            and role.lower() not in {"assistant", "agent", "model"}
+            and not is_terminal
+        ):
+            continue
+
+        text = _extract_text_value(event.get("delta"))
+        if text is None:
+            text = _extract_text_value(event.get("message"))
+        if text is None:
+            text = _extract_text_value(event.get("data"))
+        if text is None:
+            text = _extract_text_value(event)
+        if not text:
+            continue
+
+        if is_terminal:
+            final_response = text
+        else:
+            messages.append(text)
+
+    return (final_response or "".join(messages) or raw), usage_totals, session_id
+
+
 def _extract_text_from_stream_json(raw: str) -> str:
     last_result: str | None = None
     for event in _iter_json_events(raw):
@@ -1310,13 +1418,13 @@ def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
 
 def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    for key in ("session_id", "sessionId", "thread_id", "id"):
+    for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
         value = event.get(key)
         if isinstance(value, str) and value:
             return value
     metadata = event.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("session_id", "sessionId", "thread_id", "id"):
+        for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
             value = metadata.get(key)
             if isinstance(value, str) and value:
                 return value
@@ -1332,7 +1440,7 @@ def _extract_text_value(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
 
-    for key in ("text", "content", "response", "result"):
+    for key in ("text", "content", "response", "result", "final", "output"):
         text = _extract_text_value(value.get(key))
         if text:
             return text
@@ -1341,6 +1449,20 @@ def _extract_text_value(value: object) -> str | None:
     if isinstance(value_parts, list):
         text_parts = [_extract_text_value(part) for part in value_parts]
         return "".join(part for part in text_parts if part)
+    return None
+
+
+def _extract_usage_dict(event: dict[str, object]) -> dict[str, object] | None:
+    for key in ("usage", "usage_metadata", "usageMetadata", "token_usage", "tokenUsage"):
+        value = event.get(key)
+        if isinstance(value, dict):
+            return value
+    stats = event.get("stats")
+    if isinstance(stats, dict):
+        usage = stats.get("usageMetadata")
+        if isinstance(usage, dict):
+            return usage
+        return stats
     return None
 
 
@@ -1404,6 +1526,7 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
     AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
+    AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
 }
 
 
