@@ -90,7 +90,7 @@ try {
     Remove-Item -LiteralPath $bdProbe -Force -ErrorAction SilentlyContinue
 }
 
-$version = (& $VenvPython -m pip show agentshore | Select-String "^Version:" | Select-Object -First 1)
+$version = (& $VenvPython -c "from importlib.metadata import version; print(version('agentshore'))")
 Write-Step "Installed managed venv"
 Write-Info "python: $VenvPython"
 Write-Info "agentshore: $version"

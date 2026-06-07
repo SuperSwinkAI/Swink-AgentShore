@@ -59,6 +59,13 @@ def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
     assert "provision_bd(assume_yes=True)" in script
 
 
+def test_windows_venv_installer_does_not_require_pip_in_managed_venv() -> None:
+    script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
+
+    assert "-m pip" not in script
+    assert "from importlib.metadata import version" in script
+
+
 def test_windows_inno_template_uses_valid_wheel_filename_define() -> None:
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
