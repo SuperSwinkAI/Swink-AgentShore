@@ -21,6 +21,13 @@ def test_windows_inno_template_matches_pkg_component_defaults() -> None:
     assert "WizardSelectComponents('desktop,cli')" in template
 
 
+def test_windows_inno_template_does_not_block_silent_installs_on_optional_failure() -> None:
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
+
+    assert "if Optional then" in template
+    assert "if not WizardSilent then" in template
+
+
 def test_windows_build_script_stages_required_helpers() -> None:
     script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
 
@@ -71,6 +78,14 @@ def test_windows_sidecar_venv_locator_uses_localappdata() -> None:
     assert 'std::env::var_os("LOCALAPPDATA")' in sidecar_rs
     assert "managed_venv_python_path_in_local_appdata" in sidecar_rs
     assert r"AgentShore\venv\Scripts\python.exe" in sidecar_rs
+
+
+def test_windows_sidecar_launch_suppresses_console_window() -> None:
+    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+
+    assert "std::os::windows::process::CommandExt" in sidecar_rs
+    assert "CREATE_NO_WINDOW" in sidecar_rs
+    assert "cmd.creation_flags(CREATE_NO_WINDOW)" in sidecar_rs
 
 
 def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
