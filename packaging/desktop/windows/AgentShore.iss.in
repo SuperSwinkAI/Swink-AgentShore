@@ -30,7 +30,7 @@ AppPublisher=SuperSwink
 AppPublisherURL=https://github.com/SuperSwinkAI/Swink-AgentShore
 AppSupportURL=https://github.com/SuperSwinkAI/Swink-AgentShore/issues
 AppUpdatesURL=https://github.com/SuperSwinkAI/Swink-AgentShore/releases
-DefaultDirName={localappdata}\Programs\AgentShore
+DefaultDirName={autopf}\AgentShore
 DefaultGroupName=AgentShore
 DisableProgramGroupPage=yes
 DisableReadyPage=no
@@ -40,7 +40,7 @@ OutputBaseFilename=AgentShoreSetup-{#AppVersion}-x64
 SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\agentshore-desktop.exe
 WizardStyle=modern
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2
@@ -72,6 +72,11 @@ Name: "{autodesktop}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Comp
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\installer"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\venv"
+
+[InstallDelete]
+Type: filesandordirs; Name: "{localappdata}\Programs\AgentShore"
+Type: filesandordirs; Name: "{localappdata}\AgentShore\venv"
 
 [Run]
 Filename: "{app}\agentshore-desktop.exe"; Description: "Launch AgentShore"; Flags: nowait postinstall skipifsilent; Components: desktop

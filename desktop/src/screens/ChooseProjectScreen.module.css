@@ -98,6 +98,15 @@
   background: var(--row-hover, rgba(0, 0, 0, 0.04));
 }
 
+.row:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.row:disabled:hover {
+  background: var(--fm-card, transparent);
+}
+
 .rowMain {
   display: flex;
   flex-direction: column;

@@ -18,6 +18,11 @@ use std::os::windows::process::CommandExt;
 const CLIENT_NAME: &str = "agentshore-desktop";
 const MAX_STDERR_LINES: usize = 50;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+const HANDSHAKE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const SETUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
+const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
 
 #[cfg(target_os = "windows")]
@@ -48,6 +53,25 @@ pub fn resolve_build_id() -> String {
     match std::env::var(BUILD_ID_ENV) {
         Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
         _ => DEV_BUILD_ID.to_string(),
+    }
+}
+
+fn response_timeout_for_method(method: &str) -> Duration {
+    match method {
+        "project.select"
+        | "project.inspect"
+        | "recents.list"
+        | "recents.touch"
+        | "recents.remove"
+        | "config.read"
+        | "agents.catalog"
+        | "identities.list_trusted"
+        | "identities.check_keychain"
+        | "identities.check_access" => SETUP_RESPONSE_TIMEOUT,
+        "session.start" => SESSION_START_RESPONSE_TIMEOUT,
+        "session.stop" => SESSION_STOP_RESPONSE_TIMEOUT,
+        "project.install_timelapse" => INSTALL_RESPONSE_TIMEOUT,
+        _ => RESPONSE_TIMEOUT,
     }
 }
 
@@ -189,7 +213,7 @@ impl SidecarSupervisor {
         let build_id = resolve_build_id();
         let handshake = handshake_request(1, CLIENT_NAME, &build_id);
         let response = supervisor
-            .send_request(&handshake)
+            .send_request(&handshake, HANDSHAKE_RESPONSE_TIMEOUT)
             .map_err(|reason| SupervisorStartError::Other { reason })?;
 
         if let Some(err) = response.error {
@@ -252,7 +276,8 @@ impl SidecarSupervisor {
             params,
         };
 
-        let response = self.send_request(&req)?;
+        let timeout = response_timeout_for_method(&req.method);
+        let response = self.send_request(&req, timeout)?;
 
         if let Some(error) = response.error {
             return Ok(json!({"error": serialize_error(error)}));
@@ -261,7 +286,11 @@ impl SidecarSupervisor {
         Ok(response.result.unwrap_or(Value::Null))
     }
 
-    fn send_request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, String> {
+    fn send_request(
+        &self,
+        req: &JsonRpcRequest,
+        timeout: Duration,
+    ) -> Result<JsonRpcResponse, String> {
         let id = req
             .id
             .as_i64()
@@ -300,13 +329,11 @@ impl SidecarSupervisor {
             return Err(err);
         }
 
-        match rx.recv_timeout(RESPONSE_TIMEOUT) {
+        match rx.recv_timeout(timeout) {
             Ok(response) => Ok(response),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 self.discard_pending(id);
-                Err(format!(
-                    "sidecar response timed out after {RESPONSE_TIMEOUT:?}"
-                ))
+                Err(format!("sidecar response timed out after {timeout:?}"))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 self.discard_pending(id);
@@ -416,6 +443,7 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     apply_no_window_creation_flags(&mut cmd);
     if let Some(p) = bd_path {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
@@ -454,10 +482,40 @@ fn apply_user_path_overlay(cmd: &mut Command) {
         candidates.push(std::path::PathBuf::from(&home).join(".local/bin"));
         candidates.push(std::path::PathBuf::from(&home).join(".cargo/bin"));
     }
+    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+        candidates.push(std::path::PathBuf::from(&userprofile).join(".local/bin"));
+        candidates.push(std::path::PathBuf::from(&userprofile).join(".cargo/bin"));
+    }
     if let Some(appdata) = std::env::var_os("APPDATA") {
         // npm's Windows global shims live here by default, e.g.
         // ``timelapse-capture.cmd`` after ``npm install -g``.
         candidates.push(std::path::PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+        // Windows installer provisions beads into the same per-user directory
+        // used by beads' own install.ps1. The OS does not update an already
+        // running desktop process's PATH, so make the sidecar see it.
+        candidates.push(
+            std::path::PathBuf::from(&local_appdata)
+                .join("Programs")
+                .join("bd"),
+        );
+        // winget user-scope packages expose command shims here. That covers
+        // GitHub CLI, ffmpeg, and other tools installed outside a terminal.
+        candidates.push(
+            std::path::PathBuf::from(&local_appdata)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links"),
+        );
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        candidates.push(
+            std::path::PathBuf::from(&program_files)
+                .join("Git")
+                .join("cmd"),
+        );
+        candidates.push(std::path::PathBuf::from(program_files).join("nodejs"));
     }
 
     // Prepend (in reverse so the first candidate ends up first), skipping
@@ -475,14 +533,20 @@ fn apply_user_path_overlay(cmd: &mut Command) {
 
 /// Locate the Python interpreter inside the pkg-installer's managed venv.
 ///
-/// The .pkg's postinstall script provisions a per-user venv inside the
-/// launching user's home directory (no sudo required for installation)
-/// and pip-installs the bundled agentshore wheel into it. Returns ``None``
-/// in development builds where the .pkg has never been installed;
+/// The platform installer provisions a managed venv and pip-installs the
+/// bundled agentshore wheel into it. Windows uses a machine-wide venv under
+/// ProgramData; macOS keeps the existing per-user Application Support path.
+/// Returns ``None`` in development builds where the installer has never run;
 /// ``sidecar_command()`` then falls back to ``uv run``.
 fn locate_managed_venv_python() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
+        if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
+            let path = managed_venv_python_path_in_programdata(std::path::Path::new(&programdata));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
         if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
             let path =
                 managed_venv_python_path_in_local_appdata(std::path::Path::new(&local_appdata));
@@ -524,6 +588,11 @@ fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
     {
         home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
     }
+}
+
+#[cfg(target_os = "windows")]
+fn managed_venv_python_path_in_programdata(programdata: &std::path::Path) -> std::path::PathBuf {
+    programdata.join(r"AgentShore\venv\Scripts\python.exe")
 }
 
 #[cfg(target_os = "windows")]
@@ -767,7 +836,17 @@ mod tests {
     }
     #[cfg(target_os = "windows")]
     #[test]
-    fn managed_venv_python_path_in_localappdata_matches_installer_layout() {
+    fn managed_venv_python_path_in_programdata_matches_installer_layout() {
+        let programdata = std::path::Path::new(r"C:\ProgramData");
+        assert_eq!(
+            managed_venv_python_path_in_programdata(programdata),
+            programdata.join(r"AgentShore\venv\Scripts\python.exe")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn managed_venv_python_path_in_localappdata_matches_legacy_layout() {
         let local_appdata = std::path::Path::new(r"C:\Users\example\AppData\Local");
         assert_eq!(
             managed_venv_python_path_in_local_appdata(local_appdata),
@@ -864,6 +943,56 @@ mod tests {
         );
 
         std::env::remove_var(BUILD_ID_ENV);
+    }
+
+    #[test]
+    fn setup_rpc_methods_use_short_response_timeout() {
+        assert_eq!(
+            response_timeout_for_method("project.inspect"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("project.select"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("recents.list"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("identities.check_keychain"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("project.branches"),
+            RESPONSE_TIMEOUT,
+            "branch enumeration may need multiple git probes on Windows"
+        );
+        assert_eq!(
+            response_timeout_for_method("identities.list"),
+            RESPONSE_TIMEOUT,
+            "identity listing may invoke gh/keychain/repo-access checks"
+        );
+        assert_eq!(
+            response_timeout_for_method("agents.detect"),
+            RESPONSE_TIMEOUT,
+            "agent discovery inherits Windows PATH and executable lookup cost"
+        );
+        assert_eq!(
+            response_timeout_for_method("project.install_timelapse"),
+            INSTALL_RESPONSE_TIMEOUT,
+            "dependency installers are allowed to outlive quick setup probes"
+        );
+        assert_eq!(
+            response_timeout_for_method("session.start"),
+            SESSION_START_RESPONSE_TIMEOUT,
+            "session.start may need first-run Windows setup and bootstrap time"
+        );
+        assert_eq!(
+            response_timeout_for_method("session.stop"),
+            SESSION_STOP_RESPONSE_TIMEOUT,
+            "session.stop drain can wait for active agents and ESR/timelapse cleanup"
+        );
     }
 
     /// Pure unit test for the dispatch logic. Constructs a stub

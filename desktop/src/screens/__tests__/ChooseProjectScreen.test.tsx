@@ -123,7 +123,7 @@ describe("ChooseProjectScreen", () => {
     expect(await screen.findByText(/No recent projects yet/i)).toBeInTheDocument();
   });
 
-  it("clicking a row calls touch then select and navigates to /setup/readiness", async () => {
+  it("clicking a row selects and navigates to /setup/readiness", async () => {
     const adapter = makeAdapter(ENTRIES);
     renderScreen(adapter);
     const user = userEvent.setup();
@@ -132,17 +132,45 @@ describe("ChooseProjectScreen", () => {
     await user.click(row);
 
     await waitFor(() => {
-      expect(adapter.touch).toHaveBeenCalledWith("/Users/user/example-repo");
       expect(adapter.select).toHaveBeenCalledWith("/Users/user/example-repo");
     });
-    // touch must be called before select.
-    const touchOrder = adapter.touch.mock.invocationCallOrder[0];
+    expect(await screen.findByTestId("readiness")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(adapter.touch).toHaveBeenCalledWith("/Users/user/example-repo");
+    });
     const selectOrder = adapter.select.mock.invocationCallOrder[0];
-    expect(touchOrder).toBeLessThan(selectOrder);
+    const touchOrder = adapter.touch.mock.invocationCallOrder[0];
+    expect(selectOrder).toBeLessThan(touchOrder);
+  });
+
+  it("shows a busy state while opening a repository from the dialog", async () => {
+    const adapter = makeAdapter(ENTRIES);
+    adapter.openDirectory.mockResolvedValue("/Users/user/example-repo");
+    let resolveSelect: (value: unknown) => void = () => undefined;
+    adapter.select.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSelect = resolve;
+        }),
+    );
+    renderScreen(adapter);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repository" }));
+
+    await waitFor(() => {
+      expect(adapter.select).toHaveBeenCalledWith("/Users/user/example-repo");
+    });
+    expect(screen.getByRole("button", { name: "Opening..." })).toBeDisabled();
+    expect(
+      await screen.findByText("Opening", { selector: "span" }),
+    ).toBeInTheDocument();
+
+    resolveSelect({ path: "/Users/user/example-repo" });
     expect(await screen.findByTestId("readiness")).toBeInTheDocument();
   });
 
-  it("calls onProjectSelected after select and before navigation", async () => {
+  it("does not run setup hydration from the chooser click path", async () => {
     const adapter = makeAdapter(ENTRIES);
     const onProjectSelected = vi.fn().mockResolvedValue(undefined);
     renderScreen(adapter, onProjectSelected);
@@ -151,16 +179,11 @@ describe("ChooseProjectScreen", () => {
     const row = await screen.findByTestId("recent-row-/Users/user/example-repo");
     await user.click(row);
 
-    await waitFor(() => {
-      expect(onProjectSelected).toHaveBeenCalledWith("/Users/user/example-repo");
-    });
-    const selectOrder = adapter.select.mock.invocationCallOrder[0];
-    const hydrateOrder = onProjectSelected.mock.invocationCallOrder[0];
-    expect(selectOrder).toBeLessThan(hydrateOrder);
     expect(await screen.findByTestId("readiness")).toBeInTheDocument();
+    expect(onProjectSelected).not.toHaveBeenCalled();
   });
 
-  it("still navigates to /setup/readiness when onProjectSelected throws", async () => {
+  it("ignores onProjectSelected failures because chooser does not call it", async () => {
     const adapter = makeAdapter(ENTRIES);
     const onProjectSelected = vi.fn().mockRejectedValue(new Error("inspect failed"));
     renderScreen(adapter, onProjectSelected);
@@ -169,10 +192,8 @@ describe("ChooseProjectScreen", () => {
     const row = await screen.findByTestId("recent-row-/Users/user/example-repo");
     await user.click(row);
 
-    await waitFor(() => {
-      expect(onProjectSelected).toHaveBeenCalled();
-    });
     expect(await screen.findByTestId("readiness")).toBeInTheDocument();
+    expect(onProjectSelected).not.toHaveBeenCalled();
   });
 
   describe("Quick Start button (issue #565)", () => {

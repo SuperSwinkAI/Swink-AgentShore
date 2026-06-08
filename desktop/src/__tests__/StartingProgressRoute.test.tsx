@@ -60,6 +60,15 @@ function renderRoute(opts: RenderRouteOpts = {}) {
   );
 }
 
+async function currentProgressToken(): Promise<string | number> {
+  await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
+  const params = startSessionMock.mock.calls[0]?.[0] as
+    | { progressToken?: string | number }
+    | undefined;
+  expect(params?.progressToken).toBeDefined();
+  return params!.progressToken!;
+}
+
 describe("StartingProgressRoute", () => {
   it("auto-advances to /session/dashboard once first_snapshot=ok AND session.start resolved", async () => {
     let handler: ProgressHandler | null = null;
@@ -75,9 +84,10 @@ describe("StartingProgressRoute", () => {
     renderRoute();
 
     await waitFor(() => expect(handler).not.toBeNull());
+    const token = await currentProgressToken();
 
     handler!({
-      token: "session-start",
+      token,
       step: "first_snapshot",
       status: "ok",
       percent: 100,
@@ -100,9 +110,10 @@ describe("StartingProgressRoute", () => {
     renderRoute();
 
     await waitFor(() => expect(handler).not.toBeNull());
+    const token = await currentProgressToken();
 
     handler!({
-      token: "session-start",
+      token,
       step: "first_snapshot",
       status: "ok",
       percent: 100,
@@ -128,9 +139,10 @@ describe("StartingProgressRoute", () => {
     renderRoute();
 
     await waitFor(() => expect(handler).not.toBeNull());
+    const token = await currentProgressToken();
 
     handler!({
-      token: "session-start",
+      token,
       step: "config_merge",
       status: "ok",
       percent: 20,
@@ -138,7 +150,7 @@ describe("StartingProgressRoute", () => {
       error: null,
     });
     handler!({
-      token: "session-start",
+      token,
       step: "install_skills",
       status: "ok",
       percent: 40,
@@ -147,6 +159,38 @@ describe("StartingProgressRoute", () => {
     });
 
     expect(screen.queryByTestId("session-dashboard")).not.toBeInTheDocument();
+  });
+
+  it("ignores progress notifications for another start token", async () => {
+    let handler: ProgressHandler | null = null;
+    subscribeProgressMock.mockImplementation(async (h: ProgressHandler) => {
+      handler = h;
+      return () => undefined;
+    });
+    startSessionMock.mockResolvedValue({
+      session_id: "test-session",
+      ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
+    });
+
+    renderRoute();
+
+    await waitFor(() => expect(handler).not.toBeNull());
+    await currentProgressToken();
+
+    handler!({
+      token: "stale-start-token",
+      step: "first_snapshot",
+      status: "ok",
+      percent: 100,
+      message: "stale completion",
+      error: null,
+    });
+
+    expect(screen.queryByTestId("session-dashboard")).not.toBeInTheDocument();
+    expect(screen.getByTestId("step-first_snapshot")).toHaveAttribute(
+      "aria-label",
+      "First state snapshot: pending",
+    );
   });
 
   it("skips session.start when navigate state hands off { sessionStarted, startResult } (issue #582)", async () => {
@@ -291,9 +335,10 @@ describe("StartingProgressRoute", () => {
     renderRoute();
 
     await waitFor(() => expect(handler).not.toBeNull());
+    const token = await currentProgressToken();
 
     handler!({
-      token: "session-start",
+      token,
       step: "first_snapshot",
       status: "failed",
       percent: 100,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 from enum import StrEnum
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 import yaml
 
@@ -21,6 +23,7 @@ from agentshore.identity_names import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -29,6 +32,7 @@ class IdentityRow(TypedDict):
     source: str
     token_status: str
     repo_access: str
+    repo_access_detail: NotRequired[str]
 
 
 class TokenSource(StrEnum):
@@ -50,6 +54,48 @@ _TOKEN_SOURCE_FIELDS = frozenset(s.value for s in TokenSource if s is not TokenS
 _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
+_GH_TOKEN_TIMEOUT_SECONDS = 10.0
+_KEYRING_TIMEOUT_SECONDS = 5.0
+_KEYRING_SLOTS = threading.BoundedSemaphore(value=2)
+
+
+class _KeyringTimeoutError(RuntimeError):
+    """Raised when the local OS credential backend does not answer promptly."""
+
+
+def _run_keyring_operation[T](operation: Callable[[], T]) -> T:
+    """Run an OS credential operation without letting it block the sidecar.
+
+    Windows Credential Manager and third-party keyring backends can occasionally
+    stall while probing desktop/session state. Running the operation in a
+    bounded daemon thread lets the RPC return a conservative answer instead of
+    pinning the setup screen until Tauri's outer sidecar timeout fires.
+    """
+    if not _KEYRING_SLOTS.acquire(blocking=False):
+        raise _KeyringTimeoutError("another keyring operation is still running")
+
+    result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            result_queue.put(operation())
+        except Exception as exc:  # pragma: no cover - exact backend exception varies by OS
+            result_queue.put(exc)
+        finally:
+            _KEYRING_SLOTS.release()
+
+    thread = threading.Thread(target=worker, name="agentshore-keyring", daemon=True)
+    thread.start()
+    thread.join(_KEYRING_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise _KeyringTimeoutError("keyring operation timed out")
+    try:
+        result = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise _KeyringTimeoutError("keyring operation returned no result") from exc
+    if isinstance(result, Exception):
+        raise result
+    return cast("T", result)
 
 
 def _validate_token_matches_login(entry: dict[str, object], expected_login: str) -> None:
@@ -104,26 +150,44 @@ def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
 
 
 def _keyring_get(service: str) -> str | None:
-    """Read a Keychain token for *service*, returning ``None`` on any failure.
+    """Read a stored OS credential for *service*, returning ``None`` on failure.
 
-    Swallows the keyring import (its macOS backend runs setup at import time)
-    and a get that raises ``KeyringError`` or any backend-specific error, so
-    callers never have to repeat the import + double-except dance.
+    The keyring import and backend call both run behind a short timeout because
+    Windows Credential Manager and third-party keyring providers may stall while
+    discovering the active desktop session.
     """
-    try:
-        import keyring  # local import: keyring's macOS backend runs setup at import time
-    except Exception:
-        return None
-    try:
+
+    def operation() -> str | None:
+        import keyring  # local import: keyring backends can do OS setup at import time
+
         return keyring.get_password(service, service)
+
+    try:
+        return _run_keyring_operation(operation)
     except Exception:
         return None
 
 
 def _keychain_has_token(service: str) -> bool:
-    """Return True when the macOS Keychain holds a non-empty token for *service*."""
+    """Return True when the OS credential store has a non-empty token for *service*."""
     token = _keyring_get(service)
     return bool(token and token.strip())
+
+
+def _keyring_set_password(service: str, pat: str) -> None:
+    """Store *pat* in the OS credential store without risking a hung setup RPC."""
+
+    def operation() -> None:
+        import keyring  # local import: keyring backends can do OS setup at import time
+
+        keyring.set_password(service, service, pat)
+
+    try:
+        _run_keyring_operation(operation)
+    except _KeyringTimeoutError as exc:
+        raise ValueError(f"credential store did not respond in time: {exc}") from exc
+    except Exception as exc:
+        raise ValueError(f"failed to store PAT in Keychain/Credential Manager: {exc}") from exc
 
 
 def keychain_status(login: str) -> dict[str, object]:
@@ -161,8 +225,9 @@ def _resolve_login_token(raw: dict[str, object]) -> str | None:
             text=True,
             check=False,
             env=env,
+            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None
@@ -185,6 +250,24 @@ def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
             token = resolver(raw)  # type: ignore[operator]
             return token, source.value
     return None, TokenSource.AMBIENT.value
+
+
+def _source_for_identity(raw: dict[str, object]) -> tuple[str, str]:
+    """Return token status/source for fast setup listing without I/O.
+
+    The setup rail needs to list configured identities quickly. Deep token
+    resolution (`gh auth token`, OS credential reads) and repo access checks are
+    startup/runtime validation concerns; doing them here makes the Windows
+    screen feel slow or frozen.
+    """
+    if isinstance(raw.get(TokenSource.LOGIN.value), str) and raw[TokenSource.LOGIN.value]:
+        return "configured", TokenSource.LOGIN.value
+    env_var = raw.get(TokenSource.ENV.value)
+    if isinstance(env_var, str) and env_var:
+        return ("configured" if os.environ.get(env_var) else "missing", TokenSource.ENV.value)
+    if isinstance(raw.get(TokenSource.KEYCHAIN.value), str) and raw[TokenSource.KEYCHAIN.value]:
+        return "configured", TokenSource.KEYCHAIN.value
+    return "ambient", TokenSource.AMBIENT.value
 
 
 def _apply_source(entry: dict[str, object], source: str, canonical: str) -> None:
@@ -214,7 +297,7 @@ def list_identities(project_path: Path) -> list[IdentityRow]:
         login = canonical_identity_name(str(login_raw))
         if not isinstance(ident_raw, dict):
             continue
-        token, source = _token_for_identity(ident_raw)
+        token_status, source = _source_for_identity(ident_raw)
         if source == "ambient":
             rows.append(
                 {
@@ -225,30 +308,75 @@ def list_identities(project_path: Path) -> list[IdentityRow]:
                 }
             )
             continue
-        if not token:
+        if token_status != "configured":
             rows.append(
                 {
                     "login": login,
                     "source": source,
-                    "token_status": "missing",
+                    "token_status": token_status,
                     "repo_access": "unknown",
                 }
             )
             continue
-        try:
-            verify_identity_repo_access(project_path, {"GH_TOKEN": token, "GITHUB_TOKEN": token})
-            repo_access = "ok"
-        except (IdentityResolutionError, AgentAuthError):
-            repo_access = "blocked"
         rows.append(
             {
                 "login": login,
                 "source": source,
                 "token_status": "configured",
-                "repo_access": repo_access,
+                "repo_access": "unknown",
             }
         )
     return rows
+
+
+def check_identity_access(project_path: Path, login: str) -> IdentityRow:
+    """Resolve one configured identity and verify its token can see the repo.
+
+    This is intentionally separate from ``list_identities`` so the setup screen
+    can render from YAML immediately, then update live access badges without
+    making first paint depend on ``gh`` or the OS credential backend.
+    """
+    canonical = canonical_identity_name(login)
+    cfg_path = _config_path(project_path)
+    data = _load_yaml(cfg_path)
+    identities_raw = data.get("identities")
+    if not isinstance(identities_raw, dict):
+        raise ValueError("identities block must be a mapping")
+    raw = identities_raw.get(canonical)
+    if not isinstance(raw, dict):
+        raise ValueError(f"identity not found: {canonical}")
+
+    token_status, source = _source_for_identity(raw)
+    row: IdentityRow = {
+        "login": canonical,
+        "source": source,
+        "token_status": token_status,
+        "repo_access": "unknown",
+    }
+    if source == TokenSource.AMBIENT:
+        row["token_status"] = "ambient"
+        row["repo_access_detail"] = "Ambient gh authentication is verified when the agent starts."
+        return row
+    if token_status != "configured":
+        row["repo_access_detail"] = "Token source is not configured in this desktop process."
+        return row
+
+    token, _resolved_source = _token_for_identity(raw)
+    if not token:
+        row["token_status"] = "missing"
+        row["repo_access_detail"] = f"Token could not be resolved from {source}."
+        return row
+
+    row["token_status"] = "configured"
+    try:
+        verify_identity_repo_access(project_path, {"GH_TOKEN": token, "GITHUB_TOKEN": token})
+    except (IdentityResolutionError, AgentAuthError) as exc:
+        row["repo_access"] = "blocked"
+        row["repo_access_detail"] = str(exc) or "GitHub repository access preflight failed."
+    else:
+        row["repo_access"] = "ok"
+        row["repo_access_detail"] = "GitHub repository access verified."
+    return row
 
 
 def add_identity(
@@ -282,15 +410,7 @@ def add_identity(
     _apply_source(entry, source, canonical)
     if source == TokenSource.KEYCHAIN and pat:
         service = keychain_service_for_login(canonical)
-        try:
-            import keyring  # local import: keyring's macOS backend runs setup at import time
-            from keyring.errors import KeyringError
-        except Exception as exc:
-            raise ValueError(f"keyring package unavailable: {exc}") from exc
-        try:
-            keyring.set_password(service, service, pat)
-        except KeyringError as exc:
-            raise ValueError(f"failed to store PAT in Keychain: {exc}") from exc
+        _keyring_set_password(service, pat)
     _validate_token_matches_login(entry, login)
     identities[canonical] = entry
     _write_yaml_atomic(cfg_path, data)

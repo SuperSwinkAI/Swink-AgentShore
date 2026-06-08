@@ -56,7 +56,7 @@ export const STEP_METADATA: Record<string, StepMeta> = {
   [STEP_INIT_BEADS]: {
     label: "Beads ready",
     description: "Project graph is available and healthy.",
-    repairScreen: "/setup/project",
+    repairScreen: "/setup/readiness",
   },
   [STEP_BIND_IPC]: {
     label: "IPC endpoint bound",

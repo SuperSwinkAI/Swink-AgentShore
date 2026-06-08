@@ -6,8 +6,9 @@ export interface IdentityRow {
   source: string;
   /** One of: configured | missing | unknown | ambient */
   token_status: string;
-  /** One of: ok | blocked | unknown */
+  /** One of: ok | blocked | unknown | checking | check_failed */
   repo_access: string;
+  repo_access_detail?: string;
 }
 
 /** Result of the identities.check_keychain RPC. */
@@ -23,6 +24,11 @@ export interface IdentitiesSidecar {
   add(login: string, tokenSource: string, pat?: string): Promise<void>;
   update(login: string, patch: { token_source: string }): Promise<void>;
   remove(login: string): Promise<void>;
+  /**
+   * Resolve one identity's token and verify whether it can access the current
+   * repository. Optional so older sidecars still render the configured list.
+   */
+  checkAccess?(login: string): Promise<IdentityRow>;
   /**
    * Report whether an AgentShore-managed Keychain PAT already exists for a
    * login. Optional so older/mock sidecars degrade to always requiring a PAT.
@@ -52,6 +58,8 @@ interface ScreenState {
 type ScreenAction =
   | { type: "loaded"; rows: IdentityRow[] }
   | { type: "load_error"; message: string }
+  | { type: "access_check_started"; login: string }
+  | { type: "access_checked"; row: IdentityRow }
   | { type: "show_add" }
   | { type: "cancel_add" }
   | { type: "set_add_login"; value: string }
@@ -95,6 +103,24 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
       return { ...state, loading: false, error: null, rows: action.rows };
     case "load_error":
       return { ...state, loading: false, error: action.message };
+    case "access_check_started": {
+      const rows = state.rows.map((row) =>
+        row.login === action.login
+          ? {
+              ...row,
+              repo_access: "checking",
+              repo_access_detail: "Verifying GitHub repository access...",
+            }
+          : row,
+      );
+      return { ...state, rows };
+    }
+    case "access_checked": {
+      const rows = state.rows.map((row) =>
+        row.login === action.row.login ? { ...row, ...action.row } : row,
+      );
+      return { ...state, rows };
+    }
     case "show_add":
       return {
         ...state,
@@ -235,12 +261,16 @@ const REPO_ACCESS_LABELS: Record<string, string> = {
   ok: "Repo ✓",
   blocked: "Repo ✗",
   unknown: "Repo ?",
+  checking: "Repo checking...",
+  check_failed: "Repo check failed",
 };
 
 const REPO_ACCESS_CLASSES: Record<string, string> = {
   ok: "badge-ok",
   blocked: "badge-error",
   unknown: "badge-warn",
+  checking: "badge-warn",
+  check_failed: "badge-error",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -260,11 +290,21 @@ function TokenBadge({ status }: { status: string }): React.ReactElement {
   );
 }
 
-function RepoBadge({ access }: { access: string }): React.ReactElement {
+function RepoBadge({
+  access,
+  detail,
+}: {
+  access: string;
+  detail?: string;
+}): React.ReactElement {
   const label = REPO_ACCESS_LABELS[access] ?? access;
   const cls = REPO_ACCESS_CLASSES[access] ?? "badge-warn";
   return (
-    <span className={`id-badge ${cls}`} data-testid={`repo-access-${access}`}>
+    <span
+      className={`id-badge ${cls}`}
+      data-testid={`repo-access-${access}`}
+      title={detail}
+    >
       {label}
     </span>
   );
@@ -340,7 +380,15 @@ function IdentityRowItem({
           {SOURCE_LABELS[row.source] ?? row.source}
         </span>
         <TokenBadge status={row.token_status} />
-        <RepoBadge access={row.repo_access} />
+        <RepoBadge access={row.repo_access} detail={row.repo_access_detail} />
+        {row.repo_access_detail && row.repo_access !== "ok" && (
+          <span
+            className="id-access-detail"
+            data-testid={`repo-access-detail-${row.login}`}
+          >
+            {row.repo_access_detail}
+          </span>
+        )}
       </div>
 
       {isEditing ? (
@@ -411,15 +459,45 @@ export function IdentitiesScreen({
 }: IdentitiesScreenProps): React.ReactElement {
   const [state, dispatch] = useReducer(reducer, INITIAL);
 
+  const checkAccessForRows = useCallback(
+    (rows: IdentityRow[]) => {
+      if (!sidecar.checkAccess) return;
+      for (const row of rows) {
+        if (row.token_status === "missing" || row.source === "ambient")
+          continue;
+        dispatch({ type: "access_check_started", login: row.login });
+        void sidecar
+          .checkAccess(row.login)
+          .then((checked) => {
+            dispatch({ type: "access_checked", row: checked });
+          })
+          .catch((err) => {
+            dispatch({
+              type: "access_checked",
+              row: {
+                ...row,
+                repo_access: "check_failed",
+                repo_access_detail: `Unable to run GitHub repository access verification: ${String(
+                  err,
+                )}`,
+              },
+            });
+          });
+      }
+    },
+    [sidecar],
+  );
+
   const reload = useCallback(async () => {
     try {
       const rows = await sidecar.list();
       dispatch({ type: "loaded", rows });
       onRowsChange?.(rows);
+      checkAccessForRows(rows);
     } catch (err) {
       dispatch({ type: "load_error", message: String(err) });
     }
-  }, [onRowsChange, sidecar]);
+  }, [checkAccessForRows, onRowsChange, sidecar]);
 
   useEffect(() => {
     void reload();
@@ -438,7 +516,10 @@ export function IdentitiesScreen({
       dispatch({ type: "keychain_check_start" });
       try {
         const status = await sidecar.checkKeychain(trimmed);
-        dispatch({ type: "keychain_checked", hasToken: Boolean(status?.has_token) });
+        dispatch({
+          type: "keychain_checked",
+          hasToken: Boolean(status?.has_token),
+        });
       } catch {
         // A failed probe just falls back to requiring a PAT — never blocks add.
         dispatch({ type: "keychain_checked", hasToken: false });
@@ -451,7 +532,10 @@ export function IdentitiesScreen({
     e.preventDefault();
     const login = state.addLogin.trim();
     if (!login) {
-      dispatch({ type: "add_login_error", message: "GitHub login is required" });
+      dispatch({
+        type: "add_login_error",
+        message: "GitHub login is required",
+      });
       return;
     }
     // A PAT is required for Keychain storage unless one is already stored there
@@ -461,13 +545,18 @@ export function IdentitiesScreen({
       state.addKeychainHasToken !== true &&
       !state.addPat.trim();
     if (keychainPatNeeded) {
-      dispatch({ type: "add_login_error", message: "PAT is required for Keychain storage" });
+      dispatch({
+        type: "add_login_error",
+        message: "PAT is required for Keychain storage",
+      });
       return;
     }
     dispatch({ type: "submit_add" });
     try {
       const pat =
-        state.addTokenSource === "gh_token_keychain" ? state.addPat.trim() || undefined : undefined;
+        state.addTokenSource === "gh_token_keychain"
+          ? state.addPat.trim() || undefined
+          : undefined;
       await sidecar.add(login, state.addTokenSource, pat);
       const rows = await sidecar.list();
       dispatch({ type: "add_done", rows });
@@ -515,9 +604,9 @@ export function IdentitiesScreen({
     <div className="id-screen" data-testid="identities-screen">
       <h2 className="id-title">Trusted identities</h2>
       <p className="id-description">
-        Configure the GitHub identities AgentShore agents use for commits and pull
-        requests. Multiple runners may share the same login — the Code Review
-        anti-bias check (reviewer ≠ PR author) is enforced at runtime.
+        Configure the GitHub identities AgentShore agents use for commits and
+        pull requests. Multiple runners may share the same login — the Code
+        Review anti-bias check (reviewer ≠ PR author) is enforced at runtime.
       </p>
 
       {state.error && (

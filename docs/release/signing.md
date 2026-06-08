@@ -120,10 +120,10 @@ Both platform installers expose the same deliberate choices:
 | Timelapse Capture | Runs `install_timelapse()` for ffmpeg, Node, capture CLI, and browser deps | Opt-in |
 | AgentShore CLI | Installs `agentshore` from the bundled wheel via `uv tool install --force --reinstall --python 3.12` | Opt-out |
 
-The Windows installer is per-user (`PrivilegesRequired=lowest`) and installs
-the desktop app under `%LocalAppData%\Programs\AgentShore`. The managed venv is
-under `%LocalAppData%\AgentShore\venv`, matching the Rust supervisor's Windows
-lookup path.
+The Windows installer is machine-wide (`PrivilegesRequired=admin`) and installs
+the desktop app under `%ProgramFiles%\AgentShore`. The managed venv is under
+`%ProgramData%\AgentShore\venv`, matching the Rust supervisor's Windows lookup
+path.
 
 ## 7. Secrets Handling
 

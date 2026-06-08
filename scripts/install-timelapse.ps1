@@ -18,7 +18,7 @@ function Write-Step($msg) { Write-Host "`n==> $msg" }
 function Write-Info($msg) { Write-Host "    $msg" }
 function Die($msg) { Write-Error $msg; exit 1 }
 
-$VenvPython = Join-Path $env:LOCALAPPDATA "AgentShore\venv\Scripts\python.exe"
+$VenvPython = Join-Path $env:ProgramData "AgentShore\venv\Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) {
     Die "managed venv python missing at $VenvPython (Desktop component must install first)."
 }

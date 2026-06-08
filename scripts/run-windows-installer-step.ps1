@@ -24,13 +24,13 @@ if ($Wheel) {
 }
 
 try {
-    $process = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList $arguments `
-        -NoNewWindow `
-        -Wait `
-        -PassThru `
-        -RedirectStandardOutput $LogPath `
-        -RedirectStandardError "$LogPath.err"
+    $PowerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (-not (Test-Path $PowerShellPath)) {
+        $PowerShellPath = "powershell.exe"
+    }
+
+    & $PowerShellPath @arguments > $LogPath 2> "$LogPath.err"
+    $exitCode = $LASTEXITCODE
 } catch {
     Add-Content -Path $LogPath -Value "Failed to launch ${StepName}: $($_.Exception.Message)"
     if ($Optional) { exit 0 }
@@ -42,7 +42,7 @@ if (Test-Path "$LogPath.err") {
     Remove-Item "$LogPath.err" -Force -ErrorAction SilentlyContinue
 }
 
-if ($process.ExitCode -ne 0) {
+if ($exitCode -ne 0) {
     $message = "$StepName failed during installation. See $LogPath."
     Add-Content -Path $LogPath -Value $message
     if ($Optional) {
@@ -50,7 +50,7 @@ if ($process.ExitCode -ne 0) {
         exit 0
     }
     Write-Error $message
-    exit $process.ExitCode
+    exit $exitCode
 }
 
 exit 0

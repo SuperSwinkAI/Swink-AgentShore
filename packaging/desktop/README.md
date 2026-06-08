@@ -2,7 +2,7 @@
 
 Tooling for the macOS `.pkg` and Windows `.exe` installers that ship the
 AgentShore desktop shell. The shared model is: keep the Tauri app thin, ship a
-platform app shell, and provision the Python sidecar into a managed per-user
+platform app shell, and provision the Python sidecar into a managed
 venv from the exact wheel built with the installer. macOS bundles the pinned
 `bd` sidecar beside the desktop executable; Windows provisions the pinned `bd`
 dependency during the managed venv install to avoid shipping an unsigned extra
@@ -22,7 +22,7 @@ wheel into it. The Rust supervisor then spawns:
 Managed venv paths:
 
 - macOS: `$HOME/Library/Application Support/AgentShore/venv`
-- Windows: `%LocalAppData%\AgentShore\venv`
+- Windows: `%ProgramData%\AgentShore\venv`
 
 On macOS, the bundled `bd` CLI is the only external binary that stays beside
 the desktop executable. The Rust supervisor passes its path to the Python
@@ -70,11 +70,11 @@ wheel via `uv tool install`.
 Tauri executable, regenerates `EULA.rtf`, optionally Authenticode-signs the app
 and setup executable, and emits an Inno Setup wizard `.exe`.
 
-The Windows wizard is per-user (`PrivilegesRequired=lowest`) and installs the
-desktop app under:
+The Windows wizard is machine-wide (`PrivilegesRequired=admin`) and installs
+the desktop app under:
 
 ```text
-%LocalAppData%\Programs\AgentShore
+%ProgramFiles%\AgentShore
 ```
 
 It uses `packaging/desktop/windows/AgentShore.iss.in` and mirrors the macOS
@@ -87,13 +87,17 @@ component defaults:
 Bundled Windows helper scripts:
 
 - `scripts/install-agentshore-venv.ps1` provisions
-  `%LocalAppData%\AgentShore\venv` from the bundled wheel and provisions `bd`.
+  `%ProgramData%\AgentShore\venv` from the bundled wheel and provisions `bd`.
 - `scripts/install-agentshore-cli.ps1` installs `agentshore` from the bundled
   wheel with `uv tool install --force --reinstall --python 3.12`.
 - `scripts/install-timelapse.ps1` drives the canonical timelapse installer from
   the managed venv.
 - `scripts/run-windows-installer-step.ps1` wraps helper execution and writes
   logs under `%LocalAppData%\AgentShore\install-logs`.
+
+The installer removes the previous internal per-user desktop install under
+`%LocalAppData%\Programs\AgentShore` and the previous per-user managed venv
+under `%LocalAppData%\AgentShore\venv` during install.
 
 ## Build Identifier
 
