@@ -114,7 +114,10 @@ begin
   begin
     if Optional then
     begin
-      MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and Timelapse Capture can be installed later from the app. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
+      if not WizardSilent then
+      begin
+        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and Timelapse Capture can be installed later from the app. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
+      end;
       Result := True;
       exit;
     end;

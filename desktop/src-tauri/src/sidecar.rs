@@ -12,10 +12,16 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 const CLIENT_NAME: &str = "agentshore-desktop";
 const MAX_STDERR_LINES: usize = 50;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Tauri event name carrying forwarded sidecar JSON-RPC notifications
 /// (anything sent over stdout without an ``id`` field — including
@@ -410,12 +416,21 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_no_window_creation_flags(&mut cmd);
     if let Some(p) = bd_path {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
     }
     apply_user_path_overlay(&mut cmd);
     cmd
 }
+
+#[cfg(target_os = "windows")]
+fn apply_no_window_creation_flags(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_no_window_creation_flags(_cmd: &mut Command) {}
 
 /// When the Tauri .app launches from Finder/Dock/Spotlight, its PATH is
 /// the minimal launchd default (``/usr/bin:/bin:/usr/sbin:/sbin``) — the

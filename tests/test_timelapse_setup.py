@@ -52,7 +52,7 @@ async def test_install_timelapse_linux_returns_failure(
     assert "macOS and Windows" in result.message
 
 
-async def test_install_timelapse_windows_uses_npm_without_homebrew_ffmpeg(
+async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -64,6 +64,9 @@ async def test_install_timelapse_windows_uses_npm_without_homebrew_ffmpeg(
     async def record_node(cwd: object) -> None:
         calls.append("node")
 
+    async def record_windows_ffmpeg(cwd: object) -> None:
+        calls.append("ffmpeg")
+
     async def record_cli(cwd: object) -> None:
         calls.append("cli")
 
@@ -71,6 +74,7 @@ async def test_install_timelapse_windows_uses_npm_without_homebrew_ffmpeg(
         calls.append("doctor")
 
     monkeypatch.setattr(setup, "_ensure_ffmpeg", fail_ffmpeg)
+    monkeypatch.setattr(setup, "_ensure_windows_ffmpeg", record_windows_ffmpeg)
     monkeypatch.setattr(setup, "_ensure_node", record_node)
     monkeypatch.setattr(setup, "_install_cli", record_cli)
     monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
@@ -78,10 +82,10 @@ async def test_install_timelapse_windows_uses_npm_without_homebrew_ffmpeg(
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
 
     assert result.success is True
-    assert calls == ["node", "cli", "doctor"]
+    assert calls == ["ffmpeg", "node", "cli", "doctor"]
 
 
-async def test_ensure_node_windows_reports_node_install_instructions(
+async def test_ensure_windows_node_reports_missing_winget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -90,8 +94,80 @@ async def test_ensure_node_windows_reports_node_install_instructions(
     with pytest.raises(setup.TimelapseError) as exc:
         await setup._ensure_node(tmp_path)  # type: ignore[arg-type]
 
-    assert "Node.js 24+" in str(exc.value)
-    assert "winget install OpenJS.NodeJS" in str(exc.value)
+    assert "Node.js 24+ is required but winget was not found" in str(exc.value)
+
+
+async def test_ensure_windows_node_accepts_existing_supported_node(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"C:/Program Files/nodejs/{name}.exe")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        assert cmd == ["node", "--version"]
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout="v24.1.0\n", stderr="")
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    await setup._ensure_node(tmp_path)  # type: ignore[arg-type]
+
+
+async def test_ensure_windows_node_installs_when_existing_node_is_too_old(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    node_versions = iter(["v22.14.0\n", "v26.3.0\n"])
+    winget_calls: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        if name in {"node", "npm", "winget"}:
+            return f"C:/tools/{name}.exe"
+        return None
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        if cmd == ["node", "--version"]:
+            return setup.CommandResult(
+                args=tuple(cmd), returncode=0, stdout=next(node_versions), stderr=""
+            )
+        winget_calls.append(" ".join(cmd))
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup.shutil, "which", fake_which)
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    await setup._ensure_node(tmp_path)  # type: ignore[arg-type]
+
+    assert len(winget_calls) == 1
+    assert "--id OpenJS.NodeJS" in winget_calls[0]
+    assert "--scope user" in winget_calls[0]
+
+
+async def test_ensure_windows_ffmpeg_installs_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    seen = {"ffmpeg": False, "ffprobe": False}
+    winget_calls: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        if name == "winget":
+            return "C:/tools/winget.exe"
+        if name in seen and seen[name]:
+            return f"C:/Users/example/AppData/Local/Microsoft/WinGet/Links/{name}.exe"
+        return None
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        winget_calls.append(" ".join(cmd))
+        seen["ffmpeg"] = True
+        seen["ffprobe"] = True
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup.shutil, "which", fake_which)
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    await setup._ensure_windows_ffmpeg(tmp_path)  # type: ignore[arg-type]
+
+    assert len(winget_calls) == 1
+    assert "--id Gyan.FFmpeg" in winget_calls[0]
 
 
 async def test_install_timelapse_reports_step_failure(
