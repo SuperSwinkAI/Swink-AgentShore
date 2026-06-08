@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Installer component helper for the Windows wizard's AgentShore CLI choice.
-    Installs the same bundled wheel as the desktop sidecar, with [all] extras,
-    via uv tool install into the user's uv tool directory.
+    Installs the same bundled wheel as the desktop sidecar via uv tool install
+    into the user's uv tool directory.
 #>
 [CmdletBinding()]
 param(

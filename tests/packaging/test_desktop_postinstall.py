@@ -4,6 +4,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
 _POSTINSTALL = _ROOT / "packaging/desktop/installer-scripts/postinstall"
+_CLI_INSTALL = _ROOT / "scripts/install-agentshore-cli.sh"
 
 
 def _script() -> str:
@@ -30,3 +31,11 @@ def test_desktop_postinstall_launch_agent_opens_app_by_path_after_installer() ->
     assert "&" not in launch_line
     assert 'run_as_console_user /bin/launchctl remove "${FIRST_LAUNCH_LABEL}"' in script
     assert 'run_as_console_user /bin/launchctl load -w "${FIRST_LAUNCH_PLIST}"' in script
+
+
+def test_macos_cli_helper_installs_same_bare_wheel_requirement_as_windows() -> None:
+    script = _CLI_INSTALL.read_text(encoding="utf-8")
+
+    assert '"$UV_BIN" tool install --force --reinstall --python 3.12' in script
+    assert '"agentshore @ file://$WHEEL_PATH"' in script
+    assert "agentshore[all]" not in script

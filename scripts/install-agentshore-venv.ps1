@@ -28,6 +28,58 @@ function Write-Step($msg) { Write-Host "`n==> $msg" }
 function Write-Info($msg) { Write-Host "    $msg" }
 function Die($msg) { Write-Error $msg; exit 1 }
 
+function Stop-AgentShoreProcessId {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    if ($ProcessId -eq $PID) { return }
+    try {
+        Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+        Write-Info "Stopped process id $ProcessId"
+    } catch {
+        Write-Info "Could not stop process id ${ProcessId}: $($_.Exception.Message)"
+    }
+}
+
+function Stop-AgentShoreRuntimeProcesses {
+    Write-Step "Stopping running AgentShore runtime processes"
+
+    foreach ($name in @("AgentShore", "agentshore-desktop")) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-AgentShoreProcessId -ProcessId $_.Id }
+    }
+
+    try {
+        Get-CimInstance Win32_Process |
+            Where-Object {
+                $commandLine = [string]$_.CommandLine
+                $commandLine -match "(?i)agentshore\.sidecar" -or
+                    $commandLine -match "(?i)\bagentshore(\.exe)?\s+dashboard\b"
+            } |
+            ForEach-Object { Stop-AgentShoreProcessId -ProcessId ([int]$_.ProcessId) }
+    } catch {
+        Write-Info "Could not inspect process command lines: $($_.Exception.Message)"
+    }
+}
+
+function Remove-DirectoryWithRetry {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path $Path)) { return }
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq 5) {
+                throw
+            }
+            Write-Info "Retrying venv cleanup after lock or access error: $($_.Exception.Message)"
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
 function Resolve-Uv {
     $cmd = Get-Command uv -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -57,7 +109,8 @@ Write-Step "Provisioning managed venv"
 Write-Info "Path: $VenvPath"
 New-Item -ItemType Directory -Path (Split-Path -Parent $VenvPath) -Force | Out-Null
 if (Test-Path $VenvPath) {
-    Remove-Item -LiteralPath $VenvPath -Recurse -Force
+    Stop-AgentShoreRuntimeProcesses
+    Remove-DirectoryWithRetry -Path $VenvPath
 }
 
 & $uv --native-tls venv --python 3.12 $VenvPath

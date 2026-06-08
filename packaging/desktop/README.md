@@ -2,9 +2,11 @@
 
 Tooling for the macOS `.pkg` and Windows `.exe` installers that ship the
 AgentShore desktop shell. The shared model is: keep the Tauri app thin, ship a
-bundled `bd` sidecar beside the desktop executable, and provision the Python
-sidecar into a managed per-user venv from the exact wheel built with the
-installer.
+platform app shell, and provision the Python sidecar into a managed per-user
+venv from the exact wheel built with the installer. macOS bundles the pinned
+`bd` sidecar beside the desktop executable; Windows provisions the pinned `bd`
+dependency during the managed venv install to avoid shipping an unsigned extra
+binary.
 
 ## Architecture
 
@@ -22,9 +24,10 @@ Managed venv paths:
 - macOS: `$HOME/Library/Application Support/AgentShore/venv`
 - Windows: `%LocalAppData%\AgentShore\venv`
 
-The bundled `bd` CLI is the only external binary that stays beside the desktop
-executable. The Rust supervisor passes its path to the Python sidecar via
-`AGENTSHORE_BD_BIN`.
+On macOS, the bundled `bd` CLI is the only external binary that stays beside
+the desktop executable. The Rust supervisor passes its path to the Python
+sidecar via `AGENTSHORE_BD_BIN`. On Windows, `install-agentshore-venv.ps1`
+drives `agentshore.beads.setup.provision_bd()` after installing the wheel.
 
 ## Build Inputs
 
@@ -63,8 +66,9 @@ wheel via `uv tool install`.
 
 ## Windows Installer
 
-`scripts/build-windows.ps1` builds the dashboard, bd sidecar, Tauri frontend,
-Python wheel, Tauri executable, and an Inno Setup wizard `.exe`.
+`scripts/build-windows.ps1` builds the dashboard, Tauri frontend, Python wheel,
+Tauri executable, regenerates `EULA.rtf`, optionally Authenticode-signs the app
+and setup executable, and emits an Inno Setup wizard `.exe`.
 
 The Windows wizard is per-user (`PrivilegesRequired=lowest`) and installs the
 desktop app under:
@@ -83,9 +87,9 @@ component defaults:
 Bundled Windows helper scripts:
 
 - `scripts/install-agentshore-venv.ps1` provisions
-  `%LocalAppData%\AgentShore\venv` from the bundled wheel.
-- `scripts/install-agentshore-cli.ps1` installs `agentshore[all]` from the
-  bundled wheel with `uv tool install`.
+  `%LocalAppData%\AgentShore\venv` from the bundled wheel and provisions `bd`.
+- `scripts/install-agentshore-cli.ps1` installs `agentshore` from the bundled
+  wheel with `uv tool install --force --reinstall --python 3.12`.
 - `scripts/install-timelapse.ps1` drives the canonical timelapse installer from
   the managed venv.
 - `scripts/run-windows-installer-step.ps1` wraps helper execution and writes

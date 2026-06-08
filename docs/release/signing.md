@@ -1,10 +1,10 @@
 # AgentShore Desktop - Code Signing & Installer Builds
 
 This document is the maintainer runbook for producing desktop release builds of
-AgentShore. The signed, notarized release path is still macOS-first and lives in
-`scripts/build-macos.sh`. Windows now has a local user-level installer build
-script at `scripts/build-windows.ps1`, but Authenticode signing and CI release
-automation are not wired yet.
+AgentShore. macOS signing and notarization live in `scripts/build-macos.sh`.
+Windows has a user-level installer build script at `scripts/build-windows.ps1`
+with optional Authenticode signing when `signtool.exe` and a code-signing
+certificate are available. CI release automation is not wired yet.
 
 It complements `docs/design/desktop/DESIGN.md` section 6.5, "Code signing &
 trust".
@@ -35,10 +35,12 @@ Windows `scripts\build-windows.ps1` produces:
 | Stage | Tool / command | Notes |
 | --- | --- | --- |
 | Build dashboard | `npm run build`, `npm run build:lib` | Same dashboard artifacts as macOS |
-| Build sidecar | `npm run build:tauri-sidecars` | Stages `agentshore-bd.exe` |
+| Provision bd | installer helper | Windows does not bundle `bd.exe`; the managed venv installer provisions the pinned bd dependency |
 | Build wheel | `uv build --wheel` | Bundled into the installer |
 | Build app executable | `npx tauri build --no-bundle -- --locked` | Inno wraps the executable instead of Tauri NSIS/MSI |
+| Sign app executable, optional | `signtool sign` | Auto-detects a current-user code-signing cert, or use `-CertificateThumbprint` |
 | Build `.exe` wizard | Inno Setup 6 `ISCC.exe` | Emits `desktop\dist\AgentShoreSetup-<version>-x64.exe` |
+| Sign installer, optional | `signtool sign` | Same certificate and timestamp settings as the app executable |
 
 ## 2. macOS Developer ID
 
@@ -116,7 +118,7 @@ Both platform installers expose the same deliberate choices:
 | --- | --- | --- |
 | AgentShore Desktop | Desktop app plus managed sidecar venv from bundled wheel | Required |
 | Timelapse Capture | Runs `install_timelapse()` for ffmpeg, Node, capture CLI, and browser deps | Opt-in |
-| AgentShore CLI | Installs `agentshore[all]` from the bundled wheel via `uv tool install` | Opt-out |
+| AgentShore CLI | Installs `agentshore` from the bundled wheel via `uv tool install --force --reinstall --python 3.12` | Opt-out |
 
 The Windows installer is per-user (`PrivilegesRequired=lowest`) and installs
 the desktop app under `%LocalAppData%\Programs\AgentShore`. The managed venv is
@@ -130,5 +132,5 @@ lookup path.
 - `desktop/src-tauri/.gitignore` excludes certificate material by extension.
 - Developer ID private keys and notarization profiles live in Keychain or
   off-host secret storage.
-- Windows Authenticode signing is not implemented yet; add it before treating
-  the Windows `.exe` as a trusted public release artifact.
+- Treat unsigned Windows `.exe` artifacts as internal test builds only. Public
+  releases should be Authenticode-signed and timestamped.

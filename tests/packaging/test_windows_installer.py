@@ -26,6 +26,27 @@ def test_windows_inno_template_does_not_block_silent_installs_on_optional_failur
 
     assert "if Optional then" in template
     assert "if not WizardSilent then" in template
+    assert (
+        "RunInstallerStep('Installing AgentShore CLI', 'install-agentshore-cli.ps1', True, True)"
+        in template
+    )
+
+
+def test_windows_inno_template_matches_pkg_install_order() -> None:
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
+
+    desktop = template.index("Provisioning AgentShore Desktop sidecar")
+    timelapse = template.index("Provisioning Timelapse Capture")
+    cli = template.index("Installing AgentShore CLI")
+
+    assert desktop < timelapse < cli
+
+
+def test_windows_inno_template_cleans_installer_payload_after_postinstall() -> None:
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
+
+    assert "procedure CleanupInstallerPayload()" in template
+    assert r"DelTree(ExpandConstant('{app}\installer'), True, True, True)" in template
 
 
 def test_windows_build_script_stages_required_helpers() -> None:
@@ -50,6 +71,28 @@ def test_windows_build_script_stages_required_helpers() -> None:
     assert '"/DWheelFileName=$WheelFileName"' in script
     assert 'Invoke-Checked "uv" "--native-tls" "build"' in script
     assert "AgentShoreSetup-$Version-x64.exe" in script
+
+
+def test_windows_build_script_regenerates_eula_and_supports_authenticode_signing() -> None:
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+
+    assert "Invoke-EulaGenerator" in script
+    assert "build-eula-rtf.py" in script
+    assert "Resolve-SignTool" in script
+    assert "Resolve-CodeSigningThumbprint" in script
+    assert "Invoke-AuthenticodeSign -FilePath $AppExe" in script
+    assert "Invoke-AuthenticodeSign -FilePath $SetupOut" in script
+    assert "[switch]$NoSign" in script
+    assert "[string]$CertificateThumbprint" in script
+
+
+def test_windows_build_script_removes_stale_setup_artifacts_before_tauri_build() -> None:
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+
+    assert "function Clear-StaleSetupArtifacts" in script
+    assert '"AgentShoreSetup-*.exe"' in script
+    assert "Clear-StaleSetupArtifacts" in script
+    assert "Close any open installer windows or security scanner handles" in script
 
 
 def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
@@ -93,6 +136,15 @@ def test_windows_venv_installer_provisions_bd_at_install_time() -> None:
 
     assert "from agentshore.beads.setup import provision_bd" in script
     assert "provision_bd(assume_yes=True)" in script
+
+
+def test_windows_venv_installer_stops_stale_runtime_processes_before_replace() -> None:
+    script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
+
+    assert "function Stop-AgentShoreRuntimeProcesses" in script
+    assert "agentshore\\.sidecar" in script
+    assert "agentshore(\\.exe)?\\s+dashboard" in script
+    assert "Remove-DirectoryWithRetry -Path $VenvPath" in script
 
 
 def test_windows_venv_installer_does_not_require_pip_in_managed_venv() -> None:

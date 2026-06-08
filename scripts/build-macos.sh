@@ -37,7 +37,8 @@
 #                            → drives install_timelapse() in the managed venv
 #                              (ffmpeg + Node 24 + timelapse-capture CLI)
 #      - ai.agentshore.cli        nopayload + install-agentshore-cli.sh + bundled wheel
-#                            → `uv tool install --force` for ~/.local/bin/agentshore
+#                            → `uv tool install --force --reinstall` from the wheel
+#                              for ~/.local/bin/agentshore
 #      Wrap all three via `productbuild --distribution` so Installer.app's
 #      Customize panel shows "AgentShore Desktop" (required), "Timelapse
 #      Capture" (opt-in checkbox), and "AgentShore CLI" (opt-out checkbox) as

@@ -15,9 +15,7 @@
 #     1. Searches well-known per-user + system locations for uv.
 #     2. Bootstraps uv via the official installer if absent (user-context;
 #        no sudo). User opted in by checking the wizard box.
-#     3. Runs `uv tool install --force --reinstall` from the bundled wheel
-#        with the [all] extras (dashboard, browser-verify) per
-#        feedback_dashboard_default_extras.
+#     3. Runs `uv tool install --force --reinstall` from the bundled wheel.
 #     4. Smoke-tests the resulting `agentshore` binary.
 #
 # Usage:
@@ -102,15 +100,11 @@ info "Using uv: $UV_BIN"
 log "Installing agentshore CLI from wheel"
 info "Wheel: $WHEEL_PATH"
 
-# `[all]` extras pull in dashboard + browser-verify dependencies. Per
-# feedback_dashboard_default_extras: this is the intended baseline; a bare
-# `uv tool install agentshore` silently breaks --dashboard at runtime.
-#
-# uv tool install rejects `--from <wheel> 'agentshore[all]'` because --from
-# already supplies a complete package requirement. Use the PEP 508 direct
-# reference syntax instead so the extras attach to the wheel as the source.
-"$UV_BIN" tool install --force --reinstall \
-    "agentshore[all] @ file://$WHEEL_PATH" \
+# The wheel exposes the complete CLI dependency set directly; there are no
+# package extras to attach here. Keep this aligned with the Windows helper so
+# both installers refresh the same runtime.
+"$UV_BIN" tool install --force --reinstall --python 3.12 \
+    "agentshore @ file://$WHEEL_PATH" \
   || die "uv tool install failed"
 
 # ── 4. Smoke test ────────────────────────────────────────────────────────────
