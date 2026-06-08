@@ -29,6 +29,19 @@
     Explicit path to ISCC.exe. If omitted, the script checks PATH, then the
     standard Inno Setup 6 install locations.
 
+.PARAMETER NoSign
+    Skip Authenticode signing even if signtool.exe and a code-signing
+    certificate are available.
+
+.PARAMETER SignTool
+    Explicit path to signtool.exe. If omitted, the script checks PATH, then the
+    standard Windows Kits locations.
+
+.PARAMETER CertificateThumbprint
+    SHA-1 thumbprint of the Authenticode code-signing certificate to use. If
+    omitted, the script auto-detects a current-user code-signing certificate
+    with a private key.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
     .\scripts\build-windows.ps1 -SkipDashboard
@@ -38,7 +51,11 @@ param(
     [switch]$SkipDashboard,
     [switch]$DebugBuild,
     [switch]$Install,
-    [string]$Iscc = ""
+    [string]$Iscc = "",
+    [switch]$NoSign,
+    [string]$SignTool = "",
+    [string]$CertificateThumbprint = "",
+    [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
 Set-StrictMode -Version Latest
@@ -57,6 +74,8 @@ $OutputDir = Join-Path $DesktopDir "dist"
 $TemplatePath = Join-Path $RepoRoot "packaging\desktop\windows\AgentShore.iss.in"
 $WindowsTauriConfig = Join-Path $RepoRoot "packaging\desktop\windows\tauri.windows-installer.conf.json"
 $LicensePath = Join-Path $RepoRoot "packaging\desktop\installer-resources\EULA.rtf"
+$LicenseSourcePath = Join-Path $RepoRoot "LICENSE"
+$EulaBuilderPath = Join-Path $RepoRoot "packaging\desktop\installer-resources\build-eula-rtf.py"
 $IconPath = Join-Path $TauriDir "icons\icon.ico"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -95,6 +114,91 @@ function Resolve-Iscc {
     }
 
     Die "Inno Setup 6 compiler not found. Install Inno Setup 6 or pass -Iscc <path-to-ISCC.exe>."
+}
+
+function Resolve-SignTool {
+    if ($SignTool) {
+        if (-not (Test-Path $SignTool)) { Die "signtool.exe not found: $SignTool" }
+        return (Resolve-Path $SignTool).Path
+    }
+
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $kitsRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+    if (Test-Path $kitsRoot) {
+        $candidate = Get-ChildItem -Path $kitsRoot -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+
+    return ""
+}
+
+function Resolve-CodeSigningThumbprint {
+    if ($CertificateThumbprint) {
+        return ($CertificateThumbprint -replace "\s", "").ToUpperInvariant()
+    }
+
+    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+        Where-Object { $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+    if ($cert) { return $cert.Thumbprint }
+
+    return ""
+}
+
+function Invoke-AuthenticodeSign {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$SignToolPath,
+        [Parameter(Mandatory = $true)][string]$Thumbprint
+    )
+
+    Write-Step "Authenticode signing $(Split-Path -Leaf $FilePath)"
+    & $SignToolPath sign /fd SHA256 /td SHA256 /tr $TimestampUrl /sha1 $Thumbprint $FilePath
+    if ($LASTEXITCODE -ne 0) {
+        Die "signtool failed with exit code $LASTEXITCODE for $FilePath"
+    }
+}
+
+function Invoke-EulaGenerator {
+    Write-Step "Regenerating EULA.rtf from LICENSE"
+    if (-not (Test-Path $EulaBuilderPath)) { Die "EULA generator missing: $EulaBuilderPath" }
+    if (-not (Test-Path $LicenseSourcePath)) { Die "LICENSE missing: $LicenseSourcePath" }
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        & $python.Source $EulaBuilderPath $LicenseSourcePath $LicensePath
+        if ($LASTEXITCODE -ne 0) { Die "EULA generator failed with exit code $LASTEXITCODE" }
+        return
+    }
+
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        & $py.Source -3 $EulaBuilderPath $LicenseSourcePath $LicensePath
+        if ($LASTEXITCODE -ne 0) { Die "EULA generator failed with exit code $LASTEXITCODE" }
+        return
+    }
+
+    Invoke-Checked "uv" "--native-tls" "run" "python" $EulaBuilderPath $LicenseSourcePath $LicensePath
+}
+
+function Clear-StaleSetupArtifacts {
+    if (-not (Test-Path $OutputDir)) { return }
+
+    $staleSetups = Get-ChildItem -Path $OutputDir -Filter "AgentShoreSetup-*.exe" -ErrorAction SilentlyContinue
+    foreach ($setup in $staleSetups) {
+        try {
+            Remove-Item -LiteralPath $setup.FullName -Force -ErrorAction Stop
+            Write-Info "Removed stale setup artifact: $($setup.Name)"
+        } catch {
+            Die "Could not remove stale setup artifact $($setup.FullName). Close any open installer windows or security scanner handles, then retry. $($_.Exception.Message)"
+        }
+    }
 }
 
 function Read-TauriVersion {
@@ -149,6 +253,7 @@ $WheelFileName = Split-Path -Leaf $WheelPath
 Write-Info "Wheel: $WheelFileName"
 
 Write-Step "Building Tauri executable ($BuildMode)"
+Clear-StaleSetupArtifacts
 Push-Location $DesktopDir
 try {
     $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
@@ -173,6 +278,20 @@ try {
 $AppExe = Join-Path $TargetDir "agentshore-desktop.exe"
 if (-not (Test-Path $AppExe)) { Die "Tauri build finished but $AppExe does not exist" }
 
+if (-not $NoSign) {
+    $ResolvedSignTool = Resolve-SignTool
+    $ResolvedThumbprint = Resolve-CodeSigningThumbprint
+    if ($ResolvedSignTool -and $ResolvedThumbprint) {
+        Invoke-AuthenticodeSign -FilePath $AppExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
+    } else {
+        Write-Step "Skipping Authenticode signing"
+        if (-not $ResolvedSignTool) { Write-Info "signtool.exe not found." }
+        if (-not $ResolvedThumbprint) { Write-Info "No current-user code-signing certificate with a private key was found." }
+    }
+} else {
+    Write-Step "Skipping Authenticode signing (-NoSign)"
+}
+
 Write-Step "Staging installer payload"
 Remove-Item -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $AppStageDir | Out-Null
@@ -185,6 +304,8 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-venv.ps1
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-cli.ps1") -Destination $InstallerStageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-timelapse.ps1") -Destination $InstallerStageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\run-windows-installer-step.ps1") -Destination $InstallerStageDir
+
+Invoke-EulaGenerator
 
 Write-Step "Compiling Inno Setup installer"
 $IsccPath = Resolve-Iscc
@@ -206,6 +327,10 @@ Invoke-Checked $IsccPath @isccArgs
 $SetupOut = Join-Path $OutputDir "AgentShoreSetup-$Version-x64.exe"
 if (-not (Test-Path $SetupOut)) {
     Die "Inno Setup completed but expected installer is missing: $SetupOut"
+}
+
+if (-not $NoSign -and $ResolvedSignTool -and $ResolvedThumbprint) {
+    Invoke-AuthenticodeSign -FilePath $SetupOut -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
 }
 
 Write-Step "Build complete"

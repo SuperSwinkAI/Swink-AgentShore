@@ -116,7 +116,7 @@ begin
     begin
       if not WizardSilent then
       begin
-        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and Timelapse Capture can be installed later from the app. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
+        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and this optional component can be retried later. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
       end;
       Result := True;
       exit;
@@ -127,6 +127,11 @@ begin
   end;
 
   Result := True;
+end;
+
+procedure CleanupInstallerPayload();
+begin
+  DelTree(ExpandConstant('{app}\installer'), True, True, True);
 end;
 
 procedure InitializeWizard();
@@ -145,14 +150,6 @@ begin
       RaiseException('AgentShore Desktop sidecar provisioning failed.');
     end;
 
-    if WizardIsComponentSelected('cli') then
-    begin
-      if not RunInstallerStep('Installing AgentShore CLI', 'install-agentshore-cli.ps1', True, False) then
-      begin
-        RaiseException('AgentShore CLI installation failed.');
-      end;
-    end;
-
     if WizardIsComponentSelected('timelapse') then
     begin
       if not RunInstallerStep('Provisioning Timelapse Capture', 'install-timelapse.ps1', False, True) then
@@ -160,5 +157,15 @@ begin
         { Optional step already surfaced a warning. }
       end;
     end;
+
+    if WizardIsComponentSelected('cli') then
+    begin
+      if not RunInstallerStep('Installing AgentShore CLI', 'install-agentshore-cli.ps1', True, True) then
+      begin
+        { Optional step already surfaced a warning. }
+      end;
+    end;
+
+    CleanupInstallerPayload();
   end;
 end;
