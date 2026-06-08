@@ -57,7 +57,7 @@ dev = [
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
     "ruff==0.15.16",
-    "types-pyyaml==6.0.12.20260408",
+    "types-pyyaml==6.0.12.20260518",
 ]
 
 [project.urls]
