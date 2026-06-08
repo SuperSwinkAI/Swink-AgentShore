@@ -189,6 +189,85 @@ describe("IdentitiesScreen", () => {
     ).not.toBeNull();
   });
 
+  it("shows repo access checking state before the live check resolves", async () => {
+    let resolveCheck!: (row: IdentityRow) => void;
+    const sidecar: IdentitiesSidecar = {
+      async list() {
+        return [
+          {
+            login: "octocat",
+            source: "gh_token_login",
+            token_status: "configured",
+            repo_access: "unknown",
+          },
+        ];
+      },
+      async checkAccess() {
+        return new Promise<IdentityRow>((resolve) => {
+          resolveCheck = resolve;
+        });
+      },
+      add: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+    };
+
+    await render(sidecar);
+
+    const checkingRow = requireTestId(container, "identity-row-octocat");
+    expect(
+      checkingRow.querySelector("[data-testid='repo-access-checking']"),
+    ).not.toBeNull();
+
+    await act(async () => {
+      resolveCheck({
+        login: "octocat",
+        source: "gh_token_login",
+        token_status: "configured",
+        repo_access: "ok",
+        repo_access_detail: "GitHub repository access verified.",
+      });
+    });
+
+    const octocatRow = requireTestId(container, "identity-row-octocat");
+    expect(
+      octocatRow.querySelector("[data-testid='repo-access-ok']"),
+    ).not.toBeNull();
+  });
+
+  it("shows a row-level repo check failure when the live access check errors", async () => {
+    const sidecar: IdentitiesSidecar = {
+      async list() {
+        return [
+          {
+            login: "octocat",
+            source: "gh_token_login",
+            token_status: "configured",
+            repo_access: "unknown",
+          },
+        ];
+      },
+      async checkAccess() {
+        throw new Error("sidecar response timed out");
+      },
+      add: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+    };
+
+    await render(sidecar);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const octocatRow = requireTestId(container, "identity-row-octocat");
+    expect(
+      octocatRow.querySelector("[data-testid='repo-access-check_failed']"),
+    ).not.toBeNull();
+    expect(getTestId(container, "repo-access-detail-octocat")).not.toBeNull();
+  });
+
   it("adds an identity when the form is submitted", async () => {
     const sidecar = makeSidecar([]);
     await render(sidecar);
@@ -438,11 +517,13 @@ describe("IdentitiesScreen", () => {
 
   it("still requires a PAT when none is stored in the Keychain", async () => {
     const sidecar = makeSidecar([]);
-    (sidecar as IdentitiesSidecar).checkKeychain = vi.fn(async (login: string) => ({
-      login,
-      service: `agentshore/${login}`,
-      has_token: false,
-    }));
+    (sidecar as IdentitiesSidecar).checkKeychain = vi.fn(
+      async (login: string) => ({
+        login,
+        service: `agentshore/${login}`,
+        has_token: false,
+      }),
+    );
     await render(sidecar);
 
     await act(async () => {

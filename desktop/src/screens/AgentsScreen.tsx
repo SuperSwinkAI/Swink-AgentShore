@@ -97,18 +97,12 @@ export function AgentsScreen({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      adapter.listAgents(),
-      adapter.listIdentities(),
-      adapter.getSpawnLimits(),
-      adapter.detectAgents(),
-    ])
-      .then(([agentRows, identityRows, limits, detected]) => {
+    Promise.all([adapter.listAgents(), adapter.listIdentities(), adapter.getSpawnLimits()])
+      .then(([agentRows, identityRows, limits]) => {
         if (cancelled) return;
         setAgents(agentRows);
         onAgentRowsChange?.(agentRows);
         setIdentities(identityRows);
-        setDetectedTypes(detected);
         setMaxPerType(limits.max_per_config);
         setMaxPerTypeDraft(String(limits.max_per_config));
         setError(null);
@@ -117,6 +111,18 @@ export function AgentsScreen({
         if (cancelled) return;
         setAgents([]);
         setError(err instanceof Error ? err.message : String(err));
+      });
+    void adapter
+      .detectAgents()
+      .then((detected) => {
+        if (!cancelled) {
+          setDetectedTypes(detected);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetectedTypes([]);
+        }
       });
     return () => {
       cancelled = true;

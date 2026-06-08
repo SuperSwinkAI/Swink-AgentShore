@@ -4,16 +4,16 @@
 
 .DESCRIPTION
     Windows parity for scripts/build-macos.sh. Produces a user-level Inno Setup
-    wizard installer for the Tauri desktop shell plus the managed Python
+    admin installer for the Tauri desktop shell plus the managed Python
     sidecar venv, with the same deliberate component choices as the macOS pkg:
 
       - AgentShore Desktop: required.
       - Timelapse Capture: optional, unchecked by default.
       - AgentShore CLI: optional, checked by default.
 
-    The installer is per-user and does not require elevation. The desktop app
-    installs under %LocalAppData%\Programs\AgentShore, and the managed sidecar
-    venv is provisioned under %LocalAppData%\AgentShore\venv, matching the
+    The installer is machine-wide and requires elevation. The desktop app
+    installs under %ProgramFiles%\AgentShore, and the managed sidecar
+    venv is provisioned under %ProgramData%\AgentShore\venv, matching the
     Rust supervisor's Windows lookup path.
 
 .PARAMETER SkipDashboard

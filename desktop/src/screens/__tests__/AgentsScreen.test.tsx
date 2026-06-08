@@ -43,6 +43,20 @@ function renderScreen(adapter: AgentsAdapter) {
   );
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const AGENTS: AgentRow[] = [
   {
     type: "claude_code",
@@ -155,6 +169,27 @@ describe("AgentsScreen", () => {
     renderScreen(adapter);
 
     expect(await screen.findByTestId("scaffold-grok")).toHaveTextContent("+ Grok CLI");
+  });
+
+  it("renders configured agents while PATH detection is still pending", async () => {
+    const detection = deferred<string[]>();
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    adapter.detectAgents.mockReturnValue(detection.promise);
+    renderScreen(adapter);
+
+    expect(await screen.findByTestId("agent-row-claude_code")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    detection.resolve(["grok"]);
+  });
+
+  it("does not fail the Agents screen when PATH detection rejects", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    adapter.detectAgents.mockRejectedValue(new Error("PATH probe stalled"));
+    renderScreen(adapter);
+
+    expect(await screen.findByTestId("agent-row-claude_code")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("flags a missing identity bound to an agent with a (missing) option", async () => {

@@ -53,6 +53,7 @@ from agentshore.sidecar.handshake import build_response, validate_params
 from agentshore.sidecar.identities import (
     add_identity,
     add_trusted_source,
+    check_identity_access,
     keychain_status,
     list_identities,
     list_trusted_sources,
@@ -256,7 +257,11 @@ async def _close_project_handles(state: ServerState) -> None:
 
 
 def _finalize_project_select(
-    resolved: str, state: ServerState, req_id: int | str | None
+    resolved: str,
+    state: ServerState,
+    req_id: int | str | None,
+    *,
+    include_inspect: bool = True,
 ) -> JsonRpcResponse:
     state.active_project_path = resolved
     # When the desktop launches from Finder the sidecar's cwd is "/".
@@ -266,6 +271,8 @@ def _finalize_project_select(
     # subprocess spawns will inherit it unless they pass an explicit cwd.
     with contextlib.suppress(OSError):
         os.chdir(resolved)
+    if not include_inspect:
+        return _result(req_id, {"path": resolved})
     try:
         inspect_result = project_rpc.inspect()
     except project_rpc.ProjectError as exc:
@@ -293,6 +300,9 @@ def _dispatch_project_select(
     path = obj_params.get("path")
     if not isinstance(path, str):
         return _error(req_id, INVALID_PARAMS, "project.select requires string 'path'")
+    include_inspect = obj_params.get("include_inspect", True)
+    if not isinstance(include_inspect, bool):
+        return _error(req_id, INVALID_PARAMS, "project.select 'include_inspect' must be a boolean")
 
     prior_path = state.active_project_path
     if state.session_active and prior_path is not None and prior_path != path:
@@ -311,11 +321,16 @@ def _dispatch_project_select(
 
         async def _switch_with_close() -> JsonRpcResponse:
             await _close_project_handles(state)
-            return _finalize_project_select(resolved, state, req_id)
+            return _finalize_project_select(
+                resolved,
+                state,
+                req_id,
+                include_inspect=include_inspect,
+            )
 
         return _switch_with_close()
 
-    return _finalize_project_select(resolved, state, req_id)
+    return _finalize_project_select(resolved, state, req_id, include_inspect=include_inspect)
 
 
 def _active_project_path(state: ServerState) -> Path:
@@ -990,6 +1005,19 @@ def _dispatch_identities_rpc(
             return _result(req_id, keychain_status(login))
         except ValueError as exc:
             return _error(req_id, INVALID_PARAMS, str(exc))
+
+    if method == "identities.check_access":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.check_access requires object params")
+        login = raw_params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, "identities.check_access requires login")
+        try:
+            return _result(req_id, check_identity_access(_active_project_path(state), login))
+        except ValueError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
+        except OSError as exc:
+            return _error(req_id, INTERNAL_ERROR, f"identities.check_access: {exc}")
 
     if method == "identities.add":
         if not isinstance(raw_params, dict):

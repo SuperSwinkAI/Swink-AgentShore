@@ -19,6 +19,20 @@ const defaultAdapter: TargetBranchAdapter = {
   setTarget: setTargetBranch,
 };
 
+const BRANCH_LOAD_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), BRANCH_LOAD_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
 export interface TargetBranchScreenProps {
   adapter?: TargetBranchAdapter;
 }
@@ -44,6 +58,7 @@ export function TargetBranchScreen({
   selectedBranchRef.current = selectedBranch;
   const setTargetRef = useRef(adapter.setTarget);
   setTargetRef.current = adapter.setTarget;
+  const loadRequestRef = useRef(0);
 
   const onSelectBranch = useCallback((name: string) => {
     dirtyRef.current = true;
@@ -76,27 +91,37 @@ export function TargetBranchScreen({
 
   const loadBranches = useCallback(
     async (refresh: boolean) => {
+      const requestId = loadRequestRef.current + 1;
+      loadRequestRef.current = requestId;
       setLoading(true);
       setError(null);
       setStatus(null);
       try {
-        const rows = await adapter.list(refresh);
+        const rows = await withTimeout(
+          adapter.list(refresh),
+          `branch scan exceeded ${BRANCH_LOAD_TIMEOUT_MS / 1000}s`,
+        );
+        if (loadRequestRef.current !== requestId) return;
         setBranches(rows);
         const nextSelection = rows.find((row) => row.is_default)?.name ?? rows[0]?.name ?? "";
-        setSelectedBranch((current) => current || nextSelection);
+        setSelectedBranch((current) => (dirtyRef.current ? current : current || nextSelection));
         setStatus(refresh ? "Branch list refreshed." : "Branch list loaded.");
       } catch (err) {
-        setBranches([]);
+        if (loadRequestRef.current !== requestId) return;
+        setBranches((current) => current ?? []);
         setError(`Unable to load branches: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        setLoading(false);
+        if (loadRequestRef.current === requestId) {
+          setLoading(false);
+        }
       }
     },
     [adapter],
   );
 
   const onSetTarget = useCallback(async () => {
-    if (!selectedBranch) {
+    const branch = selectedBranch.trim();
+    if (!branch) {
       setError("Select a branch first.");
       return;
     }
@@ -104,9 +129,9 @@ export function TargetBranchScreen({
     setError(null);
     setStatus(null);
     try {
-      await adapter.setTarget(selectedBranch);
+      await adapter.setTarget(branch);
       savedRef.current = true;
-      setStatus(`Target branch set to ${selectedBranch}.`);
+      setStatus(`Target branch set to ${branch}.`);
       navigate("/setup/identities");
     } catch (err) {
       setError(`Unable to set target branch: ${err instanceof Error ? err.message : String(err)}`);
@@ -142,7 +167,7 @@ export function TargetBranchScreen({
             type="button"
             className={`${styles.button} ${styles.buttonPrimary}`}
             onClick={() => void onSetTarget()}
-            disabled={saving || !selectedBranch}
+            disabled={saving || !selectedBranch.trim()}
             data-testid="target-branch-save"
           >
             {saving ? "Saving…" : "Set target branch"}

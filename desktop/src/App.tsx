@@ -21,6 +21,7 @@ import {
 import {
   addIdentity,
   addTrustedSource,
+  checkIdentityAccess,
   checkKeychainToken,
   listIdentities,
   listTrustedSources,
@@ -574,6 +575,7 @@ function SetupLayout({
       update: updateIdentity,
       remove: removeIdentity,
       checkKeychain: checkKeychainToken,
+      checkAccess: checkIdentityAccess,
     }),
     [],
   );

@@ -45,6 +45,7 @@ def capabilities() -> list[str]:
         "config.read",
         "config.write",
         "identities.list",
+        "identities.check_access",
         "identities.add",
         "identities.update",
         "identities.remove",

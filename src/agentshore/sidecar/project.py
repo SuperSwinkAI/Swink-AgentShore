@@ -1,13 +1,14 @@
-"""project.* RPC method implementations (DESIGN §5.1).
+"""project.* RPC method implementations (DESIGN Â§5.1).
 
-The sidecar maintains a single ``ActiveProject`` slot (§1.3). ``project.select``
+The sidecar maintains a single ``ActiveProject`` slot (Â§1.3). ``project.select``
 sets it, ``project.deselect`` clears it, and ``inspect``/``branches``/
 ``set_target_branch`` operate against it. Switching projects while a session
-is running is the caller's responsibility to gate (§1.3: ``ERR_SESSION_ACTIVE``).
+is running is the caller's responsibility to gate (Â§1.3: ``ERR_SESSION_ACTIVE``).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import io
 import math
@@ -15,10 +16,12 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+from agentshore.beads import resolve_bd_binary
 from agentshore.budget import (
     MAX_TIME_BUDGET_MINUTES,
     MIN_ENABLED_BUDGET_USD,
@@ -30,6 +33,15 @@ from agentshore.config.models import BudgetConfig, TimelapseConfig
 # ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
 # for project.{inspect,branches,set_target_branch}; see server._dispatch.
 ERR_PROJECT_NOT_ACTIVE = -32004
+GIT_PROBE_TIMEOUT_SECONDS = 5.0
+GIT_TIMEOUT_RETURN_CODE = 124
+INSPECT_PROBE_TIMEOUT_SECONDS = 2.0
+BRANCH_LIST_TIMEOUT_SECONDS = 20.0
+BRANCH_REMOTE_ONLY_LIMIT = 200
+_PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16,
+    thread_name_prefix="agentshore-project-probe",
+)
 
 
 class ProjectError(Exception):
@@ -52,11 +64,8 @@ class ActiveProject:
 def _resolve_path(path: str) -> Path:
     if not isinstance(path, str) or not path:
         raise ProjectError("path must be a non-empty string")
-    resolved = Path(path).expanduser()
-    try:
-        resolved = resolved.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ProjectError(f"path does not exist: {path}", code=-32001) from exc
+    expanded = Path(path).expanduser()
+    resolved = expanded if expanded.is_absolute() else Path.cwd() / expanded
     if not resolved.is_dir():
         raise ProjectError(f"path is not a directory: {resolved}", code=-32001)
     return resolved
@@ -121,18 +130,66 @@ def _require_active() -> Path:
     return active.path
 
 
-def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-        ["git", *args],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _run_git(
+    args: list[str],
+    cwd: Path,
+    *,
+    timeout_seconds: float = GIT_PROBE_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    command = ["git", *args]
+    try:
+        return subprocess.run(  # noqa: S603, S607 â€” fixed argv, no shell
+            command,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            command,
+            GIT_TIMEOUT_RETURN_CODE,
+            stdout=exc.stdout if isinstance(exc.stdout, str) else "",
+            stderr=f"git {' '.join(args)} timed out after {timeout_seconds:.1f}s",
+        )
+
+
+def _repo_identity_probe_fallback(path: Path) -> dict[str, object]:
+    return {
+        "is_git": True,
+        "root": str(path),
+        "head_sha": "",
+        "origin_url": None,
+        "probe_error": "repo identity probe timed out",
+    }
+
+
+def _collect_probe[T](
+    future: concurrent.futures.Future[T],
+    fallback: T,
+    deadline: float,
+) -> T:
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        return future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return fallback
+    except Exception:
+        return fallback
 
 
 def _repo_identity(path: Path) -> dict[str, object]:
     head = _run_git(["rev-parse", "HEAD"], path)
+    if head.returncode == GIT_TIMEOUT_RETURN_CODE:
+        return {
+            "is_git": True,
+            "root": str(path),
+            "head_sha": "",
+            "origin_url": None,
+            "probe_error": head.stderr.strip(),
+        }
     if head.returncode != 0:
         return {"is_git": False}
     root = _run_git(["rev-parse", "--show-toplevel"], path)
@@ -189,22 +246,51 @@ def _beads_status(path: Path) -> dict[str, object]:
 def _prerequisites() -> dict[str, object]:
     return {
         "git": shutil.which("git") is not None,
-        "bd": shutil.which("bd") is not None,
+        "bd": resolve_bd_binary() is not None,
         "gh": shutil.which("gh") is not None,
     }
 
 
 def inspect() -> dict[str, object]:
-    """Return the inspection envelope for the active project (DESIGN §5.1)."""
+    """Return the inspection envelope for the active project (DESIGN Â§5.1)."""
     path = _require_active()
+    deadline = time.monotonic() + INSPECT_PROBE_TIMEOUT_SECONDS
+    repo_identity = _PROBE_EXECUTOR.submit(lambda: _repo_identity(path))
+    current_branch = _PROBE_EXECUTOR.submit(lambda: _current_branch(path))
+    detected_tools = _PROBE_EXECUTOR.submit(lambda: _detected_tools(path))
+    agentshore_yaml = _PROBE_EXECUTOR.submit(lambda: _agentshore_yaml_payload(path))
+    beads_status = _PROBE_EXECUTOR.submit(lambda: _beads_status(path))
+    prerequisites = _PROBE_EXECUTOR.submit(_prerequisites)
+
     return {
         "path": str(path),
-        "repo_identity": _repo_identity(path),
-        "branch": _current_branch(path),
-        "detected_tools": _detected_tools(path),
-        "agentshore_yaml": _agentshore_yaml_payload(path),
-        "beads_status": _beads_status(path),
-        "prerequisites": _prerequisites(),
+        "repo_identity": _collect_probe(
+            repo_identity,
+            _repo_identity_probe_fallback(path),
+            deadline,
+        ),
+        "branch": _collect_probe(current_branch, None, deadline),
+        "detected_tools": _collect_probe(detected_tools, [], deadline),
+        "agentshore_yaml": _collect_probe(
+            agentshore_yaml,
+            None,
+            deadline,
+        ),
+        "beads_status": _collect_probe(
+            beads_status,
+            {"initialised": False, "probe_error": "beads status probe timed out"},
+            deadline,
+        ),
+        "prerequisites": _collect_probe(
+            prerequisites,
+            {
+                "git": False,
+                "bd": False,
+                "gh": False,
+                "probe_error": "tooling probe timed out",
+            },
+            deadline,
+        ),
     }
 
 
@@ -227,8 +313,15 @@ class _BranchRow(TypedDict):
     behind: int
 
 
-def _ahead_behind(path: Path, ref: str, target: str) -> tuple[int, int]:
-    out = _run_git(["rev-list", "--left-right", "--count", f"{ref}...{target}"], path)
+def _ahead_behind(path: Path, ref: str, target: str, *, deadline: float) -> tuple[int, int]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return 0, 0
+    out = _run_git(
+        ["rev-list", "--left-right", "--count", f"{ref}...{target}"],
+        path,
+        timeout_seconds=min(GIT_PROBE_TIMEOUT_SECONDS, max(0.1, remaining)),
+    )
     if out.returncode != 0:
         return 0, 0
     parts = out.stdout.strip().split()
@@ -240,94 +333,180 @@ def _ahead_behind(path: Path, ref: str, target: str) -> tuple[int, int]:
         return 0, 0
 
 
+def _read_small_text(path: Path, *, limit: int = 64 * 1024) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
+
+
+def _git_dir_for_worktree(path: Path) -> Path | None:
+    dot_git = path / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if not dot_git.is_file():
+        return None
+    text = _read_small_text(dot_git, limit=4096)
+    if text is None:
+        return None
+    first = text.splitlines()[0].strip() if text.splitlines() else ""
+    if not first.lower().startswith("gitdir:"):
+        return None
+    raw = first[len("gitdir:") :].strip()
+    if not raw:
+        return None
+    git_dir = Path(raw)
+    if not git_dir.is_absolute():
+        git_dir = dot_git.parent / git_dir
+    return git_dir
+
+
+def _common_git_dir(git_dir: Path) -> Path:
+    text = _read_small_text(git_dir / "commondir", limit=4096)
+    if text is None:
+        return git_dir
+    raw = text.splitlines()[0].strip() if text.splitlines() else ""
+    if not raw:
+        return git_dir
+    common = Path(raw)
+    if not common.is_absolute():
+        common = git_dir / common
+    return common
+
+
+def _read_ref_names(common_git_dir: Path, prefix: str) -> list[str]:
+    names: set[str] = set()
+    root = common_git_dir.joinpath(*prefix.split("/"))
+    if root.is_dir():
+        for ref_file in root.rglob("*"):
+            if not ref_file.is_file() or ref_file.name.endswith(".lock"):
+                continue
+            with contextlib.suppress(ValueError):
+                name = ref_file.relative_to(root).as_posix()
+                if name and name != "HEAD":
+                    names.add(name)
+
+    packed = _read_small_text(common_git_dir / "packed-refs")
+    if packed is not None:
+        packed_prefix = f"{prefix}/"
+        for raw_line in packed.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", "^")):
+                continue
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            ref = parts[1]
+            if ref.startswith(packed_prefix):
+                name = ref[len(packed_prefix) :]
+                if name and name != "HEAD":
+                    names.add(name)
+    return sorted(names)
+
+
+def _symbolic_ref_name(git_dir: Path, ref_path: str, prefix: str) -> str | None:
+    text = _read_small_text(git_dir.joinpath(*ref_path.split("/")), limit=4096)
+    if text is None:
+        return None
+    first = text.splitlines()[0].strip() if text.splitlines() else ""
+    if not first.startswith("ref:"):
+        return None
+    ref = first[len("ref:") :].strip()
+    full_prefix = f"{prefix}/"
+    if ref.startswith(full_prefix):
+        return ref[len(full_prefix) :]
+    return None
+
+
+def _filesystem_branches(path: Path) -> tuple[str, str | None, list[str], list[str]]:
+    git_dir = _git_dir_for_worktree(path)
+    if git_dir is None:
+        return "main", None, [], []
+    common_git_dir = _common_git_dir(git_dir)
+    local_names = [
+        name for name in _read_ref_names(common_git_dir, "refs/heads") if name != "origin"
+    ]
+    remote_names = _read_ref_names(common_git_dir, "refs/remotes/origin")
+    current = _symbolic_ref_name(git_dir, "HEAD", "refs/heads")
+    default = _symbolic_ref_name(common_git_dir, "refs/remotes/origin/HEAD", "refs/remotes/origin")
+    if default is None:
+        if "main" in local_names or "main" in remote_names:
+            default = "main"
+        elif "master" in local_names or "master" in remote_names:
+            default = "master"
+        elif current is not None:
+            default = current
+        elif local_names:
+            default = local_names[0]
+        elif remote_names:
+            default = remote_names[0]
+        else:
+            default = "main"
+    return default, current, local_names, remote_names
+
+
 def branches(*, refresh: bool = False) -> list[_BranchRow]:
-    """Return local + remote-tracking branches with ahead/behind vs default.
+    """Return existing local + origin-tracking branches for the target picker.
 
-    When *refresh* is true, run ``git fetch --prune origin`` first so the
-    remote-tracking refs reflect upstream state.
+    The Windows desktop setup path avoids Git subprocesses here. Reading refs
+    directly from ``.git/refs`` and ``packed-refs`` is enough for a mandatory
+    "choose an existing branch" screen and avoids shelling out to Git in
+    repositories where Git process startup or ref scans can stall the sidecar.
     """
+    del refresh
     path = _require_active()
-    if refresh:
-        _run_git(["fetch", "--prune", "origin"], path)
-
-    default = _default_branch_name(path)
-    target = f"origin/{default}"
-    current_branch = _current_branch(path)
-
-    # Two separate for-each-ref calls so we can tag each ref by source
-    # unambiguously. The previous combined call inferred source from the
-    # short name's ``origin/`` prefix — which mis-classified a local branch
-    # literally named ``origin`` (refname:short == "origin", no slash) as a
-    # legitimate local branch row. The user-facing target-branch picker
-    # never wants to surface ``origin`` as a selectable branch because it
-    # collides with the remote name and would produce ambiguous git
-    # operations downstream.
-    local_res = _run_git(
-        ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-        path,
-    )
-    if local_res.returncode != 0:
-        return []
-    remote_res = _run_git(
-        ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
-        path,
-    )
-    if remote_res.returncode != 0:
-        return []
-
-    local_names: set[str] = set()
-    remote_names: list[str] = []
-    local_order: list[str] = []
-    for line in local_res.stdout.splitlines():
-        ref = line.strip()
-        if not ref:
-            continue
-        # Skip a local branch literally named ``origin`` — it shadows the
-        # remote name and is almost always an accidental ref.
-        if ref == "origin":
-            continue
-        if ref not in local_names:
-            local_names.add(ref)
-            local_order.append(ref)
-    for line in remote_res.stdout.splitlines():
-        ref = line.strip()
-        if not ref:
-            continue
-        if not ref.startswith("origin/"):
-            continue
-        name = ref[len("origin/") :]
-        if name == "HEAD" or not name:
-            continue
-        remote_names.append(name)
+    default, current_branch, local_order, remote_names = _filesystem_branches(path)
+    local_names = set(local_order)
 
     rows: list[_BranchRow] = []
     for name in local_order:
-        ahead, behind = _ahead_behind(path, name, target)
         rows.append(
             {
                 "name": name,
                 "is_default": name == default,
                 "is_current": name == current_branch,
                 "is_remote": False,
-                "ahead": ahead,
-                "behind": behind,
+                "ahead": 0,
+                "behind": 0,
             }
         )
+    remote_rows_added = 0
     for name in remote_names:
         if name in local_names:
             continue
-        ahead, behind = _ahead_behind(path, f"origin/{name}", target)
         rows.append(
             {
                 "name": name,
                 "is_default": name == default,
                 "is_current": False,
                 "is_remote": True,
-                "ahead": ahead,
-                "behind": behind,
+                "ahead": 0,
+                "behind": 0,
             }
         )
+        remote_rows_added += 1
+        if remote_rows_added >= BRANCH_REMOTE_ONLY_LIMIT:
+            break
     return rows
+
+
+def _is_valid_branch_name(name: str) -> bool:
+    """Conservative branch-name validation without invoking git.
+
+    The desktop setup flow must not block on git/ref/remote probes on Windows.
+    This accepts normal branch paths such as ``main`` and ``feature/x`` while
+    rejecting the refname shapes Git refuses or that are unsafe to persist.
+    """
+    if not name or name in {".", "..", "@", "HEAD"}:
+        return False
+    if name.startswith(("/", "-", ".")) or name.endswith(("/", ".", ".lock")):
+        return False
+    if any(ord(ch) < 32 or ch in {" ", "~", "^", ":", "?", "*", "[", "\\", "\x7f"} for ch in name):
+        return False
+    if any(part in {"", ".", ".."} or part.endswith(".lock") for part in name.split("/")):
+        return False
+    return not (".." in name or "@{" in name or "//" in name)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -369,19 +548,26 @@ def _write_target_branch(yaml_text: str, branch: str) -> str:
 
 
 def set_target_branch(name: str) -> dict[str, object]:
-    """Persist *name* as ``project.target_branch`` in agentshore.yaml (DESIGN §4.1).
+    """Persist *name* as ``project.target_branch`` in agentshore.yaml (DESIGN Â§4.1).
 
-    Validates that ``origin`` has the branch before writing. Write is atomic
-    (temp + fsync + rename).
+    Validates against existing local or ``origin/*`` refs using the same
+    filesystem-backed branch reader as ``project.branches``. This preserves the
+    setup contract ("choose an existing branch") without invoking Git
+    subprocesses or network checks on Windows.
     """
     path = _require_active()
     if not isinstance(name, str) or not name.strip():
         raise ProjectError("name must be a non-empty string")
     name = name.strip()
-    res = _run_git(["ls-remote", "--exit-code", "--heads", "origin", name], path)
-    if res.returncode != 0:
+    if not _is_valid_branch_name(name):
         raise ProjectError(
-            f"branch '{name}' not found on origin",
+            f"invalid branch name: {name!r}",
+            code=-32002,
+        )
+    _default, _current, local_names, remote_names = _filesystem_branches(path)
+    if name not in set(local_names) | set(remote_names):
+        raise ProjectError(
+            f"branch '{name}' not found in local or origin-tracking refs",
             code=-32002,
         )
     yaml_path = path / "agentshore.yaml"
@@ -423,8 +609,8 @@ def set_seed_paths(payload: object) -> dict[str, object]:
     Accepts a single path string or a list of strings (relative to the project
     root, or absolute). Each must be a non-empty string and exist on disk. An
     empty list clears the configured seed. Write is atomic (temp + fsync +
-    rename). Mirrors :func:`set_target_branch` so any start path — CLI, sidecar,
-    desktop Quick Start, TUI — picks up the configured seed via the bootstrap
+    rename). Mirrors :func:`set_target_branch` so any start path â€” CLI, sidecar,
+    desktop Quick Start, TUI â€” picks up the configured seed via the bootstrap
     ``_resolve_seed_path`` fallback.
     """
     path = _require_active()
@@ -504,7 +690,7 @@ def _validate_budget_payload(payload: object) -> BudgetConfig:
     if "total" not in payload:
         raise ProjectError("budget.total is required")
     total_raw = payload["total"]
-    # ``bool`` is a subclass of ``int`` — reject it explicitly so ``True``/
+    # ``bool`` is a subclass of ``int`` â€” reject it explicitly so ``True``/
     # ``False`` cannot pose as a dollar amount.
     if isinstance(total_raw, bool) or not isinstance(total_raw, (int, float)):
         raise ProjectError("budget.total must be a number")
@@ -540,14 +726,14 @@ def _validate_budget_payload(payload: object) -> BudgetConfig:
     if isinstance(time_total_minutes_raw, bool) or not isinstance(time_total_minutes_raw, int):
         raise ProjectError("budget.time_total_minutes must be an integer")
     time_total_minutes = int(time_total_minutes_raw)
-    # Mirror ``_parse_budget``: an enabled time cap outside 1h–72h is rejected by
+    # Mirror ``_parse_budget``: an enabled time cap outside 1hâ€“72h is rejected by
     # ``load_config`` on the next round-trip, so reject it here to stay in sync.
     if time_enabled and not (
         MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
     ):
         raise ProjectError(
             f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
+            f"{MAX_TIME_BUDGET_MINUTES} (1hâ€“72h) when budget.time_enabled is true, "
             f"got {time_total_minutes!r}"
         )
     if not time_enabled and time_total_minutes < 0:

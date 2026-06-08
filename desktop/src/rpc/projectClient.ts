@@ -30,8 +30,18 @@ export interface ProjectInspectResult {
   prerequisites: { git: boolean; bd: boolean; gh: boolean };
 }
 
-export async function selectProject(path: string): Promise<ProjectSelection> {
-  return callJsonRpc<ProjectSelection>("project.select", { path });
+export interface SelectProjectOptions {
+  includeInspect?: boolean;
+}
+
+export async function selectProject(
+  path: string,
+  options: SelectProjectOptions = {},
+): Promise<ProjectSelection> {
+  return callJsonRpc<ProjectSelection>("project.select", {
+    path,
+    include_inspect: options.includeInspect ?? false,
+  });
 }
 
 export async function deselectProject(): Promise<void> {

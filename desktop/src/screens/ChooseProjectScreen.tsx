@@ -148,12 +148,13 @@ function formatRelative(iso: string, now: Date = new Date()): string {
 
 export function ChooseProjectScreen({
   adapter = defaultAdapter,
-  onProjectSelected,
   onQuickStartFailed,
 }: ChooseProjectScreenProps): JSX.Element {
   const navigate = useNavigate();
   const [entries, setEntries] = useState<RecentEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [choosingRepository, setChoosingRepository] = useState(false);
+  const [openingPath, setOpeningPath] = useState<string | null>(null);
   const quickStart = adapter.quickStart ?? startSessionFromPersistedSetup;
   const hasPersistedSetup =
     adapter.hasPersistedSetup ?? ((_path: string) => persistedSetupExists());
@@ -183,25 +184,19 @@ export function ChooseProjectScreen({
 
   const onOpenProject = useCallback(
     async (path: string) => {
+      setOpeningPath(path);
+      setError(null);
       try {
-        await adapter.touch(path);
         await adapter.select(path);
-        if (onProjectSelected) {
-          // Hydration runs best-effort — never block the user from
-          // reaching the setup rail just because agentshore.yaml parsed
-          // poorly or project.inspect failed.
-          try {
-            await onProjectSelected(path);
-          } catch {
-            // intentionally swallowed
-          }
-        }
         navigate("/setup/readiness");
+        void adapter.touch(path).catch(() => undefined);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setOpeningPath(null);
       }
     },
-    [adapter, navigate, onProjectSelected],
+    [adapter, navigate],
   );
 
   const onRemove = useCallback(
@@ -219,6 +214,8 @@ export function ChooseProjectScreen({
   );
 
   const onOpenRepository = useCallback(async () => {
+    setChoosingRepository(true);
+    setError(null);
     try {
       const chosen = await adapter.openDirectory();
       if (chosen) {
@@ -226,6 +223,8 @@ export function ChooseProjectScreen({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChoosingRepository(false);
     }
   }, [adapter, onOpenProject]);
 
@@ -301,9 +300,10 @@ export function ChooseProjectScreen({
 
   const loaded = entries !== null;
   const isEmpty = loaded && entries.length === 0;
+  const isOpening = choosingRepository || openingPath !== null;
 
   return (
-    <main className={styles.screen}>
+    <main className={styles.screen} aria-busy={isOpening}>
       <header className={styles.header}>
         <div className={styles.headerText}>
           <h1>Choose a project</h1>
@@ -314,8 +314,9 @@ export function ChooseProjectScreen({
             type="button"
             className={`${styles.button} ${styles.buttonPrimary}`}
             onClick={() => void onOpenRepository()}
+            disabled={isOpening}
           >
-            Open repository
+            {isOpening ? "Opening..." : "Open repository"}
           </button>
         </div>
       </header>
@@ -341,8 +342,9 @@ export function ChooseProjectScreen({
               type="button"
               className={`${styles.button} ${styles.buttonPrimary}`}
               onClick={() => void onOpenRepository()}
+              disabled={isOpening}
             >
-              Open repository
+              {isOpening ? "Opening..." : "Open repository"}
             </button>
           </div>
         )}
@@ -356,6 +358,7 @@ export function ChooseProjectScreen({
                 className={styles.row}
                 data-testid={`recent-row-${entry.path}`}
                 onClick={() => void onOpenProject(entry.path)}
+                disabled={isOpening}
               >
                 <span className={styles.rowMain}>
                   <span className={styles.rowLabel}>{entry.label}</span>
@@ -363,6 +366,9 @@ export function ChooseProjectScreen({
                 </span>
                 <span className={styles.rowMeta}>
                   <span className={styles.relative}>{formatRelative(entry.last_started)}</span>
+                  {openingPath === entry.path && (
+                    <span className={`${styles.badge} ${styles.badgeKnown}`}>Opening</span>
+                  )}
                   {entry.last_exit_reason !== null && (
                     <span className={`${styles.badge} ${styles.badgeReason}`}>
                       {entry.last_exit_reason}

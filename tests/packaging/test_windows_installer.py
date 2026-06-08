@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -8,8 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_windows_inno_template_matches_pkg_component_defaults() -> None:
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
-    assert "PrivilegesRequired=lowest" in template
-    assert r"DefaultDirName={localappdata}\Programs\AgentShore" in template
+    assert "PrivilegesRequired=admin" in template
+    assert r"DefaultDirName={autopf}\AgentShore" in template
     assert (
         'Name: "desktop"; Description: "AgentShore Desktop"; Types: custom; Flags: fixed'
         in template
@@ -47,6 +52,9 @@ def test_windows_inno_template_cleans_installer_payload_after_postinstall() -> N
 
     assert "procedure CleanupInstallerPayload()" in template
     assert r"DelTree(ExpandConstant('{app}\installer'), True, True, True)" in template
+    assert r'Type: filesandordirs; Name: "{localappdata}\Programs\AgentShore"' in template
+    assert r'Type: filesandordirs; Name: "{localappdata}\AgentShore\venv"' in template
+    assert r'Type: filesandordirs; Name: "{commonappdata}\AgentShore\venv"' in template
 
 
 def test_windows_build_script_stages_required_helpers() -> None:
@@ -71,6 +79,59 @@ def test_windows_build_script_stages_required_helpers() -> None:
     assert '"/DWheelFileName=$WheelFileName"' in script
     assert 'Invoke-Checked "uv" "--native-tls" "build"' in script
     assert "AgentShoreSetup-$Version-x64.exe" in script
+
+
+def test_windows_installer_step_runner_preserves_paths_with_spaces(tmp_path: Path) -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the installer runner")
+
+    script_dir = tmp_path / "Program Files Like" / "AgentShore" / "installer"
+    script_dir.mkdir(parents=True)
+    helper = script_dir / "helper script.ps1"
+    wheel_dir = tmp_path / "wheel dir"
+    wheel_dir.mkdir()
+    wheel = wheel_dir / "agentshore wheel.whl"
+    wheel.write_text("not a real wheel")
+    helper.write_text(
+        """
+param([Parameter(Mandatory = $true)][string]$Wheel)
+Write-Host "wheel=$Wheel"
+if (-not $Wheel.EndsWith("agentshore wheel.whl")) { exit 17 }
+exit 0
+""".lstrip()
+    )
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(tmp_path / "local app data")
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts/run-windows-installer-step.ps1"),
+            "-StepName",
+            "Path Quote Test",
+            "-ScriptPath",
+            str(helper),
+            "-Wheel",
+            str(wheel),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    log_path = Path(env["LOCALAPPDATA"]) / "AgentShore" / "install-logs" / "Path-Quote-Test.log"
+    log_bytes = log_path.read_bytes()
+    log_text = (
+        log_bytes.decode("utf-16") if log_bytes.startswith(b"\xff\xfe") else log_bytes.decode()
+    )
+    assert result.returncode == 0, result.stderr
+    assert log_text.strip() == f"wheel={wheel}"
 
 
 def test_windows_build_script_regenerates_eula_and_supports_authenticode_signing() -> None:
@@ -115,12 +176,50 @@ def test_windows_sidecar_path_overlay_includes_npm_global_shims() -> None:
     assert '.join("npm")' in sidecar_rs
 
 
-def test_windows_sidecar_venv_locator_uses_localappdata() -> None:
+def test_windows_sidecar_venv_locator_uses_programdata_with_localappdata_fallback() -> None:
     sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
 
+    assert 'std::env::var_os("PROGRAMDATA")' in sidecar_rs
+    assert "managed_venv_python_path_in_programdata" in sidecar_rs
     assert 'std::env::var_os("LOCALAPPDATA")' in sidecar_rs
     assert "managed_venv_python_path_in_local_appdata" in sidecar_rs
     assert r"AgentShore\venv\Scripts\python.exe" in sidecar_rs
+
+
+def test_windows_sidecar_suppresses_bytecode_writes_for_machine_wide_venv() -> None:
+    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+
+    assert 'cmd.env("PYTHONDONTWRITEBYTECODE", "1")' in sidecar_rs
+
+
+def test_windows_venv_installer_uses_programdata() -> None:
+    script = (REPO_ROOT / "scripts/install-agentshore-venv.ps1").read_text()
+
+    assert r'Join-Path $env:ProgramData "AgentShore\venv"' in script
+    assert r'Join-Path $env:LOCALAPPDATA "AgentShore\venv"' not in script
+
+
+def test_windows_timelapse_installer_uses_programdata_venv() -> None:
+    script = (REPO_ROOT / "scripts/install-timelapse.ps1").read_text()
+
+    assert r'Join-Path $env:ProgramData "AgentShore\venv\Scripts\python.exe"' in script
+    assert r'Join-Path $env:LOCALAPPDATA "AgentShore\venv\Scripts\python.exe"' not in script
+
+
+def test_windows_build_script_documents_machine_wide_layout() -> None:
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+
+    assert "%ProgramFiles%\\AgentShore" in script
+    assert "%ProgramData%\\AgentShore\\venv" in script
+    assert "%LocalAppData%\\Programs\\AgentShore" not in script
+
+
+def test_windows_sidecar_path_overlay_still_includes_localappdata_bd() -> None:
+    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+
+    assert 'std::env::var_os("LOCALAPPDATA")' in sidecar_rs
+    assert '.join("Programs")' in sidecar_rs
+    assert '.join("bd")' in sidecar_rs
 
 
 def test_windows_sidecar_launch_suppresses_console_window() -> None:

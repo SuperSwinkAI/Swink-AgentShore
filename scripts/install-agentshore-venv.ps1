@@ -4,13 +4,13 @@
 
 .DESCRIPTION
     Windows equivalent of scripts/install-agentshore-venv.sh. It runs in the
-    per-user installer context and creates/replaces:
+    elevated installer context and creates/replaces:
 
-        %LocalAppData%\AgentShore\venv
+        %ProgramData%\AgentShore\venv
 
     The Tauri supervisor launches:
 
-        %USERPROFILE%\AppData\Local\AgentShore\venv\Scripts\python.exe
+        %ProgramData%\AgentShore\venv\Scripts\python.exe
         -m agentshore.sidecar
 
     uv is preferred because it can bootstrap a managed Python 3.12 on a clean
@@ -98,7 +98,7 @@ function Resolve-Uv {
 }
 
 $WheelPath = (Resolve-Path $Wheel).Path
-$VenvPath = Join-Path $env:LOCALAPPDATA "AgentShore\venv"
+$VenvPath = Join-Path $env:ProgramData "AgentShore\venv"
 $VenvPython = Join-Path $VenvPath "Scripts\python.exe"
 
 Write-Step "Locating uv"
