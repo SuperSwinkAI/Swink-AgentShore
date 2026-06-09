@@ -264,7 +264,9 @@ def kill_tree_sync(pid: int) -> None:
                 check=False,
             )
         return
-    with contextlib.suppress(ProcessLookupError, OSError):
-        os.killpg(os.getpgid(pid), 9)
+    # POSIX: kill only the target pid — never killpg, which could hit the
+    # sidecar's own process group (children are not session leaders here). This
+    # matches the pre-existing proc.kill() behavior, keeping macOS/Linux
+    # unchanged; Windows gets the real tree kill above via taskkill /T.
     with contextlib.suppress(ProcessLookupError, OSError):
         os.kill(pid, 9)
