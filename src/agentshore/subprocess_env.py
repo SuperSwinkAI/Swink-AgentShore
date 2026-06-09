@@ -1,4 +1,4 @@
-"""Windows-hardened subprocess policy for git/gh/bd.
+"""Windows-hardened subprocess policy for git/gh.
 
 Single source of truth for *how* AgentShore spawns external tools so every call
 site inherits the same Windows-correct behavior:
@@ -9,6 +9,8 @@ site inherits the same Windows-correct behavior:
   handed to ``create_subprocess_exec`` (which does not consult PATHEXT and would
   raise ``WinError 2`` on a ``.cmd`` shim). A missing tool returns ``None`` so
   callers degrade with an actionable message instead of an opaque spawn error.
+  ``bd`` resolution is NOT here — use ``agentshore.beads.resolve_bd_binary``
+  which is the single owner of that logic.
 * **Non-interactive credential environment** (``hardened_env`` +
   ``git_global_args``) — the dominant fresh-Windows hang vector is a headless
   ``CREATE_NO_WINDOW`` git/gh popping a Git-Credential-Manager / askpass dialog
@@ -56,10 +58,10 @@ GIT_SSL_BACKEND_ENV = "AGENTSHORE_GIT_SSL_BACKEND"
 TOOL_TIMEOUT_SCALE_ENV = "AGENTSHORE_TOOL_TIMEOUT_SCALE"
 
 # Env override knobs so support/enterprise can pin a tool path without a rebuild.
+# bd is not here — use agentshore.beads.resolve_bd_binary (single owner).
 _TOOL_ENV_OVERRIDE: dict[str, str] = {
     "git": "AGENTSHORE_GIT_BIN",
     "gh": "AGENTSHORE_GH_BIN",
-    "bd": "AGENTSHORE_BD_BIN",
 }
 
 
@@ -79,10 +81,13 @@ def no_window_creationflags() -> int:
 
 
 def _canonical_windows_paths(name: str) -> Iterable[Path]:
-    """Yield well-known Win11 install locations for *name* (git/gh/bd).
+    """Yield well-known Win11 install locations for *name* (git/gh).
 
     Probed only after ``shutil.which`` misses, so Store/portable/winget installs
     and a PATH that the parent failed to inherit still resolve.
+
+    ``bd`` is intentionally excluded — ``agentshore.beads.resolve_bd_binary``
+    is the single owner of bd resolution.
     """
     exe = f"{name}.exe"
 
@@ -107,8 +112,6 @@ def _canonical_windows_paths(name: str) -> Iterable[Path]:
         candidates.append(program_files_x86 / "GitHub CLI" / exe)
         if local_appdata is not None:
             candidates.append(local_appdata / "Programs" / "GitHub CLI" / exe)
-    elif name == "bd" and local_appdata is not None:
-        candidates.append(local_appdata / "Programs" / "bd" / exe)
 
     # Common to all: winget shim links and the AgentShore machine-managed bin.
     if local_appdata is not None:
@@ -129,8 +132,11 @@ _resolved_cache: dict[str, str] = {}
 def resolve_tool(name: str) -> str | None:
     """Resolve *name* to an absolute executable path, or ``None`` if absent.
 
-    Order: ``AGENTSHORE_{GIT,GH,BD}_BIN`` env override → ``shutil.which`` →
+    Order: ``AGENTSHORE_{GIT,GH}_BIN`` env override → ``shutil.which`` →
     explicit canonical Windows locations. Never returns a bare name.
+
+    For ``bd`` use ``agentshore.beads.resolve_bd_binary`` instead — it is the
+    single source of truth for bd resolution.
     """
     cached = _resolved_cache.get(name)
     if cached is not None:
