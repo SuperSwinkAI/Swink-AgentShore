@@ -755,7 +755,7 @@ def test_windows_keychain_token_is_trimmed_before_helper_access_check(
 
     def handle_helper(request: dict[str, object]) -> dict[str, object]:
         if request["op"] == "credential_get":
-            return {"service": request["service"], "token": "stored-token\r\n"}
+            return {"service": request["service"], "token": "\0s\0t\0o\0r\0e\0d\0-\0t\0o\0k\0e\0n\0\r\n"}
         if request["op"] == "check_repo_access":
             assert request["token"] == "stored-token"
             return {

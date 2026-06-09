@@ -42,13 +42,35 @@ pub fn get_token(service: &str) -> Result<Option<String>, GitHubMultiError> {
         let cred = &*credential;
         let bytes =
             std::slice::from_raw_parts(cred.CredentialBlob, cred.CredentialBlobSize as usize);
-        let token = String::from_utf8(bytes.to_vec()).map_err(|_| {
-            GitHubMultiError::Credential("stored credential is not valid UTF-8".to_string())
-        });
+        let token = decode_credential_blob(bytes);
         CredFree(credential.cast());
         token
     }?;
     Ok(Some(result))
+}
+
+#[cfg(target_os = "windows")]
+fn decode_credential_blob(bytes: &[u8]) -> Result<String, GitHubMultiError> {
+    if bytes.len() >= 2
+        && bytes.len() % 2 == 0
+        && bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index % 2 == 1)
+            .all(|(_, byte)| *byte == 0)
+    {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        return String::from_utf16(&units).map_err(|_| {
+            GitHubMultiError::Credential("stored credential is not valid UTF-16".to_string())
+        });
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| {
+        GitHubMultiError::Credential("stored credential is not valid UTF-8".to_string())
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -133,6 +155,15 @@ pub fn delete_token(_service: &str) -> Result<bool, GitHubMultiError> {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_utf16le_credential_blob() {
+        let bytes = b"s\0t\0o\0r\0e\0d\0-\0t\0o\0k\0e\0n\0";
+        assert_eq!(
+            decode_credential_blob(bytes).expect("decode utf16 credential"),
+            "stored-token"
+        );
+    }
 
     #[test]
     fn credential_manager_round_trip() {
