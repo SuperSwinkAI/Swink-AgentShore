@@ -21,9 +21,6 @@
 #ifndef ProvisionerFileName
   #error ProvisionerFileName must be supplied by build-windows.ps1
 #endif
-#ifndef GitHubHelperFileName
-  #error GitHubHelperFileName must be supplied by build-windows.ps1
-#endif
 #ifndef LicenseFile
   #error LicenseFile must be supplied by build-windows.ps1
 #endif

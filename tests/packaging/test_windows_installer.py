@@ -4,7 +4,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONER = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore-provisioner.rs"
-GITHUB_HELPER = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore-github-helper.rs"
 
 
 def test_windows_inno_template_matches_pkg_component_defaults() -> None:
@@ -27,7 +26,6 @@ def test_windows_inno_template_calls_compiled_provisioner() -> None:
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
     assert "ProvisionerFileName must be supplied" in template
-    assert "GitHubHelperFileName must be supplied" in template
     assert r"{app}\installer\{#ProvisionerFileName}" in template
     assert "RunProvisionerStep('Provisioning AgentShore Desktop sidecar', 'sidecar'" in template
     assert "RunProvisionerStep('Provisioning Timelapse Capture', 'timelapse'" in template
@@ -72,14 +70,11 @@ def test_windows_build_script_stages_provisioner_uv_and_wheel() -> None:
     assert "CARGO_HTTP_CHECK_REVOKE" in script
     assert "tauri.windows-installer.conf.json" in script
     assert '"cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"' in script
-    assert '"cargo" "build" "--release" "--bin" "agentshore-github-helper" "--locked"' in script
     assert "Copy-Item -LiteralPath $ProvisionerExe" in script
-    assert 'Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $AppStageDir "agentshore-github-helper.exe")' in script
-    assert 'Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $InstallerStageDir "agentshore-github-helper.exe")' not in script
     assert "Copy-Item -LiteralPath $UvPath" in script
     assert '"/DProvisionerFileName=agentshore-provisioner.exe"' in script
-    assert '"/DGitHubHelperFileName=agentshore-github-helper.exe"' in script
     assert '"/DUvFileName=uv.exe"' in script
+    assert "agentshore-github-helper" not in script
     assert "install-agentshore-venv.ps1" not in script
     assert "install-agentshore-cli.ps1" not in script
     assert "install-timelapse.ps1" not in script
@@ -102,7 +97,6 @@ def test_windows_build_script_signs_provisioner_when_cert_exists() -> None:
 
     assert "Invoke-AuthenticodeSign -FilePath $AppExe" in script
     assert "Invoke-AuthenticodeSign -FilePath $ProvisionerExe" in script
-    assert "Invoke-AuthenticodeSign -FilePath $GitHubHelperExe" in script
     assert "Invoke-AuthenticodeSign -FilePath $SetupOut" in script
 
 
@@ -135,22 +129,21 @@ def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
     assert "managed_venv_python_path_in_programdata" in sidecar_rs
     assert "machine_managed_bin_path" in sidecar_rs
     assert "locate_machine_managed_bd" in sidecar_rs
-    assert "locate_github_helper" in sidecar_rs
     assert "AGENTSHORE_BD_BIN_ENV" in sidecar_rs
-    assert "AGENTSHORE_GITHUB_HELPER_ENV" in sidecar_rs
+    assert "AGENTSHORE_GITHUB_HELPER" not in sidecar_rs
     assert r"AgentShore\venv\Scripts\python.exe" in sidecar_rs
 
 
-def test_windows_github_helper_uses_stdin_json_and_octocrab() -> None:
-    source = GITHUB_HELPER.read_text()
+def test_windows_installer_does_not_ship_github_helper() -> None:
     cargo = (REPO_ROOT / "desktop/src-tauri/Cargo.toml").read_text()
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
-    assert "read_to_string(&mut input)" in source
-    assert "serde_json::from_str::<HelperRequest>" in source
-    assert "std::env::args" not in source
-    assert 'octocrab = "=0.53.0"' in cargo
-    assert 'windows-sys = { version = "=0.61.2"' in cargo
-    assert "Win32_Security_Credentials" in cargo
+    assert "agentshore-github-helper" not in cargo
+    assert "agentshore-github-helper" not in script
+    assert "GitHubHelperFileName" not in template
+    assert "octocrab" not in cargo
+    assert "Win32_Security_Credentials" not in cargo
 
 
 def test_windows_sidecar_keeps_legacy_and_user_path_overlays() -> None:

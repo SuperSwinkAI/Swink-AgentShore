@@ -318,25 +318,12 @@ try {
 $ProvisionerExe = Join-Path $TargetDir "agentshore-provisioner.exe"
 if (-not (Test-Path $ProvisionerExe)) { Die "Provisioner build finished but $ProvisionerExe does not exist" }
 
-Write-Step "Building Windows GitHub helper ($BuildMode)"
-Push-Location $TauriDir
-try {
-    if ($DebugBuild) {
-        Invoke-Checked "cargo" "build" "--bin" "agentshore-github-helper" "--locked"
-    } else {
-        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-github-helper" "--locked"
-    }
-} finally { Pop-Location }
-$GitHubHelperExe = Join-Path $TargetDir "agentshore-github-helper.exe"
-if (-not (Test-Path $GitHubHelperExe)) { Die "GitHub helper build finished but $GitHubHelperExe does not exist" }
-
 if (-not $NoSign) {
     $ResolvedSignTool = Resolve-SignTool
     $ResolvedThumbprint = Resolve-CodeSigningThumbprint
     if ($ResolvedSignTool -and $ResolvedThumbprint) {
         Invoke-AuthenticodeSign -FilePath $AppExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
         Invoke-AuthenticodeSign -FilePath $ProvisionerExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
-        Invoke-AuthenticodeSign -FilePath $GitHubHelperExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
     } else {
         Write-Step "Skipping Authenticode signing"
         if (-not $ResolvedSignTool) { Write-Info "signtool.exe not found." }
@@ -353,7 +340,6 @@ New-Item -ItemType Directory -Path $InstallerStageDir | Out-Null
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item -LiteralPath $AppExe -Destination (Join-Path $AppStageDir "agentshore-desktop.exe")
-Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $AppStageDir "agentshore-github-helper.exe")
 Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir $WheelFileName)
 Copy-Item -LiteralPath $ProvisionerExe -Destination (Join-Path $InstallerStageDir "agentshore-provisioner.exe")
 Copy-Item -LiteralPath $UvPath -Destination (Join-Path $InstallerStageDir "uv.exe")
@@ -373,7 +359,6 @@ $isccArgs = @(
     "/DWheelFileName=$WheelFileName",
     "/DUvFileName=uv.exe",
     "/DProvisionerFileName=agentshore-provisioner.exe",
-    "/DGitHubHelperFileName=agentshore-github-helper.exe",
     "/DLicenseFile=$LicensePath",
     "/DIconFile=$IconPath",
     $IssOut
