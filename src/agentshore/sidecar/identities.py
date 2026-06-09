@@ -145,6 +145,7 @@ def _call_github_helper(request: dict[str, object]) -> dict[str, object]:
 
 
 def _resolve_github_login_for_token(token: str) -> str | None:
+    token = _clean_token(token) or ""
     if _github_helper_available():
         try:
             result = _call_github_helper({"op": "validate_token", "token": token})
@@ -153,6 +154,13 @@ def _resolve_github_login_for_token(token: str) -> str | None:
         login = result.get("login")
         return str(login) if isinstance(login, str) and login else None
     return resolve_github_login_for_token(token)
+
+
+def _clean_token(token: str | None) -> str | None:
+    if token is None:
+        return None
+    cleaned = token.strip()
+    return cleaned or None
 
 
 def _run_keyring_operation[T](operation: Callable[[], T]) -> T:
@@ -269,7 +277,7 @@ def _keyring_get(service: str) -> str | None:
         except _GitHubHelperError:
             return None
         token = result.get("token")
-        return str(token) if isinstance(token, str) and token else None
+        return _clean_token(str(token)) if isinstance(token, str) else None
 
     def operation() -> str | None:
         import keyring  # local import: keyring backends can do OS setup at import time
@@ -354,8 +362,9 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             result = _call_github_helper({"op": "credential_get", "service": service})
         except _GitHubHelperError:
             result = {}
-        token = result.get("token")
-        if isinstance(token, str) and token.strip():
+        raw_token = result.get("token")
+        token = _clean_token(str(raw_token)) if isinstance(raw_token, str) else None
+        if token:
             try:
                 validation = _call_github_helper({"op": "validate_token", "token": token})
             except _GitHubHelperError as exc:
@@ -384,6 +393,15 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
                         f"{actual_login!r}, not {raw['gh_token_login']!r}."
                     ),
                 )
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail=(
+                f"Windows GitHub helper found no Credential Manager token for {service}. "
+                "Use PAT / Keychain for this identity, or store a token in AgentShore's "
+                "Credential Manager entry for this login."
+            ),
+        )
     env = os.environ.copy()
     gh_config_dir = raw.get("gh_config_dir")
     if isinstance(gh_config_dir, str) and gh_config_dir:
@@ -416,7 +434,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             status="auth_error",
             detail=f"GitHub CLI auth lookup failed: {exc}",
         )
-    token = proc.stdout.strip() if proc.returncode == 0 else ""
+    token = _clean_token(proc.stdout) if proc.returncode == 0 else None
     if token:
         return _CredentialResolution(
             token=token,
@@ -448,7 +466,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             status="auth_error",
             detail=f"GitHub CLI active-auth lookup failed: {exc}",
         )
-    token = fallback.stdout.strip() if fallback.returncode == 0 else ""
+    token = _clean_token(fallback.stdout) if fallback.returncode == 0 else None
     if not token:
         detail = (proc.stderr or fallback.stderr or "gh auth token returned no token").strip()
         return _CredentialResolution(
@@ -497,7 +515,7 @@ def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
     for source in (TokenSource.LOGIN, TokenSource.ENV, TokenSource.KEYCHAIN):
         if isinstance(raw.get(source.value), str) and raw[source.value]:
             resolver = _TOKEN_RESOLVERS[source]
-            token = resolver(raw)  # type: ignore[operator]
+            token = _clean_token(resolver(raw))  # type: ignore[operator]
             return token, source.value
     return None, TokenSource.AMBIENT.value
 
@@ -841,13 +859,14 @@ def _identity_diagnostics(
     parts = [
         f"python={sys.executable}",
         f"gh={shutil.which('gh') or '<missing>'}",
+        f"github_helper={_windows_github_helper_path() or '<missing>'}",
         f"GH_CONFIG_DIR={_gh_env(raw).get('GH_CONFIG_DIR', '<unset>')}",
     ]
     for key in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
         parts.append(f"{key}={'set' if os.environ.get(key) else 'missing'}")
     if source == TokenSource.KEYCHAIN.value:
         parts.append(f"keyring={_keyring_backend_name()}")
-    if include_gh_status:
+    if include_gh_status and not _github_helper_available():
         status = _gh_auth_status_summary(raw)
         if status:
             parts.append(f"gh_status={status}")

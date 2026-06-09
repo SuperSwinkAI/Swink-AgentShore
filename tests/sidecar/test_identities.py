@@ -726,6 +726,53 @@ def test_windows_gh_login_uses_helper_credential_before_gh_cli(
     ]
 
 
+def test_windows_gh_login_without_helper_credential_does_not_call_gh_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / "agentshore.yaml"
+    _write_identity_config(cfg, "newlogin", "gh_token_login", "newlogin")
+    calls = _enable_windows_helper(
+        tmp_path,
+        monkeypatch,
+        lambda request: {"service": request["service"], "token": None},
+    )
+
+    row = check_identity_access(tmp_path, "newlogin")
+
+    assert row["token_status"] == "auth_missing"
+    assert row["repo_access"] == "unknown"
+    assert "Credential Manager token for agentshore/newlogin" in row["repo_access_detail"]
+    assert calls == [{"op": "credential_get", "service": "agentshore/newlogin"}]
+
+
+def test_windows_keychain_token_is_trimmed_before_helper_access_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / "agentshore.yaml"
+    _write_identity_config(cfg, "newlogin", "gh_token_keychain", "agentshore/newlogin")
+
+    def handle_helper(request: dict[str, object]) -> dict[str, object]:
+        if request["op"] == "credential_get":
+            return {"service": request["service"], "token": "stored-token\r\n"}
+        if request["op"] == "check_repo_access":
+            assert request["token"] == "stored-token"
+            return {
+                "status": "write",
+                "repo": "owner/repo",
+                "detail": "token has write access to owner/repo",
+            }
+        raise AssertionError(f"unexpected helper request: {request}")
+
+    _enable_windows_helper(tmp_path, monkeypatch, handle_helper)
+
+    row = check_identity_access(tmp_path, "newlogin")
+
+    assert row["repo_access"] == "ok"
+    assert row["token_status"] == "configured"
+
+
 def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
