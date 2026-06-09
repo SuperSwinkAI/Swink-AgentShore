@@ -201,9 +201,24 @@ fn with_supervisor<R>(
 
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
-fn jsonrpc_call(app: AppHandle, method: String, params: Option<Value>) -> Result<Value, String> {
+async fn jsonrpc_call(
+    app: AppHandle,
+    method: String,
+    params: Option<Value>,
+) -> Result<Value, String> {
     let method_for_hook = method.clone();
-    let result = with_supervisor(&app, |sup| sup.call(method, params))?;
+    // Run the (blocking) supervisor call OFF the main thread. `jsonrpc_call`
+    // used to be a synchronous command, and Tauri runs sync commands on the
+    // main UI thread — so a long RPC (session.start can take many seconds to
+    // minutes for the PPO/beads/bridge bringup) froze the window ("not
+    // responding") and stalled $/progress rendering. spawn_blocking keeps the
+    // event loop pumping so the UI stays live and the startup checklist updates.
+    let app_for_call = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        with_supervisor(&app_for_call, |sup| sup.call(method, params))
+    })
+    .await
+    .map_err(|e| format!("sidecar call task failed: {e}"))??;
     // desktop-bzr2: hold an NSProcessInfo activity assertion while a
     // AgentShore session is alive so App Nap can't throttle the Tauri UI's
     // event loop while the window is backgrounded. Acquire on
