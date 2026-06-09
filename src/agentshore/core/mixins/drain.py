@@ -143,10 +143,11 @@ class BudgetControl:
     ) -> dict[str, object]:
         """Absolute-set the live dollar/time caps (sidecar RPC + desktop dialog).
 
-        Validates bounds, applies the caps via the override fields, clears the
-        additive ``_extra_budget`` accumulator, and re-arms (or reverses) the
-        drain when a raised cap moves the session back outside its reserve.
-        Persists to ``agentshore.yaml`` when *persist* so caps survive restart.
+        Order: validate → apply overrides → rearm → publish state (live change is
+        immediately visible) → persist to YAML in a thread. If the YAML write fails
+        the live change is already active; the reply carries ``persisted: false`` so
+        the caller can surface a non-fatal warning rather than mislabelling the
+        successful live change as failed.
         """
         self._validate_dollar(dollars_enabled, dollars)
         self._validate_time(time_enabled, time_minutes)
@@ -160,8 +161,6 @@ class BudgetControl:
         )
         self._host._extra_budget = 0.0
         resumed = await self._rearm_after_budget_change()
-        if persist:
-            await asyncio.to_thread(self._persist_budget_sync)
         _logger.info(
             "budget_set",
             dollars_enabled=dollars_enabled,
@@ -171,7 +170,11 @@ class BudgetControl:
             resumed=resumed,
             session_id=self._session_id,
         )
-        return await self._apply_and_publish(resumed=resumed)
+        result = await self._apply_and_publish(resumed=resumed)
+        if persist:
+            persisted = await self._try_persist()
+            result["persisted"] = persisted
+        return result
 
     async def add_budget(
         self,
@@ -180,7 +183,10 @@ class BudgetControl:
         delta_minutes: int | None = None,
         persist: bool = True,
     ) -> dict[str, object]:
-        """Additively top up the dollar cap and/or extend the time cap (CLI)."""
+        """Additively top up the dollar cap and/or extend the time cap (CLI).
+
+        Same apply-then-persist ordering as :meth:`set_budget`.
+        """
         has_dollar = delta_usd is not None and delta_usd > 0
         has_time = delta_minutes is not None and delta_minutes > 0
         if not has_dollar and not has_time:
@@ -208,8 +214,6 @@ class BudgetControl:
             self._host._time_override_enabled = True
             self._host._time_override_minutes = new_minutes
         resumed = await self._rearm_after_budget_change()
-        if persist:
-            await asyncio.to_thread(self._persist_budget_sync)
         _logger.info(
             "budget_added",
             delta_usd=delta_usd,
@@ -217,7 +221,11 @@ class BudgetControl:
             resumed=resumed,
             session_id=self._session_id,
         )
-        return await self._apply_and_publish(resumed=resumed)
+        result = await self._apply_and_publish(resumed=resumed)
+        if persist:
+            persisted = await self._try_persist()
+            result["persisted"] = persisted
+        return result
 
     async def current_budget(self) -> dict[str, object]:
         """Return the live-effective caps + spend/remaining (prefill/echo)."""
@@ -247,6 +255,24 @@ class BudgetControl:
                 f"time cap must be between {MIN_TIME_BUDGET_MINUTES} and "
                 f"{MAX_TIME_BUDGET_MINUTES} minutes (1h-72h) when enabled"
             )
+
+    async def _try_persist(self) -> bool:
+        """Persist via ``asyncio.to_thread``; return False (with a warning log) on failure.
+
+        The live cap change is already applied and published before this is called,
+        so a file-write failure (read-only path, Windows lock, etc.) must not
+        propagate as an exception that mislabels a successful live change as failed.
+        """
+        try:
+            await asyncio.to_thread(self._persist_budget_sync)
+            return True
+        except Exception as exc:
+            _logger.warning(
+                "budget_persist_failed",
+                error=str(exc),
+                session_id=self._session_id,
+            )
+            return False
 
     def _persist_budget_sync(self) -> None:
         """Synchronous budget persist — always called via ``asyncio.to_thread``."""
