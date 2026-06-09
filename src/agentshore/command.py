@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -126,10 +125,10 @@ async def run_command(
         stdout=stdout,
         stderr=stderr,
         env=dict(env) if env is not None else None,
-        # CREATE_NO_WINDOW + new process group on Windows (0 elsewhere); a new
-        # session on POSIX so the whole tree is killable as a group.
+        # CREATE_NO_WINDOW + new process group on Windows (0 elsewhere). POSIX
+        # session/group handling is left at the default so macOS/Linux process
+        # behavior is unchanged; the timeout path kills the child directly.
         creationflags=subprocess_env.no_window_creationflags(),
-        start_new_session=sys.platform != "win32",
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -189,7 +188,6 @@ def run_sync_command(
             env=dict(env) if env is not None else None,
             check=False,
             creationflags=subprocess_env.no_window_creationflags(),
-            start_new_session=sys.platform != "win32",
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTimeoutError(
