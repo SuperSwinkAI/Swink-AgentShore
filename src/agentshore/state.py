@@ -409,6 +409,36 @@ class BudgetSnapshot:
     time_elapsed_minutes: float | None = None
     time_remaining_minutes: float | None = None
 
+    def dollar_reserve_reached(self) -> bool:
+        """Return ``True`` when dollar spend is inside the reserve window."""
+        from agentshore.budget import budget_reserve_reached
+
+        return self.enabled and budget_reserve_reached(
+            spent=self.spent, total_budget=self.total_budget
+        )
+
+    def time_reserve_reached(self) -> bool:
+        """Return ``True`` when elapsed wall-clock time is inside the reserve window."""
+        from agentshore.budget import time_budget_reserve_reached
+
+        return (
+            self.time_enabled
+            and self.time_total_minutes is not None
+            and self.time_elapsed_minutes is not None
+            and time_budget_reserve_reached(
+                elapsed_minutes=self.time_elapsed_minutes,
+                total_minutes=self.time_total_minutes,
+            )
+        )
+
+    def reserve_reason(self) -> str | None:
+        """Return the drain-reason string if either reserve is reached, else ``None``."""
+        if self.dollar_reserve_reached():
+            return "budget_reserve_reached"
+        if self.time_reserve_reached():
+            return "time_budget_reserve_reached"
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class TrajectorySnapshot:

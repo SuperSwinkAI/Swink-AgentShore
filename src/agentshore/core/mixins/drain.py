@@ -13,8 +13,6 @@ from agentshore.budget import (
     MAX_TIME_BUDGET_MINUTES,
     MIN_ENABLED_BUDGET_USD,
     MIN_TIME_BUDGET_MINUTES,
-    budget_reserve_reached,
-    time_budget_reserve_reached,
 )
 from agentshore.config.models import BudgetConfig
 from agentshore.core.helpers import _emit_weights_dir_inventory, _logger, _ppo_selector_cls
@@ -108,12 +106,235 @@ class _DrainHost(Protocol):
     def stop_loop_liveness_watchdog(self) -> None: ...
 
 
+class BudgetControl:
+    """Live-cap policy: validate, apply, persist, re-arm.
+
+    Owns the mid-session dollar/time cap override state and the pause/drain
+    re-arming logic. Extracted from :class:`DrainController` so that class
+    keeps one job: graceful drain, stop, hard_stop, and end-session report.
+
+    :class:`DrainController` wires drain-reversal callbacks through the public
+    ``set_budget`` / ``add_budget`` / ``current_budget`` methods.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: _DrainHost,
+        store: DataStore,
+        session_id: str,
+        state_builder: StateBuilder,
+        exit_drain: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._host = host
+        self._store = store
+        self._session_id = session_id
+        self._state_builder = state_builder
+        self._exit_drain = exit_drain
+
+    async def set_budget(
+        self,
+        *,
+        dollars_enabled: bool,
+        dollars: float | None,
+        time_enabled: bool,
+        time_minutes: int | None,
+        persist: bool = True,
+    ) -> dict[str, object]:
+        """Absolute-set the live dollar/time caps (sidecar RPC + desktop dialog).
+
+        Validates bounds, applies the caps via the override fields, clears the
+        additive ``_extra_budget`` accumulator, and re-arms (or reverses) the
+        drain when a raised cap moves the session back outside its reserve.
+        Persists to ``agentshore.yaml`` when *persist* so caps survive restart.
+        """
+        self._validate_dollar(dollars_enabled, dollars)
+        self._validate_time(time_enabled, time_minutes)
+        self._host._budget_override_enabled = dollars_enabled
+        self._host._budget_override_total = (
+            float(dollars) if dollars_enabled and dollars is not None else 0.0
+        )
+        self._host._time_override_enabled = time_enabled
+        self._host._time_override_minutes = (
+            int(time_minutes) if time_enabled and time_minutes is not None else 0
+        )
+        self._host._extra_budget = 0.0
+        resumed = await self._rearm_after_budget_change()
+        if persist:
+            await asyncio.to_thread(self._persist_budget_sync)
+        _logger.info(
+            "budget_set",
+            dollars_enabled=dollars_enabled,
+            dollars=self._host._budget_override_total,
+            time_enabled=time_enabled,
+            time_minutes=self._host._time_override_minutes,
+            resumed=resumed,
+            session_id=self._session_id,
+        )
+        return await self._apply_and_publish(resumed=resumed)
+
+    async def add_budget(
+        self,
+        *,
+        delta_usd: float | None = None,
+        delta_minutes: int | None = None,
+        persist: bool = True,
+    ) -> dict[str, object]:
+        """Additively top up the dollar cap and/or extend the time cap (CLI)."""
+        has_dollar = delta_usd is not None and delta_usd > 0
+        has_time = delta_minutes is not None and delta_minutes > 0
+        if not has_dollar and not has_time:
+            raise OrchestratorError("add_budget requires a positive --budget and/or --time delta")
+        caps = self._host.effective_budget_caps()
+        if has_dollar:
+            base = caps.total if caps.enabled else 0.0
+            new_total = base + self._host._extra_budget + float(delta_usd)  # type: ignore[arg-type]
+            if new_total < MIN_ENABLED_BUDGET_USD:
+                raise OrchestratorError(
+                    f"resulting dollar cap ${new_total:.2f} is below the "
+                    f"${MIN_ENABLED_BUDGET_USD:.2f} minimum"
+                )
+            self._host._budget_override_enabled = True
+            self._host._budget_override_total = new_total
+            self._host._extra_budget = 0.0
+        if has_time:
+            base_min = caps.time_total_minutes if caps.time_enabled else 0
+            new_minutes = int(base_min) + int(delta_minutes)  # type: ignore[arg-type]
+            if not (MIN_TIME_BUDGET_MINUTES <= new_minutes <= MAX_TIME_BUDGET_MINUTES):
+                raise OrchestratorError(
+                    f"resulting time cap {new_minutes} min is outside "
+                    f"{MIN_TIME_BUDGET_MINUTES}-{MAX_TIME_BUDGET_MINUTES} (1h-72h)"
+                )
+            self._host._time_override_enabled = True
+            self._host._time_override_minutes = new_minutes
+        resumed = await self._rearm_after_budget_change()
+        if persist:
+            await asyncio.to_thread(self._persist_budget_sync)
+        _logger.info(
+            "budget_added",
+            delta_usd=delta_usd,
+            delta_minutes=delta_minutes,
+            resumed=resumed,
+            session_id=self._session_id,
+        )
+        return await self._apply_and_publish(resumed=resumed)
+
+    async def current_budget(self) -> dict[str, object]:
+        """Return the live-effective caps + spend/remaining (prefill/echo)."""
+        state = await self._state_builder.build_state()
+        return self._applied_from_state(state, resumed=False)
+
+    # --- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _validate_dollar(enabled: bool, dollars: float | None) -> None:
+        if not enabled:
+            return
+        if dollars is None or not math.isfinite(dollars) or dollars < MIN_ENABLED_BUDGET_USD:
+            raise OrchestratorError(
+                f"dollar cap must be at least ${MIN_ENABLED_BUDGET_USD:.2f} when enabled"
+            )
+
+    @staticmethod
+    def _validate_time(enabled: bool, minutes: int | None) -> None:
+        if not enabled:
+            return
+        if not (
+            isinstance(minutes, int)
+            and MIN_TIME_BUDGET_MINUTES <= minutes <= MAX_TIME_BUDGET_MINUTES
+        ):
+            raise OrchestratorError(
+                f"time cap must be between {MIN_TIME_BUDGET_MINUTES} and "
+                f"{MAX_TIME_BUDGET_MINUTES} minutes (1h-72h) when enabled"
+            )
+
+    def _persist_budget_sync(self) -> None:
+        """Synchronous budget persist — always called via ``asyncio.to_thread``."""
+        config_path = self._host._config_path
+        if config_path is None:
+            return
+        caps = self._host.effective_budget_caps()
+        persisted = BudgetConfig(
+            enabled=caps.enabled,
+            total=caps.total + self._host._extra_budget,
+            warning_threshold=caps.warning_threshold,
+            time_enabled=caps.time_enabled,
+            time_total_minutes=caps.time_total_minutes,
+        )
+        from agentshore.config.budget_writer import write_budget_to_config
+
+        write_budget_to_config(config_path, persisted)
+
+    async def _apply_and_publish(self, *, resumed: bool) -> dict[str, object]:
+        """Build a fresh state, push it so the dashboard repaints immediately, echo it."""
+        state = await self._state_builder.build_state()
+        await self._host._safe_call(
+            self._host._state_provider.on_state_update(state), "on_state_update_budget"
+        )
+        return self._applied_from_state(state, resumed=resumed)
+
+    @staticmethod
+    def _applied_from_state(state: OrchestratorState, *, resumed: bool) -> dict[str, object]:
+        b = state.budget
+        if b is None:
+            return {"resumed": resumed}
+        remaining = (
+            b.remaining if (b.remaining is not None and math.isfinite(b.remaining)) else None
+        )
+        return {
+            "enabled": b.enabled,
+            "total": b.total_budget,
+            "spent": b.spent,
+            "remaining": remaining,
+            "time_enabled": b.time_enabled,
+            "time_total_minutes": b.time_total_minutes,
+            "time_elapsed_minutes": b.time_elapsed_minutes,
+            "time_remaining_minutes": b.time_remaining_minutes,
+            "resumed": resumed,
+        }
+
+    async def _rearm_after_budget_change(self) -> bool:
+        """Resume a budget pause or reverse a budget/time drain if now in-bounds."""
+        self._host._budget_override = False  # allow budget checks to run again
+        # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
+        paused_on_budget = (
+            not self._host._draining
+            and not self._host._stop_requested
+            and not self._host._pause_event.is_set()
+            and self._host._pause_reason in {"budget_exhausted", "budget_predictive"}
+        )
+        if paused_on_budget and not await self._reserve_still_reached():
+            self._host._pause_reason = None
+            self._host._pause_event.set()
+            return True
+        # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
+        if (
+            self._host._draining
+            and not self._host._stop_requested
+            and self._host._drain_reason
+            in {"budget_reserve_reached", "time_budget_reserve_reached"}
+            and not await self._reserve_still_reached()
+        ):
+            await self._exit_drain()
+            return True
+        return False
+
+    async def _reserve_still_reached(self) -> bool:
+        state = await self._state_builder.build_state()
+        b = state.budget
+        if b is None:
+            return False
+        return b.reserve_reason() is not None
+
+
 class DrainController:
-    """Drain, stop, hard_stop, budget adjust, end-session report generation.
+    """Drain, stop, hard_stop, budget adjust, and end-session report generation.
 
     Stable services / collaborators are captured via the constructor; all
     orchestrator runtime/control state (read or written) flows through the
     :class:`_DrainHost` Protocol so per-tick mutation never goes stale.
+    Live budget policy (validation, persist, re-arm) is owned by the
+    :class:`BudgetControl` collaborator and delegated here.
     """
 
     def __init__(
@@ -135,6 +356,13 @@ class DrainController:
         # One-shot guard for the drain-complete defensive-visibility warning
         # (``_on_drain_complete``) so it can never double-emit within a session.
         self._drain_complete_warned = False
+        self._budget = BudgetControl(
+            host=host,
+            store=store,
+            session_id=session_id,
+            state_builder=state_builder,
+            exit_drain=self._exit_drain,
+        )
 
     # ------------------------------------------------------------------
 
@@ -259,7 +487,7 @@ class DrainController:
             return False
 
     # ------------------------------------------------------------------
-    # Live budget control (Feature B: #41 sidecar RPC, #42 CLI add-budget)
+    # Live budget control — delegates to BudgetControl collaborator
     # ------------------------------------------------------------------
 
     async def set_budget(
@@ -271,37 +499,14 @@ class DrainController:
         time_minutes: int | None,
         persist: bool = True,
     ) -> dict[str, object]:
-        """Absolute-set the live dollar/time caps (sidecar RPC + desktop dialog).
-
-        Validates bounds, applies the caps via the override fields, clears the
-        additive ``_extra_budget`` accumulator, and re-arms (or reverses) the
-        drain when a raised cap moves the session back outside its reserve.
-        Persists to ``agentshore.yaml`` when *persist* so caps survive restart.
-        """
-        self._validate_dollar(dollars_enabled, dollars)
-        self._validate_time(time_enabled, time_minutes)
-        self._host._budget_override_enabled = dollars_enabled
-        self._host._budget_override_total = (
-            float(dollars) if dollars_enabled and dollars is not None else 0.0
-        )
-        self._host._time_override_enabled = time_enabled
-        self._host._time_override_minutes = (
-            int(time_minutes) if time_enabled and time_minutes is not None else 0
-        )
-        self._host._extra_budget = 0.0
-        resumed = await self._rearm_after_budget_change()
-        if persist:
-            self._persist_budget()
-        _logger.info(
-            "budget_set",
+        """Absolute-set the live dollar/time caps. Delegates to BudgetControl."""
+        return await self._budget.set_budget(
             dollars_enabled=dollars_enabled,
-            dollars=self._host._budget_override_total,
+            dollars=dollars,
             time_enabled=time_enabled,
-            time_minutes=self._host._time_override_minutes,
-            resumed=resumed,
-            session_id=self._session_id,
+            time_minutes=time_minutes,
+            persist=persist,
         )
-        return await self._apply_and_publish(resumed=resumed)
 
     async def add_budget(
         self,
@@ -310,164 +515,16 @@ class DrainController:
         delta_minutes: int | None = None,
         persist: bool = True,
     ) -> dict[str, object]:
-        """Additively top up the dollar cap and/or extend the time cap (CLI)."""
-        has_dollar = delta_usd is not None and delta_usd > 0
-        has_time = delta_minutes is not None and delta_minutes > 0
-        if not has_dollar and not has_time:
-            raise OrchestratorError("add_budget requires a positive --budget and/or --time delta")
-        caps = self._host.effective_budget_caps()
-        if has_dollar:
-            base = caps.total if caps.enabled else 0.0
-            new_total = base + self._host._extra_budget + float(delta_usd)  # type: ignore[arg-type]
-            if new_total < MIN_ENABLED_BUDGET_USD:
-                raise OrchestratorError(
-                    f"resulting dollar cap ${new_total:.2f} is below the "
-                    f"${MIN_ENABLED_BUDGET_USD:.2f} minimum"
-                )
-            self._host._budget_override_enabled = True
-            self._host._budget_override_total = new_total
-            self._host._extra_budget = 0.0
-        if has_time:
-            base_min = caps.time_total_minutes if caps.time_enabled else 0
-            new_minutes = int(base_min) + int(delta_minutes)  # type: ignore[arg-type]
-            if not (MIN_TIME_BUDGET_MINUTES <= new_minutes <= MAX_TIME_BUDGET_MINUTES):
-                raise OrchestratorError(
-                    f"resulting time cap {new_minutes} min is outside "
-                    f"{MIN_TIME_BUDGET_MINUTES}-{MAX_TIME_BUDGET_MINUTES} (1h-72h)"
-                )
-            self._host._time_override_enabled = True
-            self._host._time_override_minutes = new_minutes
-        resumed = await self._rearm_after_budget_change()
-        if persist:
-            self._persist_budget()
-        _logger.info(
-            "budget_added",
+        """Additively top up the dollar cap and/or time cap. Delegates to BudgetControl."""
+        return await self._budget.add_budget(
             delta_usd=delta_usd,
             delta_minutes=delta_minutes,
-            resumed=resumed,
-            session_id=self._session_id,
+            persist=persist,
         )
-        return await self._apply_and_publish(resumed=resumed)
 
     async def current_budget(self) -> dict[str, object]:
-        """Return the live-effective caps + spend/remaining (prefill/echo)."""
-        state = await self._state_builder.build_state()
-        return self._applied_from_state(state, resumed=False)
-
-    # --- live-budget helpers ----------------------------------------------
-
-    @staticmethod
-    def _validate_dollar(enabled: bool, dollars: float | None) -> None:
-        if not enabled:
-            return
-        if dollars is None or not math.isfinite(dollars) or dollars < MIN_ENABLED_BUDGET_USD:
-            raise OrchestratorError(
-                f"dollar cap must be at least ${MIN_ENABLED_BUDGET_USD:.2f} when enabled"
-            )
-
-    @staticmethod
-    def _validate_time(enabled: bool, minutes: int | None) -> None:
-        if not enabled:
-            return
-        if not (
-            isinstance(minutes, int)
-            and MIN_TIME_BUDGET_MINUTES <= minutes <= MAX_TIME_BUDGET_MINUTES
-        ):
-            raise OrchestratorError(
-                f"time cap must be between {MIN_TIME_BUDGET_MINUTES} and "
-                f"{MAX_TIME_BUDGET_MINUTES} minutes (1h-72h) when enabled"
-            )
-
-    def _persist_budget(self) -> None:
-        config_path = self._host._config_path
-        if config_path is None:
-            return
-        caps = self._host.effective_budget_caps()
-        persisted = BudgetConfig(
-            enabled=caps.enabled,
-            total=caps.total + self._host._extra_budget,
-            warning_threshold=caps.warning_threshold,
-            time_enabled=caps.time_enabled,
-            time_total_minutes=caps.time_total_minutes,
-        )
-        from agentshore.config.budget_writer import write_budget_to_config
-
-        write_budget_to_config(config_path, persisted)
-
-    async def _apply_and_publish(self, *, resumed: bool) -> dict[str, object]:
-        """Build a fresh state, push it so the dashboard repaints immediately, echo it.
-
-        A live cap change must not wait for the next loop tick to surface — emit
-        ``on_state_update`` right away so the budget bar reflects the new caps the
-        instant the RPC/command returns.
-        """
-        state = await self._state_builder.build_state()
-        await self._host._safe_call(
-            self._host._state_provider.on_state_update(state), "on_state_update_budget"
-        )
-        return self._applied_from_state(state, resumed=resumed)
-
-    @staticmethod
-    def _applied_from_state(state: OrchestratorState, *, resumed: bool) -> dict[str, object]:
-        b = state.budget
-        if b is None:
-            return {"resumed": resumed}
-        remaining = (
-            b.remaining if (b.remaining is not None and math.isfinite(b.remaining)) else None
-        )
-        return {
-            "enabled": b.enabled,
-            "total": b.total_budget,
-            "spent": b.spent,
-            "remaining": remaining,
-            "time_enabled": b.time_enabled,
-            "time_total_minutes": b.time_total_minutes,
-            "time_elapsed_minutes": b.time_elapsed_minutes,
-            "time_remaining_minutes": b.time_remaining_minutes,
-            "resumed": resumed,
-        }
-
-    async def _rearm_after_budget_change(self) -> bool:
-        """Resume a budget pause or reverse a budget/time drain if now in-bounds."""
-        self._host._budget_override = False  # allow budget checks to run again
-        # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
-        paused_on_budget = (
-            not self._host._draining
-            and not self._host._stop_requested
-            and not self._host._pause_event.is_set()
-            and self._host._pause_reason in {"budget_exhausted", "budget_predictive"}
-        )
-        if paused_on_budget and not await self._reserve_still_reached():
-            self._host._pause_reason = None
-            self._host._pause_event.set()
-            return True
-        # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
-        if (
-            self._host._draining
-            and not self._host._stop_requested
-            and self._host._drain_reason
-            in {"budget_reserve_reached", "time_budget_reserve_reached"}
-            and not await self._reserve_still_reached()
-        ):
-            await self._exit_drain()
-            return True
-        return False
-
-    async def _reserve_still_reached(self) -> bool:
-        state = await self._state_builder.build_state()
-        b = state.budget
-        if b is None:
-            return False
-        dollar = b.enabled and budget_reserve_reached(spent=b.spent, total_budget=b.total_budget)
-        timev = (
-            b.time_enabled
-            and b.time_total_minutes is not None
-            and b.time_elapsed_minutes is not None
-            and time_budget_reserve_reached(
-                elapsed_minutes=b.time_elapsed_minutes, total_minutes=b.time_total_minutes
-            )
-        )
-        return bool(dollar or timev)
+        """Return the live-effective caps + spend/remaining. Delegates to BudgetControl."""
+        return await self._budget.current_budget()
 
     async def _exit_drain(self) -> None:
         """Reverse a budget/time reserve drain, returning the session to running."""
