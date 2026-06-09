@@ -9,17 +9,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
 use windows_sys::Win32::Foundation::CloseHandle;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
 };
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+// Shared install-layout constants (single source of truth for all path literals).
+#[path = "../../install_layout.rs"]
+mod install_layout;
+
 #[cfg(windows)]
 const SYNCHRONIZE_ACCESS: u32 = 0x00100000;
 
@@ -485,25 +484,23 @@ fn remove_dir_all(path: &Path, code: i32, label: &str) -> ProvisionResult<()> {
 }
 
 pub(crate) fn agentshore_programdata_root() -> PathBuf {
-    let programdata =
-        env::var_os("ProgramData").unwrap_or_else(|| OsString::from(r"C:\ProgramData"));
-    PathBuf::from(programdata).join("AgentShore")
+    install_layout::agentshore_data_root()
 }
 
 pub(crate) fn managed_venv_path() -> PathBuf {
-    agentshore_programdata_root().join("venv")
+    install_layout::managed_venv_path()
 }
 
 pub(crate) fn managed_venv_python_path() -> PathBuf {
-    managed_venv_path().join("Scripts").join("python.exe")
+    install_layout::managed_venv_python_path()
 }
 
 pub(crate) fn machine_bin_path() -> PathBuf {
-    agentshore_programdata_root().join("bin")
+    install_layout::managed_bin_path()
 }
 
 pub(crate) fn runtime_dir() -> PathBuf {
-    agentshore_programdata_root().join("runtime")
+    install_layout::runtime_dir()
 }
 
 pub(crate) fn safe_log_name(step_name: &str) -> String {
@@ -552,13 +549,9 @@ pub(crate) fn os(value: impl AsRef<OsStr>) -> OsString {
     value.as_ref().to_os_string()
 }
 
-#[cfg(windows)]
 fn apply_no_window_creation_flags(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
+    install_layout::apply_no_window_creation_flags(command);
 }
-
-#[cfg(not(windows))]
-fn apply_no_window_creation_flags(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
