@@ -537,14 +537,6 @@ pub(crate) fn python_string_literal(path: &Path) -> String {
     format!("'{text}'")
 }
 
-pub(crate) fn wheel_uri(path: &Path) -> String {
-    let mut text = path.to_string_lossy().replace('\\', "/");
-    if !text.starts_with('/') {
-        text = format!("/{text}");
-    }
-    format!("file://{text}").replace(' ', "%20")
-}
-
 pub(crate) fn os(value: impl AsRef<OsStr>) -> OsString {
     value.as_ref().to_os_string()
 }

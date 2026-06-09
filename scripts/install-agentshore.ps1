@@ -3,13 +3,14 @@
     Install the `agentshore` CLI on Windows 11 via `uv tool install`.
 
 .DESCRIPTION
-    Windows equivalent of scripts/install-agentshore-cli.sh. It:
-      1. Locates `uv`, bootstrapping it via the official installer if absent.
-      2. Installs the `agentshore` CLI with `uv tool install` from, in order
-         of preference: an explicit -Wheel, the newest wheel in dist\, or the
-         GitHub source (git+https) as a fallback. uv auto-provisions a
-         compatible Python (3.12/3.13), so a clean box needs no preinstalled
-         Python.
+    Thin developer wrapper for the same `uv tool install` invocation the
+    provisioner binary uses. It:
+      1. Locates `uv` (0.8.11), bootstrapping it via the official installer
+         if absent.
+      2. Installs the `agentshore` CLI with `uv tool install --python 3.12`
+         from an explicit -Wheel or the newest wheel in dist\.
+         Requires a local wheel — use the provisioner binary for the product
+         path; this script is for dev/CI use only.
       3. Ensures uv's tool-bin directory is on PATH (`uv tool update-shell`).
       4. Smoke-tests the resulting `agentshore` command.
 
@@ -24,12 +25,7 @@
 
 .PARAMETER Wheel
     Path to an agentshore wheel to install. If omitted, the newest
-    dist\agentshore-*-py3-none-any.whl is used; if none exists, the GitHub
-    source is installed instead.
-
-.PARAMETER Ref
-    Git ref (branch/tag) to install when falling back to the GitHub source.
-    Defaults to the repository default branch.
+    dist\agentshore-*-py3-none-any.whl is used; fails if none found.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\install-agentshore.ps1
@@ -38,17 +34,15 @@
 .NOTES
     Compatible with Windows PowerShell 5.1 and PowerShell 7+. Pure-ASCII so it
     parses correctly regardless of file encoding/BOM.
+    Pinned uv version: 0.8.11 (matches build-windows.ps1:PinnedUvVersion).
 #>
 [CmdletBinding()]
 param(
-    [string]$Wheel = "",
-    [string]$Ref = ""
+    [string]$Wheel = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-
-$RepoUrl = "https://github.com/SuperSwinkAI/Swink-AgentShore"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Info($msg) { Write-Host "    $msg" }
@@ -70,7 +64,9 @@ if ($cmd) {
 }
 
 if (-not $uv) {
-    Write-Step "uv not found -- bootstrapping via the official installer"
+    Write-Step "uv not found -- bootstrapping via the official installer (0.8.11)"
+    # Pin to 0.8.11 to match build-windows.ps1:PinnedUvVersion for reproducible installs.
+    $env:UV_VERSION = "0.8.11"
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     $candidate = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
     if (Test-Path $candidate) {
@@ -101,17 +97,13 @@ if ($Wheel) {
         $source = $newest.FullName
         Write-Info "Source: wheel (newest in dist): $source"
     } else {
-        # Fall back to the GitHub source. Private repo: needs the user's git auth.
-        $source = "git+$RepoUrl"
-        if ($Ref) { $source = "git+$RepoUrl@$Ref" }
-        Write-Info "Source: GitHub: $source"
-        Write-Info "(no local wheel found; installing from source, which requires git access to the repo)"
+        Die "No wheel found in dist\. Build the wheel first or pass -Wheel <path>."
     }
 }
 
 # --- 3. Install / refresh the agentshore CLI --------------------------------
 Write-Step "Installing agentshore CLI"
-& $uv tool install --native-tls --force --reinstall $source
+& $uv tool install --native-tls --force --reinstall --python 3.12 $source
 if ($LASTEXITCODE -ne 0) { Die "uv tool install failed (exit $LASTEXITCODE)." }
 
 # --- 4. Ensure the tool-bin dir is on PATH ----------------------------------
