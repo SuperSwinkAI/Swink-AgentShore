@@ -353,9 +353,9 @@ New-Item -ItemType Directory -Path $InstallerStageDir | Out-Null
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item -LiteralPath $AppExe -Destination (Join-Path $AppStageDir "agentshore-desktop.exe")
+Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $AppStageDir "agentshore-github-helper.exe")
 Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir $WheelFileName)
 Copy-Item -LiteralPath $ProvisionerExe -Destination (Join-Path $InstallerStageDir "agentshore-provisioner.exe")
-Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $InstallerStageDir "agentshore-github-helper.exe")
 Copy-Item -LiteralPath $UvPath -Destination (Join-Path $InstallerStageDir "uv.exe")
 
 Invoke-EulaGenerator

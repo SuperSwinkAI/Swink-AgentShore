@@ -74,7 +74,8 @@ def test_windows_build_script_stages_provisioner_uv_and_wheel() -> None:
     assert '"cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"' in script
     assert '"cargo" "build" "--release" "--bin" "agentshore-github-helper" "--locked"' in script
     assert "Copy-Item -LiteralPath $ProvisionerExe" in script
-    assert "Copy-Item -LiteralPath $GitHubHelperExe" in script
+    assert 'Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $AppStageDir "agentshore-github-helper.exe")' in script
+    assert 'Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $InstallerStageDir "agentshore-github-helper.exe")' not in script
     assert "Copy-Item -LiteralPath $UvPath" in script
     assert '"/DProvisionerFileName=agentshore-provisioner.exe"' in script
     assert '"/DGitHubHelperFileName=agentshore-github-helper.exe"' in script

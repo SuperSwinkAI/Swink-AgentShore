@@ -348,6 +348,42 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
     surface gh-auth problems as gh-auth problems, not as generic missing tokens.
     """
     expected_login = canonical_identity_name(str(raw["gh_token_login"]))
+    if _github_helper_available():
+        service = keychain_service_for_login(expected_login)
+        try:
+            result = _call_github_helper({"op": "credential_get", "service": service})
+        except _GitHubHelperError:
+            result = {}
+        token = result.get("token")
+        if isinstance(token, str) and token.strip():
+            try:
+                validation = _call_github_helper({"op": "validate_token", "token": token})
+            except _GitHubHelperError as exc:
+                return _CredentialResolution(
+                    token=None,
+                    status="auth_error",
+                    detail=f"Windows GitHub helper could not validate {service}: {exc}",
+                )
+            actual = validation.get("login")
+            actual_login = str(actual) if isinstance(actual, str) and actual else None
+            if actual_login and canonical_identity_name(actual_login) == expected_login:
+                return _CredentialResolution(
+                    token=token,
+                    status="auth_ok",
+                    detail=(
+                        "Windows GitHub helper resolved Credential Manager token for "
+                        f"{raw['gh_token_login']}."
+                    ),
+                )
+            if actual_login:
+                return _CredentialResolution(
+                    token=None,
+                    status="auth_mismatch",
+                    detail=(
+                        f"Windows Credential Manager token for {service} belongs to "
+                        f"{actual_login!r}, not {raw['gh_token_login']!r}."
+                    ),
+                )
     env = os.environ.copy()
     gh_config_dir = raw.get("gh_config_dir")
     if isinstance(gh_config_dir, str) and gh_config_dir:

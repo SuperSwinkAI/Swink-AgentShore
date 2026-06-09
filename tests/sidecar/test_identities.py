@@ -685,6 +685,47 @@ def test_windows_check_identity_access_blocks_helper_read_only_result(
     }
 
 
+def test_windows_gh_login_uses_helper_credential_before_gh_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / "agentshore.yaml"
+    _write_identity_config(cfg, "newlogin", "gh_token_login", "newlogin")
+
+    def handle_helper(request: dict[str, object]) -> dict[str, object]:
+        if request["op"] == "credential_get":
+            assert request["service"] == "agentshore/newlogin"
+            return {"service": request["service"], "token": "stored-token"}
+        if request["op"] == "validate_token":
+            assert request["token"] == "stored-token"
+            return {"login": "NewLogin"}
+        if request["op"] == "check_repo_access":
+            assert request["token"] == "stored-token"
+            return {
+                "status": "write",
+                "repo": "owner/repo",
+                "detail": "token has write access to owner/repo",
+            }
+        raise AssertionError(f"unexpected helper request: {request}")
+
+    calls = _enable_windows_helper(tmp_path, monkeypatch, handle_helper)
+
+    row = check_identity_access(tmp_path, "newlogin")
+
+    assert row == {
+        "login": "newlogin",
+        "source": "gh_token_login",
+        "token_status": "auth_ok",
+        "repo_access": "ok",
+        "repo_access_detail": "GitHub CLI auth and repository write access verified.",
+    }
+    assert [call["op"] for call in calls] == [
+        "credential_get",
+        "validate_token",
+        "check_repo_access",
+    ]
+
+
 def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
