@@ -994,7 +994,12 @@ def test_provision_bd_uses_windows_native_tls(monkeypatch: pytest.MonkeyPatch) -
 
     from agentshore.beads import setup as setup_mod
 
+    # Patch sys.platform so the function takes the Windows branch.
+    # Also patch ssl.create_default_context so the test doesn't trigger
+    # Windows-specific ssl internals (enum_certificates) on Linux CI.
+    fake_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     monkeypatch.setattr(setup_mod.sys, "platform", "win32")
+    monkeypatch.setattr(setup_mod.ssl, "create_default_context", lambda: fake_ctx)
 
     assert isinstance(setup_mod._httpx_verify_config(), ssl.SSLContext)
 

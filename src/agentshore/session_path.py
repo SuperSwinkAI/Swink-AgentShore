@@ -542,10 +542,7 @@ def _process_alive_windows(pid: int) -> bool:
     import ctypes
     from ctypes import wintypes
 
-    if sys.platform != "win32":  # pragma: no cover
-        return False  # unreachable; only called on Windows
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
 
@@ -554,7 +551,8 @@ def _process_alive_windows(pid: int) -> bool:
         # No such PID -> dead. Any other failure (e.g. access denied) means the
         # process exists but we lack rights -> treat as alive, never discard a
         # live session.
-        return ctypes.get_last_error() != _WIN_ERROR_INVALID_PARAMETER
+        last_err: int = ctypes.get_last_error()  # type: ignore[attr-defined]
+        return last_err != _WIN_ERROR_INVALID_PARAMETER
     try:
         return bool(kernel32.WaitForSingleObject(handle, 0) == _WIN_WAIT_TIMEOUT)
     finally:

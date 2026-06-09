@@ -849,7 +849,7 @@ def test_process_alive_windows_no_such_pid_is_dead(monkeypatch: pytest.MonkeyPat
 
     kernel32 = _fake_kernel32(open_returns=0)  # NULL handle
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87)  # ERROR_INVALID_PARAMETER
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87, raising=False)  # ERROR_INVALID_PARAMETER
     assert sp._process_alive_windows(4321) is False
     kernel32.CloseHandle.assert_not_called()
 
@@ -860,7 +860,7 @@ def test_process_alive_windows_access_denied_is_alive(monkeypatch: pytest.Monkey
 
     kernel32 = _fake_kernel32(open_returns=0)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)  # ERROR_ACCESS_DENIED
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)  # ERROR_ACCESS_DENIED
     assert sp._process_alive_windows(4321) is True
 
 
