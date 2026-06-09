@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 from typing import TYPE_CHECKING
 
 import aiosqlite
 import structlog
 
+from agentshore import command
 from agentshore.data.store import ExternalMutationRecord, GitHubIssueRecord, PullRequestRecord
 from agentshore.github.labels import PRIORITY_SCORES
 from agentshore.github.pr_links import infer_pr_issue_links
@@ -707,24 +707,19 @@ async def _run_gh(
     timeout: float = _GH_TIMEOUT,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    """Run ``gh <args>`` and return (returncode, stdout, stderr)."""
-    proc_env = {**os.environ, **env} if env else None
-    proc = await asyncio.create_subprocess_exec(
-        "gh",
-        *args,
-        env=proc_env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise
+    """Run ``gh <args>`` and return (returncode, stdout, stderr).
 
-    return (
-        proc.returncode or 0,
-        stdout_b.decode(errors="replace"),
-        stderr_b.decode(errors="replace"),
+    Runs the hardened *synchronous* gh off the event loop via
+    ``asyncio.to_thread``: on Windows, spawning gh with the async
+    ``create_subprocess_exec`` from inside the loaded desktop sidecar can wedge
+    the child at 0 CPU. ``gh_sync`` resolves the real gh path, applies the
+    non-interactive gh env + ``CREATE_NO_WINDOW``, and layers *env* (the
+    per-identity ``GH_TOKEN``/``GH_CONFIG_DIR``) on top so auth is preserved.
+    Raises ``TimeoutError`` on timeout to preserve the previous contract.
+    """
+    result = await asyncio.to_thread(
+        command.gh_sync, *args, env_overlay=env, timeout_seconds=timeout
     )
+    if result.status is command.CommandStatus.TIMEOUT:
+        raise TimeoutError(f"gh {' '.join(args)} timed out after {timeout:.0f}s")
+    return result.returncode, result.stdout, result.stderr

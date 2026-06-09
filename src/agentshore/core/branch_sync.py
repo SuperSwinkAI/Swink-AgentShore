@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore import command
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -58,30 +60,25 @@ class FFSyncResult:
 async def _git(*args: str, cwd: Path, timeout: float = 120.0) -> tuple[int, str, str]:
     """Run ``git``; return ``(rc, stdout, stderr)``. rc=-1 on timeout/spawn error.
 
-    Never raises — this is best-effort housekeeping.
+    Never raises — this is best-effort housekeeping. Runs the *synchronous* git
+    off the event loop via ``asyncio.to_thread``: on Windows, spawning git with
+    the async ``create_subprocess_exec`` from inside the loaded desktop sidecar
+    wedges the child at 0 CPU. ``run_sync_command`` (not ``git_sync``) is used
+    deliberately so the inherited sidecar env is preserved — these are network
+    ``fetch``/``ls-remote`` operations that must keep the credential helper, and
+    the sidecar already sets ``GIT_TERMINAL_PROMPT=0`` so a missing credential
+    fails fast instead of prompting. It does add ``CREATE_NO_WINDOW`` and resolves
+    the real git path.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await asyncio.to_thread(
+            command.run_sync_command, "git", *args, cwd=cwd, timeout_seconds=timeout
         )
-    except OSError as exc:
-        return -1, "", str(exc)
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
+    except command.CommandTimeoutError:
         return -1, "", f"git {' '.join(args)} timed out after {timeout:.0f}s"
-    rc = proc.returncode if proc.returncode is not None else -1
-    return (
-        rc,
-        stdout_b.decode("utf-8", errors="replace"),
-        stderr_b.decode("utf-8", errors="replace"),
-    )
+    except FileNotFoundError as exc:
+        return -1, "", str(exc)
+    return result.returncode, result.stdout, result.stderr
 
 
 async def fast_forward_local_branch(

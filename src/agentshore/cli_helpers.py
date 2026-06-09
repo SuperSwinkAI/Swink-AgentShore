@@ -81,6 +81,7 @@ def _detect_gh_remote(cwd: Path | None = None) -> dict[str, str]:
         result = subprocess.run(  # nosec B603
             [gh_path, "repo", "view", "--json", "url,nameWithOwner"],
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=True,

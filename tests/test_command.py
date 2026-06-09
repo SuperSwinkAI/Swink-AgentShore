@@ -116,3 +116,33 @@ def test_git_sync_returns_tool_not_found_when_absent(
     monkeypatch.setattr(subprocess_env, "resolve_tool", lambda _name: None)
     result = git_sync("rev-parse", "HEAD", cwd=Path.cwd())
     assert result.status is CommandStatus.TOOL_NOT_FOUND
+
+
+def test_run_sync_command_never_inherits_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A git/gh child must never inherit the parent's stdin.
+
+    In the desktop sidecar that stdin is the live Tauri JSON-RPC pipe; git's
+    MSYS2 runtime wedges at 0 CPU probing it. ``run_sync_command`` must pass
+    ``stdin=DEVNULL`` when it is not feeding ``input_text`` (regression guard for
+    the Windows worktree/git_safety/bootstrap hang).
+    """
+    import subprocess
+
+    captured: dict[str, object] = {}
+
+    def fake_run(_argv: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured.clear()
+        captured.update(kwargs)
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    monkeypatch.setattr(command.subprocess, "run", fake_run)
+
+    command.run_sync_command("git", "status", resolve_executable=False)
+    assert captured.get("stdin") is subprocess.DEVNULL
+
+    # When input_text is supplied, subprocess.run wires stdin itself via input=.
+    command.run_sync_command(
+        "git", "hash-object", "--stdin", input_text="x", resolve_executable=False
+    )
+    assert captured.get("stdin") is None
+    assert captured.get("input") == b"x"

@@ -54,6 +54,10 @@ def _run_git(
     """
     return subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
         ["git", "-C", str(cwd), *args],
+        # git must never inherit the sidecar's stdin (the live Tauri JSON-RPC
+        # pipe) — git's MSYS2 runtime wedges at 0 CPU probing that contended
+        # pipe. See agentshore.command.run_sync_command for the full diagnosis.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         check=False,
