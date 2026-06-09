@@ -177,6 +177,10 @@ describe("IdentitiesScreen", () => {
       octocatRow.querySelector("[data-testid='token-status-configured']"),
     ).not.toBeNull();
     expect(
+      octocatRow.querySelector("[data-testid='token-status-configured']")
+        ?.textContent,
+    ).toBe("GH auth set");
+    expect(
       octocatRow.querySelector("[data-testid='repo-access-ok']"),
     ).not.toBeNull();
 
@@ -185,8 +189,42 @@ describe("IdentitiesScreen", () => {
       botRow.querySelector("[data-testid='token-status-missing']"),
     ).not.toBeNull();
     expect(
+      botRow.querySelector("[data-testid='token-status-missing']")
+        ?.textContent,
+    ).toBe("Token missing");
+    expect(
       botRow.querySelector("[data-testid='repo-access-unknown']"),
     ).not.toBeNull();
+  });
+
+  it("renders source-specific live credential badges", async () => {
+    const sidecar = makeSidecar([
+      {
+        login: "octocat",
+        source: "gh_token_login",
+        token_status: "auth_timeout",
+        repo_access: "check_failed",
+      },
+      {
+        login: "bot-user",
+        source: "gh_token_keychain",
+        token_status: "token_timeout",
+        repo_access: "check_failed",
+      },
+    ]);
+
+    await render(sidecar);
+
+    expect(
+      requireTestId(container, "identity-row-octocat").querySelector(
+        "[data-testid='token-status-auth_timeout']",
+      )?.textContent,
+    ).toBe("GH auth timeout");
+    expect(
+      requireTestId(container, "identity-row-bot-user").querySelector(
+        "[data-testid='token-status-token_timeout']",
+      )?.textContent,
+    ).toBe("Token timeout");
   });
 
   it("shows repo access checking state before the live check resolves", async () => {

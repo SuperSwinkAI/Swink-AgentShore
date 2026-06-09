@@ -3,7 +3,7 @@
     Build the AgentShore Windows desktop installer.
 
 .DESCRIPTION
-    Windows parity for scripts/build-macos.sh. Produces a user-level Inno Setup
+    Windows parity for scripts/build-macos.sh. Produces a machine-wide Inno Setup
     admin installer for the Tauri desktop shell plus the managed Python
     sidecar venv, with the same deliberate component choices as the macOS pkg:
 
@@ -77,6 +77,7 @@ $LicensePath = Join-Path $RepoRoot "packaging\desktop\installer-resources\EULA.r
 $LicenseSourcePath = Join-Path $RepoRoot "LICENSE"
 $EulaBuilderPath = Join-Path $RepoRoot "packaging\desktop\installer-resources\build-eula-rtf.py"
 $IconPath = Join-Path $TauriDir "icons\icon.ico"
+$PinnedUvVersion = "uv 0.8.11"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Info($msg) { Write-Host "    $msg" }
@@ -114,6 +115,30 @@ function Resolve-Iscc {
     }
 
     Die "Inno Setup 6 compiler not found. Install Inno Setup 6 or pass -Iscc <path-to-ISCC.exe>."
+}
+
+function Resolve-Uv {
+    $cmd = Get-Command uv.exe -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        $cmd = Get-Command uv -ErrorAction SilentlyContinue
+    }
+    if (-not $cmd) {
+        Die "uv not found. Install uv $PinnedUvVersion and retry."
+    }
+    return $cmd.Source
+}
+
+function Assert-UvVersion {
+    param([Parameter(Mandatory = $true)][string]$UvPath)
+
+    $version = (& $UvPath --version)
+    if ($LASTEXITCODE -ne 0) {
+        Die "uv --version failed with exit code $LASTEXITCODE"
+    }
+    if (-not ([string]$version).StartsWith($PinnedUvVersion)) {
+        Die "Expected $PinnedUvVersion for reproducible Windows installer provisioning, got '$version'."
+    }
+    Write-Info "Using uv: $UvPath ($version)"
 }
 
 function Resolve-SignTool {
@@ -184,7 +209,7 @@ function Invoke-EulaGenerator {
         return
     }
 
-    Invoke-Checked "uv" "--native-tls" "run" "python" $EulaBuilderPath $LicenseSourcePath $LicensePath
+    Invoke-Checked $UvPath "--native-tls" "run" "python" $EulaBuilderPath $LicenseSourcePath $LicensePath
 }
 
 function Clear-StaleSetupArtifacts {
@@ -218,6 +243,9 @@ function Get-NewestWheel {
     return $wheel.FullName
 }
 
+$UvPath = Resolve-Uv
+Assert-UvVersion $UvPath
+
 Write-Step "Stopping running AgentShore desktop processes"
 foreach ($name in @("AgentShore", "agentshore-desktop")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -247,7 +275,7 @@ $WheelStageDir = Join-Path $TauriDir "target\agentshore-wheel"
 Remove-Item -LiteralPath $WheelStageDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $WheelStageDir | Out-Null
 Push-Location $RepoRoot
-try { Invoke-Checked "uv" "--native-tls" "build" "--wheel" "--out-dir" $WheelStageDir } finally { Pop-Location }
+try { Invoke-Checked $UvPath "--native-tls" "build" "--wheel" "--out-dir" $WheelStageDir } finally { Pop-Location }
 $WheelPath = Get-NewestWheel $WheelStageDir
 $WheelFileName = Split-Path -Leaf $WheelPath
 Write-Info "Wheel: $WheelFileName"
@@ -278,11 +306,37 @@ try {
 $AppExe = Join-Path $TargetDir "agentshore-desktop.exe"
 if (-not (Test-Path $AppExe)) { Die "Tauri build finished but $AppExe does not exist" }
 
+Write-Step "Building Windows provisioner ($BuildMode)"
+Push-Location $TauriDir
+try {
+    if ($DebugBuild) {
+        Invoke-Checked "cargo" "build" "--bin" "agentshore-provisioner" "--locked"
+    } else {
+        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"
+    }
+} finally { Pop-Location }
+$ProvisionerExe = Join-Path $TargetDir "agentshore-provisioner.exe"
+if (-not (Test-Path $ProvisionerExe)) { Die "Provisioner build finished but $ProvisionerExe does not exist" }
+
+Write-Step "Building Windows GitHub helper ($BuildMode)"
+Push-Location $TauriDir
+try {
+    if ($DebugBuild) {
+        Invoke-Checked "cargo" "build" "--bin" "agentshore-github-helper" "--locked"
+    } else {
+        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-github-helper" "--locked"
+    }
+} finally { Pop-Location }
+$GitHubHelperExe = Join-Path $TargetDir "agentshore-github-helper.exe"
+if (-not (Test-Path $GitHubHelperExe)) { Die "GitHub helper build finished but $GitHubHelperExe does not exist" }
+
 if (-not $NoSign) {
     $ResolvedSignTool = Resolve-SignTool
     $ResolvedThumbprint = Resolve-CodeSigningThumbprint
     if ($ResolvedSignTool -and $ResolvedThumbprint) {
         Invoke-AuthenticodeSign -FilePath $AppExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
+        Invoke-AuthenticodeSign -FilePath $ProvisionerExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
+        Invoke-AuthenticodeSign -FilePath $GitHubHelperExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
     } else {
         Write-Step "Skipping Authenticode signing"
         if (-not $ResolvedSignTool) { Write-Info "signtool.exe not found." }
@@ -300,10 +354,9 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Copy-Item -LiteralPath $AppExe -Destination (Join-Path $AppStageDir "agentshore-desktop.exe")
 Copy-Item -LiteralPath $WheelPath -Destination (Join-Path $InstallerStageDir $WheelFileName)
-Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-venv.ps1") -Destination $InstallerStageDir
-Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-agentshore-cli.ps1") -Destination $InstallerStageDir
-Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install-timelapse.ps1") -Destination $InstallerStageDir
-Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\run-windows-installer-step.ps1") -Destination $InstallerStageDir
+Copy-Item -LiteralPath $ProvisionerExe -Destination (Join-Path $InstallerStageDir "agentshore-provisioner.exe")
+Copy-Item -LiteralPath $GitHubHelperExe -Destination (Join-Path $InstallerStageDir "agentshore-github-helper.exe")
+Copy-Item -LiteralPath $UvPath -Destination (Join-Path $InstallerStageDir "uv.exe")
 
 Invoke-EulaGenerator
 
@@ -318,6 +371,9 @@ $isccArgs = @(
     "/DStageDir=$StageDir",
     "/DOutputDir=$OutputDir",
     "/DWheelFileName=$WheelFileName",
+    "/DUvFileName=uv.exe",
+    "/DProvisionerFileName=agentshore-provisioner.exe",
+    "/DGitHubHelperFileName=agentshore-github-helper.exe",
     "/DLicenseFile=$LicensePath",
     "/DIconFile=$IconPath",
     $IssOut

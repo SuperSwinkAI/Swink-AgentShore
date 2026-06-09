@@ -4,7 +4,7 @@ export interface IdentityRow {
   login: string;
   /** One of: gh_token_login | gh_token_env | gh_token_keychain | ambient */
   source: string;
-  /** One of: configured | missing | unknown | ambient */
+  /** Source-specific credential state. */
   token_status: string;
   /** One of: ok | blocked | unknown | checking | check_failed */
   repo_access: string;
@@ -58,7 +58,7 @@ interface ScreenState {
 type ScreenAction =
   | { type: "loaded"; rows: IdentityRow[] }
   | { type: "load_error"; message: string }
-  | { type: "access_check_started"; login: string }
+  | { type: "access_check_started"; login: string; source: string }
   | { type: "access_checked"; row: IdentityRow }
   | { type: "show_add" }
   | { type: "cancel_add" }
@@ -109,7 +109,10 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
           ? {
               ...row,
               repo_access: "checking",
-              repo_access_detail: "Verifying GitHub repository access...",
+              repo_access_detail:
+                action.source === "gh_token_login"
+                  ? "Verifying GitHub CLI auth and repository access..."
+                  : "Verifying GitHub token and repository access...",
             }
           : row,
       );
@@ -248,6 +251,12 @@ const TOKEN_STATUS_LABELS: Record<string, string> = {
   missing: "Token missing",
   unknown: "Token unknown",
   ambient: "Ambient",
+  auth_ok: "GH auth OK",
+  auth_missing: "GH auth missing",
+  auth_timeout: "GH auth timeout",
+  auth_error: "GH auth error",
+  auth_mismatch: "GH auth mismatch",
+  token_timeout: "Token timeout",
 };
 
 const TOKEN_STATUS_CLASSES: Record<string, string> = {
@@ -255,6 +264,12 @@ const TOKEN_STATUS_CLASSES: Record<string, string> = {
   missing: "badge-error",
   unknown: "badge-warn",
   ambient: "badge-warn",
+  auth_ok: "badge-ok",
+  auth_missing: "badge-error",
+  auth_timeout: "badge-error",
+  auth_error: "badge-error",
+  auth_mismatch: "badge-error",
+  token_timeout: "badge-error",
 };
 
 const REPO_ACCESS_LABELS: Record<string, string> = {
@@ -280,9 +295,44 @@ const SOURCE_LABELS: Record<string, string> = {
   ambient: "ambient",
 };
 
-function TokenBadge({ status }: { status: string }): React.ReactElement {
-  const label = TOKEN_STATUS_LABELS[status] ?? status;
-  const cls = TOKEN_STATUS_CLASSES[status] ?? "badge-warn";
+const SKIP_ACCESS_STATUSES = new Set([
+  "missing",
+  "auth_missing",
+  "auth_timeout",
+  "auth_error",
+  "auth_mismatch",
+  "token_timeout",
+  "ambient",
+]);
+
+function shouldSkipAccessCheck(row: IdentityRow): boolean {
+  return row.source === "ambient" || SKIP_ACCESS_STATUSES.has(row.token_status);
+}
+
+function credentialLabel(source: string, status: string): string {
+  if (source === "gh_token_login") {
+    if (status === "configured") return "GH auth set";
+    if (status === "missing") return "GH auth missing";
+  }
+  return TOKEN_STATUS_LABELS[status] ?? status;
+}
+
+function credentialClass(source: string, status: string): string {
+  if (source === "gh_token_login" && status === "configured") {
+    return "badge-warn";
+  }
+  return TOKEN_STATUS_CLASSES[status] ?? "badge-warn";
+}
+
+function TokenBadge({
+  source,
+  status,
+}: {
+  source: string;
+  status: string;
+}): React.ReactElement {
+  const label = credentialLabel(source, status);
+  const cls = credentialClass(source, status);
   return (
     <span className={`id-badge ${cls}`} data-testid={`token-status-${status}`}>
       {label}
@@ -379,7 +429,7 @@ function IdentityRowItem({
         <span className="id-source-label">
           {SOURCE_LABELS[row.source] ?? row.source}
         </span>
-        <TokenBadge status={row.token_status} />
+        <TokenBadge source={row.source} status={row.token_status} />
         <RepoBadge access={row.repo_access} detail={row.repo_access_detail} />
         {row.repo_access_detail && row.repo_access !== "ok" && (
           <span
@@ -461,29 +511,34 @@ export function IdentitiesScreen({
 
   const checkAccessForRows = useCallback(
     (rows: IdentityRow[]) => {
-      if (!sidecar.checkAccess) return;
-      for (const row of rows) {
-        if (row.token_status === "missing" || row.source === "ambient")
-          continue;
-        dispatch({ type: "access_check_started", login: row.login });
-        void sidecar
-          .checkAccess(row.login)
-          .then((checked) => {
+      const checkAccess = sidecar.checkAccess;
+      if (!checkAccess) return;
+      void (async () => {
+        for (const row of rows) {
+          if (shouldSkipAccessCheck(row)) continue;
+          dispatch({
+            type: "access_check_started",
+            login: row.login,
+            source: row.source,
+          });
+          try {
+            const checked = await checkAccess(row.login);
             dispatch({ type: "access_checked", row: checked });
-          })
-          .catch((err) => {
+          } catch (err) {
             dispatch({
               type: "access_checked",
               row: {
                 ...row,
                 repo_access: "check_failed",
-                repo_access_detail: `Unable to run GitHub repository access verification: ${String(
-                  err,
-                )}`,
+                repo_access_detail:
+                  row.source === "gh_token_login"
+                    ? `Unable to run GitHub CLI auth verification: ${String(err)}`
+                    : `Unable to run GitHub token repository access verification: ${String(err)}`,
               },
             });
-          });
-      }
+          }
+        }
+      })();
     },
     [sidecar],
   );

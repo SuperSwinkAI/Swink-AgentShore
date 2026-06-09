@@ -15,6 +15,15 @@
 #ifndef WheelFileName
   #error WheelFileName must be supplied by build-windows.ps1
 #endif
+#ifndef UvFileName
+  #error UvFileName must be supplied by build-windows.ps1
+#endif
+#ifndef ProvisionerFileName
+  #error ProvisionerFileName must be supplied by build-windows.ps1
+#endif
+#ifndef GitHubHelperFileName
+  #error GitHubHelperFileName must be supplied by build-windows.ps1
+#endif
 #ifndef LicenseFile
   #error LicenseFile must be supplied by build-windows.ps1
 #endif
@@ -73,10 +82,9 @@ Name: "{autodesktop}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Comp
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\installer"
 Type: filesandordirs; Name: "{commonappdata}\AgentShore\venv"
-
-[InstallDelete]
-Type: filesandordirs; Name: "{localappdata}\Programs\AgentShore"
-Type: filesandordirs; Name: "{localappdata}\AgentShore\venv"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\bin"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\runtime"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\install-logs"
 
 [Run]
 Filename: "{app}\agentshore-desktop.exe"; Description: "Launch AgentShore"; Flags: nowait postinstall skipifsilent; Components: desktop
@@ -87,32 +95,50 @@ begin
   Result := '"' + Value + '"';
 end;
 
-function RunInstallerStep(StepName: String; ScriptName: String; NeedsWheel: Boolean; Optional: Boolean): Boolean;
+function RunProvisionerStep(
+  StepName: String;
+  Subcommand: String;
+  NeedsWheel: Boolean;
+  NeedsUv: Boolean;
+  Optional: Boolean;
+  OriginalUser: Boolean
+): Boolean;
 var
   Params: String;
   ResultCode: Integer;
-  PowerShellPath: String;
-  RunnerPath: String;
-  ScriptPath: String;
+  ProvisionerPath: String;
 begin
   Result := False;
-  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-  RunnerPath := ExpandConstant('{app}\installer\run-windows-installer-step.ps1');
-  ScriptPath := ExpandConstant('{app}\installer\' + ScriptName);
-  Params := '-NoProfile -ExecutionPolicy Bypass -File ' + Quote(RunnerPath) +
-    ' -StepName ' + Quote(StepName) +
-    ' -ScriptPath ' + Quote(ScriptPath);
+  ProvisionerPath := ExpandConstant('{app}\installer\{#ProvisionerFileName}');
+  Params := Subcommand;
 
   if NeedsWheel then
   begin
-    Params := Params + ' -Wheel ' + Quote(ExpandConstant('{app}\installer\{#WheelFileName}'));
+    Params := Params + ' --wheel ' + Quote(ExpandConstant('{app}\installer\{#WheelFileName}'));
+  end;
+
+  if NeedsUv then
+  begin
+    Params := Params + ' --uv ' + Quote(ExpandConstant('{app}\installer\{#UvFileName}'));
   end;
 
   WizardForm.StatusLabel.Caption := StepName + '...';
-  if not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+
+  if OriginalUser then
   begin
-    MsgBox('Could not launch ' + StepName + '. See %LocalAppData%\AgentShore\install-logs for details.', mbError, MB_OK);
-    exit;
+    if not ExecAsOriginalUser(ProvisionerPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      MsgBox('Could not launch ' + StepName + '. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
+      exit;
+    end;
+  end
+  else
+  begin
+    if not Exec(ProvisionerPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      MsgBox('Could not launch ' + StepName + '. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
+      exit;
+    end;
   end;
 
   if ResultCode <> 0 then
@@ -121,13 +147,13 @@ begin
     begin
       if not WizardSilent then
       begin
-        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and this optional component can be retried later. Logs are under %LocalAppData%\AgentShore\install-logs.', mbInformation, MB_OK);
+        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and this optional component can be retried later. Logs are under %ProgramData%\AgentShore\install-logs.', mbInformation, MB_OK);
       end;
       Result := True;
       exit;
     end;
 
-    MsgBox(StepName + ' failed. See %LocalAppData%\AgentShore\install-logs for details.', mbError, MB_OK);
+    MsgBox(StepName + ' failed. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
     exit;
   end;
 
@@ -150,14 +176,14 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    if not RunInstallerStep('Provisioning AgentShore Desktop sidecar', 'install-agentshore-venv.ps1', True, False) then
+    if not RunProvisionerStep('Provisioning AgentShore Desktop sidecar', 'sidecar', True, True, False, False) then
     begin
       RaiseException('AgentShore Desktop sidecar provisioning failed.');
     end;
 
     if WizardIsComponentSelected('timelapse') then
     begin
-      if not RunInstallerStep('Provisioning Timelapse Capture', 'install-timelapse.ps1', False, True) then
+      if not RunProvisionerStep('Provisioning Timelapse Capture', 'timelapse', False, False, True, True) then
       begin
         { Optional step already surfaced a warning. }
       end;
@@ -165,7 +191,7 @@ begin
 
     if WizardIsComponentSelected('cli') then
     begin
-      if not RunInstallerStep('Installing AgentShore CLI', 'install-agentshore-cli.ps1', True, True) then
+      if not RunProvisionerStep('Installing AgentShore CLI', 'cli', True, True, True, True) then
       begin
         { Optional step already surfaced a warning. }
       end;

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -638,6 +641,97 @@ def test_keychain_backend_error_returns_none(monkeypatch: pytest.MonkeyPatch) ->
     assert "GH_TOKEN" not in env
     # Authorship still set even when the backend errored.
     assert env["GIT_AUTHOR_NAME"] == "x"
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://github.com/Owner/Repo.git", "Owner/Repo"),
+        ("git@github.com:Owner/Repo.git", "Owner/Repo"),
+        ("ssh://git@github.com/Owner/Repo.git", "Owner/Repo"),
+    ],
+)
+def test_parse_github_remote_name_supports_common_formats(remote: str, expected: str) -> None:
+    assert identity_mod._parse_github_remote_name(remote) == expected
+
+
+def test_verify_repo_access_uses_github_rest_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, str | None] = {}
+
+    def fake_run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        assert argv == ["C:\\Git\\git.exe", "config", "--get", "remote.origin.url"]
+        return subprocess.CompletedProcess(
+            argv,
+            returncode=0,
+            stdout="https://github.com/Owner/Repo.git\n",
+            stderr="",
+        )
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"full_name": "Owner/Repo"}).encode("utf-8")
+
+    def fake_urlopen(request: Any, **_: Any) -> Response:
+        calls["url"] = request.full_url
+        calls["authorization"] = request.get_header("Authorization")
+        calls["user_agent"] = request.get_header("User-agent")
+        return Response()
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda name: "C:\\Git\\git.exe")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    assert calls == {
+        "url": "https://api.github.com/repos/Owner/Repo",
+        "authorization": "Bearer token-secret",
+        "user_agent": "AgentShore",
+    }
+
+
+def test_verify_repo_access_reports_github_api_denial_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            returncode=0,
+            stdout="git@github.com:Owner/Repo.git\n",
+            stderr="",
+        )
+
+    def fake_urlopen(_request: Any, **_: Any) -> None:
+        raise urllib.error.HTTPError(
+            url="https://api.github.com/repos/Owner/Repo",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message":"Not Found"}'),
+        )
+
+    monkeypatch.setattr(identity_mod, "resolve_executable", lambda name: "git")
+    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AgentAuthError) as exc_info:
+        identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    detail = str(exc_info.value)
+    assert "Owner/Repo returned HTTP 404: Not Found" in detail
+    assert "token-secret" not in detail
 
 
 def test_report_identity_repo_access_flags_wrong_repo_pat(

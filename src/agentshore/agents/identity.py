@@ -15,8 +15,12 @@ ambient ``gh`` auth (the active account in ``gh auth status``).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess  # nosec B404
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -120,6 +124,122 @@ def _isolated_gh_config_dir(identity_name: str) -> Path:
     return base
 
 
+def _github_repo_name_from_remote(project_path: Path) -> str:
+    git_path = resolve_executable("git")
+    if git_path is None:
+        raise AgentAuthError("git CLI not found for repository access preflight")
+
+    try:
+        completed = subprocess.run(  # nosec B603
+            [git_path, "config", "--get", "remote.origin.url"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise AgentAuthError(
+            f"GitHub repository access preflight failed while reading git remote: {exc}"
+        ) from exc
+
+    remote = completed.stdout.strip()
+    if completed.returncode != 0 or not remote:
+        detail = (completed.stderr or "remote.origin.url is not configured").strip()
+        raise AgentAuthError(
+            f"GitHub repository access preflight failed while reading git remote: {detail[:500]}"
+        )
+    return _parse_github_remote_name(remote)
+
+
+def _parse_github_remote_name(remote: str) -> str:
+    value = remote.strip()
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urllib.parse.urlparse(value)
+        host = (parsed.hostname or "").casefold()
+        if host != "github.com":
+            raise AgentAuthError(
+                "GitHub repository access preflight requires a github.com origin remote; "
+                f"got {remote!r}"
+            )
+        path = parsed.path.lstrip("/")
+
+    path = urllib.parse.unquote(path).strip("/").removesuffix(".git")
+    owner, sep, repo = path.partition("/")
+    if not sep or not owner or not repo or "/" in repo:
+        raise AgentAuthError(
+            "GitHub repository access preflight could not parse origin remote as owner/repo: "
+            f"{remote!r}"
+        )
+    return f"{owner}/{repo}"
+
+
+def _verify_github_repo_access_via_api(name_with_owner: str, token: str) -> None:
+    owner, repo = name_with_owner.split("/", 1)
+    url = (
+        "https://api.github.com/repos/"
+        f"{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "AgentShore",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(  # nosec B310 - fixed GitHub API host.
+            request,
+            timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
+        ) as response:
+            status = getattr(response, "status", 200)
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = _github_http_error_detail(exc)
+        raise AgentAuthError(
+            "GitHub repository access preflight failed for the assigned identity token: "
+            f"{name_with_owner} returned HTTP {exc.code}: {detail}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise AgentAuthError(f"GitHub repository access preflight failed: {exc}") from exc
+
+    if not (200 <= int(status) < 300):
+        raise AgentAuthError(
+            "GitHub repository access preflight failed for the assigned identity token: "
+            f"{name_with_owner} returned HTTP {status}"
+        )
+
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    returned = payload.get("full_name")
+    if isinstance(returned, str) and returned.casefold() != name_with_owner.casefold():
+        raise AgentAuthError(
+            "GitHub repository access preflight returned an unexpected repository: "
+            f"{returned!r}, expected {name_with_owner!r}"
+        )
+
+
+def _github_http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = exc.read(2048)
+    except OSError:
+        body = b""
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if isinstance(message, str) and message.strip():
+        return message.strip()[:500]
+    return (exc.reason or exc.msg or "GitHub API request failed")[:500]
+
+
 # ---------------------------------------------------------------------------
 # IdentityResolver — owns token caches and the resolution pipeline
 # ---------------------------------------------------------------------------
@@ -135,7 +255,7 @@ class IdentityResolver:
         self._token_cache: dict[tuple[str, str | None], str] = {}
         self._keychain_cache: dict[str, str] = {}
         self._validation_cache: dict[str, tuple[bool, str | None, str | None]] = {}
-        self._repo_access_cache: set[tuple[str, str]] = set()
+        self._repo_access_cache: set[tuple[str, str, str]] = set()
 
     def reset_caches(self) -> None:
         self._token_cache.clear()
@@ -463,41 +583,12 @@ class IdentityResolver:
             return
 
         repo_path = str(project_path.resolve())
-        cache_key = (sha256(token.encode("utf-8")).hexdigest(), repo_path)
+        name_with_owner = _github_repo_name_from_remote(project_path)
+        cache_key = (sha256(token.encode("utf-8")).hexdigest(), repo_path, name_with_owner)
         if cache_key in self._repo_access_cache:
             return
 
-        gh_path = resolve_executable("gh")
-        if gh_path is None:
-            raise IdentityResolutionError("gh CLI not found for repository access preflight")
-
-        env = {**os.environ, **identity_env}
-        try:
-            completed = subprocess.run(  # nosec B603
-                [gh_path, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
-                env=env,
-            )
-        except (subprocess.SubprocessError, OSError) as exc:
-            raise AgentAuthError(f"GitHub repository access preflight failed: {exc}") from exc
-
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "gh repo view failed").strip()
-            raise AgentAuthError(
-                "GitHub repository access preflight failed for the assigned identity token: "
-                f"{detail[:500]}"
-            )
-
-        if not completed.stdout.strip():
-            raise AgentAuthError(
-                "GitHub repository access preflight returned no repository for the assigned "
-                "identity token"
-            )
-
+        _verify_github_repo_access_via_api(name_with_owner, token)
         self._repo_access_cache.add(cache_key)
 
 

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 import yaml
@@ -24,8 +28,6 @@ from agentshore.identity_names import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
-
 
 class IdentityRow(TypedDict):
     login: str
@@ -55,12 +57,102 @@ _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
 _GH_TOKEN_TIMEOUT_SECONDS = 10.0
+_GH_STATUS_TIMEOUT_SECONDS = 5.0
+_IDENTITY_CHECK_TIMEOUT_SECONDS = 20.0
 _KEYRING_TIMEOUT_SECONDS = 5.0
+_GITHUB_HELPER_TIMEOUT_SECONDS = 20.0
+_GITHUB_HELPER_ENV = "AGENTSHORE_GITHUB_HELPER"
 _KEYRING_SLOTS = threading.BoundedSemaphore(value=2)
+_HELPER_WRITE_ACCESS_STATUSES = frozenset({"write", "admin"})
+_HELPER_BLOCKED_ACCESS_STATUSES = frozenset({"read_only", "no_access"})
 
 
 class _KeyringTimeoutError(RuntimeError):
     """Raised when the local OS credential backend does not answer promptly."""
+
+
+class _IdentityCheckTimeoutError(RuntimeError):
+    """Raised when one setup identity probe exceeds its total time budget."""
+
+
+class _GitHubHelperError(RuntimeError):
+    """Raised when the Windows desktop GitHub helper cannot complete a request."""
+
+
+@dataclass(frozen=True)
+class _CredentialResolution:
+    token: str | None
+    status: str
+    detail: str
+
+
+def _windows_github_helper_path() -> str | None:
+    if not sys.platform.startswith("win"):
+        return None
+    raw = os.environ.get(_GITHUB_HELPER_ENV)
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_file():
+        return None
+    return str(path)
+
+
+def _github_helper_available() -> bool:
+    return _windows_github_helper_path() is not None
+
+
+def _call_github_helper(request: dict[str, object]) -> dict[str, object]:
+    helper = _windows_github_helper_path()
+    if helper is None:
+        raise _GitHubHelperError("Windows GitHub helper is unavailable")
+    try:
+        proc = subprocess.run(  # noqa: S603 - helper path is provided by the desktop shell
+            [helper],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GITHUB_HELPER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _GitHubHelperError("Windows GitHub helper timed out") from exc
+    except OSError as exc:
+        raise _GitHubHelperError(f"Windows GitHub helper failed to start: {exc}") from exc
+
+    stdout = proc.stdout.strip()
+    if not stdout:
+        raise _GitHubHelperError(
+            f"Windows GitHub helper exited {proc.returncode} without a JSON response"
+        )
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise _GitHubHelperError("Windows GitHub helper returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise _GitHubHelperError("Windows GitHub helper returned a non-object response")
+    if payload.get("ok") is True:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            return result
+        raise _GitHubHelperError("Windows GitHub helper returned a non-object result")
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or "Windows GitHub helper request failed")
+    else:
+        message = "Windows GitHub helper request failed"
+    raise _GitHubHelperError(message)
+
+
+def _resolve_github_login_for_token(token: str) -> str | None:
+    if _github_helper_available():
+        try:
+            result = _call_github_helper({"op": "validate_token", "token": token})
+        except _GitHubHelperError:
+            return None
+        login = result.get("login")
+        return str(login) if isinstance(login, str) and login else None
+    return resolve_github_login_for_token(token)
 
 
 def _run_keyring_operation[T](operation: Callable[[], T]) -> T:
@@ -109,7 +201,22 @@ def _validate_token_matches_login(entry: dict[str, object], expected_login: str)
     token, _source = _token_for_identity(entry)
     if token is None:
         return
-    actual_login = resolve_github_login_for_token(token)
+    if _github_helper_available():
+        try:
+            result = _call_github_helper({"op": "validate_token", "token": token})
+        except _GitHubHelperError as exc:
+            raise ValueError(f"Windows GitHub helper could not validate PAT: {exc}") from exc
+        actual = result.get("login")
+        actual_login = str(actual) if isinstance(actual, str) and actual else None
+        if actual_login is None:
+            raise ValueError("Windows GitHub helper validated PAT without returning a login")
+        if canonical_identity_name(actual_login) != canonical_identity_name(expected_login):
+            raise ValueError(
+                f"token belongs to GitHub user {actual_login!r}, "
+                f"not {expected_login!r} - check the login for typos"
+            )
+        return
+    actual_login = _resolve_github_login_for_token(token)
     if actual_login is None:
         return
     if canonical_identity_name(actual_login) != canonical_identity_name(expected_login):
@@ -156,6 +263,13 @@ def _keyring_get(service: str) -> str | None:
     Windows Credential Manager and third-party keyring providers may stall while
     discovering the active desktop session.
     """
+    if _github_helper_available():
+        try:
+            result = _call_github_helper({"op": "credential_get", "service": service})
+        except _GitHubHelperError:
+            return None
+        token = result.get("token")
+        return str(token) if isinstance(token, str) and token else None
 
     def operation() -> str | None:
         import keyring  # local import: keyring backends can do OS setup at import time
@@ -176,6 +290,12 @@ def _keychain_has_token(service: str) -> bool:
 
 def _keyring_set_password(service: str, pat: str) -> None:
     """Store *pat* in the OS credential store without risking a hung setup RPC."""
+    if _github_helper_available():
+        try:
+            _call_github_helper({"op": "credential_set", "service": service, "token": pat})
+        except _GitHubHelperError as exc:
+            raise ValueError(f"Windows GitHub helper failed to store PAT: {exc}") from exc
+        return
 
     def operation() -> None:
         import keyring  # local import: keyring backends can do OS setup at import time
@@ -202,6 +322,13 @@ def keychain_status(login: str) -> dict[str, object]:
         raise ValueError(f"invalid GitHub login: {login!r}")
     canonical = canonical_identity_name(login)
     service = keychain_service_for_login(canonical)
+    if _github_helper_available():
+        result = _call_github_helper({"op": "credential_status", "service": service})
+        return {
+            "login": canonical,
+            "service": service,
+            "has_token": bool(result.get("has_token")),
+        }
     return {
         "login": canonical,
         "service": service,
@@ -211,27 +338,114 @@ def keychain_status(login: str) -> dict[str, object]:
 
 def _resolve_login_token(raw: dict[str, object]) -> str | None:
     """Resolve a token via ``gh auth token`` for the configured GitHub login."""
+    return _resolve_login_auth(raw).token
+
+
+def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
+    """Resolve GitHub CLI auth for the configured login.
+
+    This is separate from PAT/keychain token handling because setup should
+    surface gh-auth problems as gh-auth problems, not as generic missing tokens.
+    """
+    expected_login = canonical_identity_name(str(raw["gh_token_login"]))
     env = os.environ.copy()
     gh_config_dir = raw.get("gh_config_dir")
     if isinstance(gh_config_dir, str) and gh_config_dir:
         env["GH_CONFIG_DIR"] = gh_config_dir
     gh_bin = shutil.which("gh")
     if gh_bin is None:
-        return None
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail="GitHub CLI auth could not be checked because gh.exe is not on PATH.",
+        )
     try:
         proc = subprocess.run(  # noqa: S603 — resolved absolute path
-            [gh_bin, "auth", "token", "--user", str(raw["gh_token_login"])],
+            [gh_bin, "auth", "token", "-h", "github.com", "-u", str(raw["gh_token_login"])],
             capture_output=True,
             text=True,
             check=False,
             env=env,
             timeout=_GH_TOKEN_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    except subprocess.TimeoutExpired:
+        return _CredentialResolution(
+            token=None,
+            status="auth_timeout",
+            detail=(f"GitHub CLI auth lookup timed out while resolving {raw['gh_token_login']!r}."),
+        )
+    except OSError as exc:
+        return _CredentialResolution(
+            token=None,
+            status="auth_error",
+            detail=f"GitHub CLI auth lookup failed: {exc}",
+        )
+    token = proc.stdout.strip() if proc.returncode == 0 else ""
+    if token:
+        return _CredentialResolution(
+            token=token,
+            status="auth_ok",
+            detail=f"GitHub CLI auth resolved for {raw['gh_token_login']}.",
+        )
+
+    try:
+        fallback = subprocess.run(  # noqa: S603 — resolved absolute path
+            [gh_bin, "auth", "token", "-h", "github.com"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return _CredentialResolution(
+            token=None,
+            status="auth_timeout",
+            detail=(
+                "GitHub CLI active-auth lookup timed out after the configured "
+                f"login {raw['gh_token_login']!r} did not return a token."
+            ),
+        )
+    except OSError as exc:
+        return _CredentialResolution(
+            token=None,
+            status="auth_error",
+            detail=f"GitHub CLI active-auth lookup failed: {exc}",
+        )
+    token = fallback.stdout.strip() if fallback.returncode == 0 else ""
+    if not token:
+        detail = (proc.stderr or fallback.stderr or "gh auth token returned no token").strip()
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail=(f"GitHub CLI auth could not resolve {raw['gh_token_login']!r}: {detail[:500]}"),
+        )
+    actual_login = _resolve_github_login_for_token(token)
+    if actual_login and canonical_identity_name(actual_login) == expected_login:
+        return _CredentialResolution(
+            token=token,
+            status="auth_ok",
+            detail=(
+                f"GitHub CLI active auth matched the configured login {raw['gh_token_login']}."
+            ),
+        )
+    if actual_login:
+        return _CredentialResolution(
+            token=None,
+            status="auth_mismatch",
+            detail=(
+                f"GitHub CLI active auth belongs to {actual_login!r}, "
+                f"not {raw['gh_token_login']!r}."
+            ),
+        )
+    return _CredentialResolution(
+        token=None,
+        status="auth_missing",
+        detail=(
+            "GitHub CLI active auth produced a token, but AgentShore could not "
+            f"confirm that it belongs to {raw['gh_token_login']!r}."
+        ),
+    )
 
 
 # Per-source token resolver: dict[TokenSource, callable(raw) -> str | None].
@@ -358,25 +572,290 @@ def check_identity_access(project_path: Path, login: str) -> IdentityRow:
         row["repo_access_detail"] = "Ambient gh authentication is verified when the agent starts."
         return row
     if token_status != "configured":
-        row["repo_access_detail"] = "Token source is not configured in this desktop process."
+        row["repo_access_detail"] = _unconfigured_source_message(source)
         return row
 
+    return _run_identity_check_with_timeout(
+        lambda: (
+            _check_gh_auth_identity_access(project_path, raw, row)
+            if source == TokenSource.LOGIN.value
+            else _check_token_identity_access(project_path, raw, row, source)
+        ),
+        row=row,
+        raw=raw,
+        source=source,
+    )
+
+
+def _check_gh_auth_identity_access(
+    project_path: Path,
+    raw: dict[str, object],
+    row: IdentityRow,
+) -> IdentityRow:
+    checked: IdentityRow = dict(row)  # type: ignore[assignment]
+    resolution = _resolve_login_auth(raw)
+    if not resolution.token:
+        checked["token_status"] = resolution.status
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            resolution.detail,
+            raw,
+            TokenSource.LOGIN.value,
+        )
+        return checked
+
+    checked["token_status"] = "auth_ok"
+    helper_result = _check_repo_access_with_helper(project_path, resolution.token)
+    if helper_result is not None:
+        return _apply_helper_access_result(
+            checked,
+            helper_result,
+            ok_detail="GitHub CLI auth and repository write access verified.",
+            raw=raw,
+            source=TokenSource.LOGIN.value,
+        )
+    try:
+        verify_identity_repo_access(
+            project_path,
+            {"GH_TOKEN": resolution.token, "GITHUB_TOKEN": resolution.token},
+        )
+    except (IdentityResolutionError, AgentAuthError) as exc:
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            str(exc) or "GitHub repository access preflight failed.",
+            raw,
+            TokenSource.LOGIN.value,
+        )
+    else:
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub CLI auth and repository access verified."
+    return checked
+
+
+def _check_token_identity_access(
+    project_path: Path,
+    raw: dict[str, object],
+    row: IdentityRow,
+    source: str,
+) -> IdentityRow:
+    checked: IdentityRow = dict(row)  # type: ignore[assignment]
     token, _resolved_source = _token_for_identity(raw)
     if not token:
-        row["token_status"] = "missing"
-        row["repo_access_detail"] = f"Token could not be resolved from {source}."
-        return row
+        checked["token_status"] = "missing"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            f"Token could not be resolved from {source}.",
+            raw,
+            source,
+        )
+        return checked
 
-    row["token_status"] = "configured"
+    checked["token_status"] = "configured"
+    helper_result = _check_repo_access_with_helper(project_path, token)
+    if helper_result is not None:
+        return _apply_helper_access_result(
+            checked,
+            helper_result,
+            ok_detail="GitHub token and repository write access verified.",
+            raw=raw,
+            source=source,
+        )
     try:
         verify_identity_repo_access(project_path, {"GH_TOKEN": token, "GITHUB_TOKEN": token})
     except (IdentityResolutionError, AgentAuthError) as exc:
-        row["repo_access"] = "blocked"
-        row["repo_access_detail"] = str(exc) or "GitHub repository access preflight failed."
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            str(exc) or "GitHub repository access preflight failed.",
+            raw,
+            source,
+        )
     else:
-        row["repo_access"] = "ok"
-        row["repo_access_detail"] = "GitHub repository access verified."
-    return row
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub token and repository access verified."
+    return checked
+
+
+def _check_repo_access_with_helper(
+    project_path: Path,
+    token: str,
+) -> dict[str, object] | None:
+    if not _github_helper_available():
+        return None
+    try:
+        return _call_github_helper(
+            {
+                "op": "check_repo_access",
+                "token": token,
+                "local_repo_path": str(project_path),
+            }
+        )
+    except _GitHubHelperError as exc:
+        return {
+            "status": "error",
+            "detail": f"Windows GitHub helper access check failed: {exc}",
+        }
+
+
+def _apply_helper_access_result(
+    row: IdentityRow,
+    helper_result: dict[str, object],
+    *,
+    ok_detail: str,
+    raw: dict[str, object],
+    source: str,
+) -> IdentityRow:
+    checked: IdentityRow = dict(row)  # type: ignore[assignment]
+    status = str(helper_result.get("status") or "error")
+    detail = str(helper_result.get("detail") or "Windows GitHub helper returned no detail.")
+    if status in _HELPER_WRITE_ACCESS_STATUSES:
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = ok_detail
+    elif status in _HELPER_BLOCKED_ACCESS_STATUSES:
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            f"{detail} (status: {status}).",
+            raw,
+            source,
+        )
+    else:
+        checked["repo_access"] = "check_failed"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            f"{detail} (status: {status}).",
+            raw,
+            source,
+        )
+    return checked
+
+
+def _run_identity_check_with_timeout(
+    operation: Callable[[], IdentityRow],
+    *,
+    row: IdentityRow,
+    raw: dict[str, object],
+    source: str,
+) -> IdentityRow:
+    result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            result_queue.put(operation())
+        except Exception as exc:  # pragma: no cover - exact backend exception varies by OS
+            result_queue.put(exc)
+
+    thread = threading.Thread(target=worker, name="agentshore-identity-check", daemon=True)
+    thread.start()
+    thread.join(_IDENTITY_CHECK_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        timed_out: IdentityRow = dict(row)  # type: ignore[assignment]
+        timed_out["repo_access"] = "check_failed"
+        timed_out["token_status"] = (
+            "auth_timeout" if source == TokenSource.LOGIN.value else "token_timeout"
+        )
+        timed_out["repo_access_detail"] = _with_identity_diagnostics(
+            _timeout_message(source),
+            raw,
+            source,
+            include_gh_status=False,
+        )
+        return timed_out
+
+    try:
+        result = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise _IdentityCheckTimeoutError("identity check returned no result") from exc
+    if isinstance(result, Exception):
+        raise result
+    return cast("IdentityRow", result)
+
+
+def _unconfigured_source_message(source: str) -> str:
+    if source == TokenSource.LOGIN.value:
+        return "GitHub CLI auth login is not configured in this desktop process."
+    return "Token source is not configured in this desktop process."
+
+
+def _timeout_message(source: str) -> str:
+    if source == TokenSource.LOGIN.value:
+        return (
+            "GitHub CLI auth and repository access verification timed out after "
+            f"{_IDENTITY_CHECK_TIMEOUT_SECONDS:.0f}s."
+        )
+    return (
+        "GitHub token and repository access verification timed out after "
+        f"{_IDENTITY_CHECK_TIMEOUT_SECONDS:.0f}s."
+    )
+
+
+def _with_identity_diagnostics(
+    message: str,
+    raw: dict[str, object],
+    source: str,
+    *,
+    include_gh_status: bool = True,
+) -> str:
+    diagnostics = _identity_diagnostics(raw, source, include_gh_status=include_gh_status)
+    return f"{message} Diagnostics: {diagnostics}" if diagnostics else message
+
+
+def _identity_diagnostics(
+    raw: dict[str, object],
+    source: str,
+    *,
+    include_gh_status: bool = True,
+) -> str:
+    """Return redacted desktop environment hints for setup-screen failures."""
+    parts = [
+        f"python={sys.executable}",
+        f"gh={shutil.which('gh') or '<missing>'}",
+        f"GH_CONFIG_DIR={_gh_env(raw).get('GH_CONFIG_DIR', '<unset>')}",
+    ]
+    for key in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
+        parts.append(f"{key}={'set' if os.environ.get(key) else 'missing'}")
+    if source == TokenSource.KEYCHAIN.value:
+        parts.append(f"keyring={_keyring_backend_name()}")
+    if include_gh_status:
+        status = _gh_auth_status_summary(raw)
+        if status:
+            parts.append(f"gh_status={status}")
+    return "; ".join(parts)
+
+
+def _gh_env(raw: dict[str, object]) -> dict[str, str]:
+    env = os.environ.copy()
+    gh_config_dir = raw.get("gh_config_dir")
+    if isinstance(gh_config_dir, str) and gh_config_dir:
+        env["GH_CONFIG_DIR"] = gh_config_dir
+    return env
+
+
+def _keyring_backend_name() -> str:
+    try:
+        import keyring
+
+        return type(keyring.get_keyring()).__name__
+    except Exception as exc:  # pragma: no cover - backend discovery varies by OS
+        return f"unavailable ({type(exc).__name__})"
+
+
+def _gh_auth_status_summary(raw: dict[str, object]) -> str:
+    gh_bin = shutil.which("gh")
+    if gh_bin is None:
+        return "gh missing"
+    try:
+        proc = subprocess.run(  # noqa: S603 — resolved absolute path
+            [gh_bin, "auth", "status", "-h", "github.com"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_gh_env(raw),
+            timeout=_GH_STATUS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return "timed out"
+    except OSError as exc:
+        return f"failed ({type(exc).__name__})"
+    output = " ".join((proc.stdout or proc.stderr or "").split())
+    if len(output) > 240:
+        output = f"{output[:237]}..."
+    return f"exit={proc.returncode}; {output or '<no output>'}"
 
 
 def add_identity(

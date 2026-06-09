@@ -2,7 +2,7 @@
 
 This document is the maintainer runbook for producing desktop release builds of
 AgentShore. macOS signing and notarization live in `scripts/build-macos.sh`.
-Windows has a user-level installer build script at `scripts/build-windows.ps1`
+Windows has a machine-wide installer build script at `scripts/build-windows.ps1`
 with optional Authenticode signing when `signtool.exe` and a code-signing
 certificate are available. CI release automation is not wired yet.
 
@@ -35,10 +35,12 @@ Windows `scripts\build-windows.ps1` produces:
 | Stage | Tool / command | Notes |
 | --- | --- | --- |
 | Build dashboard | `npm run build`, `npm run build:lib` | Same dashboard artifacts as macOS |
-| Provision bd | installer helper | Windows does not bundle `bd.exe`; the managed venv installer provisions the pinned bd dependency |
+| Build provisioner | `cargo build --bin agentshore-provisioner --locked` | Compiled Windows postinstall helper |
+| Stage uv | pinned `uv.exe` | Build fails unless `uv --version` starts with the pinned baseline |
+| Provision bd | provisioner | Windows provisions pinned `bd.exe` into `%ProgramData%\AgentShore\bin` |
 | Build wheel | `uv build --wheel` | Bundled into the installer |
 | Build app executable | `npx tauri build --no-bundle -- --locked` | Inno wraps the executable instead of Tauri NSIS/MSI |
-| Sign app executable, optional | `signtool sign` | Auto-detects a current-user code-signing cert, or use `-CertificateThumbprint` |
+| Sign app/provisioner executables, optional | `signtool sign` | Auto-detects a current-user code-signing cert, or use `-CertificateThumbprint` |
 | Build `.exe` wizard | Inno Setup 6 `ISCC.exe` | Emits `desktop\dist\AgentShoreSetup-<version>-x64.exe` |
 | Sign installer, optional | `signtool sign` | Same certificate and timestamp settings as the app executable |
 
@@ -123,7 +125,9 @@ Both platform installers expose the same deliberate choices:
 The Windows installer is machine-wide (`PrivilegesRequired=admin`) and installs
 the desktop app under `%ProgramFiles%\AgentShore`. The managed venv is under
 `%ProgramData%\AgentShore\venv`, matching the Rust supervisor's Windows lookup
-path.
+path. The provisioner also installs the pinned desktop `bd.exe` under
+`%ProgramData%\AgentShore\bin` and writes install logs under
+`%ProgramData%\AgentShore\install-logs`.
 
 ## 7. Secrets Handling
 

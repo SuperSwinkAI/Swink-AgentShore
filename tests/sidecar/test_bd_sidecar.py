@@ -109,6 +109,49 @@ def test_pinned_version_matches_runtime_pin() -> None:
     assert build_bd_sidecar.PINNED_BD_VERSION == REQUIRED_BD_VERSION
 
 
+def test_provision_bd_accepts_explicit_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.beads import setup
+
+    captured: dict[str, Path | None] = {}
+
+    monkeypatch.setattr(setup, "_beads_release_asset", lambda _version: ("bd.zip", "zip"))
+
+    def fake_download(
+        _version: str, _asset: str, _kind: str, *, dest_dir: Path | None = None
+    ) -> str:
+        captured["dest_dir"] = dest_dir
+        return str((dest_dir or tmp_path) / "bd.exe")
+
+    monkeypatch.setattr(setup, "_download_bd", fake_download)
+
+    assert setup.provision_bd(assume_yes=True, dest_dir=tmp_path) == str(tmp_path / "bd.exe")
+    assert captured["dest_dir"] == tmp_path
+
+
+def test_provision_bd_default_destination_remains_managed_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.beads import setup
+
+    captured: dict[str, Path | None] = {}
+
+    monkeypatch.setattr(setup, "_beads_release_asset", lambda _version: ("bd.zip", "zip"))
+    monkeypatch.setattr(setup, "managed_bd_dir", lambda: tmp_path / "managed-bd")
+
+    def fake_download(
+        _version: str, _asset: str, _kind: str, *, dest_dir: Path | None = None
+    ) -> str:
+        captured["dest_dir"] = dest_dir
+        return str((dest_dir or setup.managed_bd_dir()) / "bd.exe")
+
+    monkeypatch.setattr(setup, "_download_bd", fake_download)
+
+    assert setup.provision_bd(assume_yes=True) == str(tmp_path / "managed-bd" / "bd.exe")
+    assert captured["dest_dir"] is None
+
+
 def test_pinned_checksums_reference_pinned_version() -> None:
     """Every checksum row must belong to the pinned version (stale-row guard)."""
     build_bd_sidecar = _load_build_module()

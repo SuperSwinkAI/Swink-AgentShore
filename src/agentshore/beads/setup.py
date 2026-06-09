@@ -169,7 +169,7 @@ def _httpx_verify_config() -> bool | ssl.SSLContext:
     return True
 
 
-def _download_bd(version: str, asset: str, kind: str) -> str:
+def _download_bd(version: str, asset: str, kind: str, *, dest_dir: Path | None = None) -> str:
     """Download, checksum-verify, and install bd; return the installed path."""
     import hashlib
 
@@ -192,9 +192,9 @@ def _download_bd(version: str, asset: str, kind: str) -> str:
         raise RuntimeError(f"sha256 mismatch for {asset}: expected {expected}, got {actual}")
 
     bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
-    dest_dir = managed_bd_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / bd_name
+    target_dir = dest_dir or managed_bd_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / bd_name
     _extract_bd(archive.content, kind, bd_name, dest)
     if not sys.platform.startswith("win"):
         dest.chmod(0o755)
@@ -227,7 +227,7 @@ def _drain_terminal_input() -> None:
         pass
 
 
-def provision_bd(*, assume_yes: bool = False) -> str | None:
+def provision_bd(*, assume_yes: bool = False, dest_dir: Path | None = None) -> str | None:
     """Best-effort download of the pinned bd into the managed dir.
 
     Returns the installed path, or ``None`` when the platform is unsupported,
@@ -260,7 +260,7 @@ def provision_bd(*, assume_yes: bool = False) -> str | None:
             return None
 
     try:
-        return _download_bd(version, asset, kind)
+        return _download_bd(version, asset, kind, dest_dir=dest_dir)
     except Exception as exc:  # best-effort: never block init on a download failure
         _logger.warning("bd_provision_failed", error=str(exc), version=version, asset=asset)
         return None
