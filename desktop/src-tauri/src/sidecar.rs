@@ -2,7 +2,9 @@ use crate::jsonrpc_stdio::{
     decode_response_line, encode_line, handshake_request, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse,
 };
-use crate::sidecar_env::{apply_no_window_creation_flags, apply_user_path_overlay};
+use crate::sidecar_env::{
+    apply_no_window_creation_flags, apply_user_path_overlay, apply_windows_headless_env,
+};
 use crate::sidecar_pid::{remove_sidecar_pid_file, write_sidecar_pid_file};
 use crate::sidecar_runtime::{
     development_sidecar_command, locate_machine_managed_bd, locate_managed_venv_python,
@@ -20,8 +22,10 @@ use tauri::{AppHandle, Emitter, Manager};
 const CLIENT_NAME: &str = "agentshore-desktop";
 const MAX_STDERR_LINES: usize = 50;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
-const HANDSHAKE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const SETUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Env override for the handshake budget (seconds). Lets support widen it on a
+/// pathologically slow box without a rebuild.
+const HANDSHAKE_TIMEOUT_ENV: &str = "AGENTSHORE_HANDSHAKE_TIMEOUT_SECS";
 const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
 const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
@@ -52,6 +56,29 @@ pub fn resolve_build_id() -> String {
     match std::env::var(BUILD_ID_ENV) {
         Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
         _ => DEV_BUILD_ID.to_string(),
+    }
+}
+
+/// Budget for the initial ``app.handshake`` round-trip.
+///
+/// A Windows cold start under antivirus (Defender/Avast scanning ``python.exe``
+/// and the first ``import agentshore.sidecar``) routinely exceeds a 30s wall and
+/// would otherwise trip the supervisor into the fatal-error screen even though
+/// the sidecar is alive and about to answer. Give Windows a wider budget; other
+/// platforms keep the original 30s. Overridable via
+/// ``AGENTSHORE_HANDSHAKE_TIMEOUT_SECS`` for field diagnosis.
+fn handshake_response_timeout() -> Duration {
+    if let Ok(raw) = std::env::var(HANDSHAKE_TIMEOUT_ENV) {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    if cfg!(target_os = "windows") {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(30)
     }
 }
 
@@ -213,7 +240,7 @@ impl SidecarSupervisor {
         let build_id = resolve_build_id();
         let handshake = handshake_request(1, CLIENT_NAME, &build_id);
         let response = supervisor
-            .send_request(&handshake, HANDSHAKE_RESPONSE_TIMEOUT)
+            .send_request(&handshake, handshake_response_timeout())
             .map_err(|reason| SupervisorStartError::Other { reason })?;
 
         if let Some(err) = response.error {
@@ -440,6 +467,7 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
         .stderr(Stdio::piped());
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     apply_no_window_creation_flags(&mut cmd);
+    apply_windows_headless_env(&mut cmd);
     if let Some(p) = bd_path {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
     } else if let Some(p) = locate_machine_managed_bd() {
@@ -759,6 +787,19 @@ mod tests {
         );
 
         std::env::remove_var(BUILD_ID_ENV);
+    }
+
+    #[test]
+    fn handshake_response_timeout_covers_env_and_default() {
+        // Env override wins.
+        std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "7");
+        assert_eq!(handshake_response_timeout(), Duration::from_secs(7));
+        // Non-positive / non-numeric override falls back to the platform default.
+        std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "  0 ");
+        let default_secs = if cfg!(target_os = "windows") { 90 } else { 30 };
+        assert_eq!(handshake_response_timeout(), Duration::from_secs(default_secs));
+        std::env::remove_var(HANDSHAKE_TIMEOUT_ENV);
+        assert_eq!(handshake_response_timeout(), Duration::from_secs(default_secs));
     }
 
     #[test]

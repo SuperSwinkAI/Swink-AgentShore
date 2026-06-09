@@ -16,6 +16,24 @@ pub(crate) fn apply_no_window_creation_flags(cmd: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn apply_no_window_creation_flags(_cmd: &mut Command) {}
 
+/// Windows-only headless/utf-8 environment for the sidecar process.
+///
+/// Belt-and-suspenders so even a git/gh spawn inside the sidecar that has not
+/// yet been routed through ``agentshore.subprocess_env`` still runs
+/// non-interactively (never blocks on a Git-Credential-Manager / askpass dialog
+/// the headless ``CREATE_NO_WINDOW`` process can never answer) and emits utf-8.
+/// No-op off Windows so macOS/Linux behavior is unchanged.
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_windows_headless_env(cmd: &mut Command) {
+    cmd.env("PYTHONUTF8", "1");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GH_PROMPT_DISABLED", "1");
+    cmd.env("GH_NO_UPDATE_NOTIFIER", "1");
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn apply_windows_headless_env(_cmd: &mut Command) {}
+
 /// Prepend common user-install locations so the sidecar sees tools installed
 /// through terminals, Homebrew, npm, uv, winget, and the Windows installer.
 pub(crate) fn apply_user_path_overlay(cmd: &mut Command) {
@@ -83,8 +101,20 @@ pub(crate) fn apply_user_path_overlay(cmd: &mut Command) {
         }
     }
 
-    if let Ok(joined) = std::env::join_paths(entries) {
-        cmd.env("PATH", joined);
+    match std::env::join_paths(entries) {
+        Ok(joined) => {
+            cmd.env("PATH", joined);
+        }
+        Err(err) => {
+            // Windows caps a single env var near 32KB; if the overlaid PATH
+            // exceeds it, join_paths errs. Don't silently drop the overlay
+            // (which would lose git/gh discovery) — keep the inherited PATH and
+            // leave a breadcrumb so the failure is diagnosable.
+            eprintln!(
+                "[agentshore-desktop][sidecar] PATH overlay join failed ({err}); \
+                 using inherited PATH"
+            );
+        }
     }
 }
 
