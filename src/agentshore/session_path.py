@@ -542,6 +542,9 @@ def _process_alive_windows(pid: int) -> bool:
     import ctypes
     from ctypes import wintypes
 
+    if sys.platform != "win32":  # pragma: no cover
+        return False  # unreachable; only called on Windows
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
