@@ -187,12 +187,12 @@ def test_inspect_returns_envelope_for_git_repo(git_repo: Path) -> None:
 
 
 def test_prerequisites_uses_managed_bd_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_which(name: str) -> str | None:
+    def fake_resolve(name: str) -> str | None:
         if name in {"git", "gh"}:
             return f"/usr/bin/{name}"
         return None
 
-    monkeypatch.setattr(project_rpc.shutil, "which", fake_which)
+    monkeypatch.setattr(project_rpc.subprocess_env, "resolve_tool", fake_resolve)
     monkeypatch.setattr(
         project_rpc, "resolve_bd_binary", lambda: r"C:\Users\x\AppData\Local\Programs\bd\bd.exe"
     )
@@ -212,6 +212,13 @@ def test_inspect_handles_non_git_path(tmp_path: Path) -> None:
 def test_run_git_times_out_instead_of_hanging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Resolve git to a fixed fake path so the probe is hermetic regardless of
+    # whether git is installed on the test box, then make the spawn time out.
+    monkeypatch.setattr(
+        "agentshore.subprocess_env.resolve_tool",
+        lambda name: "/usr/bin/git" if name == "git" else None,
+    )
+
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["git", "rev-parse", "HEAD"], timeout=0.01)
 
@@ -301,19 +308,33 @@ def test_branches_lists_local_and_remote(git_repo: Path) -> None:
     assert feature_row["is_current"] is False
 
 
-def test_branches_skips_ahead_behind_for_fast_setup_load(git_repo: Path) -> None:
-    # Add an extra commit on main locally. The setup branch picker should still
-    # return immediately and leave ahead/behind at zero instead of scanning
-    # history for every branch.
+def test_branches_passive_load_does_not_probe_git(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_run_git(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("passive target-branch load should not spawn git")
+
+    monkeypatch.setattr(project_rpc, "_run_git", fail_run_git)
+    project_rpc.select(str(git_repo))
+
+    rows = project_rpc.branches()
+
+    assert {row["name"] for row in rows} >= {"main", "feature/x"}
+    assert all(row["ahead"] == 0 and row["behind"] == 0 for row in rows)
+
+
+def test_branches_refresh_reports_ahead_behind(git_repo: Path) -> None:
+    # Add an extra commit on main locally. Explicit refresh preserves the richer
+    # Mac-era Git metadata path while the passive setup load stays filesystem-only.
     (git_repo / "extra.txt").write_text("e\n")
     _git(["add", "extra.txt"], git_repo)
     _git(["commit", "-m", "extra"], git_repo)
 
     project_rpc.select(str(git_repo))
-    rows = project_rpc.branches()
+    rows = project_rpc.branches(refresh=True)
 
     main_row = next(r for r in rows if r["name"] == "main" and not r["is_remote"])
-    assert main_row["ahead"] == 0
+    assert main_row["ahead"] == 1
     assert main_row["behind"] == 0
 
 
@@ -333,16 +354,41 @@ def test_ahead_behind_skips_when_deadline_expired(
     ) == (0, 0)
 
 
-def test_branches_does_not_invoke_git_subprocess(
+def test_branches_refresh_fetches_and_bounds_git_probes(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_rpc.select(str(git_repo))
+    calls: list[tuple[list[str], float]] = []
 
-    def fail_run_git(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise AssertionError("project.branches should read filesystem refs without invoking git")
+    def fake_run_git(
+        args: list[str],
+        _cwd: Path,
+        *,
+        timeout_seconds: float = project_rpc.GIT_PROBE_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((args, timeout_seconds))
+        stdout = ""
+        if args == ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]:
+            stdout = "origin/main\n"
+        elif args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            stdout = "main\n"
+        elif args == ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]:
+            stdout = "main\nfeature/x\n"
+        elif args == ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"]:
+            stdout = "origin/HEAD\norigin/main\norigin/feature/x\n"
+        elif args[0] == "rev-list":
+            stdout = "0 0\n"
+        return subprocess.CompletedProcess(["git", *args], 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(project_rpc, "_run_git", fail_run_git)
-    project_rpc.branches(refresh=True)
+    monkeypatch.setattr(project_rpc, "_run_git", fake_run_git)
+    rows = project_rpc.branches(refresh=True)
+
+    assert rows[0]["name"] == "main"
+    assert calls[0][0] == ["fetch", "--prune", "origin"]
+    assert 0 < calls[0][1] <= project_rpc.BRANCH_LIST_TIMEOUT_SECONDS
+    called_args = [call[0] for call in calls]
+    assert ["for-each-ref", "--format=%(refname:short)", "refs/heads/"] in called_args
+    assert ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"] in called_args
 
 
 # ---------------------------------------------------------------------------

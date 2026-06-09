@@ -325,7 +325,10 @@ if (-not $NoSign) {
         Invoke-AuthenticodeSign -FilePath $AppExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
         Invoke-AuthenticodeSign -FilePath $ProvisionerExe -SignToolPath $ResolvedSignTool -Thumbprint $ResolvedThumbprint
     } else {
-        Write-Step "Skipping Authenticode signing"
+        if (-not $DebugBuild) {
+            Die "Release Windows builds must be Authenticode-signed to reduce SmartScreen/AV heuristics. Install signtool.exe and a current-user code-signing certificate, pass -CertificateThumbprint, or intentionally pass -NoSign for local-only testing."
+        }
+        Write-Step "Skipping Authenticode signing for debug build"
         if (-not $ResolvedSignTool) { Write-Info "signtool.exe not found." }
         if (-not $ResolvedThumbprint) { Write-Info "No current-user code-signing certificate with a private key was found." }
     }

@@ -43,9 +43,9 @@ def _identity_executable_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     argv[0] == 'codex') hold regardless of what npm shims are installed. The
     dedicated _resolve_executable tests patch shutil.which themselves.
     """
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli_process as cli_process
 
-    monkeypatch.setattr(ca.shutil, "which", lambda name: name)
+    monkeypatch.setattr(cli_process.shutil, "which", lambda name: name)
 
 
 def _make_cfg(*, timeout: int | None = None, max_output_size: int = 10_000_000) -> AgentConfig:
@@ -334,8 +334,9 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
         AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
     )
     gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
+    grok = build_argv(AgentType.GROK, huge, binary="grok", prompt_on_stdin=True)
 
-    for argv in (claude, codex, gemini):
+    for argv in (claude, codex, gemini, grok):
         assert huge not in argv
 
     # claude -p with no prompt arg reads stdin (last token stays a flag/value).
@@ -345,6 +346,8 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     assert codex[-1] == "-"
     # gemini stays headless via an empty -p while the prompt arrives on stdin.
     assert gemini[-2:] == ["-p", ""]
+    # grok uses the same empty -p headless shape while stdin carries the prompt.
+    assert grok[-2:] == ["-p", ""]
 
 
 async def test_feed_prompt_stdin_writes_and_closes() -> None:
@@ -406,7 +409,7 @@ def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyP
     def fake_which(name: str) -> str | None:
         return f"/usr/local/bin/{name}" if name in {"grok", "grok-build"} else None
 
-    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+    monkeypatch.setattr("agentshore.agents.cli_grok.shutil.which", fake_which)
 
     argv = build_argv(AgentType.GROK, "do the thing")
 
@@ -419,7 +422,7 @@ def test_build_argv_grok_falls_back_to_grok_build_alias(
     def fake_which(name: str) -> str | None:
         return "/usr/local/bin/grok-build" if name == "grok-build" else None
 
-    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+    monkeypatch.setattr("agentshore.agents.cli_grok.shutil.which", fake_which)
 
     argv = build_argv(AgentType.GROK, "do the thing")
 
@@ -552,7 +555,7 @@ async def test_dispatch_cli_does_not_resume_by_default(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli_process.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -585,7 +588,7 @@ async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
         return proc
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli_process.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -615,7 +618,7 @@ async def test_dispatch_cli_never_resumes(
         return _FakeProcess(_claude_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli_process.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1285,9 +1288,10 @@ def test_resolve_executable_resolves_npm_shim_on_windows(
     """codex/claude/gemini are .cmd npm shims; CreateProcess only finds bare
     names ending in .exe, so resolve to the full .cmd path via shutil.which."""
     from agentshore.agents import cli_agent as ca
+    from agentshore.agents import cli_process
 
-    monkeypatch.setattr(ca.sys, "platform", "win32")
-    monkeypatch.setattr(ca.shutil, "which", lambda _name: r"C:\npm\codex.CMD")
+    monkeypatch.setattr(cli_process.sys, "platform", "win32")
+    monkeypatch.setattr(cli_process.shutil, "which", lambda _name: r"C:\npm\codex.CMD")
 
     out = ca._resolve_executable(["codex", "exec", "--json"])
     assert out == [r"C:\npm\codex.CMD", "exec", "--json"]
@@ -1295,8 +1299,9 @@ def test_resolve_executable_resolves_npm_shim_on_windows(
 
 def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.agents import cli_agent as ca
+    from agentshore.agents import cli_process
 
-    monkeypatch.setattr(ca.sys, "platform", "linux")
+    monkeypatch.setattr(cli_process.sys, "platform", "linux")
     assert ca._resolve_executable(["codex", "exec"]) == ["codex", "exec"]
 
 
@@ -1304,10 +1309,11 @@ def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) 
     import os
 
     from agentshore.agents import cli_agent as ca
+    from agentshore.agents import cli_process
 
-    monkeypatch.setattr(ca.sys, "platform", "win32")
+    monkeypatch.setattr(cli_process.sys, "platform", "win32")
     called: list[str] = []
-    monkeypatch.setattr(ca.shutil, "which", lambda n: called.append(n) or None)
+    monkeypatch.setattr(cli_process.shutil, "which", lambda n: called.append(n) or None)
     abs_path = os.path.abspath("python")  # absolute on the test runner
 
     assert ca._resolve_executable([abs_path, "script"]) == [abs_path, "script"]
@@ -1316,9 +1322,10 @@ def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) 
 
 def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.agents import cli_agent as ca
+    from agentshore.agents import cli_process
 
-    monkeypatch.setattr(ca.sys, "platform", "win32")
-    monkeypatch.setattr(ca.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_process.sys, "platform", "win32")
+    monkeypatch.setattr(cli_process.shutil, "which", lambda _name: None)
     assert ca._resolve_executable(["missing", "arg"]) == ["missing", "arg"]
 
 

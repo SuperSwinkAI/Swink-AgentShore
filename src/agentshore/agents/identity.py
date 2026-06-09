@@ -26,6 +26,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agentshore import subprocess_env
 from agentshore.environment import resolve_executable
 from agentshore.errors import AgentAuthError, OrchestratorError
 from agentshore.identity_names import (
@@ -137,6 +138,8 @@ def _github_repo_name_from_remote(project_path: Path) -> str:
             text=True,
             check=False,
             timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
+            env=subprocess_env.hardened_env(for_git=True),
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         raise AgentAuthError(
@@ -274,9 +277,8 @@ class IdentityResolver:
             _logger.warning("identity_gh_cli_missing", login=login)
             return None
 
-        env = os.environ.copy()
-        if expanded_config_dir:
-            env["GH_CONFIG_DIR"] = expanded_config_dir
+        overlay = {"GH_CONFIG_DIR": expanded_config_dir} if expanded_config_dir else None
+        env = subprocess_env.hardened_env(overlay, for_gh=True)
 
         try:
             result = subprocess.run(  # nosec B603
@@ -286,6 +288,7 @@ class IdentityResolver:
                 check=True,
                 timeout=10,
                 env=env,
+                creationflags=subprocess_env.no_window_creationflags(),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             _logger.warning(
@@ -341,7 +344,7 @@ class IdentityResolver:
             self._validation_cache[token] = validation
             return validation
 
-        env = {**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token}
+        env = subprocess_env.hardened_env({"GH_TOKEN": token, "GITHUB_TOKEN": token}, for_gh=True)
         try:
             completed = subprocess.run(  # nosec B603
                 [gh_path, "api", "user", "--jq", ".login"],
@@ -350,6 +353,7 @@ class IdentityResolver:
                 check=False,
                 timeout=10,
                 env=env,
+                creationflags=subprocess_env.no_window_creationflags(),
             )
         except (subprocess.SubprocessError, OSError) as exc:
             validation = (False, None, str(exc))

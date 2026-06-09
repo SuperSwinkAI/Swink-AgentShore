@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
-import queue
-import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 import yaml
 
+from agentshore import subprocess_env
 from agentshore.agents.identity import IdentityResolutionError, verify_identity_repo_access
 from agentshore.errors import AgentAuthError
 from agentshore.identity_names import (
@@ -25,8 +24,8 @@ from agentshore.identity_names import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
+
 
 class IdentityRow(TypedDict):
     login: str
@@ -59,7 +58,6 @@ _GH_TOKEN_TIMEOUT_SECONDS = 10.0
 _GH_STATUS_TIMEOUT_SECONDS = 5.0
 _IDENTITY_CHECK_TIMEOUT_SECONDS = 20.0
 _KEYRING_TIMEOUT_SECONDS = 5.0
-_KEYRING_SLOTS = threading.BoundedSemaphore(value=2)
 
 
 class _KeyringTimeoutError(RuntimeError):
@@ -89,39 +87,89 @@ def _clean_token(token: str | None) -> str | None:
     return cleaned or None
 
 
-def _run_keyring_operation[T](operation: Callable[[], T]) -> T:
-    """Run an OS credential operation without letting it block the sidecar.
+_KEYRING_CHILD_CODE = r"""
+import json
+import sys
 
-    Windows Credential Manager and third-party keyring backends can occasionally
-    stall while probing desktop/session state. Running the operation in a
-    bounded daemon thread lets the RPC return a conservative answer instead of
-    pinning the setup screen until Tauri's outer sidecar timeout fires.
+request = json.loads(sys.stdin.read() or "{}")
+try:
+    import keyring
+
+    op = request.get("op")
+    service = str(request.get("service") or "")
+    if op == "get":
+        token = keyring.get_password(service, service)
+        print(json.dumps({"ok": True, "token": token}))
+    elif op == "set":
+        keyring.set_password(service, service, str(request.get("token") or ""))
+        print(json.dumps({"ok": True}))
+    elif op == "backend":
+        print(json.dumps({"ok": True, "backend": type(keyring.get_keyring()).__name__}))
+    else:
+        print(json.dumps({"ok": False, "error": f"unsupported op: {op}"}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+"""
+
+
+_IDENTITY_CHECK_CHILD_CODE = r"""
+import json
+import sys
+from pathlib import Path
+
+from agentshore.sidecar import identities
+
+request = json.loads(sys.stdin.read() or "{}")
+try:
+    project_path = Path(str(request.get("project_path") or ""))
+    raw = request.get("raw")
+    row = request.get("row")
+    source = str(request.get("source") or "")
+    if not isinstance(raw, dict) or not isinstance(row, dict):
+        raise ValueError("raw and row must be JSON objects")
+    if source == identities.TokenSource.LOGIN.value:
+        result = identities._check_gh_auth_identity_access(project_path, raw, row)
+    else:
+        result = identities._check_token_identity_access(project_path, raw, row, source)
+    print(json.dumps({"ok": True, "row": result}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+"""
+
+
+def _run_keyring_child(request: dict[str, object]) -> dict[str, object]:
+    """Run one OS credential operation in a killable child process.
+
+    Keyring backends can wedge inside OS credential discovery. A daemon thread
+    can return a timeout to the UI, but the backend call keeps running inside
+    the sidecar forever. A subprocess gives the timeout real teeth: Python kills
+    and reaps the child when ``subprocess.run(..., timeout=...)`` expires.
     """
-    if not _KEYRING_SLOTS.acquire(blocking=False):
-        raise _KeyringTimeoutError("another keyring operation is still running")
-
-    result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
-
-    def worker() -> None:
-        try:
-            result_queue.put(operation())
-        except Exception as exc:  # pragma: no cover - exact backend exception varies by OS
-            result_queue.put(exc)
-        finally:
-            _KEYRING_SLOTS.release()
-
-    thread = threading.Thread(target=worker, name="agentshore-keyring", daemon=True)
-    thread.start()
-    thread.join(_KEYRING_TIMEOUT_SECONDS)
-    if thread.is_alive():
-        raise _KeyringTimeoutError("keyring operation timed out")
     try:
-        result = result_queue.get_nowait()
-    except queue.Empty as exc:
-        raise _KeyringTimeoutError("keyring operation returned no result") from exc
-    if isinstance(result, Exception):
-        raise result
-    return cast("T", result)
+        proc = subprocess.run(  # noqa: S603 - same Python executable, fixed -c payload
+            [sys.executable, "-c", _KEYRING_CHILD_CODE],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_KEYRING_TIMEOUT_SECONDS,
+            creationflags=subprocess_env.no_window_creationflags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _KeyringTimeoutError("keyring operation timed out") from exc
+    except OSError as exc:
+        raise RuntimeError(f"keyring child failed to start: {exc}") from exc
+
+    try:
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("keyring child returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("keyring child returned non-object JSON")
+    if payload.get("ok") is True:
+        return payload
+    error = payload.get("error")
+    raise RuntimeError(str(error or "keyring operation failed"))
 
 
 def _validate_token_matches_login(entry: dict[str, object], expected_login: str) -> None:
@@ -182,13 +230,10 @@ def _keyring_get(service: str) -> str | None:
     Windows Credential Manager and third-party keyring providers may stall while
     discovering the active desktop session.
     """
-    def operation() -> str | None:
-        import keyring  # local import: keyring backends can do OS setup at import time
-
-        return keyring.get_password(service, service)
-
     try:
-        return _run_keyring_operation(operation)
+        result = _run_keyring_child({"op": "get", "service": service})
+        token = result.get("token")
+        return token if isinstance(token, str) else None
     except Exception:
         return None
 
@@ -201,13 +246,8 @@ def _keychain_has_token(service: str) -> bool:
 
 def _keyring_set_password(service: str, pat: str) -> None:
     """Store *pat* in the OS credential store without risking a hung setup RPC."""
-    def operation() -> None:
-        import keyring  # local import: keyring backends can do OS setup at import time
-
-        keyring.set_password(service, service, pat)
-
     try:
-        _run_keyring_operation(operation)
+        _run_keyring_child({"op": "set", "service": service, "token": pat})
     except _KeyringTimeoutError as exc:
         raise ValueError(f"credential store did not respond in time: {exc}") from exc
     except Exception as exc:
@@ -245,11 +285,14 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
     surface gh-auth problems as gh-auth problems, not as generic missing tokens.
     """
     expected_login = canonical_identity_name(str(raw["gh_token_login"]))
-    env = os.environ.copy()
     gh_config_dir = raw.get("gh_config_dir")
-    if isinstance(gh_config_dir, str) and gh_config_dir:
-        env["GH_CONFIG_DIR"] = gh_config_dir
-    gh_bin = shutil.which("gh")
+    overlay = (
+        {"GH_CONFIG_DIR": gh_config_dir}
+        if isinstance(gh_config_dir, str) and gh_config_dir
+        else None
+    )
+    env = subprocess_env.hardened_env(overlay, for_gh=True)
+    gh_bin = subprocess_env.resolve_tool("gh")
     if gh_bin is None:
         return _CredentialResolution(
             token=None,
@@ -264,6 +307,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             check=False,
             env=env,
             timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:
         return _CredentialResolution(
@@ -293,6 +337,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             check=False,
             env=env,
             timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:
         return _CredentialResolution(
@@ -473,11 +518,7 @@ def check_identity_access(project_path: Path, login: str) -> IdentityRow:
         return row
 
     return _run_identity_check_with_timeout(
-        lambda: (
-            _check_gh_auth_identity_access(project_path, raw, row)
-            if source == TokenSource.LOGIN.value
-            else _check_token_identity_access(project_path, raw, row, source)
-        ),
+        project_path,
         row=row,
         raw=raw,
         source=source,
@@ -551,25 +592,61 @@ def _check_token_identity_access(
         checked["repo_access_detail"] = "GitHub token and repository access verified."
     return checked
 
-def _run_identity_check_with_timeout(
-    operation: Callable[[], IdentityRow],
+
+def _run_identity_check_child(
+    project_path: Path,
     *,
     row: IdentityRow,
     raw: dict[str, object],
     source: str,
 ) -> IdentityRow:
-    result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+    """Run one repo-access identity probe in a killable child process."""
+    request = {
+        "project_path": str(project_path),
+        "row": row,
+        "raw": raw,
+        "source": source,
+    }
+    try:
+        proc = subprocess.run(  # noqa: S603 - same Python executable, fixed -c payload
+            [sys.executable, "-c", _IDENTITY_CHECK_CHILD_CODE],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_IDENTITY_CHECK_TIMEOUT_SECONDS,
+            creationflags=subprocess_env.no_window_creationflags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _IdentityCheckTimeoutError("identity check timed out") from exc
+    except OSError as exc:
+        raise RuntimeError(f"identity check child failed to start: {exc}") from exc
 
-    def worker() -> None:
-        try:
-            result_queue.put(operation())
-        except Exception as exc:  # pragma: no cover - exact backend exception varies by OS
-            result_queue.put(exc)
+    try:
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("identity check child returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("identity check child returned non-object JSON")
+    if payload.get("ok") is not True:
+        error = payload.get("error")
+        raise RuntimeError(str(error or "identity check failed"))
+    child_row = payload.get("row")
+    if not isinstance(child_row, dict):
+        raise RuntimeError("identity check child returned invalid row")
+    return cast("IdentityRow", child_row)
 
-    thread = threading.Thread(target=worker, name="agentshore-identity-check", daemon=True)
-    thread.start()
-    thread.join(_IDENTITY_CHECK_TIMEOUT_SECONDS)
-    if thread.is_alive():
+
+def _run_identity_check_with_timeout(
+    project_path: Path,
+    *,
+    row: IdentityRow,
+    raw: dict[str, object],
+    source: str,
+) -> IdentityRow:
+    try:
+        return _run_identity_check_child(project_path, row=row, raw=raw, source=source)
+    except _IdentityCheckTimeoutError:
         timed_out: IdentityRow = dict(row)  # type: ignore[assignment]
         timed_out["repo_access"] = "check_failed"
         timed_out["token_status"] = (
@@ -582,14 +659,6 @@ def _run_identity_check_with_timeout(
             include_gh_status=False,
         )
         return timed_out
-
-    try:
-        result = result_queue.get_nowait()
-    except queue.Empty as exc:
-        raise _IdentityCheckTimeoutError("identity check returned no result") from exc
-    if isinstance(result, Exception):
-        raise result
-    return cast("IdentityRow", result)
 
 
 def _unconfigured_source_message(source: str) -> str:
@@ -630,7 +699,7 @@ def _identity_diagnostics(
     """Return redacted desktop environment hints for setup-screen failures."""
     parts = [
         f"python={sys.executable}",
-        f"gh={shutil.which('gh') or '<missing>'}",
+        f"gh={subprocess_env.resolve_tool('gh') or '<missing>'}",
         f"GH_CONFIG_DIR={_gh_env(raw).get('GH_CONFIG_DIR', '<unset>')}",
     ]
     for key in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
@@ -645,24 +714,26 @@ def _identity_diagnostics(
 
 
 def _gh_env(raw: dict[str, object]) -> dict[str, str]:
-    env = os.environ.copy()
     gh_config_dir = raw.get("gh_config_dir")
-    if isinstance(gh_config_dir, str) and gh_config_dir:
-        env["GH_CONFIG_DIR"] = gh_config_dir
-    return env
+    overlay = (
+        {"GH_CONFIG_DIR": gh_config_dir}
+        if isinstance(gh_config_dir, str) and gh_config_dir
+        else None
+    )
+    return subprocess_env.hardened_env(overlay, for_gh=True)
 
 
 def _keyring_backend_name() -> str:
     try:
-        import keyring
-
-        return type(keyring.get_keyring()).__name__
+        result = _run_keyring_child({"op": "backend"})
+        backend = result.get("backend")
+        return backend if isinstance(backend, str) and backend else "unknown"
     except Exception as exc:  # pragma: no cover - backend discovery varies by OS
         return f"unavailable ({type(exc).__name__})"
 
 
 def _gh_auth_status_summary(raw: dict[str, object]) -> str:
-    gh_bin = shutil.which("gh")
+    gh_bin = subprocess_env.resolve_tool("gh")
     if gh_bin is None:
         return "gh missing"
     try:
@@ -673,6 +744,7 @@ def _gh_auth_status_summary(raw: dict[str, object]) -> str:
             check=False,
             env=_gh_env(raw),
             timeout=_GH_STATUS_TIMEOUT_SECONDS,
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:
         return "timed out"

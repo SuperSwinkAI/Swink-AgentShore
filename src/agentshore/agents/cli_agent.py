@@ -6,13 +6,27 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import signal
-import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
+from agentshore.agents import cli_grok
+from agentshore.agents.cli_process import (
+    feed_prompt_stdin as _feed_prompt_stdin,
+)
+from agentshore.agents.cli_process import (
+    kill_process_windows as _kill_process_windows_impl,
+)
+from agentshore.agents.cli_process import (
+    no_window_creationflags as _no_window_creationflags,
+)
+from agentshore.agents.cli_process import (
+    prompt_on_stdin as _prompt_on_stdin,
+)
+from agentshore.agents.cli_process import (
+    resolve_executable as _resolve_executable,
+)
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
@@ -269,12 +283,6 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
 }
-_GROK_CLI_MODEL_ALIASES: dict[str, str] = {
-    "grok-build-0.1": "grok-build",
-    "grok-code-fast-1": "grok-build",
-    "grok-code-fast": "grok-build",
-    "grok-code-fast-1-0825": "grok-build",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,20 +339,6 @@ def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> 
     if extra_flags:
         return extra_flags
     return _DEFAULT_YOLO_FLAGS.get(agent_type, ())
-
-
-def _default_grok_binary() -> str:
-    """Prefer ``grok`` but support hosts that only have the ``grok-build`` alias."""
-    if shutil.which("grok") is not None:
-        return "grok"
-    if shutil.which("grok-build") is not None:
-        return "grok-build"
-    return "grok"
-
-
-def _grok_cli_model(model: str) -> str:
-    """Return the model id accepted by the installed Grok CLI."""
-    return _GROK_CLI_MODEL_ALIASES.get(model, model)
 
 
 # ---------------------------------------------------------------------------
@@ -429,25 +423,15 @@ def build_argv(
         return args
 
     if agent_type == AgentType.GROK:
-        binary = binary or _default_grok_binary()
-        if model:
-            model = _grok_cli_model(model)
-        args = [
-            binary,
-            "--no-auto-update",
-            "--no-subagents",
-            "--verbatim",
-        ]
-        if project_dir:
-            args += ["--cwd", project_dir]
-        args += ["--output-format", "streaming-json"]
-        if model:
-            args += ["-m", model]
-        if reasoning_effort:
-            args += ["--reasoning-effort", reasoning_effort]
-        args.extend(extra_flags)
-        args += ["-p", prompt]
-        return args
+        return cli_grok.build_argv(
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+        )
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
     raise ValueError(msg)
@@ -456,74 +440,6 @@ def build_argv(
 # ---------------------------------------------------------------------------
 # Core dispatch helpers
 # ---------------------------------------------------------------------------
-
-
-def _no_window_creationflags() -> int:
-    """``CREATE_NO_WINDOW`` on Windows so spawned agent CLIs don't pop a console.
-
-    The detached background orchestrator runs with a hidden console that its
-    children inherit, but set the flag explicitly here too so agent CLIs never
-    flash a terminal window in any launch mode (foreground TUI included). 0 on
-    POSIX (the param is Windows-only and ignored there).
-    """
-    if sys.platform == "win32":
-        import subprocess
-
-        return subprocess.CREATE_NO_WINDOW
-    return 0
-
-
-def _resolve_executable(argv: list[str]) -> list[str]:
-    """On Windows, resolve argv[0] to its full path so .cmd/.bat shims run.
-
-    Agent CLIs are usually npm shims (codex.cmd / claude.cmd / gemini.cmd) with
-    no .exe. ``create_subprocess_exec`` passes the bare name to CreateProcess,
-    which only appends ".exe" — so "codex" raises WinError 2 even though
-    codex.cmd is on PATH. ``shutil.which`` finds the shim via PATHEXT, and
-    subprocess can execute a .cmd directly when given the full path. No-op on
-    POSIX (PATH search there already resolves bare names) and when argv[0] is
-    already absolute or cannot be resolved.
-    """
-    if sys.platform != "win32" or not argv or os.path.isabs(argv[0]):
-        return argv
-    resolved = shutil.which(argv[0])
-    if resolved is None:
-        return argv
-    return [resolved, *argv[1:]]
-
-
-def _prompt_on_stdin(python_executable: str | None) -> bool:
-    """Whether to deliver the prompt over stdin rather than as an argv element.
-
-    Windows only, and never for the python-shim test path (its argv carries no
-    prompt). See :func:`build_argv` for why: npm ``.cmd`` shims expand a large
-    prompt argument through cmd.exe and trip its ~8191-char command-line limit.
-    """
-    return python_executable is None and sys.platform == "win32"
-
-
-async def _feed_prompt_stdin(proc: asyncio.subprocess.Process, prompt: str) -> None:
-    """Write *prompt* to the child's stdin and close it.
-
-    Scheduled as a task that runs concurrently with the stdout reader so a
-    child which streams output while still consuming a large prompt can't
-    deadlock on a full pipe. All write errors are swallowed: a child that
-    exits before reading the whole prompt (BrokenPipe) is the reader's problem
-    to report, not this feeder's.
-    """
-    stdin = proc.stdin
-    if stdin is None:
-        return
-    try:
-        stdin.write(prompt.encode("utf-8"))
-        await stdin.drain()
-    except OSError:
-        pass
-    finally:
-        with contextlib.suppress(OSError):
-            stdin.close()
-
-
 def _build_dispatch_argv(
     handle: AgentHandle,
     prompt: str,
@@ -1555,7 +1471,13 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
         # Windows: no process groups. ``start_new_session=True`` is a no-op
         # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
         # absent entirely. Tear the tree down by PID via taskkill instead.
-        await _kill_process_windows(proc, agent_id)
+        await _kill_process_windows_impl(
+            proc,
+            agent_id,
+            sigkill_grace=float(_SIGKILL_GRACE),
+            logger=_logger,
+            close_transport=_close_process_transport,
+        )
         return
     try:
         pgid = os.getpgid(proc.pid)
@@ -1603,50 +1525,6 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
         except ProcessLookupError:
             pass
         _close_process_transport(proc)
-
-
-async def _kill_process_windows(proc: asyncio.subprocess.Process, agent_id: str) -> None:
-    """Terminate a process tree on Windows via ``taskkill`` (no process groups)."""
-    if proc.pid is None:
-        # Subprocess never spawned — nothing to kill.
-        _close_process_transport(proc)
-        return
-
-    async def _taskkill(*, force: bool) -> int:
-        args = ["taskkill", "/PID", str(proc.pid), "/T"]
-        if force:
-            args.append("/F")
-        tk = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await tk.wait()
-        return tk.returncode if tk.returncode is not None else 0
-
-    returncode = await _taskkill(force=False)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
-    except TimeoutError:
-        _logger.warning("sending_sigkill", agent_id=agent_id)
-        returncode = await _taskkill(force=True)
-        # Bound this wait: ``taskkill /F`` can still fail (elevation, a child
-        # that refuses to die), and an unbounded wait would hang session
-        # teardown forever. Wait briefly, then fall through to log and close.
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
-
-    # taskkill returns non-zero for an already-dead PID (e.g. 128 "process not
-    # found") as well as for genuine failures. Only warn if the process is
-    # actually still running after the kill — otherwise teardown succeeded.
-    if returncode != 0 and proc.returncode is None:
-        _logger.warning(
-            "taskkill_failed",
-            agent_id=agent_id,
-            pid=proc.pid,
-            returncode=returncode,
-        )
-    _close_process_transport(proc)
 
 
 def _close_streams(proc: asyncio.subprocess.Process) -> None:
