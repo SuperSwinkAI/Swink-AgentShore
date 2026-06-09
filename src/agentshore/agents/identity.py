@@ -134,6 +134,7 @@ def _github_repo_name_from_remote(project_path: Path) -> str:
         completed = subprocess.run(  # nosec B603
             [git_path, "config", "--get", "remote.origin.url"],
             cwd=project_path,
+            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
             capture_output=True,
             text=True,
             check=False,
@@ -283,6 +284,7 @@ class IdentityResolver:
         try:
             result = subprocess.run(  # nosec B603
                 [gh_path, "auth", "token", "-h", "github.com", "-u", login],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -348,6 +350,7 @@ class IdentityResolver:
         try:
             completed = subprocess.run(  # nosec B603
                 [gh_path, "api", "user", "--jq", ".login"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=False,

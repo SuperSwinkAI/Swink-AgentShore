@@ -178,11 +178,18 @@ def run_sync_command(
         raise FileNotFoundError(args[0])
 
     started = time.monotonic()
+    # A git/gh child must NEVER inherit the parent's stdin. In the desktop
+    # sidecar that stdin is the live Tauri JSON-RPC pipe (continuously read by
+    # the reader thread); git's MSYS2 runtime probes stdin on startup and wedges
+    # at 0 CPU forever on that contended pipe (reproduced deterministically).
+    # When we feed input_text, subprocess.run wires stdin itself via ``input=``.
+    stdin = None if input_text is not None else subprocess.DEVNULL
     try:
         completed = subprocess.run(  # noqa: S603 — resolved exe, no shell
             [executable, *args[1:]],
             cwd=str(cwd) if cwd is not None else None,
             input=input_text.encode("utf-8") if input_text is not None else None,
+            stdin=stdin,
             capture_output=True,
             timeout=timeout_seconds,
             env=dict(env) if env is not None else None,

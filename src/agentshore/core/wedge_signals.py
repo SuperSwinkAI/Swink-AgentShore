@@ -89,6 +89,7 @@ def collect_dirty_trunk_paths(project_path: Path) -> list[DirtyTrunkEntry]:
         result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
             ["git", "status", "--porcelain"],
             cwd=str(project_path),
+            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
             capture_output=True,
             text=True,
             timeout=10.0,
@@ -131,6 +132,7 @@ def collect_orphan_worktree_paths(
         result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
             ["git", "worktree", "list", "--porcelain"],
             cwd=str(project_path),
+            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
             capture_output=True,
             text=True,
             timeout=10.0,

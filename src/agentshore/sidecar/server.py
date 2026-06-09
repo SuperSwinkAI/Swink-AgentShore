@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1541,9 +1542,55 @@ def _configure_sidecar_logging() -> None:
     setup_logging("info")
 
 
+def _preload_native_libraries() -> None:
+    """Import numpy/torch up front, while the sidecar is still single-threaded.
+
+    Windows loader-lock deadlock guard. numpy (OpenBLAS) and torch spawn native
+    worker threads during their C-extension initialization, and that runs under
+    the OS loader lock held by the importing thread. When the import happens
+    later instead — the ``from agentshore.core import Orchestrator`` inside
+    ``session.start`` runs on the asyncio event loop while the ``project.inspect``
+    probe pool and the ``asyncio.to_thread`` executor already have live threads —
+    those native libs' freshly spawned threads block in ``DllMain(THREAD_ATTACH)``
+    waiting for the loader lock the importing thread still holds, and the sidecar
+    wedges at 0 CPU forever (observed live: a 9-minute hang in
+    ``numpy/_core/multiarray`` ``create_module``; reproduced deterministically
+    with 6 live worker threads, while the same import is 0.33s single-threaded).
+
+    Importing here — before :func:`serve` starts the stdin reader thread, the
+    event loop, or any executor — maps both native DLLs once in a single-threaded
+    context (~3s); every later import is then a ``sys.modules`` no-op, so
+    ``session.start`` no longer pays (or deadlocks on) the native load. Off-loading
+    the import to a worker thread does NOT help: the deadlock fires whenever the
+    import runs while *other* threads are alive, regardless of which thread does
+    it. POSIX ``dlopen`` has no equivalent loader-lock/thread-attach hazard, so
+    this is win32-only — it also keeps torch's import cost off macOS/Linux boots.
+    """
+    if sys.platform != "win32":
+        return
+    import structlog
+
+    log = structlog.get_logger()
+    started = time.perf_counter()
+    try:
+        import numpy  # noqa: F401
+        import torch  # noqa: F401
+    except Exception as exc:  # pragma: no cover - a failed import is fatal regardless
+        log.warning("sidecar_preload_native_libs_failed", error=str(exc))
+        return
+    log.info(
+        "sidecar_preload_native_libs",
+        elapsed_seconds=round(time.perf_counter() - started, 2),
+    )
+
+
 def run() -> None:
     """Sync entry point. Wraps :func:`serve` against the real stdio streams."""
     force_utf8_stdio()
     ensure_windows_event_loop_policy()
     _configure_sidecar_logging()
+    # Map numpy/torch native DLLs while single-threaded — see docstring. Must run
+    # before serve() spawns the reader thread / event loop / executors, or the
+    # later session.start import deadlocks on the Windows loader lock.
+    _preload_native_libraries()
     serve(sys.stdin, sys.stdout)

@@ -38,13 +38,6 @@ def _make_adapter(
     return adapter, mock_store
 
 
-def _mock_subprocess(returncode: int = 0, stdout: str = "{}", stderr: str = "") -> MagicMock:
-    proc = MagicMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
-    return proc
-
-
 # ---------------------------------------------------------------------------
 # probe()
 # ---------------------------------------------------------------------------
@@ -52,10 +45,11 @@ def _mock_subprocess(returncode: int = 0, stdout: str = "{}", stderr: str = "") 
 
 @pytest.mark.asyncio
 async def test_probe_handles_unexpected_exception(tmp_path: Path) -> None:
-    """A non-FileNotFoundError OS-level error raised by the subprocess invocation must be
+    """A non-FileNotFoundError OS-level error raised by the gh invocation must be
     swallowed and downgrade the adapter to unavailable, never raise."""
     adapter, _ = _make_adapter(tmp_path)
-    with patch("asyncio.create_subprocess_exec", side_effect=OSError("permission denied")):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.side_effect = OSError("permission denied")
         await adapter.probe()
     assert adapter.available is False
 
@@ -68,9 +62,9 @@ async def test_probe_handles_unexpected_exception(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_issue_runs_gh_with_title_body_labels(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout='{"number": 7}')
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, '{"number": 7}', "")
         result = await adapter.create_issue(
             title="My new issue",
             body="Body text",
@@ -79,11 +73,10 @@ async def test_create_issue_runs_gh_with_title_body_labels(tmp_path: Path) -> No
         )
 
     assert result == {"number": 7}
-    # The first call to create_subprocess_exec is the actual mutation; verify
-    # that it carries title/body and one --label arg per label.
-    args = spawn.call_args.args
-    assert args[0] == "gh"
-    rest = list(args[1:])
+    # The first call to _run_gh is the actual mutation; verify that it carries
+    # title/body and one --label arg per label. The gh argv is the first
+    # positional arg (a list, without the leading "gh").
+    rest = list(run_gh.call_args.args[0])
     assert rest[0:2] == ["issue", "create"]
     assert "--title" in rest and "My new issue" in rest
     assert "--body" in rest and "Body text" in rest
@@ -97,9 +90,9 @@ async def test_create_issue_runs_gh_with_title_body_labels(tmp_path: Path) -> No
 async def test_create_issue_returns_none_on_gh_failure(tmp_path: Path) -> None:
     """gh exits non-zero → None and the mutation row gets marked 'error'."""
     adapter, mock_store = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="permission denied")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "permission denied")
         result = await adapter.create_issue(
             title="boom",
             body="",
@@ -129,9 +122,9 @@ async def test_create_issue_returns_none_when_unavailable(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_label_issue_runs_issue_edit_with_add_label(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout="ok")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "ok", "")
         ok = await adapter.label_issue(
             issue_number=42,
             labels=["agentshore/active", "bug"],
@@ -139,7 +132,7 @@ async def test_label_issue_runs_issue_edit_with_add_label(tmp_path: Path) -> Non
         )
 
     assert ok is True
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert rest[0:3] == ["issue", "edit", "42"]
     add_label_idx = rest.index("--add-label")
     # gh accepts a comma-joined label list for --add-label.
@@ -149,9 +142,9 @@ async def test_label_issue_runs_issue_edit_with_add_label(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_label_issue_returns_false_on_gh_error(tmp_path: Path) -> None:
     adapter, mock_store = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="not found")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "not found")
         ok = await adapter.label_issue(
             issue_number=99,
             labels=["nope"],
@@ -189,11 +182,11 @@ async def test_label_issue_dedups_when_mutation_already_recorded(
         )
     )
 
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         ok = await adapter.label_issue(issue_number=42, labels=["x"], idempotency_key="dup")
 
     assert ok is True
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -204,22 +197,22 @@ async def test_label_issue_dedups_when_mutation_already_recorded(
 @pytest.mark.asyncio
 async def test_close_issue_runs_issue_close(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout="closed")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "closed", "")
         ok = await adapter.close_issue(issue_number=15, idempotency_key="cl-1")
 
     assert ok is True
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert rest == ["issue", "close", "15"]
 
 
 @pytest.mark.asyncio
 async def test_close_issue_returns_false_on_gh_failure(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="not found")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "not found")
         ok = await adapter.close_issue(issue_number=404, idempotency_key="cl-err")
 
     assert ok is False
@@ -248,11 +241,11 @@ async def test_close_issue_dedups_when_already_recorded(tmp_path: Path) -> None:
         )
     )
 
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         ok = await adapter.close_issue(issue_number=42, idempotency_key="dup")
 
     assert ok is True
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +256,9 @@ async def test_close_issue_dedups_when_already_recorded(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_pr_runs_gh_with_head_and_base(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout='{"url": "https://github.com/x/y/pull/9"}')
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, '{"url": "https://github.com/x/y/pull/9"}', "")
         result = await adapter.create_pr(
             title="Add feature",
             body="Closes #1",
@@ -275,7 +268,7 @@ async def test_create_pr_runs_gh_with_head_and_base(tmp_path: Path) -> None:
         )
 
     assert result == {"url": "https://github.com/x/y/pull/9"}
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert rest[0:2] == ["pr", "create"]
     assert "--head" in rest and "feature-branch" in rest
     assert "--base" in rest and "main" in rest
@@ -285,9 +278,9 @@ async def test_create_pr_runs_gh_with_head_and_base(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_pr_returns_none_on_gh_failure(tmp_path: Path) -> None:
     adapter, mock_store = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="branch not pushed")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "branch not pushed")
         result = await adapter.create_pr(
             title="x",
             body="x",
@@ -326,7 +319,7 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
         )
     )
 
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         result = await adapter.create_pr(
             title="x",
             body="",
@@ -336,7 +329,7 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
         )
 
     assert result is None
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +341,13 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
 async def test_merge_pr_runs_gh_pr_merge_with_strategy_flag(tmp_path: Path) -> None:
     """Default strategy is 'merge'; gh receives '--merge' and '--auto'."""
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout="merged")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "merged", "")
         ok = await adapter.merge_pr(pr_number=42, idempotency_key="mp-1")
 
     assert ok is True
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert rest[0:3] == ["pr", "merge", "42"]
     assert "--merge" in rest
     assert "--auto" in rest
@@ -363,13 +356,13 @@ async def test_merge_pr_runs_gh_pr_merge_with_strategy_flag(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_merge_pr_supports_squash_strategy(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout="merged")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "merged", "")
         ok = await adapter.merge_pr(pr_number=7, idempotency_key="mp-sq", strategy="squash")
 
     assert ok is True
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert "--squash" in rest
     assert "--merge" not in rest
 
@@ -377,9 +370,9 @@ async def test_merge_pr_supports_squash_strategy(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_merge_pr_returns_false_on_gh_failure(tmp_path: Path) -> None:
     adapter, mock_store = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="merge conflict")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "merge conflict")
         ok = await adapter.merge_pr(pr_number=42, idempotency_key="mp-err")
 
     assert ok is False
@@ -412,11 +405,11 @@ async def test_merge_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
         )
     )
 
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         ok = await adapter.merge_pr(pr_number=42, idempotency_key="dup")
 
     assert ok is True
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +420,13 @@ async def test_merge_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_retarget_pr_base_runs_gh_pr_edit_with_base(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout="https://example/pr/9")
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "https://example/pr/9", "")
         ok = await adapter.retarget_pr_base(pr_number=9, base="integration", idempotency_key="r-1")
 
     assert ok is True
-    rest = list(spawn.call_args.args[1:])
+    rest = list(run_gh.call_args.args[0])
     assert rest[0:3] == ["pr", "edit", "9"]
     assert "--base" in rest
     assert "integration" in rest
@@ -442,10 +435,10 @@ async def test_retarget_pr_base_runs_gh_pr_edit_with_base(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_retarget_pr_base_noop_on_empty_base(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         ok = await adapter.retarget_pr_base(pr_number=9, base="", idempotency_key="r-empty")
     assert ok is False
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -461,7 +454,7 @@ async def test_retarget_pr_base_dedups_when_already_recorded(tmp_path: Path) -> 
             created_at="2024-01-01T00:00:00Z",
         )
     )
-    with patch("asyncio.create_subprocess_exec") as spawn:
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         ok = await adapter.retarget_pr_base(pr_number=9, base="integration", idempotency_key="dup")
     assert ok is True
-    spawn.assert_not_called()
+    run_gh.assert_not_called()
