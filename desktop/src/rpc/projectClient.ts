@@ -72,20 +72,9 @@ export async function setSeedPaths(
   });
 }
 
-/**
- * Payload shape for ``project.set_budget`` — mirrors the ``BudgetConfig``
- * dataclass at ``src/agentshore/config/models.py:92``. ``warning_threshold``
- * is optional; the sidecar defaults it to 0.20 when omitted.
- */
-export interface BudgetRpcInput {
-  enabled: boolean;
-  total: number;
-  warning_threshold?: number;
-  // Wall-clock soft cap (independent of the dollar cap). Optional; the sidecar
-  // defaults both to off when omitted. Validated to 60–4320 when time_enabled.
-  time_enabled?: boolean;
-  time_total_minutes?: number;
-}
+export type { ProjectBudgetInput } from "./budget";
+/** @deprecated Use {@link ProjectBudgetInput} — this alias will be removed. */
+export type { ProjectBudgetInput as BudgetRpcInput } from "./budget";
 
 export interface BudgetRpcResult {
   budget: {
@@ -98,7 +87,9 @@ export interface BudgetRpcResult {
   yaml_path: string;
 }
 
-export async function setBudget(budget: BudgetRpcInput): Promise<BudgetRpcResult> {
+export async function setBudget(
+  budget: import("./budget").ProjectBudgetInput,
+): Promise<BudgetRpcResult> {
   return callJsonRpc<BudgetRpcResult>("project.set_budget", { budget });
 }
 

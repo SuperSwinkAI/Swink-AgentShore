@@ -369,7 +369,10 @@ class DrainController:
     def _validate_time(enabled: bool, minutes: int | None) -> None:
         if not enabled:
             return
-        if minutes is None or not (MIN_TIME_BUDGET_MINUTES <= minutes <= MAX_TIME_BUDGET_MINUTES):
+        if not (
+            isinstance(minutes, int)
+            and MIN_TIME_BUDGET_MINUTES <= minutes <= MAX_TIME_BUDGET_MINUTES
+        ):
             raise OrchestratorError(
                 f"time cap must be between {MIN_TIME_BUDGET_MINUTES} and "
                 f"{MAX_TIME_BUDGET_MINUTES} minutes (1h-72h) when enabled"

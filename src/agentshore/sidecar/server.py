@@ -886,14 +886,6 @@ def _dispatch_session_budget(
         budget = obj_params.get("budget")
         if not isinstance(budget, dict):
             return _error(req_id, INVALID_PARAMS, "session.set_budget requires object 'budget'")
-        if "enabled" not in budget:
-            return _error(req_id, INVALID_PARAMS, "budget.enabled is required")
-        enabled = budget["enabled"]
-        if not isinstance(enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.enabled must be a boolean")
-        time_enabled = budget.get("time_enabled", False)
-        if not isinstance(time_enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.time_enabled must be a boolean")
 
         from agentshore.errors import OrchestratorError
 
@@ -901,9 +893,9 @@ def _dispatch_session_budget(
             set_budget = orch.set_budget  # type: ignore[attr-defined]
             try:
                 applied = await set_budget(
-                    dollars_enabled=enabled,
+                    dollars_enabled=budget.get("enabled", False),
                     dollars=budget.get("total"),
-                    time_enabled=time_enabled,
+                    time_enabled=budget.get("time_enabled", False),
                     time_minutes=budget.get("time_total_minutes"),
                     persist=True,
                 )

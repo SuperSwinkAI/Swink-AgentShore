@@ -6,11 +6,6 @@ import warnings
 from pathlib import Path
 from typing import TypedDict, cast, overload
 
-from agentshore.budget import (
-    MAX_TIME_BUDGET_MINUTES,
-    MIN_ENABLED_BUDGET_USD,
-    MIN_TIME_BUDGET_MINUTES,
-)
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
@@ -423,51 +418,9 @@ def _parse_intake(raw: _RawIntake) -> IntakeConfig:
 
 
 def _parse_budget(raw: _RawBudget) -> BudgetConfig:
-    enabled = raw.get("enabled", False)
-    total = raw.get("total", 0.0)
-    warning = raw.get("warning_threshold", 0.20)
-    if not isinstance(enabled, bool):
-        raise ConfigError(f"budget.enabled must be a boolean, got {enabled!r}")
-    if not isinstance(total, int | float):
-        raise ConfigError(f"budget.total must be numeric, got {total!r}")
-    if enabled and total < MIN_ENABLED_BUDGET_USD:
-        msg = (
-            "budget.total must be at least "
-            f"{MIN_ENABLED_BUDGET_USD:.2f} when budget.enabled is true, got {total!r}"
-        )
-        raise ConfigError(msg)
-    if not enabled and total < 0:
-        raise ConfigError(f"budget.total must be non-negative, got {total!r}")
-    if not isinstance(warning, int | float) or not (0.0 <= warning <= 1.0):
-        raise ConfigError(f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}")
-    time_enabled = raw.get("time_enabled", False)
-    time_total_minutes = raw.get("time_total_minutes", 0)
-    if not isinstance(time_enabled, bool):
-        raise ConfigError(f"budget.time_enabled must be a boolean, got {time_enabled!r}")
-    # ``bool`` is an ``int`` subclass — reject it so True/False can't pose as minutes.
-    if isinstance(time_total_minutes, bool) or not isinstance(time_total_minutes, int):
-        raise ConfigError(
-            f"budget.time_total_minutes must be an integer, got {time_total_minutes!r}"
-        )
-    if time_enabled and not (
-        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
-    ):
-        raise ConfigError(
-            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
-            f"got {time_total_minutes!r}"
-        )
-    if not time_enabled and time_total_minutes < 0:
-        raise ConfigError(
-            f"budget.time_total_minutes must be non-negative, got {time_total_minutes!r}"
-        )
-    return BudgetConfig(
-        enabled=enabled,
-        total=float(total),
-        warning_threshold=float(warning),
-        time_enabled=time_enabled,
-        time_total_minutes=time_total_minutes,
-    )
+    from agentshore.budget import parse_budget_raw
+
+    return parse_budget_raw(dict(raw))
 
 
 def _parse_agent(name: str, raw: _RawAgent) -> AgentConfig:
