@@ -10,11 +10,7 @@ from typing import TYPE_CHECKING
 import click
 
 from agentshore import cli_helpers
-from agentshore.budget import (
-    MAX_TIME_BUDGET_MINUTES,
-    MIN_ENABLED_BUDGET_USD,
-    MIN_TIME_BUDGET_MINUTES,
-)
+from agentshore.budget import MIN_ENABLED_BUDGET_USD
 from agentshore.cli.helpers import (
     _display_run_mode,
     _resolve_seed_input_path,
@@ -95,48 +91,34 @@ def validate_budget_flag(budget: float | None) -> None:
         )
 
 
-def validate_time_flag(time_minutes: int | None) -> None:
-    """Validate an explicit ``--time`` value (already parsed to minutes).
-
-    ``None`` (flag omitted) defers to the config. An out-of-range value raises
-    :class:`click.BadParameter` mirroring :func:`validate_budget_flag`.
-    """
-    if time_minutes is None:
-        return
-    if not (MIN_TIME_BUDGET_MINUTES <= time_minutes <= MAX_TIME_BUDGET_MINUTES):
-        raise click.BadParameter(
-            f"Time budget must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} minutes (1h–72h). "
-            "Use --unlimited to disable budgeting."
-        )
-
-
 def resolve_budget_config(
     base: BudgetConfig,
     *,
     budget_override: float | None,
     time_override: int | None,
     unlimited: bool,
+    absent: bool = False,
 ) -> BudgetConfig:
     """Resolve the effective dual-dimension :class:`BudgetConfig`.
 
-    ``base`` is the loaded config's ``budget`` block (or ``BudgetConfig()`` when
-    seeding a fresh project). Resolution:
+    ``base`` is ``cfg.budget`` from the loaded config. ``absent=True`` signals
+    that the YAML had NO ``budget:`` block — this replaces the old
+    ``base != BudgetConfig()`` equality sentinel, which would silently
+    re-impose caps after ``agentshore start --unlimited`` seeded the file.
+
+    Resolution:
 
     * ``--unlimited`` → both caps off (overrides everything).
-    * A **configured** ``base`` (``!= BudgetConfig()``) is respected as-is, with
-      ``--budget`` / ``--time`` overriding their own dimension only. Existing
-      configured sessions therefore see zero behavior change.
-    * An **empty** ``base`` (fresh/unconfigured) gets the safety defaults
-      ($200 + 24h) only when neither flag is given; naming one dimension
-      suppresses the other dimension's bare default (leaves it off).
+    * ``absent=False`` (budget block was present) → respect as-is, with
+      ``--budget`` / ``--time`` overriding their own dimension only.
+    * ``absent=True`` (no budget block) → apply safety defaults ($200 + 24h)
+      only when neither flag is given; naming one dimension suppresses the
+      other dimension's bare default (leaves it off).
     """
-    from agentshore.config.models import BudgetConfig
-
     if unlimited:
         return dataclasses.replace(base, enabled=False, time_enabled=False)
 
-    if base != BudgetConfig():
+    if not absent:
         resolved = base
         if budget_override is not None:
             resolved = dataclasses.replace(resolved, enabled=True, total=budget_override)
@@ -146,6 +128,7 @@ def resolve_budget_config(
             )
         return resolved
 
+    # No budget block in YAML — apply defaults or flags.
     if budget_override is None and time_override is None:
         return dataclasses.replace(
             base,
@@ -212,6 +195,7 @@ def _load_config_with_overrides(
         budget_override=budget_override,
         time_override=time_override,
         unlimited=unlimited,
+        absent=cfg.budget_absent,
     )
 
     # Scope strict mode: only override when --strict/--no-strict was given.
@@ -309,6 +293,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
             budget_override=opts.budget_override,
             time_override=opts.time_override,
             unlimited=opts.unlimited,
+            absent=True,  # no existing budget block → apply defaults or flags
         )
         seed_budget = seeded.total if seeded.enabled else None
         seed_time = seeded.time_total_minutes if seeded.time_enabled else None
