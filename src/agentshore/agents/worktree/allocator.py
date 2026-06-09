@@ -560,8 +560,18 @@ async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
     force-killed mid-allocate, or ``git worktree prune`` dropped the
     registration). They are never re-adopted and their gitignored build caches
     are never reused, so a *clean* orphan is rebuildable debris (committed work
-    is already in git) and is deleted. An orphan with *uncommitted* changes is
-    left in place — preserved for manual recovery rather than destroyed.
+    is already in git) and is deleted. An orphan with uncommitted changes to
+    *tracked* files is left in place — preserved for manual recovery.
+
+    "Dirty" is measured with ``--untracked-files=no`` so only changes to files
+    git already tracks block deletion; untracked files (``??``) never do. Every
+    worktree carries untracked agent-harness scaffolding (the files the agent
+    CLIs read, created at dispatch) plus build artifacts; counting those as
+    "uncommitted work" preserved every orphan forever and permanently wedged any
+    play needing that branch. We deliberately do NOT hard-code scaffolding
+    filenames — a target repo may legitimately own any of them — and instead let
+    git's own tracked/untracked distinction decide: committed work is safe in
+    git, and abandoned untracked files in a dead orphan are debris.
 
     Returns ``"deleted"`` or ``"preserved"``. Best-effort; never raises.
     """
@@ -570,7 +580,9 @@ async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
     # uncommitted work; if repair/status still can't introspect the dir, treat
     # it as detached debris and delete (committed work is safe in git).
     await _run_git("worktree", "repair", str(path), cwd=main_repo, check=False)
-    rc, out, _ = await _run_git("status", "--porcelain", cwd=path, check=False)
+    rc, out, _ = await _run_git(
+        "status", "--porcelain", "--untracked-files=no", cwd=path, check=False
+    )
     if rc == 0 and out.strip():
         log.warning(
             "worktree_orphan_preserved_dirty",
