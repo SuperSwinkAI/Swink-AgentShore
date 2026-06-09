@@ -10,8 +10,6 @@ import asyncio
 import re
 from typing import TYPE_CHECKING
 
-from agentshore import command
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -26,20 +24,27 @@ def _repo_url_from_github_child_url(url: str) -> str | None:
 
 
 async def _git_remote_url(project_path: str) -> str | None:
-    # Hardened synchronous git off the event loop (a local config read, so the
-    # credential-neutralizing global args are harmless). The async
-    # create_subprocess_exec path wedges git inside the Windows desktop sidecar.
-    result = await asyncio.to_thread(
-        command.git_sync,
-        "-C",
-        project_path,
-        "config",
-        "--get",
-        "remote.origin.url",
-    )
-    if result.returncode != 0:
+    # stdin=DEVNULL: a git child must never inherit the sidecar's stdin (the live
+    # Tauri JSON-RPC pipe) -- Git-for-Windows' MSYS2 runtime wedges at 0 CPU
+    # probing that contended pipe.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            project_path,
+            "config",
+            "--get",
+            "remote.origin.url",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
         return None
-    remote = result.stdout.strip()
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    remote = stdout.decode(errors="replace").strip()
     return remote or None
 
 

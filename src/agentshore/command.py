@@ -121,6 +121,9 @@ async def run_command(
         executable,
         *args[1:],
         cwd=str(cwd) if cwd is not None else None,
+        # Never inherit the parent's stdin: in the desktop sidecar that is the
+        # live Tauri JSON-RPC pipe, and git's MSYS2 runtime wedges at 0 CPU
+        # probing it. DEVNULL unless the caller is explicitly feeding stdin_data.
         stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,

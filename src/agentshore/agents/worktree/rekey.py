@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore import command
 from agentshore.agents.worktree.allocator import (
     WorktreeAllocationFailed,
     _run_git,
@@ -44,20 +43,24 @@ async def detect_branch_in_worktree(worktree_path: Path) -> str | None:
     """
     if not worktree_path.exists():
         return None
-    # Hardened synchronous git off the event loop (git_sync never raises). The
-    # async create_subprocess_exec path wedges git inside the Windows desktop
-    # sidecar; this matches the proven-working project.inspect pattern.
-    result = await asyncio.to_thread(
-        command.git_sync,
+    # stdin=DEVNULL: a git child must never inherit the sidecar's stdin (the live
+    # Tauri JSON-RPC pipe) -- Git-for-Windows' MSYS2 runtime wedges at 0 CPU
+    # probing that contended pipe.
+    proc = await asyncio.create_subprocess_exec(
+        "git",
         "symbolic-ref",
         "--quiet",
         "--short",
         "HEAD",
-        cwd=worktree_path,
+        cwd=str(worktree_path),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if result.returncode != 0:
+    stdout_b, _ = await proc.communicate()
+    if proc.returncode != 0:
         return None
-    branch = result.stdout.strip()
+    branch = stdout_b.decode("utf-8", errors="replace").strip()
     return branch or None
 
 

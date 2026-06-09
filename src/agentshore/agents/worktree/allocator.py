@@ -15,7 +15,6 @@ from pathlib import Path
 
 import structlog
 
-from agentshore import command
 from agentshore.errors import OrchestratorError
 
 log = structlog.get_logger(__name__)
@@ -93,35 +92,44 @@ async def _run_git(
     check: bool = True,
     timeout: float = 60.0,
 ) -> tuple[int, str, str]:
-    """Run a ``git`` subprocess and capture stdout/stderr.
+    """Run a ``git`` subprocess asynchronously and capture stdout/stderr.
 
     Returns ``(returncode, stdout, stderr)``. If ``check`` is true and the
     return code is non-zero, raises ``WorktreeAllocationFailed`` with the
     failing command embedded in the reason.
 
-    Executes the hardened *synchronous* git off the event loop via
-    ``asyncio.to_thread`` (resolved git path, non-interactive credential env,
-    ``CREATE_NO_WINDOW``, ``DEVNULL`` stdin). On Windows, spawning git through
-    the async ``create_subprocess_exec`` from inside the loaded desktop sidecar
-    wedges the child at 0 CPU indefinitely (the same command is instant
-    standalone); the synchronous off-loop path is the proven-working pattern
-    that ``project.inspect`` and the identity checks already use in that sidecar.
-    These are local worktree operations, so the credential-neutralizing global
-    args are harmless.
+    ``stdin`` is pinned to ``DEVNULL``: a git child must never inherit the
+    sidecar's stdin (the live Tauri JSON-RPC pipe). Git-for-Windows' MSYS2
+    runtime probes stdin on startup and wedges at 0 CPU forever on that
+    contended pipe -- the Windows worktree-reconcile hang. (This is the whole
+    fix; async-vs-sync was a red herring.)
     """
-    result = await asyncio.to_thread(command.git_sync, *args, cwd=cwd, timeout_seconds=timeout)
-    if result.status is command.CommandStatus.TIMEOUT:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=str(cwd),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after {timeout:.0f}s",
             reason="git_timeout",
-        )
-    rc = result.returncode
+        ) from exc
+    stdout = stdout_b.decode("utf-8", errors="replace")
+    stderr = stderr_b.decode("utf-8", errors="replace")
+    rc = proc.returncode if proc.returncode is not None else -1
     if check and rc != 0:
         raise WorktreeAllocationFailed(
-            f"git {' '.join(args)} failed (rc={rc}): {result.stderr.strip()}",
+            f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
             reason=f"git_{args[0]}_failed",
         )
-    return rc, result.stdout, result.stderr
+    return rc, stdout, stderr
 
 
 _PICKUP_COLLISION_RE = re.compile(
@@ -148,18 +156,28 @@ async def _add_worktree_with_collision_retry(
     rekeyed), force-remove it and retry the original add exactly once.
     Anything else bubbles through the existing failure path.
     """
-    # Hardened synchronous git off the event loop — see _run_git for why the
-    # async create_subprocess_exec path wedges inside the Windows sidecar.
-    result = await asyncio.to_thread(command.git_sync, *args, cwd=main_repo, timeout_seconds=180.0)
-    if result.status is command.CommandStatus.TIMEOUT:
+    # stdin=DEVNULL: never inherit the sidecar's JSON-RPC stdin -- see _run_git.
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=str(main_repo),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180.0)
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after 180s",
             reason="git_timeout",
-        )
-    rc = result.returncode
+        ) from exc
+    rc = proc.returncode if proc.returncode is not None else -1
     if rc == 0:
         return
-    stderr = result.stderr
+    stderr = stderr_b.decode("utf-8", errors="replace")
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
     is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")
