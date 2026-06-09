@@ -24,6 +24,7 @@ const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
 const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
+const AGENTSHORE_GITHUB_HELPER_ENV: &str = "AGENTSHORE_GITHUB_HELPER";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -165,6 +166,7 @@ impl SidecarSupervisor {
         let mut child = cmd.spawn().map_err(|e| SupervisorStartError::Other {
             reason: format!("spawn sidecar: {e}"),
         })?;
+        write_sidecar_pid_file(child.id());
 
         let stdin = child
             .stdin
@@ -372,6 +374,7 @@ impl SidecarSupervisor {
             };
 
             if let Some(status) = maybe_exit {
+                remove_sidecar_pid_file();
                 let payload = SidecarCrashPayload {
                     exit_code: status.code(),
                     last_stderr_lines: snapshot_stderr(&stderr_lines),
@@ -401,6 +404,7 @@ impl SidecarSupervisor {
 
 impl Drop for SidecarSupervisor {
     fn drop(&mut self) {
+        remove_sidecar_pid_file();
         if let Ok(mut guard) = self.child.lock() {
             if let Some(proc_ref) = guard.as_mut() {
                 let _ = proc_ref.kill();
@@ -420,9 +424,10 @@ impl Drop for SidecarSupervisor {
 /// postinstall script which pip-installs the bundled agentshore wheel.
 ///
 /// Development: when the managed venv is not present (running outside
-/// an installed .pkg), fall back to ``uv run python -m agentshore.sidecar``
-/// against the in-tree source so ``tauri dev`` and ``cargo test`` work
-/// without an install step.
+/// an installed .pkg), fall back to the repo's ``.venv`` Python against
+/// the in-tree source so ``tauri dev`` and ``cargo test`` work without an
+/// install step. If the repo venv does not exist, use ``uv run`` as a
+/// last-resort development fallback.
 fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     let mut cmd = match locate_managed_venv_python() {
         Some(python) => {
@@ -430,15 +435,7 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
             prod.arg("-m").arg("agentshore.sidecar");
             prod
         }
-        None => {
-            let mut dev = Command::new("uv");
-            dev.arg("run")
-                .arg("python")
-                .arg("-m")
-                .arg("agentshore.sidecar")
-                .env("PYTHONPATH", "../../src");
-            dev
-        }
+        None => development_sidecar_command(),
     };
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -447,9 +444,71 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     apply_no_window_creation_flags(&mut cmd);
     if let Some(p) = bd_path {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
+    } else if let Some(p) = locate_machine_managed_bd() {
+        cmd.env(AGENTSHORE_BD_BIN_ENV, p);
+    }
+    if let Some(p) = locate_github_helper() {
+        cmd.env(AGENTSHORE_GITHUB_HELPER_ENV, p);
     }
     apply_user_path_overlay(&mut cmd);
     cmd
+}
+
+fn development_sidecar_command() -> Command {
+    if let Some(root) = find_repo_root_for_dev_sidecar() {
+        let mut dev = match dev_venv_python_path(&root) {
+            Some(python) => Command::new(python),
+            None => {
+                let mut uv = Command::new("uv");
+                uv.arg("run").arg("python");
+                uv
+            }
+        };
+        dev.current_dir(&root)
+            .env("PYTHONPATH", root.join("src"))
+            .arg("-m")
+            .arg("agentshore.sidecar");
+        dev
+    } else {
+        let mut dev = Command::new("uv");
+        dev.arg("run")
+            .arg("python")
+            .arg("-m")
+            .arg("agentshore.sidecar");
+        dev.env("PYTHONPATH", "../../src");
+        dev
+    }
+}
+
+fn find_repo_root_for_dev_sidecar() -> Option<std::path::PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        starts.push(current_dir);
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            starts.push(parent.to_path_buf());
+        }
+    }
+
+    for start in starts {
+        for candidate in start.ancestors() {
+            if candidate.join("pyproject.toml").is_file()
+                && candidate.join("src").join("agentshore").is_dir()
+            {
+                return Some(candidate.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
+fn dev_venv_python_path(repo_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidates = [
+        repo_root.join(".venv").join("Scripts").join("python.exe"),
+        repo_root.join(".venv").join("bin").join("python"),
+    ];
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 #[cfg(target_os = "windows")]
@@ -485,6 +544,11 @@ fn apply_user_path_overlay(cmd: &mut Command) {
     if let Some(userprofile) = std::env::var_os("USERPROFILE") {
         candidates.push(std::path::PathBuf::from(&userprofile).join(".local/bin"));
         candidates.push(std::path::PathBuf::from(&userprofile).join(".cargo/bin"));
+        #[cfg(target_os = "windows")]
+        {
+            ensure_env_from_userprofile(cmd, "APPDATA", &userprofile, &["AppData", "Roaming"]);
+            ensure_env_from_userprofile(cmd, "LOCALAPPDATA", &userprofile, &["AppData", "Local"]);
+        }
     }
     if let Some(appdata) = std::env::var_os("APPDATA") {
         // npm's Windows global shims live here by default, e.g.
@@ -509,14 +573,25 @@ fn apply_user_path_overlay(cmd: &mut Command) {
                 .join("Links"),
         );
     }
+    if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
+        candidates.push(machine_managed_bin_path(std::path::Path::new(&programdata)));
+    }
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
         candidates.push(
             std::path::PathBuf::from(&program_files)
                 .join("Git")
                 .join("cmd"),
         );
+        candidates.push(std::path::PathBuf::from(&program_files).join("GitHub CLI"));
         candidates.push(std::path::PathBuf::from(program_files).join("nodejs"));
     }
+    #[cfg(target_os = "windows")]
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        candidates.push(std::path::PathBuf::from(program_files_x86).join("GitHub CLI"));
+    }
+
+    #[cfg(target_os = "windows")]
+    apply_windows_github_cli_env(cmd);
 
     // Prepend (in reverse so the first candidate ends up first), skipping
     // any already-present entry to avoid PATH duplication.
@@ -529,6 +604,102 @@ fn apply_user_path_overlay(cmd: &mut Command) {
     if let Ok(joined) = std::env::join_paths(entries) {
         cmd.env("PATH", joined);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_env_from_userprofile(
+    cmd: &mut Command,
+    key: &str,
+    userprofile: &std::ffi::OsStr,
+    suffix: &[&str],
+) {
+    if std::env::var_os(key).is_some() {
+        return;
+    }
+    let mut path = std::path::PathBuf::from(userprofile);
+    for part in suffix {
+        path.push(part);
+    }
+    cmd.env(key, path);
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_github_cli_env(cmd: &mut Command) {
+    if std::env::var_os("GH_CONFIG_DIR").is_some() {
+        return;
+    }
+    let appdata = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|profile| {
+                std::path::PathBuf::from(profile)
+                    .join("AppData")
+                    .join("Roaming")
+            })
+        });
+    if let Some(appdata) = appdata {
+        cmd.env("GH_CONFIG_DIR", appdata.join("GitHub CLI"));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn locate_machine_managed_bd() -> Option<std::path::PathBuf> {
+    let programdata = std::env::var_os("PROGRAMDATA")?;
+    let path = machine_managed_bin_path(std::path::Path::new(&programdata)).join("bd.exe");
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn locate_machine_managed_bd() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn machine_managed_bin_path(programdata: &std::path::Path) -> std::path::PathBuf {
+    programdata.join(r"AgentShore\bin")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn machine_managed_bin_path(_programdata: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::new()
+}
+
+#[cfg(target_os = "windows")]
+fn locate_github_helper() -> Option<std::path::PathBuf> {
+    const HELPER_EXE: &str = "agentshore-github-helper.exe";
+    if let Some(path) = std::env::var_os(AGENTSHORE_GITHUB_HELPER_ENV).map(std::path::PathBuf::from)
+    {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            candidates.push(exe_dir.join("installer").join(HELPER_EXE));
+            candidates.push(exe_dir.join(HELPER_EXE));
+            if let Some(parent) = exe_dir.parent() {
+                candidates.push(parent.join(HELPER_EXE));
+            }
+        }
+    }
+    if let Some(root) = find_repo_root_for_dev_sidecar() {
+        let tauri_target = root.join("desktop").join("src-tauri").join("target");
+        candidates.push(tauri_target.join("debug").join(HELPER_EXE));
+        candidates.push(tauri_target.join("release").join(HELPER_EXE));
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn locate_github_helper() -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Locate the Python interpreter inside the pkg-installer's managed venv.
@@ -600,6 +771,50 @@ fn managed_venv_python_path_in_local_appdata(
     local_appdata: &std::path::Path,
 ) -> std::path::PathBuf {
     local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn sidecar_pid_file_path() -> Option<std::path::PathBuf> {
+    let programdata = std::env::var_os("PROGRAMDATA")?;
+    Some(
+        std::path::PathBuf::from(programdata)
+            .join("AgentShore")
+            .join("runtime")
+            .join("sidecar.pid"),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sidecar_pid_file_path() -> Option<std::path::PathBuf> {
+    None
+}
+
+fn write_sidecar_pid_file(pid: u32) {
+    let Some(path) = sidecar_pid_file_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[agentshore-desktop][sidecar] could not create runtime dir {}: {err}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    if let Err(err) = std::fs::write(&path, pid.to_string()) {
+        eprintln!(
+            "[agentshore-desktop][sidecar] could not write sidecar pid file {}: {err}",
+            path.display()
+        );
+    }
+}
+
+fn remove_sidecar_pid_file() {
+    let Some(path) = sidecar_pid_file_path() else {
+        return;
+    };
+    let _ = std::fs::remove_file(path);
 }
 
 fn spawn_stdout_dispatcher(
@@ -869,18 +1084,43 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_command_without_bd_path_omits_agentshore_bd_bin_env() {
+    fn sidecar_command_without_bd_path_uses_machine_managed_bd_when_available() {
         let cmd = sidecar_command(None);
-        let found = cmd.get_envs().any(|(k, _)| k == AGENTSHORE_BD_BIN_ENV);
-        assert!(
-            !found,
-            "AGENTSHORE_BD_BIN must not be set when bd_path is None"
-        );
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(AGENTSHORE_BD_BIN_ENV))
+            .and_then(|(_, value)| value.map(std::ffi::OsString::from));
+        if let Some(path) = value {
+            assert!(
+                std::path::Path::new(&path).is_file(),
+                "machine-managed AGENTSHORE_BD_BIN should point at an existing bd executable"
+            );
+        }
+    }
+
+    #[test]
+    fn sidecar_command_sets_github_helper_env_when_available() {
+        let cmd = sidecar_command(None);
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(AGENTSHORE_GITHUB_HELPER_ENV))
+            .and_then(|(_, value)| value.map(std::ffi::OsString::from));
+        if let Some(path) = value {
+            assert!(
+                std::path::Path::new(&path).is_file(),
+                "AGENTSHORE_GITHUB_HELPER should point at an existing helper executable"
+            );
+        }
     }
 
     #[test]
     fn sidecar_round_trip_handshake_and_recents_list() {
-        let mut cmd = sidecar_command(None);
+        let mut cmd = development_sidecar_command();
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+        apply_no_window_creation_flags(&mut cmd);
         let mut child = cmd.spawn().expect("spawn sidecar");
         let mut stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");

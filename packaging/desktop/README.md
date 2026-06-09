@@ -5,8 +5,7 @@ AgentShore desktop shell. The shared model is: keep the Tauri app thin, ship a
 platform app shell, and provision the Python sidecar into a managed
 venv from the exact wheel built with the installer. macOS bundles the pinned
 `bd` sidecar beside the desktop executable; Windows provisions the pinned `bd`
-dependency during the managed venv install to avoid shipping an unsigned extra
-binary.
+dependency through a compiled install-time provisioner.
 
 ## Architecture
 
@@ -26,8 +25,9 @@ Managed venv paths:
 
 On macOS, the bundled `bd` CLI is the only external binary that stays beside
 the desktop executable. The Rust supervisor passes its path to the Python
-sidecar via `AGENTSHORE_BD_BIN`. On Windows, `install-agentshore-venv.ps1`
-drives `agentshore.beads.setup.provision_bd()` after installing the wheel.
+sidecar via `AGENTSHORE_BD_BIN`. On Windows, `agentshore-provisioner.exe`
+drives `agentshore.beads.setup.provision_bd()` into
+`%ProgramData%\AgentShore\bin` after installing the wheel.
 
 ## Build Inputs
 
@@ -67,8 +67,9 @@ wheel via `uv tool install`.
 ## Windows Installer
 
 `scripts/build-windows.ps1` builds the dashboard, Tauri frontend, Python wheel,
-Tauri executable, regenerates `EULA.rtf`, optionally Authenticode-signs the app
-and setup executable, and emits an Inno Setup wizard `.exe`.
+Tauri executable, compiled Windows provisioner, regenerates `EULA.rtf`,
+optionally Authenticode-signs the app/provisioner/setup executables, and emits
+an Inno Setup wizard `.exe`.
 
 The Windows wizard is machine-wide (`PrivilegesRequired=admin`) and installs
 the desktop app under:
@@ -84,20 +85,21 @@ component defaults:
 - **Timelapse Capture (optional)** - unchecked by default.
 - **AgentShore CLI** - checked by default.
 
-Bundled Windows helper scripts:
+Bundled Windows install-time payloads:
 
-- `scripts/install-agentshore-venv.ps1` provisions
-  `%ProgramData%\AgentShore\venv` from the bundled wheel and provisions `bd`.
-- `scripts/install-agentshore-cli.ps1` installs `agentshore` from the bundled
-  wheel with `uv tool install --force --reinstall --python 3.12`.
-- `scripts/install-timelapse.ps1` drives the canonical timelapse installer from
-  the managed venv.
-- `scripts/run-windows-installer-step.ps1` wraps helper execution and writes
-  logs under `%LocalAppData%\AgentShore\install-logs`.
+- `agentshore-provisioner.exe` owns Windows post-install provisioning. It uses
+  direct process execution, timeout-aware logging, and stable exit codes.
+- `uv.exe` is copied from the build host and pinned by the build script to the
+  expected baseline before packaging.
+- The bundled wheel is installed into `%ProgramData%\AgentShore\venv`.
+- The pinned `bd.exe` dependency is provisioned into
+  `%ProgramData%\AgentShore\bin`.
+
+Provisioning logs are written under `%ProgramData%\AgentShore\install-logs`.
 
 The installer removes the previous internal per-user desktop install under
 `%LocalAppData%\Programs\AgentShore` and the previous per-user managed venv
-under `%LocalAppData%\AgentShore\venv` during install.
+under `%LocalAppData%\AgentShore\venv` from the provisioner during install.
 
 ## Build Identifier
 
@@ -110,8 +112,8 @@ runtime version.
 ## Development
 
 When the managed venv is absent, the Rust supervisor falls back to
-`uv run python -m agentshore.sidecar`, so `npm run tauri:dev` from `desktop/`
-works against a clean checkout.
+the checkout's `.venv` Python, then `uv run python -m agentshore.sidecar` if
+no `.venv` exists, so `npm run tauri:dev` works against a clean checkout.
 
 ## Verification
 

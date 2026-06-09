@@ -5,7 +5,13 @@ const SIDECAR_NAME: &str = "agentshore-bd";
 const SOURCE_BD_NAME: &str = "bd";
 
 fn main() {
-    if std::env::var_os("AGENTSHORE_SKIP_BD_SIDECAR").is_none() {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target.contains("windows") {
+        println!("cargo:rerun-if-env-changed=TARGET");
+        if std::env::var_os("TAURI_CONFIG").is_none() {
+            std::env::set_var("TAURI_CONFIG", r#"{"bundle":{"externalBin":[]}}"#);
+        }
+    } else if std::env::var_os("AGENTSHORE_SKIP_BD_SIDECAR").is_none() {
         ensure_bd_sidecar();
     } else {
         println!("cargo:rerun-if-env-changed=AGENTSHORE_SKIP_BD_SIDECAR");

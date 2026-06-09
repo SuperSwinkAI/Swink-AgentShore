@@ -12,6 +12,7 @@ use tauri::{Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 pub mod activity;
+pub mod github_multi;
 pub mod jsonrpc_stdio;
 pub mod readiness;
 pub mod sidecar;
@@ -820,6 +821,9 @@ mod tests {
     fn resolve_bundled_sidecar_path_keeps_binary_stem() {
         let path = resolve_bundled_sidecar_path(std::path::Path::new("agentshore-bd"))
             .expect("resolve sidecar path");
-        assert!(path.ends_with("agentshore-bd"));
+        assert_eq!(
+            path.file_stem().and_then(|stem| stem.to_str()),
+            Some("agentshore-bd")
+        );
     }
 }
