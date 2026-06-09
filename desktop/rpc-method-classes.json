@@ -1,0 +1,20 @@
+{
+  "setup": [
+    "project.select",
+    "project.inspect",
+    "project.branches",
+    "recents.list",
+    "recents.touch",
+    "recents.remove",
+    "config.read",
+    "agents.catalog",
+    "identities.list_trusted",
+    "identities.check_keychain",
+    "identities.check_access"
+  ],
+  "uncapped": [
+    "session.start",
+    "session.stop",
+    "project.install_timelapse"
+  ]
+}
