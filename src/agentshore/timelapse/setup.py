@@ -38,7 +38,7 @@ _logger = structlog.get_logger(__name__)
 #: Pinned because the driver depends on indefinite capture and
 #: ``status.outputPath`` JSON compatibility. Bump only after doctor/status
 #: verification.
-_CLI_PACKAGE = "timelapse-capture@0.4.0"
+_CLI_PACKAGE = "timelapse-capture@0.5.0"
 _MIN_NODE_MAJOR = 24
 _WINGET_NODE_ID = "OpenJS.NodeJS"
 _WINGET_FFMPEG_ID = "Gyan.FFmpeg"
