@@ -40,7 +40,7 @@ async def test_install_cli_uses_pinned_npm_package(
 
     await setup._install_cli(tmp_path)  # type: ignore[arg-type]
 
-    assert seen["cmd"] == ["npm", "install", "-g", "timelapse-capture@0.4.0"]
+    assert seen["cmd"] == ["npm", "install", "-g", "timelapse-capture@0.5.0"]
 
 
 async def test_install_timelapse_linux_returns_failure(
