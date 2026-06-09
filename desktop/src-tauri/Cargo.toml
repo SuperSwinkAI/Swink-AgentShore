@@ -16,10 +16,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "agentshore-provisioner"
 path = "src/bin/agentshore-provisioner.rs"
 
-[[bin]]
-name = "agentshore-github-helper"
-path = "src/bin/agentshore-github-helper.rs"
-
 # Supply-chain hardening: all crates are pinned to exact versions with the
 # `=` operator (not caret ranges) and matched to Cargo.lock. Builds run with
 # `cargo build --locked` so no crate changes without an explicit, reviewed
@@ -42,10 +38,6 @@ tauri-plugin-updater = "=2.10.1"
 tauri-plugin-single-instance = "=2.4.2"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
-octocrab = "=0.53.0"
-thiserror = "=2.0.18"
-tokio = { version = "=1.52.3", features = ["rt-multi-thread", "macros"] }
-tracing = "=0.1.44"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.186"
@@ -59,7 +51,7 @@ objc2 = "=0.6.4"
 objc2-foundation = { version = "=0.3.2", features = ["NSProcessInfo", "NSString", "NSObject"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Threading"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [features]
 default = ["custom-protocol"]

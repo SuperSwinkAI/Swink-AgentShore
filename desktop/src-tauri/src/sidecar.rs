@@ -24,7 +24,6 @@ const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
 const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
-const AGENTSHORE_GITHUB_HELPER_ENV: &str = "AGENTSHORE_GITHUB_HELPER";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -447,9 +446,6 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     } else if let Some(p) = locate_machine_managed_bd() {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
     }
-    if let Some(p) = locate_github_helper() {
-        cmd.env(AGENTSHORE_GITHUB_HELPER_ENV, p);
-    }
     apply_user_path_overlay(&mut cmd);
     cmd
 }
@@ -666,40 +662,6 @@ fn machine_managed_bin_path(programdata: &std::path::Path) -> std::path::PathBuf
 #[cfg(not(target_os = "windows"))]
 fn machine_managed_bin_path(_programdata: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::new()
-}
-
-#[cfg(target_os = "windows")]
-fn locate_github_helper() -> Option<std::path::PathBuf> {
-    const HELPER_EXE: &str = "agentshore-github-helper.exe";
-    if let Some(path) = std::env::var_os(AGENTSHORE_GITHUB_HELPER_ENV).map(std::path::PathBuf::from)
-    {
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            candidates.push(exe_dir.join("installer").join(HELPER_EXE));
-            candidates.push(exe_dir.join(HELPER_EXE));
-            if let Some(parent) = exe_dir.parent() {
-                candidates.push(parent.join(HELPER_EXE));
-            }
-        }
-    }
-    if let Some(root) = find_repo_root_for_dev_sidecar() {
-        let tauri_target = root.join("desktop").join("src-tauri").join("target");
-        candidates.push(tauri_target.join("debug").join(HELPER_EXE));
-        candidates.push(tauri_target.join("release").join(HELPER_EXE));
-    }
-
-    candidates.into_iter().find(|path| path.is_file())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn locate_github_helper() -> Option<std::path::PathBuf> {
-    None
 }
 
 /// Locate the Python interpreter inside the pkg-installer's managed venv.
@@ -1094,21 +1056,6 @@ mod tests {
             assert!(
                 std::path::Path::new(&path).is_file(),
                 "machine-managed AGENTSHORE_BD_BIN should point at an existing bd executable"
-            );
-        }
-    }
-
-    #[test]
-    fn sidecar_command_sets_github_helper_env_when_available() {
-        let cmd = sidecar_command(None);
-        let value = cmd
-            .get_envs()
-            .find(|(k, _)| *k == std::ffi::OsStr::new(AGENTSHORE_GITHUB_HELPER_ENV))
-            .and_then(|(_, value)| value.map(std::ffi::OsString::from));
-        if let Some(path) = value {
-            assert!(
-                std::path::Path::new(&path).is_file(),
-                "AGENTSHORE_GITHUB_HELPER should point at an existing helper executable"
             );
         }
     }

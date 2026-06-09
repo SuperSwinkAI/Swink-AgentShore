@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from pathlib import Path
@@ -47,33 +46,6 @@ def _write_identity_config(path: Path, login: str, token_field: str, token_value
         yaml.safe_dump({"identities": {login: {token_field: token_value}}}, sort_keys=False),
         encoding="utf-8",
     )
-
-
-def _enable_windows_helper(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    handler,
-) -> list[dict[str, object]]:
-    helper = tmp_path / "agentshore-github-helper.exe"
-    helper.write_text("helper", encoding="utf-8")
-    calls: list[dict[str, object]] = []
-    monkeypatch.setattr(identities_mod.sys, "platform", "win32")
-    monkeypatch.setenv("AGENTSHORE_GITHUB_HELPER", str(helper))
-
-    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert argv == [str(helper)]
-        request = json.loads(str(kwargs["input"]))
-        calls.append(request)
-        result = handler(request)
-        return subprocess.CompletedProcess(
-            argv,
-            returncode=0,
-            stdout=json.dumps({"ok": True, "result": result}) + "\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(identities_mod.subprocess, "run", fake_run)
-    return calls
 
 
 def test_identities_crud_write_through(tmp_path: Path) -> None:
@@ -151,42 +123,6 @@ def test_keychain_status_times_out_when_backend_hangs(monkeypatch) -> None:
 def test_keychain_status_rejects_invalid_login() -> None:
     with pytest.raises(ValueError, match="invalid.*login|login.*invalid"):
         keychain_status("has space")
-
-
-def test_windows_keychain_status_uses_github_helper(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _enable_windows_helper(
-        tmp_path,
-        monkeypatch,
-        lambda request: {
-            "service": request["service"],
-            "has_token": True,
-        },
-    )
-
-    status = keychain_status("NewLogin")
-
-    assert status == {
-        "login": "newlogin",
-        "service": "agentshore/newlogin",
-        "has_token": True,
-    }
-    assert calls == [{"op": "credential_status", "service": "agentshore/newlogin"}]
-
-
-def test_windows_keychain_status_missing_helper_falls_back(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(identities_mod.sys, "platform", "win32")
-    monkeypatch.setenv("AGENTSHORE_GITHUB_HELPER", str(tmp_path / "missing-helper.exe"))
-    monkeypatch.setattr(identities_mod, "_keychain_has_token", lambda _service: True)
-
-    status = keychain_status("NewLogin")
-
-    assert status["has_token"] is True
 
 
 def test_rpc_check_keychain_returns_status(monkeypatch) -> None:
@@ -610,169 +546,6 @@ def test_check_identity_access_reports_missing_when_token_cannot_resolve(
     }
 
 
-def test_windows_check_identity_access_maps_helper_write_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_identity_config(cfg, "newlogin", "gh_token_env", "NEWLOGIN_GH_TOKEN")
-    monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
-
-    def fail_legacy_access(*_args: object) -> None:
-        raise AssertionError("Windows helper should handle repo access")
-
-    monkeypatch.setattr(identities_mod, "verify_identity_repo_access", fail_legacy_access)
-    calls = _enable_windows_helper(
-        tmp_path,
-        monkeypatch,
-        lambda request: {
-            "status": "write",
-            "repo": "owner/repo",
-            "detail": "token has write access to owner/repo",
-        },
-    )
-
-    row = check_identity_access(tmp_path, "newlogin")
-
-    assert row == {
-        "login": "newlogin",
-        "source": "gh_token_env",
-        "token_status": "configured",
-        "repo_access": "ok",
-        "repo_access_detail": "GitHub token and repository write access verified.",
-    }
-    assert calls == [
-        {
-            "op": "check_repo_access",
-            "token": "fake-token-value",
-            "local_repo_path": str(tmp_path),
-        }
-    ]
-
-
-def test_windows_check_identity_access_blocks_helper_read_only_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_identity_config(cfg, "newlogin", "gh_token_env", "NEWLOGIN_GH_TOKEN")
-    monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
-    monkeypatch.setattr(
-        identities_mod,
-        "_identity_diagnostics",
-        lambda _raw, _source, **_kwargs: "diag",
-    )
-    _enable_windows_helper(
-        tmp_path,
-        monkeypatch,
-        lambda _request: {
-            "status": "read_only",
-            "repo": "owner/repo",
-            "detail": "token has read-only access to owner/repo",
-        },
-    )
-
-    row = check_identity_access(tmp_path, "newlogin")
-
-    assert row == {
-        "login": "newlogin",
-        "source": "gh_token_env",
-        "token_status": "configured",
-        "repo_access": "blocked",
-        "repo_access_detail": (
-            "token has read-only access to owner/repo (status: read_only). Diagnostics: diag"
-        ),
-    }
-
-
-def test_windows_gh_login_uses_helper_credential_before_gh_cli(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_identity_config(cfg, "newlogin", "gh_token_login", "newlogin")
-
-    def handle_helper(request: dict[str, object]) -> dict[str, object]:
-        if request["op"] == "credential_get":
-            assert request["service"] == "agentshore/newlogin"
-            return {"service": request["service"], "token": "stored-token"}
-        if request["op"] == "validate_token":
-            assert request["token"] == "stored-token"
-            return {"login": "NewLogin"}
-        if request["op"] == "check_repo_access":
-            assert request["token"] == "stored-token"
-            return {
-                "status": "write",
-                "repo": "owner/repo",
-                "detail": "token has write access to owner/repo",
-            }
-        raise AssertionError(f"unexpected helper request: {request}")
-
-    calls = _enable_windows_helper(tmp_path, monkeypatch, handle_helper)
-
-    row = check_identity_access(tmp_path, "newlogin")
-
-    assert row == {
-        "login": "newlogin",
-        "source": "gh_token_login",
-        "token_status": "auth_ok",
-        "repo_access": "ok",
-        "repo_access_detail": "GitHub CLI auth and repository write access verified.",
-    }
-    assert [call["op"] for call in calls] == [
-        "credential_get",
-        "validate_token",
-        "check_repo_access",
-    ]
-
-
-def test_windows_gh_login_without_helper_credential_does_not_call_gh_cli(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_identity_config(cfg, "newlogin", "gh_token_login", "newlogin")
-    calls = _enable_windows_helper(
-        tmp_path,
-        monkeypatch,
-        lambda request: {"service": request["service"], "token": None},
-    )
-
-    row = check_identity_access(tmp_path, "newlogin")
-
-    assert row["token_status"] == "auth_missing"
-    assert row["repo_access"] == "unknown"
-    assert "Credential Manager token for agentshore/newlogin" in row["repo_access_detail"]
-    assert calls == [{"op": "credential_get", "service": "agentshore/newlogin"}]
-
-
-def test_windows_keychain_token_is_trimmed_before_helper_access_check(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_identity_config(cfg, "newlogin", "gh_token_keychain", "agentshore/newlogin")
-
-    def handle_helper(request: dict[str, object]) -> dict[str, object]:
-        if request["op"] == "credential_get":
-            return {"service": request["service"], "token": "\0s\0t\0o\0r\0e\0d\0-\0t\0o\0k\0e\0n\0\r\n"}
-        if request["op"] == "check_repo_access":
-            assert request["token"] == "stored-token"
-            return {
-                "status": "write",
-                "repo": "owner/repo",
-                "detail": "token has write access to owner/repo",
-            }
-        raise AssertionError(f"unexpected helper request: {request}")
-
-    _enable_windows_helper(tmp_path, monkeypatch, handle_helper)
-
-    row = check_identity_access(tmp_path, "newlogin")
-
-    assert row["repo_access"] == "ok"
-    assert row["token_status"] == "configured"
-
-
 def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1021,35 +794,6 @@ def test_add_identity_keychain_store_timeout_is_clear(tmp_path: Path, monkeypatc
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert "newlogin" not in data["identities"]
     time.sleep(0.06)
-
-
-def test_windows_add_identity_with_pat_stores_through_helper(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = tmp_path / "agentshore.yaml"
-    _write_minimal_config(cfg)
-
-    def handle_helper(request: dict[str, object]) -> dict[str, object]:
-        if request["op"] == "credential_set":
-            assert request["service"] == "agentshore/newlogin"
-            assert request["token"] == "secret-pat"
-            return {"service": request["service"], "stored": True}
-        if request["op"] == "credential_get":
-            assert request["service"] == "agentshore/newlogin"
-            return {"service": request["service"], "token": "secret-pat"}
-        if request["op"] == "validate_token":
-            assert request["token"] == "secret-pat"
-            return {"login": "NewLogin"}
-        raise AssertionError(f"unexpected helper request: {request}")
-
-    calls = _enable_windows_helper(tmp_path, monkeypatch, handle_helper)
-
-    add_identity(tmp_path, "NewLogin", "gh_token_keychain", pat="secret-pat")
-
-    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert data["identities"]["newlogin"]["gh_token_keychain"] == "agentshore/newlogin"
-    assert [call["op"] for call in calls] == ["credential_set", "credential_get", "validate_token"]
 
 
 def test_add_identity_skips_validation_when_token_unresolvable(tmp_path: Path, monkeypatch) -> None:
