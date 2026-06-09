@@ -94,7 +94,7 @@ def _prepend_path_entries(entries: Sequence[Path]) -> None:
 
 def _refresh_windows_tool_paths() -> None:
     candidates: list[Path] = []
-    if program_files := os.environ.get("ProgramFiles"):
+    if program_files := os.environ.get("PROGRAMFILES"):
         candidates.append(Path(program_files) / "nodejs")
     if appdata := os.environ.get("APPDATA"):
         candidates.append(Path(appdata) / "npm")
@@ -159,9 +159,6 @@ async def _ensure_node(cwd: Path) -> None:
         major = _node_major(result.stdout) if result.returncode == 0 else None
         if major is not None and major >= _MIN_NODE_MAJOR:
             return
-        found = result.stdout.strip() or "unknown"
-    else:
-        found = "missing"
     if shutil.which("brew") is None:
         raise TimelapseError(
             f"Node.js {_MIN_NODE_MAJOR}+ is required but Homebrew was not found. "
