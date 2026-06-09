@@ -2,6 +2,11 @@ use crate::jsonrpc_stdio::{
     decode_response_line, encode_line, handshake_request, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse,
 };
+use crate::sidecar_env::{apply_no_window_creation_flags, apply_user_path_overlay};
+use crate::sidecar_pid::{remove_sidecar_pid_file, write_sidecar_pid_file};
+use crate::sidecar_runtime::{
+    development_sidecar_command, locate_machine_managed_bd, locate_managed_venv_python,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -12,9 +17,6 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
 const CLIENT_NAME: &str = "agentshore-desktop";
 const MAX_STDERR_LINES: usize = 50;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -24,9 +26,6 @@ const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
 const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Tauri event name carrying forwarded sidecar JSON-RPC notifications
 /// (anything sent over stdout without an ``id`` field — including
@@ -450,335 +449,6 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     cmd
 }
 
-fn development_sidecar_command() -> Command {
-    if let Some(root) = find_repo_root_for_dev_sidecar() {
-        let mut dev = match dev_venv_python_path(&root) {
-            Some(python) => Command::new(python),
-            None => {
-                let mut uv = Command::new("uv");
-                uv.arg("run").arg("python");
-                uv
-            }
-        };
-        dev.current_dir(&root)
-            .env("PYTHONPATH", root.join("src"))
-            .arg("-m")
-            .arg("agentshore.sidecar");
-        dev
-    } else {
-        let mut dev = Command::new("uv");
-        dev.arg("run")
-            .arg("python")
-            .arg("-m")
-            .arg("agentshore.sidecar");
-        dev.env("PYTHONPATH", "../../src");
-        dev
-    }
-}
-
-fn find_repo_root_for_dev_sidecar() -> Option<std::path::PathBuf> {
-    let mut starts = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        starts.push(current_dir);
-    }
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            starts.push(parent.to_path_buf());
-        }
-    }
-
-    for start in starts {
-        for candidate in start.ancestors() {
-            if candidate.join("pyproject.toml").is_file()
-                && candidate.join("src").join("agentshore").is_dir()
-            {
-                return Some(candidate.to_path_buf());
-            }
-        }
-    }
-    None
-}
-
-fn dev_venv_python_path(repo_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let candidates = [
-        repo_root.join(".venv").join("Scripts").join("python.exe"),
-        repo_root.join(".venv").join("bin").join("python"),
-    ];
-    candidates.into_iter().find(|path| path.is_file())
-}
-
-#[cfg(target_os = "windows")]
-fn apply_no_window_creation_flags(cmd: &mut Command) {
-    cmd.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(target_os = "windows"))]
-fn apply_no_window_creation_flags(_cmd: &mut Command) {}
-
-/// When the Tauri .app launches from Finder/Dock/Spotlight, its PATH is
-/// the minimal launchd default (``/usr/bin:/bin:/usr/sbin:/sbin``) — the
-/// shell rc files that populate the user's terminal PATH never run. The
-/// sidecar inherits that minimal PATH, so its readiness check
-/// (``shutil.which("bd")`` / ``which("gh")``) reports tooling as missing
-/// even when the user has it installed in standard user-install
-/// locations. Prepend those locations so the sidecar's checks see
-/// what the user's terminal sees.
-fn apply_user_path_overlay(cmd: &mut Command) {
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries: Vec<std::path::PathBuf> = std::env::split_paths(&existing).collect();
-
-    let mut candidates: Vec<std::path::PathBuf> = vec![
-        std::path::PathBuf::from("/opt/homebrew/bin"),
-        std::path::PathBuf::from("/opt/homebrew/sbin"),
-        std::path::PathBuf::from("/usr/local/bin"),
-        std::path::PathBuf::from("/usr/local/sbin"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(std::path::PathBuf::from(&home).join(".local/bin"));
-        candidates.push(std::path::PathBuf::from(&home).join(".cargo/bin"));
-    }
-    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-        candidates.push(std::path::PathBuf::from(&userprofile).join(".local/bin"));
-        candidates.push(std::path::PathBuf::from(&userprofile).join(".cargo/bin"));
-        #[cfg(target_os = "windows")]
-        {
-            ensure_env_from_userprofile(cmd, "APPDATA", &userprofile, &["AppData", "Roaming"]);
-            ensure_env_from_userprofile(cmd, "LOCALAPPDATA", &userprofile, &["AppData", "Local"]);
-        }
-    }
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        // npm's Windows global shims live here by default, e.g.
-        // ``timelapse-capture.cmd`` after ``npm install -g``.
-        candidates.push(std::path::PathBuf::from(appdata).join("npm"));
-    }
-    if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-        // Windows installer provisions beads into the same per-user directory
-        // used by beads' own install.ps1. The OS does not update an already
-        // running desktop process's PATH, so make the sidecar see it.
-        candidates.push(
-            std::path::PathBuf::from(&local_appdata)
-                .join("Programs")
-                .join("bd"),
-        );
-        // winget user-scope packages expose command shims here. That covers
-        // GitHub CLI, ffmpeg, and other tools installed outside a terminal.
-        candidates.push(
-            std::path::PathBuf::from(&local_appdata)
-                .join("Microsoft")
-                .join("WinGet")
-                .join("Links"),
-        );
-    }
-    if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
-        candidates.push(machine_managed_bin_path(std::path::Path::new(&programdata)));
-    }
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        candidates.push(
-            std::path::PathBuf::from(&program_files)
-                .join("Git")
-                .join("cmd"),
-        );
-        candidates.push(std::path::PathBuf::from(&program_files).join("GitHub CLI"));
-        candidates.push(std::path::PathBuf::from(program_files).join("nodejs"));
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
-        candidates.push(std::path::PathBuf::from(program_files_x86).join("GitHub CLI"));
-    }
-
-    #[cfg(target_os = "windows")]
-    apply_windows_github_cli_env(cmd);
-
-    // Prepend (in reverse so the first candidate ends up first), skipping
-    // any already-present entry to avoid PATH duplication.
-    for dir in candidates.into_iter().rev() {
-        if !entries.iter().any(|e| e == &dir) {
-            entries.insert(0, dir);
-        }
-    }
-
-    if let Ok(joined) = std::env::join_paths(entries) {
-        cmd.env("PATH", joined);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn ensure_env_from_userprofile(
-    cmd: &mut Command,
-    key: &str,
-    userprofile: &std::ffi::OsStr,
-    suffix: &[&str],
-) {
-    if std::env::var_os(key).is_some() {
-        return;
-    }
-    let mut path = std::path::PathBuf::from(userprofile);
-    for part in suffix {
-        path.push(part);
-    }
-    cmd.env(key, path);
-}
-
-#[cfg(target_os = "windows")]
-fn apply_windows_github_cli_env(cmd: &mut Command) {
-    if std::env::var_os("GH_CONFIG_DIR").is_some() {
-        return;
-    }
-    let appdata = std::env::var_os("APPDATA")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|profile| {
-                std::path::PathBuf::from(profile)
-                    .join("AppData")
-                    .join("Roaming")
-            })
-        });
-    if let Some(appdata) = appdata {
-        cmd.env("GH_CONFIG_DIR", appdata.join("GitHub CLI"));
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn locate_machine_managed_bd() -> Option<std::path::PathBuf> {
-    let programdata = std::env::var_os("PROGRAMDATA")?;
-    let path = machine_managed_bin_path(std::path::Path::new(&programdata)).join("bd.exe");
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn locate_machine_managed_bd() -> Option<std::path::PathBuf> {
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn machine_managed_bin_path(programdata: &std::path::Path) -> std::path::PathBuf {
-    programdata.join(r"AgentShore\bin")
-}
-
-#[cfg(not(target_os = "windows"))]
-fn machine_managed_bin_path(_programdata: &std::path::Path) -> std::path::PathBuf {
-    std::path::PathBuf::new()
-}
-
-/// Locate the Python interpreter inside the pkg-installer's managed venv.
-///
-/// The platform installer provisions a managed venv and pip-installs the
-/// bundled agentshore wheel into it. Windows uses a machine-wide venv under
-/// ProgramData; macOS keeps the existing per-user Application Support path.
-/// Returns ``None`` in development builds where the installer has never run;
-/// ``sidecar_command()`` then falls back to ``uv run``.
-fn locate_managed_venv_python() -> Option<std::path::PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
-            let path = managed_venv_python_path_in_programdata(std::path::Path::new(&programdata));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            let path =
-                managed_venv_python_path_in_local_appdata(std::path::Path::new(&local_appdata));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-            let path = managed_venv_python_path(std::path::Path::new(&userprofile));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-
-    let home = std::env::var_os("HOME")?;
-    locate_managed_venv_python_in_home(std::path::Path::new(&home))
-}
-
-fn locate_managed_venv_python_in_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
-    let path = managed_venv_python_path(home);
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        home.join("Library/Application Support/AgentShore/venv/bin/python")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        home.join(".local/share/agentshore/venv/bin/python")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn managed_venv_python_path_in_programdata(programdata: &std::path::Path) -> std::path::PathBuf {
-    programdata.join(r"AgentShore\venv\Scripts\python.exe")
-}
-
-#[cfg(target_os = "windows")]
-fn managed_venv_python_path_in_local_appdata(
-    local_appdata: &std::path::Path,
-) -> std::path::PathBuf {
-    local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
-}
-
-#[cfg(target_os = "windows")]
-fn sidecar_pid_file_path() -> Option<std::path::PathBuf> {
-    let programdata = std::env::var_os("PROGRAMDATA")?;
-    Some(
-        std::path::PathBuf::from(programdata)
-            .join("AgentShore")
-            .join("runtime")
-            .join("sidecar.pid"),
-    )
-}
-
-#[cfg(not(target_os = "windows"))]
-fn sidecar_pid_file_path() -> Option<std::path::PathBuf> {
-    None
-}
-
-fn write_sidecar_pid_file(pid: u32) {
-    let Some(path) = sidecar_pid_file_path() else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "[agentshore-desktop][sidecar] could not create runtime dir {}: {err}",
-                parent.display()
-            );
-            return;
-        }
-    }
-    if let Err(err) = std::fs::write(&path, pid.to_string()) {
-        eprintln!(
-            "[agentshore-desktop][sidecar] could not write sidecar pid file {}: {err}",
-            path.display()
-        );
-    }
-}
-
-fn remove_sidecar_pid_file() {
-    let Some(path) = sidecar_pid_file_path() else {
-        return;
-    };
-    let _ = std::fs::remove_file(path);
-}
-
 fn spawn_stdout_dispatcher(
     stdout: ChildStdout,
     pending: Arc<Mutex<HashMap<i64, mpsc::Sender<JsonRpcResponse>>>>,
@@ -988,47 +658,6 @@ mod tests {
         };
         assert_eq!(payload.exit_code, Some(17));
         assert_eq!(payload.last_stderr_lines, vec!["one", "two", "three"]);
-    }
-
-    #[test]
-    fn locate_managed_venv_python_in_home_returns_none_when_absent() {
-        let root = unique_temp_dir("absent-managed-venv");
-        std::fs::create_dir_all(&root).expect("create temp home");
-        let result = locate_managed_venv_python_in_home(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn locate_managed_venv_python_in_home_returns_python_when_present() {
-        let root = unique_temp_dir("present-managed-venv");
-        let python = managed_venv_python_path(&root);
-        std::fs::create_dir_all(python.parent().expect("python parent")).expect("create venv bin");
-        std::fs::write(&python, b"#!/bin/sh\n").expect("write fake python");
-
-        let result = locate_managed_venv_python_in_home(&root);
-        let _ = std::fs::remove_dir_all(&root);
-
-        assert_eq!(result, Some(python));
-    }
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn managed_venv_python_path_in_programdata_matches_installer_layout() {
-        let programdata = std::path::Path::new(r"C:\ProgramData");
-        assert_eq!(
-            managed_venv_python_path_in_programdata(programdata),
-            programdata.join(r"AgentShore\venv\Scripts\python.exe")
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn managed_venv_python_path_in_localappdata_matches_legacy_layout() {
-        let local_appdata = std::path::Path::new(r"C:\Users\example\AppData\Local");
-        assert_eq!(
-            managed_venv_python_path_in_local_appdata(local_appdata),
-            local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
-        );
     }
 
     #[test]
@@ -1309,16 +938,5 @@ mod tests {
         handle_agent_subprocess_notification("$/progress", &params, &pids);
         handle_agent_subprocess_notification("sidecar.health", &params, &pids);
         assert!(pids.lock().unwrap().is_empty());
-    }
-
-    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "agentshore-desktop-{label}-{}-{nanos}",
-            std::process::id()
-        ))
     }
 }

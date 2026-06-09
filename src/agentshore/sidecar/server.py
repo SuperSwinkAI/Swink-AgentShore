@@ -1001,10 +1001,20 @@ def _dispatch_identities_rpc(
         login = raw_params.get("login")
         if not isinstance(login, str):
             return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
-        try:
-            return _result(req_id, keychain_status(login))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
+        keychain_login: str = login
+
+        # Run off the serve loop: keychain_status spawns a killable child
+        # subprocess that can take seconds (Windows Credential Manager under
+        # antivirus). Returning a coroutine lets the dispatcher schedule it as a
+        # task so concurrent setup-screen RPCs don't serialize behind it — the
+        # Windows "nearly every screen times out" cascade.
+        async def _run_check_keychain() -> JsonRpcResponse:
+            try:
+                return _result(req_id, await asyncio.to_thread(keychain_status, keychain_login))
+            except ValueError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+
+        return _run_check_keychain()
 
     if method == "identities.check_access":
         if not isinstance(raw_params, dict):
@@ -1012,12 +1022,26 @@ def _dispatch_identities_rpc(
         login = raw_params.get("login")
         if not isinstance(login, str):
             return _error(req_id, INVALID_PARAMS, "identities.check_access requires login")
-        try:
-            return _result(req_id, check_identity_access(_active_project_path(state), login))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"identities.check_access: {exc}")
+        access_login: str = login
+        project_path = _active_project_path(state)
+
+        # Off the serve loop (see check_keychain): check_identity_access runs a
+        # killable child subprocess (gh/git, up to ~20s). The Identities screen
+        # fires one per configured identity concurrently; running them in
+        # threads keeps the loop pumping so they complete in parallel instead of
+        # queueing past their per-call Rust timeout.
+        async def _run_check_access() -> JsonRpcResponse:
+            try:
+                return _result(
+                    req_id,
+                    await asyncio.to_thread(check_identity_access, project_path, access_login),
+                )
+            except ValueError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+            except OSError as exc:
+                return _error(req_id, INTERNAL_ERROR, f"identities.check_access: {exc}")
+
+        return _run_check_access()
 
     if method == "identities.add":
         if not isinstance(raw_params, dict):

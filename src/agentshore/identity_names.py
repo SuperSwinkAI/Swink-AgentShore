@@ -94,11 +94,11 @@ def resolve_github_login_for_token(token: str) -> str | None:
     or the ``gh`` CLI is unavailable. Used at identity-add time to catch
     typos before they're persisted to ``agentshore.yaml``.
     """
-    import os
-    import shutil
     import subprocess  # noqa: S404
 
-    gh_bin = shutil.which("gh")
+    from agentshore import subprocess_env
+
+    gh_bin = subprocess_env.resolve_tool("gh")
     if gh_bin is None:
         return None
     try:
@@ -108,7 +108,10 @@ def resolve_github_login_for_token(token: str) -> str | None:
             text=True,
             check=False,
             timeout=10,
-            env={**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token},
+            env=subprocess_env.hardened_env(
+                {"GH_TOKEN": token, "GITHUB_TOKEN": token}, for_gh=True
+            ),
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except (subprocess.SubprocessError, OSError):
         return None

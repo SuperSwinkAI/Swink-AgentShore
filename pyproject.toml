@@ -37,7 +37,6 @@ dependencies = [
     "starlette==1.1.0",
     "uvicorn==0.49.0",
     "websockets==16.0",
-    "playwright==1.58.0",
     "keyring==25.7.0",
     "ruamel-yaml==0.19.1",
     "beaupy==3.12.0",

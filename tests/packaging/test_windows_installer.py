@@ -4,6 +4,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONER = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore-provisioner.rs"
+PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore_provisioner/mod.rs"
+
+
+def _provisioner_source() -> str:
+    return PROVISIONER.read_text() + "\n" + PROVISIONER_SUPPORT.read_text()
 
 
 def test_windows_inno_template_matches_pkg_component_defaults() -> None:
@@ -100,6 +105,14 @@ def test_windows_build_script_signs_provisioner_when_cert_exists() -> None:
     assert "Invoke-AuthenticodeSign -FilePath $SetupOut" in script
 
 
+def test_windows_release_build_requires_signing_unless_explicitly_disabled() -> None:
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+
+    assert "Release Windows builds must be Authenticode-signed" in script
+    assert "or intentionally pass -NoSign for local-only testing" in script
+    assert "if (-not $DebugBuild)" in script
+
+
 def test_windows_build_script_removes_stale_setup_artifacts_before_tauri_build() -> None:
     script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
 
@@ -124,14 +137,15 @@ def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> Non
 
 def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
     sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    runtime_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_runtime.rs").read_text()
 
-    assert 'std::env::var_os("PROGRAMDATA")' in sidecar_rs
-    assert "managed_venv_python_path_in_programdata" in sidecar_rs
-    assert "machine_managed_bin_path" in sidecar_rs
+    assert 'std::env::var_os("PROGRAMDATA")' in runtime_rs
+    assert "managed_venv_python_path_in_programdata" in runtime_rs
+    assert "machine_managed_bin_path" in runtime_rs
     assert "locate_machine_managed_bd" in sidecar_rs
     assert "AGENTSHORE_BD_BIN_ENV" in sidecar_rs
     assert "AGENTSHORE_GITHUB_HELPER" not in sidecar_rs
-    assert r"AgentShore\venv\Scripts\python.exe" in sidecar_rs
+    assert r"AgentShore\venv\Scripts\python.exe" in runtime_rs
 
 
 def test_windows_installer_does_not_ship_github_helper() -> None:
@@ -147,40 +161,41 @@ def test_windows_installer_does_not_ship_github_helper() -> None:
 
 
 def test_windows_sidecar_keeps_legacy_and_user_path_overlays() -> None:
-    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    env_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_env.rs").read_text()
 
-    assert 'std::env::var_os("APPDATA")' in sidecar_rs
-    assert '.join("npm")' in sidecar_rs
-    assert 'std::env::var_os("LOCALAPPDATA")' in sidecar_rs
-    assert 'ensure_env_from_userprofile(cmd, "APPDATA"' in sidecar_rs
-    assert 'ensure_env_from_userprofile(cmd, "LOCALAPPDATA"' in sidecar_rs
-    assert '.join("Programs")' in sidecar_rs
-    assert '.join("bd")' in sidecar_rs
-    assert '.join("Microsoft")' in sidecar_rs
-    assert '.join("WinGet")' in sidecar_rs
-    assert '.join("GitHub CLI")' in sidecar_rs
-    assert "apply_windows_github_cli_env(cmd)" in sidecar_rs
-    assert 'cmd.env("GH_CONFIG_DIR"' in sidecar_rs
+    assert 'std::env::var_os("APPDATA")' in env_rs
+    assert '.join("npm")' in env_rs
+    assert 'std::env::var_os("LOCALAPPDATA")' in env_rs
+    assert 'ensure_env_from_userprofile(cmd, "APPDATA"' in env_rs
+    assert 'ensure_env_from_userprofile(cmd, "LOCALAPPDATA"' in env_rs
+    assert '.join("Programs")' in env_rs
+    assert '.join("bd")' in env_rs
+    assert '.join("Microsoft")' in env_rs
+    assert '.join("WinGet")' in env_rs
+    assert '.join("GitHub CLI")' in env_rs
+    assert "apply_windows_github_cli_env(cmd)" in env_rs
+    assert 'cmd.env("GH_CONFIG_DIR"' in env_rs
 
 
 def test_windows_sidecar_records_pid_for_installer_cleanup() -> None:
     sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    pid_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_pid.rs").read_text()
 
     assert "write_sidecar_pid_file(child.id())" in sidecar_rs
-    assert "sidecar.pid" in sidecar_rs
+    assert "sidecar.pid" in pid_rs
     assert "remove_sidecar_pid_file()" in sidecar_rs
 
 
 def test_windows_sidecar_launch_suppresses_console_window() -> None:
-    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    env_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_env.rs").read_text()
 
-    assert "std::os::windows::process::CommandExt" in sidecar_rs
-    assert "CREATE_NO_WINDOW" in sidecar_rs
-    assert "cmd.creation_flags(CREATE_NO_WINDOW)" in sidecar_rs
+    assert "std::os::windows::process::CommandExt" in env_rs
+    assert "CREATE_NO_WINDOW" in env_rs
+    assert "cmd.creation_flags(CREATE_NO_WINDOW)" in env_rs
 
 
 def test_windows_provisioner_has_stable_exit_codes_and_timeouts() -> None:
-    source = PROVISIONER.read_text()
+    source = _provisioner_source()
 
     for code in [
         "const INVALID_ARGS: i32 = 10",
@@ -201,7 +216,7 @@ def test_windows_provisioner_has_stable_exit_codes_and_timeouts() -> None:
 
 
 def test_windows_provisioner_uses_programdata_layout_and_icacls() -> None:
-    source = PROVISIONER.read_text()
+    source = _provisioner_source()
 
     assert r'OsString::from(r"C:\ProgramData")' in source
     assert 'join("install-logs")' in source
@@ -213,7 +228,7 @@ def test_windows_provisioner_uses_programdata_layout_and_icacls() -> None:
 
 
 def test_windows_provisioner_installs_wheel_and_machine_bd() -> None:
-    source = PROVISIONER.read_text()
+    source = _provisioner_source()
 
     assert 'os("venv")' in source
     assert 'os("pip")' in source
@@ -222,7 +237,7 @@ def test_windows_provisioner_installs_wheel_and_machine_bd() -> None:
 
 
 def test_windows_provisioner_rolls_back_failed_venv_replace() -> None:
-    source = PROVISIONER.read_text()
+    source = _provisioner_source()
 
     assert "replace_venv_with_rollback" in source
     assert 'venv.with_file_name("venv.previous")' in source
@@ -230,7 +245,7 @@ def test_windows_provisioner_rolls_back_failed_venv_replace() -> None:
 
 
 def test_windows_provisioner_does_not_shell_processes() -> None:
-    source = PROVISIONER.read_text()
+    source = _provisioner_source()
 
     assert "Command::new(program)" in source
     assert ".args(args)" in source

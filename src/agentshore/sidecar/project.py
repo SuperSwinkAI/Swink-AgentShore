@@ -13,20 +13,20 @@ import contextlib
 import io
 import math
 import os
-import shutil
-import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+from agentshore import subprocess_env
 from agentshore.beads import resolve_bd_binary
 from agentshore.budget import (
     MAX_TIME_BUDGET_MINUTES,
     MIN_ENABLED_BUDGET_USD,
     MIN_TIME_BUDGET_MINUTES,
 )
+from agentshore.command import CommandResult, git_sync
 from agentshore.config.models import BudgetConfig, TimelapseConfig
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
@@ -35,6 +35,11 @@ from agentshore.config.models import BudgetConfig, TimelapseConfig
 ERR_PROJECT_NOT_ACTIVE = -32004
 GIT_PROBE_TIMEOUT_SECONDS = 5.0
 GIT_TIMEOUT_RETURN_CODE = 124
+# Deliberately short: inspect() fans probes out concurrently and returns within
+# this deadline with filesystem fallbacks for any slow probe, so the Readiness
+# screen always paints fast and degrades to a "probe timed out, re-run" state
+# rather than blocking. The git layer's non-interactive env (no credential
+# prompt) is what removes the real hang risk — not a longer deadline here.
 INSPECT_PROBE_TIMEOUT_SECONDS = 2.0
 BRANCH_LIST_TIMEOUT_SECONDS = 20.0
 BRANCH_REMOTE_ONLY_LIMIT = 200
@@ -135,24 +140,14 @@ def _run_git(
     cwd: Path,
     *,
     timeout_seconds: float = GIT_PROBE_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess[str]:
-    command = ["git", *args]
-    try:
-        return subprocess.run(  # noqa: S603, S607 â€” fixed argv, no shell
-            command,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return subprocess.CompletedProcess(
-            command,
-            GIT_TIMEOUT_RETURN_CODE,
-            stdout=exc.stdout if isinstance(exc.stdout, str) else "",
-            stderr=f"git {' '.join(args)} timed out after {timeout_seconds:.1f}s",
-        )
+) -> CommandResult:
+    """Run a read-only git probe through the hardened, non-interactive runner.
+
+    Returns a :class:`CommandResult` (returncode ``124`` on timeout, ``127``
+    when git is not installed) — the credential-neutralizing env guarantees the
+    probe can never hang on a Git-Credential-Manager / askpass dialog.
+    """
+    return git_sync(*args, cwd=cwd, timeout_seconds=timeout_seconds)
 
 
 def _repo_identity_probe_fallback(path: Path) -> dict[str, object]:
@@ -245,9 +240,9 @@ def _beads_status(path: Path) -> dict[str, object]:
 
 def _prerequisites() -> dict[str, object]:
     return {
-        "git": shutil.which("git") is not None,
+        "git": subprocess_env.resolve_tool("git") is not None,
         "bd": resolve_bd_binary() is not None,
-        "gh": shutil.which("gh") is not None,
+        "gh": subprocess_env.resolve_tool("gh") is not None,
     }
 
 
@@ -446,49 +441,135 @@ def _filesystem_branches(path: Path) -> tuple[str, str | None, list[str], list[s
     return default, current, local_names, remote_names
 
 
-def branches(*, refresh: bool = False) -> list[_BranchRow]:
-    """Return existing local + origin-tracking branches for the target picker.
+def _remaining_timeout(deadline: float) -> float:
+    return max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
 
-    The Windows desktop setup path avoids Git subprocesses here. Reading refs
-    directly from ``.git/refs`` and ``packed-refs`` is enough for a mandatory
-    "choose an existing branch" screen and avoids shelling out to Git in
-    repositories where Git process startup or ref scans can stall the sidecar.
-    """
-    del refresh
-    path = _require_active()
-    default, current_branch, local_order, remote_names = _filesystem_branches(path)
-    local_names = set(local_order)
 
+def _branch_rows(
+    path: Path,
+    *,
+    default: str,
+    current_branch: str | None,
+    local_order: list[str],
+    remote_names: list[str],
+    deadline: float | None,
+) -> list[_BranchRow]:
+    target = f"origin/{default}"
     rows: list[_BranchRow] = []
+    local_names = set(local_order)
     for name in local_order:
+        ahead, behind = (0, 0)
+        if deadline is not None:
+            ahead, behind = _ahead_behind(path, name, target, deadline=deadline)
         rows.append(
             {
                 "name": name,
                 "is_default": name == default,
                 "is_current": name == current_branch,
                 "is_remote": False,
-                "ahead": 0,
-                "behind": 0,
+                "ahead": ahead,
+                "behind": behind,
             }
         )
     remote_rows_added = 0
     for name in remote_names:
         if name in local_names:
             continue
+        ahead, behind = (0, 0)
+        if deadline is not None:
+            ahead, behind = _ahead_behind(path, f"origin/{name}", target, deadline=deadline)
         rows.append(
             {
                 "name": name,
                 "is_default": name == default,
                 "is_current": False,
                 "is_remote": True,
-                "ahead": 0,
-                "behind": 0,
+                "ahead": ahead,
+                "behind": behind,
             }
         )
         remote_rows_added += 1
         if remote_rows_added >= BRANCH_REMOTE_ONLY_LIMIT:
             break
     return rows
+
+
+def _filesystem_branch_rows(path: Path) -> list[_BranchRow]:
+    default, current_branch, local_order, remote_names = _filesystem_branches(path)
+    return _branch_rows(
+        path,
+        default=default,
+        current_branch=current_branch,
+        local_order=local_order,
+        remote_names=remote_names,
+        deadline=None,
+    )
+
+
+def branches(*, refresh: bool = False) -> list[_BranchRow]:
+    """Return local + remote-tracking branches for the target-branch picker.
+
+    The default setup-screen load is filesystem-only so Windows cannot hang in
+    Git process startup or network-adjacent probes. ``refresh=True`` preserves
+    the Mac-era richer path: fetch origin, ask Git for refs, and compute
+    ahead/behind where possible, all under one shared deadline.
+    """
+    path = _require_active()
+    if not refresh:
+        return _filesystem_branch_rows(path)
+
+    deadline = time.monotonic() + BRANCH_LIST_TIMEOUT_SECONDS
+    fetch_res = _run_git(
+        ["fetch", "--prune", "origin"],
+        path,
+        timeout_seconds=max(0.1, deadline - time.monotonic()),
+    )
+    if fetch_res.returncode == GIT_TIMEOUT_RETURN_CODE or time.monotonic() >= deadline:
+        return _filesystem_branch_rows(path)
+
+    default, current_branch, fallback_local, fallback_remote = _filesystem_branches(path)
+    local_res = _run_git(
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        path,
+        timeout_seconds=_remaining_timeout(deadline),
+    )
+    if time.monotonic() >= deadline:
+        return _filesystem_branch_rows(path)
+    remote_res = _run_git(
+        ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+        path,
+        timeout_seconds=_remaining_timeout(deadline),
+    )
+    if local_res.returncode != 0 or remote_res.returncode != 0:
+        local_order = fallback_local
+        remote_names = fallback_remote
+    else:
+        local_seen: set[str] = set()
+        local_order = []
+        remote_names = []
+        for line in local_res.stdout.splitlines():
+            ref = line.strip()
+            if not ref or ref == "origin":
+                continue
+            if ref not in local_seen:
+                local_seen.add(ref)
+                local_order.append(ref)
+        for line in remote_res.stdout.splitlines():
+            ref = line.strip()
+            if not ref or not ref.startswith("origin/"):
+                continue
+            name = ref[len("origin/") :]
+            if name and name != "HEAD":
+                remote_names.append(name)
+
+    return _branch_rows(
+        path,
+        default=default,
+        current_branch=current_branch,
+        local_order=local_order,
+        remote_names=remote_names,
+        deadline=deadline,
+    )
 
 
 def _is_valid_branch_name(name: str) -> bool:

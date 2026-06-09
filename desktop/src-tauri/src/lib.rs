@@ -15,6 +15,9 @@ pub mod activity;
 pub mod jsonrpc_stdio;
 pub mod readiness;
 pub mod sidecar;
+mod sidecar_env;
+mod sidecar_pid;
+mod sidecar_runtime;
 
 const UI_STATE_STORE_PATH: &str = "ui-state.json";
 const UI_STATE_KEY: &str = "ui_state";

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 import yaml
 
-from agentshore.errors import AgentAuthError
 from agentshore.identity_names import keychain_service_for_login
 from agentshore.sidecar import identities as identities_mod
 from agentshore.sidecar.identities import (
@@ -19,6 +19,18 @@ from agentshore.sidecar.identities import (
     update_identity,
 )
 from agentshore.sidecar.server import INVALID_PARAMS, handle_request
+
+
+def _resolve(response: object) -> object:
+    """Resolve a possibly-awaitable handle_request result for sync RPC tests.
+
+    ``identities.check_keychain``/``check_access`` now dispatch off the serve
+    loop (returning a coroutine) so they don't block concurrent setup RPCs;
+    direct synchronous callers resolve it here.
+    """
+    if inspect.isawaitable(response):
+        return asyncio.run(response)
+    return response
 
 
 def _write_minimal_config(path: Path) -> None:
@@ -84,9 +96,11 @@ def test_identities_list_reports_env_missing(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_keychain_status_reports_existing_token(monkeypatch) -> None:
-    import keyring as _keyring
-
-    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: "stored-pat-value")
+    monkeypatch.setattr(
+        identities_mod,
+        "_run_keyring_child",
+        lambda _request: {"ok": True, "token": "stored-pat-value"},
+    )
     status = keychain_status("OctoCat")
     assert status == {
         "login": "octocat",
@@ -96,28 +110,24 @@ def test_keychain_status_reports_existing_token(monkeypatch) -> None:
 
 
 def test_keychain_status_reports_absent_token(monkeypatch) -> None:
-    import keyring as _keyring
-
-    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: None)
+    monkeypatch.setattr(
+        identities_mod,
+        "_run_keyring_child",
+        lambda _request: {"ok": True, "token": None},
+    )
     status = keychain_status("octocat")
     assert status["has_token"] is False
     assert status["login"] == "octocat"
 
 
 def test_keychain_status_times_out_when_backend_hangs(monkeypatch) -> None:
-    import keyring as _keyring
+    def timeout(_request: dict[str, object]) -> dict[str, object]:
+        raise identities_mod._KeyringTimeoutError("keyring operation timed out")
 
-    def slow_get_password(_service: str, _username: str) -> str:
-        time.sleep(0.05)
-        return "late-token"
-
-    monkeypatch.setattr(_keyring, "get_password", slow_get_password)
-    monkeypatch.setattr("agentshore.sidecar.identities._KEYRING_TIMEOUT_SECONDS", 0.001)
-
+    monkeypatch.setattr(identities_mod, "_run_keyring_child", timeout)
     status = keychain_status("octocat")
 
     assert status["has_token"] is False
-    time.sleep(0.06)
 
 
 def test_keychain_status_rejects_invalid_login() -> None:
@@ -126,16 +136,20 @@ def test_keychain_status_rejects_invalid_login() -> None:
 
 
 def test_rpc_check_keychain_returns_status(monkeypatch) -> None:
-    import keyring as _keyring
-
-    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: "stored-pat-value")
-    response = handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 7,
-            "method": "identities.check_keychain",
-            "params": {"login": "octocat"},
-        }
+    monkeypatch.setattr(
+        identities_mod,
+        "_run_keyring_child",
+        lambda _request: {"ok": True, "token": "stored-pat-value"},
+    )
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "identities.check_keychain",
+                "params": {"login": "octocat"},
+            }
+        )
     )
     assert response is not None
     assert response["result"]["has_token"] is True
@@ -143,26 +157,30 @@ def test_rpc_check_keychain_returns_status(monkeypatch) -> None:
 
 
 def test_rpc_check_keychain_invalid_login_returns_invalid_params() -> None:
-    response = handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 8,
-            "method": "identities.check_keychain",
-            "params": {"login": "has space"},
-        }
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "identities.check_keychain",
+                "params": {"login": "has space"},
+            }
+        )
     )
     assert response is not None
     assert response["error"]["code"] == INVALID_PARAMS
 
 
 def test_rpc_check_keychain_missing_login_returns_invalid_params() -> None:
-    response = handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 9,
-            "method": "identities.check_keychain",
-            "params": {},
-        }
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "identities.check_keychain",
+                "params": {},
+            }
+        )
     )
     assert response is not None
     assert response["error"]["code"] == INVALID_PARAMS
@@ -173,18 +191,30 @@ def test_rpc_check_access_returns_identity_status(tmp_path: Path, monkeypatch) -
     _write_identity_config(cfg, "newlogin", "gh_token_env", "NEWLOGIN_GH_TOKEN")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
-    monkeypatch.setattr(
-        "agentshore.sidecar.identities.verify_identity_repo_access",
-        lambda _project_path, _identity_env: None,
-    )
 
-    response = handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "identities.check_access",
-            "params": {"login": "newlogin"},
-        }
+    def ok_child(
+        _project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub token and repository access verified."
+        return checked
+
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", ok_child)
+
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "identities.check_access",
+                "params": {"login": "newlogin"},
+            }
+        )
     )
 
     assert response is not None
@@ -426,9 +456,11 @@ def test_list_identities_gh_token_keychain_configured_without_keyring_probe(
     cfg = tmp_path / "agentshore.yaml"
     _write_identity_config(cfg, "newlogin", "gh_token_keychain", "agentshore:gh:newlogin")
 
-    import keyring as _keyring
-
-    monkeypatch.setattr(_keyring, "get_password", lambda _svc, _user: None)
+    monkeypatch.setattr(
+        identities_mod,
+        "_run_keyring_child",
+        lambda _request: {"ok": True, "token": None},
+    )
 
     rows = list_identities(tmp_path)
     assert rows == [
@@ -447,12 +479,10 @@ def test_list_identities_gh_token_keychain_does_not_read_keyring(
     cfg = tmp_path / "agentshore.yaml"
     _write_identity_config(cfg, "newlogin", "gh_token_keychain", "agentshore:gh:newlogin")
 
-    import keyring as _keyring
-
-    def fail_get_password(_service: str, _username: str) -> str:
+    def fail_keyring_child(_request: dict[str, object]) -> dict[str, object]:
         raise AssertionError("identities.list should not read the OS credential store")
 
-    monkeypatch.setattr(_keyring, "get_password", fail_get_password)
+    monkeypatch.setattr(identities_mod, "_run_keyring_child", fail_keyring_child)
 
     rows = list_identities(tmp_path)
     assert rows == [
@@ -471,15 +501,22 @@ def test_check_identity_access_uses_resolved_token_for_repo_preflight(
     cfg = tmp_path / "agentshore.yaml"
     _write_identity_config(cfg, "newlogin", "gh_token_env", "NEWLOGIN_GH_TOKEN")
     monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
-    calls: list[dict[str, str]] = []
+    calls: list[tuple[Path, dict[str, object], identities_mod.IdentityRow, str]] = []
 
-    def record_access(_project_path: Path, identity_env: dict[str, str]) -> None:
-        calls.append(identity_env)
+    def record_child(
+        project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        calls.append((project_path, raw, row, source))
+        checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub token and repository access verified."
+        return checked
 
-    monkeypatch.setattr(
-        "agentshore.sidecar.identities.verify_identity_repo_access",
-        record_access,
-    )
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", record_child)
 
     row = check_identity_access(tmp_path, "newlogin")
 
@@ -490,7 +527,19 @@ def test_check_identity_access_uses_resolved_token_for_repo_preflight(
         "repo_access": "ok",
         "repo_access_detail": "GitHub token and repository access verified.",
     }
-    assert calls == [{"GH_TOKEN": "fake-token-value", "GITHUB_TOKEN": "fake-token-value"}]
+    assert calls == [
+        (
+            tmp_path,
+            {"gh_token_env": "NEWLOGIN_GH_TOKEN"},
+            {
+                "login": "newlogin",
+                "source": "gh_token_env",
+                "token_status": "configured",
+                "repo_access": "unknown",
+            },
+            "gh_token_env",
+        )
+    ]
 
 
 def test_check_identity_access_reports_blocked_repo_preflight(tmp_path: Path, monkeypatch) -> None:
@@ -502,13 +551,21 @@ def test_check_identity_access_reports_blocked_repo_preflight(tmp_path: Path, mo
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    def raise_denied(_project_path: Path, _identity_env: dict[str, str]) -> None:
-        raise AgentAuthError("denied")
+    def blocked_child(
+        _project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = identities_mod._with_identity_diagnostics(
+            "denied", raw, source
+        )
+        return checked
 
-    monkeypatch.setattr(
-        "agentshore.sidecar.identities.verify_identity_repo_access",
-        raise_denied,
-    )
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", blocked_child)
 
     row = check_identity_access(tmp_path, "newlogin")
 
@@ -530,10 +587,24 @@ def test_check_identity_access_reports_missing_when_token_cannot_resolve(
         "agentshore.sidecar.identities._identity_diagnostics",
         lambda _raw, _source, **_kwargs: "diag",
     )
-    monkeypatch.setattr(
-        "agentshore.sidecar.identities._token_for_identity",
-        lambda _raw: (None, "gh_token_keychain"),
-    )
+
+    def missing_child(
+        _project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
+        checked["token_status"] = "missing"
+        checked["repo_access_detail"] = identities_mod._with_identity_diagnostics(
+            f"Token could not be resolved from {source}.",
+            raw,
+            source,
+        )
+        return checked
+
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", missing_child)
 
     row = check_identity_access(tmp_path, "newlogin")
 
@@ -560,7 +631,7 @@ def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
             return subprocess.CompletedProcess(argv, returncode=1, stdout="", stderr="missing")
         return subprocess.CompletedProcess(argv, returncode=0, stdout="active-token\n", stderr="")
 
-    monkeypatch.setattr(identities_mod.shutil, "which", lambda name: "C:\\gh.exe")
+    monkeypatch.setattr(identities_mod.subprocess_env, "resolve_tool", lambda name: "C:\\gh.exe")
     monkeypatch.setattr(identities_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(
         identities_mod,
@@ -569,7 +640,16 @@ def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
     )
     monkeypatch.setattr(identities_mod, "verify_identity_repo_access", lambda *_args: None)
 
-    row = check_identity_access(tmp_path, "newlogin")
+    row = identities_mod._check_gh_auth_identity_access(
+        tmp_path,
+        {"gh_token_login": "newlogin"},
+        {
+            "login": "newlogin",
+            "source": "gh_token_login",
+            "token_status": "configured",
+            "repo_access": "unknown",
+        },
+    )
 
     assert row["repo_access"] == "ok"
     assert row["token_status"] == "auth_ok"
@@ -591,7 +671,7 @@ def test_check_identity_access_gh_login_rejects_active_token_for_wrong_login(
             return subprocess.CompletedProcess(argv, returncode=1, stdout="", stderr="missing")
         return subprocess.CompletedProcess(argv, returncode=0, stdout="other-token\n", stderr="")
 
-    monkeypatch.setattr(identities_mod.shutil, "which", lambda name: "C:\\gh.exe")
+    monkeypatch.setattr(identities_mod.subprocess_env, "resolve_tool", lambda name: "C:\\gh.exe")
     monkeypatch.setattr(identities_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(identities_mod, "resolve_github_login_for_token", lambda _token: "someone")
     monkeypatch.setattr(
@@ -600,7 +680,16 @@ def test_check_identity_access_gh_login_rejects_active_token_for_wrong_login(
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    row = check_identity_access(tmp_path, "newlogin")
+    row = identities_mod._check_gh_auth_identity_access(
+        tmp_path,
+        {"gh_token_login": "newlogin"},
+        {
+            "login": "newlogin",
+            "source": "gh_token_login",
+            "token_status": "configured",
+            "repo_access": "unknown",
+        },
+    )
 
     assert row["token_status"] == "auth_mismatch"
     assert row["repo_access"] == "unknown"
@@ -622,16 +711,16 @@ def test_check_identity_access_gh_login_returns_row_when_probe_times_out(
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    def slow_auth(_raw: dict[str, object]) -> identities_mod._CredentialResolution:
-        time.sleep(0.05)
-        return identities_mod._CredentialResolution(
-            token="late-token",
-            status="auth_ok",
-            detail="late",
-        )
+    def timeout_child(
+        _project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        raise identities_mod._IdentityCheckTimeoutError("identity check timed out")
 
-    monkeypatch.setattr(identities_mod, "_resolve_login_auth", slow_auth)
-
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", timeout_child)
     row = check_identity_access(tmp_path, "newlogin")
 
     assert row == {
@@ -644,7 +733,6 @@ def test_check_identity_access_gh_login_returns_row_when_probe_times_out(
             "Diagnostics: diag"
         ),
     }
-    time.sleep(0.06)
 
 
 def test_check_identity_access_token_source_returns_row_when_repo_probe_times_out(
@@ -661,11 +749,16 @@ def test_check_identity_access_token_source_returns_row_when_repo_probe_times_ou
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    def slow_access(_project_path: Path, _identity_env: dict[str, str]) -> None:
-        time.sleep(0.05)
+    def timeout_child(
+        _project_path: Path,
+        *,
+        row: identities_mod.IdentityRow,
+        raw: dict[str, object],
+        source: str,
+    ) -> identities_mod.IdentityRow:
+        raise identities_mod._IdentityCheckTimeoutError("identity check timed out")
 
-    monkeypatch.setattr(identities_mod, "verify_identity_repo_access", slow_access)
-
+    monkeypatch.setattr(identities_mod, "_run_identity_check_child", timeout_child)
     row = check_identity_access(tmp_path, "newlogin")
 
     assert row == {
@@ -677,7 +770,6 @@ def test_check_identity_access_token_source_returns_row_when_repo_probe_times_ou
             "GitHub token and repository access verification timed out after 0s. Diagnostics: diag"
         ),
     }
-    time.sleep(0.06)
 
 
 def test_update_identity_rejects_unsupported_token_source(tmp_path: Path) -> None:
@@ -780,20 +872,15 @@ def test_add_identity_keychain_store_timeout_is_clear(tmp_path: Path, monkeypatc
     cfg = tmp_path / "agentshore.yaml"
     _write_minimal_config(cfg)
 
-    import keyring as _keyring
+    def timeout(_request: dict[str, object]) -> dict[str, object]:
+        raise identities_mod._KeyringTimeoutError("keyring operation timed out")
 
-    def slow_set_password(_service: str, _username: str, _password: str) -> None:
-        time.sleep(0.05)
-
-    monkeypatch.setattr(_keyring, "set_password", slow_set_password)
-    monkeypatch.setattr("agentshore.sidecar.identities._KEYRING_TIMEOUT_SECONDS", 0.001)
-
+    monkeypatch.setattr(identities_mod, "_run_keyring_child", timeout)
     with pytest.raises(ValueError, match="credential store did not respond in time"):
         add_identity(tmp_path, "NewLogin", "gh_token_keychain", pat="secret")
 
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert "newlogin" not in data["identities"]
-    time.sleep(0.06)
 
 
 def test_add_identity_skips_validation_when_token_unresolvable(tmp_path: Path, monkeypatch) -> None:
