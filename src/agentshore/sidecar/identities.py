@@ -159,7 +159,7 @@ def _resolve_github_login_for_token(token: str) -> str | None:
 def _clean_token(token: str | None) -> str | None:
     if token is None:
         return None
-    cleaned = token.strip()
+    cleaned = "".join(ch for ch in token if ch.isprintable()).strip()
     return cleaned or None
 
 
