@@ -1026,16 +1026,16 @@ def _dispatch_identities_rpc(
         access_login: str = login
         project_path = _active_project_path(state)
 
-        # Off the serve loop (see check_keychain): check_identity_access runs a
-        # killable child subprocess (gh/git, up to ~20s). The Identities screen
-        # fires one per configured identity concurrently; running them in
-        # threads keeps the loop pumping so they complete in parallel instead of
-        # queueing past their per-call Rust timeout.
+        # Off the serve loop (see check_keychain): check_identity_access is async
+        # and runs its blocking gh/keyring/repo-access calls inside threads
+        # internally.  The Identities screen fires one per configured identity
+        # concurrently; they complete in parallel because each awaits its own
+        # to_thread call instead of serialising through a single thread pool entry.
         async def _run_check_access() -> JsonRpcResponse:
             try:
                 return _result(
                     req_id,
-                    await asyncio.to_thread(check_identity_access, project_path, access_login),
+                    await check_identity_access(project_path, access_login),
                 )
             except ValueError as exc:
                 return _error(req_id, INVALID_PARAMS, str(exc))

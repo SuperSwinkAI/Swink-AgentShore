@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -9,7 +10,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 import yaml
 
@@ -54,18 +55,10 @@ _TOKEN_SOURCE_FIELDS = frozenset(s.value for s in TokenSource if s is not TokenS
 _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
-_GH_TOKEN_TIMEOUT_SECONDS = 10.0
-_GH_STATUS_TIMEOUT_SECONDS = 5.0
-_IDENTITY_CHECK_TIMEOUT_SECONDS = 20.0
-_KEYRING_TIMEOUT_SECONDS = 5.0
 
 
 class _KeyringTimeoutError(RuntimeError):
     """Raised when the local OS credential backend does not answer promptly."""
-
-
-class _IdentityCheckTimeoutError(RuntimeError):
-    """Raised when one setup identity probe exceeds its total time budget."""
 
 
 @dataclass(frozen=True)
@@ -112,31 +105,6 @@ except Exception as exc:
 """
 
 
-_IDENTITY_CHECK_CHILD_CODE = r"""
-import json
-import sys
-from pathlib import Path
-
-from agentshore.sidecar import identities
-
-request = json.loads(sys.stdin.read() or "{}")
-try:
-    project_path = Path(str(request.get("project_path") or ""))
-    raw = request.get("raw")
-    row = request.get("row")
-    source = str(request.get("source") or "")
-    if not isinstance(raw, dict) or not isinstance(row, dict):
-        raise ValueError("raw and row must be JSON objects")
-    if source == identities.TokenSource.LOGIN.value:
-        result = identities._check_gh_auth_identity_access(project_path, raw, row)
-    else:
-        result = identities._check_token_identity_access(project_path, raw, row, source)
-    print(json.dumps({"ok": True, "row": result}))
-except Exception as exc:
-    print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
-"""
-
-
 def _run_keyring_child(request: dict[str, object]) -> dict[str, object]:
     """Run one OS credential operation in a killable child process.
 
@@ -152,7 +120,7 @@ def _run_keyring_child(request: dict[str, object]) -> dict[str, object]:
             capture_output=True,
             text=True,
             check=False,
-            timeout=_KEYRING_TIMEOUT_SECONDS,
+            timeout=subprocess_env.timeout_for("keyring"),
             creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired as exc:
@@ -306,7 +274,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             text=True,
             check=False,
             env=env,
-            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+            timeout=subprocess_env.timeout_for("gh"),
             creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:
@@ -336,7 +304,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
             text=True,
             check=False,
             env=env,
-            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+            timeout=subprocess_env.timeout_for("gh"),
             creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:
@@ -485,12 +453,18 @@ def list_identities(project_path: Path) -> list[IdentityRow]:
     return rows
 
 
-def check_identity_access(project_path: Path, login: str) -> IdentityRow:
+async def check_identity_access(project_path: Path, login: str) -> IdentityRow:
     """Resolve one configured identity and verify its token can see the repo.
 
     This is intentionally separate from ``list_identities`` so the setup screen
     can render from YAML immediately, then update live access badges without
     making first paint depend on ``gh`` or the OS credential backend.
+
+    Runs the blocking gh / keyring / repo-access calls inside a thread so the
+    serve loop stays pumping while concurrent identity checks complete in
+    parallel.  A monotonic deadline (``timeout_for("identity_check")``) caps
+    the total time — every individual operation already has its own inner
+    timeout, so this outer cap is a safety net only.
     """
     canonical = canonical_identity_name(login)
     cfg_path = _config_path(project_path)
@@ -517,12 +491,29 @@ def check_identity_access(project_path: Path, login: str) -> IdentityRow:
         row["repo_access_detail"] = _unconfigured_source_message(source)
         return row
 
-    return _run_identity_check_with_timeout(
-        project_path,
-        row=row,
-        raw=raw,
-        source=source,
-    )
+    def _run_check() -> IdentityRow:
+        if source == TokenSource.LOGIN.value:
+            return _check_gh_auth_identity_access(project_path, raw, row)
+        return _check_token_identity_access(project_path, raw, row, source)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run_check),
+            timeout=subprocess_env.timeout_for("identity_check"),
+        )
+    except TimeoutError:
+        timed_out: IdentityRow = dict(row)  # type: ignore[assignment]
+        timed_out["repo_access"] = "check_failed"
+        timed_out["token_status"] = (
+            "auth_timeout" if source == TokenSource.LOGIN.value else "token_timeout"
+        )
+        timed_out["repo_access_detail"] = _with_identity_diagnostics(
+            _timeout_message(source),
+            raw,
+            source,
+            include_gh_status=False,
+        )
+        return timed_out
 
 
 def _check_gh_auth_identity_access(
@@ -593,73 +584,6 @@ def _check_token_identity_access(
     return checked
 
 
-def _run_identity_check_child(
-    project_path: Path,
-    *,
-    row: IdentityRow,
-    raw: dict[str, object],
-    source: str,
-) -> IdentityRow:
-    """Run one repo-access identity probe in a killable child process."""
-    request = {
-        "project_path": str(project_path),
-        "row": row,
-        "raw": raw,
-        "source": source,
-    }
-    try:
-        proc = subprocess.run(  # noqa: S603 - same Python executable, fixed -c payload
-            [sys.executable, "-c", _IDENTITY_CHECK_CHILD_CODE],
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_IDENTITY_CHECK_TIMEOUT_SECONDS,
-            creationflags=subprocess_env.no_window_creationflags(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise _IdentityCheckTimeoutError("identity check timed out") from exc
-    except OSError as exc:
-        raise RuntimeError(f"identity check child failed to start: {exc}") from exc
-
-    try:
-        payload = json.loads(proc.stdout.strip() or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("identity check child returned invalid JSON") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError("identity check child returned non-object JSON")
-    if payload.get("ok") is not True:
-        error = payload.get("error")
-        raise RuntimeError(str(error or "identity check failed"))
-    child_row = payload.get("row")
-    if not isinstance(child_row, dict):
-        raise RuntimeError("identity check child returned invalid row")
-    return cast("IdentityRow", child_row)
-
-
-def _run_identity_check_with_timeout(
-    project_path: Path,
-    *,
-    row: IdentityRow,
-    raw: dict[str, object],
-    source: str,
-) -> IdentityRow:
-    try:
-        return _run_identity_check_child(project_path, row=row, raw=raw, source=source)
-    except _IdentityCheckTimeoutError:
-        timed_out: IdentityRow = dict(row)  # type: ignore[assignment]
-        timed_out["repo_access"] = "check_failed"
-        timed_out["token_status"] = (
-            "auth_timeout" if source == TokenSource.LOGIN.value else "token_timeout"
-        )
-        timed_out["repo_access_detail"] = _with_identity_diagnostics(
-            _timeout_message(source),
-            raw,
-            source,
-            include_gh_status=False,
-        )
-        return timed_out
-
 
 def _unconfigured_source_message(source: str) -> str:
     if source == TokenSource.LOGIN.value:
@@ -668,14 +592,15 @@ def _unconfigured_source_message(source: str) -> str:
 
 
 def _timeout_message(source: str) -> str:
+    secs = subprocess_env.timeout_for("identity_check")
     if source == TokenSource.LOGIN.value:
         return (
             "GitHub CLI auth and repository access verification timed out after "
-            f"{_IDENTITY_CHECK_TIMEOUT_SECONDS:.0f}s."
+            f"{secs:.0f}s."
         )
     return (
         "GitHub token and repository access verification timed out after "
-        f"{_IDENTITY_CHECK_TIMEOUT_SECONDS:.0f}s."
+        f"{secs:.0f}s."
     )
 
 
@@ -743,7 +668,7 @@ def _gh_auth_status_summary(raw: dict[str, object]) -> str:
             text=True,
             check=False,
             env=_gh_env(raw),
-            timeout=_GH_STATUS_TIMEOUT_SECONDS,
+            timeout=subprocess_env.timeout_for("gh"),
             creationflags=subprocess_env.no_window_creationflags(),
         )
     except subprocess.TimeoutExpired:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agentshore import subprocess_env
 from agentshore.identity_names import keychain_service_for_login
 from agentshore.sidecar import identities as identities_mod
 from agentshore.sidecar.identities import (
@@ -192,19 +193,18 @@ def test_rpc_check_access_returns_identity_status(tmp_path: Path, monkeypatch) -
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
 
-    def ok_child(
+    def ok_check(
         _project_path: Path,
-        *,
+        _raw: dict[str, object],
         row: identities_mod.IdentityRow,
-        raw: dict[str, object],
-        source: str,
+        _source: str,
     ) -> identities_mod.IdentityRow:
         checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
         checked["repo_access"] = "ok"
         checked["repo_access_detail"] = "GitHub token and repository access verified."
         return checked
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", ok_child)
+    monkeypatch.setattr(identities_mod, "_check_token_identity_access", ok_check)
 
     response = _resolve(
         handle_request(
@@ -503,11 +503,10 @@ def test_check_identity_access_uses_resolved_token_for_repo_preflight(
     monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
     calls: list[tuple[Path, dict[str, object], identities_mod.IdentityRow, str]] = []
 
-    def record_child(
+    def record_check(
         project_path: Path,
-        *,
-        row: identities_mod.IdentityRow,
         raw: dict[str, object],
+        row: identities_mod.IdentityRow,
         source: str,
     ) -> identities_mod.IdentityRow:
         calls.append((project_path, raw, row, source))
@@ -516,9 +515,9 @@ def test_check_identity_access_uses_resolved_token_for_repo_preflight(
         checked["repo_access_detail"] = "GitHub token and repository access verified."
         return checked
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", record_child)
+    monkeypatch.setattr(identities_mod, "_check_token_identity_access", record_check)
 
-    row = check_identity_access(tmp_path, "newlogin")
+    row = asyncio.run(check_identity_access(tmp_path, "newlogin"))
 
     assert row == {
         "login": "newlogin",
@@ -551,11 +550,10 @@ def test_check_identity_access_reports_blocked_repo_preflight(tmp_path: Path, mo
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    def blocked_child(
+    def blocked_check(
         _project_path: Path,
-        *,
-        row: identities_mod.IdentityRow,
         raw: dict[str, object],
+        row: identities_mod.IdentityRow,
         source: str,
     ) -> identities_mod.IdentityRow:
         checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
@@ -565,9 +563,9 @@ def test_check_identity_access_reports_blocked_repo_preflight(tmp_path: Path, mo
         )
         return checked
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", blocked_child)
+    monkeypatch.setattr(identities_mod, "_check_token_identity_access", blocked_check)
 
-    row = check_identity_access(tmp_path, "newlogin")
+    row = asyncio.run(check_identity_access(tmp_path, "newlogin"))
 
     assert row == {
         "login": "newlogin",
@@ -588,11 +586,10 @@ def test_check_identity_access_reports_missing_when_token_cannot_resolve(
         lambda _raw, _source, **_kwargs: "diag",
     )
 
-    def missing_child(
+    def missing_check(
         _project_path: Path,
-        *,
-        row: identities_mod.IdentityRow,
         raw: dict[str, object],
+        row: identities_mod.IdentityRow,
         source: str,
     ) -> identities_mod.IdentityRow:
         checked: identities_mod.IdentityRow = dict(row)  # type: ignore[assignment]
@@ -604,9 +601,9 @@ def test_check_identity_access_reports_missing_when_token_cannot_resolve(
         )
         return checked
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", missing_child)
+    monkeypatch.setattr(identities_mod, "_check_token_identity_access", missing_check)
 
-    row = check_identity_access(tmp_path, "newlogin")
+    row = asyncio.run(check_identity_access(tmp_path, "newlogin"))
 
     assert row == {
         "login": "newlogin",
@@ -698,38 +695,38 @@ def test_check_identity_access_gh_login_rejects_active_token_for_wrong_login(
     )
 
 
+async def _raise_timeout(coro: object, *_args: object, **_kwargs: object) -> object:
+    """Fake ``asyncio.wait_for`` that closes the coroutine and raises TimeoutError."""
+    import inspect
+
+    if inspect.iscoroutine(coro):
+        coro.close()  # type: ignore[union-attr]
+    raise TimeoutError("identity check timed out")
+
+
 def test_check_identity_access_gh_login_returns_row_when_probe_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = tmp_path / "agentshore.yaml"
     _write_identity_config(cfg, "newlogin", "gh_token_login", "newlogin")
-    monkeypatch.setattr(identities_mod, "_IDENTITY_CHECK_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(
         identities_mod,
         "_identity_diagnostics",
         lambda _raw, _source, **_kwargs: "diag",
     )
+    monkeypatch.setattr("agentshore.sidecar.identities.asyncio.wait_for", _raise_timeout)
 
-    def timeout_child(
-        _project_path: Path,
-        *,
-        row: identities_mod.IdentityRow,
-        raw: dict[str, object],
-        source: str,
-    ) -> identities_mod.IdentityRow:
-        raise identities_mod._IdentityCheckTimeoutError("identity check timed out")
+    row = asyncio.run(check_identity_access(tmp_path, "newlogin"))
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", timeout_child)
-    row = check_identity_access(tmp_path, "newlogin")
-
+    expected_secs = f"{subprocess_env.timeout_for('identity_check'):.0f}"
     assert row == {
         "login": "newlogin",
         "source": "gh_token_login",
         "token_status": "auth_timeout",
         "repo_access": "check_failed",
         "repo_access_detail": (
-            "GitHub CLI auth and repository access verification timed out after 0s. "
+            f"GitHub CLI auth and repository access verification timed out after {expected_secs}s. "
             "Diagnostics: diag"
         ),
     }
@@ -742,32 +739,24 @@ def test_check_identity_access_token_source_returns_row_when_repo_probe_times_ou
     cfg = tmp_path / "agentshore.yaml"
     _write_identity_config(cfg, "newlogin", "gh_token_env", "NEWLOGIN_GH_TOKEN")
     monkeypatch.setenv("NEWLOGIN_GH_TOKEN", "fake-token-value")
-    monkeypatch.setattr(identities_mod, "_IDENTITY_CHECK_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(
         identities_mod,
         "_identity_diagnostics",
         lambda _raw, _source, **_kwargs: "diag",
     )
+    monkeypatch.setattr("agentshore.sidecar.identities.asyncio.wait_for", _raise_timeout)
 
-    def timeout_child(
-        _project_path: Path,
-        *,
-        row: identities_mod.IdentityRow,
-        raw: dict[str, object],
-        source: str,
-    ) -> identities_mod.IdentityRow:
-        raise identities_mod._IdentityCheckTimeoutError("identity check timed out")
+    row = asyncio.run(check_identity_access(tmp_path, "newlogin"))
 
-    monkeypatch.setattr(identities_mod, "_run_identity_check_child", timeout_child)
-    row = check_identity_access(tmp_path, "newlogin")
-
+    expected_secs = f"{subprocess_env.timeout_for('identity_check'):.0f}"
     assert row == {
         "login": "newlogin",
         "source": "gh_token_env",
         "token_status": "token_timeout",
         "repo_access": "check_failed",
         "repo_access_detail": (
-            "GitHub token and repository access verification timed out after 0s. Diagnostics: diag"
+            f"GitHub token and repository access verification timed out after {expected_secs}s. "
+            "Diagnostics: diag"
         ),
     }
 
