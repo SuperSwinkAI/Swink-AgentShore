@@ -47,21 +47,20 @@ class _LifecycleHost(Protocol):
     """Orchestrator runtime/control state read OR written live by :class:`LifecycleController`.
 
     These members are accessed fresh via ``self._host.<attr>`` on every call so
-    SIGHUP config swaps (``_cfg``) and per-tick mutation (pause latches, budget
-    override, feedback-cadence counters) are always current — never captured at
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (pause latches,
+    feedback-cadence counters) are always current — never captured at
     construction. Fields the controller *writes* (``_cfg``, ``_pause_reason``,
-    ``_pause_deadline``, ``_budget_override``, the feedback-cadence counters) are
-    declared as plain annotated attributes (not read-only ``@property``) so the
-    assignments type-check. ``_OrchestratorBase`` structurally satisfies this
-    Protocol; the cross-component methods (``_safe_call``, ``begin_drain``) and
-    the ``_state_builder`` reference are resolved live on the composition root.
+    ``_pause_deadline``, the feedback-cadence counters) are declared as plain
+    annotated attributes (not read-only ``@property``) so the assignments
+    type-check. ``_OrchestratorBase`` structurally satisfies this Protocol; the
+    cross-component methods (``_safe_call``, ``begin_drain``) and the
+    ``_state_builder`` reference are resolved live on the composition root.
     """
 
     # --- written by the controller -----------------------------------------
     _cfg: RuntimeConfig  # reassigned atomically on SIGHUP reload
     _pause_reason: str | None
     _pause_deadline: float | None
-    _budget_override: bool
     _feedback_cadence_plays_since_ack: int
     _feedback_cadence_last_ack_monotonic: float
     # --- read by the controller --------------------------------------------
@@ -214,14 +213,8 @@ class LifecycleController:
             except (RuntimeError, ValueError) as exc:
                 _logger.warning("ppo_flush_on_pause_failed", error=str(exc))
 
-    async def resume(self, override_budget: bool = False) -> None:
-        """Resume the orchestrator loop after a pause.
-
-        ``override_budget`` is accepted for compatibility with older feedback
-        flows; budget reserve drain is handled separately.
-        """
-        if override_budget:
-            self._host._budget_override = True
+    async def resume(self) -> None:
+        """Resume the orchestrator loop after a pause."""
         self._host._pause_reason = None
         self._host._pause_deadline = None
         await self._host._safe_call(
@@ -231,9 +224,7 @@ class LifecycleController:
         self._host._pause_event.set()
         self._host._feedback_cadence_plays_since_ack = 0
         self._host._feedback_cadence_last_ack_monotonic = time.monotonic()
-        _logger.info(
-            "session_resumed", session_id=self._session_id, budget_override=override_budget
-        )
+        _logger.info("session_resumed", session_id=self._session_id)
 
     async def reload_config(self) -> None:
         """Reload configuration from disk (triggered by SIGHUP)."""

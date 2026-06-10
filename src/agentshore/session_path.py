@@ -670,30 +670,6 @@ def request_drain(
         return "error"
 
 
-def budget_from_state_line(line: bytes | None) -> dict[str, object] | None:
-    """Extract the ``budget`` mapping from a single ``state_update`` reply line.
-
-    ``get_state`` replies with the enveloped ``state_update`` message
-    (``{"type": "state_update", ..., "payload": {..., "budget": {...}}}``), so the
-    budget lives under ``payload``. Tolerates a flat shape too. Returns ``None``
-    for a blank/unparseable/error line or a missing budget.
-    """
-    import json as _json
-
-    if line is None or not line.strip():
-        return None
-    try:
-        env = _json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, _json.JSONDecodeError):
-        return None
-    if not isinstance(env, dict) or env.get("type") == "error":
-        return None
-    payload = env.get("payload")
-    container = payload if isinstance(payload, dict) else env
-    budget = container.get("budget")
-    return budget if isinstance(budget, dict) else None
-
-
 def request_add_budget(
     project_path: Path,
     *,
@@ -702,21 +678,18 @@ def request_add_budget(
 ) -> str | dict[str, object]:
     """Additively top up / extend the live session budget over IPC.
 
-    The NDJSON control channel is fire-and-forget for mutating commands, but the
-    server answers ``get_state`` from its cached ``state_update``. Because
-    ``add_budget`` is applied asynchronously by the orchestrator's command pump,
-    a single immediate ``get_state`` can race ahead of the change. So this reads a
-    baseline, sends ``add_budget``, then polls ``get_state`` until the cached
-    budget reflects the new caps (or a short deadline elapses) and returns it, so
-    the CLI reports the *applied* caps rather than the pre-change snapshot.
+    Sends ``add_budget`` and reads the orchestrator's synchronous reply on the
+    same connection (``{"type": "add_budget_ok", ...applied caps...}`` on
+    success, ``{"type": "error", ...}`` on rejection).
 
-    Returns ``"no_session"`` when no IPC endpoint is discoverable, ``"error"`` /
-    ``"timeout"`` on transport failure, or the budget dict on success (``{}`` if
-    the snapshot never carried a budget).
+    Returns ``"no_session"`` when no IPC endpoint is discoverable,
+    ``"timeout"`` when the server does not reply within 12 s,
+    ``"error"`` on any other transport or protocol failure,
+    ``"rejected:<msg>"`` when the orchestrator rejects the request, or
+    the applied-caps dict on success.
     """
     import json as _json
     import socket as _socket
-    import time as _time
 
     endpoint = discover_ipc_endpoint(project_path)
     if endpoint is None:
@@ -727,11 +700,13 @@ def request_add_budget(
         add_cmd["delta_usd"] = delta_usd
     if delta_minutes is not None:
         add_cmd["delta_minutes"] = delta_minutes
-    get_state = (_json.dumps({"command": "get_state"}) + "\n").encode()
 
     def _read_line(sock: _socket.socket, buf: bytes) -> tuple[bytes | None, bytes]:
         while b"\n" not in buf:
-            chunk = sock.recv(65536)
+            try:
+                chunk = sock.recv(65536)
+            except OSError:
+                return None, buf
             if not chunk:
                 return None, buf
             buf += chunk
@@ -741,7 +716,7 @@ def request_add_budget(
     try:
         family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
         with _socket.socket(family, _socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(12.0)
             if endpoint.kind == "unix":
                 if endpoint.path is None:
                     return "no_session"
@@ -749,30 +724,29 @@ def request_add_budget(
             else:
                 sock.connect((endpoint.host, endpoint.port))
 
-            buf = b""
-            # Baseline so we can tell when the async apply lands.
-            sock.sendall(get_state)
-            line, buf = _read_line(sock, buf)
-            baseline = budget_from_state_line(line)
-
             sock.sendall((_json.dumps(add_cmd) + "\n").encode())
 
-            applied = baseline
-            deadline = _time.monotonic() + 3.0
-            while _time.monotonic() < deadline:
-                _time.sleep(0.15)
-                sock.sendall(get_state)
-                line, buf = _read_line(sock, buf)
-                current = budget_from_state_line(line)
-                if current is not None and current != baseline:
-                    applied = current
-                    break
+            buf = b""
+            line, _buf = _read_line(sock, buf)
     except TimeoutError:
         return "timeout"
     except (AttributeError, OSError):
         return "error"
 
-    return applied if isinstance(applied, dict) else {}
+    if line is None or not line.strip():
+        return "error"
+    try:
+        msg = _json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError):
+        return "error"
+    if not isinstance(msg, dict):
+        return "error"
+    msg_type = msg.get("type")
+    if msg_type == "add_budget_ok":
+        return {k: v for k, v in msg.items() if k != "type"}
+    if msg_type == "error":
+        return f"rejected:{msg.get('error', 'unknown')}"
+    return "error"
 
 
 def stop_dashboard_process(project_path: Path, *, pid: int | None = None) -> bool:

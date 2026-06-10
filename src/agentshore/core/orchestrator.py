@@ -335,10 +335,6 @@ class Orchestrator(_OrchestratorBase):
         """Pause the orchestrator loop after the current play completes."""
         await self._lifecycle.pause(reason)
 
-    async def resume(self, override_budget: bool = False) -> None:
-        """Resume the orchestrator loop after a pause."""
-        await self._lifecycle.resume(override_budget)
-
     async def reload_config(self) -> None:
         """Reload configuration from the configured path."""
         await self._lifecycle.reload_config()
@@ -368,10 +364,6 @@ class Orchestrator(_OrchestratorBase):
     async def hard_stop(self) -> None:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
         await self._drain.hard_stop()
-
-    def adjust_budget(self, delta_usd: float) -> bool:
-        """Increase session budget; return True when a budget pause should resume."""
-        return self._drain.adjust_budget(delta_usd)
 
     async def set_budget(
         self,

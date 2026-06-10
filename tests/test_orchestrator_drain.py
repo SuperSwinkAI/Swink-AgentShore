@@ -1,4 +1,4 @@
-"""Tests for Orchestrator drain-mode: begin_drain idempotency, _should_terminate, adjust_budget."""
+"""Tests for Orchestrator drain-mode: begin_drain idempotency, _should_terminate."""
 
 from __future__ import annotations
 
@@ -40,7 +40,6 @@ def _make_orch() -> Orchestrator:
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
     orch._pause_reason = None
-    orch._extra_budget = 0.0
     orch._in_flight = {}
     orch._stop_requested = False
     orch._draining = False
@@ -291,63 +290,6 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
 
     assert await orch._dispatcher.consume_override(state) is None
     assert orch._overrides.empty()
-
-
-# ---------------------------------------------------------------------------
-# adjust_budget
-# ---------------------------------------------------------------------------
-
-
-def test_adjust_budget_increments_extra_budget() -> None:
-    """adjust_budget() adds delta_usd to _extra_budget."""
-    orch = _make_orch()
-    should_resume = orch.adjust_budget(5.0)
-    assert orch._extra_budget == pytest.approx(5.0)
-    assert should_resume is False
-
-
-def test_adjust_budget_accumulates() -> None:
-    """Multiple adjust_budget calls accumulate."""
-    orch = _make_orch()
-    orch._extra_budget = 0.0
-    orch.adjust_budget(3.0)
-    orch.adjust_budget(2.5)
-    assert orch._extra_budget == pytest.approx(5.5)
-
-
-@pytest.mark.parametrize("reason", ["budget_exhausted", "budget_predictive"])
-def test_adjust_budget_requests_resume_for_budget_pause(reason: str) -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = reason
-
-    assert orch.adjust_budget(5.0) is True
-
-
-@pytest.mark.parametrize("reason", ["user_request", "loop_detected", None])
-def test_adjust_budget_does_not_resume_non_budget_pause(reason: str | None) -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = reason
-
-    assert orch.adjust_budget(5.0) is False
-
-
-def test_adjust_budget_does_not_resume_while_draining() -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = "budget_exhausted"
-    orch._draining = True
-
-    assert orch.adjust_budget(5.0) is False
-
-
-def test_adjust_budget_ignored_delta_never_resumes() -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = "budget_exhausted"
-
-    assert orch.adjust_budget(-1.0) is False
 
 
 def test_request_drain_twice_keeps_first_reason() -> None:

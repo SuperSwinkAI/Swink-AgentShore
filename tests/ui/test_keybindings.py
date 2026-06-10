@@ -19,7 +19,7 @@ def _make_mock_orch() -> MagicMock:
     orch.stop = AsyncMock()
     orch.begin_drain = AsyncMock()
     orch.hard_stop = AsyncMock()
-    orch.adjust_budget = MagicMock()
+    orch.add_budget = AsyncMock()
     return orch
 
 
@@ -110,12 +110,11 @@ async def test_escalation_hard_stop_calls_hard_stop() -> None:
 
 
 async def test_escalation_add_budget_resumes_budget_pause() -> None:
-    """Adding budget resumes only when the orchestrator says the pause was budget-related."""
+    """Adding budget dispatches add_budget and unblocks the TUI pause flag."""
     from textual.widgets import Input
 
     app = OrchestratorApp()
     app._orch = _make_mock_orch()
-    app._orch.adjust_budget.return_value = True
     async with app.run_test() as pilot:
         app.post_message(OrchestratorApp.FeedbackRequested("budget_exhausted"))
         await pilot.pause()
@@ -129,18 +128,16 @@ async def test_escalation_add_budget_resumes_budget_pause() -> None:
         await pilot.pause()
         await pilot.pause()
 
-        app._orch.adjust_budget.assert_called_once_with(5.0)
-        app._orch.resume.assert_called_once()
+        app._orch.add_budget.assert_called_once_with(delta_usd=5.0)
         assert app._paused is False
 
 
-async def test_escalation_add_budget_keeps_non_budget_pause_paused() -> None:
-    """A budget adjustment alone must not resume manual or loop-detection pauses."""
+async def test_escalation_add_budget_dispatches_add_budget() -> None:
+    """Budget adjustment from any escalation type dispatches add_budget and clears TUI pause."""
     from textual.widgets import Input
 
     app = OrchestratorApp()
     app._orch = _make_mock_orch()
-    app._orch.adjust_budget.return_value = False
     async with app.run_test() as pilot:
         app.post_message(OrchestratorApp.FeedbackRequested("loop_detected"))
         await pilot.pause()
@@ -154,9 +151,8 @@ async def test_escalation_add_budget_keeps_non_budget_pause_paused() -> None:
         await pilot.pause()
         await pilot.pause()
 
-        app._orch.adjust_budget.assert_called_once_with(5.0)
-        app._orch.resume.assert_not_called()
-        assert app._paused is True
+        app._orch.add_budget.assert_called_once_with(delta_usd=5.0)
+        assert app._paused is False
 
 
 async def test_ctrl_q_no_double_screen() -> None:

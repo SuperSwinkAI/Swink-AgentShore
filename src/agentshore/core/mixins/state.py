@@ -141,7 +141,6 @@ class _StateBuilderHost(Protocol):
     """
 
     _cfg: RuntimeConfig
-    _extra_budget: float
     _loop_started_at: float
 
     def effective_budget_caps(self) -> BudgetConfig:
@@ -508,7 +507,6 @@ class StateBuilder:
             total_plays,
             total_cost,
             budget_cfg=self._host.effective_budget_caps(),
-            extra_budget=self._host._extra_budget,
             elapsed_minutes=elapsed_minutes,
         )
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
