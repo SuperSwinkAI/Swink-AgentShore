@@ -274,6 +274,35 @@ def check_main_repo_branch_mutated(
     return True, post_ref, restored
 
 
+def _resolve_signing_key() -> str:
+    """Return the SSH signing key path to use, as a display string.
+
+    Checks ``gpg.ssh.signingKey`` in the global git config first, then probes
+    common default key filenames under ``~/.ssh``. Falls back to the generic
+    placeholder ``<your-signing-key>`` when nothing is found.
+    """
+    import pathlib
+
+    try:
+        result = subprocess.run(
+            ["git", "config", "--global", "--get", "gpg.ssh.signingKey"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    ssh_dir = pathlib.Path.home() / ".ssh"
+    for name in ("id_ed25519", "id_ecdsa", "id_rsa"):
+        if (ssh_dir / name).exists():
+            return str(ssh_dir / name)
+
+    return "<your-signing-key>"
+
+
 def ssh_signing_setup_hint() -> str:
     """Platform-appropriate command(s) to load an SSH signing key into the agent.
 
@@ -281,14 +310,15 @@ def ssh_signing_setup_hint() -> str:
     so the user-facing fix text must vary by platform. On Windows the usual
     blocker is that the OpenSSH ``ssh-agent`` service is not running.
     """
+    key = _resolve_signing_key()
     if sys.platform == "darwin":
-        return "ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+        return f"ssh-add --apple-use-keychain {key}"
     if sys.platform.startswith("win"):
         return (
-            "Start-Service ssh-agent; ssh-add $env:USERPROFILE\\.ssh\\id_ed25519  "
+            f"Start-Service ssh-agent; ssh-add {key}  "
             "(first time only: Set-Service ssh-agent -StartupType Manual)"
         )
-    return "ssh-add ~/.ssh/id_ed25519"
+    return f"ssh-add {key}"
 
 
 def ssh_signing_enabled(repo_root: Path) -> bool:
@@ -311,9 +341,9 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     """Attempt to load the SSH signing key from the macOS Keychain.
 
     Runs ``ssh-add -l`` to check if any identity is loaded. If not,
-    attempts ``ssh-add --apple-use-keychain ~/.ssh/id_ed25519`` (macOS)
-    or ``ssh-add ~/.ssh/id_ed25519`` (Linux/other) to load it
-    non-interactively.
+    resolves the signing key via ``_resolve_signing_key()`` (git config
+    ``gpg.ssh.signingKey`` → common key file probe) and attempts a
+    non-interactive ``ssh-add`` with the platform-appropriate flags.
 
     Returns ``(loaded, detail)`` where *loaded* is True when at least
     one identity is available after the attempt, and *detail* is a
@@ -354,15 +384,17 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     # Attempt non-interactive load from the platform keychain / default key.
     import pathlib
 
-    default_key = pathlib.Path.home() / ".ssh" / "id_ed25519"
+    key_str = _resolve_signing_key()
+    if key_str == "<your-signing-key>":
+        return False, "no identities loaded and no SSH signing key found under ~/.ssh"
+
+    default_key = pathlib.Path(key_str).expanduser()
     if not default_key.exists():
         return False, f"no identities loaded and {default_key} does not exist"
 
     system = platform.system()
     if system == "Darwin":
         add_cmd = [ssh_add, "--apple-use-keychain", str(default_key)]
-    elif system == "Windows":
-        add_cmd = [ssh_add, str(default_key)]
     else:
         add_cmd = [ssh_add, str(default_key)]
 
