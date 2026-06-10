@@ -171,6 +171,33 @@ describe("AgentsScreen", () => {
     expect(await screen.findByTestId("scaffold-grok")).toHaveTextContent("+ Grok CLI");
   });
 
+  it("surfaces supported runners that were checked but not detected", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES, {
+      detected: ["claude_code", "codex", "gemini"],
+    });
+    renderScreen(adapter);
+
+    expect(await screen.findByTestId("agent-unavailable-grok")).toHaveTextContent(
+      "Grok CLI — not detected",
+    );
+    expect(screen.queryByTestId("agent-unavailable-claude_code")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-unavailable-codex")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-unavailable-gemini")).not.toBeInTheDocument();
+  });
+
+  it("keeps detected-but-unconfigured scaffolding while showing unavailable runners", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES, {
+      detected: ["claude_code", "codex", "grok"],
+    });
+    renderScreen(adapter);
+
+    expect(await screen.findByTestId("scaffold-grok")).toHaveTextContent("+ Grok CLI");
+    expect(screen.queryByTestId("agent-unavailable-grok")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-unavailable-gemini")).toHaveTextContent(
+      "Gemini CLI — not detected",
+    );
+  });
+
   it("renders configured agents while PATH detection is still pending", async () => {
     const detection = deferred<string[]>();
     const adapter = makeAdapter(AGENTS, IDENTITIES);
@@ -190,6 +217,7 @@ describe("AgentsScreen", () => {
 
     expect(await screen.findByTestId("agent-row-claude_code")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-unavailable-grok")).not.toBeInTheDocument();
   });
 
   it("flags a missing identity bound to an agent with a (missing) option", async () => {
