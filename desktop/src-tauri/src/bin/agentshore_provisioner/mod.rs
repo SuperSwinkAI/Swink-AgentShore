@@ -178,6 +178,15 @@ pub(crate) fn run_logged(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Force UTF-8 mode for any Python child (sidecar import, bd provisioning,
+    // timelapse). Without it the managed venv's stdout defaults to the legacy
+    // code page (cp1252 on most en-US installs), and structlog's print()
+    // crashes with UnicodeEncodeError the moment a log line carries a
+    // non-cp1252 character (e.g. winget progress glyphs folded into an error
+    // message). The desktop sidecar already sets this in sidecar_env.rs; the
+    // installer's provisioner must match so install-time logging is just as
+    // robust.
+    command.env("PYTHONUTF8", "1");
     apply_no_window_creation_flags(&mut command);
     let mut child = command.spawn().map_err(|err| {
         ProvisionError::new(
@@ -712,6 +721,29 @@ mod tests {
         assert!(!result.timed_out);
         let log = fs::read_to_string(root.join("test.log")).unwrap();
         assert!(log.contains("benign stderr"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pythonutf8_is_set_for_spawned_children() {
+        // Regression: the managed venv Python must run in UTF-8 mode so a
+        // non-cp1252 log line (e.g. a winget progress glyph in a timelapse
+        // error) cannot crash structlog's print() with UnicodeEncodeError.
+        let root = unique_temp_dir("pythonutf8");
+        fs::create_dir_all(&root).unwrap();
+        let logger = test_logger(&root);
+        let result = run_logged(
+            "pythonutf8",
+            Path::new("cmd.exe"),
+            &[os("/C"), os("echo PYTHONUTF8=%PYTHONUTF8%")],
+            Duration::from_secs(5),
+            &logger,
+        )
+        .expect("run command");
+        assert_eq!(result.code, 0);
+        let log = fs::read_to_string(root.join("test.log")).unwrap();
+        assert!(log.contains("PYTHONUTF8=1"), "log was: {log}");
         let _ = fs::remove_dir_all(root);
     }
 
