@@ -24,6 +24,7 @@ from agentshore.config.models import (
     LoggingConfig,
     LoopDetectionConfig,
     ModelTierConfig,
+    PlayPacingConfig,
     PolicyMode,
     PPOConfig,
     ProjectConfig,
@@ -43,6 +44,7 @@ from agentshore.config.models import (
 )
 from agentshore.errors import ConfigError
 from agentshore.identity_names import canonical_identity_name, is_valid_github_login
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 
 _RawNumber = int | float | str
 _RawStrictNumber = int | float
@@ -146,6 +148,10 @@ class _RawAgentSpawn(TypedDict, total=False):
     # legacy YAML still parses, but ``_parse_agent_spawn`` ignores it and
     # logs a deprecation warning.
     max_total: int
+
+
+class _RawPlayPacing(TypedDict, total=False):
+    standard_cooldown_plays: int
 
 
 class _RawBootstrap(TypedDict, total=False):
@@ -316,6 +322,7 @@ class _RawConfig(TypedDict, total=False):
     identities: _RawIdentities
     agents: _RawAgents
     agent_spawn: _RawAgentSpawn
+    play_pacing: _RawPlayPacing
     bootstrap: _RawBootstrap
     circuit_breaker: _RawCircuitBreaker
     health: _RawHealth
@@ -987,6 +994,16 @@ def _parse_agent_spawn(raw: _RawAgentSpawn) -> AgentSpawnConfig:
     )
 
 
+def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
+    cooldown = raw.get("standard_cooldown_plays", STANDARD_PLAY_COOLDOWN_PLAYS)
+    if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
+        raise ConfigError(
+            "play_pacing.standard_cooldown_plays must be a non-negative integer, "
+            f"got {cooldown!r}"
+        )
+    return PlayPacingConfig(standard_cooldown_plays=cooldown)
+
+
 def _parse_bootstrap(raw: _RawBootstrap) -> BootstrapConfig:
     threshold = raw.get("cleanup_threshold", 50)
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
@@ -1054,6 +1071,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         identities=identities,
         agents=agents,
         agent_spawn=_parse_agent_spawn(data.get("agent_spawn", {}) or {}),
+        play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
         bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
         fresh_start=fresh_start,
         agent_preferences=prefs,

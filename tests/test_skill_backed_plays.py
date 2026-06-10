@@ -1117,8 +1117,8 @@ def test_run_qa_precondition_met() -> None:
     # Simulate a session past the first-run floor with a prior QA run recorded.
     state = _state(
         agents=[_snap()],
-        plays_since_last_play_type={PlayType.RUN_QA: 26},
-        total_plays=30,
+        plays_since_last_play_type={PlayType.RUN_QA: 42},
+        total_plays=46,
     )
     assert RunQAPlay().preconditions(state) == []
 
@@ -1137,15 +1137,15 @@ def test_run_qa_blocks_in_flight() -> None:
 
 def test_run_qa_blocks_during_cooldown() -> None:
     errors = RunQAPlay().preconditions(
-        _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 19})
+        _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 41})
     )
-    assert [e.text for e in errors] == ["run_qa cooldown (19/20 plays since last)"]
+    assert [e.text for e in errors] == ["run_qa cooldown (41/42 plays since last)"]
 
 
 def test_run_qa_allows_after_cooldown() -> None:
     assert (
         RunQAPlay().preconditions(
-            _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 20})
+            _state(agents=[_snap()], plays_since_last_play_type={PlayType.RUN_QA: 42})
         )
         == []
     )

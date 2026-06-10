@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agentshore.beads import EpicStatus, ProjectGraph
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.design_audit import (
     DesignAuditPlay,
     _validate_design_audit_artifact,
@@ -67,7 +68,7 @@ def _state(
         agents=agents if agents is not None else [_idle_agent()],
         in_flight_plays=[] if in_flight is None else in_flight,
         plays_since_last_play_type=(
-            {PlayType.DESIGN_AUDIT: 20}
+            {PlayType.DESIGN_AUDIT: STANDARD_PLAY_COOLDOWN_PLAYS}
             if plays_since_last_play_type is None
             else plays_since_last_play_type
         ),
@@ -128,7 +129,7 @@ def test_preconditions_block_during_cooldown() -> None:
     errors = DesignAuditPlay().preconditions(
         _state(
             graph=_graph_with_epics(),
-            plays_since_last_play_type={PlayType.DESIGN_AUDIT: 19},
+            plays_since_last_play_type={PlayType.DESIGN_AUDIT: STANDARD_PLAY_COOLDOWN_PLAYS - 1},
         )
     )
     assert errors

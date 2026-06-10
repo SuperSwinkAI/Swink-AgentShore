@@ -7,6 +7,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -202,6 +204,13 @@ class AgentSpawnConfig:
 
 
 @dataclass(frozen=True)
+class PlayPacingConfig:
+    """Pacing knobs for heavyweight skill-backed plays."""
+
+    standard_cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS
+
+
+@dataclass(frozen=True)
 class BootstrapConfig:
     """First-play decision tunables for the bootstrap recipe.
 
@@ -282,8 +291,8 @@ class RewardConfig:
     # merge_pr) on success — biases PPO toward moving issues forward
     # rather than collapsing onto cheap planning loops.
     progress_play_bonus: float = 0.5
-    # Larger bonus for a successful QA pass (gated by a 20-play cooldown so
-    # PPO can't farm it).
+    # Larger bonus for a successful QA pass (gated by the standard play cooldown
+    # so PPO can't farm it).
     qa_success_bonus: float = 2.0
     # Dedicated bonus for a successful merge_pr — the terminal-win signal.
     # 5× the generic progress_play_bonus so PPO learns merges (not the work
@@ -522,6 +531,7 @@ class RuntimeConfig:
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)
     agent_spawn: AgentSpawnConfig = field(default_factory=AgentSpawnConfig)
+    play_pacing: PlayPacingConfig = field(default_factory=PlayPacingConfig)
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)
     agent_preferences: AgentPreferencesConfig = field(default_factory=AgentPreferencesConfig)

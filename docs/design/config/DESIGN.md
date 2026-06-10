@@ -42,6 +42,7 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 | `identities` | Named GitHub identities (git authorship + token source) bindable to CLI agents (see Identities). |
 | `agents` | Per-agent-type fleet definitions (see Agents). |
 | `agent_spawn` | Instantiate-play pacing and caps (see Spawn Limits). |
+| `play_pacing` | Standard post-run cooldown for heavyweight skill-backed plays (see Play Pacing). |
 | `bootstrap` | First-play recipe tunable: `cleanup_threshold` open-issue count above which bootstrap queues `cleanup` instead of `seed_project`. |
 | `fresh_start` | Context-reset thresholds (plays / context fraction / auto-trigger). |
 | `agent_preferences` | Play→agent-type affinity and per-play exclusions. |
@@ -80,6 +81,14 @@ Each entry under `agents:` is an `AgentConfig`: binary/API base, default model a
 | `max_per_config` | `2` | Max live agents for one `(agent_type, model_tier)`. |
 
 The former global `max_total` cap was removed: per-(type, tier) gating is sufficient, and because PPO cannot starve one cell by concentrating in another, budget enforcement is the practical fleet ceiling. A type/tier is spawnable only when enabled, within the per-config cap, not blocked by auth/model errors, and no idle same type/tier agent already exists; busy agents do not block another same-config spawn.
+
+## Play Pacing
+
+`play_pacing` controls shared post-run cooldowns for heavyweight skill-backed plays. The standard cooldown applies to `cleanup`, `run_qa`, `design_audit`, `groom_backlog`, `calibrate_alignment`, and `prune`; each play still owns its other gates such as warmup, beads initialization, capability, in-flight, and debt thresholds.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `standard_cooldown_plays` | `42` | Completed plays required before a standard-cooldown play can run again. |
 
 ## Budget
 

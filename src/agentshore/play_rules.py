@@ -5,7 +5,7 @@ from __future__ import annotations
 from agentshore.state import PlayType
 
 SEED_PROJECT_COOLDOWN_PLAYS = 50
-DESIGN_AUDIT_COOLDOWN_PLAYS = 20
+DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS = 20
 TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS = 50
 
 # Play types whose validity is gated on a concrete candidate target existing in

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     CapabilityGate,
@@ -16,18 +17,20 @@ class CleanupPlay(SkillBackedPlay):
     """Run a language-agnostic code-quality sweep: lint, format, typecheck, test.
 
     Auto-fixes are pushed as a PR; unfixable failures are filed as issues.
-    Cost/time penalties are not waived — the 20-play cooldown prevents PPO from
-    spamming this play for its small success bonus. There is intentionally no
-    open-issue ceiling: a large backlog is exactly when trunk quality debt tends
-    to accumulate, so cleanup must stay reachable on busy projects.
+    Cost/time penalties are not waived — the configured standard cooldown
+    prevents PPO from spamming this play for its small success bonus. There is
+    intentionally no open-issue ceiling: a large backlog is exactly when trunk
+    quality debt tends to accumulate, so cleanup must stay reachable on busy
+    projects.
     """
 
-    gates = (
-        CapabilityGate("can_implement"),
-        InFlightGate(PlayType.CLEANUP),
-        FirstRunWarmupGate(PlayType.CLEANUP, threshold=20, prerequisite=PlayType.SEED_PROJECT),
-        CooldownGate(PlayType.CLEANUP, plays=20),
-    )
+    def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
+        self.gates = (
+            CapabilityGate("can_implement"),
+            InFlightGate(PlayType.CLEANUP),
+            FirstRunWarmupGate(PlayType.CLEANUP, threshold=20, prerequisite=PlayType.SEED_PROJECT),
+            CooldownGate(PlayType.CLEANUP, plays=cooldown_plays),
+        )
 
     @property
     def play_type(self) -> PlayType:
