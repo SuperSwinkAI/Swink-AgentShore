@@ -30,6 +30,7 @@ from agentshore.core.base import _OrchestratorBase
 from agentshore.core.helpers import (
     _bootstrap_phase_publisher,
     _emit_weights_dir_inventory,
+    _logger,
 )
 from agentshore.core.mixins.drain import SHUTDOWN_GRACE_PERIOD_SECONDS
 
@@ -190,14 +191,6 @@ class Orchestrator(_OrchestratorBase):
                 orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
             )
             await phases._phase_session_start_worktree_sweep(orch=orch, sid=sid)
-            # Ensure the canonical beads install dir is on PATH for this process
-            # so agent subprocesses (which shell out to a bare ``bd`` from the
-            # skills) inherit it — beads' own installers only hint at PATH, so a
-            # provisioned bd is otherwise invisible to the agents even though the
-            # orchestrator resolves it by absolute path.
-            from agentshore.beads import ensure_bd_dir_on_path as _ensure_bd_on_path
-
-            _ensure_bd_on_path()
             await phases._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
             # Snapshot pre-session dirty trunk state before _phase_git_safety_sweep
             # restores any branch state — RECONCILE_STATE uses this sidecar to
@@ -223,9 +216,18 @@ class Orchestrator(_OrchestratorBase):
                 # on the no-seed path must route to the seed recipe (seedless
                 # SEED_PROJECT bootstraps epics) instead of grooming an empty
                 # graph and deadlocking.
+                from agentshore.beads import GraphReadError
                 from agentshore.beads import load_graph as _load_graph
 
-                _bootstrap_graph = await _load_graph(repo_root)
+                try:
+                    _bootstrap_graph = await _load_graph(repo_root)
+                except GraphReadError as exc:
+                    _logger.warning(
+                        "beads_graph_read_failed_at_bootstrap",
+                        error=str(exc),
+                        session_id=sid,
+                    )
+                    _bootstrap_graph = None
                 phases._phase_queue_agent_instantiation(
                     orch=orch,
                     cfg=cfg,

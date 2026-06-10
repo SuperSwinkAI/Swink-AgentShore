@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agentshore.beads import load_graph
+from agentshore.beads import GraphReadError, load_graph
 from agentshore.reports._aggregations import (
     compute_agent_performance,
     compute_agent_specialization,
@@ -135,7 +135,10 @@ class ReportDataCollector:
         snapshots = await self._store.list_trajectory_snapshots(session_id)
         learnings = await self._store.list_learnings(session_id)
         patterns = await self._store.list_review_patterns(session_id)
-        graph = await load_graph(Path(session.project_path))
+        try:
+            graph = await load_graph(Path(session.project_path))
+        except GraphReadError:
+            graph = None
 
         overview = compute_overview(session, plays)
 

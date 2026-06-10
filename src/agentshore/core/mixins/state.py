@@ -221,7 +221,25 @@ class StateBuilder:
         Trajectory fetch is the only one that historically swallowed errors;
         that behaviour is preserved in ``safe_get_latest_trajectory``.
         """
-        from agentshore.beads import load_graph
+        from agentshore.beads import GraphReadError, ProjectGraph, load_graph
+
+        async def _safe_load_graph() -> ProjectGraph | None:
+            """Load the beads graph, returning None on GraphReadError.
+
+            GraphReadError signals a persistent bd failure (uninstalled binary,
+            corrupted store, wedged lock). We surface it as alignment_delta=None
+            in the assembled state rather than aborting the entire tick — the RL
+            loop must keep running even when beads is temporarily unavailable.
+            """
+            try:
+                return await load_graph(self._repo_root)
+            except GraphReadError as exc:
+                _logger.warning(
+                    "beads_graph_read_failed_using_none",
+                    project_path=str(self._repo_root),
+                    error=str(exc),
+                )
+                return None
 
         async with asyncio.TaskGroup() as tg:
             open_issues_task = tg.create_task(self._store.get_open_issues(self._session_id))
@@ -236,7 +254,7 @@ class StateBuilder:
             pending_reviews_task = tg.create_task(
                 self._store.list_pending_reviews(self._session_id)
             )
-            graph_task = tg.create_task(load_graph(self._repo_root))
+            graph_task = tg.create_task(_safe_load_graph())
             latest_checkpoint_task = tg.create_task(
                 self._store.load_latest_checkpoint(self._session_id)
             )
