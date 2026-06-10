@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -123,172 +120,23 @@ async def test_load_graph_returns_none_when_no_beads_dir(tmp_path: object) -> No
 
 
 @pytest.mark.asyncio
-async def test_load_graph_returns_none_when_bd_command_fails(tmp_path: object) -> None:
-    """load_graph distinguishes command failures from a valid empty graph."""
+async def test_load_graph_raises_graph_read_error_when_bd_command_fails(
+    tmp_path: object,
+) -> None:
+    """load_graph raises GraphReadError after exhausting retries — never returns stale None."""
     from pathlib import Path
 
-    from agentshore.beads import load_graph
+    from agentshore.beads import BdError, GraphReadError, load_graph
 
     p = Path(str(tmp_path))
     (p / ".beads").mkdir()
 
-    from agentshore.beads import BdError
-
-    with patch("agentshore.beads.bd", side_effect=BdError("bd failed")):
-        result = await load_graph(p)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_load_graph_retries_empty_stdout_then_returns_none(tmp_path: object) -> None:
-    """Empty stdout (contended Dolt read) is retried, then yields None — not an
-    empty graph — when no populated graph was ever cached.
-
-    ``bd list --json`` always prints at least ``[]`` on a real read, so empty
-    stdout signals a lock-contended read (Windows mandatory file locks), never a
-    truthful empty store. Treating it as empty would flip ``has_epics`` off and
-    re-trigger seed_project.
-    """
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import load_graph
-
-    beads_mod._reset_graph_cache()
-    p = Path(str(tmp_path))
-    (p / ".beads").mkdir()
-
-    bd = AsyncMock(return_value="   ")  # whitespace-only == empty
+    # All retry attempts fail — GraphReadError must be raised, not None returned.
     with (
-        patch("agentshore.beads.bd", bd),
-        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        patch("agentshore.beads.bd", side_effect=BdError("bd failed")),
+        pytest.raises(GraphReadError),
     ):
-        result = await load_graph(p)
-
-    assert result is None  # NOT an empty ProjectGraph
-    # One initial read + the full retry budget.
-    assert bd.await_count == beads_mod._BD_EMPTY_READ_RETRIES + 1
-    assert sleep.await_count == beads_mod._BD_EMPTY_READ_RETRIES
-
-
-@pytest.mark.asyncio
-async def test_load_graph_empty_read_reuses_last_good_graph(tmp_path: object) -> None:
-    """A contended empty read after a populated load reuses the cached graph,
-    so a momentary lock contention never downgrades a seeded project."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import load_graph
-
-    beads_mod._reset_graph_cache()
-    p = Path(str(tmp_path))
-    (p / ".beads").mkdir()
-    populated = [
-        {"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"},
-        {
-            "id": "task-1",
-            "title": "Login",
-            "type": "task",
-            "status": "open",
-            "parent_id": "epic-1",
-        },
-    ]
-
-    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
-        good = await load_graph(p)
-    assert good is not None and good.has_epics
-
-    # Next tick: bd returns empty stdout on every attempt (full contention).
-    with (
-        patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=""),
-        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock),
-    ):
-        reused = await load_graph(p)
-
-    assert reused is good  # exact cached instance, not a fresh empty graph
-    assert reused.has_epics
-
-
-@pytest.mark.asyncio
-async def test_load_graph_transient_bderror_reuses_last_good_graph(tmp_path: object) -> None:
-    """A transient BdError after a populated load reuses the cached graph too."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import BdError, load_graph
-
-    beads_mod._reset_graph_cache()
-    p = Path(str(tmp_path))
-    (p / ".beads").mkdir()
-    populated = [{"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"}]
-
-    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
-        good = await load_graph(p)
-    assert good is not None and good.has_epics
-
-    with patch("agentshore.beads.bd", side_effect=BdError("dolt lock held")):
-        reused = await load_graph(p)
-
-    assert reused is good
-
-
-@pytest.mark.asyncio
-async def test_load_graph_valid_empty_list_is_truthful_empty_graph(tmp_path: object) -> None:
-    """A valid empty ``[]`` response is a real empty store: an empty graph (not
-    None), and it is NOT cached so it never masks a later real read."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import load_graph
-
-    beads_mod._reset_graph_cache()
-    p = Path(str(tmp_path))
-    (p / ".beads").mkdir()
-
-    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value="[]"):
-        result = await load_graph(p)
-
-    assert result is not None
-    assert not result.has_epics
-    assert result.tasks_total == 0
-    key = os.path.normcase(os.path.normpath(str(p.resolve())))
-    assert key not in beads_mod._LAST_GOOD_GRAPH
-
-
-@pytest.mark.asyncio
-async def test_load_graph_valid_empty_clears_stale_last_good_cache(tmp_path: object) -> None:
-    """A genuine wipe (valid ``[]`` after a populated load) both reports empty
-    now AND drops the stale cache, so a later contended read can't resurrect the
-    wiped graph."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import load_graph
-
-    beads_mod._reset_graph_cache()
-    p = Path(str(tmp_path))
-    (p / ".beads").mkdir()
-    key = os.path.normcase(os.path.normpath(str(p.resolve())))
-
-    populated = [{"id": "epic-1", "title": "Auth", "type": "epic", "status": "open"}]
-    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=json.dumps(populated)):
         await load_graph(p)
-    assert key in beads_mod._LAST_GOOD_GRAPH  # cached while populated
-
-    # Genuine wipe: bd now reports a valid empty store.
-    with patch("agentshore.beads.bd", new_callable=AsyncMock, return_value="[]"):
-        empty = await load_graph(p)
-    assert empty is not None and not empty.has_epics
-    assert key not in beads_mod._LAST_GOOD_GRAPH  # stale entry cleared
-
-    # A subsequent contended read must NOT resurrect the wiped graph.
-    with (
-        patch("agentshore.beads.bd", new_callable=AsyncMock, return_value=""),
-        patch("agentshore.beads.asyncio.sleep", new_callable=AsyncMock),
-    ):
-        after_wipe = await load_graph(p)
-    assert after_wipe is None
 
 
 @pytest.mark.asyncio
@@ -655,121 +503,12 @@ def test_resolve_bd_binary_falls_back_to_path_when_env_unset(
 def test_resolve_bd_binary_returns_none_when_nothing_resolves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from pathlib import Path
-
     from agentshore.beads import resolve_bd_binary
 
     monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
 
-    with (
-        patch("shutil.which", return_value=None),
-        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
-    ):
-        assert resolve_bd_binary() is None
-
-
-def test_resolve_bd_binary_uses_managed_dir_when_path_empty(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With env unset and bd off PATH, the init-managed dir is the last resort."""
-    import sys
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-    from agentshore.beads import resolve_bd_binary
-
-    managed = Path(str(tmp_path)) / ("bd.exe" if sys.platform.startswith("win") else "bd")
-    managed.write_text("#!/bin/sh\necho bd\n", encoding="utf-8")
-    managed.chmod(0o755)
-
-    monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
-    monkeypatch.setattr(beads_mod, "_managed_bd_path", lambda: managed)
     with patch("shutil.which", return_value=None):
-        assert resolve_bd_binary() == str(managed.resolve())
-
-
-# ---------------------------------------------------------------------------
-# managed_bd_dir / ensure_bd_dir_on_path — install to the canonical beads
-# location and make it resolvable for agent subprocesses.
-# ---------------------------------------------------------------------------
-
-
-def test_managed_bd_dir_is_canonical_beads_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    """managed_bd_dir mirrors beads' own install.ps1 / install.sh targets so a
-    provisioned bd is a normal, on-PATH beads install (not a swink-private dir)."""
-    import agentshore.beads as beads_mod
-
-    # Windows → %LOCALAPPDATA%\Programs\bd (matches install.ps1).
-    monkeypatch.setattr(beads_mod.sys, "platform", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
-    win_dir = beads_mod.managed_bd_dir()
-    assert win_dir.parts[-2:] == ("Programs", "bd")
-    assert "AppData" in str(win_dir)
-
-    # POSIX with /usr/local/bin writable → that (matches install.sh first choice).
-    monkeypatch.setattr(beads_mod.sys, "platform", "linux")
-    with patch("agentshore.beads.os.access", return_value=True):
-        assert beads_mod.managed_bd_dir() == Path("/usr/local/bin")
-
-    # POSIX with /usr/local/bin not writable → ~/.local/bin fallback.
-    with patch("agentshore.beads.os.access", return_value=False):
-        assert beads_mod.managed_bd_dir() == Path.home() / ".local" / "bin"
-
-
-def test_ensure_bd_dir_on_path_prepends_existing_dir(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When the install dir exists and is off PATH, it is prepended for this
-    process (so inheriting agent subprocesses resolve a bare ``bd``)."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-
-    bd_dir = Path(str(tmp_path)) / "Programs" / "bd"
-    bd_dir.mkdir(parents=True)
-    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: bd_dir)
-    monkeypatch.setenv("PATH", "/already/here")
-
-    beads_mod.ensure_bd_dir_on_path()
-
-    parts = os.environ["PATH"].split(os.pathsep)
-    assert parts[0] == str(bd_dir)
-    assert "/already/here" in parts
-
-
-def test_ensure_bd_dir_on_path_idempotent(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A second call does not duplicate the entry."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-
-    bd_dir = Path(str(tmp_path)) / "bd"
-    bd_dir.mkdir(parents=True)
-    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: bd_dir)
-    monkeypatch.setenv("PATH", str(bd_dir) + os.pathsep + "/already/here")
-
-    beads_mod.ensure_bd_dir_on_path()
-
-    assert os.environ["PATH"].split(os.pathsep).count(str(bd_dir)) == 1
-
-
-def test_ensure_bd_dir_on_path_noop_when_dir_missing(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No PATH mutation when nothing is installed at the canonical dir."""
-    from pathlib import Path
-
-    import agentshore.beads as beads_mod
-
-    missing = Path(str(tmp_path)) / "nope"  # not created
-    monkeypatch.setattr(beads_mod, "managed_bd_dir", lambda: missing)
-    monkeypatch.setenv("PATH", "/already/here")
-
-    beads_mod.ensure_bd_dir_on_path()
-
-    assert os.environ["PATH"] == "/already/here"
+        assert resolve_bd_binary() is None
 
 
 # ---------------------------------------------------------------------------
@@ -788,22 +527,15 @@ def test_ensure_bd_installed_passes_when_on_path(monkeypatch: pytest.MonkeyPatch
 
 
 def test_ensure_bd_installed_raises_when_missing() -> None:
-    from pathlib import Path
-
     from agentshore.beads.setup import ensure_bd_installed
 
     with (
         patch("shutil.which", return_value=None),
-        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
-        patch("agentshore.beads.setup.provision_bd", return_value=None),
         pytest.raises(RuntimeError, match="bd.*not found"),
     ):
         ensure_bd_installed()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
-)
 def test_ensure_bd_installed_accepts_env_var(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -823,9 +555,6 @@ def test_ensure_bd_installed_accepts_env_var(
         ensure_bd_installed()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
-)
 def test_ensure_bd_installed_rejects_version_mismatch(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -847,9 +576,6 @@ def test_ensure_bd_installed_rejects_version_mismatch(
         ensure_bd_installed()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="bd stub is a POSIX shell script, not a Win32 exe"
-)
 def test_ensure_bd_installed_version_override(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -870,175 +596,11 @@ def test_ensure_bd_installed_version_override(
 
 
 def test_ensure_bd_installed_error_mentions_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    from pathlib import Path
-
     from agentshore.beads.setup import ensure_bd_installed
 
     monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
     with (
         patch("shutil.which", return_value=None),
-        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
-        patch("agentshore.beads.setup.provision_bd", return_value=None),
         pytest.raises(RuntimeError, match="AGENTSHORE_BD_BIN"),
     ):
         ensure_bd_installed()
-
-
-def test_ensure_bd_installed_auto_provisions_when_missing(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When bd is absent everywhere, ensure_bd_installed provisions it rather
-    than raising."""
-    from pathlib import Path
-
-    from agentshore.beads import setup as setup_mod
-
-    fake_bd = str(Path(str(tmp_path)) / "bd")
-    # Empty pin disables the version check so the fake path need not run.
-    monkeypatch.setenv("AGENTSHORE_BD_VERSION", "")
-    monkeypatch.setattr(setup_mod, "provision_bd", lambda **_k: fake_bd)
-    with (
-        patch("shutil.which", return_value=None),
-        patch("agentshore.beads._managed_bd_path", return_value=Path("/does/not/exist/bd")),
-    ):
-        setup_mod.ensure_bd_installed()  # must not raise
-
-
-def _zip_with_bd(bd_name: str, payload: bytes) -> bytes:
-    import io
-    import zipfile
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr(bd_name, payload)
-    return buf.getvalue()
-
-
-def _fake_httpx_client(archive_bytes: bytes, checksums_text: str) -> type:
-    class _Resp:
-        def __init__(self, content: bytes = b"", text: str = "") -> None:
-            self.content = content
-            self.text = text
-
-        def raise_for_status(self) -> None:
-            return None
-
-    class _Client:
-        def __init__(self, *_a: object, **_k: object) -> None: ...
-
-        def __enter__(self) -> _Client:
-            return self
-
-        def __exit__(self, *_a: object) -> bool:
-            return False
-
-        def get(self, url: str) -> _Resp:
-            if url.endswith("checksums.txt"):
-                return _Resp(text=checksums_text)
-            return _Resp(content=archive_bytes)
-
-    return _Client
-
-
-def test_provision_bd_downloads_verifies_and_installs(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Happy path: asset downloaded, sha256-verified, bd extracted to the
-    managed dir."""
-    import hashlib
-    import sys
-    from pathlib import Path
-
-    from agentshore.beads import setup as setup_mod
-
-    bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
-    archive = _zip_with_bd(bd_name, b"FAKE-BD-BINARY")
-    sha = hashlib.sha256(archive).hexdigest()
-    asset = "beads_test.zip"
-    checksums = f"{sha}  {asset}\n0000  other_asset.tar.gz\n"
-
-    managed_dir = Path(str(tmp_path)) / "bin"
-    monkeypatch.setattr(setup_mod, "_beads_release_asset", lambda _v: (asset, "zip"))
-    monkeypatch.setattr(setup_mod, "managed_bd_dir", lambda: managed_dir)
-    monkeypatch.setattr("httpx.Client", _fake_httpx_client(archive, checksums))
-
-    result = setup_mod.provision_bd(assume_yes=True)
-    assert result == str(managed_dir / bd_name)
-    assert (managed_dir / bd_name).read_bytes() == b"FAKE-BD-BINARY"
-
-
-def test_provision_bd_returns_none_on_sha_mismatch(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import sys
-    from pathlib import Path
-
-    from agentshore.beads import setup as setup_mod
-
-    bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
-    archive = _zip_with_bd(bd_name, b"FAKE")
-    asset = "beads_test.zip"
-    checksums = f"{'0' * 64}  {asset}\n"  # deliberately wrong hash
-
-    managed_dir = Path(str(tmp_path)) / "bin"
-    monkeypatch.setattr(setup_mod, "_beads_release_asset", lambda _v: (asset, "zip"))
-    monkeypatch.setattr(setup_mod, "managed_bd_dir", lambda: managed_dir)
-    monkeypatch.setattr("httpx.Client", _fake_httpx_client(archive, checksums))
-
-    assert setup_mod.provision_bd(assume_yes=True) is None
-    assert not (managed_dir / bd_name).exists()
-
-
-def test_provision_bd_uses_windows_native_tls(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ssl
-
-    from agentshore.beads import setup as setup_mod
-
-    # Patch sys.platform so the function takes the Windows branch.
-    # Also patch ssl.create_default_context so the test doesn't trigger
-    # Windows-specific ssl internals (enum_certificates) on Linux CI.
-    fake_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    monkeypatch.setattr(setup_mod.sys, "platform", "win32")
-    monkeypatch.setattr(setup_mod.ssl, "create_default_context", lambda: fake_ctx)
-
-    assert isinstance(setup_mod._httpx_verify_config(), ssl.SSLContext)
-
-
-def test_provision_bd_declined_does_not_download(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An interactive 'no' to the prompt skips the download entirely."""
-    from unittest.mock import MagicMock
-
-    from agentshore.beads import setup as setup_mod
-
-    download = MagicMock()
-    monkeypatch.setattr(setup_mod, "_download_bd", download)
-    with patch("click.confirm", return_value=False):
-        assert setup_mod.provision_bd(assume_yes=False) is None
-    download.assert_not_called()
-
-
-def test_drain_terminal_input_never_raises() -> None:
-    """Draining is best-effort — must not raise with no real console (e.g. CI)."""
-    from agentshore.beads import setup as setup_mod
-
-    setup_mod._drain_terminal_input()  # must not raise
-
-
-def test_provision_bd_drains_stdin_before_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Buffered keystrokes are flushed *before* the confirm so the prompt blocks
-    instead of consuming a stray newline left by the preceding wizards."""
-    from unittest.mock import MagicMock
-
-    from agentshore.beads import setup as setup_mod
-
-    order: list[str] = []
-    monkeypatch.setattr(setup_mod, "_drain_terminal_input", lambda: order.append("drain"))
-    monkeypatch.setattr(setup_mod, "_download_bd", MagicMock())
-
-    def _confirm(*_a: object, **_k: object) -> bool:
-        order.append("confirm")
-        return False
-
-    with patch("click.confirm", side_effect=_confirm):
-        assert setup_mod.provision_bd(assume_yes=False) is None
-    assert order == ["drain", "confirm"]

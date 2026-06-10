@@ -983,10 +983,7 @@ class CompletionProcessor:
             self._host, "_stop_requested", False
         )
         if draining and final_status == AgentStatus.ERROR:
-            # force=True: session is winding down; in-flight tasks already cancelled.
-            await self._host._safe_call(
-                self._manager.clear(agent_id, force=True), "drain_clear_errored_agent"
-            )
+            await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
             return
         self._maybe_enqueue_error_recovery(agent_id, final_status)
 
@@ -1298,9 +1295,17 @@ class CompletionProcessor:
                 # issues whose only linked beads are closed duplicates.
                 if full_sync and issues is not None:
                     open_issues = [iss for iss in issues if iss.state == "open"]
-                    from agentshore.beads import BeadStatus, GraphTask, load_graph
+                    from agentshore.beads import (
+                        BeadStatus,
+                        GraphReadError,
+                        GraphTask,
+                        load_graph,
+                    )
 
-                    graph = await load_graph(self._repo_root)
+                    try:
+                        graph = await load_graph(self._repo_root)
+                    except GraphReadError:
+                        graph = None
                     if graph is not None:
                         tasks_by_issue: dict[int, list[GraphTask]] = {}
                         for task in graph.tasks:
@@ -1363,19 +1368,10 @@ class CompletionProcessor:
             await self._ensure_ssh_key_fresh()
 
     async def _ensure_ssh_key_fresh(self) -> None:
-        """Re-check the SSH signing key periodically so merge_pr doesn't fail.
-
-        No-op when the repo doesn't SSH-sign commits — there is no key to keep
-        fresh, and warning about it would be a false alarm.
-        """
+        """Re-check the SSH signing key periodically so merge_pr doesn't fail."""
         try:
-            from agentshore.core.git_safety import (
-                ensure_ssh_signing_key_loaded,
-                ssh_signing_enabled,
-            )
+            from agentshore.core.git_safety import ensure_ssh_signing_key_loaded
 
-            if not await asyncio.to_thread(ssh_signing_enabled, self._repo_root):
-                return
             loaded, detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
             if not loaded:
                 _logger.warning("ssh_signing_key_refresh_failed", detail=detail)

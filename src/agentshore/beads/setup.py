@@ -15,23 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import platform
 import re
-import shutil
-import ssl
 import subprocess
-import sys
 from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore.beads import (
-    BdError,
-    bd,
-    ensure_bd_dir_on_path,
-    managed_bd_dir,
-    resolve_bd_binary,
-)
+from agentshore.beads import BdError, bd, resolve_bd_binary
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
@@ -47,10 +37,6 @@ _logger = structlog.get_logger(__name__)
 # AGENTSHORE_BD_VERSION env var (set it empty to disable the check) only after
 # re-verifying the skill-template `bd` calls against the new release.
 REQUIRED_BD_VERSION = "1.0.4"
-
-# Public beads release repo. ``provision_bd`` downloads the pinned version's
-# platform asset from here when bd is otherwise unavailable.
-_BEADS_REPO = "gastownhall/beads"
 
 
 def _check_bd_version(bd_binary: str) -> None:
@@ -96,198 +82,34 @@ _BD_ACTOR_NAMES: dict[AgentType, str] = {
 }
 
 
-def _beads_release_asset(version: str) -> tuple[str, str] | None:
-    """Return ``(asset_filename, archive_kind)`` for this platform.
-
-    ``archive_kind`` is ``"zip"`` (Windows) or ``"tar.gz"`` (macOS/Linux).
-    Returns ``None`` on an unsupported platform or CPU architecture.
-    """
-    arch = {
-        "amd64": "amd64",
-        "x86_64": "amd64",
-        "arm64": "arm64",
-        "aarch64": "arm64",
-    }.get(platform.machine().lower())
-    if arch is None:
-        return None
-    if sys.platform.startswith("win"):
-        return f"beads_{version}_windows_{arch}.zip", "zip"
-    if sys.platform == "darwin":
-        return f"beads_{version}_darwin_{arch}.tar.gz", "tar.gz"
-    if sys.platform.startswith("linux"):
-        return f"beads_{version}_linux_{arch}.tar.gz", "tar.gz"
-    return None
-
-
-def _expected_sha256(checksums_text: str, asset: str) -> str | None:
-    """Pull the SHA-256 for *asset* out of a goreleaser ``checksums.txt``."""
-    for line in checksums_text.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == asset:
-            return parts[0].lower()
-    return None
-
-
-def _extract_bd(data: bytes, kind: str, bd_name: str, dest: Path) -> None:
-    """Extract the *bd_name* member from an in-memory archive into *dest*."""
-    import io
-
-    if kind == "zip":
-        import zipfile
-
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            member = next((n for n in zf.namelist() if n.rsplit("/", 1)[-1] == bd_name), None)
-            if member is None:
-                raise RuntimeError(f"{bd_name} not found in archive")
-            with zf.open(member) as src, dest.open("wb") as out:
-                shutil.copyfileobj(src, out)
-        return
-
-    import tarfile
-
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        member = next((n for n in tf.getnames() if n.rsplit("/", 1)[-1] == bd_name), None)
-        if member is None:
-            raise RuntimeError(f"{bd_name} not found in archive")
-        extracted = tf.extractfile(member)
-        if extracted is None:
-            raise RuntimeError(f"could not extract {member} from archive")
-        with extracted as src, dest.open("wb") as out:
-            shutil.copyfileobj(src, out)
-
-
-def _httpx_verify_config() -> bool | ssl.SSLContext:
-    """Return TLS verification config for release downloads.
-
-    httpx defaults to certifi, which does not include enterprise roots installed
-    in the Windows certificate store. The Windows installer already uses
-    ``uv --native-tls`` for the same reason; use Python's native Windows trust
-    loading for the bd release download too.
-    """
-    if sys.platform.startswith("win"):
-        return ssl.create_default_context()
-    return True
-
-
-def _download_bd(version: str, asset: str, kind: str, *, dest_dir: Path | None = None) -> str:
-    """Download, checksum-verify, and install bd; return the installed path."""
-    import hashlib
-
-    import httpx
-
-    base = f"https://github.com/{_BEADS_REPO}/releases/download/v{version}"
-    with httpx.Client(
-        follow_redirects=True, timeout=120.0, verify=_httpx_verify_config()
-    ) as client:
-        archive = client.get(f"{base}/{asset}")
-        archive.raise_for_status()
-        checksums = client.get(f"{base}/checksums.txt")
-        checksums.raise_for_status()
-
-    expected = _expected_sha256(checksums.text, asset)
-    if expected is None:
-        raise RuntimeError(f"{asset} is not listed in the release checksums.txt")
-    actual = hashlib.sha256(archive.content).hexdigest()
-    if actual != expected:
-        raise RuntimeError(f"sha256 mismatch for {asset}: expected {expected}, got {actual}")
-
-    bd_name = "bd.exe" if sys.platform.startswith("win") else "bd"
-    target_dir = dest_dir or managed_bd_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / bd_name
-    _extract_bd(archive.content, kind, bd_name, dest)
-    if not sys.platform.startswith("win"):
-        dest.chmod(0o755)
-    _logger.info("bd_provisioned", path=str(dest), version=version)
-    return str(dest)
-
-
-def _drain_terminal_input() -> None:
-    """Discard any buffered terminal input before an interactive prompt.
-
-    The identity / agent-select wizards that run earlier in ``agentshore init``
-    use raw-mode keypress readers (beaupy/questo) and can leave the Enter that
-    submitted them queued in the console input buffer. Without draining it,
-    ``click.confirm`` below reads that stray newline immediately and resolves to
-    its default instead of waiting for the user — so the prompt appears but
-    never blocks. Best-effort and never raises (no console / piped stdin ⇒
-    nothing to drain).
-    """
-    try:
-        if sys.platform.startswith("win"):
-            import msvcrt
-
-            while msvcrt.kbhit():
-                msvcrt.getwch()
-        else:
-            import termios
-
-            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-    except Exception:
-        pass
-
-
-def provision_bd(*, assume_yes: bool = False, dest_dir: Path | None = None) -> str | None:
-    """Best-effort download of the pinned bd into the managed dir.
-
-    Returns the installed path, or ``None`` when the platform is unsupported,
-    the user declines the prompt, or the download/verification fails. Never
-    raises — the caller falls back to manual-install instructions.
-    """
-    version = (
-        os.environ.get("AGENTSHORE_BD_VERSION", REQUIRED_BD_VERSION).strip() or REQUIRED_BD_VERSION
-    )
-    asset_info = _beads_release_asset(version)
-    if asset_info is None:
-        _logger.warning(
-            "bd_provision_unsupported_platform",
-            platform=sys.platform,
-            machine=platform.machine(),
-        )
-        return None
-    asset, kind = asset_info
-
-    if not assume_yes:
-        import click
-
-        # Flush any leftover keystrokes so the prompt actually waits for input.
-        _drain_terminal_input()
-        if not click.confirm(
-            f"  bd {version} is required but not installed. "
-            f"Download it from github.com/{_BEADS_REPO} now?",
-            default=True,
-        ):
-            return None
-
-    try:
-        return _download_bd(version, asset, kind, dest_dir=dest_dir)
-    except Exception as exc:  # best-effort: never block init on a download failure
-        _logger.warning("bd_provision_failed", error=str(exc), version=version, asset=asset)
-        return None
-
-
 def ensure_bd_installed() -> None:
-    """Ensure `bd` is available and matches the pinned version.
+    """Verify that `bd` is on PATH and matches the pinned version.
 
-    Resolves bd from AGENTSHORE_BD_BIN / PATH / the managed dir. If it is not
-    found anywhere, attempts to provision the pinned release into the managed
-    dir (prompting first when interactive, auto-yes when headless). Raises
-    RuntimeError with install instructions only if bd is still unavailable, or
-    if a resolved bd's version does not match REQUIRED_BD_VERSION. Synchronous
-    so it can be called from the Click-based `agentshore init` without a loop.
+    If bd is absent, delegates to ``downloader.provision_bd`` which enforces
+    the consent gate: interactive sessions may prompt the user; headless
+    sessions fail with instructions unless ``AGENTSHORE_AUTO_INSTALL_BD=1``
+    is set. This function never silently downloads a binary in headless mode.
+
+    Raises RuntimeError with install instructions if bd is not found (and
+    consent for download is absent), or if its version does not match
+    REQUIRED_BD_VERSION (see AGENTSHORE_BD_VERSION override). This check is
+    intentionally synchronous so it can be called from the Click-based
+    `agentshore init` command without an event loop.
     """
+    from agentshore.beads.downloader import provision_bd
+
+    # provision_bd is a no-op when bd is already installed, or raises with
+    # instructions when it is not (respecting the headless-fail invariant).
+    provision_bd(REQUIRED_BD_VERSION)
+
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
-        bd_binary = provision_bd(assume_yes=not sys.stdin.isatty())
-    if bd_binary is None:
+        # Should not be reachable if provision_bd succeeded, but guard anyway.
         raise RuntimeError(
             "The bd binary was not found. Set AGENTSHORE_BD_BIN to a bundled binary or install "
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."
         )
     _check_bd_version(bd_binary)
-    # Beads' own installers only hint at PATH; make the canonical dir resolvable
-    # for this process (and any agent subprocess that inherits its env).
-    ensure_bd_dir_on_path()
     _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 

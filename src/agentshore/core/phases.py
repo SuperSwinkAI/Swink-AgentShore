@@ -27,8 +27,6 @@ from agentshore.core.git_safety import (
     find_path_escape_siblings,
     resolve_default_branch,
     restore_default_branch,
-    ssh_signing_enabled,
-    ssh_signing_setup_hint,
     untrack_ignored_entries,
 )
 from agentshore.core.helpers import (
@@ -492,22 +490,19 @@ async def _phase_git_safety_sweep(
                 untracked=untracked,
             )
 
-        # Only relevant when the repo actually SSH-signs commits — otherwise
-        # the empty-agent warning is a false alarm (see desktop-l7i follow-up).
-        if await asyncio.to_thread(ssh_signing_enabled, repo_root):
-            ssh_loaded, ssh_detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
-            if ssh_loaded:
-                _logger.info("ssh_signing_key_loaded", session_id=sid, detail=ssh_detail)
-            else:
-                _logger.warning(
-                    "ssh_signing_key_not_loaded",
-                    session_id=sid,
-                    detail=ssh_detail,
-                    note=(
-                        "merge_pr plays will fail with 'ssh-signing-key-not-loaded'. "
-                        f"Run: {ssh_signing_setup_hint()}"
-                    ),
-                )
+        ssh_loaded, ssh_detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
+        if ssh_loaded:
+            _logger.info("ssh_signing_key_loaded", session_id=sid, detail=ssh_detail)
+        else:
+            _logger.warning(
+                "ssh_signing_key_not_loaded",
+                session_id=sid,
+                detail=ssh_detail,
+                note=(
+                    "merge_pr plays will fail with 'ssh-signing-key-not-loaded'. "
+                    "Run: ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+                ),
+            )
 
         default_branch, assumed = await asyncio.to_thread(resolve_default_branch, repo_root)
         orch._main_repo.default_branch = default_branch
@@ -712,11 +707,21 @@ async def _mirror_issues_to_beads(
                 stdin_data=(line + "\n").encode(),
             )
         except _beads_mod.BdError as exc:
-            _logger.warning(
-                "beads_mirror_issue_failed",
-                issue_number=issue.issue_number,
-                error=str(exc),
-            )
+            # Dolt reports "nothing to commit" (exit 1) when the import is
+            # already fully deduplicated — the graph is already converged, so
+            # this is a successful no-op, not a failure.
+            if "nothing to commit" in str(exc):
+                _logger.debug(
+                    "beads_mirror_issue_noop",
+                    issue_number=issue.issue_number,
+                    reason="already_deduplicated",
+                )
+            else:
+                _logger.warning(
+                    "beads_mirror_issue_failed",
+                    issue_number=issue.issue_number,
+                    error=str(exc),
+                )
 
 
 async def _phase_fetch_github(
@@ -762,9 +767,22 @@ async def _phase_fetch_github(
                         expected_issues_known=True,
                         session_id=sid,
                     )
-                    from agentshore.beads import load_graph as _load_graph
+                    from agentshore.beads import (
+                        GraphReadError,
+                    )
+                    from agentshore.beads import (
+                        load_graph as _load_graph,
+                    )
 
-                    _startup_graph = await _load_graph(repo_root)
+                    try:
+                        _startup_graph = await _load_graph(repo_root)
+                    except GraphReadError as exc:
+                        _logger.warning(
+                            "beads_graph_read_failed_skipping_mirror",
+                            error=str(exc),
+                            session_id=sid,
+                        )
+                        _startup_graph = None
                     await _mirror_issues_to_beads(
                         project_path=repo_root, issues=issues, graph=_startup_graph
                     )
