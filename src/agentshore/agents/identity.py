@@ -312,24 +312,11 @@ class IdentityResolver:
         if service in self._keychain_cache:
             return self._keychain_cache[service]
 
-        try:
-            import keyring
-            from keyring.errors import KeyringError
-        except ImportError:
-            _logger.warning("identity_keyring_unavailable", service=service)
-            return None
+        from agentshore import keyring_child
 
-        try:
-            token = keyring.get_password(service, service)
-        except KeyringError as exc:
-            _logger.warning(
-                "identity_keychain_lookup_failed",
-                service=service,
-                error=str(exc),
-            )
-            return None
-
+        token = keyring_child.keyring_get(service)
         if not token:
+            _logger.warning("identity_keychain_lookup_failed_or_empty", service=service)
             return None
 
         self._keychain_cache[service] = token

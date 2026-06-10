@@ -444,6 +444,7 @@ def test_run_wizard_skip_for_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Selecting the keychain option writes gh_token_keychain to the binding
     and offers to store the token via keyring."""
+    from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
     # Force keyring to look available so the wizard offers option 3.
@@ -451,12 +452,10 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     stored: dict[str, str] = {}
 
-    def fake_set_password(service: str, username: str, token: str) -> None:
+    def fake_keyring_set(service: str, token: str) -> None:
         stored[service] = token
 
-    import keyring
-
-    monkeypatch.setattr(keyring, "set_password", fake_set_password)
+    monkeypatch.setattr(keyring_child, "keyring_set", fake_keyring_set)
 
     # New flow: Pass 1 picks claude_code → 1; Pass 2 prompts email "",
     # name "", "Do you have a PAT?" → True (paste path), then the masked PAT
@@ -493,12 +492,12 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_keychain_backend_label_when_no_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """If the active keyring backend is the fail backend, hide the keychain option."""
-    import keyring
-    from keyring.backends.fail import Keyring as FailKeyring
-
+    from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
-    monkeypatch.setattr(keyring, "get_keyring", lambda: FailKeyring())
+    # keyring_child.keyring_backend_name() returns the class name; the keychain.py
+    # wrapper hides the keychain option when the name contains "fail" (case-insensitive).
+    monkeypatch.setattr(keyring_child, "keyring_backend_name", lambda: "FailKeyring")
     assert mod._keychain_backend_label() is None
 
 
@@ -924,14 +923,16 @@ def test_prompt_token_strategy_paste_pat_stores_in_keychain(
     """Happy path: user accepts the paste-PAT prompt, pastes a real-looking
     PAT, and the wizard stores it under agentshore/<login> with no env var
     name ever requested."""
+    from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
     monkeypatch.setattr(mod, "_keychain_has_token", lambda _service: False)
     stored: dict[str, str] = {}
     monkeypatch.setattr(
-        "keyring.set_password",
-        lambda service, _user, token: stored.__setitem__(service, token),
+        keyring_child,
+        "keyring_set",
+        lambda service, token: stored.__setitem__(service, token),
     )
 
     inputs = iter(["ghp_realtoken12345"])
@@ -950,14 +951,16 @@ def test_prompt_token_strategy_paste_pat_stores_repo_specific_keychain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Repo-aware wizard runs store pasted PATs under agentshore/owner/repo/login."""
+    from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
     monkeypatch.setattr(mod, "_keychain_has_token", lambda _service: False)
     stored: dict[str, str] = {}
     monkeypatch.setattr(
-        "keyring.set_password",
-        lambda service, _user, token: stored.__setitem__(service, token),
+        keyring_child,
+        "keyring_set",
+        lambda service, token: stored.__setitem__(service, token),
     )
 
     inputs = iter(["ghp_realtoken12345"])
@@ -982,14 +985,16 @@ def test_prompt_token_strategy_keychain_service_uses_lowercase_login(
 ) -> None:
     """Keychain services use canonical lowercase identity names even when
     GitHub's display login has mixed case."""
+    from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
     monkeypatch.setattr(mod, "_keychain_has_token", lambda _service: False)
     stored: dict[str, str] = {}
     monkeypatch.setattr(
-        "keyring.set_password",
-        lambda service, _user, token: stored.__setitem__(service, token),
+        keyring_child,
+        "keyring_set",
+        lambda service, token: stored.__setitem__(service, token),
     )
     monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: "ghp_realtoken12345")
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: True)
