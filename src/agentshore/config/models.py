@@ -512,6 +512,12 @@ class RuntimeConfig:
     auto: AutoDetectConfig = field(default_factory=AutoDetectConfig)
     intake: IntakeConfig = field(default_factory=IntakeConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
+    # ``True`` when the YAML had NO ``budget:`` block. ``bootstrap.py``
+    # uses this flag instead of a value-equality sentinel to decide whether
+    # to apply safety defaults. A ``BudgetConfig()`` that was explicitly
+    # written to the YAML (e.g., ``agentshore start --unlimited``) should
+    # NOT trigger default application on the next plain ``agentshore start``.
+    budget_absent: bool = False
     trusted_ids: TrustedIdsConfig = field(default_factory=TrustedIdsConfig)
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)

@@ -31,7 +31,6 @@ from agentshore.session.bootstrap import (
     echo_bootstrap_summary,
     preflight_identities,
     validate_budget_flag,
-    validate_time_flag,
 )
 
 
@@ -205,7 +204,6 @@ def start(
             raise click.BadParameter(str(exc), param_hint="--time") from exc
     else:
         time_override = None
-    validate_time_flag(time_override)
     policy_mode_override = _resolve_policy_mode_override(
         policy_mode=policy_mode,
         legacy_deterministic=legacy_deterministic,
