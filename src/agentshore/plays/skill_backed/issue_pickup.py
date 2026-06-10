@@ -8,6 +8,7 @@ import structlog
 
 from agentshore.github.labels import ISSUE_PICKUP_SKIP_LABELS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
+from agentshore.plays.skill_backed.gates import DependenciesResolvedGate
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
@@ -165,6 +166,9 @@ class IssuePickupPlay(SkillBackedPlay):
                     source=MaskSource.CANDIDATE,
                 )
             )
+        dep_reason = DependenciesResolvedGate()(state)
+        if dep_reason is not None:
+            issues.append(dep_reason)
         issues += self._capability_check(state)
         open_prs = {pr.pr_number for pr in state.pull_requests if pr.state == "open"}
         open_pr_count = len(open_prs)
