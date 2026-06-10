@@ -13,6 +13,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO_ROOT / "packaging" / "desktop" / "build_bd_sidecar.py"
 
+# Arbitrary version string for the provision consent-gate tests — the value is
+# only echoed into the install-instructions message, never matched against.
+_PINNED = "1.0.4"
+
 
 def _load_build_module() -> ModuleType:
     import importlib.util
@@ -109,47 +113,79 @@ def test_pinned_version_matches_runtime_pin() -> None:
     assert build_bd_sidecar.PINNED_BD_VERSION == REQUIRED_BD_VERSION
 
 
-def test_provision_bd_accepts_explicit_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_provision_bd_noop_when_already_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When bd already resolves, provision is a no-op returning the existing path
+    (no download, no raise)."""
+    from agentshore.beads import downloader
+
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: "/usr/bin/bd")
+    assert downloader.provision_bd(_PINNED) == "/usr/bin/bd"  # must not raise/download
+
+
+def test_provision_bd_headless_without_opt_in_raises_with_instructions(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agentshore.beads import setup
+    """Headless + no opt-in must fail conservatively with install instructions —
+    never auto-download a third-party binary in CI/agent/server contexts."""
+    import types
 
-    captured: dict[str, Path | None] = {}
+    from agentshore.beads import downloader
 
-    monkeypatch.setattr(setup, "_beads_release_asset", lambda _version: ("bd.zip", "zip"))
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: None)
+    monkeypatch.delenv("AGENTSHORE_AUTO_INSTALL_BD", raising=False)
+    monkeypatch.setattr(downloader.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
 
-    def fake_download(
-        _version: str, _asset: str, _kind: str, *, dest_dir: Path | None = None
-    ) -> str:
-        captured["dest_dir"] = dest_dir
-        return str((dest_dir or tmp_path) / "bd.exe")
-
-    monkeypatch.setattr(setup, "_download_bd", fake_download)
-
-    assert setup.provision_bd(assume_yes=True, dest_dir=tmp_path) == str(tmp_path / "bd.exe")
-    assert captured["dest_dir"] == tmp_path
+    with pytest.raises(RuntimeError, match="bd binary was not found"):
+        downloader.provision_bd(_PINNED)
 
 
-def test_provision_bd_default_destination_remains_managed_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_provision_bd_opt_in_downloads_into_dest_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from agentshore.beads import setup
+    """With the explicit opt-in (or a consented caller), provision downloads the
+    pinned release into dest_dir and returns the installed path."""
+    from agentshore.beads import downloader
 
-    captured: dict[str, Path | None] = {}
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: None)
+    monkeypatch.setenv("AGENTSHORE_AUTO_INSTALL_BD", "1")
 
-    monkeypatch.setattr(setup, "_beads_release_asset", lambda _version: ("bd.zip", "zip"))
-    monkeypatch.setattr(setup, "managed_bd_dir", lambda: tmp_path / "managed-bd")
+    captured: dict[str, object] = {}
 
-    def fake_download(
-        _version: str, _asset: str, _kind: str, *, dest_dir: Path | None = None
-    ) -> str:
+    def _fake_download(version: str, asset: str, kind: str, *, dest_dir: Path) -> str:
+        captured["version"] = version
         captured["dest_dir"] = dest_dir
-        return str((dest_dir or setup.managed_bd_dir()) / "bd.exe")
+        installed = dest_dir / ("bd.exe" if sys.platform.startswith("win") else "bd")
+        return str(installed)
 
-    monkeypatch.setattr(setup, "_download_bd", fake_download)
+    monkeypatch.setattr(downloader, "_download_bd", _fake_download)
 
-    assert setup.provision_bd(assume_yes=True) == str(tmp_path / "managed-bd" / "bd.exe")
-    assert captured["dest_dir"] is None
+    dest = tmp_path / "bin"
+    result = downloader.provision_bd(_PINNED, dest_dir=dest)
+
+    assert captured["version"] == _PINNED
+    assert captured["dest_dir"] == dest
+    assert result is not None and result.endswith(
+        "bd.exe" if sys.platform.startswith("win") else "bd"
+    )
+
+
+def test_provision_bd_assume_yes_consents_without_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A consented caller (the installer) passes assume_yes=True and downloads
+    even without the opt-in env var set."""
+    from agentshore.beads import downloader
+
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: None)
+    monkeypatch.delenv("AGENTSHORE_AUTO_INSTALL_BD", raising=False)
+
+    def _fake_download(version: str, asset: str, kind: str, *, dest_dir: Path) -> str:
+        return str(dest_dir / "bd")
+
+    monkeypatch.setattr(downloader, "_download_bd", _fake_download)
+
+    result = downloader.provision_bd(_PINNED, assume_yes=True, dest_dir=tmp_path)
+    assert result == str(tmp_path / "bd")
 
 
 def test_pinned_checksums_reference_pinned_version() -> None:

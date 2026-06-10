@@ -138,8 +138,12 @@ fn run_sidecar(args: Vec<OsString>) -> ProvisionResult<()> {
         )?;
 
         logger.line("==> Provisioning bd dependency");
+        // assume_yes=True: the installer is a consented (admin-wizard) context,
+        // so the headless-fail consent gate in downloader.provision_bd is
+        // satisfied and it downloads the pinned bd release into the managed bin
+        // dir. REQUIRED_BD_VERSION is single-sourced in agentshore.beads.setup.
         let code = format!(
-            "from pathlib import Path\nfrom agentshore.beads.setup import provision_bd\npath = provision_bd(assume_yes=True, dest_dir=Path({}))\nraise SystemExit(0 if path else 1)\n",
+            "from pathlib import Path\nfrom agentshore.beads.setup import REQUIRED_BD_VERSION\nfrom agentshore.beads.downloader import provision_bd\npath = provision_bd(REQUIRED_BD_VERSION, assume_yes=True, dest_dir=Path({}))\nraise SystemExit(0 if path else 1)\n",
             python_string_literal(&bin)
         );
         run_required(

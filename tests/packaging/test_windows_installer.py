@@ -105,6 +105,22 @@ def test_windows_build_script_signs_provisioner_when_cert_exists() -> None:
     assert "Invoke-AuthenticodeSign -FilePath $SetupOut" in script
 
 
+def test_windows_build_script_can_create_local_self_signed_cert() -> None:
+    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+
+    assert "[switch]$SelfSign" in script
+    assert "[switch]$TrustSelfSignedCertificate" in script
+    assert "[switch]$SetupSelfSignedCertificateOnly" in script
+    assert 'CN=AgentShore Local Dev Code Signing' in script
+    assert "function New-AgentShoreSelfSignedCodeSigningCertificate" in script
+    assert "New-SelfSignedCertificate" in script
+    assert "-Type CodeSigningCert" in script
+    assert "CurrentUser\\Root" in script
+    assert "Use either -SelfSign or -CertificateThumbprint, not both." in script
+    assert "-SetupSelfSignedCertificateOnly requires -SelfSign." in script
+    assert "Self-signed certificate setup complete" in script
+
+
 def test_windows_release_build_requires_signing_unless_explicitly_disabled() -> None:
     script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
 
@@ -243,7 +259,10 @@ def test_windows_provisioner_installs_wheel_and_machine_bd() -> None:
     assert 'os("venv")' in source
     assert 'os("pip")' in source
     assert "import agentshore.sidecar" in source
-    assert "provision_bd(assume_yes=True, dest_dir=Path({}))" in source
+    # provision_bd lives in agentshore.beads.downloader; the installer is a
+    # consented context so it passes assume_yes=True and the version pin.
+    assert "from agentshore.beads.downloader import provision_bd" in source
+    assert "provision_bd(REQUIRED_BD_VERSION, assume_yes=True, dest_dir=Path({}))" in source
 
 
 def test_windows_provisioner_rolls_back_failed_venv_replace() -> None:

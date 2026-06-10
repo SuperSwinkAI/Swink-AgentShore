@@ -117,3 +117,33 @@ def test_timeout_for_scales_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_no_window_creationflags_zero_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess_env.sys, "platform", "linux")
     assert subprocess_env.no_window_creationflags() == 0
+
+
+def test_kill_tree_sync_uses_taskkill_tree_force_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows the whole tree is force-killed by pid via ``taskkill /T /F``."""
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(subprocess_env.sys, "platform", "win32")
+    captured: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: object) -> object:
+        captured.append(list(argv))
+        return type("_Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    subprocess_env.kill_tree_sync(4321)
+
+    assert captured == [["taskkill", "/PID", "4321", "/T", "/F"]]
+
+
+def test_kill_tree_sync_kills_target_pid_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off Windows only the target pid is SIGKILLed — never the process group."""
+    monkeypatch.setattr(subprocess_env.sys, "platform", "linux")
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(subprocess_env.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    subprocess_env.kill_tree_sync(4321)
+
+    assert killed == [(4321, 9)]

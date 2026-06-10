@@ -71,6 +71,12 @@ Tauri executable, compiled Windows provisioner, regenerates `EULA.rtf`,
 optionally Authenticode-signs the app/provisioner/setup executables, and emits
 an Inno Setup wizard `.exe`.
 
+For local installer QA, pass `-SelfSign` to create or reuse a current-user
+self-signed code-signing certificate. Add `-TrustSelfSignedCertificate` when the
+build machine should trust that certificate for local signature verification, or
+`-SetupSelfSignedCertificateOnly` to provision the certificate without building.
+Self-signed installers are never public release artifacts.
+
 The Windows wizard is machine-wide (`PrivilegesRequired=admin`) and installs
 the desktop app under:
 

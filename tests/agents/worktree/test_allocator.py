@@ -394,7 +394,7 @@ async def test_run_git_pins_stdin_to_devnull(monkeypatch: pytest.MonkeyPatch) ->
     class _FakeProc:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:  # noqa: A002
             return (b"", b"")
 
         async def wait(self) -> int:

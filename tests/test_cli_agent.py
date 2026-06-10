@@ -36,13 +36,19 @@ from agentshore.state import AgentStatus, AgentType
 
 
 @pytest.fixture(autouse=True)
-def _identity_executable_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+def _identity_executable_resolution(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Keep dispatch argv deterministic across hosts. On Windows,
     _resolve_executable() rewrites a bare 'codex' to the real codex.CMD path
     via shutil.which; pin which() to identity so argv assertions (e.g.
     argv[0] == 'codex') hold regardless of what npm shims are installed. The
-    dedicated _resolve_executable tests patch the function directly.
+    dedicated _resolve_executable tests opt out via @pytest.mark.real_resolve_executable
+    so they exercise the genuine function.
     """
+    if request.node.get_closest_marker("real_resolve_executable") is not None:
+        return
+
     import agentshore.agents.cli_agent as ca
 
     monkeypatch.setattr(ca, "_resolve_executable", lambda argv: argv)
@@ -1160,19 +1166,12 @@ class _FakeKillProcess:
         return self.returncode
 
 
-class _FakeTaskkill:
-    def __init__(self, returncode: int = 0) -> None:
-        self.returncode = returncode
-
-    async def wait(self) -> int:
-        return self.returncode
-
-
 async def test_kill_process_uses_taskkill_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under Windows-simulation, _kill_process drives taskkill and never touches
-    os.killpg (which is absent on Windows -> AttributeError)."""
+    """Under Windows-simulation, _kill_process tears the tree down by PID via
+    ``subprocess_env.kill_tree_sync`` (taskkill) and never touches os.killpg
+    (which is absent on Windows -> AttributeError)."""
     import os as _os
 
     from agentshore.agents import cli_agent as ca
@@ -1181,52 +1180,41 @@ async def test_kill_process_uses_taskkill_on_windows(
     monkeypatch.delattr(_os, "killpg", raising=False)
     monkeypatch.delattr(_os, "getpgid", raising=False)
 
-    captured_argv: list[list[str]] = []
-
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
-        captured_argv.append(list(argv))
-        return _FakeTaskkill(returncode=0)
-
+    killed_pids: list[int] = []
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda pid: killed_pids.append(pid),
     )
 
     proc = _FakeKillProcess(pid=4321)
     # Must not raise AttributeError despite os.killpg being absent.
     await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
-    assert captured_argv, "taskkill was never invoked"
-    assert captured_argv[0][:3] == ["taskkill", "/PID", "4321"]
-    assert "/T" in captured_argv[0]
-    # Process exited within grace -> no force kill needed.
-    assert all("/F" not in argv for argv in captured_argv)
+    # The process tree was torn down by pid; the process exited within grace so
+    # there is no post-grace retry.
+    assert killed_pids == [4321]
 
 
 async def test_kill_process_windows_no_warn_when_process_already_gone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-zero taskkill exit (e.g. 128 'process not found') for a process
-    that has already exited is benign and must NOT be logged as a failure."""
+    """A process that has already exited is benign: the tree kill is attempted
+    but teardown succeeds, so nothing is logged as a failure."""
     import os as _os
 
     from agentshore.agents import cli_agent as ca
 
     monkeypatch.delattr(_os, "killpg", raising=False)
     monkeypatch.delattr(_os, "getpgid", raising=False)
-
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
-        return _FakeTaskkill(returncode=128)
-
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda _pid: None,
     )
     mock_logger = MagicMock()
     monkeypatch.setattr(ca, "_logger", mock_logger)
 
-    # _FakeKillProcess.returncode is 0 -> the process exited, so even though
-    # taskkill returned non-zero, teardown succeeded and nothing is logged.
+    # _FakeKillProcess.returncode is 0 -> the process exited, so teardown
+    # succeeded and nothing is logged.
     proc = _FakeKillProcess(pid=4321)
     await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
@@ -1239,7 +1227,7 @@ async def test_kill_process_windows_no_warn_when_process_already_gone(
 async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If ``taskkill /F`` cannot stop the process, teardown still completes via a
+    """If the tree kill cannot stop the process, teardown still completes via a
     bounded wait instead of hanging the session forever (codex review P2)."""
     import os as _os
 
@@ -1249,15 +1237,12 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     monkeypatch.delattr(_os, "getpgid", raising=False)
     monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.01)
 
-    captured_argv: list[list[str]] = []
-
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeTaskkill:
-        captured_argv.append(list(argv))
-        return _FakeTaskkill(returncode=128)  # every taskkill fails
-
+    killed_pids: list[int] = []
+    # taskkill is a no-op here: the process never dies, simulating an
+    # unkillable tree.
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda pid: killed_pids.append(pid),
     )
     mock_logger = MagicMock()
     monkeypatch.setattr(ca, "_logger", mock_logger)
@@ -1267,21 +1252,23 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
             await asyncio.sleep(3600)  # never exits on its own
             return 0
 
-    # returncode stays None â€” the process never dies, so taskkill genuinely
+    # returncode stays None — the process never dies, so the tree kill genuinely
     # failed and the warning must fire (unlike the already-gone benign case).
     proc = _HangingProc(pid=4321, returncode=None)  # type: ignore[arg-type]
     # Guard the test itself: a regression would hang here instead of returning.
     await asyncio.wait_for(ca._kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
 
-    # The forced kill was attempted, and the failure was surfaced (not raised).
-    assert any("/F" in argv for argv in captured_argv), "forced taskkill never attempted"
+    # The tree kill was attempted twice (initial + post-grace retry) and the
+    # unrecoverable failure was surfaced as a warning, not raised.
+    assert killed_pids == [4321, 4321]
     warnings = [
         c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
     ]
     assert len(warnings) == 1
-    assert warnings[0].kwargs["returncode"] == 128
+    assert warnings[0].kwargs["pid"] == 4321
 
 
+@pytest.mark.real_resolve_executable
 def test_resolve_executable_resolves_npm_shim_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1299,6 +1286,7 @@ def test_resolve_executable_resolves_npm_shim_on_windows(
     assert out == [r"C:\npm\codex.CMD", "exec", "--json"]
 
 
+@pytest.mark.real_resolve_executable
 def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
@@ -1308,6 +1296,7 @@ def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> No
     assert ca._resolve_executable(["codex", "exec"]) == ["codex", "exec"]
 
 
+@pytest.mark.real_resolve_executable
 def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) -> None:
     import os
     import shutil
@@ -1324,6 +1313,7 @@ def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) 
     assert called == []  # absolute paths are not re-resolved
 
 
+@pytest.mark.real_resolve_executable
 def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
     import shutil
     import sys

@@ -33,6 +33,23 @@
     Skip Authenticode signing even if signtool.exe and a code-signing
     certificate are available.
 
+.PARAMETER SelfSign
+    Create or reuse a local current-user self-signed code-signing certificate
+    and use it for Authenticode signing. This is for local installer testing
+    only; public releases must use a CA-backed or managed signing certificate.
+
+.PARAMETER TrustSelfSignedCertificate
+    Add the self-signed certificate to the current user's Trusted Root store so
+    local verification treats the signature as trusted. Only valid with
+    -SelfSign.
+
+.PARAMETER SetupSelfSignedCertificateOnly
+    Create or reuse the local self-signed certificate, optionally trust it, and
+    exit before building any artifacts. Only valid with -SelfSign.
+
+.PARAMETER SelfSignedCertificateSubject
+    Subject name for the local development self-signed certificate.
+
 .PARAMETER AllowNoRevocationCheck
     Required on machines with Avast HTTPS scanning (Schannel interception breaks
     cargo TLS cert revocation). Use -AllowNoRevocationCheck only on such machines.
@@ -58,6 +75,10 @@ param(
     [switch]$Install,
     [string]$Iscc = "",
     [switch]$NoSign,
+    [switch]$SelfSign,
+    [switch]$TrustSelfSignedCertificate,
+    [switch]$SetupSelfSignedCertificateOnly,
+    [string]$SelfSignedCertificateSubject = "CN=AgentShore Local Dev Code Signing",
     [string]$SignTool = "",
     [string]$CertificateThumbprint = "",
     [string]$TimestampUrl = "http://timestamp.digicert.com",
@@ -168,7 +189,93 @@ function Resolve-SignTool {
     return ""
 }
 
+function Assert-SigningOptions {
+    if ($NoSign -and $SelfSign) {
+        Die "Use either -NoSign or -SelfSign, not both."
+    }
+    if ($TrustSelfSignedCertificate -and -not $SelfSign) {
+        Die "-TrustSelfSignedCertificate requires -SelfSign."
+    }
+    if ($SetupSelfSignedCertificateOnly -and -not $SelfSign) {
+        Die "-SetupSelfSignedCertificateOnly requires -SelfSign."
+    }
+    if ($SelfSign -and $CertificateThumbprint) {
+        Die "Use either -SelfSign or -CertificateThumbprint, not both."
+    }
+}
+
+function Add-CertificateToCurrentUserRoot {
+    param([Parameter(Mandatory = $true)]$Certificate)
+
+    $rootStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+        [System.Security.Cryptography.X509Certificates.StoreName]::Root,
+        [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+    )
+    try {
+        $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $existing = $rootStore.Certificates.Find(
+            [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $Certificate.Thumbprint,
+            $false
+        )
+        if ($existing.Count -eq 0) {
+            $rootStore.Add($Certificate)
+            Write-Info "Trusted self-signed certificate in CurrentUser\Root."
+        } else {
+            Write-Info "Self-signed certificate is already trusted in CurrentUser\Root."
+        }
+    } finally {
+        $rootStore.Close()
+    }
+}
+
+function New-AgentShoreSelfSignedCodeSigningCertificate {
+    if ($SelfSignedCertificateSubject -notmatch "^CN=") {
+        Die "SelfSignedCertificateSubject must start with CN=."
+    }
+
+    $minValidity = (Get-Date).AddDays(7)
+    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Subject -eq $SelfSignedCertificateSubject -and
+            $_.HasPrivateKey -and
+            $_.NotAfter -gt $minValidity
+        } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+
+    if (-not $cert) {
+        Write-Step "Creating local self-signed code-signing certificate"
+        $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject $SelfSignedCertificateSubject `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyAlgorithm RSA `
+            -KeyLength 3072 `
+            -HashAlgorithm SHA256 `
+            -KeyExportPolicy NonExportable `
+            -NotAfter (Get-Date).AddYears(3)
+    } else {
+        Write-Step "Reusing local self-signed code-signing certificate"
+    }
+
+    Write-Info "Subject: $($cert.Subject)"
+    Write-Info "Thumbprint: $($cert.Thumbprint)"
+    Write-Info "Expires: $($cert.NotAfter)"
+    if ($TrustSelfSignedCertificate) {
+        Add-CertificateToCurrentUserRoot -Certificate $cert
+    } else {
+        Write-Info "Not trusted locally. Pass -TrustSelfSignedCertificate to add it to CurrentUser\Root."
+    }
+
+    return $cert.Thumbprint
+}
+
 function Resolve-CodeSigningThumbprint {
+    if ($SelfSign) {
+        return New-AgentShoreSelfSignedCodeSigningCertificate
+    }
+
     if ($CertificateThumbprint) {
         return ($CertificateThumbprint -replace "\s", "").ToUpperInvariant()
     }
@@ -249,6 +356,13 @@ function Get-NewestWheel {
     return $wheel.FullName
 }
 
+Assert-SigningOptions
+if ($SetupSelfSignedCertificateOnly) {
+    [void](New-AgentShoreSelfSignedCodeSigningCertificate)
+    Write-Step "Self-signed certificate setup complete"
+    exit 0
+}
+
 $UvPath = Resolve-Uv
 Assert-UvVersion $UvPath
 
@@ -290,6 +404,10 @@ Write-Step "Building Tauri executable ($BuildMode)"
 Clear-StaleSetupArtifacts
 Push-Location $DesktopDir
 try {
+    # Windows provisions bd at install time via the managed sidecar venv, so the
+    # Tauri build must not try to bundle it as an externalBin. The build.rs guard
+    # skips ensure_bd_sidecar() when AGENTSHORE_SKIP_BD_SIDECAR is set.
+    $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
     if ($AllowNoRevocationCheck) {
         # Required on machines with Avast HTTPS scanning (Schannel interception breaks cargo TLS cert revocation).
         # Use -AllowNoRevocationCheck only on such machines.
@@ -303,6 +421,7 @@ try {
         Invoke-Checked "npx" "tauri" "build" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     }
 } finally {
+    Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
     if ($AllowNoRevocationCheck) {
         if ($null -eq $PreviousCargoHttpCheckRevoke) {
             Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
@@ -319,12 +438,34 @@ if (-not (Test-Path $AppExe)) { Die "Tauri build finished but $AppExe does not e
 Write-Step "Building Windows provisioner ($BuildMode)"
 Push-Location $TauriDir
 try {
+    # agentshore-provisioner is a [[bin]] in the agentshore-desktop crate, so this
+    # cargo build runs that crate's build.rs -> tauri_build::build(), which validates
+    # bundle.externalBin. On Windows bd is provisioned at install time (never bundled),
+    # so feed tauri_build the same externalBin:[] override the Tauri-exe phase passes
+    # via --config; without it the build fails on the missing agentshore-bd sidecar.
+    $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
+    $env:TAURI_CONFIG = (Get-Content -Raw -LiteralPath $WindowsTauriConfig)
+    if ($AllowNoRevocationCheck) {
+        $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
+        $env:CARGO_HTTP_CHECK_REVOKE = "false"
+    }
     if ($DebugBuild) {
         Invoke-Checked "cargo" "build" "--bin" "agentshore-provisioner" "--locked"
     } else {
         Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"
     }
-} finally { Pop-Location }
+} finally {
+    Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
+    Remove-Item Env:\TAURI_CONFIG -ErrorAction SilentlyContinue
+    if ($AllowNoRevocationCheck) {
+        if ($null -eq $PreviousCargoHttpCheckRevoke) {
+            Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
+        } else {
+            $env:CARGO_HTTP_CHECK_REVOKE = $PreviousCargoHttpCheckRevoke
+        }
+    }
+    Pop-Location
+}
 $ProvisionerExe = Join-Path $TargetDir "agentshore-provisioner.exe"
 if (-not (Test-Path $ProvisionerExe)) { Die "Provisioner build finished but $ProvisionerExe does not exist" }
 

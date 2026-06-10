@@ -44,6 +44,17 @@ Windows `scripts\build-windows.ps1` produces:
 | Build `.exe` wizard | Inno Setup 6 `ISCC.exe` | Emits `desktop\dist\AgentShoreSetup-<version>-x64.exe` |
 | Sign installer, optional | `signtool sign` | Same certificate and timestamp settings as the app executable |
 
+For local Windows installer testing, `scripts\build-windows.ps1 -SelfSign`
+creates or reuses a current-user self-signed Authenticode code-signing
+certificate named `CN=AgentShore Local Dev Code Signing` and uses it for the
+app, provisioner, and setup executable. Add `-TrustSelfSignedCertificate` if the
+local machine should trust that development certificate for verification. Use
+`-SetupSelfSignedCertificateOnly` to provision the certificate without building.
+
+Self-signed builds are for local QA only. They do not establish publisher
+reputation, they do not reduce SmartScreen warnings for public users, and they
+must not be shipped as public releases.
+
 ## 2. macOS Developer ID
 
 Two Developer ID certificates are used:
@@ -129,7 +140,60 @@ path. The provisioner also installs the pinned desktop `bd.exe` under
 `%ProgramData%\AgentShore\bin` and writes install logs under
 `%ProgramData%\AgentShore\install-logs`.
 
-## 7. Secrets Handling
+## 7. Windows Local Self-Signing
+
+Install the Windows SDK first so `signtool.exe` is available. Then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
+  -SelfSign `
+  -TrustSelfSignedCertificate `
+  -SetupSelfSignedCertificateOnly
+```
+
+Build and sign with the local development certificate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
+  -SelfSign `
+  -TrustSelfSignedCertificate
+```
+
+The script creates the certificate in `Cert:\CurrentUser\My` with a non-
+exportable private key, then signs the Tauri app, the provisioner, and the final
+Inno setup executable. With `-TrustSelfSignedCertificate`, it also adds the
+certificate to `Cert:\CurrentUser\Root` so local verification succeeds. With
+`-SetupSelfSignedCertificateOnly`, it exits after certificate setup.
+
+To use a different local-dev subject:
+
+```powershell
+.\scripts\build-windows.ps1 `
+  -SelfSign `
+  -SelfSignedCertificateSubject "CN=AgentShore Dev Build Signing"
+```
+
+To verify the resulting installer:
+
+```powershell
+signtool verify /pa /all /v desktop\dist\AgentShoreSetup-0.2.1-x64.exe
+```
+
+To remove the local trust entry later:
+
+```powershell
+$thumbprint = "<thumbprint shown by build-windows.ps1>"
+Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$thumbprint"
+```
+
+Remove the private-key-bearing certificate only after confirming no local build
+flow still needs it:
+
+```powershell
+Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint"
+```
+
+## 8. Secrets Handling
 
 - Never commit `.p12`, `.pfx`, `.cer`, `.p8`, `.mobileprovision`, or the Tauri
   private updater key.
