@@ -1605,12 +1605,13 @@ def test_is_terminal_event_detects_each_agent_type() -> None:
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
     )
-    assert _is_terminal_event(b'{"event":"completed","response":"ok"}', AgentType.GROK)
-    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GROK)
+    # Grok's real terminal event uses type:"end".
     assert _is_terminal_event(
         b'{"type":"end","stopReason":"EndTurn","sessionId":"grok-session"}',
         AgentType.GROK,
     )
+    # Grok CLI may also use the ``event`` key instead of ``type``.
+    assert _is_terminal_event(b'{"event":"end","stopReason":"EndTurn"}', AgentType.GROK)
 
 
 def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
@@ -1709,12 +1710,25 @@ def test_extract_text_from_gemini_jsonl_handles_whitespace_lines() -> None:
     assert usage.tokens_out == 0
 
 
-def test_extract_text_from_grok_jsonl_handles_nested_events() -> None:
-    raw = (
-        '\n  {"type":"session.started","metadata":{"sessionId":"grok-1"}}  \n'
-        '  {"type":"message","role":"assistant","delta":{"text":"hel"}}  \n'
-        '  {"event":"completed","response":{"content":"hello"},'
-        '"usage":{"prompt_tokens":10,"cached_input_tokens":3,"completion_tokens":4}}  \n'
+def test_extract_text_from_grok_jsonl_real_format_with_usage() -> None:
+    """Narrow parser: text stream + end terminal with Grok-native usage keys."""
+    raw = "\n".join(
+        [
+            json.dumps({"type": "session.started", "metadata": {"sessionId": "grok-1"}}),
+            json.dumps({"type": "text", "data": "hel"}),
+            json.dumps({"type": "text", "data": "lo"}),
+            json.dumps(
+                {
+                    "type": "end",
+                    "stopReason": "EndTurn",
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "cached_input_tokens": 3,
+                        "completion_tokens": 4,
+                    },
+                }
+            ),
+        ]
     )
     text, usage, session_id = _extract_text_from_grok_jsonl(raw)
     assert text == "hello"
@@ -1781,6 +1795,48 @@ def test_extract_text_from_grok_jsonl_keeps_terminal_result_with_non_assistant_r
     text, _, _ = _extract_text_from_grok_jsonl(raw)
 
     assert text == "final answer"
+
+
+def test_extract_text_from_grok_jsonl_result_extraction_succeeds_94() -> None:
+    """Regression: #94 — groom_backlog play emitted agent_json_retry with 'no
+    valid result block found'.  The narrow parser must correctly extract the
+    result JSON from a realistic Grok CLI transcript so that result extraction
+    succeeds on the first attempt."""
+    result_payload = {
+        "schema_version": 1,
+        "success": True,
+        "artifacts": [],
+        "issues_created": [],
+        "requested_mutations": [],
+        "metrics": {},
+        "error": None,
+    }
+    raw = "\n".join(
+        [
+            json.dumps({"type": "session.started", "sessionId": "grok-94-regression"}),
+            json.dumps({"type": "text", "data": "```json\n"}),
+            json.dumps({"type": "text", "data": json.dumps(result_payload)}),
+            json.dumps({"type": "text", "data": "\n```"}),
+            json.dumps(
+                {
+                    "type": "end",
+                    "stopReason": "EndTurn",
+                    "sessionId": "grok-94-regression",
+                    "usage": {"input_tokens": 200, "output_tokens": 50},
+                }
+            ),
+        ]
+    )
+
+    text, usage, session_id = _extract_text_from_grok_jsonl(raw)
+
+    # Result block must be parseable — if this fails the play retries with
+    # agent_json_retry (the #94 symptom).
+    parsed = parse_skill_result(text)
+    assert parsed.success is True
+    assert session_id == "grok-94-regression"
+    assert usage.tokens_in == 200
+    assert usage.tokens_out == 50
 
 
 def test_extract_text_from_stream_json_handles_whitespace_lines() -> None:

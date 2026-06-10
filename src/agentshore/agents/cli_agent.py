@@ -1024,7 +1024,7 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
     AgentType.GEMINI: frozenset({"result"}),
-    AgentType.GROK: frozenset({"result", "done", "completed", "turn.completed", "end"}),
+    AgentType.GROK: frozenset({"end"}),
 }
 
 
@@ -1047,7 +1047,10 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
         return False
     if not isinstance(event, dict):
         return False
-    return event.get("type") in terminal_types or event.get("event") in terminal_types
+    # Grok CLI uses ``event`` (not ``type``) as the event-type key in some output shapes.
+    return event.get("type") in terminal_types or (
+        agent_type == AgentType.GROK and event.get("event") in terminal_types
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1120,18 +1123,12 @@ def _usage_totals_from_dict(
         turn_usage = last_usage
         input_includes_cache = True
 
-    input_tokens = _first_int(
-        usage, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-    )
+    input_tokens = _first_int(usage, "input_tokens")
     cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
         usage.get("cache_read_input_tokens")
     )
-    if cache_read_tokens == 0:
-        cache_read_tokens = _first_int(usage, "cachedContentTokenCount")
     cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(
-        usage, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-    )
+    output_tokens = _first_int(usage, "output_tokens")
     reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
 
     tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
@@ -1245,60 +1242,10 @@ def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | 
 
 
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    session_id: str | None = None
-    usage_totals = _UsageTotals()
-    messages: list[str] = []
-    final_response: str | None = None
+    """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
+    from agentshore.agents.cli_grok import parse_grok_jsonl
 
-    for event in _iter_json_events(raw):
-        session_id = session_id or _extract_gemini_session_id(event)
-
-        usage = _extract_usage_dict(event)
-        if usage is not None:
-            usage_totals = _max_usage(
-                usage_totals,
-                _usage_totals_from_dict(usage, input_includes_cache=True),
-            )
-
-        event_type = str(event.get("type") or event.get("event") or "").lower()
-        if event_type == "text":
-            text = _extract_text_value(event.get("data"))
-            if text:
-                messages.append(text)
-            continue
-        if event_type == "end":
-            continue
-
-        role = event.get("role")
-        message = event.get("message")
-        if role is None and isinstance(message, dict):
-            role = message.get("role")
-        is_terminal = event_type in {"result", "done", "completed", "turn.completed"} or any(
-            key in event for key in ("result", "response", "final", "output")
-        )
-        if (
-            isinstance(role, str)
-            and role.lower() not in {"assistant", "agent", "model"}
-            and not is_terminal
-        ):
-            continue
-
-        text = _extract_text_value(event.get("delta"))
-        if text is None:
-            text = _extract_text_value(event.get("message"))
-        if text is None:
-            text = _extract_text_value(event.get("data"))
-        if text is None:
-            text = _extract_text_value(event)
-        if not text:
-            continue
-
-        if is_terminal:
-            final_response = text
-        else:
-            messages.append(text)
-
-    return (final_response or "".join(messages) or raw), usage_totals, session_id
+    return parse_grok_jsonl(raw)
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
@@ -1334,13 +1281,13 @@ def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
 
 def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
+    for key in ("session_id", "sessionId", "thread_id", "id"):
         value = event.get(key)
         if isinstance(value, str) and value:
             return value
     metadata = event.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
+        for key in ("session_id", "sessionId", "thread_id", "id"):
             value = metadata.get(key)
             if isinstance(value, str) and value:
                 return value
@@ -1356,7 +1303,7 @@ def _extract_text_value(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
 
-    for key in ("text", "content", "response", "result", "final", "output"):
+    for key in ("text", "content", "response", "result"):
         text = _extract_text_value(value.get(key))
         if text:
             return text
