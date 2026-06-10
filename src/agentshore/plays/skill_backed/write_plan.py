@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from agentshore.plays.skill_backed.base import SkillBackedPlay
-from agentshore.plays.skill_backed.gates import CapabilityGate
+from agentshore.plays.skill_backed.gates import CapabilityGate, DependenciesResolvedGate
 from agentshore.state import PlayType
 
 
@@ -12,11 +12,13 @@ class WriteImplementationPlanPlay(SkillBackedPlay):
 
     Candidate validity ("is there an open, uncovered issue to plan?") lives in
     ``EligibilityAuthority._VALIDITY_FNS`` for ``WRITE_IMPLEMENTATION_PLAN`` and
-    is appended by the base ``preconditions`` adapter. This play only declares
-    the capability gate.
+    is appended by the base ``preconditions`` adapter. This play declares the
+    capability gate and the dependency-resolution gate (#96) so issues whose
+    beads task still has unresolved ``blocked_by_ids`` are rejected before an
+    agent is dispatched.
     """
 
-    gates = (CapabilityGate("can_implement"),)
+    gates = (CapabilityGate("can_implement"), DependenciesResolvedGate())
 
     @property
     def play_type(self) -> PlayType:
