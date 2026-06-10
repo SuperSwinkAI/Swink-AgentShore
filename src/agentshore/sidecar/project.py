@@ -218,6 +218,53 @@ def _detected_tools(path: Path) -> list[str]:
     return [tool for marker, tool in _TOOL_MARKERS if (path / marker).exists()]
 
 
+def _parse_yaml_hydration(raw: str) -> dict[str, object]:
+    """Parse *raw* agentshore.yaml text and return a typed hydration dict.
+
+    Uses the real config loader so the desktop never needs its own parser.
+    Returns an empty dict on any parse / validation error so the caller can
+    still surface ``raw`` for diagnostics.
+    """
+    import yaml as _yaml
+
+    from agentshore.config._parsers import _build_config
+    from agentshore.errors import ConfigError
+
+    try:
+        data = _yaml.safe_load(raw)
+    except _yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    try:
+        cfg = _build_config(data)  # type: ignore[arg-type]
+    except (ConfigError, Exception):
+        return {}
+
+    enabled_agents = [
+        agent_type for agent_type, agent_cfg in cfg.agents.items() if agent_cfg.enabled
+    ]
+    identity_logins = list(cfg.identities.keys())
+    trusted_sources = list(cfg.trusted_ids.github_logins)
+    b = cfg.budget
+    return {
+        "target_branch": cfg.project.target_branch,
+        "enabled_agents": enabled_agents,
+        "budget": {
+            "enabled": b.enabled,
+            "total": b.total,
+            "warning_threshold": b.warning_threshold,
+            "time_enabled": b.time_enabled,
+            "time_total_minutes": b.time_total_minutes,
+        },
+        "timelapse_enabled": cfg.timelapse.enabled,
+        "timelapse_installed": cfg.timelapse.installed,
+        "trusted_sources": trusted_sources,
+        "identity_logins": identity_logins,
+        "trusted_issue_enforcement": cfg.trusted_ids.restrict_issues_to_trusted_authors,
+    }
+
+
 def _agentshore_yaml_payload(path: Path) -> dict[str, object] | None:
     yaml_path = path / "agentshore.yaml"
     if not yaml_path.is_file():
@@ -226,7 +273,8 @@ def _agentshore_yaml_payload(path: Path) -> dict[str, object] | None:
         raw = yaml_path.read_text(encoding="utf-8")
     except OSError as exc:
         return {"path": str(yaml_path), "error": str(exc)}
-    return {"path": str(yaml_path), "raw": raw}
+    parsed = _parse_yaml_hydration(raw)
+    return {"path": str(yaml_path), "raw": raw, "parsed": parsed}
 
 
 def _beads_status(path: Path) -> dict[str, object]:

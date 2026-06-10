@@ -51,6 +51,13 @@ vi.mock("../rpc/projectClient", () => ({
   selectProject: selectProjectMock,
   inspectProject: inspectProjectMock,
   setBudget: setBudgetMock,
+  budgetSelectionToConfig: (s: { mode: string; total: number; timeMode?: string; timeMinutes?: number }) => ({
+    enabled: s.mode === "capped",
+    total: s.mode === "capped" ? s.total : 0,
+    time_enabled: s.timeMode === "capped",
+    time_total_minutes: s.timeMode === "capped" ? (s.timeMinutes ?? 0) : 0,
+  }),
+  budgetHydrationToSelection: () => null,
 }));
 
 vi.mock("../services/sessionClient", () => ({
