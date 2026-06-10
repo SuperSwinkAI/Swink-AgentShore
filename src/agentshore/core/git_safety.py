@@ -283,17 +283,13 @@ def _resolve_signing_key() -> str:
     """
     import pathlib
 
-    try:
-        result = subprocess.run(
-            ["git", "config", "--global", "--get", "gpg.ssh.signingKey"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    # Use the hardened git_sync wrapper (stdin=DEVNULL, CREATE_NO_WINDOW) rather
+    # than raw subprocess.run. In the desktop sidecar, the process's stdin is the
+    # live Tauri JSON-RPC pipe; git's MSYS2 runtime probes stdin on startup and
+    # wedges at 0 CPU forever when it inherits that pipe.
+    result = command.git_sync("config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5)
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
 
     ssh_dir = pathlib.Path.home() / ".ssh"
     for name in ("id_ed25519", "id_ecdsa", "id_rsa"):
