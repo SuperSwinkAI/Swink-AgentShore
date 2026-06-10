@@ -11,22 +11,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
+from agentshore import subprocess_env
 from agentshore.agents import cli_grok
-from agentshore.agents.cli_process import (
-    feed_prompt_stdin as _feed_prompt_stdin,
-)
-from agentshore.agents.cli_process import (
-    kill_process_windows as _kill_process_windows_impl,
-)
-from agentshore.agents.cli_process import (
-    no_window_creationflags as _no_window_creationflags,
-)
-from agentshore.agents.cli_process import (
-    prompt_on_stdin as _prompt_on_stdin,
-)
-from agentshore.agents.cli_process import (
-    resolve_executable as _resolve_executable,
-)
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
@@ -52,6 +38,53 @@ _DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
 _LINE_DRIFT_WARN_BYTES = 1_048_576  # warn once if any single line exceeds 1MB
 _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from skill+params
+
+
+# ---------------------------------------------------------------------------
+# Inline helpers (migrated from agents/cli_process.py, #107)
+# ---------------------------------------------------------------------------
+
+
+def _prompt_on_stdin(python_executable: str | None) -> bool:
+    """Return True when Windows npm shims should receive the prompt over stdin."""
+    import sys
+
+    return python_executable is None and sys.platform == "win32"
+
+
+def _resolve_executable(argv: list[str]) -> list[str]:
+    """On Windows resolve argv[0] to its full path so .cmd/.bat shims run.
+
+    ``subprocess_env.resolve_tool`` is for known tools (git/gh); here we need
+    the same PATHEXT-aware which() for arbitrary agent CLI names (claude.cmd,
+    codex.cmd, gemini.cmd) that are npm shims on Windows.
+    """
+    import os
+    import shutil
+    import sys
+
+    if sys.platform != "win32" or not argv or os.path.isabs(argv[0]):
+        return argv
+    resolved = shutil.which(argv[0])
+    if resolved is None:
+        return argv
+    return [resolved, *argv[1:]]
+
+
+async def _feed_prompt_stdin(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write *prompt* to the child's stdin and close it."""
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
+
 
 # YOLO permission flags applied by default per agent type. AgentShore is an
 # autonomous orchestrator — agents can't pause for human approval on each
@@ -747,7 +780,7 @@ async def dispatch_cli(
         cwd=str(effective_cwd),
         limit=cfg.line_limit_bytes,
         start_new_session=True,
-        creationflags=_no_window_creationflags(),
+        creationflags=subprocess_env.no_window_creationflags(),
         env=env,
     )
     handle.process = proc
@@ -1418,13 +1451,24 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
         # Windows: no process groups. ``start_new_session=True`` is a no-op
         # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
         # absent entirely. Tear the tree down by PID via taskkill instead.
-        await _kill_process_windows_impl(
-            proc,
-            agent_id,
-            sigkill_grace=float(_SIGKILL_GRACE),
-            logger=_logger,
-            close_transport=_close_process_transport,
-        )
+        if proc.pid is None:
+            _close_process_transport(proc)
+            return
+        subprocess_env.kill_tree_sync(proc.pid)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+        except TimeoutError:
+            _logger.warning("sending_sigkill", agent_id=agent_id)
+            subprocess_env.kill_tree_sync(proc.pid)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+        if proc.returncode is None:
+            _logger.warning(
+                "taskkill_failed",
+                agent_id=agent_id,
+                pid=proc.pid,
+            )
+        _close_process_transport(proc)
         return
     try:
         pgid = os.getpgid(proc.pid)

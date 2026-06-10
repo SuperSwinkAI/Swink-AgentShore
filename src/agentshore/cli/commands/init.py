@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import click
 
-from agentshore import cli_helpers
+from agentshore import cli_helpers, command
 from agentshore.cli.agent_select import (
     _interactive_agent_select,
     _load_config_for_agent_setup,
@@ -49,39 +48,23 @@ def _detect_default_target_branch(project_path: Path) -> str | None:
     sensible is available (e.g., not a git repo).
     """
     # 1. origin/HEAD — what GitHub treats as the default branch.
-    try:
-        result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-            cwd=str(project_path),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            ref = result.stdout.strip()
-            prefix = "refs/remotes/origin/"
-            if ref.startswith(prefix):
-                return ref[len(prefix) :] or None
-    except (OSError, subprocess.SubprocessError):
-        pass
+    result = command.git_sync(
+        "symbolic-ref", "refs/remotes/origin/HEAD", cwd=project_path, timeout_seconds=5.0
+    )
+    if result.returncode == 0:
+        ref = result.stdout.strip()
+        prefix = "refs/remotes/origin/"
+        if ref.startswith(prefix):
+            return ref[len(prefix) :] or None
 
     # 2. Currently-checked-out branch.
-    try:
-        result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(project_path),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            name = result.stdout.strip()
-            if name and name != "HEAD":
-                return name
-    except (OSError, subprocess.SubprocessError):
-        pass
+    result = command.git_sync(
+        "rev-parse", "--abbrev-ref", "HEAD", cwd=project_path, timeout_seconds=5.0
+    )
+    if result.returncode == 0:
+        name = result.stdout.strip()
+        if name and name != "HEAD":
+            return name
 
     return None
 

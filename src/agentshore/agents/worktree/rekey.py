@@ -9,16 +9,14 @@ plays touching the same branch share the worktree.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore import command
 from agentshore.agents.worktree.allocator import (
-    WorktreeAllocationFailed,
-    _run_git,
     remove_worktree,
     worktree_target_path,
 )
@@ -43,24 +41,16 @@ async def detect_branch_in_worktree(worktree_path: Path) -> str | None:
     """
     if not worktree_path.exists():
         return None
-    # stdin=DEVNULL: a git child must never inherit the sidecar's stdin (the live
-    # Tauri JSON-RPC pipe) -- Git-for-Windows' MSYS2 runtime wedges at 0 CPU
-    # probing that contended pipe.
-    proc = await asyncio.create_subprocess_exec(
-        "git",
+    result = await command.git(
         "symbolic-ref",
         "--quiet",
         "--short",
         "HEAD",
-        cwd=str(worktree_path),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        cwd=worktree_path,
     )
-    stdout_b, _ = await proc.communicate()
-    if proc.returncode != 0:
+    if result.returncode != 0:
         return None
-    branch = stdout_b.decode("utf-8", errors="replace").strip()
+    branch = result.stdout.strip()
     return branch or None
 
 
@@ -210,13 +200,12 @@ async def _repair_git_worktree_metadata(*, main_repo: Path, reason: str) -> None
     fails — git's metadata at ``.git/worktrees/<old-key>/`` still points
     at the pre-move path until repair updates it. Best-effort.
     """
-    try:
-        await _run_git("worktree", "repair", cwd=main_repo, check=False)
-    except WorktreeAllocationFailed as exc:
+    result = await command.git("worktree", "repair", cwd=main_repo)
+    if result.returncode != 0:
         log.warning(
             "worktree_rekey_git_repair_failed",
             reason=reason,
-            error=str(exc),
+            error=result.stderr.strip()[:200],
         )
         return
     log.warning("worktree_rekey_git_repair_ran", reason=reason)
