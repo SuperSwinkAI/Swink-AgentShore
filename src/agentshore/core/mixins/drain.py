@@ -155,15 +155,10 @@ class DrainController:
 
         mergeable = build_candidate_plan(state).work_availability.mergeable_pr_count
         if mergeable > 0:
-            _logger.error(
+            _logger.info(
                 "drain_complete_with_mergeable_prs",
                 session_id=self._session_id,
                 mergeable_pr_count=mergeable,
-                note=(
-                    "session draining to completion while merge-ready PRs remain "
-                    "unmerged — finished work abandoned; the auto-stop entry guard "
-                    "should have prevented this drain"
-                ),
             )
 
     def request_stop(self, reason: str = "stop_requested") -> None:
