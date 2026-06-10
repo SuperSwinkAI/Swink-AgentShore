@@ -257,7 +257,7 @@ async def _close_project_handles(state: ServerState) -> None:
         await store.close()
 
 
-def _finalize_project_select(
+async def _finalize_project_select(
     resolved: str,
     state: ServerState,
     req_id: int | str | None,
@@ -275,7 +275,7 @@ def _finalize_project_select(
     if not include_inspect:
         return _result(req_id, {"path": resolved})
     try:
-        inspect_result = project_rpc.inspect()
+        inspect_result = await project_rpc.inspect()
     except project_rpc.ProjectError as exc:
         return _error(req_id, exc.code, str(exc))
     return _result(req_id, {"path": resolved, "inspect": inspect_result})
@@ -322,7 +322,7 @@ def _dispatch_project_select(
 
         async def _switch_with_close() -> JsonRpcResponse:
             await _close_project_handles(state)
-            return _finalize_project_select(
+            return await _finalize_project_select(
                 resolved,
                 state,
                 req_id,
@@ -830,6 +830,28 @@ def _dispatch_project_rpc(
         return _dispatch_project_select(raw_params, state, req_id)
     if method == "project.install_timelapse":
         return _dispatch_install_timelapse(req_id)
+
+    # project.inspect and project.branches are async coroutines — wrap them so
+    # ProjectError / _ParamError raised during await is handled consistently.
+    if method in ("project.inspect", "project.branches"):
+
+        async def _run_async_project() -> JsonRpcResponse:
+            try:
+                coro = _dispatch_project(method, raw_params, state)
+                result = await coro  # type: ignore[misc]
+            except _ParamError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+            except project_rpc.ProjectError as exc:
+                if (
+                    method in _PROJECT_NO_ACTIVE_REMAP
+                    and exc.code == project_rpc.ERR_PROJECT_NOT_ACTIVE
+                ):
+                    return _error(req_id, ERR_NO_ACTIVE_PROJECT, str(exc))
+                return _error(req_id, exc.code, str(exc))
+            return _result(req_id, result)
+
+        return _run_async_project()
+
     try:
         result = _dispatch_project(method, raw_params, state)
         if method == "project.deselect":
@@ -1430,6 +1452,10 @@ async def _serve_async(
                 _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
                 emitted = True
             raise
+        except Exception as exc:  # noqa: BLE001 — real failures → INTERNAL_ERROR, not -32800
+            if req_id not in cancelled_ids:
+                _emit(_error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"))
+                emitted = True
         finally:
             if not emitted and req_id not in cancelled_ids:
                 _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
