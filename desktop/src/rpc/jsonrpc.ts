@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+// Single source of truth for RPC method timeout classes.
+// The Rust supervisor (sidecar.rs:response_timeout_for_method) reads the same
+// file via include_str! — do not edit method lists here; edit
+// desktop/rpc-method-classes.json instead.
+import methodClasses from "../../rpc-method-classes.json";
 
 export interface JsonRpcErrorPayload {
   code: number;
@@ -16,31 +21,15 @@ export const RPC_CLIENT_TIMEOUT_CODE = -32001;
  * bridge itself never returns (so the screen shows a clear error instead of an
  * infinite spinner). Long-running lifecycle calls are uncapped — they report
  * progress via ``$/progress`` and have their own overlay/timeout handling.
+ *
+ * Method lists are read from desktop/rpc-method-classes.json (single source of
+ * truth shared with the Rust supervisor).
  */
 const SETUP_TIMEOUT_MS = 35_000; // Rust SETUP_RESPONSE_TIMEOUT is 30s.
 const DEFAULT_TIMEOUT_MS = 130_000; // Rust RESPONSE_TIMEOUT is 120s.
 
-// Mirrors the SETUP bucket in desktop/src-tauri/src/sidecar.rs:response_timeout_for_method.
-const SETUP_METHODS: ReadonlySet<string> = new Set([
-  "project.select",
-  "project.inspect",
-  "recents.list",
-  "recents.touch",
-  "recents.remove",
-  "config.read",
-  "agents.catalog",
-  "identities.list_trusted",
-  "identities.check_keychain",
-  "identities.check_access",
-]);
-
-// Uncapped on the frontend: these legitimately outlive any setup probe and are
-// driven by streamed progress + the session-starting overlay, not a spinner.
-const UNCAPPED_METHODS: ReadonlySet<string> = new Set([
-  "session.start",
-  "session.stop",
-  "project.install_timelapse",
-]);
+const SETUP_METHODS: ReadonlySet<string> = new Set(methodClasses.setup);
+const UNCAPPED_METHODS: ReadonlySet<string> = new Set(methodClasses.uncapped);
 
 function timeoutForMethod(method: string): number | null {
   if (UNCAPPED_METHODS.has(method)) return null;
@@ -58,7 +47,7 @@ class RpcTimeout extends Error {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, method: string, ms: number): Promise<T> {
+export async function withTimeout<T>(promise: Promise<T>, method: string, ms: number): Promise<T> {
   const started = Date.now();
   let handle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {

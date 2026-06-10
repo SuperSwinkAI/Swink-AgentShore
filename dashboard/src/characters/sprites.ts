@@ -336,7 +336,32 @@ function drawSpriteCharacter(
     bounds.footY + 2,
     zoom,
   );
-  drawBubble(ctx, char.bubble, sx + w / 2, sy - bob - 8 * zoom, zoom);
+  ctx.restore();
+}
+
+export function drawCharacterBubble(
+  ctx: CanvasRenderingContext2D,
+  char: Character,
+  zoom: number,
+  camera: Camera,
+): void {
+  if (char.npcKind || !char.bubble) return;
+
+  const bounds = characterScreenBounds(char, zoom, camera);
+  const bob =
+    char.state === CharacterState.WALK
+      ? Math.sin(char.animFrame * Math.PI) * 2 * zoom
+      : 0;
+
+  ctx.save();
+  ctx.globalAlpha = char.opacity;
+  drawBubble(
+    ctx,
+    char.bubble,
+    bounds.left + bounds.width / 2,
+    bounds.top - bob - 8 * zoom,
+    zoom,
+  );
   ctx.restore();
 }
 
@@ -416,7 +441,6 @@ function drawPlaceholderAgentCharacter(
     bounds.footY + 2,
     zoom,
   );
-  drawBubble(ctx, char.bubble, sx + w / 2, sy - bob - 8 * zoom, zoom);
   ctx.restore();
 }
 
