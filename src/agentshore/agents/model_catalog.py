@@ -12,7 +12,7 @@ _logger = structlog.get_logger(__name__)
 
 type ModelExtractor = Callable[[Mapping[str, object]], list[str]]
 
-# Curated baseline — known models shipped with each release.
+# Curated baseline - known models shipped with each release.
 # Keys match AgentType values used as agent_key throughout the wizard.
 KNOWN_MODELS: dict[str, list[str]] = {
     "claude_code": [
@@ -27,6 +27,8 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-opus-4-5",
         "claude-opus-4-7",
         "claude-opus-4-8",
+        # Most capable widely released Claude model; opt-in due to cost.
+        "claude-fable-5",
     ],
     "codex": [
         # ChatGPT-account-compatible line (also works with API-key auth).
@@ -34,12 +36,7 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gpt-5.2",
-        # API-key-only coding model. Kept selectable for users on API-key
-        # auth, but it is NOT a default tier — ChatGPT-account sign-in rejects
-        # it with HTTP 400 ("not supported when using Codex with a ChatGPT
-        # account").
-        "gpt-5.3-codex",
+        "gpt-5.4-nano",
     ],
     "gemini": [
         # Gemini CLI aliases. Keep these first so the setup wizard can use
@@ -56,6 +53,7 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro-preview",
         "gemini-3.1-pro-preview-customtools",
         "gemini-3-flash-preview",
+        "gemini-3-flash",
         "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
@@ -63,6 +61,7 @@ KNOWN_MODELS: dict[str, list[str]] = {
     "grok": [
         "grok-build",
         "grok-build-0.1",
+        "grok-4.3",
         "grok-code-fast-1",
         "grok-code-fast",
         "grok-code-fast-1-0825",

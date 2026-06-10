@@ -167,6 +167,7 @@ def test_agents_catalog_includes_grok_defaults() -> None:
     assert isinstance(defaults, dict)
     assert "grok-build" in models["grok"]
     assert "grok-build-0.1" in models["grok"]
+    assert "grok-4.3" in models["grok"]
     assert defaults["grok"]["small"] == {
         "model": "grok-build",
         "reasoning_effort": "low",
@@ -215,7 +216,7 @@ def test_configure_agent_rejects_invalid_tier(tmp_path: Path) -> None:
 def test_rpc_agents_list_requires_no_params() -> None:
     response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.list"})
     assert response is not None
-    # Without a configured cwd this returns [] — the call itself must succeed.
+    # Without a configured cwd this returns [] - the call itself must succeed.
     assert "error" not in response
 
 
@@ -255,7 +256,7 @@ def test_rpc_agents_configure_rejects_unknown_agent_type() -> None:
 
 
 def test_get_spawn_limits_returns_default_when_unset(tmp_path: Path) -> None:
-    """No agentshore.yaml → defaults to max_per_config=2 (the desktop-ty04 default)."""
+    """No agentshore.yaml -> defaults to max_per_config=2 (the desktop-ty04 default)."""
     result = get_spawn_limits(tmp_path)
     assert result == {"max_per_config": 2}
 
@@ -299,7 +300,7 @@ def test_set_spawn_limits_rejects_out_of_range(tmp_path: Path) -> None:
 def test_rpc_agents_get_spawn_limits_returns_default() -> None:
     response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.get_spawn_limits"})
     assert response is not None
-    # Without a configured project, defaults — the call itself must succeed.
+    # Without a configured project, defaults - the call itself must succeed.
     assert "error" not in response
     assert response["result"]["max_per_config"] == 2
 
