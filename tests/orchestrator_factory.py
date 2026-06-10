@@ -82,7 +82,6 @@ def make_test_orchestrator(
     orch._end_session_report_open_browser = False
     orch._embedded_mode = False
     orch._esr_ready_callback = None
-    orch._extra_budget = 0.0
     orch._stop_reason = "unknown"
     orch._exit_stack = MagicMock()
     orch._health = None
@@ -108,7 +107,6 @@ def make_test_orchestrator(
     orch._last_play_id = None
     orch._velocity = VelocityTracker(velocity_window_size=50)
     orch._recent_play_outcomes = collections.deque(maxlen=50)
-    orch._budget_override = False
     orch._budget_override_enabled = None
     orch._budget_override_total = None
     orch._time_override_enabled = None

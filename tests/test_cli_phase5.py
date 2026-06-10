@@ -941,39 +941,6 @@ def test_dashboard_ipc_host_requires_ipc_port(runner: CliRunner, tmp_path: Path)
 
 
 @pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_bad_string_logs_warning() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock()
-    # Should not raise
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": "abc"}, orch)
-    orch.adjust_budget.assert_not_called()
-
-
-@pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_resumes_budget_pause() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock(return_value=True)
-    orch.resume = AsyncMock()
-
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": 5.0}, orch)
-
-    orch.adjust_budget.assert_called_once_with(5.0)
-    orch.resume.assert_awaited_once()
-
-
-@pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_does_not_resume_when_not_needed() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock(return_value=False)
-    orch.resume = AsyncMock()
-
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": 5.0}, orch)
-
-    orch.adjust_budget.assert_called_once_with(5.0)
-    orch.resume.assert_not_awaited()
-
-
-@pytest.mark.asyncio()
 async def test_dispatch_verification_response_uses_passed_field() -> None:
     orch = MagicMock()
     orch.resume = AsyncMock()
