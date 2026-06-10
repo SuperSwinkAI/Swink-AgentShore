@@ -207,6 +207,8 @@ async def _dispatch_command(
     # "start" is accepted by the validator (so connecting clients can send it)
     # but is a no-op at dispatch time — the orchestrator is already running by
     # the time IPC commands are processed.
+    elif command == "reload_config":
+        await orch.reload_config()
     elif command == "start":
         _logger.info("ipc.start_received_noop", message="Orchestrator already running")
 

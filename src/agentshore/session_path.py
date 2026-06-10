@@ -670,6 +670,44 @@ def request_drain(
         return "error"
 
 
+def request_reload_config(project_path: Path) -> str:
+    """Send a reload_config request to the running orchestrator over IPC.
+
+    Instructs the orchestrator to re-read ``agentshore.yaml`` and apply the
+    updated configuration atomically.  This is the cross-platform equivalent of
+    ``kill -HUP`` for callers on Windows where SIGHUP does not exist.
+
+    Returns a status string: ``"sent"``, ``"timeout"``, ``"error"``, or
+    ``"fallback_hard"`` (no IPC endpoint found).
+    """
+    import json as _json
+    import socket as _socket
+
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return "fallback_hard"
+
+    try:
+        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            if endpoint.kind == "unix":
+                if endpoint.path is None:
+                    return "fallback_hard"
+                sock.connect(str(endpoint.path))
+            else:
+                sock.connect((endpoint.host, endpoint.port))
+            cmd = {"command": "reload_config"}
+            encoded = _json.dumps(cmd) + "\n"
+            sock.sendall(encoded.encode())
+        return "sent"
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
+
+
+
 def request_add_budget(
     project_path: Path,
     *,
