@@ -79,14 +79,10 @@ def _parse_duration_core(text: str, *, min_minutes: int | None, max_minutes: int
     unit = match.group(2).lower()
     minutes_f = value * 60.0 if unit == "h" else value
     minutes = int(round(minutes_f))
-    if min_minutes is not None and minutes < min_minutes:
+    if (min_minutes is not None and minutes < min_minutes) or minutes > max_minutes:
         raise ValueError(
             f"time budget must be between {min_minutes} and "
-            f"{max_minutes} minutes (1h–72h), got {minutes} minutes"
-        )
-    if minutes > max_minutes:
-        raise ValueError(
-            f"time budget must be at most {max_minutes} minutes, got {minutes} minutes"
+            f"{max_minutes} minutes, got {minutes} minutes"
         )
     if minutes <= 0:
         raise ValueError(f"time delta must be a positive number of minutes, got {minutes}")
@@ -153,9 +149,7 @@ def parse_budget_raw(raw: dict[str, object]) -> BudgetConfig:
     if not enabled and total < 0:
         raise ConfigError(f"budget.total must be non-negative, got {total!r}")
     if not isinstance(warning, int | float) or not (0.0 <= warning <= 1.0):
-        raise ConfigError(
-            f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}"
-        )
+        raise ConfigError(f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}")
     time_enabled = raw.get("time_enabled", False)
     time_total_minutes = raw.get("time_total_minutes", 0)
     if not isinstance(time_enabled, bool):
@@ -227,9 +221,11 @@ def validate_budget_payload(
     enabled = payload["enabled"]
     if not isinstance(enabled, bool):
         _raise("budget.enabled must be a boolean")
-    if "total" not in payload:
-        _raise("budget.total is required")
-    total_raw = payload["total"]
+    # ``total`` is required when enabled; optional (defaults to 0.0) when disabled
+    # so that ``{"enabled": false}`` is a valid payload for the live-session RPC.
+    if "total" not in payload and enabled:
+        _raise("budget.total is required when budget.enabled is true")
+    total_raw = payload.get("total", 0)
     if isinstance(total_raw, bool) or not isinstance(total_raw, (int, float)):
         _raise("budget.total must be a number")
         return BudgetConfig()  # unreachable
@@ -248,7 +244,7 @@ def validate_budget_payload(
         threshold_raw = payload["warning_threshold"]
         if isinstance(threshold_raw, bool) or not isinstance(threshold_raw, (int, float)):
             _raise("budget.warning_threshold must be a number")
-        threshold = float(threshold_raw)  # type: ignore[arg-type]
+        threshold = float(threshold_raw)
         if not math.isfinite(threshold):
             _raise("budget.warning_threshold must be finite")
         if threshold < 0 or threshold > 1:

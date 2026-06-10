@@ -205,15 +205,20 @@ function describeBudget(b: BudgetSnapshot): {
   const spent = b.spent;
   const total = b.total_budget;
   const dollarCapped = b.enabled && total !== null && b.remaining !== null;
-  const timeCapped =
-    b.time_enabled &&
-    b.time_total_minutes !== null &&
-    b.time_remaining_minutes !== null;
+
+  // Narrow time fields to non-null so arithmetic below type-checks without casts.
+  const timeTotalMinutes =
+    b.time_enabled && b.time_total_minutes !== null ? b.time_total_minutes : null;
+  const timeRemainingMinutes =
+    timeTotalMinutes !== null && b.time_remaining_minutes !== null
+      ? b.time_remaining_minutes
+      : null;
+  const timeCapped = timeRemainingMinutes !== null;
 
   const dollarPct = dollarCapped && total ? (spent / total) * 100 : 0;
   const timePct =
-    timeCapped && b.time_total_minutes
-      ? ((b.time_total_minutes - b.time_remaining_minutes) / b.time_total_minutes) * 100
+    timeCapped && timeTotalMinutes
+      ? ((timeTotalMinutes - timeRemainingMinutes) / timeTotalMinutes) * 100
       : 0;
 
   const dollarLabel = dollarCapped
@@ -222,7 +227,7 @@ function describeBudget(b: BudgetSnapshot): {
   // Right segment: remaining time when capped; "∞" only when nothing is
   // capped at all (a dollar-only run leaves the right side empty).
   const timeLabel = timeCapped
-    ? `${formatRemainingTime(b.time_remaining_minutes)} left`
+    ? `${formatRemainingTime(timeRemainingMinutes)} left`
     : !dollarCapped
       ? "∞"
       : "";
