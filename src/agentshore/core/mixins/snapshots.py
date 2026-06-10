@@ -374,10 +374,9 @@ class SnapshotProjector:
         total_cost: float,
         *,
         budget_cfg: BudgetConfig,
-        extra_budget: float,
         elapsed_minutes: float,
     ) -> BudgetSnapshot:
-        total_budget = budget_cfg.total + extra_budget
+        total_budget = budget_cfg.total
         remaining = max(0.0, total_budget - total_cost) if budget_cfg.enabled else float("inf")
         time_total: float | None = None
         time_elapsed: float | None = None

@@ -88,7 +88,7 @@ def test_validate_pause_no_extras_needed() -> None:
 
 
 def test_valid_commands_has_expected_entries() -> None:
-    assert len(VALID_COMMANDS) == 16
+    assert len(VALID_COMMANDS) == 15
 
 
 def test_get_state_is_valid_command() -> None:
@@ -108,37 +108,6 @@ def test_roundtrip_parse_and_validate() -> None:
     validate_command(cmd)  # must not raise
     assert cmd["action"] == "continue"
     assert cmd["params"] == {"note": "looks good"}
-
-
-# ---------------------------------------------------------------------------
-# adjust_budget numeric validation tests
-# ---------------------------------------------------------------------------
-
-
-def test_adjust_budget_rejects_non_numeric_string() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": "abc"})
-
-
-def test_adjust_budget_rejects_nan() -> None:
-    import math
-
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": math.nan})
-
-
-def test_adjust_budget_rejects_zero() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": 0})
-
-
-def test_adjust_budget_rejects_negative() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": -1})
-
-
-def test_adjust_budget_accepts_positive_float() -> None:
-    validate_command({"command": "adjust_budget", "delta_usd": 5.0})  # must not raise
 
 
 # ---------------------------------------------------------------------------

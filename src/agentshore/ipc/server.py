@@ -51,9 +51,11 @@ class IpcServer:
 
     Each connected client may send NDJSON command lines (one per line).
     Parsed + validated commands land on :attr:`command_queue`; the
-    orchestrator consumes them. Outbound traffic is limited to error
-    responses for malformed commands — there is no streaming push from
-    the server.
+    orchestrator consumes them. For ``add_budget`` the server awaits a reply
+    from the orchestrator before answering the client — the dispatcher calls
+    :meth:`post_reply` with the correlation ID embedded in the command.
+    Outbound traffic is otherwise limited to error responses for malformed
+    commands and ``get_state`` snapshots.
     """
 
     def __init__(self, endpoint: IpcEndpoint | str | Path) -> None:
@@ -65,6 +67,10 @@ class IpcServer:
         self._command_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self._client_count = 0
         self._cached_state: str | None = None
+        # Per-command reply futures keyed by ``_reply_id``.  ``add_budget``
+        # embeds a reply-id in the command dict; the dispatcher resolves or
+        # rejects the future so the client connection can write the result.
+        self._reply_futures: dict[str, asyncio.Future[dict[str, object]]] = {}
 
     def set_cached_state(self, message: str) -> None:
         """Cache the latest serialized ``state_update`` envelope for ``get_state``.
@@ -76,6 +82,22 @@ class IpcServer:
         single appended ``\\n`` and produce a valid NDJSON line.
         """
         self._cached_state = message.rstrip("\n")
+
+    def post_reply(self, reply_id: str, result: dict[str, object] | Exception) -> None:
+        """Resolve (or reject) the reply future for a pending ``add_budget`` command.
+
+        Called by the orchestrator dispatcher after processing the command.
+        If *result* is an ``Exception`` the future is set to the exception so
+        the client receives an error line.  Silently ignores unknown IDs (the
+        connection may have closed before the dispatcher ran).
+        """
+        fut = self._reply_futures.pop(reply_id, None)
+        if fut is None or fut.done():
+            return
+        if isinstance(result, Exception):
+            fut.set_exception(result)
+        else:
+            fut.set_result(result)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -192,6 +214,8 @@ class IpcServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle a single client connection — read commands, enqueue them."""
+        import uuid as _uuid
+
         self._client_count += 1
         await _logger.ainfo("ipc.client_connected")
 
@@ -231,6 +255,33 @@ class IpcServer:
                             writer.write((cached + "\n").encode("utf-8"))
                             await writer.drain()
                         except (ConnectionError, OSError):
+                            break
+                    continue
+
+                if cmd.get("command") == "add_budget":
+                    # ``add_budget`` is synchronous from the client's perspective:
+                    # the orchestrator processes it, then the reply is written back
+                    # on this connection.  Embed a reply-id so the dispatcher can
+                    # route the result back here via post_reply().
+                    reply_id = str(_uuid.uuid4())
+                    cmd["_reply_id"] = reply_id
+                    loop = asyncio.get_running_loop()
+                    fut: asyncio.Future[dict[str, object]] = loop.create_future()
+                    self._reply_futures[reply_id] = fut
+                    await self._command_queue.put(cmd)
+                    try:
+                        result = await asyncio.wait_for(asyncio.shield(fut), timeout=10.0)
+                        if not await _write_line(writer, {"type": "add_budget_ok", **result}):
+                            break
+                    except TimeoutError:
+                        self._reply_futures.pop(reply_id, None)
+                        if not await _write_line(
+                            writer, {"type": "error", "error": "add_budget timed out"}
+                        ):
+                            break
+                    except Exception as exc:
+                        self._reply_futures.pop(reply_id, None)
+                        if not await _write_line(writer, {"type": "error", "error": str(exc)}):
                             break
                     continue
 

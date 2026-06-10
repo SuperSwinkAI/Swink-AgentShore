@@ -82,7 +82,6 @@ class _OrchestratorBase:
     _end_session_dispatch_started: bool = False
     _natural_exit_reason: str | None = None
     _natural_exit_callback: NaturalExitCallback | None = None
-    _extra_budget: float = 0.0
     # Monotonic timestamp of the most recent _refresh_issues call.  Class-level
     # default is float('inf') so tests that bypass __init__ via Orchestrator.__new__
     # never trigger a periodic refresh.  __init__ resets it to 0.0 and bootstrap
@@ -159,10 +158,9 @@ class _OrchestratorBase:
     # every skip category (masked + no_target + staffing) so the LoopProgressMonitor
     # can see an alternating no_target/masked spin the masked-only rate misses.
     _recent_play_outcomes: collections.deque[tuple[bool, str]]
-    _budget_override: bool
-    # Live budget-cap overrides applied mid-session (Feature B, #41/#42). Each is
-    # ``None`` until a live control RPC/command sets it, in which case it shadows
-    # the corresponding ``_cfg.budget`` field without mutating the frozen config.
+    # Live budget-cap overrides applied mid-session. Each is ``None`` until a
+    # live control RPC/command sets it, in which case it shadows the
+    # corresponding ``_cfg.budget`` field without mutating the frozen config.
     # ``effective_budget_caps`` resolves overrides → cfg as the single source of
     # truth read by the snapshot builder and the time hard-stop.
     # Class-level ``None`` defaults so __new__-bypass test stubs (which skip
@@ -274,7 +272,6 @@ class _OrchestratorBase:
         self._embedded_mode = False
         self._esr_ready_callback = None
         self._log_path = None
-        self._extra_budget = 0.0
         self._stop_reason = "unknown"
         self._health = None
         self._integrity: IntegrityMonitor | None = None
@@ -315,9 +312,6 @@ class _OrchestratorBase:
         self._velocity = VelocityTracker(velocity_window_size=cfg.rl.velocity_window_size)
         # All-category no-op window for the LoopProgressMonitor (see annotation).
         self._recent_play_outcomes = collections.deque(maxlen=50)
-        # Retained for IPC compatibility with older feedback responses. Budget
-        # reserve drain itself is not bypassable once reached.
-        self._budget_override = False
         # Live mid-session cap overrides (None ⇒ fall through to _cfg.budget).
         self._budget_override_enabled = None
         self._budget_override_total = None
@@ -351,9 +345,9 @@ class _OrchestratorBase:
         # completion path mutates them; state.py reads recovery_exhausted_agent_ids.
         self._recovery = RecoveryTracker()
         # Record/history → snapshot projection + trajectory math. Holds stable
-        # refs (manager/store/session_id); reload-mutable cfg/extra_budget are
-        # passed per-call to build_budget_snapshot and safe_call is passed
-        # per-call to record_trajectory_snapshot (Lesson L2a).
+        # refs (manager/store/session_id); reload-mutable cfg is passed per-call
+        # to build_budget_snapshot and safe_call is passed per-call to
+        # record_trajectory_snapshot (Lesson L2a).
         self._snapshots = SnapshotProjector(manager=manager, store=store, session_id=session_id)
         # DB reads + live handles → OrchestratorState. Stable services/
         # collaborators captured via the constructor; orchestrator runtime/
@@ -504,11 +498,11 @@ class _OrchestratorBase:
     def effective_budget_caps(self) -> BudgetConfig:
         """Resolve the live-effective budget caps (overrides shadowing ``_cfg``).
 
-        Single source of truth for the *base* caps (before ``_extra_budget`` is
-        added by the snapshot builder). A live ``set_budget``/``add_*`` call sets
-        the override fields; until then each falls through to ``_cfg.budget``.
-        Returns a fresh frozen ``BudgetConfig`` so the config-immutability
-        invariant is preserved (no in-place mutation of ``_cfg``).
+        Single source of truth for the live caps. A ``set_budget``/``add_budget``
+        call sets the override fields; until then each falls through to
+        ``_cfg.budget``. Returns a fresh frozen ``BudgetConfig`` so the
+        config-immutability invariant is preserved (no in-place mutation of
+        ``_cfg``).
         """
         b = self._cfg.budget
         return BudgetConfig(
@@ -610,3 +604,13 @@ class _OrchestratorBase:
         Referenced by ``DrainController`` teardown via the ``_DrainHost`` Protocol.
         """
         self._loop.stop_loop_liveness_watchdog()
+
+    async def resume(self) -> None:
+        """Forward to :meth:`LifecycleController.resume`.
+
+        Referenced by ``DrainController._rearm_after_budget_change`` via the
+        ``_DrainHost`` Protocol so budget-pause and drain-reversal resume routes
+        through the single canonical lifecycle path (DB update, cadence reset,
+        ``session_resumed`` event).
+        """
+        await self._lifecycle.resume()

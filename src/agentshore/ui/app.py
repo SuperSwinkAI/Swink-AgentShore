@@ -312,12 +312,9 @@ class OrchestratorApp(App[None]):
                     delta = float(result.split(":", 1)[1])
                 except ValueError:
                     delta = 0.0
-                should_resume = False
                 if delta > 0:
-                    should_resume = self._orch.adjust_budget(delta)
-                if should_resume:
                     self._paused = False
-                    self.run_worker(self._orch.resume())
+                    self.run_worker(self._orch.add_budget(delta_usd=delta))
             else:
                 # Dismissed without action — leave session paused
                 self._paused = False

@@ -30,7 +30,6 @@ def _make_orch() -> Orchestrator:
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
     orch._pause_reason = None
-    orch._extra_budget = 0.0
     orch._in_flight = {}
     orch._stop_requested = False
     orch._draining = False

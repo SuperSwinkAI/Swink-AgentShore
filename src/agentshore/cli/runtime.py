@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from agentshore.config import RuntimeConfig
     from agentshore.config.models import BudgetConfig
     from agentshore.core import Orchestrator
+    from agentshore.ipc import IpcServer
 
 _logger = structlog.get_logger("agentshore.cli")
 
@@ -87,12 +88,20 @@ def _wait_for_ipc_endpoint_ready(endpoint: object, proc: Any, log_file: Path) ->
     return False
 
 
-async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
+async def _dispatch_command(
+    cmd: dict[str, object],
+    orch: Orchestrator,
+    server: IpcServer | None = None,
+) -> None:
     """Dispatch a single IPC command dict to the orchestrator.
 
     Every validated command must have a handler here.  Commands without a full
     backend implementation return an explicit ``not_implemented`` log entry rather
     than silently doing nothing.
+
+    *server* is the :class:`~agentshore.ipc.IpcServer` instance, required for
+    ``add_budget`` replies.  When ``None`` (e.g. in tests that don't use a real
+    server) the reply is silently dropped.
     """
     command = cmd.get("command")
     if command == "pause":
@@ -108,16 +117,8 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         await orch.begin_drain(reason)
     elif command == "hard_stop":
         await orch.hard_stop()
-    elif command == "adjust_budget":
-        delta_raw = cmd.get("delta_usd", 0)
-        try:
-            delta = float(delta_raw if isinstance(delta_raw, (int, float, str)) else 0)
-        except ValueError:
-            _logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
-            return
-        if orch.adjust_budget(delta):
-            await orch.resume()
     elif command == "add_budget":
+        reply_id = cmd.get("_reply_id")
         delta_usd_raw = cmd.get("delta_usd")
         delta_minutes_raw = cmd.get("delta_minutes")
         delta_usd: float | None = None
@@ -132,6 +133,12 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             _logger.warning("ipc.add_budget_invalid_minutes", delta_minutes=delta_minutes_raw)
         if delta_usd is None and delta_minutes is None:
             _logger.warning("ipc.add_budget_no_delta")
+            if isinstance(reply_id, str) and server is not None:
+                from agentshore.errors import OrchestratorError
+
+                server.post_reply(
+                    reply_id, OrchestratorError("add_budget requires a positive delta")
+                )
             return
         from agentshore.errors import OrchestratorError
 
@@ -139,9 +146,11 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             applied = await orch.add_budget(delta_usd=delta_usd, delta_minutes=delta_minutes)
         except OrchestratorError as exc:
             _logger.warning("ipc.add_budget_rejected", error=str(exc))
+            if isinstance(reply_id, str) and server is not None:
+                server.post_reply(reply_id, exc)
             return
-        if isinstance(applied, dict) and applied.get("resumed") is True:
-            await orch.resume()
+        if isinstance(reply_id, str) and server is not None:
+            server.post_reply(reply_id, applied)
     elif command == "rescan_issues":
         await orch.refresh_issues()
     elif command == "feedback_response":
@@ -519,7 +528,7 @@ async def _run_agent_mode(
             except asyncio.CancelledError:
                 break
             try:
-                await _dispatch_command(cmd, orch)
+                await _dispatch_command(cmd, orch, server)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
