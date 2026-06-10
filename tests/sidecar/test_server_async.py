@@ -18,6 +18,7 @@ from agentshore.data.store import DataStore
 from agentshore.sidecar.handshake import PROTOCOL_VERSION, build_response
 from agentshore.sidecar.server import (
     ERR_SESSION_ACTIVE,
+    INTERNAL_ERROR,
     INVALID_PARAMS,
     METHOD_HANDLERS,
     REQUEST_CANCELLED,
@@ -255,6 +256,37 @@ async def test_serve_async_cancel_swallows_non_cancelled_error_from_handler_clea
             "error": {"code": REQUEST_CANCELLED, "message": "request cancelled"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_request_emits_internal_error_not_cancelled_on_handler_exception() -> None:
+    """Non-CancelledError escaping an async handler must emit INTERNAL_ERROR (-32603).
+
+    Regression for #130: before the central ``except Exception`` catch in
+    ``run_request``, any non-CancelledError exception fell through to the
+    ``finally`` block and was emitted as REQUEST_CANCELLED (-32800), making
+    real handler failures look like client cancellations.
+    """
+
+    async def _bad_handler(_payload: object) -> object:
+        raise RuntimeError("handler exploded")
+
+    METHOD_HANDLERS["test.raises_runtime"] = _bad_handler
+    try:
+        stdin = io.StringIO(
+            json.dumps({"jsonrpc": "2.0", "id": 42, "method": "test.raises_runtime"}) + "\n"
+        )
+        stdout = io.StringIO()
+        await asyncio.wait_for(_serve_async(stdin, stdout, health_interval_seconds=0), timeout=3.0)
+    finally:
+        METHOD_HANDLERS.pop("test.raises_runtime", None)
+
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    assert len(replies) == 1
+    assert replies[0]["id"] == 42
+    assert replies[0]["error"]["code"] == INTERNAL_ERROR
+    assert "RuntimeError" in replies[0]["error"]["message"]
+    assert replies[0]["error"]["code"] != REQUEST_CANCELLED
 
 
 @pytest.mark.asyncio

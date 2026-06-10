@@ -1,26 +1,30 @@
-"""project.* RPC method implementations (DESIGN Â§5.1).
+"""project.* RPC method implementations (DESIGN §5.1).
 
-The sidecar maintains a single ``ActiveProject`` slot (Â§1.3). ``project.select``
+The sidecar maintains a single ``ActiveProject`` slot (§1.3). ``project.select``
 sets it, ``project.deselect`` clears it, and ``inspect``/``branches``/
 ``set_target_branch`` operate against it. Switching projects while a session
-is running is the caller's responsibility to gate (Â§1.3: ``ERR_SESSION_ACTIVE``).
+is running is the caller's responsibility to gate (§1.3: ``ERR_SESSION_ACTIVE``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextlib
-import io
+import math
 import os
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
 from agentshore import subprocess_env
 from agentshore.beads import resolve_bd_binary
-from agentshore.budget import validate_budget_payload
+from agentshore.budget import (
+    MAX_TIME_BUDGET_MINUTES,
+    MIN_ENABLED_BUDGET_USD,
+    MIN_TIME_BUDGET_MINUTES,
+)
 from agentshore.command import CommandResult, git_sync
 from agentshore.config.models import BudgetConfig, TimelapseConfig
 
@@ -30,14 +34,19 @@ from agentshore.config.models import BudgetConfig, TimelapseConfig
 ERR_PROJECT_NOT_ACTIVE = -32004
 GIT_PROBE_TIMEOUT_SECONDS = 5.0
 GIT_TIMEOUT_RETURN_CODE = 124
-# Deliberately short: inspect() fans probes out concurrently and returns within
-# this deadline with filesystem fallbacks for any slow probe, so the Readiness
-# screen always paints fast and degrades to a "probe timed out, re-run" state
-# rather than blocking. The git layer's non-interactive env (no credential
-# prompt) is what removes the real hang risk — not a longer deadline here.
+# Deliberately short: inspect() fans probes out concurrently via asyncio.gather
+# and returns within this deadline with fallback values for any slow probe, so
+# the Readiness screen always paints fast. The git layer's non-interactive env
+# (no credential prompt) is what removes the real hang risk — not a longer
+# deadline here.
 INSPECT_PROBE_TIMEOUT_SECONDS = 2.0
 BRANCH_LIST_TIMEOUT_SECONDS = 20.0
 BRANCH_REMOTE_ONLY_LIMIT = 200
+
+# Dedicated thread pool for inspect() probes. Using a custom executor (not the
+# asyncio default executor) means asyncio.run() / loop.shutdown_default_executor()
+# does not wait for slow probe threads — consistent with the original
+# concurrent.futures-based implementation.
 _PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=16,
     thread_name_prefix="agentshore-project-probe",
@@ -155,21 +164,6 @@ def _repo_identity_probe_fallback(path: Path) -> dict[str, object]:
     }
 
 
-def _collect_probe[T](
-    future: concurrent.futures.Future[T],
-    fallback: T,
-    deadline: float,
-) -> T:
-    remaining = max(0.0, deadline - time.monotonic())
-    try:
-        return future.result(timeout=remaining)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        return fallback
-    except Exception:
-        return fallback
-
-
 def _repo_identity(path: Path) -> dict[str, object]:
     head = _run_git(["rev-parse", "HEAD"], path)
     if head.returncode == GIT_TIMEOUT_RETURN_CODE:
@@ -218,53 +212,6 @@ def _detected_tools(path: Path) -> list[str]:
     return [tool for marker, tool in _TOOL_MARKERS if (path / marker).exists()]
 
 
-def _parse_yaml_hydration(raw: str) -> dict[str, object]:
-    """Parse *raw* agentshore.yaml text and return a typed hydration dict.
-
-    Uses the real config loader so the desktop never needs its own parser.
-    Returns an empty dict on any parse / validation error so the caller can
-    still surface ``raw`` for diagnostics.
-    """
-    import yaml as _yaml
-
-    from agentshore.config._parsers import _build_config
-    from agentshore.errors import ConfigError
-
-    try:
-        data = _yaml.safe_load(raw)
-    except _yaml.YAMLError:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    try:
-        cfg = _build_config(data)  # type: ignore[arg-type]
-    except (ConfigError, Exception):
-        return {}
-
-    enabled_agents = [
-        agent_type for agent_type, agent_cfg in cfg.agents.items() if agent_cfg.enabled
-    ]
-    identity_logins = list(cfg.identities.keys())
-    trusted_sources = list(cfg.trusted_ids.github_logins)
-    b = cfg.budget
-    return {
-        "target_branch": cfg.project.target_branch,
-        "enabled_agents": enabled_agents,
-        "budget": {
-            "enabled": b.enabled,
-            "total": b.total,
-            "warning_threshold": b.warning_threshold,
-            "time_enabled": b.time_enabled,
-            "time_total_minutes": b.time_total_minutes,
-        },
-        "timelapse_enabled": cfg.timelapse.enabled,
-        "timelapse_installed": cfg.timelapse.installed,
-        "trusted_sources": trusted_sources,
-        "identity_logins": identity_logins,
-        "trusted_issue_enforcement": cfg.trusted_ids.restrict_issues_to_trusted_authors,
-    }
-
-
 def _agentshore_yaml_payload(path: Path) -> dict[str, object] | None:
     yaml_path = path / "agentshore.yaml"
     if not yaml_path.is_file():
@@ -273,8 +220,7 @@ def _agentshore_yaml_payload(path: Path) -> dict[str, object] | None:
         raw = yaml_path.read_text(encoding="utf-8")
     except OSError as exc:
         return {"path": str(yaml_path), "error": str(exc)}
-    parsed = _parse_yaml_hydration(raw)
-    return {"path": str(yaml_path), "raw": raw, "parsed": parsed}
+    return {"path": str(yaml_path), "raw": raw}
 
 
 def _beads_status(path: Path) -> dict[str, object]:
@@ -289,46 +235,59 @@ def _prerequisites() -> dict[str, object]:
     }
 
 
-def inspect() -> dict[str, object]:
-    """Return the inspection envelope for the active project (DESIGN Â§5.1)."""
+async def inspect() -> dict[str, object]:
+    """Return the inspection envelope for the active project (DESIGN §5.1).
+
+    All blocking git probes run off the event loop via ``loop.run_in_executor``
+    using a dedicated ``_PROBE_EXECUTOR`` (not the asyncio default executor, so
+    ``asyncio.run`` / ``loop.shutdown_default_executor`` does not wait for slow
+    threads). :func:`asyncio.wait` collects whichever probes finish within
+    ``INSPECT_PROBE_TIMEOUT_SECONDS``; pending probes get a safe fallback value
+    so the Readiness screen always paints fast.
+    """
     path = _require_active()
-    deadline = time.monotonic() + INSPECT_PROBE_TIMEOUT_SECONDS
-    repo_identity = _PROBE_EXECUTOR.submit(lambda: _repo_identity(path))
-    current_branch = _PROBE_EXECUTOR.submit(lambda: _current_branch(path))
-    detected_tools = _PROBE_EXECUTOR.submit(lambda: _detected_tools(path))
-    agentshore_yaml = _PROBE_EXECUTOR.submit(lambda: _agentshore_yaml_payload(path))
-    beads_status = _PROBE_EXECUTOR.submit(lambda: _beads_status(path))
-    prerequisites = _PROBE_EXECUTOR.submit(_prerequisites)
+    loop = asyncio.get_event_loop()
+
+    def _run(fn: object) -> asyncio.Task[object]:
+        return asyncio.ensure_future(loop.run_in_executor(_PROBE_EXECUTOR, fn))  # type: ignore[arg-type]
+
+    # Build (task, fallback) pairs — each task wraps a blocking git probe.
+    probe_pairs: list[tuple[asyncio.Future[object], object]] = [
+        (_run(lambda: _repo_identity(path)), _repo_identity_probe_fallback(path)),
+        (_run(lambda: _current_branch(path)), None),
+        (_run(lambda: _detected_tools(path)), []),
+        (_run(lambda: _agentshore_yaml_payload(path)), None),
+        (
+            _run(lambda: _beads_status(path)),
+            {"initialised": False, "probe_error": "beads status probe timed out"},
+        ),
+        (
+            _run(_prerequisites),
+            {"git": False, "bd": False, "gh": False, "probe_error": "tooling probe timed out"},
+        ),
+    ]
+    tasks = [t for t, _ in probe_pairs]
+
+    done, _ = await asyncio.wait(tasks, timeout=INSPECT_PROBE_TIMEOUT_SECONDS)
+
+    results: list[object] = []
+    for task, fallback in probe_pairs:
+        if task in done and not task.cancelled():
+            exc = task.exception()
+            results.append(fallback if exc is not None else task.result())
+        else:
+            results.append(fallback)
+
+    repo_identity, branch, detected_tools, agentshore_yaml, beads_status, prerequisites = results
 
     return {
         "path": str(path),
-        "repo_identity": _collect_probe(
-            repo_identity,
-            _repo_identity_probe_fallback(path),
-            deadline,
-        ),
-        "branch": _collect_probe(current_branch, None, deadline),
-        "detected_tools": _collect_probe(detected_tools, [], deadline),
-        "agentshore_yaml": _collect_probe(
-            agentshore_yaml,
-            None,
-            deadline,
-        ),
-        "beads_status": _collect_probe(
-            beads_status,
-            {"initialised": False, "probe_error": "beads status probe timed out"},
-            deadline,
-        ),
-        "prerequisites": _collect_probe(
-            prerequisites,
-            {
-                "git": False,
-                "bd": False,
-                "gh": False,
-                "probe_error": "tooling probe timed out",
-            },
-            deadline,
-        ),
+        "repo_identity": repo_identity,
+        "branch": branch,
+        "detected_tools": detected_tools,
+        "agentshore_yaml": agentshore_yaml,
+        "beads_status": beads_status,
+        "prerequisites": prerequisites,
     }
 
 
@@ -347,148 +306,31 @@ class _BranchRow(TypedDict):
     is_default: bool
     is_current: bool
     is_remote: bool
-    ahead: int
-    behind: int
+    ahead: int | None
+    behind: int | None
 
 
-def _ahead_behind(path: Path, ref: str, target: str, *, deadline: float) -> tuple[int, int]:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        return 0, 0
+def _ahead_behind_sync(
+    path: Path, ref: str, target: str, *, timeout_seconds: float
+) -> tuple[int, int] | None:
+    """Return (ahead, behind) for *ref* vs *target*, or ``None`` on failure."""
     out = _run_git(
         ["rev-list", "--left-right", "--count", f"{ref}...{target}"],
         path,
-        timeout_seconds=min(GIT_PROBE_TIMEOUT_SECONDS, max(0.1, remaining)),
+        timeout_seconds=timeout_seconds,
     )
     if out.returncode != 0:
-        return 0, 0
+        return None
     parts = out.stdout.strip().split()
     if len(parts) != 2:
-        return 0, 0
+        return None
     try:
         return int(parts[0]), int(parts[1])
     except ValueError:
-        return 0, 0
-
-
-def _read_small_text(path: Path, *, limit: int = 64 * 1024) -> str | None:
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(limit)
-    except OSError:
         return None
 
 
-def _git_dir_for_worktree(path: Path) -> Path | None:
-    dot_git = path / ".git"
-    if dot_git.is_dir():
-        return dot_git
-    if not dot_git.is_file():
-        return None
-    text = _read_small_text(dot_git, limit=4096)
-    if text is None:
-        return None
-    first = text.splitlines()[0].strip() if text.splitlines() else ""
-    if not first.lower().startswith("gitdir:"):
-        return None
-    raw = first[len("gitdir:") :].strip()
-    if not raw:
-        return None
-    git_dir = Path(raw)
-    if not git_dir.is_absolute():
-        git_dir = dot_git.parent / git_dir
-    return git_dir
-
-
-def _common_git_dir(git_dir: Path) -> Path:
-    text = _read_small_text(git_dir / "commondir", limit=4096)
-    if text is None:
-        return git_dir
-    raw = text.splitlines()[0].strip() if text.splitlines() else ""
-    if not raw:
-        return git_dir
-    common = Path(raw)
-    if not common.is_absolute():
-        common = git_dir / common
-    return common
-
-
-def _read_ref_names(common_git_dir: Path, prefix: str) -> list[str]:
-    names: set[str] = set()
-    root = common_git_dir.joinpath(*prefix.split("/"))
-    if root.is_dir():
-        for ref_file in root.rglob("*"):
-            if not ref_file.is_file() or ref_file.name.endswith(".lock"):
-                continue
-            with contextlib.suppress(ValueError):
-                name = ref_file.relative_to(root).as_posix()
-                if name and name != "HEAD":
-                    names.add(name)
-
-    packed = _read_small_text(common_git_dir / "packed-refs")
-    if packed is not None:
-        packed_prefix = f"{prefix}/"
-        for raw_line in packed.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith(("#", "^")):
-                continue
-            parts = line.split()
-            if len(parts) != 2:
-                continue
-            ref = parts[1]
-            if ref.startswith(packed_prefix):
-                name = ref[len(packed_prefix) :]
-                if name and name != "HEAD":
-                    names.add(name)
-    return sorted(names)
-
-
-def _symbolic_ref_name(git_dir: Path, ref_path: str, prefix: str) -> str | None:
-    text = _read_small_text(git_dir.joinpath(*ref_path.split("/")), limit=4096)
-    if text is None:
-        return None
-    first = text.splitlines()[0].strip() if text.splitlines() else ""
-    if not first.startswith("ref:"):
-        return None
-    ref = first[len("ref:") :].strip()
-    full_prefix = f"{prefix}/"
-    if ref.startswith(full_prefix):
-        return ref[len(full_prefix) :]
-    return None
-
-
-def _filesystem_branches(path: Path) -> tuple[str, str | None, list[str], list[str]]:
-    git_dir = _git_dir_for_worktree(path)
-    if git_dir is None:
-        return "main", None, [], []
-    common_git_dir = _common_git_dir(git_dir)
-    local_names = [
-        name for name in _read_ref_names(common_git_dir, "refs/heads") if name != "origin"
-    ]
-    remote_names = _read_ref_names(common_git_dir, "refs/remotes/origin")
-    current = _symbolic_ref_name(git_dir, "HEAD", "refs/heads")
-    default = _symbolic_ref_name(common_git_dir, "refs/remotes/origin/HEAD", "refs/remotes/origin")
-    if default is None:
-        if "main" in local_names or "main" in remote_names:
-            default = "main"
-        elif "master" in local_names or "master" in remote_names:
-            default = "master"
-        elif current is not None:
-            default = current
-        elif local_names:
-            default = local_names[0]
-        elif remote_names:
-            default = remote_names[0]
-        else:
-            default = "main"
-    return default, current, local_names, remote_names
-
-
-def _remaining_timeout(deadline: float) -> float:
-    return max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
-
-
-def _branch_rows(
+def _build_branch_rows(
     path: Path,
     *,
     default: str,
@@ -497,13 +339,20 @@ def _branch_rows(
     remote_names: list[str],
     deadline: float | None,
 ) -> list[_BranchRow]:
+    """Build branch rows. ``ahead``/``behind`` are ``None`` unless *deadline* is set."""
+    import time
+
     target = f"origin/{default}"
     rows: list[_BranchRow] = []
     local_names = set(local_order)
     for name in local_order:
-        ahead, behind = (0, 0)
+        ahead: int | None = None
+        behind: int | None = None
         if deadline is not None:
-            ahead, behind = _ahead_behind(path, name, target, deadline=deadline)
+            remaining = max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
+            result = _ahead_behind_sync(path, name, target, timeout_seconds=remaining)
+            if result is not None:
+                ahead, behind = result
         rows.append(
             {
                 "name": name,
@@ -518,9 +367,13 @@ def _branch_rows(
     for name in remote_names:
         if name in local_names:
             continue
-        ahead, behind = (0, 0)
+        ahead = None
+        behind = None
         if deadline is not None:
-            ahead, behind = _ahead_behind(path, f"origin/{name}", target, deadline=deadline)
+            remaining = max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
+            result = _ahead_behind_sync(path, f"origin/{name}", target, timeout_seconds=remaining)
+            if result is not None:
+                ahead, behind = result
         rows.append(
             {
                 "name": name,
@@ -537,59 +390,38 @@ def _branch_rows(
     return rows
 
 
-def _filesystem_branch_rows(path: Path) -> list[_BranchRow]:
-    default, current_branch, local_order, remote_names = _filesystem_branches(path)
-    return _branch_rows(
-        path,
-        default=default,
-        current_branch=current_branch,
-        local_order=local_order,
-        remote_names=remote_names,
-        deadline=None,
-    )
+def _list_branches_sync(path: Path, deadline: float | None = None) -> list[_BranchRow]:
+    """List branches via ``git for-each-ref`` (synchronous; no fetch).
 
-
-def branches(*, refresh: bool = False) -> list[_BranchRow]:
-    """Return local + remote-tracking branches for the target-branch picker.
-
-    The default setup-screen load is filesystem-only so Windows cannot hang in
-    Git process startup or network-adjacent probes. ``refresh=True`` preserves
-    the Mac-era richer path: fetch origin, ask Git for refs, and compute
-    ahead/behind where possible, all under one shared deadline.
+    ``ahead``/``behind`` are always ``None`` on this path — the caller is
+    responsible for computing them if they are needed.
     """
-    path = _require_active()
-    if not refresh:
-        return _filesystem_branch_rows(path)
+    import time
 
-    deadline = time.monotonic() + BRANCH_LIST_TIMEOUT_SECONDS
-    fetch_res = _run_git(
-        ["fetch", "--prune", "origin"],
-        path,
-        timeout_seconds=max(0.1, deadline - time.monotonic()),
-    )
-    if fetch_res.returncode == GIT_TIMEOUT_RETURN_CODE or time.monotonic() >= deadline:
-        return _filesystem_branch_rows(path)
+    def _remaining() -> float:
+        if deadline is None:
+            return GIT_PROBE_TIMEOUT_SECONDS
+        return max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
 
-    default, current_branch, fallback_local, fallback_remote = _filesystem_branches(path)
+    default = _default_branch_name(path)
+    current = _current_branch(path)
+
     local_res = _run_git(
         ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
         path,
-        timeout_seconds=_remaining_timeout(deadline),
+        timeout_seconds=_remaining(),
     )
-    if time.monotonic() >= deadline:
-        return _filesystem_branch_rows(path)
     remote_res = _run_git(
         ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
         path,
-        timeout_seconds=_remaining_timeout(deadline),
+        timeout_seconds=_remaining(),
     )
-    if local_res.returncode != 0 or remote_res.returncode != 0:
-        local_order = fallback_local
-        remote_names = fallback_remote
-    else:
-        local_seen: set[str] = set()
-        local_order = []
-        remote_names = []
+
+    local_order: list[str] = []
+    remote_names: list[str] = []
+    local_seen: set[str] = set()
+
+    if local_res.returncode == 0:
         for line in local_res.stdout.splitlines():
             ref = line.strip()
             if not ref or ref == "origin":
@@ -597,6 +429,8 @@ def branches(*, refresh: bool = False) -> list[_BranchRow]:
             if ref not in local_seen:
                 local_seen.add(ref)
                 local_order.append(ref)
+
+    if remote_res.returncode == 0:
         for line in remote_res.stdout.splitlines():
             ref = line.strip()
             if not ref or not ref.startswith("origin/"):
@@ -605,32 +439,100 @@ def branches(*, refresh: bool = False) -> list[_BranchRow]:
             if name and name != "HEAD":
                 remote_names.append(name)
 
-    return _branch_rows(
+    # No deadline passed to _build_branch_rows — ahead/behind stay None
+    return _build_branch_rows(
         path,
         default=default,
-        current_branch=current_branch,
+        current_branch=current,
         local_order=local_order,
         remote_names=remote_names,
-        deadline=deadline,
+        deadline=None,
     )
 
 
-def _is_valid_branch_name(name: str) -> bool:
-    """Conservative branch-name validation without invoking git.
+async def branches(*, refresh: bool = False) -> list[_BranchRow]:
+    """Return local + remote-tracking branches for the target-branch picker.
 
-    The desktop setup flow must not block on git/ref/remote probes on Windows.
-    This accepts normal branch paths such as ``main`` and ``feature/x`` while
-    rejecting the refname shapes Git refuses or that are unsafe to persist.
+    Both paths use ``git for-each-ref`` through the hardened non-interactive
+    runner and run off the event loop via ``asyncio.to_thread``.
+
+    On the default (``refresh=False``) path, ``ahead``/``behind`` are always
+    ``None`` — they are never fabricated as ``0``.
+
+    On the ``refresh=True`` path, ``git fetch --prune origin`` is run first,
+    then ``ahead``/``behind`` are computed per-branch up to
+    ``BRANCH_LIST_TIMEOUT_SECONDS``.
     """
-    if not name or name in {".", "..", "@", "HEAD"}:
-        return False
-    if name.startswith(("/", "-", ".")) or name.endswith(("/", ".", ".lock")):
-        return False
-    if any(ord(ch) < 32 or ch in {" ", "~", "^", ":", "?", "*", "[", "\\", "\x7f"} for ch in name):
-        return False
-    if any(part in {"", ".", ".."} or part.endswith(".lock") for part in name.split("/")):
-        return False
-    return not (".." in name or "@{" in name or "//" in name)
+    import time
+
+    path = _require_active()
+
+    if not refresh:
+        return await asyncio.to_thread(_list_branches_sync, path)
+
+    deadline = time.monotonic() + BRANCH_LIST_TIMEOUT_SECONDS
+
+    def _refresh_sync() -> list[_BranchRow]:
+        remaining = max(0.1, deadline - time.monotonic())
+        fetch_res = _run_git(
+            ["fetch", "--prune", "origin"],
+            path,
+            timeout_seconds=remaining,
+        )
+        if fetch_res.returncode == GIT_TIMEOUT_RETURN_CODE or time.monotonic() >= deadline:
+            return _list_branches_sync(path)
+
+        default = _default_branch_name(path)
+        current = _current_branch(path)
+
+        def _rem() -> float:
+            return max(0.1, min(GIT_PROBE_TIMEOUT_SECONDS, deadline - time.monotonic()))
+
+        local_res = _run_git(
+            ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+            path,
+            timeout_seconds=_rem(),
+        )
+        if time.monotonic() >= deadline:
+            return _list_branches_sync(path)
+        remote_res = _run_git(
+            ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+            path,
+            timeout_seconds=_rem(),
+        )
+
+        local_seen: set[str] = set()
+        local_order: list[str] = []
+        remote_names: list[str] = []
+
+        if local_res.returncode == 0:
+            for line in local_res.stdout.splitlines():
+                ref = line.strip()
+                if not ref or ref == "origin":
+                    continue
+                if ref not in local_seen:
+                    local_seen.add(ref)
+                    local_order.append(ref)
+
+        if remote_res.returncode == 0:
+            for line in remote_res.stdout.splitlines():
+                ref = line.strip()
+                if not ref or not ref.startswith("origin/"):
+                    continue
+                name = ref[len("origin/") :]
+                if name and name != "HEAD":
+                    remote_names.append(name)
+
+        return _build_branch_rows(
+            path,
+            default=default,
+            current_branch=current,
+            local_order=local_order,
+            remote_names=remote_names,
+            deadline=deadline,
+        )
+
+    return await asyncio.to_thread(_refresh_sync)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -648,83 +550,59 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def _write_target_branch(yaml_text: str, branch: str) -> str:
-    """Round-trip *yaml_text* and set ``project.target_branch`` to *branch*.
-
-    Preserves comments and key ordering via ruamel.yaml. If the document is
-    empty or has no ``project`` key, a minimal one is created.
-    """
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    project = data.get("project")
-    if not isinstance(project, dict):
-        project = {}
-        data["project"] = project
-    project["target_branch"] = branch
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
-
-
 def set_target_branch(name: str) -> dict[str, object]:
-    """Persist *name* as ``project.target_branch`` in agentshore.yaml (DESIGN Â§4.1).
+    """Persist *name* as ``project.target_branch`` in agentshore.yaml (DESIGN §4.1).
 
-    Validates against existing local or ``origin/*`` refs using the same
-    filesystem-backed branch reader as ``project.branches``. This preserves the
-    setup contract ("choose an existing branch") without invoking Git
-    subprocesses or network checks on Windows.
+    Validates the branch name via ``git check-ref-format`` and that the branch
+    exists in local or ``origin/*`` refs via ``git for-each-ref``.
     """
+    from agentshore.sidecar.yaml_edits import write_target_branch as _write
+
     path = _require_active()
     if not isinstance(name, str) or not name.strip():
         raise ProjectError("name must be a non-empty string")
     name = name.strip()
-    if not _is_valid_branch_name(name):
-        raise ProjectError(
-            f"invalid branch name: {name!r}",
-            code=-32002,
-        )
-    _default, _current, local_names, remote_names = _filesystem_branches(path)
-    if name not in set(local_names) | set(remote_names):
+
+    # Validate branch name via git check-ref-format
+    check = _run_git(["check-ref-format", "--branch", name], path)
+    if check.returncode != 0:
+        raise ProjectError(f"invalid branch name: {name!r}", code=-32002)
+
+    # Validate the branch exists in local or remote refs
+    local_res = _run_git(
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        path,
+    )
+    remote_res = _run_git(
+        ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+        path,
+    )
+    local_names: set[str] = set()
+    remote_names: set[str] = set()
+    if local_res.returncode == 0:
+        for line in local_res.stdout.splitlines():
+            ref = line.strip()
+            if ref and ref != "origin":
+                local_names.add(ref)
+    if remote_res.returncode == 0:
+        for line in remote_res.stdout.splitlines():
+            ref = line.strip()
+            if ref.startswith("origin/"):
+                remote_names.add(ref[len("origin/") :])
+    if name not in local_names | remote_names:
         raise ProjectError(
             f"branch '{name}' not found in local or origin-tracking refs",
             code=-32002,
         )
+
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write_target_branch(existing, name)
+        new_text = _write(existing, name)
         _atomic_write_text(yaml_path, new_text)
     except Exception as exc:
         raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
     return {"target_branch": name, "yaml_path": str(yaml_path)}
-
-
-def _write_seed_paths(yaml_text: str, seed_paths: list[str]) -> str:
-    """Round-trip *yaml_text* and set ``intake.seed_paths`` to *seed_paths*.
-
-    Preserves comments and key ordering via ruamel.yaml. Mirrors
-    :func:`_write_target_branch`; creates the ``intake`` mapping if absent.
-    """
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    intake = data.get("intake")
-    if not isinstance(intake, dict):
-        intake = {}
-        data["intake"] = intake
-    intake["seed_paths"] = list(seed_paths)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
 
 
 def set_seed_paths(payload: object) -> dict[str, object]:
@@ -733,10 +611,12 @@ def set_seed_paths(payload: object) -> dict[str, object]:
     Accepts a single path string or a list of strings (relative to the project
     root, or absolute). Each must be a non-empty string and exist on disk. An
     empty list clears the configured seed. Write is atomic (temp + fsync +
-    rename). Mirrors :func:`set_target_branch` so any start path â€” CLI, sidecar,
-    desktop Quick Start, TUI â€” picks up the configured seed via the bootstrap
+    rename). Mirrors :func:`set_target_branch` so any start path — CLI, sidecar,
+    desktop Quick Start, TUI — picks up the configured seed via the bootstrap
     ``_resolve_seed_path`` fallback.
     """
+    from agentshore.sidecar.yaml_edits import write_seed_paths as _write
+
     path = _require_active()
     if isinstance(payload, str):
         raw_paths: list[object] = [payload]
@@ -760,7 +640,7 @@ def set_seed_paths(payload: object) -> dict[str, object]:
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write_seed_paths(existing, seed_paths)
+        new_text = _write(existing, seed_paths)
         _atomic_write_text(yaml_path, new_text)
     except ProjectError:
         raise
@@ -769,25 +649,94 @@ def set_seed_paths(payload: object) -> dict[str, object]:
     return {"seed_paths": seed_paths, "yaml_path": str(yaml_path)}
 
 
-def _write_budget(yaml_text: str, budget: BudgetConfig) -> str:
-    """Round-trip *yaml_text* and set the top-level ``budget`` mapping.
-
-    Delegates to :func:`agentshore.config.budget_writer.render_budget_yaml` so
-    the sidecar RPC and the live ``Orchestrator.set_budget`` path share one
-    serialiser. Preserves comments / key ordering on every other section.
-    """
-    from agentshore.config.budget_writer import render_budget_yaml
-
-    return render_budget_yaml(yaml_text, budget)
+# Accepted keys on the ``budget:`` mapping written to agentshore.yaml. Mirrors
+# the ``BudgetConfig`` dataclass in ``src/agentshore/config/models.py``.
+_BUDGET_KEYS: frozenset[str] = frozenset(
+    {"enabled", "total", "warning_threshold", "time_enabled", "time_total_minutes"}
+)
 
 
 def _validate_budget_payload(payload: object) -> BudgetConfig:
     """Validate the ``set_budget`` payload and return a :class:`BudgetConfig`.
 
-    Delegates to :func:`agentshore.budget.validate_budget_payload`, raising
-    :class:`ProjectError` for any invalid value.
+    Rules:
+    * ``enabled`` (bool, required).
+    * ``total`` (number, required, finite, ``>= 0``). NaN/Inf rejected.
+      When ``enabled`` is ``True``, ``total`` must be ``>= MIN_ENABLED_BUDGET_USD``
+      so the persisted YAML round-trips through ``load_config`` (which enforces
+      the same floor).
+    * ``warning_threshold`` (number, optional, finite, ``0 <= x <= 1``;
+      defaults to ``0.20``).
+    * No unknown keys.
     """
-    return validate_budget_payload(payload, exc_class=ProjectError)
+    if not isinstance(payload, dict):
+        raise ProjectError("budget payload must be an object")
+    unknown = set(payload.keys()) - _BUDGET_KEYS
+    if unknown:
+        raise ProjectError(f"unknown budget fields: {sorted(unknown)}")
+    if "enabled" not in payload:
+        raise ProjectError("budget.enabled is required")
+    enabled = payload["enabled"]
+    if not isinstance(enabled, bool):
+        raise ProjectError("budget.enabled must be a boolean")
+    if "total" not in payload:
+        raise ProjectError("budget.total is required")
+    total_raw = payload["total"]
+    # ``bool`` is a subclass of ``int`` — reject it explicitly so ``True``/
+    # ``False`` cannot pose as a dollar amount.
+    if isinstance(total_raw, bool) or not isinstance(total_raw, (int, float)):
+        raise ProjectError("budget.total must be a number")
+    total = float(total_raw)
+    if not math.isfinite(total):
+        raise ProjectError("budget.total must be finite")
+    if total < 0:
+        raise ProjectError("budget.total must be >= 0")
+    # Mirror ``agentshore.config._parse_budget``: an enabled budget below
+    # ``MIN_ENABLED_BUDGET_USD`` is rejected by ``load_config`` on the next
+    # round-trip, so we must reject it here too to keep the RPC and the
+    # config-loader contract in sync.
+    if enabled and total < MIN_ENABLED_BUDGET_USD:
+        raise ProjectError(
+            "budget.total must be at least "
+            f"{MIN_ENABLED_BUDGET_USD:.2f} when budget.enabled is true, got {total!r}"
+        )
+    threshold = 0.20
+    if "warning_threshold" in payload:
+        threshold_raw = payload["warning_threshold"]
+        if isinstance(threshold_raw, bool) or not isinstance(threshold_raw, (int, float)):
+            raise ProjectError("budget.warning_threshold must be a number")
+        threshold = float(threshold_raw)
+        if not math.isfinite(threshold):
+            raise ProjectError("budget.warning_threshold must be finite")
+        if threshold < 0 or threshold > 1:
+            raise ProjectError("budget.warning_threshold must be between 0 and 1")
+    # Time soft cap (independent dimension). Both fields optional; default off.
+    time_enabled = payload.get("time_enabled", False)
+    if not isinstance(time_enabled, bool):
+        raise ProjectError("budget.time_enabled must be a boolean")
+    time_total_minutes_raw = payload.get("time_total_minutes", 0)
+    if isinstance(time_total_minutes_raw, bool) or not isinstance(time_total_minutes_raw, int):
+        raise ProjectError("budget.time_total_minutes must be an integer")
+    time_total_minutes = int(time_total_minutes_raw)
+    # Mirror ``_parse_budget``: an enabled time cap outside 1h–72h is rejected by
+    # ``load_config`` on the next round-trip, so reject it here to stay in sync.
+    if time_enabled and not (
+        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
+    ):
+        raise ProjectError(
+            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
+            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
+            f"got {time_total_minutes!r}"
+        )
+    if not time_enabled and time_total_minutes < 0:
+        raise ProjectError("budget.time_total_minutes must be non-negative")
+    return BudgetConfig(
+        enabled=enabled,
+        total=total,
+        warning_threshold=threshold,
+        time_enabled=time_enabled,
+        time_total_minutes=time_total_minutes,
+    )
 
 
 def set_budget(payload: object) -> dict[str, object]:
@@ -805,12 +754,14 @@ def set_budget(payload: object) -> dict[str, object]:
     Returns the persisted values (echoing what was written) plus the
     resolved ``yaml_path``.
     """
+    from agentshore.sidecar.yaml_edits import write_budget as _write
+
     path = _require_active()
     budget = _validate_budget_payload(payload)
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write_budget(existing, budget)
+        new_text = _write(existing, budget)
         _atomic_write_text(yaml_path, new_text)
     except ProjectError:
         raise
@@ -828,30 +779,6 @@ def set_budget(payload: object) -> dict[str, object]:
     }
 
 
-def _write_trusted_issue_enforcement(yaml_text: str, enabled: bool) -> str:
-    """Round-trip *yaml_text* and set ``trusted_ids.restrict_issues_to_trusted_authors``.
-
-    Preserves comments and key ordering on every other section via
-    ruamel.yaml. Mirrors :func:`_write_budget`/:func:`_write_target_branch`;
-    get-or-creates the ``trusted_ids`` mapping if absent.
-    """
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    trusted_ids = data.get("trusted_ids")
-    if not isinstance(trusted_ids, dict):
-        trusted_ids = {}
-        data["trusted_ids"] = trusted_ids
-    trusted_ids["restrict_issues_to_trusted_authors"] = bool(enabled)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
-
-
 def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
     """Persist ``trusted_ids.restrict_issues_to_trusted_authors`` in agentshore.yaml.
 
@@ -862,6 +789,8 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
 
     Returns ``{"enabled": bool, "yaml_path": str}``.
     """
+    from agentshore.sidecar.yaml_edits import write_trusted_issue_enforcement as _write
+
     path = _require_active()
     if not isinstance(payload, bool):
         raise ProjectError("enabled must be a boolean")
@@ -869,7 +798,7 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write_trusted_issue_enforcement(existing, enabled)
+        new_text = _write(existing, enabled)
         _atomic_write_text(yaml_path, new_text)
     except ProjectError:
         raise
@@ -882,29 +811,6 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
 # Mirrors the ``TimelapseConfig`` dataclass in
 # ``src/agentshore/config/models.py``.
 _TIMELAPSE_KEYS: frozenset[str] = frozenset({"enabled", "installed"})
-
-
-def _write_timelapse(yaml_text: str, timelapse: TimelapseConfig) -> str:
-    """Round-trip *yaml_text* and set the top-level ``timelapse`` mapping.
-
-    Preserves comments / key ordering on every other section via ruamel.yaml,
-    matching :func:`_write_budget`.
-    """
-    from ruamel.yaml import YAML
-
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    existing = data.get("timelapse")
-    block: dict[str, object] = existing if isinstance(existing, dict) else {}
-    block["enabled"] = bool(timelapse.enabled)
-    block["installed"] = bool(timelapse.installed)
-    data["timelapse"] = block
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
 
 
 def _validate_timelapse_payload(payload: object) -> TimelapseConfig:
@@ -929,10 +835,12 @@ def _validate_timelapse_payload(payload: object) -> TimelapseConfig:
 
 def _persist_timelapse(path: Path, timelapse: TimelapseConfig) -> str:
     """Write the ``timelapse`` block into *path*/agentshore.yaml; return yaml path."""
+    from agentshore.sidecar.yaml_edits import write_timelapse as _write
+
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write_timelapse(existing, timelapse)
+        new_text = _write(existing, timelapse)
         _atomic_write_text(yaml_path, new_text)
     except ProjectError:
         raise
