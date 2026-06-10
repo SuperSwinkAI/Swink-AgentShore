@@ -2,11 +2,15 @@
 
 Covers (a) registry wiring and slot placement, (b) the declarative gate
 configuration on the play, (c) representative scenarios of the gate behavior
-exercised against ReconcileStatePlay.preconditions(), and (d) reward shaping.
+exercised against ReconcileStatePlay.preconditions(), (d) reward shaping,
+and (e) the active-play cross-check that prevents reconcile_state from
+classifying live agents as zombies (#93).
 Exhaustive gate-level semantics are tested in tests/plays/test_gates.py.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from agentshore.config.models import RewardConfig
 from agentshore.plays.registry import build_default_registry
@@ -240,3 +244,82 @@ def test_reward_breakdown_field_default_zero() -> None:
     """RewardBreakdown initializes the new field to 0.0 so legacy callers stay sound."""
     bd = RewardBreakdown()
     assert bd.reconcile_state_success_bonus == 0.0
+
+
+# --- active-play cross-check (#93) ------------------------------------------
+
+
+def _agent_snapshot_with_play(
+    agent_id: str = "agent-busy",
+    play_id: int = 762,
+    play_type: PlayType = PlayType.CLEANUP,
+) -> AgentSnapshot:
+    """Return an agent snapshot that has an active in-flight play."""
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CODEX,
+        status=AgentStatus.BUSY,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=3,
+        tasks_failed=0,
+        current_play_type=play_type,
+        current_play_id=play_id,
+        current_play_started_at="2026-06-09T10:00:00+00:00",
+    )
+
+
+def test_wedge_signals_active_agents_in_flight_populated(tmp_path: Path) -> None:
+    """build_recent_wedge_signals includes agents with active plays in active_agents_in_flight.
+
+    This is the data the reconcile skill reads to cross-check zombie candidates (#93).
+    """
+    from agentshore.core.wedge_signals import build_recent_wedge_signals
+
+    busy_agent = _agent_snapshot_with_play(agent_id="agent-busy", play_id=759)
+    idle_agent = AgentSnapshot(
+        agent_id="agent-idle",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.IDLE,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=5,
+        tasks_failed=0,
+    )
+    state = OrchestratorState(
+        session_id="sess-93",
+        session_state=SessionState.RUNNING,
+        total_plays=20,
+        total_cost=1.0,
+        agents=[busy_agent, idle_agent],
+    )
+
+    signals = build_recent_wedge_signals(state, tmp_path, session_id="sess-93")
+
+    in_flight = signals["active_agents_in_flight"]
+    assert isinstance(in_flight, list)
+    assert len(in_flight) == 1
+    entry = in_flight[0]
+    assert entry["agent_id"] == "agent-busy"
+    assert entry["current_play_id"] == 759
+    assert entry["current_play_type"] == "cleanup"
+
+
+def test_wedge_signals_active_agents_empty_when_all_idle(tmp_path: Path) -> None:
+    """active_agents_in_flight is empty when no agent has an active play."""
+    from agentshore.core.wedge_signals import build_recent_wedge_signals
+
+    idle_agent = _idle_agent()
+    state = OrchestratorState(
+        session_id="sess-idle",
+        session_state=SessionState.RUNNING,
+        total_plays=5,
+        total_cost=0.5,
+        agents=[idle_agent],
+    )
+
+    signals = build_recent_wedge_signals(state, tmp_path, session_id="sess-idle")
+
+    assert signals["active_agents_in_flight"] == []
