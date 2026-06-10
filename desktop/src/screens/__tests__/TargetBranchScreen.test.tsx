@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -25,20 +25,6 @@ function renderScreen(adapter: TargetBranchAdapter) {
       <TargetBranchScreen adapter={adapter} />
     </MemoryRouter>,
   );
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason?: unknown) => void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 const BRANCHES: BranchRow[] = [
@@ -160,25 +146,4 @@ describe("TargetBranchScreen", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/Unable to load branches/);
   });
 
-  it("times out a stalled branch load instead of leaving the screen loading", async () => {
-    vi.useFakeTimers();
-    try {
-      const stalled = deferred<BranchRow[]>();
-      const adapter: TargetBranchAdapter = {
-        list: vi.fn().mockReturnValue(stalled.promise),
-        setTarget: vi.fn(),
-      };
-      renderScreen(adapter);
-
-      await act(async () => {
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(20_000);
-      });
-
-      expect(screen.getByRole("alert")).toHaveTextContent(/branch scan exceeded 20s/);
-      expect(screen.getByText("No branches found.")).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

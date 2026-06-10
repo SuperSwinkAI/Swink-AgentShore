@@ -19,20 +19,6 @@ const defaultAdapter: TargetBranchAdapter = {
   setTarget: setTargetBranch,
 };
 
-const BRANCH_LOAD_TIMEOUT_MS = 20_000;
-
-function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(message)), BRANCH_LOAD_TIMEOUT_MS);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timeoutId !== null) {
-      clearTimeout(timeoutId);
-    }
-  });
-}
-
 export interface TargetBranchScreenProps {
   adapter?: TargetBranchAdapter;
 }
@@ -97,10 +83,7 @@ export function TargetBranchScreen({
       setError(null);
       setStatus(null);
       try {
-        const rows = await withTimeout(
-          adapter.list(refresh),
-          `branch scan exceeded ${BRANCH_LOAD_TIMEOUT_MS / 1000}s`,
-        );
+        const rows = await adapter.list(refresh);
         if (loadRequestRef.current !== requestId) return;
         setBranches(rows);
         const nextSelection = rows.find((row) => row.is_default)?.name ?? rows[0]?.name ?? "";

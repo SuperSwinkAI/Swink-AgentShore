@@ -11,11 +11,11 @@ use crate::sidecar_runtime::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -82,22 +82,53 @@ fn handshake_response_timeout() -> Duration {
     }
 }
 
+/// Single source of truth for per-method timeout classification.
+///
+/// Both this file (via ``include_str!``) and the TypeScript frontend (via a
+/// JSON import) read ``desktop/rpc-method-classes.json``.  Edit that file to
+/// change which methods belong to which bucket — do not add method names here.
+const METHOD_CLASSES_JSON: &str = include_str!("../../rpc-method-classes.json");
+
+#[derive(serde::Deserialize)]
+struct MethodClasses {
+    setup: Vec<String>,
+    uncapped: Vec<String>,
+}
+
+struct MethodBuckets {
+    setup: HashSet<String>,
+    uncapped: HashSet<String>,
+}
+
+fn method_buckets() -> &'static MethodBuckets {
+    static BUCKETS: OnceLock<MethodBuckets> = OnceLock::new();
+    BUCKETS.get_or_init(|| {
+        let classes: MethodClasses = serde_json::from_str(METHOD_CLASSES_JSON)
+            .expect("rpc-method-classes.json must be valid JSON with setup/uncapped arrays");
+        MethodBuckets {
+            setup: classes.setup.into_iter().collect(),
+            uncapped: classes.uncapped.into_iter().collect(),
+        }
+    })
+}
+
 fn response_timeout_for_method(method: &str) -> Duration {
-    match method {
-        "project.select"
-        | "project.inspect"
-        | "recents.list"
-        | "recents.touch"
-        | "recents.remove"
-        | "config.read"
-        | "agents.catalog"
-        | "identities.list_trusted"
-        | "identities.check_keychain"
-        | "identities.check_access" => SETUP_RESPONSE_TIMEOUT,
-        "session.start" => SESSION_START_RESPONSE_TIMEOUT,
-        "session.stop" => SESSION_STOP_RESPONSE_TIMEOUT,
-        "project.install_timelapse" => INSTALL_RESPONSE_TIMEOUT,
-        _ => RESPONSE_TIMEOUT,
+    let buckets = method_buckets();
+    if buckets.uncapped.contains(method) {
+        // session.start / session.stop / project.install_timelapse: these
+        // are long-running lifecycle calls driven by $/progress; the Rust
+        // side gives them their own generous caps rather than sharing the
+        // setup/default budgets.
+        match method {
+            "session.start" => SESSION_START_RESPONSE_TIMEOUT,
+            "session.stop" => SESSION_STOP_RESPONSE_TIMEOUT,
+            "project.install_timelapse" => INSTALL_RESPONSE_TIMEOUT,
+            _ => RESPONSE_TIMEOUT,
+        }
+    } else if buckets.setup.contains(method) {
+        SETUP_RESPONSE_TIMEOUT
+    } else {
+        RESPONSE_TIMEOUT
     }
 }
 
@@ -797,9 +828,15 @@ mod tests {
         // Non-positive / non-numeric override falls back to the platform default.
         std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "  0 ");
         let default_secs = if cfg!(target_os = "windows") { 90 } else { 30 };
-        assert_eq!(handshake_response_timeout(), Duration::from_secs(default_secs));
+        assert_eq!(
+            handshake_response_timeout(),
+            Duration::from_secs(default_secs)
+        );
         std::env::remove_var(HANDSHAKE_TIMEOUT_ENV);
-        assert_eq!(handshake_response_timeout(), Duration::from_secs(default_secs));
+        assert_eq!(
+            handshake_response_timeout(),
+            Duration::from_secs(default_secs)
+        );
     }
 
     #[test]
@@ -822,8 +859,8 @@ mod tests {
         );
         assert_eq!(
             response_timeout_for_method("project.branches"),
-            RESPONSE_TIMEOUT,
-            "branch enumeration may need multiple git probes on Windows"
+            SETUP_RESPONSE_TIMEOUT,
+            "project.branches is in the setup bucket per rpc-method-classes.json"
         );
         assert_eq!(
             response_timeout_for_method("identities.list"),
