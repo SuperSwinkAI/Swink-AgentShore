@@ -95,7 +95,12 @@ class EndAgentPlay:
             return PlayOutcome.failed(self.play_type, "agent_id not resolved")
 
         try:
-            await ctx.manager.clear(agent_id)
+            # force=True: the executor marks the target agent in-flight with this
+            # play's own END_AGENT marker before execute() runs, so the default
+            # active-play guard in clear() would always reject the retirement.
+            # Preconditions guarantee the agent is IDLE, so the only in-flight
+            # play is the synthetic end_agent marker itself (#154).
+            await ctx.manager.clear(agent_id, force=True)
         except (PreconditionFailed, aiosqlite.Error, sqlite3.Error, RuntimeError, KeyError) as exc:
             return PlayOutcome.failed(self.play_type, str(exc), agent_id=agent_id)
 

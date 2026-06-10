@@ -308,7 +308,10 @@ async def test_drain_retires_errored_agent_without_enqueuing_recovery() -> None:
 
     await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
 
-    h._manager.clear.assert_awaited_once_with("err1")
+    # force=True is load-bearing: the session is winding down and in-flight
+    # tasks are already cancelled; a force-less clear() would hit the
+    # active-play guard and leak the agent (#154).
+    h._manager.clear.assert_awaited_once_with("err1", force=True)
     assert h._overrides.empty()  # no doomed rate-limit recovery enqueued (#23)
     assert "err1" not in h._recovery._rate_limit_recovery_enqueued
 

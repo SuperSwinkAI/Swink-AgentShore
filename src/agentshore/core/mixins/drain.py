@@ -583,14 +583,16 @@ class DrainController:
             n_pending_after=n_pending_after,
         )
 
-        # Clear all agent handles concurrently
+        # Clear all agent handles concurrently.  force=True because in-flight
+        # asyncio tasks were cancelled above; the active-play guard in clear()
+        # must not block teardown.
         t = time.perf_counter()
         agent_ids = list(self._manager.handles)
         if agent_ids:
 
             async def _clear_one(aid: str) -> None:
                 try:
-                    await self._manager.clear(aid)
+                    await self._manager.clear(aid, force=True)
                 except (OrchestratorError, OSError, KeyError, aiosqlite.Error) as exc:
                     _logger.warning("agent_clear_failed", agent_id=aid, error=str(exc))
 

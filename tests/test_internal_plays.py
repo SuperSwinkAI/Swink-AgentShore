@@ -146,7 +146,10 @@ async def test_end_agent_calls_manager_clear() -> None:
     )
 
     assert outcome.success is True
-    ctx.manager.clear.assert_awaited_once_with("a1")
+    # force=True is load-bearing: the executor marks the target agent in-flight
+    # with this play's own END_AGENT marker before execute() runs, so a
+    # force-less clear() would always hit the active-play guard (#154).
+    ctx.manager.clear.assert_awaited_once_with("a1", force=True)
 
 
 @pytest.mark.asyncio

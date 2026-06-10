@@ -362,3 +362,54 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
 
     assert events.index("generate") < events.index("store_close")
     assert events.index("ended") < events.index("open")
+
+
+@pytest.mark.asyncio
+async def test_stop_inner_clears_agents_with_force(tmp_path: Path) -> None:
+    """Teardown must clear every agent handle with force=True (#154).
+
+    #144 added an active-play guard to AgentManager.clear() and passed
+    force=True from this teardown path; #149 silently reverted it in a bad
+    conflict resolution, so any agent still holding a current_play_id at
+    drain time refused to clear. Pin the force=True so a future rebase
+    cannot drop it again.
+    """
+    orch = Orchestrator.__new__(Orchestrator)
+    orch._session_id = "sess-test"
+    orch._repo_root = tmp_path
+    orch._stop_reason = "stop_requested"
+    orch._in_flight = {}
+    orch._dispatch_ctx = {}
+    orch._manager = MagicMock()
+    orch._manager.handles = {"agent-1": MagicMock(), "agent-2": MagicMock()}
+    orch._manager.clear = AsyncMock()
+    orch._health = None
+    orch._integrity = None
+    orch._power_assertion = None
+    orch._loop = MagicMock()
+    orch._end_session_report_requested = False
+    orch._end_session_report_open_browser = False
+    orch._state_builder = MagicMock()
+    orch._state_builder.build_state = AsyncMock(
+        return_value=_state(SessionState.DRAINING, agents=[])
+    )
+    orch._completion = MagicMock()
+    orch._store = AsyncMock()
+    orch._state_provider = MagicMock()
+    orch._state_provider.on_session_ended = AsyncMock()
+    orch._drain = DrainController(
+        host=orch,
+        store=orch._store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
+
+    await orch._drain.stop_inner(0.0)
+
+    assert orch._manager.clear.await_count == 2
+    for call in orch._manager.clear.await_args_list:
+        assert call.kwargs.get("force") is True, (
+            f"teardown clear() must pass force=True, got {call}"
+        )
