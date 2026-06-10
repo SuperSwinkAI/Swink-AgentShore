@@ -94,13 +94,19 @@ class TestSshSigningSetupHint:
     def test_macos_hint_uses_apple_keychain(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "darwin"):
-            assert "--apple-use-keychain" in ssh_signing_setup_hint()
+        with patch("sys.platform", "darwin"), patch(
+            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        ):
+            hint = ssh_signing_setup_hint()
+        assert "--apple-use-keychain" in hint
+        assert "/home/user/.ssh/id_ed25519" in hint
 
     def test_windows_hint_starts_agent_service_not_apple(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "win32"):
+        with patch("sys.platform", "win32"), patch(
+            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        ):
             hint = ssh_signing_setup_hint()
         assert "ssh-agent" in hint
         assert "--apple-use-keychain" not in hint
@@ -108,8 +114,11 @@ class TestSshSigningSetupHint:
     def test_linux_hint_is_plain_ssh_add(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "linux"):
-            assert ssh_signing_setup_hint() == "ssh-add ~/.ssh/id_ed25519"
+        with patch("sys.platform", "linux"), patch(
+            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        ):
+            hint = ssh_signing_setup_hint()
+        assert hint == "ssh-add /home/user/.ssh/id_ed25519"
 
 
 class TestSshSigningEnabled:
