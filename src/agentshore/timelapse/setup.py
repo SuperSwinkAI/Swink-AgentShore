@@ -44,6 +44,20 @@ _WINGET_NODE_ID = "OpenJS.NodeJS"
 _WINGET_FFMPEG_ID = "Gyan.FFmpeg"
 _HOMEBREW_URL = "https://brew.sh"
 
+# winget exits non-zero when the requested package is already present and no
+# newer version is available. That is not a failure for us — the caller
+# re-verifies the actual tool/version afterwards — so these exit codes and
+# output markers are treated as a no-op rather than a hard error.
+#: 0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE, as both the unsigned
+#: DWORD and the signed-int form a subprocess return code may surface as.
+_WINGET_NOOP_EXIT_CODES = frozenset({2316632107, -1978335189})
+_WINGET_NOOP_OUTPUT_MARKERS = (
+    "no available upgrade found",
+    "no newer package versions are available",
+    "no applicable upgrade",
+    "already installed",
+)
+
 # brew/npm installs can be slow (compiling, downloading Chromium).
 _BREW_TIMEOUT_SECONDS = 600.0
 _WINGET_TIMEOUT_SECONDS = 900.0
@@ -86,14 +100,87 @@ async def _ensure_ffmpeg(cwd: Path) -> None:
 
 
 def _prepend_path_entries(entries: Sequence[Path]) -> None:
-    existing = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
-    new_entries = [str(path) for path in entries if path and str(path) not in existing]
-    if new_entries:
-        os.environ["PATH"] = os.pathsep.join([*new_entries, *existing])
+    requested: list[str] = []
+    for path in entries:
+        if not path:
+            continue
+        text = str(path)
+        if text not in requested:
+            requested.append(text)
+    if not requested:
+        return
+    # Move requested dirs to the front even when they are already on PATH:
+    # winget appends a newly-installed Node to the *end* of PATH, so an older
+    # Program Files Node would otherwise keep shadowing it. Reordering (rather
+    # than skip-if-present) guarantees the preferred entries win.
+    requested_set = set(requested)
+    remaining = [
+        p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p not in requested_set
+    ]
+    os.environ["PATH"] = os.pathsep.join([*requested, *remaining])
+
+
+def _node_dir_version(name: str) -> tuple[int, int, int] | None:
+    """Parse ``(major, minor, patch)`` from a ``node-vX.Y.Z-win-x64`` dir name."""
+    match = re.search(r"node-v(\d+)\.(\d+)\.(\d+)", name)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _winget_node_bin_dirs() -> list[Path]:
+    r"""Locate winget-installed Node dirs meeting the minimum version.
+
+    winget unpacks ``OpenJS.NodeJS`` under
+    ``%LOCALAPPDATA%\Microsoft\WinGet\Packages\OpenJS.NodeJS*\node-v*-win-x64``,
+    a directory that is not placed ahead of an existing Program Files Node on
+    PATH — so a freshly-installed (newer) Node stays invisible and the older
+    one keeps failing the version gate. Returns matching ``node.exe``
+    directories, newest version first, filtered to ``>= _MIN_NODE_MAJOR``.
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        return []
+    packages = Path(local_appdata) / "Microsoft" / "WinGet" / "Packages"
+    if not packages.is_dir():
+        return []
+    versioned: list[tuple[tuple[int, int, int], Path]] = []
+    for package_dir in packages.glob("OpenJS.NodeJS*"):
+        for node_dir in package_dir.glob("node-v*-win-x64"):
+            version = _node_dir_version(node_dir.name)
+            if version is None or version[0] < _MIN_NODE_MAJOR:
+                continue
+            if (node_dir / "node.exe").is_file():
+                versioned.append((version, node_dir))
+    versioned.sort(key=lambda item: item[0], reverse=True)
+    return [node_dir for _, node_dir in versioned]
+
+
+def _clean_command_output(text: str) -> str:
+    """Collapse winget's carriage-return progress bars into readable text.
+
+    winget renders download progress as a ``\\r``-updated bar made of
+    block-drawing glyphs (U+2580–U+259F). Folding that raw stream into an error
+    message floods logs and — on a legacy code page — used to crash structlog's
+    ``print`` with ``UnicodeEncodeError``. Keep only the final state of each
+    line and drop box-drawing/geometric runs (U+2500–U+25FF).
+    """
+    cleaned_lines: list[str] = []
+    for raw_line in text.split("\n"):
+        latest = raw_line.split("\r")[-1]
+        filtered = "".join(ch for ch in latest if ch.isprintable() and not ("─" <= ch <= "◿"))
+        collapsed = " ".join(filtered.split())
+        if collapsed:
+            cleaned_lines.append(collapsed)
+    return " ".join(cleaned_lines)
 
 
 def _refresh_windows_tool_paths() -> None:
     candidates: list[Path] = []
+    # A winget-installed Node lives under WinGet\Packages (not normally ahead of
+    # Program Files on PATH) and must win over any older Program Files Node, so
+    # list the newest-qualifying winget Node dirs first.
+    candidates.extend(_winget_node_bin_dirs())
     if program_files := os.environ.get("PROGRAMFILES"):
         candidates.append(Path(program_files) / "nodejs")
     if appdata := os.environ.get("APPDATA"):
@@ -129,8 +216,24 @@ async def _winget_install(package_id: str, *, cwd: Path, label: str) -> None:
         timeout=_WINGET_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
-        details = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        raise TimelapseError(f"`winget install {package_id}` failed: {details}")
+        combined = _clean_command_output("\n".join(filter(None, (result.stdout, result.stderr))))
+        lowered = combined.lower()
+        benign = result.returncode in _WINGET_NOOP_EXIT_CODES or any(
+            marker in lowered for marker in _WINGET_NOOP_OUTPUT_MARKERS
+        )
+        if benign:
+            # Package already present at the latest available version. Not a
+            # failure: the caller (_ensure_windows_node / _ensure_windows_ffmpeg)
+            # re-verifies the actual tool/version afterwards and surfaces a clean,
+            # actionable error if the requirement is still unmet.
+            _logger.info(
+                "timelapse_winget_no_change",
+                package_id=package_id,
+                detail=combined or "no change",
+            )
+            _refresh_windows_tool_paths()
+            return
+        raise TimelapseError(f"`winget install {package_id}` failed: {combined or 'unknown error'}")
     _refresh_windows_tool_paths()
 
 
