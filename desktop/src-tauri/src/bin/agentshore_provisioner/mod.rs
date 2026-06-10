@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::CloseHandle;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
 // Shared install-layout constants (single source of truth for all path literals).
@@ -376,13 +377,122 @@ fn stop_pid_file(path: &Path, logger: &Logger) -> ProvisionResult<()> {
     Ok(())
 }
 
+/// Verify that `image_path` (wide string slice of length `len`) refers to a
+/// `python.exe` binary under the AgentShore managed installation tree.
+///
+/// Accepted prefixes (case-insensitive on Windows):
+/// - `%ProgramData%\AgentShore\` (machine-wide managed venv)
+/// - `%LOCALAPPDATA%\AgentShore\` (per-user venv written by older installers)
+///
+/// The path must also end with `\python.exe`. Both checks together eliminate
+/// the attack described in #115: a local user writes an arbitrary PID into the
+/// Users-writable `sidecar.pid`; the next admin-run installer calls
+/// `terminate_pid` on that PID. Without this guard, any system process could
+/// be killed. With it, only processes that are both named `python.exe` *and*
+/// live under the managed AgentShore tree are eligible.
+#[cfg(windows)]
+fn is_managed_python(image_path: &[u16], len: usize) -> bool {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    if len == 0 || len > image_path.len() {
+        return false;
+    }
+    let path_str = OsString::from_wide(&image_path[..len])
+        .to_string_lossy()
+        .to_lowercase();
+
+    // Must be named python.exe
+    if !path_str.ends_with("\\python.exe") {
+        return false;
+    }
+
+    // Must be under the machine-wide ProgramData path or the per-user
+    // LOCALAPPDATA path that older installer revisions used.
+    let programdata_prefix = std::env::var_os("ProgramData")
+        .map(|v| {
+            v.to_string_lossy()
+                .to_lowercase()
+                .trim_end_matches('\\')
+                .to_string()
+                + r"\agentshore\"
+        })
+        .unwrap_or_else(|| r"c:\programdata\agentshore\".to_string());
+
+    let localappdata_prefix = std::env::var_os("LOCALAPPDATA")
+        .map(|v| {
+            v.to_string_lossy()
+                .to_lowercase()
+                .trim_end_matches('\\')
+                .to_string()
+                + r"\agentshore\"
+        })
+        .unwrap_or_default();
+
+    path_str.starts_with(&programdata_prefix)
+        || (!localappdata_prefix.is_empty() && path_str.starts_with(&localappdata_prefix))
+}
+
+/// Terminate the process with the given PID.
+///
+/// Security invariant (#115): before calling `TerminateProcess`, query the
+/// target's full image path via `QueryFullProcessImageNameW` and verify it is
+/// a `python.exe` binary under the AgentShore managed installation tree. If
+/// the image check fails (wrong executable, wrong location, or
+/// `QueryFullProcessImageNameW` itself fails because the process has already
+/// exited), the kill is skipped and `Ok(false)` is returned. This prevents a
+/// local user from writing an arbitrary PID into the Users-writable
+/// `sidecar.pid` and having the elevated installer kill an unrelated process.
+///
+/// `PROCESS_QUERY_LIMITED_INFORMATION` is sufficient for
+/// `QueryFullProcessImageNameW` and does not require `SeDebugPrivilege`.
 #[cfg(windows)]
 fn terminate_pid(pid: u32) -> Result<bool, String> {
+    // Buffer sized per Windows docs: MAX_PATH is 260 but long-path names can
+    // reach 32767 UTF-16 code units. Allocate the full ceiling so we never
+    // truncate a valid path.
+    const MAX_IMAGE_PATH: usize = 32768;
+
     unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE_ACCESS, 0, pid);
+        // Open with both TERMINATE and QUERY_LIMITED_INFORMATION so we can
+        // inspect the image before committing to a kill.
+        let handle = OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+            0,
+            pid,
+        );
         if handle.is_null() {
+            // Process not running or access denied; treat as already gone.
             return Ok(false);
         }
+
+        // Query the full image path. If this fails (process exited between
+        // OpenProcess and here, or any other error), do NOT kill — we can no
+        // longer verify the target.
+        let mut buf = [0u16; MAX_IMAGE_PATH];
+        let mut buf_len = MAX_IMAGE_PATH as u32;
+        // dwFlags = 0 means Win32 format (not native NT path).
+        let query_ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut buf_len) != 0;
+        if !query_ok {
+            eprintln!(
+                "[agentshore-provisioner] QueryFullProcessImageNameW failed for pid {pid}; \
+                 skipping kill (process likely already exited)"
+            );
+            CloseHandle(handle);
+            return Ok(false);
+        }
+
+        // Verify the target is our managed python.exe before committing to a kill.
+        if !is_managed_python(&buf, buf_len as usize) {
+            let path_display = String::from_utf16_lossy(&buf[..buf_len as usize]);
+            eprintln!(
+                "[agentshore-provisioner] pid {pid} image '{path_display}' is not a managed \
+                 AgentShore python.exe; skipping kill"
+            );
+            CloseHandle(handle);
+            return Ok(false);
+        }
+
         let terminated = TerminateProcess(handle, 1) != 0;
         if terminated {
             WaitForSingleObject(handle, 5_000);
@@ -651,6 +761,77 @@ mod tests {
         stop_pid_file(&pid_file, &logger).expect("ignore stale pid");
         assert!(!pid_file.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Unit-test the `is_managed_python` path-verification guard that prevents
+    /// the #115 attack (arbitrary PID written to the Users-writable `sidecar.pid`
+    /// by a local user, then killed by the next elevated installer run).
+    ///
+    /// `is_managed_python` only exists on Windows; the test is gated accordingly.
+    #[cfg(windows)]
+    #[test]
+    fn is_managed_python_accepts_managed_paths_and_rejects_others() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let encode = |s: &str| -> Vec<u16> {
+            std::ffi::OsStr::new(s)
+                .encode_wide()
+                .collect::<Vec<u16>>()
+        };
+
+        // Use the real ProgramData prefix so the test works on any Windows install.
+        let programdata = env::var_os("ProgramData")
+            .map(|v| v.to_string_lossy().to_string())
+            .unwrap_or_else(|| r"C:\ProgramData".to_string());
+
+        // Canonical managed path — must be accepted.
+        let managed_path = format!(r"{programdata}\AgentShore\venv\Scripts\python.exe");
+        let buf = encode(&managed_path);
+        assert!(
+            is_managed_python(&buf, buf.len()),
+            "managed venv python.exe should be accepted: {managed_path}"
+        );
+
+        // Case-insensitive variant — must be accepted.
+        let managed_lower = managed_path.to_lowercase();
+        let buf_lower = encode(&managed_lower);
+        assert!(
+            is_managed_python(&buf_lower, buf_lower.len()),
+            "lower-case managed path should be accepted"
+        );
+
+        // System python — must be rejected.
+        let system_python = r"C:\Windows\System32\python.exe";
+        let buf_sys = encode(system_python);
+        assert!(
+            !is_managed_python(&buf_sys, buf_sys.len()),
+            "system python.exe must be rejected"
+        );
+
+        // Arbitrary executable — must be rejected.
+        let arbitrary = r"C:\Windows\System32\svchost.exe";
+        let buf_arb = encode(arbitrary);
+        assert!(
+            !is_managed_python(&buf_arb, buf_arb.len()),
+            "svchost.exe must be rejected"
+        );
+
+        // Path-traversal spoof: contains AgentShore prefix text but doesn't
+        // start with the managed root — must be rejected.
+        let spoof = format!(
+            r"C:\Users\attacker\{programdata}\AgentShore\venv\Scripts\python.exe"
+        );
+        let buf_spoof = encode(&spoof);
+        assert!(
+            !is_managed_python(&buf_spoof, buf_spoof.len()),
+            "path-traversal spoof must be rejected"
+        );
+
+        // Zero-length must not panic and must return false.
+        assert!(
+            !is_managed_python(&[], 0),
+            "zero-length buffer must be rejected"
+        );
     }
 
     fn test_logger(root: &Path) -> Logger {
