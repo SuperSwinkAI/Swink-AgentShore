@@ -65,7 +65,13 @@ pub fn runtime_dir() -> PathBuf {
 }
 
 /// Sidecar pid file: `%ProgramData%\AgentShore\runtime\sidecar.pid` (Windows only).
+///
+/// Used by the lib crate's `sidecar_pid` module. When `install_layout` is
+/// included via `#[path]` into the provisioner binary, only a subset of
+/// callers is present, so suppress the dead-code lint here rather than at
+/// every hypothetical future call site.
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 pub fn sidecar_pid_path() -> PathBuf {
     runtime_dir().join("sidecar.pid")
 }
