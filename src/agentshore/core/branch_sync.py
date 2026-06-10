@@ -22,12 +22,13 @@ compare-and-swap, guarded by an explicit ancestor check) instead of merging.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import structlog
+
+from agentshore import command
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,37 +60,9 @@ async def _git(*args: str, cwd: Path, timeout: float = 120.0) -> tuple[int, str,
     """Run ``git``; return ``(rc, stdout, stderr)``. rc=-1 on timeout/spawn error.
 
     Never raises — this is best-effort housekeeping.
-
-    ``stdin`` is pinned to ``DEVNULL``: a git child must never inherit the
-    sidecar's stdin (the live Tauri JSON-RPC pipe), or Git-for-Windows' MSYS2
-    runtime wedges at 0 CPU probing it. The rest of the env is inherited so an
-    authenticated ``fetch`` still uses the configured credential helper (the
-    sidecar already sets ``GIT_TERMINAL_PROMPT=0``, so a missing credential fails
-    fast instead of prompting).
     """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            cwd=str(cwd),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except OSError as exc:
-        return -1, "", str(exc)
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return -1, "", f"git {' '.join(args)} timed out after {timeout:.0f}s"
-    rc = proc.returncode if proc.returncode is not None else -1
-    return (
-        rc,
-        stdout_b.decode("utf-8", errors="replace"),
-        stderr_b.decode("utf-8", errors="replace"),
-    )
+    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout)
+    return result.returncode, result.stdout, result.stderr
 
 
 async def fast_forward_local_branch(

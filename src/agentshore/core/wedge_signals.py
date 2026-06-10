@@ -13,15 +13,14 @@ diagnostic field is far less harmful than failing the dispatch itself.
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
-import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from agentshore import command
 from agentshore.paths import project_db_path, project_dir
 
 if TYPE_CHECKING:
@@ -83,20 +82,8 @@ def collect_dirty_trunk_paths(project_path: Path) -> list[DirtyTrunkEntry]:
     AgentShore/beads are excluded. Errors return an empty list — diagnosis
     falls back to the skill's own ``git status`` call.
     """
-    if shutil.which("git") is None:
-        return []
-    try:
-        result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-            ["git", "status", "--porcelain"],
-            cwd=str(project_path),
-            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _logger.warning("wedge_signals_git_status_failed", error=str(exc))
+    result = command.git_sync("status", "--porcelain", cwd=project_path, timeout_seconds=10.0)
+    if result.tool_missing:
         return []
     if result.returncode != 0:
         return []
@@ -126,20 +113,10 @@ def collect_orphan_worktree_paths(
     session. The main checkout itself is excluded. Errors return an
     empty list.
     """
-    if shutil.which("git") is None:
-        return []
-    try:
-        result = subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=str(project_path),
-            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _logger.warning("wedge_signals_worktree_list_failed", error=str(exc))
+    result = command.git_sync(
+        "worktree", "list", "--porcelain", cwd=project_path, timeout_seconds=10.0
+    )
+    if result.tool_missing:
         return []
     if result.returncode != 0:
         return []

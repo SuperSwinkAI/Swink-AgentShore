@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess  # nosec B404
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,8 +25,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agentshore import subprocess_env
-from agentshore.environment import resolve_executable
+from agentshore import command
 from agentshore.errors import AgentAuthError, OrchestratorError
 from agentshore.identity_names import (
     canonical_identity_name,
@@ -126,26 +124,15 @@ def _isolated_gh_config_dir(identity_name: str) -> Path:
 
 
 def _github_repo_name_from_remote(project_path: Path) -> str:
-    git_path = resolve_executable("git")
-    if git_path is None:
+    completed = command.git_sync(
+        "config",
+        "--get",
+        "remote.origin.url",
+        cwd=project_path,
+        timeout_seconds=float(_REPO_ACCESS_TIMEOUT_SECONDS),
+    )
+    if completed.tool_missing:
         raise AgentAuthError("git CLI not found for repository access preflight")
-
-    try:
-        completed = subprocess.run(  # nosec B603
-            [git_path, "config", "--get", "remote.origin.url"],
-            cwd=project_path,
-            stdin=subprocess.DEVNULL,  # never inherit the sidecar's JSON-RPC stdin (git wedges)
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
-            env=subprocess_env.hardened_env(for_git=True),
-            creationflags=subprocess_env.no_window_creationflags(),
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise AgentAuthError(
-            f"GitHub repository access preflight failed while reading git remote: {exc}"
-        ) from exc
 
     remote = completed.stdout.strip()
     if completed.returncode != 0 or not remote:
@@ -273,30 +260,25 @@ class IdentityResolver:
         if cache_key in self._token_cache:
             return self._token_cache[cache_key]
 
-        gh_path = resolve_executable("gh")
-        if gh_path is None:
+        overlay = {"GH_CONFIG_DIR": expanded_config_dir} if expanded_config_dir else None
+        result = command.gh_sync(
+            "auth",
+            "token",
+            "-h",
+            "github.com",
+            "-u",
+            login,
+            env_overlay=overlay,
+            timeout_seconds=10.0,
+        )
+        if result.tool_missing:
             _logger.warning("identity_gh_cli_missing", login=login)
             return None
-
-        overlay = {"GH_CONFIG_DIR": expanded_config_dir} if expanded_config_dir else None
-        env = subprocess_env.hardened_env(overlay, for_gh=True)
-
-        try:
-            result = subprocess.run(  # nosec B603
-                [gh_path, "auth", "token", "-h", "github.com", "-u", login],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10,
-                env=env,
-                creationflags=subprocess_env.no_window_creationflags(),
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        if result.returncode != 0:
             _logger.warning(
                 "identity_gh_token_lookup_failed",
                 login=login,
-                error=str(exc),
+                error=result.stderr.strip()[:200],
             )
             return None
 
@@ -327,26 +309,16 @@ class IdentityResolver:
             return self._validation_cache[token]
 
         validation: tuple[bool, str | None, str | None]
-        gh_path = resolve_executable("gh")
-        if gh_path is None:
+        completed = command.gh_sync(
+            "api",
+            "user",
+            "--jq",
+            ".login",
+            env_overlay={"GH_TOKEN": token, "GITHUB_TOKEN": token},
+            timeout_seconds=10.0,
+        )
+        if completed.tool_missing:
             validation = (False, None, "gh CLI not found for token validation")
-            self._validation_cache[token] = validation
-            return validation
-
-        env = subprocess_env.hardened_env({"GH_TOKEN": token, "GITHUB_TOKEN": token}, for_gh=True)
-        try:
-            completed = subprocess.run(  # nosec B603
-                [gh_path, "api", "user", "--jq", ".login"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-                env=env,
-                creationflags=subprocess_env.no_window_creationflags(),
-            )
-        except (subprocess.SubprocessError, OSError) as exc:
-            validation = (False, None, str(exc))
             self._validation_cache[token] = validation
             return validation
 

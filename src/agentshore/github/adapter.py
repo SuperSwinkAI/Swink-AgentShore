@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 from typing import TYPE_CHECKING
 
 import aiosqlite
 import structlog
 
+from agentshore import command
 from agentshore.data.store import ExternalMutationRecord, GitHubIssueRecord, PullRequestRecord
 from agentshore.github.labels import PRIORITY_SCORES
 from agentshore.github.pr_links import infer_pr_issue_links
@@ -707,31 +707,6 @@ async def _run_gh(
     timeout: float = _GH_TIMEOUT,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    """Run ``gh <args>`` and return (returncode, stdout, stderr).
-
-    ``stdin`` is pinned to ``DEVNULL`` so the child never inherits the sidecar's
-    stdin (the live Tauri JSON-RPC pipe). That stdin-probe contention wedges
-    git's MSYS2 runtime at 0 CPU; gh is a Go binary and is not known to wedge,
-    but it is hardened the same way for consistency.
-    """
-    proc_env = {**os.environ, **env} if env else None
-    proc = await asyncio.create_subprocess_exec(
-        "gh",
-        *args,
-        env=proc_env,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise
-
-    return (
-        proc.returncode or 0,
-        stdout_b.decode(errors="replace"),
-        stderr_b.decode(errors="replace"),
-    )
+    """Run ``gh <args>`` and return (returncode, stdout, stderr)."""
+    result = await command.gh(*args, env_overlay=env, timeout_seconds=timeout)
+    return result.returncode, result.stdout, result.stderr
