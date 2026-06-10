@@ -14,9 +14,9 @@
  *      Required: ``session.start`` reads its config off the active project,
  *      and the sidecar may have been told to forget the previous selection
  *      (``project.deselect``) on its way to the ESR / chooser screen.
- *   2. Read the project's agentshore.yaml via ``project.inspect`` and hydrate
- *      the budget slice so the caller can layer the persisted-local budget
- *      back on top via ``budgetSelectionToConfig``. The budget is not
+ *   2. Read the project's agentshore.yaml typed fields via ``project.inspect``
+ *      and hydrate the budget slice so the caller can layer the persisted-local
+ *      budget back on top via ``budgetSelectionToConfig``. The budget is not
  *      currently sent on the ``session.start`` wire (the sidecar reads it
  *      out of ``agentshore.yaml``); the call still goes through so callers
  *      that DO want to mutate budget-on-disk before start (a near-term
@@ -41,9 +41,9 @@ import type { NavigateFunction } from "react-router-dom";
 import {
   budgetHydrationToSelection,
   budgetSelectionToConfig,
-  parseProjectYaml,
-} from "./projectYaml";
-import { inspectProject, selectProject } from "../rpc/projectClient";
+  inspectProject,
+  selectProject,
+} from "../rpc/projectClient";
 
 
 const SETUP_STORAGE_KEY = "agentshore.desktop.setup.v1";
@@ -199,19 +199,14 @@ export async function startSessionFromPersistedSetup(
     return;
   }
 
-  // Step 2: inspect + hydrate budget. The budget is read here so callers
-  // that want to round-trip it through a future ``project.set_budget`` RPC
-  // (#580) have a single place to slot in. Currently we only re-compute it
-  // for side-effect-free symmetry with the setup rail's hydration flow.
+  // Step 2: inspect + hydrate budget. Uses typed parsed fields from the
+  // Python sidecar — no TS YAML parser needed (issue #123). Compute the
+  // budget selection eagerly so callers that want to write it back via
+  // project.set_budget (#580) have a single place to slot in.
   try {
     const inspect = await inspectImpl();
-    const hydration = parseProjectYaml(inspect.agentshore_yaml?.raw ?? null);
-    const budget = budgetHydrationToSelection(hydration.budget);
+    const budget = budgetHydrationToSelection(inspect.agentshore_yaml?.parsed?.budget);
     if (budget !== null) {
-      // budgetSelectionToConfig is the shape ``project.set_budget`` will
-      // accept once #580 lands. Compute it eagerly so a future write step
-      // is a one-liner — and so a typo in either helper trips at runtime
-      // here rather than only inside a not-yet-existing RPC.
       void budgetSelectionToConfig(budget);
     }
   } catch (err) {

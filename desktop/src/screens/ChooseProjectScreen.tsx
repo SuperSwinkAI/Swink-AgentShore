@@ -8,11 +8,11 @@ import {
   type RecentEntry,
 } from "../rpc/recentsClient";
 import {
+  budgetSelectionToConfig,
   selectProject,
   setBudget,
   type BudgetRpcInput,
 } from "../rpc/projectClient";
-import { budgetSelectionToConfig } from "../setup/projectYaml";
 import {
   persistedSetupExists,
   readPersistedBudget,
