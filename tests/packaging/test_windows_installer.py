@@ -138,10 +138,12 @@ def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> Non
 def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
     sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
     runtime_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_runtime.rs").read_text()
+    layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    assert 'std::env::var_os("PROGRAMDATA")' in runtime_rs
-    assert "managed_venv_python_path_in_programdata" in runtime_rs
-    assert "machine_managed_bin_path" in runtime_rs
+    # PROGRAMDATA access and path helpers moved to install_layout (single source of truth).
+    assert 'std::env::var_os("PROGRAMDATA")' in layout_rs
+    assert "managed_venv_python_path" in layout_rs
+    assert "managed_bin_path" in layout_rs
     assert "locate_machine_managed_bd" in sidecar_rs
     assert "AGENTSHORE_BD_BIN_ENV" in sidecar_rs
     assert "AGENTSHORE_GITHUB_HELPER" not in sidecar_rs
@@ -179,19 +181,24 @@ def test_windows_sidecar_keeps_legacy_and_user_path_overlays() -> None:
 
 def test_windows_sidecar_records_pid_for_installer_cleanup() -> None:
     sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
-    pid_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_pid.rs").read_text()
+    layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
     assert "write_sidecar_pid_file(child.id())" in sidecar_rs
-    assert "sidecar.pid" in pid_rs
+    # sidecar.pid path definition moved to install_layout (single source of truth).
+    assert "sidecar.pid" in layout_rs
     assert "remove_sidecar_pid_file()" in sidecar_rs
 
 
 def test_windows_sidecar_launch_suppresses_console_window() -> None:
     env_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_env.rs").read_text()
+    layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    assert "std::os::windows::process::CommandExt" in env_rs
-    assert "CREATE_NO_WINDOW" in env_rs
-    assert "cmd.creation_flags(CREATE_NO_WINDOW)" in env_rs
+    # CommandExt and CREATE_NO_WINDOW moved to install_layout (shared with provisioner).
+    assert "std::os::windows::process::CommandExt" in layout_rs
+    assert "CREATE_NO_WINDOW" in layout_rs
+    assert "creation_flags(CREATE_NO_WINDOW)" in layout_rs
+    # sidecar_env delegates to install_layout.
+    assert "install_layout::apply_no_window_creation_flags" in env_rs
 
 
 def test_windows_provisioner_has_stable_exit_codes_and_timeouts() -> None:
@@ -217,12 +224,15 @@ def test_windows_provisioner_has_stable_exit_codes_and_timeouts() -> None:
 
 def test_windows_provisioner_uses_programdata_layout_and_icacls() -> None:
     source = _provisioner_source()
+    layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    assert r'OsString::from(r"C:\ProgramData")' in source
+    # ProgramData fallback constant and path helpers moved to install_layout (single source of
+    # truth). The provisioner includes install_layout.rs via #[path] and delegates to it.
+    assert r'OsString::from(r"C:\ProgramData")' in layout_rs
     assert 'join("install-logs")' in source
-    assert 'join("venv")' in source
-    assert 'join("bin")' in source
-    assert 'join("runtime")' in source
+    assert 'join("venv")' in layout_rs
+    assert 'join("bin")' in layout_rs
+    assert 'join("runtime")' in layout_rs
     assert "icacls.exe" in source
     assert "*S-1-5-32-545" in source
 
