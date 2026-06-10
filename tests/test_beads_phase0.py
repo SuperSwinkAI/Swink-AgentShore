@@ -16,6 +16,25 @@ from agentshore.beads import (
 )
 from agentshore.state import OrchestratorState, SessionState
 
+
+class _VersionRun:
+    """Stand-in for ``subprocess.run`` that reports a fixed ``bd --version``.
+
+    Used instead of a real on-disk fake binary so the version-check tests are
+    cross-platform — a ``#!/bin/sh`` stub is not a valid Win32 executable
+    ([WinError 193]) and cannot be spawned directly on Windows.
+    """
+
+    def __init__(self, version: str) -> None:
+        self._version = version
+
+    def __call__(self, *_args: object, **_kwargs: object) -> _VersionRun:
+        self.stdout = f"bd version {self._version}\n"
+        self.stderr = ""
+        self.returncode = 0
+        return self
+
+
 # ---------------------------------------------------------------------------
 # ProjectGraph dataclass
 # ---------------------------------------------------------------------------
@@ -545,13 +564,16 @@ def test_ensure_bd_installed_accepts_env_var(
     from agentshore.beads.setup import REQUIRED_BD_VERSION, ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
-    # Stub reports the pinned version so the version check passes too.
-    bd_path.write_text(f'#!/bin/sh\necho "bd version {REQUIRED_BD_VERSION}"\n', encoding="utf-8")
+    bd_path.write_text("stub", encoding="utf-8")
     bd_path.chmod(0o755)
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
     monkeypatch.delenv("AGENTSHORE_BD_VERSION", raising=False)
 
-    with patch("shutil.which", return_value=None):
+    # Stub reports the pinned version so the version check passes too.
+    with (
+        patch("shutil.which", return_value=None),
+        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(REQUIRED_BD_VERSION)),
+    ):
         ensure_bd_installed()
 
 
@@ -564,13 +586,14 @@ def test_ensure_bd_installed_rejects_version_mismatch(
     from agentshore.beads.setup import ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
-    bd_path.write_text('#!/bin/sh\necho "bd version 0.9.0"\n', encoding="utf-8")
+    bd_path.write_text("stub", encoding="utf-8")
     bd_path.chmod(0o755)
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
     monkeypatch.delenv("AGENTSHORE_BD_VERSION", raising=False)
 
     with (
         patch("shutil.which", return_value=None),
+        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun("0.9.0")),
         pytest.raises(RuntimeError, match="does not match"),
     ):
         ensure_bd_installed()
@@ -585,13 +608,16 @@ def test_ensure_bd_installed_version_override(
     from agentshore.beads.setup import ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
-    bd_path.write_text('#!/bin/sh\necho "bd version 0.9.0"\n', encoding="utf-8")
+    bd_path.write_text("stub", encoding="utf-8")
     bd_path.chmod(0o755)
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
     # Explicit override to the stub's version makes the check pass.
     monkeypatch.setenv("AGENTSHORE_BD_VERSION", "0.9.0")
 
-    with patch("shutil.which", return_value=None):
+    with (
+        patch("shutil.which", return_value=None),
+        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun("0.9.0")),
+    ):
         ensure_bd_installed()
 
 

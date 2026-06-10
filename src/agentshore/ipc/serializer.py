@@ -131,7 +131,7 @@ def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
 
     return {
         "enabled": budget.enabled,
-        "total": budget.total_budget if budget.enabled else None,
+        "total_budget": budget.total_budget if budget.enabled else None,
         "spent": budget.spent,
         "remaining": (
             budget.remaining if budget.enabled and math.isfinite(budget.remaining) else None

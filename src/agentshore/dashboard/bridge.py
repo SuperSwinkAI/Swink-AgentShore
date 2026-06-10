@@ -430,6 +430,8 @@ class DashboardBridge:
         if not isinstance(msg, dict):
             return
         msg_type = msg.get("type")
+        payload = msg.get("payload")
+        fields: dict[str, object] = payload if isinstance(payload, dict) else msg
 
         # Tier 1 backstop: with session_id stamped on every event, reject any
         # that names a session other than the one we serve. Events without an id
@@ -470,10 +472,8 @@ class DashboardBridge:
         if msg_type != "play_event":
             return
 
-        payload = msg.get("payload")
         if not isinstance(payload, dict):
             return
-        fields: dict[str, object] = payload
 
         event = dict(fields)
         event["type"] = msg_type

@@ -98,13 +98,16 @@ def ensure_bd_installed() -> None:
     """
     from agentshore.beads.downloader import provision_bd
 
-    # provision_bd is a no-op when bd is already installed, or raises with
-    # instructions when it is not (respecting the headless-fail invariant).
-    provision_bd(REQUIRED_BD_VERSION)
-
+    # provision_bd returns the existing bd path when already installed,
+    # downloads + returns the installed path when consent is present, or raises
+    # with instructions when bd is absent and no consent is given (the
+    # headless-fail invariant).
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
-        # Should not be reachable if provision_bd succeeded, but guard anyway.
+        bd_binary = provision_bd(REQUIRED_BD_VERSION)
+    if bd_binary is None:
+        # Reachable only when the download was attempted and failed (best-effort
+        # path returns None); the no-consent path raises inside provision_bd.
         raise RuntimeError(
             "The bd binary was not found. Set AGENTSHORE_BD_BIN to a bundled binary or install "
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."

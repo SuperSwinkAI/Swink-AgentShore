@@ -31,7 +31,6 @@ from agentshore.state import (
     PlayType,
     SkillResult,
 )
-from tests.ci_support import requires_external_tooling
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,10 +125,13 @@ def _success_outcome(pr_number: int = 42) -> PlayOutcome:
 # ---------------------------------------------------------------------------
 
 
-@requires_external_tooling
 @pytest.mark.asyncio
 async def test_bd_lock_serialises_concurrent_calls() -> None:
-    """Two concurrent bd coroutines must not overlap — the lock ensures sequential execution."""
+    """Two concurrent bd coroutines must not overlap — the lock ensures sequential execution.
+
+    Fully hermetic: both binary resolution and the subprocess spawn are mocked, so
+    the test exercises only ``_BD_LOCK`` ordering and needs no real bd on PATH.
+    """
     timeline: list[str] = []
 
     async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
@@ -142,7 +144,11 @@ async def test_bd_lock_serialises_concurrent_calls() -> None:
         return ""
 
     # Patch the subprocess path inside bd() to our fake that captures ordering.
-    with patch("agentshore.beads.asyncio.create_subprocess_exec") as mock_exec:
+    # resolve_bd_binary is pinned so the test does not depend on bd being installed.
+    with (
+        patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
+        patch("agentshore.beads.asyncio.create_subprocess_exec") as mock_exec,
+    ):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
-from agentshore.agents import cli_grok
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
@@ -456,6 +455,10 @@ def build_argv(
         return args
 
     if agent_type == AgentType.GROK:
+        # Imported lazily: cli_grok imports private helpers from this module at
+        # import time, so a top-level import here would form a circular import.
+        from agentshore.agents import cli_grok
+
         return cli_grok.build_argv(
             prompt=prompt,
             binary=binary,

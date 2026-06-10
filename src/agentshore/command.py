@@ -36,6 +36,11 @@ if TYPE_CHECKING:
 TIMEOUT_RETURN_CODE = 124
 # Return code used for a tool that could not be located on the box.
 TOOL_NOT_FOUND_RETURN_CODE = 127
+# Return code used when the process could not be spawned at all (e.g. an invalid
+# ``cwd`` — on Windows a stale/deleted project dir raises NotADirectoryError
+# [WinError 267] from the spawn). 126 mirrors the shell "command found but not
+# executable" convention for an unrunnable command.
+SPAWN_FAILED_RETURN_CODE = 126
 
 
 class CommandStatus(StrEnum):
@@ -247,6 +252,18 @@ def _timeout_result(argv: Sequence[str], exc: CommandTimeoutError) -> CommandRes
     )
 
 
+def _spawn_failed_result(argv: Sequence[str], exc: OSError) -> CommandResult:
+    """The process could not be spawned (e.g. invalid ``cwd``). The hardened
+    git/gh wrappers promise never to raise, so surface it as a nonzero result."""
+    return CommandResult(
+        args=tuple(argv),
+        returncode=SPAWN_FAILED_RETURN_CODE,
+        stdout="",
+        stderr=str(exc),
+        status=CommandStatus.NONZERO,
+    )
+
+
 async def git(
     *args: str,
     cwd: Path | None = None,
@@ -272,6 +289,8 @@ async def git(
         )
     except CommandTimeoutError as exc:
         return _timeout_result(full, exc)
+    except OSError as exc:
+        return _spawn_failed_result(full, exc)
 
 
 async def gh(
@@ -299,6 +318,8 @@ async def gh(
         )
     except CommandTimeoutError as exc:
         return _timeout_result(full, exc)
+    except OSError as exc:
+        return _spawn_failed_result(full, exc)
 
 
 def git_sync(
@@ -326,6 +347,8 @@ def git_sync(
         )
     except CommandTimeoutError as exc:
         return _timeout_result(full, exc)
+    except OSError as exc:
+        return _spawn_failed_result(full, exc)
 
 
 def gh_sync(
@@ -355,3 +378,5 @@ def gh_sync(
         )
     except CommandTimeoutError as exc:
         return _timeout_result(full, exc)
+    except OSError as exc:
+        return _spawn_failed_result(full, exc)

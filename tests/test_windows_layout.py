@@ -6,8 +6,6 @@ Two groups of tests:
    that ``subprocess_env._canonical_windows_paths`` includes the key directories
    that ``desktop/src-tauri/src/install_layout.rs`` defines. If this test fails,
    one side drifted — update both files together and refresh this test.
-   Also pins that ``beads.managed_bd_dir()`` resolves to the expected per-user
-   Windows path (``%LOCALAPPDATA%\\Programs\\bd``).
 
 2. **Cross-platform PATH-safety test** (runs everywhere): asserts that
    ``subprocess_env._canonical_windows_paths`` never yields an empty path, even
@@ -78,7 +76,8 @@ def test_managed_bin_path_suffix_matches_rust_constant() -> None:
                       = ``ProgramData\\AgentShore\\bin``
 
     bd is excluded: bd resolution is owned by agentshore.beads.resolve_bd_binary
-    (see test_beads_managed_bd_dir_windows for the bd path pin).
+    (PATH + AGENTSHORE_BD_BIN only). The installer drops bd.exe into the managed
+    bin dir, which the sidecar PATH overlay already prepends.
     """
     expected_suffix = Path("AgentShore") / "bin"
     for tool in ("git", "gh"):
@@ -88,24 +87,6 @@ def test_managed_bin_path_suffix_matches_rust_constant() -> None:
         assert matching, (
             f"No candidate for tool={tool!r} ends with {expected_suffix}. Candidates: {candidates}"
         )
-
-
-def test_beads_managed_bd_dir_windows() -> None:
-    """On Windows, beads.managed_bd_dir() must resolve to LOCALAPPDATA\\Programs\\bd.
-
-    This is the per-user install location beads' own install.ps1 uses, and is
-    where agentshore init provisions bd.  subprocess_env no longer handles bd —
-    this pins the bd path contract via the single owner: beads.resolve_bd_binary.
-    """
-    from agentshore.beads import managed_bd_dir
-
-    local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    expected = Path(local_appdata) / "Programs" / "bd"
-    result = managed_bd_dir()
-    assert result == expected, (
-        f"beads.managed_bd_dir() returned {result!r}; expected {expected!r}.\n"
-        "Update agentshore.beads.managed_bd_dir if the Windows bd install path changed."
-    )
 
 
 # ---------------------------------------------------------------------------

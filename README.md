@@ -23,13 +23,13 @@ The `agentshore` CLI runs on Windows 11. Install it either way:
 # Recommended: the bootstrap script (locates/installs uv, then `uv tool install`)
 powershell -ExecutionPolicy Bypass -File scripts\install-agentshore.ps1
 # or, against the GitHub source / an explicit wheel:
-.\scripts\install-agentshore.ps1 -Wheel dist\agentshore-0.2.1-py3-none-any.whl
+.\scripts\install-agentshore.ps1 -Wheel dist\agentshore-0.3.0-py3-none-any.whl
 ```
 
 ```powershell
 # Or a plain pip install of the wheel into any Python 3.12+ venv:
 py -m venv .venv; .venv\Scripts\Activate.ps1
-pip install dist\agentshore-0.2.1-py3-none-any.whl
+pip install dist\agentshore-0.3.0-py3-none-any.whl
 ```
 
 The wheel is self-contained (schema, dashboard assets, and skill templates are bundled), so a plain `pip install` yields a fully working CLI — no extras required. Timelapse capture is an optional, separately-provisioned npm/ffmpeg toolchain and is **not** part of the CLI install. If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.

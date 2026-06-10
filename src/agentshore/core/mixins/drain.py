@@ -272,7 +272,7 @@ class DrainController:
         self._host._time_override_minutes = (
             int(time_minutes) if time_enabled and time_minutes is not None else 0
         )
-        await self._rearm_after_budget_change()
+        resumed = await self._rearm_after_budget_change()
         if persist:
             self._persist_budget()
         _logger.info(
@@ -283,7 +283,7 @@ class DrainController:
             time_minutes=self._host._time_override_minutes,
             session_id=self._session_id,
         )
-        return await self._apply_and_publish()
+        return await self._apply_and_publish(resumed=resumed)
 
     async def add_budget(
         self,
@@ -318,7 +318,7 @@ class DrainController:
                 )
             self._host._time_override_enabled = True
             self._host._time_override_minutes = new_minutes
-        await self._rearm_after_budget_change()
+        resumed = await self._rearm_after_budget_change()
         if persist:
             self._persist_budget()
         _logger.info(
@@ -327,12 +327,13 @@ class DrainController:
             delta_minutes=delta_minutes,
             session_id=self._session_id,
         )
-        return await self._apply_and_publish()
+        return await self._apply_and_publish(resumed=resumed)
 
     async def current_budget(self) -> dict[str, object]:
         """Return the live-effective caps + spend/remaining (prefill/echo)."""
         state = await self._state_builder.build_state()
-        return self._applied_from_state(state)
+        # A pure read never resumes/reverses anything.
+        return self._applied_from_state(state, resumed=False)
 
     # --- live-budget helpers ----------------------------------------------
 
@@ -371,24 +372,27 @@ class DrainController:
 
         write_budget_to_config(config_path, persisted)
 
-    async def _apply_and_publish(self) -> dict[str, object]:
+    async def _apply_and_publish(self, *, resumed: bool = False) -> dict[str, object]:
         """Build a fresh state, push it so the dashboard repaints immediately, echo it.
 
         A live cap change must not wait for the next loop tick to surface — emit
         ``on_state_update`` right away so the budget bar reflects the new caps the
-        instant the RPC/command returns.
+        instant the RPC/command returns. ``resumed`` reflects whether the cap
+        change un-paused or reversed a drain (see ``_rearm_after_budget_change``).
         """
         state = await self._state_builder.build_state()
         await self._host._safe_call(
             self._host._state_provider.on_state_update(state), "on_state_update_budget"
         )
-        return self._applied_from_state(state)
+        return self._applied_from_state(state, resumed=resumed)
 
     @staticmethod
-    def _applied_from_state(state: OrchestratorState) -> dict[str, object]:
+    def _applied_from_state(
+        state: OrchestratorState, *, resumed: bool = False
+    ) -> dict[str, object]:
         b = state.budget
         if b is None:
-            return {}
+            return {"resumed": resumed}
         remaining = (
             b.remaining if (b.remaining is not None and math.isfinite(b.remaining)) else None
         )
@@ -401,14 +405,16 @@ class DrainController:
             "time_total_minutes": b.time_total_minutes,
             "time_elapsed_minutes": b.time_elapsed_minutes,
             "time_remaining_minutes": b.time_remaining_minutes,
+            "resumed": resumed,
         }
 
-    async def _rearm_after_budget_change(self) -> None:
+    async def _rearm_after_budget_change(self) -> bool:
         """Resume a budget pause or reverse a budget/time drain if now in-bounds.
 
         Routes resume through the single canonical :meth:`_DrainHost.resume`
         path so the DB session row, feedback-cadence counters, and the
-        ``session_resumed`` event are always updated consistently.
+        ``session_resumed`` event are always updated consistently. Returns
+        ``True`` when the cap change actually un-paused or reversed a drain.
         """
         # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
         paused_on_budget = (
@@ -419,7 +425,7 @@ class DrainController:
         )
         if paused_on_budget and not await self._reserve_still_reached():
             await self._host.resume()
-            return
+            return True
         # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
         if (
             self._host._draining
@@ -430,6 +436,8 @@ class DrainController:
         ):
             await self._exit_drain()
             await self._host.resume()
+            return True
+        return False
 
     async def _reserve_still_reached(self) -> bool:
         state = await self._state_builder.build_state()
