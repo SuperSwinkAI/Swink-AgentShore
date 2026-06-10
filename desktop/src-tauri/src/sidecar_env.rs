@@ -1,20 +1,14 @@
 use std::process::Command;
 
-use crate::sidecar_runtime::machine_managed_bin_path;
+use crate::install_layout;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-#[cfg(target_os = "windows")]
+/// Apply `CREATE_NO_WINDOW` to *cmd* on Windows; no-op elsewhere.
+///
+/// Delegates to `install_layout::apply_no_window_creation_flags` — the single
+/// definition shared with the provisioner binary.
 pub(crate) fn apply_no_window_creation_flags(cmd: &mut Command) {
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    install_layout::apply_no_window_creation_flags(cmd);
 }
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn apply_no_window_creation_flags(_cmd: &mut Command) {}
 
 /// Windows-only headless/utf-8 environment for the sidecar process.
 ///
@@ -75,8 +69,12 @@ pub(crate) fn apply_user_path_overlay(cmd: &mut Command) {
                 .join("Links"),
         );
     }
-    if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
-        candidates.push(machine_managed_bin_path(std::path::Path::new(&programdata)));
+    #[cfg(target_os = "windows")]
+    {
+        // Machine-managed bin dir (the provisioner drops bd.exe here).
+        // Gated on cfg so an empty PathBuf::new() is never pushed on POSIX
+        // (an empty PATH entry = cwd in POSIX PATH semantics — a security hole).
+        candidates.push(install_layout::managed_bin_path());
     }
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
         candidates.push(

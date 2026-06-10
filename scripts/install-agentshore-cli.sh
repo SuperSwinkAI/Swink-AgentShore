@@ -101,10 +101,12 @@ log "Installing agentshore CLI from wheel"
 info "Wheel: $WHEEL_PATH"
 
 # The wheel exposes the complete CLI dependency set directly; there are no
-# package extras to attach here. Keep this aligned with the Windows helper so
-# both installers refresh the same runtime.
-"$UV_BIN" tool install --force --reinstall --python 3.12 \
-    "agentshore @ file://$WHEEL_PATH" \
+# package extras to attach here. Keep this aligned with the Windows helper and
+# provisioner binary so all three paths use the same flag set.
+# Use plain path (not file:// URI) — uv resolves local paths directly and
+# handles spaces/# /% correctly without percent-encoding.
+"$UV_BIN" tool install --native-tls --force --reinstall --python 3.12 \
+    "$WHEEL_PATH" \
   || die "uv tool install failed"
 
 # ── 4. Smoke test ────────────────────────────────────────────────────────────

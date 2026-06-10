@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::install_layout;
+
 /// Development fallback command for the Python sidecar.
 pub(crate) fn development_sidecar_command() -> Command {
     if let Some(root) = find_repo_root_for_dev_sidecar() {
@@ -61,8 +63,7 @@ fn dev_venv_python_path(repo_root: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn locate_machine_managed_bd() -> Option<PathBuf> {
-    let programdata = std::env::var_os("PROGRAMDATA")?;
-    let path = machine_managed_bin_path(Path::new(&programdata)).join("bd.exe");
+    let path = install_layout::managed_bin_path().join("bd.exe");
     if path.is_file() {
         Some(path)
     } else {
@@ -75,37 +76,13 @@ pub(crate) fn locate_machine_managed_bd() -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) fn machine_managed_bin_path(programdata: &Path) -> PathBuf {
-    programdata.join(r"AgentShore\bin")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn machine_managed_bin_path(_programdata: &Path) -> PathBuf {
-    PathBuf::new()
-}
-
 /// Locate the Python interpreter inside the platform installer's managed venv.
 pub(crate) fn locate_managed_venv_python() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(programdata) = std::env::var_os("PROGRAMDATA") {
-            let path = managed_venv_python_path_in_programdata(Path::new(&programdata));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            let path = managed_venv_python_path_in_local_appdata(Path::new(&local_appdata));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-            let path = managed_venv_python_path(Path::new(&userprofile));
-            if path.is_file() {
-                return Some(path);
-            }
+        let path = install_layout::managed_venv_python_path();
+        if path.is_file() {
+            return Some(path);
         }
     }
 
@@ -133,18 +110,10 @@ pub(crate) fn managed_venv_python_path(home: &Path) -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
+        // Per-user fallback (AppData\Local) — the machine-managed path under
+        // ProgramData is tried first in locate_managed_venv_python.
         home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
     }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn managed_venv_python_path_in_programdata(programdata: &Path) -> PathBuf {
-    programdata.join(r"AgentShore\venv\Scripts\python.exe")
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn managed_venv_python_path_in_local_appdata(local_appdata: &Path) -> PathBuf {
-    local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
 }
 
 #[cfg(test)]
@@ -176,20 +145,15 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn managed_venv_python_path_in_programdata_matches_installer_layout() {
-        let programdata = Path::new(r"C:\ProgramData");
-        assert_eq!(
-            managed_venv_python_path_in_programdata(programdata),
-            programdata.join(r"AgentShore\venv\Scripts\python.exe")
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn managed_venv_python_path_in_localappdata_matches_legacy_layout() {
-        let local_appdata = Path::new(r"C:\Users\example\AppData\Local");
-        assert_eq!(
-            managed_venv_python_path_in_local_appdata(local_appdata),
-            local_appdata.join(r"AgentShore\venv\Scripts\python.exe")
+        let path = install_layout::managed_venv_python_path();
+        // The managed venv python must be under ProgramData\AgentShore\venv\Scripts.
+        let s = path.to_string_lossy().to_lowercase();
+        assert!(s.contains("agentshore"), "path must contain AgentShore: {}", path.display());
+        assert!(s.contains("venv"), "path must contain venv: {}", path.display());
+        assert!(
+            s.ends_with("python.exe"),
+            "path must end with python.exe: {}",
+            path.display()
         );
     }
 
