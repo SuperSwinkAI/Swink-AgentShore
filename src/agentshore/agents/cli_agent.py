@@ -191,9 +191,9 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
-# Transient network/socket failures. desktop/agentic_jane observed claude_code
-# exits with "API Error: The socket connection was closed unexpectedly" falling
-# into the generic "unknown" bucket (#23). These are distinctive enough to match
+# Transient network/socket failures. claude_code has been observed to exit with
+# "API Error: The socket connection was closed unexpectedly" falling into the
+# generic "unknown" bucket (#23). These are distinctive enough to match
 # in either stream and are genuinely transient (a retry/take_break recovers), so
 # pulling them out of "unknown" gives operators an accurate signal instead of a
 # catch-all while keeping the same recovery treatment.

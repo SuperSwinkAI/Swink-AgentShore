@@ -19,7 +19,7 @@ Babysit a live AgentShore session that the **user already started** in a
 target directory. This skill never runs `agentshore start` — it observes,
 reports, files bugs, and (only when the session wedges) runs `agentshore
 stop`. Argument: the project directory, e.g. `/monitor_run
-/Users/wes/Development/agentic_jane`.
+/path/to/my-project`.
 
 > **CLI carve-out.** The repo rule forbids invoking `agentshore` CLI
 > subcommands from Claude Code. `/monitor_run` is a named exception, and **only
@@ -35,12 +35,14 @@ CHECKIN_SECONDS = 1200    # 20 minutes between check-ins
 STALE_AGE_S     = 300     # newest log line older than this + no process => exited
 SNAPSHOT        = <this skill dir>/snapshot.py         # human-readable readout
 PROGRESS        = <this skill dir>/progress.py         # machine-readable counters
-STATE_FILE      = /tmp/agentshore-monitor-<sanitized-DIR>.json
+STATE_FILE      = <os-temp-dir>/agentshore-monitor-<sanitized-DIR>.json
 ```
 
 Resolve `<this skill dir>` to the directory holding this `SKILL.md`.
-`<sanitized-DIR>` = `DIR` with `/` replaced by `_` (keeps the state file
-unique per target, in `/tmp` so the monitored project is never touched).
+`<os-temp-dir>` = the platform temp directory (`$TMPDIR` or `/tmp` on
+macOS/Linux, `$env:TEMP` on Windows). `<sanitized-DIR>` = `DIR` with path
+separators replaced by `_` (keeps the state file unique per target, outside
+the project tree so the monitored project is never touched).
 
 ## How the cadence works
 

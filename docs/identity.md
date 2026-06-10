@@ -93,7 +93,7 @@ One-time setup (run once in an elevated PowerShell session):
 ```powershell
 Set-Service ssh-agent -StartupType Manual
 Start-Service ssh-agent
-ssh-add $env:USERPROFILE\.ssh\id_ed25519
+ssh-add $env:USERPROFILE\.ssh\<your-key>
 ```
 
 With `StartupType Manual` the service persists across reboots; run only
