@@ -1377,7 +1377,7 @@ class CompletionProcessor:
 
             loaded, detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
             if not loaded:
-                _logger.warning("ssh_signing_key_refresh_failed", detail=detail)
+                _logger.debug("ssh_signing_key_refresh_failed", detail=detail)
         except Exception:
             pass
 
