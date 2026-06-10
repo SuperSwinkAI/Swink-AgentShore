@@ -95,13 +95,19 @@ Comprehensive design documentation lives in `docs/design/`. The PRD cross-links 
 
 ## Git Commit Signing
 
-Commits in this repo are SSH-signed. If a `git commit` fails with `incorrect passphrase supplied to decrypt private key`, the SSH agent doesn't have the key loaded. Fix it with:
+Commits in this repo are SSH-signed. If a `git commit` fails with `incorrect passphrase supplied to decrypt private key`, the SSH agent doesn't have the key loaded. Load it (substitute your own key filename for `<your-key>`):
 
 ```bash
-ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+# macOS — loads from Keychain without prompting for a passphrase
+ssh-add --apple-use-keychain ~/.ssh/<your-key>
 ```
 
-This loads the key from macOS Keychain without prompting for a passphrase. Run it once per terminal session (or after a reboot) and subsequent signed commits will work normally.
+```powershell
+# Windows — start the OpenSSH agent service first if it isn't running
+Start-Service ssh-agent; ssh-add $env:USERPROFILE\.ssh\<your-key>
+```
+
+Run it once per terminal session (or after a reboot) and subsequent signed commits will work normally.
 
 ## Key Conventions
 
