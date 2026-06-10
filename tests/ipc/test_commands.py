@@ -88,7 +88,7 @@ def test_validate_pause_no_extras_needed() -> None:
 
 
 def test_valid_commands_has_expected_entries() -> None:
-    assert len(VALID_COMMANDS) == 15
+    assert len(VALID_COMMANDS) == 16
 
 
 def test_get_state_is_valid_command() -> None:
@@ -162,3 +162,13 @@ def test_add_budget_rejects_non_integer_minutes() -> None:
 
 def test_add_budget_accepts_integer_valued_float_minutes() -> None:
     validate_command({"command": "add_budget", "delta_minutes": 30.0})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# reload_config tests
+# ---------------------------------------------------------------------------
+
+
+def test_reload_config_is_valid_command() -> None:
+    """reload_config requires no additional parameters and must not raise."""
+    validate_command({"command": "reload_config"})

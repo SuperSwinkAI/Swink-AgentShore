@@ -23,6 +23,7 @@ VALID_COMMANDS: frozenset[str] = frozenset(
         "archive_session",
         "list_archives",
         "get_state",
+        "reload_config",
     }
 )
 

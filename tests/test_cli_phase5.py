@@ -949,3 +949,12 @@ async def test_dispatch_verification_response_uses_passed_field() -> None:
         orch,
     )
     orch.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio()
+async def test_dispatch_reload_config_calls_orchestrator() -> None:
+    """reload_config IPC command calls orch.reload_config() exactly once."""
+    orch = MagicMock()
+    orch.reload_config = AsyncMock()
+    await _dispatch_command({"command": "reload_config"}, orch)
+    orch.reload_config.assert_awaited_once_with()
