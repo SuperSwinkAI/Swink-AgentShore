@@ -109,6 +109,15 @@ class AgentType(enum.Enum):
     GROK = "grok"
 
 
+# Single canonical definition of which AgentType values are CLI (subprocess)
+# agents — used by the health monitor to check liveness and by the agent
+# manager to gate identity resolution. Define it once here, adjacent to the
+# enum, so adding a new CLI agent type requires only one edit.
+CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
+)
+
+
 class AgentStatus(enum.Enum):
     """Runtime status of a managed agent."""
 

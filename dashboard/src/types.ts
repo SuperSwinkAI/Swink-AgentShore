@@ -1,9 +1,10 @@
+// AgentType is derived from the canonical AGENT_REGISTRY so it stays in sync
+// automatically when new agent types are added.  Import it here for use within
+// this file, and re-export it so downstream consumers still find it in types.ts.
+import type { AgentType } from "./agentRegistry";
+
+export type { AgentType };
 export type AgentStatus = "idle" | "busy" | "error" | "terminated";
-export type AgentType =
-  | "claude_code"
-  | "codex"
-  | "gemini"
-  | "grok";
 export type SessionState =
   | "initializing"
   | "running"

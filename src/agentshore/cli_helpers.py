@@ -8,6 +8,7 @@ import subprocess  # nosec B404
 from pathlib import Path
 
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
+from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.environment import resolve_executable
 from agentshore.errors import OrchestratorError
 from agentshore.state import AgentType
@@ -204,9 +205,7 @@ def _generate_default_config(
     time_total_minutes = time_minutes if time_minutes is not None else 0
     agent_blocks = []
     for binary in agents:
-        agent = (
-            "claude_code" if binary == "claude" else ("grok" if binary == "grok-build" else binary)
-        )
+        agent = BINARY_TO_AGENT_KEY.get(binary, binary)
         model_lines = ""
         try:
             agent_type = AgentType(agent)

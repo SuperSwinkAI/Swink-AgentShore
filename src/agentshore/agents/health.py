@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from agentshore.logging import get_logger
-from agentshore.state import AgentStatus, AgentType
+from agentshore.state import CLI_AGENT_TYPES, AgentStatus, AgentType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -15,10 +15,6 @@ if TYPE_CHECKING:
     from agentshore.agents.handle import AgentHandle
 
 _logger = get_logger(__name__)
-
-_CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
-)
 
 # Context is considered "pressured" when utilisation exceeds this ratio
 _CONTEXT_PRESSURE_THRESHOLD = 0.80
@@ -117,7 +113,7 @@ class HealthMonitor:
 
     async def _check_liveness(self, agent_id: str, handle: AgentHandle) -> None:
         """Detect a crashed CLI process and invoke on_crash."""
-        if handle.agent_type not in _CLI_AGENT_TYPES:
+        if handle.agent_type not in CLI_AGENT_TYPES:
             return
         process = handle.process
         if process is None:
