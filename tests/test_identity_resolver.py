@@ -442,14 +442,12 @@ def test_report_env_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
-    import keyring
+    from agentshore import keyring_child
 
     monkeypatch.setattr(
-        keyring,
-        "get_password",
-        lambda service, username: (
-            "ghp_keychain_token" if service == "agentshore/unseriousAI" else None
-        ),
+        keyring_child,
+        "keyring_get",
+        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousAI" else None,
     )
 
     fc = RuntimeConfig(
@@ -467,14 +465,12 @@ def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.MonkeyPatch) -> None:
-    import keyring
+    from agentshore import keyring_child
 
     monkeypatch.setattr(
-        keyring,
-        "get_password",
-        lambda service, username: (
-            "ghp_keychain_token" if service == "agentshore/unseriousai" else None
-        ),
+        keyring_child,
+        "keyring_get",
+        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousai" else None,
     )
     warnings: list[str] = []
     monkeypatch.setattr(
