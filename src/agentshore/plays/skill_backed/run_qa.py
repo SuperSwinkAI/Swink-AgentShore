@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     CapabilityGate,
@@ -19,12 +20,13 @@ class RunQAPlay(SkillBackedPlay):
     eligibility and ``can_test`` capability are enforced by agent selection.
     """
 
-    gates = (
-        CapabilityGate("can_test"),
-        InFlightGate(PlayType.RUN_QA),
-        FirstRunWarmupGate(PlayType.RUN_QA, threshold=20),
-        CooldownGate(PlayType.RUN_QA, plays=20),
-    )
+    def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
+        self.gates = (
+            CapabilityGate("can_test"),
+            InFlightGate(PlayType.RUN_QA),
+            FirstRunWarmupGate(PlayType.RUN_QA, threshold=20),
+            CooldownGate(PlayType.RUN_QA, plays=cooldown_plays),
+        )
 
     @property
     def play_type(self) -> PlayType:

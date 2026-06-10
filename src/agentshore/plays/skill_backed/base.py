@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -115,7 +115,7 @@ class SkillBackedPlay(Play, ABC):
     # Declarative preconditions. Subclasses override to declare the gates that
     # mask this play. Empty tuple == no preconditions (eligible whenever the
     # cross-cutting masks in ``rl/mask.py`` permit).
-    gates: ClassVar[Sequence[Gate]] = ()
+    gates: Sequence[Gate] = ()
 
     @property
     @abstractmethod

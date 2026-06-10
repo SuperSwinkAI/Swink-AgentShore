@@ -29,7 +29,7 @@ from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.identity_names import canonical_identity_name, same_identity
 from agentshore.logging import get_logger
 from agentshore.play_rules import (
-    DESIGN_AUDIT_COOLDOWN_PLAYS,
+    DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS,
     SEED_PROJECT_COOLDOWN_PLAYS,
     TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
     needs_review,
@@ -535,7 +535,9 @@ class PlayCandidateAnalyzer:
     def seed_audit_is_fresh(self) -> bool:
         return seed_audit_is_fresh(self._state)
 
-    def design_audit_is_fresh(self, *, window: int = DESIGN_AUDIT_COOLDOWN_PLAYS) -> bool:
+    def design_audit_is_fresh(
+        self, *, window: int = DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS
+    ) -> bool:
         return design_audit_is_fresh(self._state, window=window)
 
     def terminal_audits_are_fresh(self) -> bool:
@@ -814,7 +816,7 @@ def seed_audit_is_fresh(state: OrchestratorState) -> bool:
 
 
 def design_audit_is_fresh(
-    state: OrchestratorState, *, window: int = DESIGN_AUDIT_COOLDOWN_PLAYS
+    state: OrchestratorState, *, window: int = DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS
 ) -> bool:
     """Return True when a successful design audit is still inside the requested window."""
     if state.last_play_success_by_type.get(PlayType.DESIGN_AUDIT) is not True:

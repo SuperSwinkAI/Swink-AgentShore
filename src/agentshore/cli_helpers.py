@@ -10,6 +10,7 @@ from agentshore import command
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
 from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.errors import OrchestratorError
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.state import AgentType
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,8 @@ def _generate_default_config(
         "trusted_ids:\n"
         "  github_logins: []\n"
         "  restrict_issues_to_trusted_authors: false\n"
+        "play_pacing:\n"
+        f"  standard_cooldown_plays: {STANDARD_PLAY_COOLDOWN_PLAYS}\n"
         "rl:\n"
         "  policy_mode: learning\n"
         "  reverse_failsafe_enabled: false\n"

@@ -74,9 +74,11 @@ _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
 # COOLDOWN_PLAYS`` have elapsed since its last attempt, then the policy may
 # retry it once (a fresh strike re-arms it). This benches a play that can only
 # skip — e.g. write_implementation_plan losing the resolve-time TOCTOU race —
-# instead of letting the policy re-select it every tick. Cooldown matches the
-# project-standard 20-play window (cf. SEED/DESIGN_AUDIT cooldowns). Internal
-# control plays and RECONCILE_STATE (self-heal must stay available) are excluded.
+# instead of letting the policy re-select it every tick. This breaker cooldown
+# is intentionally separate from ``play_pacing.standard_cooldown_plays`` because
+# it is a retry bench for nonproductive outcomes, not a normal post-run play
+# cadence. Internal control plays and RECONCILE_STATE (self-heal must stay
+# available) are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
 _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {

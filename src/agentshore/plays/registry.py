@@ -74,6 +74,7 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     *cfg* lets caller-tunable settings (e.g. agent spawn limits) flow into the
     plays.  Tests that exercise mask logic can omit it; defaults apply.
     """
+    from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
     from agentshore.plays.internal.end_agent import EndAgentPlay
     from agentshore.plays.internal.end_session import EndSessionPlay
     from agentshore.plays.internal.instantiate_agent import InstantiateAgentPlay
@@ -100,6 +101,11 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     from agentshore.plays.skill_backed.write_plan import WriteImplementationPlanPlay
 
     spawn_cfg = cfg.agent_spawn if cfg is not None else None
+    standard_cooldown_plays = (
+        cfg.play_pacing.standard_cooldown_plays
+        if cfg is not None
+        else STANDARD_PLAY_COOLDOWN_PLAYS
+    )
     seed_project_ceiling = (
         cfg.scope.seed_project_mid_session_issue_ceiling if cfg is not None else 10
     )
@@ -116,19 +122,19 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
         IssuePickupPlay(),
         CodeReviewPlay(),
         MergePRPlay(),
-        RunQAPlay(),
+        RunQAPlay(cooldown_plays=standard_cooldown_plays),
         SystematicDebuggingPlay(),
-        DesignAuditPlay(),
+        DesignAuditPlay(cooldown_plays=standard_cooldown_plays),
         EndSessionPlay(),
         ReconcileStatePlay(),
         RefineTaskBreakdownPlay(),
-        CleanupPlay(),
+        CleanupPlay(cooldown_plays=standard_cooldown_plays),
         FutureFourPlay(),
         TakeBreakPlay(),
-        GroomBacklogPlay(),
+        GroomBacklogPlay(cooldown_plays=standard_cooldown_plays),
         SeedProjectPlay(mid_session_issue_ceiling=seed_project_ceiling),
-        CalibrateAlignmentPlay(),
-        PrunePlay(),
+        CalibrateAlignmentPlay(cooldown_plays=standard_cooldown_plays),
+        PrunePlay(cooldown_plays=standard_cooldown_plays),
         FutureSevenPlay(),
         FutureEightPlay(),
     ):

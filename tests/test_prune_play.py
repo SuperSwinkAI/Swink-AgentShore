@@ -145,7 +145,7 @@ def test_prune_masked_when_in_flight() -> None:
 
 
 def test_prune_masked_within_cooldown() -> None:
-    """20-play cooldown after the last completion."""
+    """Standard cooldown after the last completion."""
     play = PrunePlay()
     issues = [_issue(999)]
     tasks = [
@@ -158,7 +158,7 @@ def test_prune_masked_within_cooldown() -> None:
         plays_since_last_play_type={PlayType.PRUNE: 5},
     )
     reasons = play.preconditions(state)
-    assert any("prune cooldown (5/20" in r.text for r in reasons)
+    assert any("prune cooldown (5/42" in r.text for r in reasons)
 
 
 def test_prune_masked_without_beads_graph() -> None:

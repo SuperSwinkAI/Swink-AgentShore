@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.beads import BeadStatus
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     CapabilityGate,
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
 
 
 _STALE_LINKED_BEAD_THRESHOLD = 10
-_PRUNE_COOLDOWN_PLAYS = 20
 
 
 def _stale_linked_bead_count(state: OrchestratorState) -> int:
@@ -52,11 +52,12 @@ class PrunePlay(SkillBackedPlay):
     decomposition residue is never touched.
     """
 
-    gates = (
-        CapabilityGate("can_implement"),
-        InFlightGate(PlayType.PRUNE),
-        CooldownGate(PlayType.PRUNE, plays=_PRUNE_COOLDOWN_PLAYS),
-    )
+    def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
+        self.gates = (
+            CapabilityGate("can_implement"),
+            InFlightGate(PlayType.PRUNE),
+            CooldownGate(PlayType.PRUNE, plays=cooldown_plays),
+        )
 
     @property
     def play_type(self) -> PlayType:
