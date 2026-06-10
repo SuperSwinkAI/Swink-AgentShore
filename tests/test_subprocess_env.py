@@ -32,11 +32,11 @@ def test_resolve_tool_falls_back_to_which(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_resolve_tool_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
+    monkeypatch.delenv("AGENTSHORE_GIT_BIN", raising=False)
     monkeypatch.setattr(subprocess_env.shutil, "which", lambda _name: None)
     # Force the non-Windows branch so canonical-path probing is skipped.
     monkeypatch.setattr(subprocess_env.sys, "platform", "linux")
-    assert subprocess_env.resolve_tool("bd") is None
+    assert subprocess_env.resolve_tool("git") is None
 
 
 def test_resolve_tool_caches_positive_hits_only(monkeypatch: pytest.MonkeyPatch) -> None:

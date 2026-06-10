@@ -12,6 +12,7 @@ use tauri::{Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 pub mod activity;
+pub mod install_layout;
 pub mod jsonrpc_stdio;
 pub mod readiness;
 pub mod sidecar;

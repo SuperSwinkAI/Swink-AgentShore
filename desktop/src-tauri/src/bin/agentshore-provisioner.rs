@@ -169,8 +169,9 @@ fn run_cli(args: Vec<OsString>) -> ProvisionResult<()> {
 
     let logger = Logger::open("Installing-AgentShore-CLI")?;
     logger.line("==> Installing AgentShore CLI");
-    let wheel_uri = wheel_uri(&wheel);
-    let package = OsString::from(format!("agentshore @ {wheel_uri}"));
+    // Pass the plain wheel path directly — uv resolves local paths without a
+    // file:// URI, and plain paths handle spaces, #, %, and non-ASCII correctly
+    // (wheel_uri's %20-only encoding broke those cases).
     run_required(
         "uv tool install",
         CLI_FAILURE,
@@ -183,7 +184,7 @@ fn run_cli(args: Vec<OsString>) -> ProvisionResult<()> {
             os("--reinstall"),
             os("--python"),
             os("3.12"),
-            package,
+            wheel.clone().into_os_string(),
         ],
         CLI_TIMEOUT,
         &logger,
