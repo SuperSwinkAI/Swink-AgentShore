@@ -20,14 +20,100 @@ export interface RepoIdentity {
   origin_url?: string | null;
 }
 
+/**
+ * Typed hydration fields returned by ``project.inspect`` in
+ * ``agentshore_yaml.parsed``. The Python sidecar parses agentshore.yaml with
+ * the real config loader and surfaces these fields so the desktop setup flow
+ * never needs its own YAML parser (issue #123).
+ */
+export interface ParsedYamlFields {
+  target_branch: string | null;
+  enabled_agents: string[];
+  budget: {
+    enabled: boolean;
+    total: number;
+    warning_threshold: number;
+    time_enabled: boolean;
+    time_total_minutes: number;
+  };
+  timelapse_enabled: boolean;
+  timelapse_installed: boolean;
+  trusted_sources: string[];
+  identity_logins: string[];
+  trusted_issue_enforcement: boolean;
+}
+
 export interface ProjectInspectResult {
   path: string;
   repo_identity: RepoIdentity;
   branch: string | null;
   detected_tools: string[];
-  agentshore_yaml: { path: string; raw?: string; error?: string } | null;
+  agentshore_yaml: {
+    path: string;
+    raw?: string;
+    error?: string;
+    /** Typed fields parsed by the Python sidecar. Present when the file was
+     *  read and the config loader succeeded; absent on read error or parse
+     *  failure. */
+    parsed?: ParsedYamlFields;
+  } | null;
   beads_status: { initialised: boolean };
   prerequisites: { git: boolean; bd: boolean; gh: boolean };
+}
+
+// ---------------------------------------------------------------------------
+// Budget conversion helpers (moved here from setup/projectYaml.ts; issue #123)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-shape a ``ParsedYamlFields`` budget into the SetupState ``budget`` shape
+ * the desktop carries on the rail. Returns ``null`` when the input is absent or
+ * has nothing actionable (the caller should keep its current value).
+ */
+export function budgetHydrationToSelection(
+  hydration: ParsedYamlFields["budget"] | null | undefined,
+): {
+  mode: "capped" | "unlimited";
+  total: number;
+  timeMode: "capped" | "unlimited";
+  timeMinutes: number;
+} | null {
+  if (hydration == null) return null;
+  const dollar = hydration.enabled
+    ? { mode: "capped" as const, total: hydration.total }
+    : { mode: "unlimited" as const, total: 0 };
+  const time = hydration.time_enabled
+    ? { timeMode: "capped" as const, timeMinutes: hydration.time_total_minutes }
+    : { timeMode: "unlimited" as const, timeMinutes: 0 };
+  return { ...dollar, ...time };
+}
+
+/**
+ * Serialize a SetupState budget selection into the ``BudgetConfig`` shape that
+ * ``project.set_budget`` / ``session.set_budget`` accept on the wire. Mirrors
+ * ``src/agentshore/config/models.py:BudgetConfig``.
+ */
+export function budgetSelectionToConfig(selection: {
+  mode: "capped" | "unlimited";
+  total: number;
+  timeMode?: "capped" | "unlimited";
+  timeMinutes?: number;
+}): {
+  enabled: boolean;
+  total: number;
+  time_enabled: boolean;
+  time_total_minutes: number;
+} {
+  const dollar =
+    selection.mode === "capped"
+      ? { enabled: true, total: selection.total }
+      : { enabled: false, total: 0.0 };
+  const timeCapped = selection.timeMode === "capped";
+  return {
+    ...dollar,
+    time_enabled: timeCapped,
+    time_total_minutes: timeCapped ? (selection.timeMinutes ?? 0) : 0,
+  };
 }
 
 export interface SelectProjectOptions {

@@ -39,16 +39,13 @@ import {
   type AgentsCatalog,
 } from "./rpc/agentsClient";
 import {
+  budgetHydrationToSelection,
+  budgetSelectionToConfig,
   inspectProject,
   setBudget,
   setSeedPaths,
   setTrustedIssueEnforcement,
 } from "./rpc/projectClient";
-import {
-  budgetHydrationToSelection,
-  budgetSelectionToConfig,
-  parseProjectYaml,
-} from "./setup/projectYaml";
 import {
   esrPayloadFromReadyParams,
   SessionContext,
@@ -989,35 +986,33 @@ export function App() {
     // the hydration step below fails, the path is still useful.
     setLastProjectPath(_path);
     // DESIGN §10.1 re-entry policy: previous-session choices pre-populate
-    // from agentshore.yaml. project.inspect returns the raw YAML content; we
-    // parse the slice the setup rail needs (target_branch, enabled
-    // agents, identity logins) and overlay it on top of the persisted
-    // localStorage state. Any parse / RPC failure is non-fatal — the
-    // user can still edit on the rail.
+    // from agentshore.yaml. project.inspect returns typed parsed fields from
+    // the Python sidecar's real config loader — no TS YAML parser needed.
+    // Any RPC failure is non-fatal — the user can still edit on the rail.
     try {
       const result = await inspectProject();
-      const hydration = parseProjectYaml(result.agentshore_yaml?.raw ?? null);
-      const budgetSelection = budgetHydrationToSelection(hydration.budget);
+      const parsed = result.agentshore_yaml?.parsed;
+      const budgetSelection = budgetHydrationToSelection(parsed?.budget);
       setSetup((prev) => {
         const next: SetupState = {
           ...prev,
-          ...(hydration.targetBranch !== null
-            ? { targetBranch: hydration.targetBranch }
+          ...(parsed?.target_branch != null
+            ? { targetBranch: parsed.target_branch }
             : {}),
-          ...(hydration.enabledAgents.length > 0
-            ? { enabledAgents: hydration.enabledAgents }
+          ...(parsed != null && parsed.enabled_agents.length > 0
+            ? { enabledAgents: parsed.enabled_agents }
             : {}),
-          ...(hydration.identityLogins.length > 0
-            ? { identities: hydration.identityLogins }
+          ...(parsed != null && parsed.identity_logins.length > 0
+            ? { identities: parsed.identity_logins }
             : {}),
           ...(budgetSelection !== null ? { budget: budgetSelection } : {}),
-          ...(hydration.trustedIssueEnforcement !== null
-            ? { trustedIssueEnforcement: hydration.trustedIssueEnforcement }
+          ...(parsed != null
+            ? { trustedIssueEnforcement: parsed.trusted_issue_enforcement }
             : {}),
-          ...(hydration.trustedSources.length > 0
-            ? { trustedSources: hydration.trustedSources }
+          ...(parsed != null && parsed.trusted_sources.length > 0
+            ? { trustedSources: parsed.trusted_sources }
             : {}),
-          timelapseInstalled: hydration.timelapse?.installed ?? false,
+          timelapseInstalled: parsed?.timelapse_installed ?? false,
         };
         persistSetup(next);
         return next;
