@@ -32,7 +32,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.logging import get_logger
-from agentshore.state import CLI_AGENT_TYPES, AgentStatus, AgentType
+from agentshore.state import CLI_AGENT_TYPES, AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -434,10 +434,19 @@ class AgentManager:
         ``force=True``: skip the active-play guard.  Use this only from
         session-teardown paths (drain, completion mixin) where in-flight asyncio
         tasks have already been cancelled and the session is being wound down.
+
+        Exception: an agent whose in-flight play *is* ``END_AGENT`` is always
+        clearable.  The executor marks the retirement target with the end_agent
+        play's own marker before the play body runs, so that marker must never
+        block the retirement it belongs to (#154).
         """
         handle = self._get_handle(agent_id)
 
-        if not force and handle.current_play_id is not None:
+        if (
+            not force
+            and handle.current_play_id is not None
+            and handle.current_play_type is not PlayType.END_AGENT
+        ):
             raise PreconditionFailed(
                 f"Cannot clear agent {agent_id!r}: it has an active in-flight play "
                 f"(current_play_id={handle.current_play_id!r}, "

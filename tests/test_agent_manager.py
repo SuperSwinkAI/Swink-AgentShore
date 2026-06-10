@@ -20,7 +20,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.state import AgentStatus, AgentType
+from agentshore.state import AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -560,6 +560,37 @@ async def test_clear_force_bypasses_active_play_guard(
 
     # Must not raise.
     await mgr.clear(agent_id, force=True)
+
+    assert agent_id not in mgr.handles
+
+
+async def test_clear_allows_agent_whose_inflight_play_is_end_agent(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """An agent whose in-flight play is END_AGENT is clearable without force.
+
+    #154 regression guard: the executor marks the retirement target with the
+    end_agent play's own marker before the play body runs, so that marker must
+    never block the retirement it belongs to — even if a caller forgets
+    force=True.
+    """
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    # Simulate the executor's _mark_agent_current_play for an end_agent play.
+    handle.start_play(
+        play_type=PlayType.END_AGENT,
+        play_id=7,
+        started_at="2026-06-10T00:00:00+00:00",
+        issue_number=None,
+        pr_number=None,
+        branch=None,
+    )
+    assert handle.current_play_id == 7
+
+    # Must not raise despite force defaulting to False.
+    await mgr.clear(agent_id)
 
     assert agent_id not in mgr.handles
 
