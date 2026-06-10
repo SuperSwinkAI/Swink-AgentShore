@@ -1359,6 +1359,23 @@ def _reader_loop(
 DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
 """Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
 
+EOF_IN_FLIGHT_GRACE_SECONDS: float = 5.0
+"""How long after stdin EOF in-flight handlers may finish naturally.
+
+Long enough for quick requests to drain and emit their responses (the
+documented "request then close stdin" pattern tests rely on); short enough
+that a wedged handler — e.g. a graceful ``session.stop`` whose drain will
+never finish — cannot keep the sidecar alive after the shell is gone (#155).
+"""
+
+EOF_TEARDOWN_DEADLINE_SECONDS: float = 10.0
+"""Hard bound on post-EOF teardown (cancelled handlers + orchestrator task).
+
+stdin EOF means the desktop shell exited or the pipe broke; "sidecar death ==
+orchestrator death" (DESIGN §1.2) only holds if the serve loop is guaranteed
+to return promptly after EOF, so every post-EOF wait is bounded (#155).
+"""
+
 
 async def _serve_async(
     stdin: IO[str],
@@ -1374,7 +1391,10 @@ async def _serve_async(
     fixed interval (DESIGN §5.1) so the Tauri shell can detect a stalled
     sidecar. Pass ``health_interval_seconds <= 0`` to disable the heartbeat
     (used by tests that drive a quick request and then close stdin). Returns
-    when ``stdin`` reaches EOF and any in-flight async requests have drained.
+    when ``stdin`` reaches EOF and in-flight async requests have drained —
+    bounded by ``EOF_IN_FLIGHT_GRACE_SECONDS`` / ``EOF_TEARDOWN_DEADLINE_SECONDS``
+    and with the orchestrator task hard-cancelled, so EOF always means a
+    prompt exit even mid-drain (#155).
     """
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -1531,10 +1551,40 @@ async def _serve_async(
         health_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await health_task
+
+    # stdin EOF: the desktop shell is gone (window closed, host exited, or the
+    # pipe broke). EOF is always HARD-stop semantics — nobody is left to
+    # receive a graceful drain's result, so never wait for one (#155).
+    #
+    # 1. Cancel the supervised orchestrator run loop immediately. An in-flight
+    #    graceful ``session.stop`` awaits it through ``asyncio.shield``, so
+    #    cancelling only the handler would leave the orchestrator running
+    #    headless; the task itself must be cancelled.
+    # 2. Give in-flight handlers a short grace to finish naturally (quick
+    #    requests still drain and emit, as documented), then cancel stragglers.
+    # 3. Bound the final wait so the serve loop is guaranteed to return and
+    #    ``asyncio.run`` can tear the loop down — the sidecar process must
+    #    always exit promptly once the pipe closes.
+    orch_task = state.orchestrator_task
+    if orch_task is not None and not orch_task.done():
+        orch_task.cancel()
     if in_flight:
-        await asyncio.gather(*in_flight.values(), return_exceptions=True)
-    if drain_tasks:
-        await asyncio.gather(*drain_tasks, return_exceptions=True)
+        _done, pending = await asyncio.wait(
+            set(in_flight.values()), timeout=EOF_IN_FLIGHT_GRACE_SECONDS
+        )
+        for task in pending:
+            task.cancel()
+    remaining: list[asyncio.Task[None]] = [
+        task
+        for task in (orch_task, *in_flight.values(), *drain_tasks)
+        if task is not None and not task.done()
+    ]
+    if remaining:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(*remaining, return_exceptions=True),
+                timeout=EOF_TEARDOWN_DEADLINE_SECONDS,
+            )
 
 
 def serve(
@@ -1546,7 +1596,8 @@ def serve(
     """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
 
     Synchronous wrapper around :func:`_serve_async`. Returns when ``stdin``
-    reaches EOF and any in-flight async requests have drained.
+    reaches EOF and in-flight async requests have drained (bounded — see
+    :func:`_serve_async`).
     """
     asyncio.run(_serve_async(stdin, stdout, health_interval_seconds=health_interval_seconds))
 

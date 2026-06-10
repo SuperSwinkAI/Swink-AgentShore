@@ -325,6 +325,28 @@ impl SidecarSupervisor {
         snapshot
     }
 
+    /// Explicit sidecar teardown: kill the entire sidecar process tree and
+    /// reap the direct child. Called from the window-close path (which holds
+    /// only an ``Arc`` — in-flight RPC threads may keep the supervisor alive
+    /// past the holder's ``take()``, so ``Drop`` is not guaranteed to run at
+    /// quit time); ``Drop`` delegates here as the backstop.
+    ///
+    /// The tree-kill matters on Windows (#155): the sidecar may be spawned
+    /// through a ``uv`` trampoline (development fallback), so killing only
+    /// the direct child leaves the real python — and its ``bd`` daemon
+    /// children — running headless. ``taskkill /T`` walks the whole tree;
+    /// ``Child::kill`` + ``wait`` stays as the direct-child backstop and
+    /// reaper. On Unix the process group dies with the direct kill as before.
+    pub fn kill_sidecar(&self) {
+        remove_sidecar_pid_file();
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(proc_ref) = guard.as_mut() {
+                kill_process_tree(proc_ref);
+            }
+            *guard = None;
+        }
+    }
+
     pub fn call(&self, method: String, params: Option<Value>) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = JsonRpcRequest {
@@ -460,14 +482,7 @@ impl SidecarSupervisor {
 
 impl Drop for SidecarSupervisor {
     fn drop(&mut self) {
-        remove_sidecar_pid_file();
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(proc_ref) = guard.as_mut() {
-                let _ = proc_ref.kill();
-                let _ = proc_ref.wait();
-            }
-            *guard = None;
-        }
+        self.kill_sidecar();
     }
 }
 
@@ -641,11 +656,35 @@ fn kill_agent_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
-        // ``taskkill /F /PID`` is the standard Windows equivalent.
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
+        // ``taskkill /F /T /PID`` is the standard Windows equivalent. ``/T``
+        // kills the agent's whole process tree — CLI agents spawn their own
+        // children (node, git, MCP servers) which Windows does not reap on
+        // parent death, so a direct-PID kill leaks them (#155).
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        crate::sidecar_env::apply_no_window_creation_flags(&mut cmd);
+        let _ = cmd.output();
     }
+}
+
+/// Kill *proc_ref* and (on Windows) its entire descendant tree, then reap it.
+///
+/// Windows does not kill children when a parent dies and the sidecar may be
+/// spawned through a ``uv`` trampoline (development fallback), so a plain
+/// ``Child::kill`` strands the real python — and its ``bd`` daemon children —
+/// running headless (#155). ``taskkill /T`` walks the tree first;
+/// ``kill`` + ``wait`` stays as the direct-child backstop and reaper. On Unix
+/// the direct kill suffices (the sidecar is spawned directly, no trampoline).
+fn kill_process_tree(proc_ref: &mut Child) {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &proc_ref.id().to_string()]);
+        crate::sidecar_env::apply_no_window_creation_flags(&mut cmd);
+        let _ = cmd.output();
+    }
+    let _ = proc_ref.kill();
+    let _ = proc_ref.wait();
 }
 
 #[cfg(unix)]
@@ -1016,5 +1055,44 @@ mod tests {
         handle_agent_subprocess_notification("$/progress", &params, &pids);
         handle_agent_subprocess_notification("sidecar.health", &params, &pids);
         assert!(pids.lock().unwrap().is_empty());
+    }
+
+    /// #155 regression guard: the explicit teardown must terminate and reap
+    /// a still-running child. (On Windows ``kill_process_tree`` additionally
+    /// walks the descendant tree via ``taskkill /T`` — that part is
+    /// taskkill's contract; this pins the direct kill + reap.)
+    #[test]
+    fn kill_process_tree_terminates_and_reaps_a_live_child() {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping -n 60 127.0.0.1 > NUL"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("60");
+            c
+        };
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn long-running child");
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "child should still be running before the kill"
+        );
+
+        kill_process_tree(&mut child);
+
+        // kill_process_tree wait()ed, so the child must be reaped: try_wait
+        // reports an exit status immediately.
+        assert!(
+            child.try_wait().expect("try_wait after kill").is_some(),
+            "child must be terminated and reaped after kill_process_tree"
+        );
     }
 }
