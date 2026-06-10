@@ -222,6 +222,10 @@ describe("PlaysPanel", () => {
             spent: 55.01,
             remaining: 4.99,
             estimated_cost_per_play: 0.25,
+            time_enabled: false,
+            time_total_minutes: null,
+            time_elapsed_minutes: null,
+            time_remaining_minutes: null,
           },
         }),
       );
