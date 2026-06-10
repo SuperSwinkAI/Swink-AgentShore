@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import structlog
 import torch
 
-from agentshore.beads import load_graph
+from agentshore.beads import GraphReadError, load_graph
 from agentshore.config.models import PolicyMode
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
@@ -442,7 +442,10 @@ class PPOSelector:
             return None
 
         async def _load() -> ProjectGraph | None:
-            return await load_graph(project_path)
+            try:
+                return await load_graph(project_path)
+            except GraphReadError:
+                return None
 
         return _load
 

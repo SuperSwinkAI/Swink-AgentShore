@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import shutil
-import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -251,79 +250,24 @@ class BdError(RuntimeError):
     """Raised when a bd subcommand exits with a non-zero return code."""
 
 
-def managed_bd_dir() -> Path:
-    r"""Canonical beads install directory.
+class GraphReadError(BdError):
+    """Raised when load_graph exhausts all retries and cannot return a fresh graph.
 
-    This is the *same* location beads' own ``install.ps1`` / ``install.sh`` use,
-    so an AgentShore-provisioned ``bd`` is indistinguishable from a user's
-    standalone beads install and lands on the conventional per-platform PATH:
-
-      * Windows — ``%LOCALAPPDATA%\Programs\bd`` (matches ``install.ps1``).
-      * macOS/Linux — ``/usr/local/bin`` when writable, else ``~/.local/bin``
-        (matches ``install.sh``).
-
-    Installing here (rather than a swink-private dir) means the binary is found
-    by any tool that respects PATH — including the ``bd`` the agent subprocesses
-    shell out to from the skills — not just by AgentShore's own absolute-path
-    resolution.
+    Callers must handle this explicitly; returning stale data silently is not
+    acceptable because it hides permanent failures (uninstalled bd binary,
+    corrupted store, wedged lock) from the RL loop.
     """
-    if sys.platform.startswith("win"):
-        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(local_app_data) / "Programs" / "bd"
-    usr_local_bin = Path("/usr/local/bin")
-    if os.access(usr_local_bin, os.W_OK):
-        return usr_local_bin
-    return Path.home() / ".local" / "bin"
-
-
-def _managed_bd_path() -> Path:
-    name = "bd.exe" if sys.platform.startswith("win") else "bd"
-    return managed_bd_dir() / name
-
-
-def ensure_bd_dir_on_path() -> None:
-    """Prepend the beads install dir to this process's ``PATH`` (idempotent).
-
-    Beads' own installers only *print* a PATH hint; they never modify PATH. So a
-    freshly provisioned ``bd`` in the canonical dir may not be on the PATH this
-    process inherited. Agent subprocesses inherit this process's environment, so
-    prepending the dir here makes a bare ``bd`` (the form the skills invoke)
-    resolve for every agent — without persisting any change to the user's shell.
-    """
-    bd_dir_path = managed_bd_dir()
-    if not bd_dir_path.is_dir():
-        # Nothing installed there yet — don't pollute PATH with a phantom dir.
-        return
-    bd_dir = str(bd_dir_path)
-    current = os.environ.get("PATH", "")
-    parts = current.split(os.pathsep) if current else []
-    target = os.path.normcase(os.path.normpath(bd_dir))
-    if any(os.path.normcase(os.path.normpath(p)) == target for p in parts if p):
-        return
-    os.environ["PATH"] = (bd_dir + os.pathsep + current) if current else bd_dir
-    _logger.info("bd_dir_added_to_path", bd_dir=bd_dir)
 
 
 def resolve_bd_binary() -> str | None:
-    """Resolve the bd binary: env override, then PATH, then the managed dir.
-
-    The managed dir (:func:`managed_bd_dir`) is where ``agentshore init``
-    drops an auto-provisioned bd, so a fresh CLI/pip install finds it without
-    any PATH change once init has run.
-    """
+    """Resolve the bd binary path from env override first, then PATH."""
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
     if env_value:
         env_path = Path(env_value)
         if env_path.is_file() and os.access(env_path, os.X_OK):
             return str(env_path.resolve())
         _logger.warning("agentshore_bd_bin_invalid", env_path=env_value)
-    on_path = shutil.which("bd")
-    if on_path:
-        return on_path
-    managed = _managed_bd_path()
-    if managed.is_file() and os.access(managed, os.X_OK):
-        return str(managed.resolve())
-    return None
+    return shutil.which("bd")
 
 
 async def bd(
@@ -619,48 +563,46 @@ def _graph_task_from_bead(
     )
 
 
-# Retry budget for a contended graph read. On Windows the embedded-Dolt store
-# uses *mandatory* file locks (POSIX locks are advisory), so a per-tick
-# ``bd list`` issued while an agent subprocess holds the lock can return rc=0
-# with empty stdout. ``bd list --json`` always prints at least ``[]`` on a real
-# read, so empty stdout is treated as a transient contended read and retried —
-# never accepted as a truthful empty graph (which would falsely flip
-# ``has_epics`` off, re-triggering seed_project and unmasking fleet expansion).
-_BD_EMPTY_READ_RETRIES = 4
-_BD_EMPTY_READ_BACKOFF_SECONDS = 0.2
-
-# Last successfully-loaded *populated* graph, keyed by ``str(project_path)``. A
-# contended read (empty stdout after the full retry budget, or a transient bd
-# failure) reuses this instead of synthesising a false-empty graph, so a
-# momentary lock contention can never downgrade a seeded project to "unseeded".
-# Only graphs with epics are cached, so a genuinely empty store (valid ``[]``)
-# is reported truthfully and never masked.
-_LAST_GOOD_GRAPH: dict[str, ProjectGraph] = {}
+_GRAPH_READ_RETRIES = 3
+_GRAPH_READ_RETRY_DELAY = 0.5  # seconds between attempts
 
 
-def _reset_graph_cache() -> None:
-    """Clear the last-known-good graph cache. Test hook — not used in prod."""
-    _LAST_GOOD_GRAPH.clear()
+async def _read_graph_raw(project_path: Path) -> list[RawBead]:
+    """Run ``bd list --all --json`` with retries, returning the raw bead list.
 
-
-async def _read_graph_raw(project_path: Path) -> str | None:
-    """Run the graph ``bd list`` and return stdout, retrying on empty output.
-
-    ``bd list --json`` prints a JSON document on every successful read — at
-    minimum ``[]`` for an empty store. Empty stdout is therefore never a
-    truthful "no beads"; it signals a contended/aborted read (on Windows an
-    agent subprocess holds the embedded-Dolt store's mandatory file lock while
-    running its own ``bd``). We retry a few times so a transient lock-holder
-    clears. Returns the raw JSON on success, or ``None`` if stdout stays empty
-    across the whole retry budget. ``BdError`` propagates to the caller.
+    Raises ``GraphReadError`` after exhausting all retries.  This ensures
+    callers cannot silently consume stale data — a persistent failure surfaces
+    immediately rather than being hidden behind a fallback cache.
     """
-    for attempt in range(_BD_EMPTY_READ_RETRIES + 1):
-        raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
-        if raw.strip():
-            return raw
-        if attempt < _BD_EMPTY_READ_RETRIES:
-            await asyncio.sleep(_BD_EMPTY_READ_BACKOFF_SECONDS)
-    return None
+    last_exc: Exception | None = None
+    for attempt in range(1, _GRAPH_READ_RETRIES + 1):
+        try:
+            raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+            return _as_json_list(raw)
+        except BdError as exc:
+            last_exc = exc
+            _logger.warning(
+                "beads_graph_load_failed",
+                project_path=str(project_path),
+                attempt=attempt,
+                max_attempts=_GRAPH_READ_RETRIES,
+                error=str(exc),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_exc = exc
+            _logger.warning(
+                "beads_graph_parse_failed",
+                project_path=str(project_path),
+                attempt=attempt,
+                max_attempts=_GRAPH_READ_RETRIES,
+                error=str(exc),
+            )
+        if attempt < _GRAPH_READ_RETRIES:
+            await asyncio.sleep(_GRAPH_READ_RETRY_DELAY)
+
+    raise GraphReadError(
+        f"bd list failed after {_GRAPH_READ_RETRIES} attempts for {project_path}"
+    ) from last_exc
 
 
 async def load_graph(project_path: Path) -> ProjectGraph | None:
@@ -668,54 +610,16 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
 
     Returns ``None`` when beads is not initialised for the project
     (no ``.beads/`` directory). Returns an empty ``ProjectGraph`` when
-    beads is present but genuinely has no epics yet (a valid empty ``bd list``
-    response). A *contended* read — empty stdout, a parse error, or a transient
-    ``bd`` failure — never downgrades a known-populated graph to empty: it
-    reuses the last cached populated graph (or ``None`` if we have never seen
-    one), so transient Windows file-lock contention cannot flip ``has_epics``.
+    beads is present but has no epics yet.
+
+    Raises ``GraphReadError`` if the bd binary fails after all retries.
+    Callers must handle this explicitly — silent stale-graph fallback is
+    not acceptable because it hides permanent failures from the RL loop.
     """
     if not (project_path / ".beads").exists():
         return None
 
-    # Canonicalise so the same project keyed by different casing / relative
-    # spelling / symlink (Windows path case is not normalised) shares one cache
-    # entry and one set of consumers can't desync on spelling.
-    cache_key = os.path.normcase(os.path.normpath(str(project_path.resolve())))
-    try:
-        raw = await _read_graph_raw(project_path)
-    except BdError as exc:
-        _logger.warning(
-            "beads_graph_load_failed",
-            project_path=cache_key,
-            error=str(exc),
-            reused_cache=cache_key in _LAST_GOOD_GRAPH,
-        )
-        return _LAST_GOOD_GRAPH.get(cache_key)
-
-    if raw is None:
-        # Empty stdout after the full retry budget: a contended read, not an
-        # empty store. Reuse the last populated graph so a momentary lock
-        # contention cannot re-trigger seed_project. Falls through to None only
-        # when we have never seen a populated graph for this project (e.g. a
-        # truly fresh, pre-seed boot where bd legitimately has nothing yet —
-        # though that path normally returns a valid ``[]``, not empty stdout).
-        _logger.warning(
-            "beads_graph_empty_read",
-            project_path=cache_key,
-            reused_cache=cache_key in _LAST_GOOD_GRAPH,
-        )
-        return _LAST_GOOD_GRAPH.get(cache_key)
-
-    try:
-        bead_items = _as_json_list(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        _logger.warning(
-            "beads_graph_parse_failed",
-            project_path=cache_key,
-            error=str(exc),
-            reused_cache=cache_key in _LAST_GOOD_GRAPH,
-        )
-        return _LAST_GOOD_GRAPH.get(cache_key)
+    bead_items = await _read_graph_raw(project_path)
 
     beads = [_parse_bead(item) for item in bead_items]
     beads_by_id = {bead.bead_id: bead for bead in beads if bead.bead_id}
@@ -766,7 +670,7 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
     tasks_ready = sum(1 for task in tasks if task.ready)
     tasks_blocked = sum(1 for task in tasks if task.blocked_by_ids)
 
-    graph = ProjectGraph(
+    return ProjectGraph(
         epics=epics,
         tasks=tasks,
         tasks_ready=tasks_ready,
@@ -774,16 +678,6 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
         tasks_total=total_tasks,
         global_closure_ratio=global_ratio,
     )
-    # Cache only populated graphs, and *clear* the entry on a truthful empty
-    # read. A known epic graph then survives a later contended read (reused
-    # above instead of a false-empty downgrade), while a genuine wipe/reinit
-    # (valid ``[]``) both reports empty now and drops the stale cache so a
-    # subsequent contended read can't resurrect the wiped graph.
-    if graph.has_epics:
-        _LAST_GOOD_GRAPH[cache_key] = graph
-    else:
-        _LAST_GOOD_GRAPH.pop(cache_key, None)
-    return graph
 
 
 # ---------------------------------------------------------------------------

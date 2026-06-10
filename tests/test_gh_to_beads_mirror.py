@@ -218,13 +218,13 @@ async def test_mirror_skips_closed_issues(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# BdError is swallowed
+# BdError is swallowed (genuine failures)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_mirror_swallows_bd_error(tmp_path: Path) -> None:
-    """BdError raised by bd is caught and does not propagate."""
+    """Genuine BdError raised by bd is caught and does not propagate."""
     from agentshore.beads import BdError
 
     beads_dir = tmp_path / ".beads"
@@ -248,6 +248,83 @@ async def test_mirror_swallows_bd_error(tmp_path: Path) -> None:
 
     # Both were attempted despite the error on the first
     assert mock_bd.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# "nothing to commit" is treated as a no-op (issue #92)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mirror_treats_nothing_to_commit_as_noop(tmp_path: Path) -> None:
+    """bd import --dedup returning 'nothing to commit' must not emit beads_mirror_issue_failed.
+
+    Dolt exits 1 with 'Error: commit: dolt commit: Error 1105: nothing to commit' when the
+    import is already fully deduplicated. This is idempotent success, not a failure.
+    """
+    from agentshore.beads import BdError
+
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+
+    nothing_to_commit_error = BdError(
+        "bd import --dedup - failed (rc=1): "
+        "Error: commit: dolt commit: Error 1105: nothing to commit"
+    )
+
+    issues = [_make_issue(1, "Already imported issue")]
+
+    warning_events: list[str] = []
+
+    with (
+        patch(
+            "agentshore.beads.bd",
+            new_callable=AsyncMock,
+            side_effect=nothing_to_commit_error,
+        ),
+        patch("agentshore.core.phases._logger") as mock_logger,
+    ):
+        mock_logger.warning.side_effect = lambda ev, **kw: warning_events.append(ev)
+        await _mirror_issues_to_beads(
+            project_path=tmp_path, issues=issues, graph=_graph_with_epics()
+        )
+
+    # beads_mirror_issue_failed must NOT have been emitted.
+    assert "beads_mirror_issue_failed" not in warning_events, (
+        f"Expected no beads_mirror_issue_failed for nothing-to-commit; got: {warning_events}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mirror_emits_failure_for_genuine_bd_error(tmp_path: Path) -> None:
+    """Genuine BdError (not 'nothing to commit') must still emit beads_mirror_issue_failed."""
+    from agentshore.beads import BdError
+
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+
+    genuine_error = BdError("bd import --dedup - failed (rc=1): permission denied")
+
+    issues = [_make_issue(1, "Some issue")]
+
+    warning_events: list[str] = []
+
+    with (
+        patch(
+            "agentshore.beads.bd",
+            new_callable=AsyncMock,
+            side_effect=genuine_error,
+        ),
+        patch("agentshore.core.phases._logger") as mock_logger,
+    ):
+        mock_logger.warning.side_effect = lambda ev, **kw: warning_events.append(ev)
+        await _mirror_issues_to_beads(
+            project_path=tmp_path, issues=issues, graph=_graph_with_epics()
+        )
+
+    assert "beads_mirror_issue_failed" in warning_events, (
+        f"Expected beads_mirror_issue_failed for genuine error; got: {warning_events}"
+    )
 
 
 @pytest.mark.asyncio
