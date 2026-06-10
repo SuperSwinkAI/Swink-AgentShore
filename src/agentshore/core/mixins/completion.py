@@ -983,7 +983,10 @@ class CompletionProcessor:
             self._host, "_stop_requested", False
         )
         if draining and final_status == AgentStatus.ERROR:
-            await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
+            # force=True: session is winding down; in-flight tasks already cancelled.
+            await self._host._safe_call(
+                self._manager.clear(agent_id, force=True), "drain_clear_errored_agent"
+            )
             return
         self._maybe_enqueue_error_recovery(agent_id, final_status)
 

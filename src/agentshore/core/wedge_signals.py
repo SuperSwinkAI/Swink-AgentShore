@@ -229,11 +229,33 @@ def build_recent_wedge_signals(
     state-derived counters (failure streak, last play type) so the
     skill can diagnose without re-deriving everything from the log.
     Each sub-call is best-effort; this assembly never raises.
+
+    ``active_agents_in_flight`` is a list of agents that currently have an
+    active in-flight play (``current_play_id`` is set on their snapshot).
+    The reconcile skill MUST cross-check any zombie candidate's ``play_id``
+    against this list: if the play is still active (i.e. its agent appears
+    here), the process must NOT be classified as a zombie or killed.
     """
     recent_failed = collect_recent_failed_plays(
         project_path, session_id=session_id, db_path=db_path
     )
     last_failed = recent_failed[0] if recent_failed else None
+
+    # Build the in-flight agent list for zombie cross-checking. Each entry
+    # carries enough information for the skill to match against a candidate
+    # PID's backing play_id.
+    active_agents_in_flight = [
+        {
+            "agent_id": a.agent_id,
+            "agent_type": a.agent_type.value,
+            "current_play_id": a.current_play_id,
+            "current_play_type": (a.current_play_type.value if a.current_play_type else None),
+            "current_play_started_at": a.current_play_started_at,
+        }
+        for a in state.agents
+        if a.current_play_id is not None
+    ]
+
     return {
         "same_type_failure_streak": int(state.same_type_failure_streak),
         "last_play_type": state.last_play_type.value if state.last_play_type else None,
@@ -244,6 +266,9 @@ def build_recent_wedge_signals(
         "orphan_worktree_paths": collect_orphan_worktree_paths(
             project_path, db_path=db_path, session_id=session_id
         ),
+        # Cross-check list for zombie classification: agents with active plays
+        # must never be classified as zombies or killed by reconcile_state.
+        "active_agents_in_flight": active_agents_in_flight,
     }
 
 
