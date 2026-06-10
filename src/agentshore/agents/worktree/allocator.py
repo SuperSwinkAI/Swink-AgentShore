@@ -7,7 +7,6 @@ play verdicts.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import structlog
 
+from agentshore import command
 from agentshore.errors import OrchestratorError
 
 log = structlog.get_logger(__name__)
@@ -97,39 +97,20 @@ async def _run_git(
     Returns ``(returncode, stdout, stderr)``. If ``check`` is true and the
     return code is non-zero, raises ``WorktreeAllocationFailed`` with the
     failing command embedded in the reason.
-
-    ``stdin`` is pinned to ``DEVNULL``: a git child must never inherit the
-    sidecar's stdin (the live Tauri JSON-RPC pipe). Git-for-Windows' MSYS2
-    runtime probes stdin on startup and wedges at 0 CPU forever on that
-    contended pipe -- the Windows worktree-reconcile hang. (This is the whole
-    fix; async-vs-sync was a red herring.)
     """
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout)
+    if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after {timeout:.0f}s",
             reason="git_timeout",
-        ) from exc
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
-    rc = proc.returncode if proc.returncode is not None else -1
+        )
+    rc = result.returncode
     if check and rc != 0:
         raise WorktreeAllocationFailed(
-            f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
+            f"git {' '.join(args)} failed (rc={rc}): {result.stderr.strip()}",
             reason=f"git_{args[0]}_failed",
         )
-    return rc, stdout, stderr
+    return rc, result.stdout, result.stderr
 
 
 _PICKUP_COLLISION_RE = re.compile(
@@ -156,28 +137,16 @@ async def _add_worktree_with_collision_retry(
     rekeyed), force-remove it and retry the original add exactly once.
     Anything else bubbles through the existing failure path.
     """
-    # stdin=DEVNULL: never inherit the sidecar's JSON-RPC stdin -- see _run_git.
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(main_repo),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180.0)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+    result = await command.git(*args, cwd=main_repo, timeout_seconds=180.0)
+    if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after 180s",
             reason="git_timeout",
-        ) from exc
-    rc = proc.returncode if proc.returncode is not None else -1
+        )
+    rc = result.returncode
     if rc == 0:
         return
-    stderr = stderr_b.decode("utf-8", errors="replace")
+    stderr = result.stderr
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
     is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")

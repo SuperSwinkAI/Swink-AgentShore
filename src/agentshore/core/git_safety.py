@@ -13,15 +13,17 @@ boundaries and the session-start sweeper.
 
 from __future__ import annotations
 
-import contextlib
 import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from agentshore import command
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from agentshore.command import CommandResult
 
 _logger = get_logger(__name__)
 
@@ -44,7 +46,7 @@ def _run_git(
     cwd: Path,
     *,
     timeout: float = 10.0,
-) -> subprocess.CompletedProcess[str]:
+) -> CommandResult:
     """Run ``git`` synchronously in *cwd* and capture text output.
 
     Returned ``returncode`` is non-zero on failure; callers branch on it
@@ -52,17 +54,7 @@ def _run_git(
     orchestrator's main loop. Timeout protects against hung git processes
     (e.g. an interactive credential prompt sneaking in).
     """
-    return subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-        ["git", "-C", str(cwd), *args],
-        # git must never inherit the sidecar's stdin (the live Tauri JSON-RPC
-        # pipe) — git's MSYS2 runtime wedges at 0 CPU probing that contended
-        # pipe. See agentshore.command.run_sync_command for the full diagnosis.
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    return command.git_sync(*args, cwd=cwd, timeout_seconds=timeout)
 
 
 def resolve_default_branch(repo_root: Path) -> tuple[str, bool]:
@@ -77,10 +69,7 @@ def resolve_default_branch(repo_root: Path) -> tuple[str, bool]:
     1. ``git symbolic-ref refs/remotes/origin/HEAD`` (the GitHub default).
     2. Fallback to :data:`DEFAULT_BRANCH_FALLBACK` with ``assumed=True``.
     """
-    try:
-        result = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo_root)
-    except (OSError, subprocess.SubprocessError):
-        return DEFAULT_BRANCH_FALLBACK, True
+    result = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo_root)
     if result.returncode == 0:
         ref = result.stdout.strip()
         prefix = "refs/remotes/origin/"
@@ -99,10 +88,7 @@ def current_head_ref(repo_root: Path) -> str | None:
     boundary guard treats both cases identically — any normal play should
     leave HEAD on a branch.
     """
-    try:
-        result = _run_git(["symbolic-ref", "HEAD"], repo_root)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    result = _run_git(["symbolic-ref", "HEAD"], repo_root)
     if result.returncode != 0:
         return None
     ref = result.stdout.strip()
@@ -130,10 +116,7 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     """
 
     def _checkout() -> bool:
-        try:
-            result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
-        except (OSError, subprocess.SubprocessError):
-            return False
+        result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
         return result.returncode == 0
 
     if _checkout():
@@ -147,8 +130,7 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     for recovery in (["merge", "--abort"], ["reset", "--hard"]):
         if recovery == ["merge", "--abort"] and not merge_in_progress:
             continue
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_git(recovery, repo_root, timeout=30.0)
+        _run_git(recovery, repo_root, timeout=30.0)
         if _checkout():
             return True
     return _checkout()
@@ -318,13 +300,10 @@ def ssh_signing_enabled(repo_root: Path) -> bool:
     majority of repos (and every Windows box) that commit unsigned. Returns
     False on any git error.
     """
-    try:
-        gpgsign = _run_git(["config", "--type=bool", "--get", "commit.gpgsign"], repo_root)
-        if gpgsign.returncode != 0 or gpgsign.stdout.strip() != "true":
-            return False
-        fmt = _run_git(["config", "--get", "gpg.format"], repo_root)
-    except (OSError, subprocess.SubprocessError):
+    gpgsign = _run_git(["config", "--type=bool", "--get", "commit.gpgsign"], repo_root)
+    if gpgsign.returncode != 0 or gpgsign.stdout.strip() != "true":
         return False
+    fmt = _run_git(["config", "--get", "gpg.format"], repo_root)
     return fmt.returncode == 0 and fmt.stdout.strip().lower() == "ssh"
 
 
