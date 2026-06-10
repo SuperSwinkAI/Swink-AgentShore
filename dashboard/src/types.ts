@@ -133,10 +133,10 @@ export interface BudgetSnapshot {
   estimated_cost_per_play: number;
   // Wall-clock soft cap (minutes), independent of the dollar cap above.
   // null when time_enabled is false (no wall-clock limit).
-  time_enabled?: boolean;
-  time_total_minutes?: number | null;
-  time_elapsed_minutes?: number | null;
-  time_remaining_minutes?: number | null;
+  time_enabled: boolean;
+  time_total_minutes: number | null;
+  time_elapsed_minutes: number | null;
+  time_remaining_minutes: number | null;
 }
 
 export interface TrajectorySnapshot {

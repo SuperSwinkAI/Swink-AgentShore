@@ -883,28 +883,25 @@ def _dispatch_session_budget(
             obj_params = _as_dict(raw_params)
         except _ParamError as exc:
             return _error(req_id, INVALID_PARAMS, str(exc))
-        budget = obj_params.get("budget")
-        if not isinstance(budget, dict):
+        budget_raw = obj_params.get("budget")
+        if not isinstance(budget_raw, dict):
             return _error(req_id, INVALID_PARAMS, "session.set_budget requires object 'budget'")
-        if "enabled" not in budget:
-            return _error(req_id, INVALID_PARAMS, "budget.enabled is required")
-        enabled = budget["enabled"]
-        if not isinstance(enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.enabled must be a boolean")
-        time_enabled = budget.get("time_enabled", False)
-        if not isinstance(time_enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.time_enabled must be a boolean")
+        from agentshore.budget import validate_budget_payload
+        from agentshore.errors import ConfigError, OrchestratorError
 
-        from agentshore.errors import OrchestratorError
+        try:
+            validated = validate_budget_payload(budget_raw)
+        except ConfigError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
 
         async def _run_set() -> JsonRpcResponse:
             set_budget = orch.set_budget  # type: ignore[attr-defined]
             try:
                 applied = await set_budget(
-                    dollars_enabled=enabled,
-                    dollars=budget.get("total"),
-                    time_enabled=time_enabled,
-                    time_minutes=budget.get("time_total_minutes"),
+                    dollars_enabled=validated.enabled,
+                    dollars=validated.total if validated.enabled else None,
+                    time_enabled=validated.time_enabled,
+                    time_minutes=validated.time_total_minutes if validated.time_enabled else None,
                     persist=True,
                 )
             except OrchestratorError as exc:

@@ -7,7 +7,6 @@ import dataclasses
 import time
 from typing import TYPE_CHECKING, Protocol
 
-from agentshore.budget import budget_reserve_reached, time_budget_reserve_reached
 from agentshore.config import load_config
 from agentshore.core.git_safety import resolve_default_branch
 from agentshore.core.helpers import _logger, _ppo_selector_cls
@@ -156,23 +155,9 @@ class LifecycleController:
         budget = state.budget
         if budget is None:
             return state
-        # Two independent reserves — whichever is hit first begins the drain.
-        dollar_reserve = budget.enabled and budget_reserve_reached(
-            spent=budget.spent, total_budget=budget.total_budget
-        )
-        time_reserve = (
-            budget.time_enabled
-            and budget.time_total_minutes is not None
-            and budget.time_elapsed_minutes is not None
-            and time_budget_reserve_reached(
-                elapsed_minutes=budget.time_elapsed_minutes,
-                total_minutes=budget.time_total_minutes,
-            )
-        )
-        if not dollar_reserve and not time_reserve:
+        reason = budget.reserve_reason()
+        if reason is None:
             return state
-
-        reason = "budget_reserve_reached" if dollar_reserve else "time_budget_reserve_reached"
         await self._host._drain.begin_drain(reason)
         return await self._host._state_builder.build_state()
 

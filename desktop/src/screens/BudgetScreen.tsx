@@ -1,7 +1,42 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { useNavigate } from "react-router-dom";
 
+import {
+  BUDGET_DEFAULT_USD,
+  BUDGET_DRAIN_RESERVE_USD,
+  BUDGET_MAX_USD,
+  BUDGET_MIN_USD,
+  BUDGET_STEP_USD,
+  TIME_DEFAULT_MINUTES,
+  TIME_MAX_MINUTES,
+  TIME_MIN_MINUTES,
+  TIME_STEP_MINUTES,
+  TIME_DRAIN_RESERVE_MINUTES,
+  clampDollars,
+  clampMinutes,
+  formatDollars,
+  formatHours,
+  type BudgetMode,
+  type BudgetSelection,
+} from "../rpc/budget";
+import { CapSliderPanel } from "../components/CapSliderPanel";
 import styles from "./BudgetScreen.module.css";
+
+// Re-export constants/types so existing imports from this module keep working.
+export {
+  BUDGET_DEFAULT_USD,
+  BUDGET_DRAIN_RESERVE_USD,
+  BUDGET_MAX_USD,
+  BUDGET_MIN_USD,
+  BUDGET_STEP_USD,
+  TIME_DEFAULT_MINUTES,
+  TIME_MAX_MINUTES,
+  TIME_MIN_MINUTES,
+  TIME_STEP_MINUTES,
+  TIME_DRAIN_RESERVE_MINUTES,
+  type BudgetMode,
+  type BudgetSelection,
+};
 
 /**
  * Session budget surface for the Setup rail (issue #571). Two independent
@@ -15,34 +50,8 @@ import styles from "./BudgetScreen.module.css";
  *   (``MIN/MAX_TIME_BUDGET_MINUTES``). AgentShore stops assigning new plays 20
  *   minutes before the cap and lets in-flight agents finish.
  *
- * Each dimension can be capped or Unlimited on its own (you can cap dollars
- * but leave time unlimited, or vice versa).
+ * Each dimension can be capped or Unlimited on its own.
  */
-export const BUDGET_MIN_USD = 20;
-export const BUDGET_MAX_USD = 1000;
-export const BUDGET_STEP_USD = 5;
-export const BUDGET_DEFAULT_USD = 200;
-export const BUDGET_DRAIN_RESERVE_USD = 5;
-
-export const TIME_MIN_MINUTES = 60;
-export const TIME_MAX_MINUTES = 4320;
-export const TIME_STEP_MINUTES = 60;
-export const TIME_DEFAULT_MINUTES = 1440;
-export const TIME_DRAIN_RESERVE_MINUTES = 20;
-
-export type BudgetMode = "capped" | "unlimited";
-
-export interface BudgetSelection {
-  mode: BudgetMode;
-  /** Dollars when ``mode === "capped"``; ignored when unlimited (kept on
-   *  state so toggling back to ``capped`` restores the last picked value). */
-  total: number;
-  /** Time dimension, independent of the dollar dimension. */
-  timeMode: BudgetMode;
-  /** Minutes when ``timeMode === "capped"``; kept on state when unlimited so
-   *  toggling back to ``capped`` restores the last picked value. */
-  timeMinutes: number;
-}
 
 export interface BudgetScreenProps {
   selection: BudgetSelection;
@@ -55,34 +64,6 @@ export interface BudgetScreenProps {
    * inline so the user can retry.
    */
   onSave?: (selection: BudgetSelection) => Promise<void>;
-}
-
-function clampToSlider(value: number): number {
-  if (!Number.isFinite(value)) return BUDGET_DEFAULT_USD;
-  if (value < BUDGET_MIN_USD) return BUDGET_MIN_USD;
-  if (value > BUDGET_MAX_USD) return BUDGET_MAX_USD;
-  // Snap to nearest step so the live label always matches a valid slider stop.
-  const steps = Math.round((value - BUDGET_MIN_USD) / BUDGET_STEP_USD);
-  return BUDGET_MIN_USD + steps * BUDGET_STEP_USD;
-}
-
-function clampTimeToSlider(value: number): number {
-  if (!Number.isFinite(value)) return TIME_DEFAULT_MINUTES;
-  if (value < TIME_MIN_MINUTES) return TIME_MIN_MINUTES;
-  if (value > TIME_MAX_MINUTES) return TIME_MAX_MINUTES;
-  const steps = Math.round((value - TIME_MIN_MINUTES) / TIME_STEP_MINUTES);
-  return TIME_MIN_MINUTES + steps * TIME_STEP_MINUTES;
-}
-
-function formatDollars(amount: number): string {
-  return `$${amount.toLocaleString("en-US")}`;
-}
-
-function formatHours(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  if (mins === 0) return `${hours}h`;
-  return `${hours}h ${mins}m`;
 }
 
 export function BudgetScreen({
@@ -99,45 +80,35 @@ export function BudgetScreen({
   // If it is below the minimum (the default-state case from App.tsx, which
   // seeds 0 for unlimited), surface the typical starting point instead.
   const sliderValue =
-    selection.total >= BUDGET_MIN_USD ? clampToSlider(selection.total) : BUDGET_DEFAULT_USD;
+    selection.total >= BUDGET_MIN_USD ? clampDollars(selection.total) : BUDGET_DEFAULT_USD;
   const timeSliderValue =
     selection.timeMinutes >= TIME_MIN_MINUTES
-      ? clampTimeToSlider(selection.timeMinutes)
+      ? clampMinutes(selection.timeMinutes)
       : TIME_DEFAULT_MINUTES;
 
   const isCapped = selection.mode === "capped";
   const isTimeCapped = selection.timeMode === "capped";
 
-  const setMode = useCallback(
-    (mode: BudgetMode) => {
-      if (mode === selection.mode) return;
-      onChange({ ...selection, mode, total: sliderValue });
+  const onDollarChange = useCallback(
+    ({ capped, value }: { capped: boolean; value: number }) => {
+      const mode: BudgetMode = capped ? "capped" : "unlimited";
+      if (mode === selection.mode && value === sliderValue) return;
+      onChange({ ...selection, mode, total: capped ? value : sliderValue });
     },
     [onChange, selection, sliderValue],
   );
 
-  const onSliderChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const next = clampToSlider(Number.parseInt(event.target.value, 10));
-      onChange({ ...selection, mode: "capped", total: next });
-    },
-    [onChange, selection],
-  );
-
-  const setTimeMode = useCallback(
-    (mode: BudgetMode) => {
-      if (mode === selection.timeMode) return;
-      onChange({ ...selection, timeMode: mode, timeMinutes: timeSliderValue });
+  const onTimeChange = useCallback(
+    ({ capped, value }: { capped: boolean; value: number }) => {
+      const timeMode: BudgetMode = capped ? "capped" : "unlimited";
+      if (timeMode === selection.timeMode && value === timeSliderValue) return;
+      onChange({
+        ...selection,
+        timeMode,
+        timeMinutes: capped ? value : timeSliderValue,
+      });
     },
     [onChange, selection, timeSliderValue],
-  );
-
-  const onTimeSliderChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const next = clampTimeToSlider(Number.parseInt(event.target.value, 10));
-      onChange({ ...selection, timeMode: "capped", timeMinutes: next });
-    },
-    [onChange, selection],
   );
 
   const liveLabel = isCapped ? `Soft cap: ${formatDollars(sliderValue)}` : "Budget: Unlimited";
@@ -177,9 +148,6 @@ export function BudgetScreen({
   );
 
   const onContinue = useCallback(async () => {
-    // Match TargetBranchScreen's save-then-navigate flow. When no
-    // ``onSave`` adapter is supplied (the existing test renders), skip
-    // straight to navigation so behaviour matches the original screen.
     if (onSave === undefined) {
       navigate("/setup/start");
       return;
@@ -187,9 +155,6 @@ export function BudgetScreen({
     setSaving(true);
     setSaveError(null);
     try {
-      // Persist the selection the user actually sees — if a dimension is capped
-      // the displayed slider value may differ from ``selection`` when the
-      // stored value is below the slider floor (unlimited→capped restore path).
       const toPersist: BudgetSelection = {
         mode: isCapped ? "capped" : "unlimited",
         total: isCapped ? sliderValue : selection.total,
@@ -218,115 +183,39 @@ export function BudgetScreen({
         </p>
       </header>
 
-      <section className={styles.panel} aria-label="Dollar budget selection">
-        <label className={styles.modeRow}>
-          <input
-            type="radio"
-            name="budget-mode"
-            value="capped"
-            checked={isCapped}
-            onChange={() => setMode("capped")}
-            data-testid="budget-mode-capped"
-          />
-          <span>Soft cap</span>
-        </label>
+      <CapSliderPanel
+        label="Dollar budget selection"
+        radioName="budget-mode"
+        min={BUDGET_MIN_USD}
+        max={BUDGET_MAX_USD}
+        step={BUDGET_STEP_USD}
+        format={formatDollars}
+        value={sliderValue}
+        capped={isCapped}
+        onChange={onDollarChange}
+        cappedLabel="Soft cap"
+        testId="budget"
+      />
+      <p className={styles.liveLabel} data-testid="budget-live-label">
+        <strong>{liveLabel}</strong>
+      </p>
 
-        <div
-          className={`${styles.cappedBlock} ${isCapped ? "" : styles["cappedBlock--disabled"]}`}
-          aria-hidden={!isCapped}
-        >
-          <span className={styles.sliderBounds}>{formatDollars(BUDGET_MIN_USD)}</span>
-          <input
-            type="range"
-            min={BUDGET_MIN_USD}
-            max={BUDGET_MAX_USD}
-            step={BUDGET_STEP_USD}
-            value={sliderValue}
-            disabled={!isCapped}
-            onChange={onSliderChange}
-            aria-label="Session soft cap in US dollars"
-            data-testid="budget-slider"
-            className={styles.slider}
-          />
-          <span className={`${styles.sliderBounds} ${styles.sliderBoundsRight}`}>
-            {formatDollars(BUDGET_MAX_USD)}
-          </span>
-          <span className={styles.valueRow}>
-            <strong data-testid="budget-slider-value">{formatDollars(sliderValue)}</strong>
-          </span>
-        </div>
-
-        <label className={styles.modeRow}>
-          <input
-            type="radio"
-            name="budget-mode"
-            value="unlimited"
-            checked={!isCapped}
-            onChange={() => setMode("unlimited")}
-            data-testid="budget-mode-unlimited"
-          />
-          <span>Unlimited</span>
-        </label>
-
-        <p className={styles.liveLabel} data-testid="budget-live-label">
-          <strong>{liveLabel}</strong>
-        </p>
-      </section>
-
-      <section className={styles.panel} aria-label="Time budget selection">
-        <label className={styles.modeRow}>
-          <input
-            type="radio"
-            name="budget-time-mode"
-            value="capped"
-            checked={isTimeCapped}
-            onChange={() => setTimeMode("capped")}
-            data-testid="budget-time-mode-capped"
-          />
-          <span>Time soft cap</span>
-        </label>
-
-        <div
-          className={`${styles.cappedBlock} ${isTimeCapped ? "" : styles["cappedBlock--disabled"]}`}
-          aria-hidden={!isTimeCapped}
-        >
-          <span className={styles.sliderBounds}>{formatHours(TIME_MIN_MINUTES)}</span>
-          <input
-            type="range"
-            min={TIME_MIN_MINUTES}
-            max={TIME_MAX_MINUTES}
-            step={TIME_STEP_MINUTES}
-            value={timeSliderValue}
-            disabled={!isTimeCapped}
-            onChange={onTimeSliderChange}
-            aria-label="Session time soft cap in hours"
-            data-testid="budget-time-slider"
-            className={styles.slider}
-          />
-          <span className={`${styles.sliderBounds} ${styles.sliderBoundsRight}`}>
-            {formatHours(TIME_MAX_MINUTES)}
-          </span>
-          <span className={styles.valueRow}>
-            <strong data-testid="budget-time-slider-value">{formatHours(timeSliderValue)}</strong>
-          </span>
-        </div>
-
-        <label className={styles.modeRow}>
-          <input
-            type="radio"
-            name="budget-time-mode"
-            value="unlimited"
-            checked={!isTimeCapped}
-            onChange={() => setTimeMode("unlimited")}
-            data-testid="budget-time-mode-unlimited"
-          />
-          <span>Unlimited</span>
-        </label>
-
-        <p className={styles.liveLabel} data-testid="budget-time-live-label">
-          <strong>{timeLiveLabel}</strong>
-        </p>
-      </section>
+      <CapSliderPanel
+        label="Time budget selection"
+        radioName="budget-time-mode"
+        min={TIME_MIN_MINUTES}
+        max={TIME_MAX_MINUTES}
+        step={TIME_STEP_MINUTES}
+        format={formatHours}
+        value={timeSliderValue}
+        capped={isTimeCapped}
+        onChange={onTimeChange}
+        cappedLabel="Time soft cap"
+        testId="budget-time"
+      />
+      <p className={styles.liveLabel} data-testid="budget-time-live-label">
+        <strong>{timeLiveLabel}</strong>
+      </p>
 
       {saveError !== null && (
         <p className={styles.saveError} data-testid="budget-save-error" role="alert">
