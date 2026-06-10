@@ -33,6 +33,11 @@
     Skip Authenticode signing even if signtool.exe and a code-signing
     certificate are available.
 
+.PARAMETER AllowNoRevocationCheck
+    Required on machines with Avast HTTPS scanning (Schannel interception breaks
+    cargo TLS cert revocation). Use -AllowNoRevocationCheck only on such machines.
+    Disables CARGO_HTTP_CHECK_REVOKE for the Tauri build step.
+
 .PARAMETER SignTool
     Explicit path to signtool.exe. If omitted, the script checks PATH, then the
     standard Windows Kits locations.
@@ -55,7 +60,8 @@ param(
     [switch]$NoSign,
     [string]$SignTool = "",
     [string]$CertificateThumbprint = "",
-    [string]$TimestampUrl = "http://timestamp.digicert.com"
+    [string]$TimestampUrl = "http://timestamp.digicert.com",
+    [switch]$AllowNoRevocationCheck
 )
 
 Set-StrictMode -Version Latest
@@ -284,21 +290,25 @@ Write-Step "Building Tauri executable ($BuildMode)"
 Clear-StaleSetupArtifacts
 Push-Location $DesktopDir
 try {
-    $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
-    $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
-    $env:CARGO_HTTP_CHECK_REVOKE = "false"
-    Write-Info "Temporarily disabled Cargo Schannel revocation checks for crate downloads."
+    if ($AllowNoRevocationCheck) {
+        # Required on machines with Avast HTTPS scanning (Schannel interception breaks cargo TLS cert revocation).
+        # Use -AllowNoRevocationCheck only on such machines.
+        $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
+        $env:CARGO_HTTP_CHECK_REVOKE = "false"
+        Write-Info "Temporarily disabled Cargo Schannel revocation checks for crate downloads (-AllowNoRevocationCheck)."
+    }
     if ($DebugBuild) {
         Invoke-Checked "npx" "tauri" "build" "--debug" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     } else {
         Invoke-Checked "npx" "tauri" "build" "--no-bundle" "--config" $WindowsTauriConfig "--" "--locked"
     }
 } finally {
-    Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
-    if ($null -eq $PreviousCargoHttpCheckRevoke) {
-        Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
-    } else {
-        $env:CARGO_HTTP_CHECK_REVOKE = $PreviousCargoHttpCheckRevoke
+    if ($AllowNoRevocationCheck) {
+        if ($null -eq $PreviousCargoHttpCheckRevoke) {
+            Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
+        } else {
+            $env:CARGO_HTTP_CHECK_REVOKE = $PreviousCargoHttpCheckRevoke
+        }
     }
     Pop-Location
 }
