@@ -32,7 +32,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.logging import get_logger
-from agentshore.state import AgentStatus, AgentType
+from agentshore.state import CLI_AGENT_TYPES, AgentStatus, AgentType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -42,10 +42,6 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
 
 _logger = get_logger(__name__)
-
-_CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
-)
 
 
 class AgentManager:
@@ -179,7 +175,7 @@ class AgentManager:
         # and return it without leaving a half-constructed agent live in the
         # manager. On success the validated overlay is cached on the handle so
         # dispatch() never re-resolves the token or re-runs `gh repo view`.
-        if agent_type in _CLI_AGENT_TYPES and ident_name:
+        if agent_type in CLI_AGENT_TYPES and ident_name:
             try:
                 identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
                 await asyncio.to_thread(

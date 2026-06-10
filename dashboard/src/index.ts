@@ -1,3 +1,5 @@
+export { AGENT_REGISTRY, AGENT_TYPES, agentLabel } from "./agentRegistry";
+export type { AgentType, AgentRegistryEntry } from "./agentRegistry";
 export { Dashboard } from "./components/Dashboard";
 export type { DashboardProps } from "./components/Dashboard";
 export { ErrorBoundary } from "./components/ErrorBoundary";

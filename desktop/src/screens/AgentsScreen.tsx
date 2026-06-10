@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { agentLabel } from "@agentshore/dashboard";
 import {
   configureAgent,
   detectAgents,
@@ -14,17 +15,6 @@ import {
 import { listIdentities, type IdentityRow } from "../rpc/identitiesClient";
 
 import styles from "./AgentsScreen.module.css";
-
-const AGENT_TYPE_LABELS: Record<string, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex CLI",
-  gemini: "Gemini CLI",
-  grok: "Grok CLI",
-};
-
-function agentLabel(type: string): string {
-  return AGENT_TYPE_LABELS[type] ?? type;
-}
 
 function tierSummary(row: AgentRow): string {
   const enabledTiers = Object.entries(row.tier_models)

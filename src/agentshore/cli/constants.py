@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agentshore.agents.registry import BINARY_TO_AGENT_KEY, SUPPORTED_CLI_AGENT_KEYS
 from agentshore.config.models import RunMode
 
 # Socket-wait constants used by ``_launch_dashboard_background``. We poll the
@@ -26,13 +27,10 @@ _BYPASS_FLAGS: dict[str, tuple[str, ...]] = {
     "gemini": ("--approval-mode=yolo", "--skip-trust"),
     "grok": ("--permission-mode", "bypassPermissions"),
 }
-_AGENT_KEY_BY_BINARY: dict[str, str] = {
-    "claude": "claude_code",
-    "codex": "codex",
-    "gemini": "gemini",
-    "grok": "grok",
-    "grok-build": "grok",
-}
-_SUPPORTED_CLI_AGENT_KEYS: frozenset[str] = frozenset(_AGENT_KEY_BY_BINARY.values())
+
+# Binary→agent-key map sourced from the canonical registry so there is one
+# source of truth for which binaries map to which agent config key.
+_AGENT_KEY_BY_BINARY: dict[str, str] = BINARY_TO_AGENT_KEY
+_SUPPORTED_CLI_AGENT_KEYS: frozenset[str] = SUPPORTED_CLI_AGENT_KEYS
 
 _CUSTOM_MODEL_SENTINEL = "[ enter custom model... ]"

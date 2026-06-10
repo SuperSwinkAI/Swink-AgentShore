@@ -12,6 +12,8 @@ import {
 import { flushSync } from "react-dom";
 import { Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
+  AGENT_REGISTRY,
+  AGENT_TYPES,
   DashboardCanvas,
   IdentitiesScreen,
   type IdentitiesSidecar,
@@ -92,7 +94,9 @@ type UiState = {
 
 type Tier = "small" | "medium" | "large";
 
-type AgentType = "codex" | "claude_code" | "gemini" | "grok";
+// AgentType is imported via AGENT_REGISTRY so the desktop stays in sync with
+// the canonical registry in the dashboard package without a second definition.
+type AgentType = keyof typeof AGENT_REGISTRY;
 
 interface TierEntry {
   model: string;
@@ -103,14 +107,8 @@ type TierPlan = Record<Tier, TierEntry>;
 // Recommended defaults and per-agent model lists now come from the sidecar
 // (agents.catalog), sourced from agentshore.agents.model_catalog.KNOWN_MODELS and
 // agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS — the same canonical data the
-// CLI wizard reads. Keep AGENT_LABELS local: it's pure presentation.
-const AGENT_LABELS: Record<AgentType, string> = {
-  codex: "Codex CLI",
-  claude_code: "Claude Code",
-  gemini: "Gemini CLI",
-  grok: "Grok CLI",
-};
-const AGENT_TYPES = new Set<string>(["codex", "claude_code", "gemini", "grok"]);
+// CLI wizard reads. Labels are derived from the registry.
+const AGENT_TYPE_SET = new Set<string>(AGENT_TYPES);
 const TIERS: Tier[] = ["small", "medium", "large"];
 
 type SetupState = {
@@ -202,7 +200,7 @@ function parseStartSelection(value: unknown): StartSelection {
 }
 
 function isAgentType(value: string): value is AgentType {
-  return AGENT_TYPES.has(value);
+  return AGENT_TYPE_SET.has(value);
 }
 
 function isSetupScreen(value: string | undefined): value is SetupScreen {
@@ -422,10 +420,11 @@ function AgentConfigScreen() {
             }
           }}
         >
-          <option value="codex">{AGENT_LABELS.codex}</option>
-          <option value="claude_code">{AGENT_LABELS.claude_code}</option>
-          <option value="gemini">{AGENT_LABELS.gemini}</option>
-          <option value="grok">{AGENT_LABELS.grok}</option>
+          {AGENT_TYPES.map((type) => (
+            <option key={type} value={type}>
+              {AGENT_REGISTRY[type].label}
+            </option>
+          ))}
         </select>
       </section>
 
