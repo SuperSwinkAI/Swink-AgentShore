@@ -79,6 +79,7 @@ def effective_model_tier_config(
             enabled=configured.enabled,
             model=configured.model or default.model,
             reasoning_effort=configured.reasoning_effort or default.reasoning_effort,
+            max=configured.max,
         )
 
     if tier == DEFAULT_MODEL_TIER and (agent_cfg.model or agent_cfg.reasoning_effort):

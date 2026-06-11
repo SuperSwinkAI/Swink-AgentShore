@@ -28,6 +28,7 @@ class TierModel(TypedDict, total=False):
     enabled: bool
     model: str
     reasoning_effort: str
+    max: int
 
 
 class AgentRow(TypedDict):
@@ -142,6 +143,9 @@ def _tier_models_from_raw(raw: object) -> dict[str, TierModel]:
         effort = body.get("reasoning_effort")
         if isinstance(effort, str):
             row["reasoning_effort"] = effort
+        raw_max = body.get("max")
+        if isinstance(raw_max, int) and not isinstance(raw_max, bool):
+            row["max"] = min(20, max(1, raw_max))
         tiers[tier_key] = row
     return tiers
 
@@ -188,7 +192,7 @@ def _validate_tier_models(value: object) -> dict[str, dict[str, object]]:
         if not isinstance(body, dict):
             raise ValueError(f"tier_models.{tier_key} must be a mapping")
         clean: dict[str, object] = {}
-        for field in ("enabled", "model", "reasoning_effort"):
+        for field in ("enabled", "model", "reasoning_effort", "max"):
             if field not in body:
                 continue
             field_value = body[field]
@@ -196,6 +200,11 @@ def _validate_tier_models(value: object) -> dict[str, dict[str, object]]:
                 raise ValueError(f"tier_models.{tier_key}.enabled must be a boolean")
             if field in ("model", "reasoning_effort") and not isinstance(field_value, str):
                 raise ValueError(f"tier_models.{tier_key}.{field} must be a string")
+            if field == "max":
+                if isinstance(field_value, bool) or not isinstance(field_value, int):
+                    raise ValueError(f"tier_models.{tier_key}.max must be an integer")
+                clean[field] = min(20, max(1, field_value))
+                continue
             clean[field] = field_value
         out[tier_key] = clean
     return out
@@ -265,59 +274,4 @@ def configure_agent(project_path: Path, agent_type: str, patch: dict[str, object
             merged_tiers[tier_key] = current_dict
         body["model_tiers"] = merged_tiers
 
-    _write_yaml_atomic(cfg_path, data)
-
-
-_DEFAULT_MAX_PER_CONFIG = 2
-_MAX_PER_CONFIG_LIMIT = 32
-
-
-def get_spawn_limits(project_path: Path) -> dict[str, int]:
-    """Return ``agent_spawn`` limits as a flat dict.
-
-    Currently surfaces ``max_per_config`` (desktop-ty04): the per-(agent_type,
-    model_tier) cap. ``max_total`` was removed when per-cell gating became
-    the sole ceiling. Adds default if not yet persisted.
-    """
-    cfg_path = _config_path(project_path)
-    if not cfg_path.exists():
-        return {"max_per_config": _DEFAULT_MAX_PER_CONFIG}
-    data = _load_yaml(cfg_path)
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        return {"max_per_config": _DEFAULT_MAX_PER_CONFIG}
-    value = agent_spawn.get("max_per_config")
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-        return {"max_per_config": value}
-    return {"max_per_config": _DEFAULT_MAX_PER_CONFIG}
-
-
-def set_spawn_limits(project_path: Path, patch: dict[str, object]) -> None:
-    """Update ``agent_spawn`` fields in agentshore.yaml.
-
-    Currently accepts ``max_per_config`` only. The patch shape matches the
-    sidecar RPC ``agents.set_spawn_limits`` so the Desktop UI can call it
-    directly with the rendered field name (desktop-ty04).
-    """
-    unknown = [field for field in patch if field != "max_per_config"]
-    if unknown:
-        raise ValueError(f"unsupported agent_spawn fields: {sorted(unknown)}")
-    if "max_per_config" not in patch:
-        # Empty patch — no-op rather than rewriting the file.
-        return
-    value = patch["max_per_config"]
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError("agent_spawn.max_per_config must be an integer")
-    if value < 1 or value > _MAX_PER_CONFIG_LIMIT:
-        raise ValueError(
-            f"agent_spawn.max_per_config must be between 1 and {_MAX_PER_CONFIG_LIMIT}"
-        )
-
-    cfg_path = _config_path(project_path)
-    data = _load_yaml(cfg_path)
-    agent_spawn = data.get("agent_spawn")
-    if not isinstance(agent_spawn, dict):
-        agent_spawn = {}
-        data["agent_spawn"] = agent_spawn
-    agent_spawn["max_per_config"] = value
     _write_yaml_atomic(cfg_path, data)

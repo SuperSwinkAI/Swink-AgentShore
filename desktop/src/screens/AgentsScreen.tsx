@@ -4,12 +4,9 @@ import { useNavigate } from "react-router-dom";
 import {
   configureAgent,
   detectAgents,
-  getAgentSpawnLimits,
   listAgents,
-  setAgentSpawnLimits,
   type AgentConfigurePatch,
   type AgentRow,
-  type AgentSpawnLimits,
 } from "../rpc/agentsClient";
 import { listIdentities, type IdentityRow } from "../rpc/identitiesClient";
 
@@ -27,13 +24,18 @@ function agentLabel(type: string): string {
 }
 
 function tierSummary(row: AgentRow): string {
-  const enabledTiers = Object.entries(row.tier_models)
-    .filter(([, body]) => body.enabled !== false && (body.model || body.enabled === true))
-    .map(([tier, body]) => (body.model ? `${tier}: ${body.model}` : tier));
-  if (enabledTiers.length === 0) {
-    return "No tiers enabled";
-  }
-  return enabledTiers.join(" · ");
+  const TIER_INITIALS: Record<string, string> = { small: "S", medium: "M", large: "L" };
+  const parts = ["small", "medium", "large"]
+    .map((tier) => {
+      const t = row.tier_models[tier];
+      if (!t) return null;
+      const initial = TIER_INITIALS[tier] ?? tier[0].toUpperCase();
+      if (t.enabled === false) return `${initial}✗`;
+      const maxVal = t.max ?? 1;
+      return `${initial}×${maxVal}`;
+    })
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "no tiers";
 }
 
 export interface AgentsAdapter {
@@ -41,8 +43,6 @@ export interface AgentsAdapter {
   listIdentities: () => Promise<IdentityRow[]>;
   detectAgents: () => Promise<string[]>;
   configureAgent: (type: string, patch: AgentConfigurePatch) => Promise<void>;
-  getSpawnLimits: () => Promise<AgentSpawnLimits>;
-  setSpawnLimits: (patch: Partial<AgentSpawnLimits>) => Promise<void>;
 }
 
 const defaultAdapter: AgentsAdapter = {
@@ -50,11 +50,7 @@ const defaultAdapter: AgentsAdapter = {
   listIdentities,
   detectAgents,
   configureAgent,
-  getSpawnLimits: getAgentSpawnLimits,
-  setSpawnLimits: setAgentSpawnLimits,
 };
-
-const DEFAULT_MAX_PER_TYPE = 2;
 
 export interface AgentsScreenProps {
   adapter?: AgentsAdapter;
@@ -71,11 +67,6 @@ export function AgentsScreen({
   const [detectedTypes, setDetectedTypes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [maxPerType, setMaxPerType] = useState<number>(DEFAULT_MAX_PER_TYPE);
-  const [maxPerTypeDraft, setMaxPerTypeDraft] = useState<string>(
-    String(DEFAULT_MAX_PER_TYPE),
-  );
-  const [maxPerTypeBusy, setMaxPerTypeBusy] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -100,17 +91,14 @@ export function AgentsScreen({
     Promise.all([
       adapter.listAgents(),
       adapter.listIdentities(),
-      adapter.getSpawnLimits(),
       adapter.detectAgents(),
     ])
-      .then(([agentRows, identityRows, limits, detected]) => {
+      .then(([agentRows, identityRows, detected]) => {
         if (cancelled) return;
         setAgents(agentRows);
         onAgentRowsChange?.(agentRows);
         setIdentities(identityRows);
         setDetectedTypes(detected);
-        setMaxPerType(limits.max_per_config);
-        setMaxPerTypeDraft(String(limits.max_per_config));
         setError(null);
       })
       .catch((err: unknown) => {
@@ -122,30 +110,6 @@ export function AgentsScreen({
       cancelled = true;
     };
   }, [adapter, onAgentRowsChange]);
-
-  const onMaxPerTypeCommit = useCallback(async () => {
-    const parsed = Number.parseInt(maxPerTypeDraft, 10);
-    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 32) {
-      // Reject — snap back to the last persisted value.
-      setMaxPerTypeDraft(String(maxPerType));
-      setError("Max agents per type must be an integer between 1 and 32.");
-      return;
-    }
-    if (parsed === maxPerType) {
-      return;
-    }
-    setMaxPerTypeBusy(true);
-    try {
-      await adapter.setSpawnLimits({ max_per_config: parsed });
-      setMaxPerType(parsed);
-      setError(null);
-    } catch (err) {
-      setMaxPerTypeDraft(String(maxPerType));
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setMaxPerTypeBusy(false);
-    }
-  }, [adapter, maxPerType, maxPerTypeDraft]);
 
   const applyPatch = useCallback(
     async (type: string, patch: AgentConfigurePatch) => {
@@ -218,35 +182,6 @@ export function AgentsScreen({
           {error}
         </div>
       )}
-
-      <section className={styles.panel}>
-        <div className={styles.panelHead}>
-          <h2>Fleet sizing</h2>
-        </div>
-        <label className={styles.spawnLimit}>
-          <span className={styles.spawnLimitLabel}>Max agents per type</span>
-          <input
-            type="number"
-            min={1}
-            max={32}
-            step={1}
-            value={maxPerTypeDraft}
-            disabled={maxPerTypeBusy}
-            onChange={(event) => setMaxPerTypeDraft(event.target.value)}
-            onBlur={() => void onMaxPerTypeCommit()}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
-            }}
-            aria-label="Max agents per type"
-            data-testid="agents-max-per-type"
-          />
-          <span className={styles.small}>
-            Cap on live agents for any single (agent type, model tier). Default 2.
-          </span>
-        </label>
-      </section>
 
       <section className={styles.panel}>
         <div className={styles.panelHead}>

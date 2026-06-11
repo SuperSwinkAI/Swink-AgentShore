@@ -96,6 +96,7 @@ type AgentType = "codex" | "claude_code" | "gemini" | "grok";
 interface TierEntry {
   model: string;
   enabled: boolean;
+  max: number;
 }
 type TierPlan = Record<Tier, TierEntry>;
 
@@ -264,7 +265,7 @@ function persistSetup(next: SetupState): void {
 }
 
 function emptyTierEntry(): TierEntry {
-  return { model: "", enabled: true };
+  return { model: "", enabled: true, max: 1 };
 }
 
 function emptyTierPlan(): TierPlan {
@@ -278,9 +279,9 @@ function tierPlanFromCatalog(
   if (!catalog) return emptyTierPlan();
   const defaults = catalog.defaults[agentType] ?? {};
   return {
-    small: { model: defaults.small?.model ?? "", enabled: true },
-    medium: { model: defaults.medium?.model ?? "", enabled: true },
-    large: { model: defaults.large?.model ?? "", enabled: true },
+    small: { model: defaults.small?.model ?? "", enabled: true, max: 1 },
+    medium: { model: defaults.medium?.model ?? "", enabled: true, max: 1 },
+    large: { model: defaults.large?.model ?? "", enabled: true, max: 1 },
   };
 }
 
@@ -328,6 +329,9 @@ function AgentConfigScreen() {
             if (typeof savedTier.enabled === "boolean") {
               base[tier].enabled = savedTier.enabled;
             }
+            if (typeof savedTier.max === "number") {
+              base[tier].max = savedTier.max;
+            }
           }
         }
         setTierPlan(base);
@@ -361,6 +365,11 @@ function AgentConfigScreen() {
     setSaveError(null);
   };
 
+  const updateTierMax = (tier: Tier, maxVal: number) => {
+    setTierPlan((prev) => ({ ...prev, [tier]: { ...prev[tier], max: maxVal } }));
+    setSaveError(null);
+  };
+
   const resetToRecommended = () => {
     setTierPlan(recommended);
     setSaveError(null);
@@ -370,15 +379,15 @@ function AgentConfigScreen() {
     setSaving(true);
     setSaveError(null);
     try {
-      const tier_models: Record<string, { enabled: boolean; model: string }> = {};
+      const tier_models: Record<string, { enabled: boolean; model: string; max: number }> = {};
       for (const tier of TIERS) {
-        const { model, enabled } = tierPlan[tier];
+        const { model, enabled, max } = tierPlan[tier];
         // Persist the entry whenever the model is set, even when disabled —
         // that way a tier toggled off keeps its model selection for next
         // time the user re-enables it (matches the CLI wizard's behavior
         // where unticked tiers persist as `enabled: false`).
         if (model.length > 0) {
-          tier_models[tier] = { enabled, model };
+          tier_models[tier] = { enabled, model, max: max ?? 1 };
         }
       }
       await configureAgent(agentType, { tier_models });
@@ -477,6 +486,26 @@ function AgentConfigScreen() {
                     </option>
                   ))}
                 </select>
+                <label className="desktop-label" htmlFor={`${tier}-max-input`}>
+                  Max agents
+                </label>
+                <input
+                  id={`${tier}-max-input`}
+                  type="number"
+                  min={1}
+                  max={20}
+                  step={1}
+                  value={entry.max ?? 1}
+                  disabled={catalog === null || !entry.enabled}
+                  onChange={(event) =>
+                    updateTierMax(
+                      tier,
+                      Math.min(20, Math.max(1, parseInt(event.target.value, 10) || 1)),
+                    )
+                  }
+                  aria-label={`Max agents for ${tier} tier`}
+                  data-testid={`tier-max-${tier}`}
+                />
                 <small>
                   {!entry.enabled
                     ? "Tier disabled — agent not instantiated at this size"

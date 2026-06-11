@@ -40,8 +40,7 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 | `budget` | Spend cap (see Budget). |
 | `trusted_ids` | GitHub logins and a PR allow-list treated as trusted for review/merge gating. |
 | `identities` | Named GitHub identities (git authorship + token source) bindable to CLI agents (see Identities). |
-| `agents` | Per-agent-type fleet definitions (see Agents). |
-| `agent_spawn` | Instantiate-play pacing and caps (see Spawn Limits). |
+| `agents` | Per-agent-type fleet definitions, including per-tier spawn caps (see Agents / Spawn Limits). |
 | `bootstrap` | First-play recipe tunable: `cleanup_threshold` open-issue count above which bootstrap queues `cleanup` instead of `seed_project`. |
 | `fresh_start` | Context-reset thresholds (plays / context fraction / auto-trigger). |
 | `agent_preferences` | Play→agent-type affinity and per-play exclusions. |
@@ -72,14 +71,15 @@ Each entry under `agents:` is an `AgentConfig`: binary/API base, default model a
 
 ## Spawn Limits
 
-`agent_spawn` controls the `INSTANTIATE_AGENT` play:
+The `INSTANTIATE_AGENT` cap is **per `(agent_type, model_tier)` cell**, set by the `max` field on each entry under an agent's `model_tiers:` (see Agents):
 
-| Field | Default | Meaning |
-|-------|---------|---------|
-| `cooldown_plays` | `2` | Completed plays required between successful instantiate plays. |
-| `max_per_config` | `2` | Max live agents for one `(agent_type, model_tier)`. |
+| Field | Default | Range | Meaning |
+|-------|---------|-------|---------|
+| `model_tiers.<tier>.max` | `1` | `1`–`20` (silently clamped) | Max live agents for that one `(agent_type, model_tier)`. A tier with `enabled: false` is never spawned regardless of `max`. |
 
-The former global `max_total` cap was removed: per-(type, tier) gating is sufficient, and because PPO cannot starve one cell by concentrating in another, budget enforcement is the practical fleet ceiling. A type/tier is spawnable only when enabled, within the per-config cap, not blocked by auth/model errors, and no idle same type/tier agent already exists; busy agents do not block another same-config spawn.
+The former global `agent_spawn` block (`max_per_config`, `cooldown_plays`, and the older `max_total`) was removed in favor of per-tier `max`. A legacy `agent_spawn.max_per_config` is migrated automatically — it fans out to every explicitly-configured tier that omits its own `max`, and a `DeprecationWarning` is emitted (remove the `agent_spawn` block to silence it). Note: agents relying entirely on default tiers (no `model_tiers:` block) fall back to `max: 1`, not the legacy value.
+
+Per-(type, tier) gating is sufficient because PPO cannot starve one cell by concentrating in another, so budget enforcement is the practical fleet ceiling. A type/tier is spawnable only when enabled, within that tier's `max`, not blocked by auth/model errors, and no idle same type/tier agent already exists; busy agents do not block another same-config spawn. A single in-flight instantiate dispatch holds the next one until it lands, purely to prevent same-tick overshoot.
 
 ## Budget
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from agentshore.agents.manager import AgentManager
-from agentshore.config import AgentConfig, AgentSpawnConfig, RuntimeConfig
+from agentshore.config import AgentConfig, ModelTierConfig, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.executor import PlayExecutor
 from agentshore.plays.internal.instantiate_agent import InstantiateAgentPlay
@@ -138,62 +138,15 @@ def test_instantiate_precondition_met_with_budget_and_slots() -> None:
     assert errors == []
 
 
-def test_instantiate_precondition_blocks_within_cooldown() -> None:
-    play = InstantiateAgentPlay(spawn_cfg=AgentSpawnConfig(cooldown_plays=5))
-    state = _make_state()
-    state.plays_since_last_instantiate = 2
-    errors = play.preconditions(state)
-    assert any("cooldown" in e.text for e in errors)
+def test_instantiate_per_tier_max_enforced_at_execute() -> None:
+    """Per-tier max is enforced at execute() time, not in preconditions.
 
-
-def test_instantiate_precondition_clears_after_cooldown() -> None:
-    play = InstantiateAgentPlay(spawn_cfg=AgentSpawnConfig(cooldown_plays=5))
-    state = _make_state()
-    state.plays_since_last_instantiate = 5
-    errors = play.preconditions(state)
-    assert errors == []
-
-
-def test_instantiate_uses_default_cooldown_of_2_plays() -> None:
-    play = InstantiateAgentPlay()  # defaults: cooldown_plays=2
-    state = _make_state()
-    state.plays_since_last_instantiate = 1
-    assert any("cooldown" in e.text for e in play.preconditions(state))
-    state.plays_since_last_instantiate = 2
-    assert play.preconditions(state) == []
-
-
-def test_instantiate_default_max_per_config_is_2() -> None:
-    """Default cap is per-(agent_type, model_tier) = 2 (desktop-ty04).
-
-    Previously this test verified the global ``max_total=10`` default,
-    which was removed when per-cell gating became the only ceiling.
+    The precondition only checks bootstrap/budget/in-flight — the per-cell
+    cap is enforced in execute() once we know the target (type, tier).
     """
-    from agentshore.state import AgentSnapshot
-
-    play = InstantiateAgentPlay()  # defaults: max_per_config=2
+    play = InstantiateAgentPlay()
     state = _make_state()
-    # Sanity: precondition empty until we exercise mask/execute paths.
-    assert play.preconditions(state) == []
-    assert play._spawn_cfg.max_per_config == 2
-
-    # Two live agents of one (type, tier) does NOT block preconditions —
-    # the per-cell gate fires at execute / mask time (verified in mask + ppo tests).
-    agents = [
-        AgentSnapshot(
-            agent_id=f"a{i}",
-            agent_type=AgentType.CLAUDE_CODE,
-            status=AgentStatus.IDLE,
-            context_size=0,
-            total_cost=0.0,
-            total_tokens=0,
-            tasks_completed=0,
-            tasks_failed=0,
-            model_tier="medium",
-        )
-        for i in range(2)
-    ]
-    state = _make_state(agent_snapshots=agents)
+    # Preconditions don't gate on per-tier max — execute/mask do.
     assert play.preconditions(state) == []
 
 
@@ -201,7 +154,7 @@ def test_instantiate_default_max_per_config_is_2() -> None:
 async def test_instantiate_blocks_when_per_config_cap_reached() -> None:
     from agentshore.state import AgentSnapshot
 
-    play = InstantiateAgentPlay(spawn_cfg=AgentSpawnConfig(max_per_config=3))
+    play = InstantiateAgentPlay()
     state = _make_state(
         agent_snapshots=[
             AgentSnapshot(
@@ -220,7 +173,14 @@ async def test_instantiate_blocks_when_per_config_cap_reached() -> None:
     )
 
     ctx = MagicMock()
-    ctx.cfg = RuntimeConfig()
+    ctx.cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="sonnet", enabled=True, max=3)},
+            )
+        }
+    )
     ctx.manager.instantiate = AsyncMock()
 
     from agentshore.plays.base import PlayParams
@@ -232,7 +192,7 @@ async def test_instantiate_blocks_when_per_config_cap_reached() -> None:
     )
 
     assert outcome.success is False
-    assert "max per-config slots" in (outcome.error or "")
+    assert "per-tier max" in (outcome.error or "")
     ctx.manager.instantiate.assert_not_called()
 
 
@@ -258,7 +218,14 @@ async def test_instantiate_blocks_when_same_config_has_idle_agent() -> None:
     )
 
     ctx = MagicMock()
-    ctx.cfg = RuntimeConfig()
+    ctx.cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="sonnet", enabled=True, max=2)},
+            )
+        }
+    )
     handle = MagicMock()
     handle.agent_id = "a1"
     handle.model = "sonnet"
@@ -300,7 +267,14 @@ async def test_instantiate_allows_second_busy_same_config_below_cap() -> None:
     )
 
     ctx = MagicMock()
-    ctx.cfg = RuntimeConfig()
+    ctx.cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="sonnet", enabled=True, max=2)},
+            )
+        }
+    )
     handle = MagicMock()
     handle.agent_id = "a1"
     handle.model = "sonnet"
