@@ -41,9 +41,7 @@ from agentshore.sidecar.agents import (
     agents_catalog,
     configure_agent,
     detect_available_agents,
-    get_spawn_limits,
     list_agents,
-    set_spawn_limits,
 )
 from agentshore.sidecar.archive_rpc import ArchiveError
 from agentshore.sidecar.config import read_config, write_config
@@ -1093,23 +1091,6 @@ def _dispatch_agents_rpc(
             return _error(req_id, INVALID_PARAMS, str(exc))
         except OSError as exc:
             return _error(req_id, INTERNAL_ERROR, f"agents.configure: {exc}")
-        return _result(req_id, {})
-
-    if method == "agents.get_spawn_limits":
-        try:
-            return _result(req_id, get_spawn_limits(_active_project_path(state)))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.get_spawn_limits: {exc}")
-
-    if method == "agents.set_spawn_limits":
-        if not isinstance(raw_params, dict):
-            return _error(req_id, INVALID_PARAMS, "agents.set_spawn_limits requires object params")
-        try:
-            set_spawn_limits(_active_project_path(state), dict(raw_params))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
-        except OSError as exc:
-            return _error(req_id, INTERNAL_ERROR, f"agents.set_spawn_limits: {exc}")
         return _result(req_id, {})
 
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")

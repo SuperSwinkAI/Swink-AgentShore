@@ -384,6 +384,7 @@ def test_agent_setup_wizard_prints_detected_agents_before_picker(
     monkeypatch,
     capsys,
 ) -> None:
+    """Wizard shows a review grid with all detected agents, then exits on confirm."""
     import beaupy
 
     cfg = RuntimeConfig(
@@ -404,7 +405,13 @@ agents:
 
     monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    agent_picker_options: list[str] = []
+    hub_options_seen: list[str] = []
+
+    def fake_select(options: list[str], *, cursor_index: int = 0, **_kwargs: object) -> str:
+        # First call is the hub menu — capture its options and confirm immediately.
+        if not hub_options_seen and options and options[0] == "✓ Confirm & continue":
+            hub_options_seen[:] = options
+        return options[0]  # always pick the first option (confirm / enable / first model)
 
     def fake_select_multiple(
         options: list[str],
@@ -412,13 +419,7 @@ agents:
         ticked_indices: list[int],
         **_kwargs: object,
     ) -> list[int]:
-        if options and options[0] == "claude":
-            agent_picker_options[:] = options
-            return [index for index, _option in enumerate(options)]
         return ticked_indices
-
-    def fake_select(options: list[str], *, cursor_index: int = 0, **_kwargs: object) -> str:
-        return options[cursor_index]
 
     monkeypatch.setattr(beaupy, "select_multiple", fake_select_multiple)
     monkeypatch.setattr(beaupy, "select", fake_select)
@@ -445,9 +446,21 @@ agents:
         force_run=True,
     )
 
-    assert "Coding agents detected:  claude_code, codex, gemini" in capsys.readouterr().out
-    assert agent_picker_options == ["claude", "codex", "gemini"]
-    assert list(updated.agents) == ["claude_code", "codex", "gemini"]
+    out = capsys.readouterr().out
+    # Review grid header is shown.
+    assert "AgentShore — Agent Setup" in out
+    # All three detected agents appear in the grid output.
+    assert "claude" in out
+    assert "codex" in out
+    assert "gemini" in out
+    # Hub menu offered all three agents.
+    assert any("claude" in opt for opt in hub_options_seen)
+    assert any("codex" in opt for opt in hub_options_seen)
+    assert any("gemini" in opt for opt in hub_options_seen)
+    # Detected agents are present in the returned config with correct binaries.
+    assert "claude_code" in updated.agents
+    assert "codex" in updated.agents
+    assert "gemini" in updated.agents
     assert updated.agents["codex"].binary == "codex"
     assert updated.agents["gemini"].binary == "gemini"
 

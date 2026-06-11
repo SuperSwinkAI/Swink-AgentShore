@@ -4,6 +4,7 @@ export interface TierModel {
   enabled?: boolean;
   model?: string;
   reasoning_effort?: string;
+  max?: number;
 }
 
 export interface AgentRow {
@@ -50,14 +51,3 @@ export async function getAgentsCatalog(): Promise<AgentsCatalog> {
   return callJsonRpc<AgentsCatalog>("agents.catalog");
 }
 
-export interface AgentSpawnLimits {
-  max_per_config: number;
-}
-
-export async function getAgentSpawnLimits(): Promise<AgentSpawnLimits> {
-  return callJsonRpc<AgentSpawnLimits>("agents.get_spawn_limits");
-}
-
-export async function setAgentSpawnLimits(patch: Partial<AgentSpawnLimits>): Promise<void> {
-  await callJsonRpc<unknown>("agents.set_spawn_limits", patch);
-}

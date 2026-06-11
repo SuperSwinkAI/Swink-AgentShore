@@ -7,8 +7,13 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, MODEL_TIER_ORDER, enabled_model_tiers
-from agentshore.config import AgentConfig, AgentSpawnConfig
+from agentshore.agents.model_tiers import (
+    DEFAULT_MODEL_TIER,
+    MODEL_TIER_ORDER,
+    effective_model_tier_config,
+    enabled_model_tiers,
+)
+from agentshore.config import AgentConfig
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentStatus, AgentType, PlayOutcome, PlayType
 
@@ -60,20 +65,15 @@ def _first_enabled_config_for_tier(
 class InstantiateAgentPlay:
     """Spawn a new agent of the requested type.
 
-    Spawn limits (cooldown, per-config cap, total cap) come from
-    ``AgentSpawnConfig`` so they're tunable from ``agentshore.yaml``. Defaults
-    apply when no config is supplied (e.g. mask tests).
+    Per-tier spawn caps come from the ``max`` field on each ``ModelTierConfig``
+    in ``agentshore.yaml``. Defaults apply when no tier config is present.
     """
 
     play_type = PlayType.INSTANTIATE_AGENT
     skill_name = None
     capability = None
 
-    def __init__(self, spawn_cfg: AgentSpawnConfig | None = None) -> None:
-        self._spawn_cfg = spawn_cfg or AgentSpawnConfig()
-
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
-        cfg = self._spawn_cfg
         issues: list[MaskReason] = []
         # Defer fleet *expansion* until the bootstrap first-play has completed,
         # but never block the very first spawn. With zero active agents no play
@@ -106,20 +106,9 @@ class InstantiateAgentPlay:
                     source=MaskSource.PRECONDITION,
                 )
             )
-        cooldown = state.plays_since_last_instantiate
-        if cooldown is not None and cooldown < cfg.cooldown_plays:
-            issues.append(
-                MaskReason(
-                    text=f"instantiate cooldown ({cooldown}/{cfg.cooldown_plays} plays since last)",
-                    classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.SPAWN,
-                )
-            )
         # Count a dispatched-but-not-yet-completed instantiate toward the
-        # cooldown (#3). plays_since_last_instantiate only reflects *completed*
-        # plays, so two instantiate plays could dispatch back-to-back before the
-        # first landed in history — the second slipped the cooldown. An in-flight
-        # instantiate means the cooldown clock has not started; hold the next one.
+        # per-tier cap. An in-flight instantiate means its slot is already
+        # committed; hold the next one until it lands to prevent overshoot.
         in_flight_instantiate = sum(
             1 for pt in state.in_flight_plays if pt == PlayType.INSTANTIATE_AGENT
         )
@@ -128,7 +117,7 @@ class InstantiateAgentPlay:
                 MaskReason(
                     text=(
                         f"instantiate dispatch in flight ({in_flight_instantiate}) — "
-                        "cooldown not yet counted"
+                        "hold until it lands to prevent per-tier overshoot"
                     ),
                     classification=MaskClassification.INDEFINITE_WAIT,
                     source=MaskSource.SPAWN,
@@ -184,12 +173,12 @@ class InstantiateAgentPlay:
             if a.agent_type == agent_type
             and (a.model_tier or DEFAULT_MODEL_TIER) == target_model_tier
         )
-        max_per_config = self._spawn_cfg.max_per_config
-        if config_count >= max_per_config:
+        tier_max = effective_model_tier_config(agent_type, agent_cfg, target_model_tier).max
+        if config_count >= tier_max:
             return PlayOutcome.failed(
                 self.play_type,
-                f"{agent_type.value} {target_model_tier} at max per-config slots "
-                f"({config_count}/{max_per_config})",
+                f"{agent_type.value} {target_model_tier} at per-tier max "
+                f"({config_count}/{tier_max})",
             )
         if any(
             a.status.value == "idle"
