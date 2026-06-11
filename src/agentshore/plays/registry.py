@@ -99,7 +99,6 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     from agentshore.plays.skill_backed.unblock_pr import UnblockPrPlay
     from agentshore.plays.skill_backed.write_plan import WriteImplementationPlanPlay
 
-    spawn_cfg = cfg.agent_spawn if cfg is not None else None
     seed_project_ceiling = (
         cfg.scope.seed_project_mid_session_issue_ceiling if cfg is not None else 10
     )
@@ -109,7 +108,7 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     # space's V1_ACTION_ORDER and this registry stay in lockstep — easy to scan
     # against ``src/agentshore/state.py:PlayType``.
     for play in (
-        InstantiateAgentPlay(spawn_cfg=spawn_cfg),
+        InstantiateAgentPlay(),
         UnblockPrPlay(),
         WriteImplementationPlanPlay(),
         EndAgentPlay(),

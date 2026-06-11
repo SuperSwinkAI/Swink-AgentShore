@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agentshore.sidecar.agents import (
     agents_catalog,
     configure_agent,
     detect_available_agents,
-    get_spawn_limits,
     list_agents,
-    set_spawn_limits,
 )
 from agentshore.sidecar.server import INVALID_PARAMS, handle_request
 
@@ -250,77 +249,70 @@ def test_rpc_agents_configure_rejects_unknown_agent_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spawn limits (desktop-ty04)
+# Per-tier max
 # ---------------------------------------------------------------------------
 
 
-def test_get_spawn_limits_returns_default_when_unset(tmp_path: Path) -> None:
-    """No agentshore.yaml → defaults to max_per_config=2 (the desktop-ty04 default)."""
-    result = get_spawn_limits(tmp_path)
-    assert result == {"max_per_config": 2}
-
-
-def test_get_spawn_limits_reads_persisted_value(tmp_path: Path) -> None:
-    _write_config(tmp_path / "agentshore.yaml", {"agent_spawn": {"max_per_config": 4}})
-    result = get_spawn_limits(tmp_path)
-    assert result == {"max_per_config": 4}
-
-
-def test_set_spawn_limits_writes_to_yaml(tmp_path: Path) -> None:
-    """set_spawn_limits round-trips through get_spawn_limits."""
-    _write_config(tmp_path / "agentshore.yaml", {"agents": {}})
-    set_spawn_limits(tmp_path, {"max_per_config": 5})
-    assert get_spawn_limits(tmp_path) == {"max_per_config": 5}
-
-
-def test_set_spawn_limits_rejects_unsupported_field(tmp_path: Path) -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="unsupported agent_spawn fields"):
-        set_spawn_limits(tmp_path, {"max_total": 10})
-
-
-def test_set_spawn_limits_rejects_non_integer(tmp_path: Path) -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="must be an integer"):
-        set_spawn_limits(tmp_path, {"max_per_config": "two"})  # type: ignore[dict-item]
-
-
-def test_set_spawn_limits_rejects_out_of_range(tmp_path: Path) -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="between 1 and 32"):
-        set_spawn_limits(tmp_path, {"max_per_config": 99})
-    with pytest.raises(ValueError, match="between 1 and 32"):
-        set_spawn_limits(tmp_path, {"max_per_config": 0})
-
-
-def test_rpc_agents_get_spawn_limits_returns_default() -> None:
-    response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.get_spawn_limits"})
-    assert response is not None
-    # Without a configured project, defaults — the call itself must succeed.
-    assert "error" not in response
-    assert response["result"]["max_per_config"] == 2
-
-
-def test_rpc_agents_set_spawn_limits_rejects_non_object() -> None:
-    response = handle_request(
-        {"jsonrpc": "2.0", "id": 2, "method": "agents.set_spawn_limits", "params": []}
-    )
-    assert response is not None
-    assert response["error"]["code"] == INVALID_PARAMS
-
-
-def test_rpc_agents_set_spawn_limits_rejects_invalid_value() -> None:
-    response = handle_request(
+def test_tier_models_from_raw_reads_max(tmp_path: Path) -> None:
+    """_tier_models_from_raw surfaces the per-tier max field."""
+    _write_config(
+        tmp_path / "agentshore.yaml",
         {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "agents.set_spawn_limits",
-            "params": {"max_per_config": 99},
-        }
+            "agents": {
+                "claude_code": {
+                    "model_tiers": {
+                        "medium": {"enabled": True, "model": "sonnet", "max": 5},
+                    }
+                }
+            }
+        },
     )
-    assert response is not None
-    assert response["error"]["code"] == INVALID_PARAMS
-    assert "between 1 and 32" in response["error"]["message"]
+    rows = list_agents(tmp_path)
+    assert len(rows) == 1
+    tier = rows[0]["tier_models"].get("medium", {})
+    assert tier.get("max") == 5
+
+
+def test_tier_models_from_raw_clamps_max(tmp_path: Path) -> None:
+    """max values outside 1–20 are silently clamped."""
+    _write_config(
+        tmp_path / "agentshore.yaml",
+        {
+            "agents": {
+                "claude_code": {
+                    "model_tiers": {
+                        "small": {"enabled": True, "model": "haiku", "max": 99},
+                        "large": {"enabled": True, "model": "opus", "max": 0},
+                    }
+                }
+            }
+        },
+    )
+    rows = list_agents(tmp_path)
+    tiers = rows[0]["tier_models"]
+    assert tiers.get("small", {}).get("max") == 20  # clamped from 99
+    assert tiers.get("large", {}).get("max") == 1  # clamped from 0
+
+
+def test_configure_agent_writes_max(tmp_path: Path) -> None:
+    """configure_agent persists max for each tier."""
+    _write_config(tmp_path / "agentshore.yaml", {"agents": {"codex": {"enabled": True}}})
+    configure_agent(
+        tmp_path,
+        "codex",
+        {"tier_models": {"medium": {"enabled": True, "model": "gpt-5.4", "max": 10}}},
+    )
+    rows = list_agents(tmp_path)
+    tier = rows[0]["tier_models"].get("medium", {})
+    assert tier.get("max") == 10
+
+
+def test_validate_tier_models_rejects_bool_max(tmp_path: Path) -> None:
+    """max must be an integer, not a boolean."""
+    _write_config(tmp_path / "agentshore.yaml", {"agents": {"codex": {"enabled": True}}})
+    with pytest.raises(ValueError, match="max must be an integer"):
+        configure_agent(
+            tmp_path,
+            "codex",
+            {"tier_models": {"medium": {"max": True}}},
+        )

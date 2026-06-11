@@ -217,7 +217,7 @@ class WorktreeManager:
         Called at the end of each reap pass. Scans the current session's
         active+reaping rows and rebuilds the live key set, then removes
         every dict entry not in that set. Cheap: lock dict is small, row
-        list is bounded by ``max_per_config × N_cells``.
+        list is bounded by the sum of each tier's ``max`` across cells.
         """
         from agentshore.agents.worktree.registry import list_active
 
