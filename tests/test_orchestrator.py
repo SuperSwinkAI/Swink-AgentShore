@@ -278,20 +278,18 @@ def test_compute_play_streaks_real_streak_after_override_burst() -> None:
     assert any_streak == 3
 
 
-def test_author_labels_include_every_enabled_agent_type() -> None:
-    cfg = RuntimeConfig(
-        agents={
-            AgentType.GEMINI.value: AgentConfig(enabled=True),
-            AgentType.CODEX.value: AgentConfig(enabled=True),
-            "custom_agent": AgentConfig(enabled=True),
-        }
-    )
+def test_author_labels_cover_all_agent_types_with_dashboard_colors() -> None:
+    # cfg content is irrelevant — all AgentType values are always bootstrapped.
+    cfg = RuntimeConfig(agents={})
 
     labels = _author_labels_for_config(cfg, "agentshore/")
 
-    assert ("agentshore/author:gemini", "cccccc") in labels
-    assert ("agentshore/author:codex", "0052cc") in labels
-    assert all(name != "agentshore/author:custom_agent" for name, _ in labels)
+    label_map = dict(labels)
+    assert label_map["agentshore/author:claude_code"] == "E07B39"
+    assert label_map["agentshore/author:codex"] == "F4D44D"
+    assert label_map["agentshore/author:gemini"] == "4285F4"
+    assert label_map["agentshore/author:grok"] == "14B8A6"
+    assert "agentshore/author:custom_agent" not in label_map
 
 
 # ---------------------------------------------------------------------------
