@@ -555,8 +555,19 @@ class EligibilityAuthority:
                 classification=MaskClassification.INDEFINITE_WAIT,
                 source=MaskSource.PRECONDITION,
             )
-        if self._cfg is None or self._config_index is None:
+        if self._cfg is None:
             return None
+        if not self._config_index:
+            # None OR empty tuple → no (agent_type, tier) cell exists to spawn
+            # into. Fail closed: an empty config_index must HARD-mask the action,
+            # not leave it selectable (the selector coerces () -> None, so the
+            # old ``is None`` guard let an empty index bypass the cap and spin
+            # against execute()'s slot check; #159).
+            return MaskReason(
+                text="No agent configuration index — nothing to spawn",
+                classification=MaskClassification.HARD,
+                source=MaskSource.CONFIG,
+            )
         if not compute_config_mask(state, self._cfg, self._config_index).any():
             return MaskReason(
                 text="No eligible agent configuration",
