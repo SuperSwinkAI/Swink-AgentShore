@@ -81,12 +81,6 @@ _AGENT_LABELS: dict[str, str] = {
     "grok": "grok",
 }
 
-_TIER_INITIALS: dict[str, str] = {
-    "small": "S",
-    "medium": "M",
-    "large": "L",
-}
-
 
 def _interactive_agent_select(
     cfg: RuntimeConfig,
@@ -95,18 +89,18 @@ def _interactive_agent_select(
     *,
     force_run: bool = False,
 ) -> RuntimeConfig:
-    """Hub-and-spoke agent/tier/model/max wizard.
+    """Boxed accelerator agent/tier/model/max wizard.
 
-    Displays a review grid, then loops through a hub menu allowing per-agent
-    edits until the user confirms. Writes selections back to agentshore.yaml
-    and returns the updated config. Falls back to returning cfg unchanged when
-    stdin is not a TTY.
+    Renders detected agents as a 2-up grid of boxes whose cells carry single-key
+    accelerators: a number per box toggles that whole agent, a letter per tier
+    cell opens a sequential model/max edit. Loops until the user presses Enter,
+    then writes selections back to agentshore.yaml and returns the updated
+    config. Falls back to returning cfg unchanged when stdin is not a TTY.
     """
     import os
     import sys
 
     from agentshore.agents.model_tiers import (
-        DEFAULT_MODEL_TIER,
         MODEL_TIER_ORDER,
         MODEL_TIER_PRIORITY,
         default_model_tiers_for,
@@ -130,11 +124,11 @@ def _interactive_agent_select(
         return cfg
 
     import dataclasses
+    import string
 
     import yaml
     from beaupy import prompt as beaupy_prompt
     from beaupy import select as beaupy_select
-    from beaupy import select_multiple as beaupy_select_multiple
 
     # Build the candidate list from supported agent binaries detected on PATH.
     # Existing config provides defaults; missing detected agents are added so
@@ -180,217 +174,221 @@ def _interactive_agent_select(
         if agent_key not in new_agents:
             new_agents[agent_key] = agent_cfg
 
-    def _tier_status_label(agent_key: str) -> str:
-        """Build the S/M/L status string for one agent in the review grid."""
-        acfg = new_agents.get(agent_key)
-        if not isinstance(acfg, AgentConfig) or not acfg.enabled:
-            return "disabled"
-        parts: list[str] = []
-        for tier_full, initial in _TIER_INITIALS.items():
-            tc = acfg.model_tiers.get(tier_full) if acfg.model_tiers else None
-            if tc is not None and tc.enabled:
-                parts.append(f"{initial}x{tc.max}")
-            else:
-                parts.append(f"{initial}:off")
-        return " ".join(parts) if parts else "enabled"
+    # Stable accelerator maps: a number per agent (toggle), a letter per tier
+    # cell (edit). Letters/numbers are assigned once over the fixed candidate
+    # list so they stay put across redraws (muscle memory).
+    agent_num_by_key: dict[str, str] = {}
+    agent_by_number: dict[str, str] = {}
+    cell_by_letter: dict[str, tuple[str, str]] = {}
+    tier_letter_by_cell: dict[tuple[str, str], str] = {}
+    _letters = iter(string.ascii_lowercase)
+    for _idx, (_ak, _) in enumerate(candidates):
+        _num = str(_idx + 1)
+        agent_num_by_key[_ak] = _num
+        agent_by_number[_num] = _ak
+        try:
+            _at = AgentType(_ak)
+        except ValueError:
+            continue
+        _defaults = default_model_tiers_for(_at)
+        for _t in MODEL_TIER_ORDER:
+            if _t in _defaults:
+                _ltr = next(_letters)
+                cell_by_letter[_ltr] = (_ak, _t)
+                tier_letter_by_cell[(_ak, _t)] = _ltr
 
-    def _print_review_grid() -> None:
+    box_inner = 24
+    box_border = box_inner + 2  # rows render as "│ " + INNER + " │"
+
+    def _tier_names_for(agent_key: str) -> list[str]:
+        try:
+            defaults = default_model_tiers_for(AgentType(agent_key))
+        except ValueError:
+            return []
+        return [t for t in MODEL_TIER_ORDER if t in defaults]
+
+    def _tier_cell_text(letter: str, tier: str, tc: ModelTierConfig | None) -> str:
+        """One box line, e.g. ``[b] Medium  sonnet     ×5`` or ``[d] Small  — off``."""
+        label = tier.capitalize()
+        if tc is None or not tc.enabled:
+            return f"[{letter}] {label:<6} — off"
+        max_s = f"×{tc.max}"
+        prefix = f"[{letter}] {label:<6} "
+        avail = box_inner - len(prefix) - len(max_s) - 1
+        model = tc.model or "?"
+        if len(model) > avail:
+            model = model[: max(1, avail - 1)] + "…"
+        return f"{prefix}{model:<{avail}} {max_s}"
+
+    def _render_box(agent_key: str) -> list[str]:
+        num = agent_num_by_key.get(agent_key, "?")
+        label = _AGENT_LABELS.get(agent_key, agent_key)
+        acfg = new_agents.get(agent_key)
+        title = f"─ [{num}] {label} "
+        top = "┌" + title + "─" * max(0, box_border - len(title)) + "┐"
+        bottom = "└" + "─" * box_border + "┘"
+        tier_names = _tier_names_for(agent_key)
+        rows: list[str] = []
+        if not (isinstance(acfg, AgentConfig) and acfg.enabled):
+            rows.append(f"disabled — press [{num}]")
+        else:
+            for t in tier_names:
+                letter = tier_letter_by_cell.get((agent_key, t), "?")
+                tc = acfg.model_tiers.get(t) if acfg.model_tiers else None
+                rows.append(_tier_cell_text(letter, t, tc))
+        while len(rows) < max(3, len(tier_names)):
+            rows.append("")
+        return [top] + [f"│ {r.ljust(box_inner)[:box_inner]} │" for r in rows] + [bottom]
+
+    def _print_agent_boxes() -> None:
         click.echo()
         click.echo("=" * 60)
         click.echo("  AgentShore — Agent Setup")
         click.echo("=" * 60)
-        label_width = max((len(_AGENT_LABELS.get(k, k)) for k, _ in candidates), default=10)
-        for agent_key, _ in candidates:
-            label = _AGENT_LABELS.get(agent_key, agent_key)
-            status = _tier_status_label(agent_key)
-            click.echo(f"  {label:<{label_width}}  {status}")
+        boxes = [_render_box(ak) for ak, _ in candidates]
+        for i in range(0, len(boxes), 2):
+            left = boxes[i]
+            right = boxes[i + 1] if i + 1 < len(boxes) else None
+            if right is None:
+                for line in left:
+                    click.echo("  " + line)
+            else:
+                for lft, rgt in zip(left, right, strict=True):
+                    click.echo("  " + lft + " " + rgt)
         click.echo("=" * 60)
 
-    def _edit_agent(agent_key: str, agent_cfg: AgentConfig) -> None:
-        """Hub spoke: interactively edit one agent's tier/model/max settings."""
-        try:
-            agent_type = AgentType(agent_key)
-        except ValueError:
-            # Non-standard agent type — just toggle enabled.
-            acfg = new_agents.get(agent_key, agent_cfg)
-            new_agents[agent_key] = dataclasses.replace(acfg, enabled=True)
-            return
-
-        defaults = default_model_tiers_for(agent_type)
-        tier_names = [t for t in MODEL_TIER_ORDER if t in defaults]
-
-        current_cfg = new_agents.get(agent_key, agent_cfg)
-        label = _AGENT_LABELS.get(agent_key, agent_key)
-
-        click.echo(f"\n  Editing: {label}")
-
-        # Enable/disable the agent first.
-        enable_choice: str | None = beaupy_select(
-            options=["Enable", "Disable"],
-            cursor_index=0 if (current_cfg.enabled is not False) else 1,
-            cursor_style="cyan",
-        )
-        agent_enabled = (enable_choice or "Enable") == "Enable"
-
-        if not agent_enabled:
-            new_agents[agent_key] = dataclasses.replace(current_cfg, enabled=False)
-            return
-
-        if not tier_names:
-            new_agents[agent_key] = dataclasses.replace(current_cfg, enabled=True)
-            return
-
-        # Tier enable/disable via multi-select.
-        click.echo(f"\n  {label} — select tiers to enable  (Space to toggle, Enter to confirm)")
-        existing_tiers = current_cfg.model_tiers if current_cfg.model_tiers else {}
-        default_tier_indices = [
-            i
-            for i, t in enumerate(tier_names)
-            if (tc.enabled if (tc := existing_tiers.get(t)) is not None else defaults[t].enabled)
-        ]
-        if not default_tier_indices:
-            med = tier_names.index(DEFAULT_MODEL_TIER) if DEFAULT_MODEL_TIER in tier_names else 0
-            default_tier_indices = [med]
-
-        raw_tiers: list[int] = (
-            beaupy_select_multiple(
-                options=tier_names,
-                ticked_indices=default_tier_indices,
-                minimal_count=1,
-                tick_style="green",
-                cursor_style="cyan",
-                return_indices=True,
-            )
-            or default_tier_indices
-        )
-        selected_tier_set = {tier_names[i] for i in raw_tiers}
-
-        # Model + max per enabled tier.
-        available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]
-        model_tiers: dict[str, ModelTierConfig] = {}
-
-        for tier in tier_names:
-            dtcfg = defaults[tier]
-            existing_tc = existing_tiers.get(tier)
-
-            if tier not in selected_tier_set:
-                model_tiers[tier] = ModelTierConfig(
-                    enabled=False,
-                    model=existing_tc.model if existing_tc else dtcfg.model,
-                    reasoning_effort=(
-                        existing_tc.reasoning_effort if existing_tc else dtcfg.reasoning_effort
-                    ),
-                    max=existing_tc.max if existing_tc else dtcfg.max,
-                )
-                continue
-
-            click.echo(f"\n  {label} / {tier} — select model")
-            default_model = (
-                existing_tc.model if existing_tc and existing_tc.model else dtcfg.model or ""
-            )
-            cursor_idx = (
-                available_models.index(default_model) if default_model in available_models else 0
-            )
-
-            chosen: str | None = beaupy_select(
-                options=available_models,
-                cursor_index=cursor_idx,
-                cursor_style="cyan",
-            )
-            if not chosen:
-                chosen = default_model
-            elif chosen == _CUSTOM_MODEL_SENTINEL:
-                typed = beaupy_prompt(
-                    f"  Model for {label}/{tier}: ",
-                    initial_value=default_model,
-                )
-                chosen = (typed or default_model).strip()
-
-            current_max = existing_tc.max if existing_tc else dtcfg.max
-            new_max: int = click.prompt(
-                f"  Max agents [{tier} tier]",
-                default=current_max,
-                type=click.IntRange(1, 20),
-                show_default=True,
-            )
-
-            model_tiers[tier] = ModelTierConfig(
-                enabled=True,
-                model=chosen,
-                reasoning_effort=(
-                    existing_tc.reasoning_effort if existing_tc else dtcfg.reasoning_effort
-                ),
-                max=new_max,
-            )
-
-        # Bypass flag applied unconditionally — this is a YOLO-only system.
-        extra_flags: list[str] = list(current_cfg.extra_flags)
+    def _commit_tiers(agent_key: str, tiers: dict[str, ModelTierConfig], *, enabled: bool) -> None:
+        """Write tiers back to new_agents, refreshing primary/approved/bypass flags."""
+        acfg = new_agents.get(agent_key)
+        base = acfg if isinstance(acfg, AgentConfig) else AgentConfig(enabled=enabled)
+        extra_flags = list(base.extra_flags)
         for flag in _BYPASS_FLAGS.get(agent_key, ()):
             if flag not in extra_flags:
                 extra_flags.append(flag)
-
         primary_tier = next(
-            (t for t in MODEL_TIER_PRIORITY if t in model_tiers and model_tiers[t].enabled),
-            None,
+            (t for t in MODEL_TIER_PRIORITY if t in tiers and tiers[t].enabled), None
         )
-        primary = model_tiers[primary_tier] if primary_tier else None
+        primary = tiers[primary_tier] if primary_tier else None
         approved = tuple(
-            dict.fromkeys(tc.model for tc in model_tiers.values() if tc.enabled and tc.model)
+            dict.fromkeys(tc.model for tc in tiers.values() if tc.enabled and tc.model)
         )
-
         new_agents[agent_key] = dataclasses.replace(
-            current_cfg,
-            enabled=True,
-            model=primary.model if primary else current_cfg.model,
-            reasoning_effort=(
-                primary.reasoning_effort if primary else current_cfg.reasoning_effort
-            ),
+            base,
+            enabled=enabled,
+            model=primary.model if primary else base.model,
+            reasoning_effort=primary.reasoning_effort if primary else base.reasoning_effort,
             approved_models=approved,
-            model_tiers=model_tiers,
+            model_tiers=tiers,
             extra_flags=tuple(extra_flags),
         )
 
-    # Unconfigured agents detected on PATH but not yet in new_agents.
-    unconfigured_keys = [k for k, _ in candidates if not isinstance(new_agents.get(k), AgentConfig)]
+    def _toggle_agent(agent_key: str) -> None:
+        """[N] key: flip an agent on/off, materializing default tiers on enable."""
+        acfg = new_agents.get(agent_key)
+        if isinstance(acfg, AgentConfig) and acfg.enabled:
+            new_agents[agent_key] = dataclasses.replace(acfg, enabled=False)
+            return
+        try:
+            agent_type = AgentType(agent_key)
+        except ValueError:
+            base = acfg if isinstance(acfg, AgentConfig) else AgentConfig()
+            new_agents[agent_key] = dataclasses.replace(base, enabled=True)
+            return
+        if isinstance(acfg, AgentConfig) and acfg.model_tiers:
+            tiers = dict(acfg.model_tiers)
+        else:
+            defaults = default_model_tiers_for(agent_type)
+            tiers = {t: defaults[t] for t in MODEL_TIER_ORDER if t in defaults}
+        _commit_tiers(agent_key, tiers, enabled=True)
 
-    # ── Hub-and-spoke loop ───────────────────────────────────────────────
-    while True:
-        _print_review_grid()
+    def _edit_tier_cell(agent_key: str, tier: str) -> None:
+        """[a-l] key: sequential 3-prompt edit (enabled → model → max) for one cell."""
+        label = _AGENT_LABELS.get(agent_key, agent_key)
+        try:
+            agent_type = AgentType(agent_key)
+        except ValueError:
+            return
+        dtcfg = default_model_tiers_for(agent_type).get(tier, ModelTierConfig())
+        acfg = new_agents.get(agent_key)
+        tiers = dict(acfg.model_tiers) if isinstance(acfg, AgentConfig) and acfg.model_tiers else {}
+        cur = tiers.get(tier)
 
-        # Build hub menu options.
-        hub_options: list[str] = ["✓ Confirm & continue"]
-        for agent_key, _ in candidates:
-            label = _AGENT_LABELS.get(agent_key, agent_key)
-            hub_options.append(f"Edit {label}")
-        for agent_key in unconfigured_keys:
-            label = _AGENT_LABELS.get(agent_key, agent_key)
-            hub_options.append(f"+ add: {label}")
+        click.echo(f"\n  Edit {label} · {tier}")
 
-        click.echo()
-        chosen_hub: str | None = beaupy_select(
-            options=hub_options,
-            cursor_index=0,
+        # [1/3] tier enabled?
+        click.echo("  [1/3] tier enabled?")
+        enable_choice: str | None = beaupy_select(
+            options=["Enable", "Disable"],
+            cursor_index=0 if (cur is None or cur.enabled) else 1,
             cursor_style="cyan",
         )
-        if not chosen_hub or chosen_hub == "✓ Confirm & continue":
-            break
+        if (enable_choice or "Enable") == "Disable":
+            tiers[tier] = ModelTierConfig(
+                enabled=False,
+                model=cur.model if cur else dtcfg.model,
+                reasoning_effort=cur.reasoning_effort if cur else dtcfg.reasoning_effort,
+                max=cur.max if cur else dtcfg.max,
+            )
+            _commit_tiers(agent_key, tiers, enabled=True)
+            return
 
-        # Resolve which agent was chosen.
-        selected_agent_key: str | None = None
-        for agent_key, agent_cfg in candidates:
-            label = _AGENT_LABELS.get(agent_key, agent_key)
-            if chosen_hub in (f"Edit {label}", f"+ add: {label}"):
-                selected_agent_key = agent_key
-                _edit_agent(agent_key, agent_cfg)
-                if agent_key in unconfigured_keys and isinstance(
-                    new_agents.get(agent_key), AgentConfig
-                ):
-                    unconfigured_keys.remove(agent_key)
-                break
+        # [2/3] model
+        available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]
+        default_model = cur.model if cur and cur.model else dtcfg.model or ""
+        cursor_idx = (
+            available_models.index(default_model) if default_model in available_models else 0
+        )
+        click.echo("  [2/3] model")
+        chosen: str | None = beaupy_select(
+            options=available_models, cursor_index=cursor_idx, cursor_style="cyan"
+        )
+        if not chosen:
+            chosen = default_model
+        elif chosen == _CUSTOM_MODEL_SENTINEL:
+            typed = beaupy_prompt(f"  Model for {label}/{tier}: ", initial_value=default_model)
+            chosen = (typed or default_model).strip()
 
-        if selected_agent_key is None:
-            # Fallthrough — shouldn't happen; treat as confirm.
+        # [3/3] max
+        current_max = cur.max if cur else dtcfg.max
+        new_max: int = click.prompt(
+            "  [3/3] Max agents",
+            default=current_max,
+            type=click.IntRange(1, 20),
+            show_default=True,
+        )
+
+        tiers[tier] = ModelTierConfig(
+            enabled=True,
+            model=chosen,
+            reasoning_effort=cur.reasoning_effort if cur else dtcfg.reasoning_effort,
+            max=new_max,
+        )
+        _commit_tiers(agent_key, tiers, enabled=True)
+
+    # ── Boxed accelerator picker loop ────────────────────────────────────
+    letter_keys = sorted(cell_by_letter)
+    key_hint = f"[{letter_keys[0]}-{letter_keys[-1]}] edit tier · " if letter_keys else ""
+    while True:
+        _print_agent_boxes()
+        click.echo(f"\n  {key_hint}[1-{len(candidates)}] toggle agent · [Enter] confirm")
+        key = click.prompt("  ›", default="", show_default=False).strip().lower()
+        if key == "":
             break
+        if key in agent_by_number:
+            _toggle_agent(agent_by_number[key])
+            continue
+        if key in cell_by_letter:
+            cell_agent, cell_tier = cell_by_letter[key]
+            acfg = new_agents.get(cell_agent)
+            if not (isinstance(acfg, AgentConfig) and acfg.enabled):
+                click.echo(
+                    f"  ({_AGENT_LABELS.get(cell_agent, cell_agent)} is disabled — "
+                    f"press [{agent_num_by_key.get(cell_agent, '?')}] to enable it first)"
+                )
+                continue
+            _edit_tier_cell(cell_agent, cell_tier)
+            continue
+        click.echo(f"  (unrecognized key: {key!r})")
 
     # Disable supported CLI agents that weren't in the candidate list.
     for agent_key, agent_cfg in cfg.agents.items():
