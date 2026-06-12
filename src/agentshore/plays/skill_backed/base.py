@@ -231,6 +231,25 @@ class SkillBackedPlay(Play, ABC):
             ]
         return []
 
+    def _is_trunk_scoped_dispatch(self, dispatch_cwd: Path | None, project_path: Path) -> bool:
+        """True when this play dispatches into the main checkout and is a trunk type.
+
+        Only the trunk-scoped play types can leave untracked root artifacts (they
+        run their agent in the main repo, not an isolated worktree). ``None`` cwd
+        means the dispatcher falls back to ``handle.working_dir``, which for these
+        plays is the main repo; an explicit cwd must equal the project path.
+        """
+        from agentshore.core.trunk_artifacts import TRUNK_SCOPED_PLAY_TYPES
+
+        if self.play_type not in TRUNK_SCOPED_PLAY_TYPES:
+            return False
+        if dispatch_cwd is None:
+            return True
+        try:
+            return dispatch_cwd.resolve() == project_path.resolve()
+        except OSError:
+            return False
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
@@ -363,12 +382,27 @@ class SkillBackedPlay(Play, ABC):
                 prompt=prompt,
                 branch=params.branch,
             )
+        # Snapshot untracked root files before a trunk-scoped dispatch so we can
+        # reclaim any the agent leaves behind (#162/#164). Only meaningful when
+        # the play runs in the main checkout, not an isolated worktree.
+        dispatch_cwd = _worktree_cwd_override(params)
+        trunk_artifact_pre: set[str] | None = None
+        if self._is_trunk_scoped_dispatch(dispatch_cwd, ctx.project_path):
+            from agentshore.core.trunk_artifacts import snapshot_untracked_root_artifacts
+
+            try:
+                trunk_artifact_pre = snapshot_untracked_root_artifacts(ctx.project_path)
+            except Exception as exc:  # noqa: BLE001 — best-effort diagnostic
+                _logger.warning(
+                    "trunk_artifact_presnapshot_failed", error=str(exc), play_id=ctx.play_id
+                )
+
         invocation = await ctx.manager.dispatch(
             agent_id,
             prompt,
             capability=self.capability,
             play_type=self.play_type.value,
-            cwd_override=_worktree_cwd_override(params),
+            cwd_override=dispatch_cwd,
         )
 
         # Parse the raw result block emitted by the skill
@@ -399,7 +433,7 @@ class SkillBackedPlay(Play, ABC):
                 prompt,
                 capability=self.capability,
                 play_type=self.play_type.value,
-                cwd_override=_worktree_cwd_override(params),
+                cwd_override=dispatch_cwd,
                 resume_session_id=invocation.session_id,
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
@@ -416,6 +450,11 @@ class SkillBackedPlay(Play, ABC):
             invocation = _merge_invocation_costs(invocation, retry_invocation)
 
         self._last_skill_result = skill_result
+
+        # Reclaim untracked root files this trunk-scoped play introduced and left
+        # behind, so they don't wedge merge_pr / reconcile_state (#162/#164).
+        if trunk_artifact_pre is not None:
+            await _reclaim_trunk_artifacts_for_play(ctx, self.play_type, trunk_artifact_pre)
 
         failure_kind: FailureKind | None = None
         if not skill_result.success and _looks_like_auth_failure(skill_result.error):
@@ -439,6 +478,69 @@ class SkillBackedPlay(Play, ABC):
             error=skill_result.error,
             failure_kind=failure_kind,
         )
+
+
+async def _reclaim_trunk_artifacts_for_play(
+    ctx: PlayExecutionContext, play_type: PlayType, pre: set[str]
+) -> None:
+    """Quarantine untracked root files this trunk-scoped play introduced.
+
+    Diffs a post-dispatch snapshot against *pre*; the delta is the set of
+    top-level scratch files the play created and left untracked. Reclaim is
+    deferred (skipped) when another trunk-scoped play is concurrently in flight,
+    because the new file's ownership is then ambiguous across the overlapping
+    plays (#162) — the session-start sweep resolves those deterministically by
+    DB window. Best-effort: never raises, never affects the play outcome.
+    """
+    try:
+        from agentshore.core.trunk_artifacts import (
+            TRUNK_SCOPED_PLAY_TYPES,
+            reclaim_artifacts,
+            snapshot_untracked_root_artifacts,
+        )
+        from agentshore.data.models import ExternalMutationRecord
+        from agentshore.utils import now_iso
+
+        new = snapshot_untracked_root_artifacts(ctx.project_path) - pre
+        if not new:
+            return
+        concurrent = await ctx.store.count_running_trunk_plays(
+            ctx.session_id,
+            exclude_play_id=ctx.play_id,
+            play_types=[pt.value for pt in TRUNK_SCOPED_PLAY_TYPES],
+        )
+        if concurrent > 0:
+            _logger.info(
+                "trunk_artifact_reclaim_deferred",
+                play_id=ctx.play_id,
+                play_type=play_type.value,
+                candidate_count=len(new),
+                concurrent_trunk_plays=concurrent,
+            )
+            return
+        moved = reclaim_artifacts(ctx.project_path, new, play_id=ctx.play_id)
+        for rel in moved:
+            await ctx.store.record_external_mutation(
+                ExternalMutationRecord(
+                    session_id=ctx.session_id,
+                    play_id=ctx.play_id,
+                    idempotency_key=f"reclaim:{ctx.play_id}:{rel}",
+                    mutation_type="trunk_artifact_reclaim",
+                    target=rel,
+                    status="reclaimed",
+                    created_at=now_iso(),
+                )
+            )
+        if moved:
+            _logger.info(
+                "trunk_artifacts_reclaimed",
+                play_id=ctx.play_id,
+                play_type=play_type.value,
+                count=len(moved),
+                paths=moved,
+            )
+    except Exception as exc:  # noqa: BLE001 — reclaim must never fail a play
+        _logger.warning("trunk_artifact_reclaim_errored", play_id=ctx.play_id, error=str(exc))
 
 
 def _merge_invocation_costs(

@@ -49,10 +49,17 @@ _AGENTSHORE_OWNED_UNTRACKED_PREFIXES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class DirtyTrunkEntry:
-    """A tracked-file modification on trunk."""
+    """A dirty-trunk entry: a tracked modification or an untracked root artifact.
+
+    ``mtime_utc`` is the file's modification time (ISO-8601 Z), captured so the
+    wedge-signal builder can decide whether an untracked root file is owned by a
+    still-active trunk-scoped play (in-flight work, not a wedge — #162). ``None``
+    when the file could not be stat'd.
+    """
 
     path: str
     status: str
+    mtime_utc: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +71,16 @@ class RecentFailedPlay:
     agent_id: str | None
     error_excerpt: str | None
     is_timeout: bool
+
+
+def _iso_to_epoch(ts: str | None) -> float | None:
+    """Parse an ISO-8601 (``Z`` or offset) timestamp to epoch seconds, or None."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 def _path_is_agentshore_owned(path: str) -> bool:
@@ -96,7 +113,17 @@ def collect_dirty_trunk_paths(project_path: Path) -> list[DirtyTrunkEntry]:
             continue
         if status == "??" and _path_is_agentshore_owned(path):
             continue
-        entries.append(DirtyTrunkEntry(path=path, status=status.strip() or status))
+        mtime_utc: str | None = None
+        try:
+            st = (project_path / path).stat()
+            mtime_utc = (
+                datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat().replace("+00:00", "Z")
+            )
+        except OSError:
+            pass
+        entries.append(
+            DirtyTrunkEntry(path=path, status=status.strip() or status, mtime_utc=mtime_utc)
+        )
     return entries
 
 
@@ -233,13 +260,36 @@ def build_recent_wedge_signals(
         if a.current_play_id is not None
     ]
 
+    # Earliest start (epoch) of each in-flight *trunk-scoped* play. An untracked
+    # root file whose mtime is at/after one of these is in-flight work owned by a
+    # live play, not a wedge — reconcile_state must leave it alone (#162).
+    from agentshore.core.trunk_artifacts import TRUNK_SCOPED_PLAY_TYPES
+
+    active_trunk_starts = [
+        epoch
+        for a in state.agents
+        if a.current_play_id is not None
+        and a.current_play_type in TRUNK_SCOPED_PLAY_TYPES
+        and (epoch := _iso_to_epoch(a.current_play_started_at)) is not None
+    ]
+
+    dirty_payload: list[dict[str, Any]] = []
+    for entry in collect_dirty_trunk_paths(project_path):
+        record = asdict(entry)
+        owned = False
+        if entry.status == "??" and "/" not in entry.path and entry.mtime_utc:
+            mtime = _iso_to_epoch(entry.mtime_utc)
+            owned = mtime is not None and any(start <= mtime for start in active_trunk_starts)
+        record["owned_by_active_play"] = owned
+        dirty_payload.append(record)
+
     return {
         "same_type_failure_streak": int(state.same_type_failure_streak),
         "last_play_type": state.last_play_type.value if state.last_play_type else None,
         "last_failed_play_type": last_failed.play_type if last_failed else None,
         "last_failed_error": last_failed.error_excerpt if last_failed else None,
         "recent_failed_plays": [asdict(r) for r in recent_failed],
-        "dirty_trunk_paths": [asdict(e) for e in collect_dirty_trunk_paths(project_path)],
+        "dirty_trunk_paths": dirty_payload,
         "orphan_worktree_paths": collect_orphan_worktree_paths(
             project_path, db_path=db_path, session_id=session_id
         ),

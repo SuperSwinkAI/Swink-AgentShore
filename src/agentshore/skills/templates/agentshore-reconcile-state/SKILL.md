@@ -29,6 +29,8 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
 
   Secondary content signals (corroborate only): auto-fixer reformat patterns / lockfile churn (cleanup); new test files / deleted scaffolding (implementation plays).
 
+  **Untracked root artifacts are NOT this pathology.** `dirty_trunk_from_killed_mutator` covers **tracked** modifications (`M/A/D/R`) only. Untracked (`??`) files at the repo root left by trunk-scoped plays are handled deterministically by the orchestrator (per-play reclaim + a session-start sweep that quarantines them under `.agentshore/reclaimed/<play_id>/`), not by this skill — never `git clean` them. In particular, any `recent_wedge_signals.dirty_trunk_paths` entry with `owned_by_active_play: true` is **in-flight work of a still-running trunk-scoped play, not a wedge** (#162): exclude it from every pathology, never act on it, and do not let it drive `success: false`. A `??` root entry with `owned_by_active_play: false` is orphaned debris the orchestrator's sweep will reclaim — record it under `unrecognized_pathologies` for visibility and move on; it is not yours to delete or restore.
+
 - **`conflicted_merge_in_progress`** — `$AGENTSHORE_PROJECT_PATH/.git/MERGE_HEAD` exists, or `git status --porcelain` shows unmerged entries (`UU`/`AA`/`DD`/`AU`/`UA`/`UD`/`DU`). A killed/errant `merge_pr` left the main checkout mid-merge with unresolved conflicts — this is the state that latches the trunk-dispatch pause. High confidence whenever `MERGE_HEAD` is present; no mtime analysis needed.
 
 - **`orphan_worktrees`** — `git worktree list --porcelain` shows paths under the project's worktree root with no active session row in `sqlite3 .agentshore/agentshore.db "SELECT worktree_path FROM worktrees WHERE session_id='<current>' AND status='active'"`.
@@ -92,4 +94,4 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
 }
 ```
 
-`success: false` only when verification fails after remediation, or no remediation was possible (ambiguous ownership across all pathologies). A run that diagnosed nothing actionable is still `success: true` with empty `remediation` and `pathologies` — a no-op confirming the state is fine. Always emit the block.
+`success: false` only when verification fails after remediation, or no remediation was possible (ambiguous ownership across all pathologies). A run that diagnosed nothing actionable is still `success: true` with empty `remediation` and `pathologies` — a no-op confirming the state is fine. **A checkout whose only dirty state is untracked root artifacts (`??` at the repo root) — whether `owned_by_active_play: true` in-flight work or orphaned debris the orchestrator's sweep owns — is exactly this no-op `success: true` case, never `success: false`**: those files are not this skill's to remediate, so their presence alone must not fail the run. Always emit the block.

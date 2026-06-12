@@ -446,6 +446,99 @@ async def _phase_session_start_dirty_baseline(*, repo_root: Path, sid: str) -> N
         )
 
 
+async def _phase_session_start_trunk_artifacts(
+    *,
+    store: DataStore,
+    cfg: RuntimeConfig,
+    repo_root: Path,
+    sid: str,
+) -> None:
+    """Reclaim untracked root artifacts orphaned by prior trunk-scoped plays.
+
+    The per-play reclaim hook (``SkillBackedPlay``) cleans up a trunk-scoped
+    play's debris at *normal* completion, but a play killed mid-flight never
+    reaches its post-snapshot — its leftover root file lingers and wedges
+    ``merge_pr`` / ``reconcile_state`` (#164). This bootstrap sweep closes that
+    gap deterministically: each current untracked root file is attributed to the
+    closed trunk-scoped play whose execution window brackets the file's mtime
+    (via ``plays`` rows across all sessions), then quarantined under
+    ``.agentshore/reclaimed/<play_id>/``. Files older than every trunk window
+    (e.g. pre-session user WIP) are left untouched. Also TTL-reaps the
+    quarantine dir. Errors are logged and swallowed — never blocks session start.
+    """
+    from datetime import datetime
+
+    from agentshore.core.trunk_artifacts import (
+        TRUNK_SCOPED_PLAY_TYPES,
+        PlayWindow,
+        attribute_orphan_artifacts,
+        reap_quarantine,
+        reclaim_artifacts,
+    )
+    from agentshore.data.models import ExternalMutationRecord
+    from agentshore.utils import now_iso
+
+    def _epoch(ts: str | None) -> float | None:
+        if ts is None:
+            return None
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return None
+
+    async with _step("session_start_trunk_artifacts"):
+        try:
+            rows = await store.list_trunk_play_windows(
+                play_types=[pt.value for pt in TRUNK_SCOPED_PLAY_TYPES]
+            )
+            owner_windows: list[PlayWindow] = []
+            for play_id, started_at, ended_at in rows:
+                started = _epoch(started_at)
+                if started is None:
+                    continue
+                owner_windows.append(
+                    PlayWindow(play_id=play_id, started_at=started, ended_at=_epoch(ended_at))
+                )
+            # No genuinely-active plays exist at bootstrap (dispatch is not open),
+            # so a prior killed play (ended_at NULL) is an owner, not active.
+            attributed = attribute_orphan_artifacts(
+                repo_root, owner_windows=owner_windows, active_windows=[]
+            )
+            by_owner: dict[int, list[str]] = {}
+            for rel, owner in attributed.items():
+                by_owner.setdefault(owner, []).append(rel)
+            reclaimed_total = 0
+            for owner, rels in by_owner.items():
+                moved = reclaim_artifacts(repo_root, rels, play_id=owner)
+                reclaimed_total += len(moved)
+                for rel in moved:
+                    await store.record_external_mutation(
+                        ExternalMutationRecord(
+                            session_id=sid,
+                            play_id=owner,
+                            idempotency_key=f"reclaim:{owner}:{rel}",
+                            mutation_type="trunk_artifact_reclaim",
+                            target=rel,
+                            status="reclaimed_sweep",
+                            created_at=now_iso(),
+                        )
+                    )
+            reaped = reap_quarantine(repo_root, ttl_seconds=cfg.worktrees.reap_ttl_seconds)
+            _logger.info(
+                "session_start_trunk_artifacts",
+                session_id=sid,
+                reclaimed=reclaimed_total,
+                quarantine_reaped=reaped,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort, never block startup
+            _logger.warning(
+                "session_start_trunk_artifacts_failed",
+                session_id=sid,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+
+
 async def _phase_git_safety_sweep(
     *,
     orch: Orchestrator,

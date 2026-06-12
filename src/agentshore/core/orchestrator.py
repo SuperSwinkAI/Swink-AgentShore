@@ -197,6 +197,13 @@ class Orchestrator(_OrchestratorBase):
             # attribute dirty paths to prior sessions even when the DB/log was
             # recovered or rotated.
             await phases._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
+            # Reclaim untracked root artifacts orphaned by killed trunk-scoped
+            # plays (prior sessions) so they don't wedge merge_pr / reconcile
+            # (#162/#164). Runs after the dirty baseline so the baseline still
+            # records pre-reclaim trunk state, and before dispatch opens.
+            await phases._phase_session_start_trunk_artifacts(
+                store=store, cfg=cfg, repo_root=repo_root, sid=sid
+            )
             # desktop-kqo5: cache default branch + sweep main-repo HEAD before
             # opening dispatch. Must run before _phase_install_skills so the
             # cached value is available to any phase that needs it.
