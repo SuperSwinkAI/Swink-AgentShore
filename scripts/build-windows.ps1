@@ -115,7 +115,20 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
     )
-    & $FilePath @Arguments
+    # Native tools (npm, npx, cargo, uv) routinely write progress and warnings to
+    # stderr. Under the script-wide $ErrorActionPreference = "Stop", PowerShell 5.1
+    # wraps any native command's stderr line in a terminating NativeCommandError
+    # before we can inspect $LASTEXITCODE — so a benign warning (e.g. Vite's
+    # INEFFECTIVE_DYNAMIC_IMPORT, emitted while the frontend build succeeds with a
+    # 0 exit code) aborts the whole build. Drop to Continue for the invocation and
+    # gate success solely on the real exit code.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
     if ($LASTEXITCODE -ne 0) {
         Die "$FilePath failed with exit code $LASTEXITCODE"
     }
