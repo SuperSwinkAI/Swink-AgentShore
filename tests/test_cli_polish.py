@@ -379,90 +379,95 @@ def test_agent_setup_wizard_force_run_non_tty_prints_notice(
     assert "Agent setup wizard requested but stdin is not a TTY" in capsys.readouterr().out
 
 
-def test_agent_setup_wizard_prints_detected_agents_before_picker(
+_FAKE_MODELS = [
+    "haiku",
+    "sonnet",
+    "opus",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.5",
+    "flash-lite",
+    "auto",
+    "pro",
+]
+
+
+def test_agent_setup_wizard_renders_boxes_and_confirms(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
-    """Wizard shows a review grid with all detected agents, then exits on confirm."""
-    import beaupy
+    """Wizard renders a 2-up box grid with letter/number accelerators, exits on Enter."""
+    import click
 
-    cfg = RuntimeConfig(
-        agents={
-            "claude_code": AgentConfig(enabled=True, binary="claude"),
-        }
-    )
+    cfg = RuntimeConfig(agents={"claude_code": AgentConfig(enabled=True, binary="claude")})
     config_path = tmp_path / "agentshore.yaml"
     config_path.write_text(
-        """\
-agents:
-  claude_code:
-    enabled: true
-    binary: claude
-""",
+        "agents:\n  claude_code:\n    enabled: true\n    binary: claude\n",
         encoding="utf-8",
     )
 
     monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    hub_options_seen: list[str] = []
-
-    def fake_select(options: list[str], *, cursor_index: int = 0, **_kwargs: object) -> str:
-        # First call is the hub menu — capture its options and confirm immediately.
-        if not hub_options_seen and options and options[0] == "✓ Confirm & continue":
-            hub_options_seen[:] = options
-        return options[0]  # always pick the first option (confirm / enable / first model)
-
-    def fake_select_multiple(
-        options: list[str],
-        *,
-        ticked_indices: list[int],
-        **_kwargs: object,
-    ) -> list[int]:
-        return ticked_indices
-
-    monkeypatch.setattr(beaupy, "select_multiple", fake_select_multiple)
-    monkeypatch.setattr(beaupy, "select", fake_select)
-    monkeypatch.setattr(beaupy, "prompt", lambda *_a, **_k: "")
     monkeypatch.setattr(
-        "agentshore.agents.model_catalog.models_for_agent",
-        lambda *_a, **_k: [
-            "haiku",
-            "sonnet",
-            "opus",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex",
-            "gpt-5.5",
-            "flash-lite",
-            "auto",
-            "pro",
-        ],
+        "agentshore.agents.model_catalog.models_for_agent", lambda *_a, **_k: _FAKE_MODELS
     )
+    # Press Enter immediately → confirm & write.
+    monkeypatch.setattr(click, "prompt", lambda *_a, **_k: "")
 
     updated = _interactive_agent_select(
-        cfg,
-        ["claude", "codex", "gemini"],
-        config_path,
-        force_run=True,
+        cfg, ["claude", "codex", "gemini"], config_path, force_run=True
     )
 
     out = capsys.readouterr().out
-    # Review grid header is shown.
     assert "AgentShore — Agent Setup" in out
-    # All three detected agents appear in the grid output.
-    assert "claude" in out
-    assert "codex" in out
-    assert "gemini" in out
-    # Hub menu offered all three agents.
-    assert any("claude" in opt for opt in hub_options_seen)
-    assert any("codex" in opt for opt in hub_options_seen)
-    assert any("gemini" in opt for opt in hub_options_seen)
-    # Detected agents are present in the returned config with correct binaries.
-    assert "claude_code" in updated.agents
-    assert "codex" in updated.agents
-    assert "gemini" in updated.agents
+    # Box frames + letter/number accelerators rendered.
+    assert "┌" in out and "│" in out
+    assert "[a]" in out  # first tier cell letter
+    assert "[1]" in out  # first agent toggle number
+    assert "toggle agent" in out and "confirm" in out
+    # All three detected agents appear and round-trip into config with binaries.
+    for label in ("claude", "codex", "gemini"):
+        assert label in out
     assert updated.agents["codex"].binary == "codex"
     assert updated.agents["gemini"].binary == "gemini"
+
+
+def test_agent_setup_wizard_edit_tier_cell_sets_max(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Pressing a tier letter runs the 3-prompt edit and persists the new max."""
+    import beaupy
+    import click
+
+    cfg = RuntimeConfig(agents={"claude_code": AgentConfig(enabled=True, binary="claude")})
+    config_path = tmp_path / "agentshore.yaml"
+    config_path.write_text(
+        "agents:\n  claude_code:\n    enabled: true\n    binary: claude\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "agentshore.agents.model_catalog.models_for_agent", lambda *_a, **_k: _FAKE_MODELS
+    )
+    # beaupy.select: enable toggle → "Enable", model picker → first model.
+    monkeypatch.setattr(beaupy, "select", lambda options, **_k: options[0])
+    monkeypatch.setattr(beaupy, "prompt", lambda *_a, **_k: "")
+    # click.prompt sequence: keystroke 'a' (claude·small) → max 7 → Enter (confirm).
+    inputs = iter(["a", 7, ""])
+    monkeypatch.setattr(click, "prompt", lambda *_a, **_k: next(inputs))
+
+    updated = _interactive_agent_select(cfg, ["claude"], config_path, force_run=True)
+
+    small = updated.agents["claude_code"].model_tiers["small"]
+    assert small.enabled is True
+    assert small.max == 7
+    # Persisted to YAML too.
+    saved = config_path.read_text(encoding="utf-8")
+    assert "max: 7" in saved
 
 
 def test_agent_identity_keys_filter_to_detected_enabled_agents(tmp_path: Path) -> None:
