@@ -39,7 +39,13 @@ from agentshore.rl.mask_reason import (
     MaskReason,
     MaskSource,
 )
-from agentshore.state import AgentStatus, AgentType, PlayType, SessionState
+from agentshore.state import (
+    CONSECUTIVE_TIMEOUT_BENCH_LIMIT,
+    AgentStatus,
+    AgentType,
+    PlayType,
+    SessionState,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -235,6 +241,11 @@ def _agent_needs_reaping(state: OrchestratorState) -> bool:
     the lifecycle-churn breaker so a stuck agent can still be retired (#163).
     """
     if state.recovery_exhausted_agent_ids:
+        return True
+    # A consecutive-timeout-benched agent (#161) sits IDLE but is excluded from
+    # selection, so it never recovers on its own — keep END_AGENT available so
+    # the PPO can reap it and instantiate a fresh one instead of wedging.
+    if any(a.consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT for a in state.agents):
         return True
     return EligibilityAuthority._has_terminal_error_agent(state)
 

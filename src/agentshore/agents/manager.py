@@ -356,6 +356,7 @@ class AgentManager:
                     else ErrorClass.UNKNOWN
                 )
                 handle.timeout_count += 1
+                handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)
                 await self._store.increment_agent_tasks(agent_id, failed=1)
                 elapsed_seconds = round(time.perf_counter() - dispatch_started_at, 3)
@@ -394,6 +395,7 @@ class AgentManager:
             raise
 
         cb.record_success()
+        handle.consecutive_timeouts = 0
         handle.accumulate(
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,

@@ -171,12 +171,17 @@ async def test_dispatch_success_updates_handle_and_store(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
     agent_id = handle.agent_id
+    # A prior stream-idle timeout left the storm counter elevated; a successful
+    # dispatch must reset it so a one-off stall doesn't accumulate toward the
+    # bench limit (#161).
+    handle.consecutive_timeouts = 3
 
     result = await mgr.dispatch(agent_id, "do the work")
 
     assert result.exit_code == 0
     assert result.tokens_in == 500
     assert result.tokens_out == 200
+    assert handle.consecutive_timeouts == 0
 
     # Parse the raw output using the shared result parser
     sr = parse_skill_result(result.raw_output)
@@ -438,6 +443,7 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.status == AgentStatus.IDLE
     assert handle.last_error_class == "timeout_transient"
     assert handle.timeout_count == 1
+    assert handle.consecutive_timeouts == 1
 
 
 # ---------------------------------------------------------------------------

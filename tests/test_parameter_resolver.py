@@ -1697,6 +1697,54 @@ async def test_resolve_instantiate_agent_returns_none_when_only_config_has_idle_
 
 
 @pytest.mark.asyncio
+async def test_resolve_instantiate_agent_returns_none_when_only_config_at_per_tier_max() -> None:
+    """#159: a BUSY (non-idle) agent that fills the only cell's per-tier max must
+    not be re-picked. Previously the fallback excluded only IDLE cells, so the
+    resolver deterministically returned a full cell that execute() then rejected
+    ("at per-tier max"), spinning instantiate_agent."""
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+            ),
+            "codex": AgentConfig(enabled=False),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[_make_snapshot("busy-claude", status=AgentStatus.BUSY, model_tier="medium")]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_instantiate_agent_ignores_dead_agents_for_capacity() -> None:
+    """A TERMINATED/ERROR agent does not occupy its cell — the resolver may
+    refill it, matching execute()'s live-agent capacity definition."""
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+            ),
+            "codex": AgentConfig(enabled=False),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[_make_snapshot("dead-claude", status=AgentStatus.TERMINATED, model_tier="medium")]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result == PlayParams(target_agent_type="claude_code", target_model_tier="medium")
+
+
+@pytest.mark.asyncio
 async def test_resolve_instantiate_agent_returns_none_when_no_enabled_configs() -> None:
     cfg = RuntimeConfig(
         agents={

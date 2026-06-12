@@ -22,6 +22,7 @@ from agentshore.data.store import PlayRecord, PullRequestRecord
 from agentshore.errors import ErrorClass
 from agentshore.github.labels import (
     MANUAL_REQUIRED_LABEL,
+    NEEDS_HUMAN_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
 )
 from agentshore.plays.base import PlayParams
@@ -99,6 +100,25 @@ _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "infrastructure failures",
     "external ci",
     "ci config or infrastructure",
+)
+
+# Markers in a failed write_implementation_plan outcome that mean the issue
+# cannot be turned into a plan by re-dispatching an agent — it needs a human to
+# split or clarify it. Matching any parks the issue with NEEDS_HUMAN_LABEL on the
+# FIRST such failure (#458) so the planner stops re-selecting it every tick
+# (comment spam + wasted budget). Transient/ambiguous failures do NOT match and
+# stay retryable.
+_WRITE_PLAN_UNPLANNABLE_MARKERS: tuple[str, ...] = (
+    "too ambiguous",
+    "too large",
+    "too broad",
+    "cannot produce a plan",
+    "cannot be planned",
+    "unable to plan",
+    "needs human",
+    "needs decomposition",
+    "must be split",
+    "requires human",
 )
 
 # Used by ``refresh_issues`` — declared module-level so renaming inside the
@@ -399,6 +419,7 @@ class CompletionProcessor:
                 pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
+        await self._park_unplannable_issue_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
         await self._record_completion_experience(
             ctx,
@@ -701,6 +722,59 @@ class CompletionProcessor:
                     self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
+
+    async def _park_unplannable_issue_if_needed(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
+        # #458: a write_implementation_plan that fails because the issue is
+        # un-plannable (too ambiguous/large to decompose by re-running an agent)
+        # must not be re-selected next tick — the deterministic priority sort
+        # picks the same issue, the agent no-ops with the same diagnosis, and the
+        # session spams comments while burning budget. Park it with
+        # NEEDS_HUMAN_LABEL so _base_issue_available drops it from plan/pickup/
+        # refine/debug until a human (or a grooming split) clears the label.
+        if (
+            completed_play_type != PlayType.WRITE_IMPLEMENTATION_PLAN
+            or outcome.success
+            or not isinstance(ctx.params.issue_number, int)
+        ):
+            return
+        error_text = (outcome.error or "").lower()
+        if not any(m in error_text for m in _WRITE_PLAN_UNPLANNABLE_MARKERS):
+            return
+        await self._host._safe_call(
+            self.mark_issue_needs_human(ctx.params.issue_number),
+            "mark_issue_needs_human",
+        )
+        # Shadow the label so the very next state build excludes the issue, before
+        # the gh CLI add + add_issue_labels write is visible to a fresh
+        # get_open_issues read (same WAL/refresh lag as the systematic_debugging
+        # ROOT_CAUSE_FOUND_LABEL shadow above).
+        self._host._recent_applied_labels.append((ctx.params.issue_number, NEEDS_HUMAN_LABEL))
+
+    async def mark_issue_needs_human(self, issue_number: int) -> None:
+        """Park an un-plannable issue behind NEEDS_HUMAN_LABEL (store + GitHub)."""
+        await self._store.add_issue_labels(
+            issue_number,
+            self._session_id,
+            [NEEDS_HUMAN_LABEL],
+        )
+        github = getattr(self._executor, "_github", None)
+        if github is not None:
+            await github.label_issue(
+                issue_number,
+                [NEEDS_HUMAN_LABEL],
+                f"needs_human:issue{issue_number}",
+            )
+        _logger.warning(
+            "issue_needs_human",
+            session_id=self._session_id,
+            issue_number=issue_number,
+            label=NEEDS_HUMAN_LABEL,
+        )
 
     async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
         next_state = await self._state_builder.build_state()

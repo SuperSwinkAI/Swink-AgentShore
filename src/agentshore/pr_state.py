@@ -65,19 +65,18 @@ def blocked_reasons(
     status_check_summary: str | None,
     is_draft: bool | None = None,
     mergeable: str | None = None,
-    head_sha: str | None = None,
-    last_reviewed_sha: str | None = None,
-    last_review_status: str | None = None,
 ) -> list[str]:
     """Derive normalized reasons a PR is not ready for normal review/merge flow.
 
-    A GitHub-side ``CHANGES_REQUESTED`` review is treated as stale (and
-    omitted from the reasons) when AgentShore has logged a ``PASS`` verdict at
-    the current head SHA — this is the path the ``unblock_pr`` skill's
-    stale-review short-circuit relies on. Without this, an unblock that
-    addresses the feedback never lets ``merge_pr`` proceed because the
-    GitHub review_decision stays ``CHANGES_REQUESTED`` until a new review
-    is submitted.
+    A current GitHub ``CHANGES_REQUESTED`` review decision always blocks. An
+    AgentShore ``PASS`` verdict never overrides it — previously a PASS logged at
+    the same head SHA as a fresh human CHANGES_REQUESTED suppressed the reason,
+    which let ``merge_pr`` repeatedly select a PR a human had explicitly blocked
+    (#344 merge starvation: the PASS and the CHANGES_REQUESTED were both at the
+    PR's current head, indistinguishable in order, so the suppression fired on a
+    live human verdict). A CHANGES_REQUESTED clears only when GitHub's
+    ``reviewDecision`` itself changes — i.e. a fresh review/approval at the new
+    head, which is exactly the gate GitHub branch protection enforces.
     """
     if is_draft:
         return ["draft"]
@@ -86,11 +85,7 @@ def blocked_reasons(
     normalized_state = state.lower()
     if normalized_state in BLOCKED_PR_STATES:
         reasons.append(normalized_state)
-    if review_decision == "CHANGES_REQUESTED" and not _changes_requested_is_stale(
-        head_sha=head_sha,
-        last_reviewed_sha=last_reviewed_sha,
-        last_review_status=last_review_status,
-    ):
+    if review_decision == "CHANGES_REQUESTED":
         reasons.append("changes_requested")
     if "agentshore/manual-required" in labels:
         reasons.append("manual_required")
@@ -102,20 +97,6 @@ def blocked_reasons(
         reasons.append("merge_conflicts")
 
     return list(dict.fromkeys(reasons))
-
-
-def _changes_requested_is_stale(
-    *,
-    head_sha: str | None,
-    last_reviewed_sha: str | None,
-    last_review_status: str | None,
-) -> bool:
-    return (
-        last_review_status == "PASS"
-        and last_reviewed_sha is not None
-        and head_sha is not None
-        and last_reviewed_sha == head_sha
-    )
 
 
 def _collect_rollup_states(raw: object) -> set[str]:

@@ -193,6 +193,15 @@ def test_cooldown_gate_passes_past_window() -> None:
     assert gate(_state(plays_since_last_play_type={PlayType.CLEANUP: 50})) is None
 
 
+def test_cooldown_gate_in_flight_is_owned_by_inflight_gate_not_cooldown() -> None:
+    """A same-type play in flight (counter absent) is the InFlightGate's job, not
+    this gate's — CooldownGate must not emit a duplicate reason for it. Standard
+    plays declare both gates; the persist race for completed plays is closed
+    upstream by _recent_play_completions."""
+    gate = CooldownGate(PlayType.CLEANUP, plays=20)
+    assert gate(_state(in_flight_plays=[PlayType.CLEANUP])) is None
+
+
 # --- ArmedByFailureGate (the new logic) -------------------------------------
 
 

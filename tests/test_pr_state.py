@@ -37,51 +37,27 @@ def test_changes_requested_review_decision() -> None:
     assert "changes_requested" in result
 
 
-def test_changes_requested_is_stale_when_agentshore_pass_matches_head() -> None:
-    """AgentShore PASS at the current head SHA dismisses CHANGES_REQUESTED."""
-    result = _call(
-        review_decision="CHANGES_REQUESTED",
-        head_sha="abc123",
-        last_reviewed_sha="abc123",
-        last_review_status="PASS",
-    )
-    assert "changes_requested" not in result
+def test_changes_requested_not_dismissed_by_agentshore_pass() -> None:
+    """#344: an AgentShore PASS never overrides a live CHANGES_REQUESTED.
 
-
-def test_changes_requested_kept_when_pass_at_older_sha() -> None:
-    """PASS at an older SHA than head must NOT dismiss the request."""
-    result = _call(
-        review_decision="CHANGES_REQUESTED",
-        head_sha="def456",
-        last_reviewed_sha="abc123",
-        last_review_status="PASS",
-    )
+    A PASS logged at the same head as a fresh human CHANGES_REQUESTED used to
+    suppress the reason (the two are indistinguishable in order at the same
+    SHA), letting merge_pr fixate on a PR a human had explicitly blocked. The
+    decision now always blocks; it clears only when GitHub's reviewDecision
+    itself changes.
+    """
+    result = _call(review_decision="CHANGES_REQUESTED")
     assert "changes_requested" in result
 
 
-def test_changes_requested_kept_when_no_pass_verdict() -> None:
-    """Missing or non-PASS AgentShore verdict must NOT dismiss the request."""
-    for status in (None, "FAIL", "BLOCK"):
-        result = _call(
-            review_decision="CHANGES_REQUESTED",
-            head_sha="abc123",
-            last_reviewed_sha="abc123",
-            last_review_status=status,
-        )
-        assert "changes_requested" in result, f"status={status!r} should keep the reason"
-
-
-def test_other_blockers_unaffected_by_stale_dismissal() -> None:
-    """The stale-CHANGES_REQUESTED rule never hides ci_failed or merge_conflicts."""
+def test_changes_requested_accumulates_with_other_blockers() -> None:
+    """CHANGES_REQUESTED is reported alongside ci_failed and merge_conflicts."""
     result = _call(
         review_decision="CHANGES_REQUESTED",
         status_check_summary="failed",
         mergeable="CONFLICTING",
-        head_sha="abc123",
-        last_reviewed_sha="abc123",
-        last_review_status="PASS",
     )
-    assert "changes_requested" not in result
+    assert "changes_requested" in result
     assert "ci_failed" in result
     assert "merge_conflicts" in result
 

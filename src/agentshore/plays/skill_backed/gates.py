@@ -64,6 +64,7 @@ class CapabilityGate:
                 tasks_completed=a.tasks_completed,
                 tasks_failed=a.tasks_failed,
                 timeout_count=a.timeout_count,
+                consecutive_timeouts=a.consecutive_timeouts,
             )
             and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(self.capability, False))
         ]
@@ -101,6 +102,16 @@ class CooldownGate:
     """Mask for ``plays`` plays after the named play type last completed.
 
     Lifted from ``SkillBackedPlay._cooldown_check``.
+
+    Counts only *completed* occurrences: ``plays_since_last_play_type`` is built
+    from ended plays, and a just-completed play is bridged into it via
+    ``_recent_play_completions`` (closing the WAL-flush persist race that let
+    same-tick duplicates slip the cooldown). A same-type play that is still
+    *in flight* is owned by the sibling ``InFlightGate`` — every standard-cooldown
+    play declares both — so this gate intentionally does not re-mask it (doing so
+    would only emit a duplicate reason). The effective cooldown reaching this gate
+    is pinned by ``test_registry_cooldown_plumbing`` after the #344-session
+    finding that a stale build enforced ~20 instead of the configured value.
     """
 
     __slots__ = ("play_type", "plays")
