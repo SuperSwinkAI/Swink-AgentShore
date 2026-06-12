@@ -287,7 +287,9 @@ def _resolve_signing_key() -> str:
     # than raw subprocess.run. In the desktop sidecar, the process's stdin is the
     # live Tauri JSON-RPC pipe; git's MSYS2 runtime probes stdin on startup and
     # wedges at 0 CPU forever when it inherits that pipe.
-    result = command.git_sync("config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5)
+    result = command.git_sync(
+        "config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5
+    )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
 
@@ -365,6 +367,9 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                # Never inherit the sidecar's stdin (the live Tauri JSON-RPC
+                # pipe); a subprocess probing it can wedge the session (#155).
+                stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return False, f"ssh-add probe failed: {exc}"
@@ -400,6 +405,10 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=10,
+            # A passphrase-protected key would otherwise prompt on the inherited
+            # stdin (the live Tauri JSON-RPC pipe); DEVNULL fails fast instead of
+            # contending the pipe (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"ssh-add load attempt failed: {exc}"
