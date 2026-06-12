@@ -70,6 +70,29 @@ def _resolve_executable(argv: list[str]) -> list[str]:
     return [resolved, *argv[1:]]
 
 
+def _write_grok_prompt_file(prompt: str) -> Path:
+    """Write *prompt* to a temp file for Grok's ``--prompt-file`` (issue #160).
+
+    Grok has no stdin prompt mode and rejects an empty ``-p`` value, so on
+    Windows — where we can't pass a large prompt as an argv element — the
+    prompt is delivered through a file instead. The caller owns cleanup
+    (``unlink`` in its ``finally``).
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    fd, path = tempfile.mkstemp(prefix="agentshore-grok-prompt-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+    return Path(path)
+
+
 async def _feed_prompt_stdin(proc: asyncio.subprocess.Process, prompt: str) -> None:
     """Write *prompt* to the child's stdin and close it."""
     stdin = proc.stdin
@@ -389,6 +412,7 @@ def build_argv(
     context_path: str | None = None,
     project_dir: str | None = None,
     prompt_on_stdin: bool = False,
+    prompt_file: str | None = None,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -404,6 +428,9 @@ def build_argv(
     Each CLI is told to read the prompt from stdin: codex via the ``-`` prompt
     placeholder, claude via ``-p`` with no prompt argument, gemini via an empty
     ``-p`` (its ``--prompt`` value is appended to whatever arrives on stdin).
+    Grok is the exception — it has no stdin prompt mode, so the caller writes
+    the prompt to a temp file and passes its path as *prompt_file*, which Grok
+    reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -467,6 +494,7 @@ def build_argv(
             extra_flags=extra_flags,
             project_dir=project_dir,
             prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
         )
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
@@ -484,12 +512,14 @@ def _build_dispatch_argv(
     python_executable: str | None,
     resume_session_id: str | None,
     effective_cwd: Path,
+    prompt_file: str | None = None,
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
     Encapsulates the test-shim path (``python_executable``), the normal
     ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
-    (desktop-dy2j).
+    (desktop-dy2j). *prompt_file*, when set, routes a Grok dispatch's prompt
+    through ``--prompt-file`` instead of an argv element (issue #160).
     """
     prompt_on_stdin = _prompt_on_stdin(python_executable)
     if python_executable is not None:
@@ -505,6 +535,7 @@ def _build_dispatch_argv(
             extra_flags=cfg.extra_flags,
             project_dir=str(effective_cwd),
             prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
         )
 
     # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
@@ -741,6 +772,15 @@ async def dispatch_cli(
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
 
+    # Grok can't take the prompt over stdin (no stdin mode) and rejects an empty
+    # ``-p`` ("--single: prompt is empty", issue #160). Where the other CLIs
+    # would route the prompt over stdin (Windows arg-length limits), Grok
+    # instead reads it from a temp file via ``--prompt-file``. Cleaned up in the
+    # ``finally`` below.
+    grok_prompt_file: Path | None = None
+    if handle.agent_type == AgentType.GROK and _prompt_on_stdin(python_executable):
+        grok_prompt_file = _write_grok_prompt_file(prompt)
+
     _argv = _build_dispatch_argv(
         handle,
         prompt,
@@ -748,6 +788,7 @@ async def dispatch_cli(
         python_executable=python_executable,
         resume_session_id=resume_session_id,
         effective_cwd=effective_cwd,
+        prompt_file=str(grok_prompt_file) if grok_prompt_file is not None else None,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
@@ -772,8 +813,11 @@ async def dispatch_cli(
     argv = _resolve_executable(argv)
 
     # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
-    # limit (see build_argv); elsewhere stdin stays closed.
-    prompt_on_stdin = _prompt_on_stdin(python_executable)
+    # limit (see build_argv); elsewhere stdin stays closed. Grok is the
+    # exception: it never reads the prompt from stdin (it's in --prompt-file),
+    # so we keep stdin closed for it — opening a PIPE and writing a prompt Grok
+    # never drains could block on a full pipe buffer.
+    prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
 
     proc = await asyncio.create_subprocess_exec(
         *argv,
@@ -837,6 +881,8 @@ async def dispatch_cli(
             stdin_feeder.cancel()
             with contextlib.suppress(Exception):
                 await stdin_feeder
+        if grok_prompt_file is not None:
+            grok_prompt_file.unlink(missing_ok=True)
         if on_subprocess_exited is not None and proc.pid is not None:
             with contextlib.suppress(Exception):
                 await on_subprocess_exited(proc.pid, proc.returncode)

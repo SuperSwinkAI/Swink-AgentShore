@@ -340,7 +340,11 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
         AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
     )
     gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
-    grok = build_argv(AgentType.GROK, huge, binary="grok", prompt_on_stdin=True)
+    # Grok has no stdin prompt mode, so the dispatch layer hands it a prompt-file
+    # path instead (issue #160); that is what keeps the prompt out of argv.
+    grok = build_argv(
+        AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
+    )
 
     for argv in (claude, codex, gemini, grok):
         assert huge not in argv
@@ -352,8 +356,26 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     assert codex[-1] == "-"
     # gemini stays headless via an empty -p while the prompt arrives on stdin.
     assert gemini[-2:] == ["-p", ""]
-    # grok uses the same empty -p headless shape while stdin carries the prompt.
-    assert grok[-2:] == ["-p", ""]
+    # grok reads the prompt from a file (no stdin mode; empty -p errors).
+    assert grok[-2:] == ["--prompt-file", "/tmp/p.txt"]
+
+
+def test_build_argv_grok_empty_prompt_never_emits_empty_dash_p() -> None:
+    """Regression for #160: grok must never be invoked with ``-p ""``.
+
+    The Grok CLI validates that ``-p/--single`` is non-empty before reading
+    anything, so an empty value fails with ``--single: prompt is empty``. With
+    no prompt-file the real prompt must be passed via ``-p``; with one it must
+    use ``--prompt-file`` — never an empty ``-p``.
+    """
+    direct = build_argv(AgentType.GROK, "real prompt", binary="grok", prompt_on_stdin=True)
+    assert direct[-2:] == ["-p", "real prompt"]
+    assert "" not in direct
+
+    via_file = build_argv(
+        AgentType.GROK, "real prompt", binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p"
+    )
+    assert via_file[-2:] == ["--prompt-file", "/tmp/p"]
 
 
 async def test_feed_prompt_stdin_writes_and_closes() -> None:
