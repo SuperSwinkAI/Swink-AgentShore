@@ -7,8 +7,7 @@ favour of letting the existing mask machinery decide:
 
 - ``compute_agent_eligibility_mask`` already masks off *worker* plays (those
   with a non-None capability) when no IDLE agent satisfies their eligibility.
-- ``compute_config_mask`` still bounds INSTANTIATE_AGENT by per-(type, tier)
-  ``max_per_config`` (default 2 since desktop-ty04) and ``cooldown_plays``.
+- ``compute_config_mask`` still bounds INSTANTIATE_AGENT by each tier's ``max`` (default 1).
 
 These tests pin the safety property the orchestrator change relies on:
 during all-busy, INSTANTIATE_AGENT remains pickable while worker plays do not.
@@ -18,7 +17,6 @@ from __future__ import annotations
 
 from agentshore.config.models import (
     AgentConfig,
-    AgentSpawnConfig,
     ModelTierConfig,
     RuntimeConfig,
 )
@@ -58,17 +56,17 @@ def _cfg(*, max_per_config: int = 5) -> RuntimeConfig:
         agents={
             "claude_code": AgentConfig(
                 enabled=True,
-                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+                model_tiers={
+                    "medium": ModelTierConfig(model="m", enabled=True, max=max_per_config)
+                },
             ),
             "codex": AgentConfig(
                 enabled=True,
-                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+                model_tiers={
+                    "medium": ModelTierConfig(model="m", enabled=True, max=max_per_config)
+                },
             ),
         },
-        agent_spawn=AgentSpawnConfig(
-            max_per_config=max_per_config,
-            cooldown_plays=2,
-        ),
     )
 
 

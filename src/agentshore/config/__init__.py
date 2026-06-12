@@ -10,7 +10,6 @@ from agentshore.config._parsers import _build_config, _RawConfig
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
-    AgentSpawnConfig,
     AgentTypeAvailability,
     AutoDetectConfig,
     AvailabilityRecord,
@@ -55,7 +54,6 @@ if TYPE_CHECKING:
 __all__ = [
     "AgentConfig",
     "AgentPreferencesConfig",
-    "AgentSpawnConfig",
     "AgentTypeAvailability",
     "AutoDetectConfig",
     "AvailabilityRecord",
@@ -212,10 +210,6 @@ agents:
   preferences:
     affinity: {}
     exclude: {}
-
-agent_spawn:
-  cooldown_plays: 2
-  max_per_config: 2
 
 play_pacing:
   # Standard post-run cooldown for heavyweight skill-backed plays such as

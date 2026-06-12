@@ -20,7 +20,7 @@ from agentshore.cli.identity_helpers import (
 )
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _PROJECT_DIR
 from agentshore.config.models import AgentConfig
-from agentshore.config.yaml_io import ruamel_get_nested, ruamel_set_nested
+from agentshore.config.yaml_io import ruamel_set_nested
 from agentshore.errors import OrchestratorError
 
 
@@ -77,51 +77,6 @@ def _write_target_branch_to_yaml(config_path: Path, branch: str) -> None:
     ordering on other top-level entries are preserved.
     """
     ruamel_set_nested(config_path, ("project", "target_branch"), branch)
-
-
-def _write_max_per_config_to_yaml(config_path: Path, max_per_config: int) -> None:
-    """Persist ``agent_spawn.max_per_config`` to *config_path* via ruamel round-trip.
-
-    Used by the CLI init wizard's "Max agents per type" prompt and the
-    Desktop AgentsScreen to converge on the same yaml shape (desktop-ty04).
-    """
-    ruamel_set_nested(config_path, ("agent_spawn", "max_per_config"), int(max_per_config))
-
-
-def _read_max_per_config_from_yaml(config_path: Path) -> int | None:
-    """Return the persisted ``agent_spawn.max_per_config`` if present, else None."""
-    value = ruamel_get_nested(config_path, ("agent_spawn", "max_per_config"))
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-        return value
-    return None
-
-
-def _maybe_prompt_max_per_config(config_path: Path) -> None:
-    """Prompt for ``agent_spawn.max_per_config`` and persist to ``config_path``.
-
-    This is the per-(agent_type, model_tier) cap surfaced in the CLI as
-    "Max agents per type" (desktop-ty04). Default of 2 keeps the fleet
-    spread across (type, tier) cells instead of concentrating in one.
-
-    Non-interactive (no TTY): no-op so scripted ``agentshore init`` runs are
-    deterministic.
-    """
-    if not sys.stdin.isatty():
-        return
-    existing = _read_max_per_config_from_yaml(config_path)
-    default = existing if existing is not None else 2
-    try:
-        value = click.prompt(
-            "Max agents per type (small/medium/large of each agent_type)",
-            default=default,
-            type=click.IntRange(min=1, max=32),
-            show_default=True,
-        )
-    except click.Abort:
-        click.echo("Skipped max-agents-per-type configuration.")
-        return
-    _write_max_per_config_to_yaml(config_path, value)
-    click.echo(f"Set agent_spawn.max_per_config = {value}")
 
 
 def _maybe_prompt_target_branch(
@@ -340,10 +295,6 @@ def init(
             config_yaml,
             explicit_target_branch=target_branch,
         )
-        # Per-(agent_type, model_tier) cap (desktop-ty04). Surfaced as
-        # "Max agents per type" — single number, applies to every
-        # (type, tier) combination. Default 2.
-        _maybe_prompt_max_per_config(config_yaml)
 
     # -- 3. Refresh availability + run wizards --------------------------
     # ``init`` is an explicit user command; all wizards run with prefill

@@ -123,6 +123,7 @@ class ModelTierConfig:
     enabled: bool = True
     model: str | None = None
     reasoning_effort: str | None = None
+    max: int = 1
 
 
 @dataclass(frozen=True)
@@ -183,24 +184,6 @@ class FreshStartConfig:
     max_plays_before_reset: int = 20
     context_threshold: float = 0.80
     auto_trigger: bool = False
-
-
-@dataclass(frozen=True)
-class AgentSpawnConfig:
-    """Limits and pacing for ``instantiate_agent`` plays.
-
-    ``max_per_config`` is the per-(agent_type, model_tier) cap — at most
-    this many live agents of any single (type, tier) combination at once.
-    With the default of 2, a fully expanded fleet of 4 agent types × 3
-    tiers × 2 = up to 24 agents, but PPO rarely fills more than a handful
-    of cells; budget enforcement is the practical ceiling. The previous
-    global ``max_total`` field was removed (desktop-ty04) — per-(type, tier)
-    gating is sufficient and PPO can't starve a cell by concentrating in
-    another.
-    """
-
-    cooldown_plays: int = 2
-    max_per_config: int = 2
 
 
 @dataclass(frozen=True)
@@ -530,7 +513,6 @@ class RuntimeConfig:
     trusted_ids: TrustedIdsConfig = field(default_factory=TrustedIdsConfig)
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)
-    agent_spawn: AgentSpawnConfig = field(default_factory=AgentSpawnConfig)
     play_pacing: PlayPacingConfig = field(default_factory=PlayPacingConfig)
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)

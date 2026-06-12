@@ -64,9 +64,9 @@ space at v13. `POLICY_VERSION` (5) is bumped independently when the config head'
 shape or semantics change; mismatched-`policy_version` checkpoints are rejected.
 
 `Instantiate Agent` uses the config head to choose `(agent_type, model_tier)`.
-A type/tier config is spawnable only when the session is seeded, budget and
-cooldown gates pass, live agents for that same type/tier are below
-`agent_spawn.max_per_config`, and no idle agent of that type/tier already exists.
+A type/tier config is spawnable only when the session is seeded, the budget gate
+passes, live agents for that same type/tier are below that tier's
+`model_tiers.<tier>.max`, and no idle agent of that type/tier already exists.
 Busy agents do not block spawning additional same-config capacity.
 
 ## Observation Vector
