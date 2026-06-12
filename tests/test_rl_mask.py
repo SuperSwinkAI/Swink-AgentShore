@@ -765,6 +765,23 @@ def test_lifecycle_churn_breaker_leaves_end_agent_for_wedged_agent():
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
 
+def test_lifecycle_churn_breaker_masks_both_when_no_reaping_needed():
+    """Under churn with no agent needing reaping, BOTH lifecycle plays are masked
+    so the selector idles instead of spinning instantiate <-> end_agent (#163).
+
+    This is the anti-spin terminal state: with the trigger removed (WS1 trunk
+    artifacts / WS2 allocation) and no wedged agent to retire, the orchestrator
+    quiesces rather than churning lifecycle plays with zero dispatches."""
+    cfg = _make_cfg()
+    config_index = (("claude_code", "medium"), ("codex", "medium"))
+    # Default _churn_state has two healthy IDLE agents and no exhausted/terminal
+    # agent → _agent_needs_reaping is False.
+    state = _churn_state()
+    mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=config_index)
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+    assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
+
+
 def test_empty_config_index_hard_masks_instantiate_base():
     """An empty config_index must HARD-mask INSTANTIATE_AGENT, not bypass the gate (#159)."""
     from agentshore.state import AgentType

@@ -20,6 +20,7 @@ from agentshore.github.labels import (
     DISALLOWED_LABEL,
     ISSUE_PICKUP_SKIP_LABELS,
     MANUAL_REQUIRED_LABEL,
+    NEEDS_HUMAN_LABEL,
     PLANNED_LABELS,
     PRIORITY_SCORES,
     ROOT_CAUSE_FOUND_LABEL,
@@ -262,9 +263,6 @@ def _pr_blocked_reasons(pr: object, *, labels: list[str] | None = None) -> list[
         status_check_summary=_string_or_none(getattr(pr, "status_check_summary", None)),
         is_draft=_bool_or_none(getattr(pr, "is_draft", None)),
         mergeable=getattr(pr, "mergeable", None),
-        head_sha=_string_or_none(getattr(pr, "head_sha", None)),
-        last_reviewed_sha=_string_or_none(getattr(pr, "last_reviewed_sha", None)),
-        last_review_status=_string_or_none(getattr(pr, "last_review_status", None)),
     )
 
 
@@ -305,8 +303,13 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     last_review_status = getattr(pr, "last_review_status", None)
     last_reviewed_sha = getattr(pr, "last_reviewed_sha", None)
     head_sha = getattr(pr, "head_sha", None)
+    # The AgentShore PASS-at-head branch is the autonomous approval path (no
+    # human reviewer). It must never override a live human CHANGES_REQUESTED —
+    # _pr_blocked_reasons already returns early on that, but guard explicitly so
+    # the invariant is local and can't regress if the gate above changes (#344).
     return bool(
         getattr(pr, "mergeable", None) == "MERGEABLE"
+        and review_decision != "CHANGES_REQUESTED"
         and (
             review_decision == "APPROVED"
             or (
@@ -513,6 +516,10 @@ class PlayCandidateAnalyzer:
             and "agentshore/blocked" not in labels
             and "blocked" not in labels
             and DISALLOWED_LABEL not in labels
+            # An issue the planner gave up on (un-plannable, #458) is parked for
+            # a human; exclude it from plan/pickup/refine/debug so it stops being
+            # re-selected every tick. Cleared when the label is removed.
+            and NEEDS_HUMAN_LABEL not in labels
         )
 
     # -- freshness / terminal predicates -------------------------------------
@@ -535,9 +542,7 @@ class PlayCandidateAnalyzer:
     def seed_audit_is_fresh(self) -> bool:
         return seed_audit_is_fresh(self._state)
 
-    def design_audit_is_fresh(
-        self, *, window: int = DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS
-    ) -> bool:
+    def design_audit_is_fresh(self, *, window: int = DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS) -> bool:
         return design_audit_is_fresh(self._state, window=window)
 
     def terminal_audits_are_fresh(self) -> bool:
@@ -1200,6 +1205,7 @@ def idle_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
             tasks_completed=agent.tasks_completed,
             tasks_failed=agent.tasks_failed,
             timeout_count=agent.timeout_count,
+            consecutive_timeouts=agent.consecutive_timeouts,
         )
     ]
     eligible.sort(key=lambda agent: (agent.agent_type.value, agent.agent_id))

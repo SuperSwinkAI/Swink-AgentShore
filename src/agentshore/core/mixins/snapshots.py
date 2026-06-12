@@ -129,6 +129,7 @@ class SnapshotProjector:
                 current_play_branch=h.current_play_branch,
                 last_error_class=h.last_error_class,
                 timeout_count=h.timeout_count,
+                consecutive_timeouts=h.consecutive_timeouts,
                 github_identity=h.github_identity,
                 dispatch_count=dispatches_by_handle[id(h)],
                 dispatch_share=(
@@ -188,9 +189,6 @@ class SnapshotProjector:
                 status_check_summary=pr.status_check_summary,
                 is_draft=pr.is_draft,
                 mergeable=pr.mergeable,
-                head_sha=pr.head_sha,
-                last_reviewed_sha=pr.last_reviewed_sha,
-                last_review_status=pr.last_review_status,
             )
             if pr.branch is None and pr.state and pr.state.lower() != "merged":
                 # Safety net for issue #567: an active PR record without a branch

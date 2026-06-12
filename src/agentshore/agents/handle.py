@@ -200,6 +200,14 @@ class AgentHandle:
     current_play_branch: str | None = None
     last_error_class: ErrorClass | None = None
     timeout_count: int = 0
+    # Timeouts since this agent's last *successful* dispatch (reset to 0 on
+    # success). Distinct from the cumulative ``timeout_count`` telemetry: this is
+    # the consecutive-storm signal. A hung agent that produces no stdout returns
+    # to IDLE and — if it has prior completions — is not benched by the
+    # 0-completion circuit breaker, so reconcile_state re-selects it and it hangs
+    # for the full stream-idle window again (#161). Benching on this counter
+    # bounds the storm without disabling the self-heal play itself.
+    consecutive_timeouts: int = 0
     github_identity: str | None = None
     # Identity env overlay resolved once at instantiate() and reused by every
     # dispatch — never re-resolved per play. Empty when the agent has no bound
