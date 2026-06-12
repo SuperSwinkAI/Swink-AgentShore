@@ -10,22 +10,18 @@ import type { IdentityRow } from "../../rpc/identitiesClient";
 function makeAdapter(
   agents: AgentRow[],
   identities: IdentityRow[],
-  { maxPerConfig = 2, detected = [] }: { maxPerConfig?: number; detected?: string[] } = {},
+  { detected = [] }: { detected?: string[] } = {},
 ): AgentsAdapter & {
   listAgents: ReturnType<typeof vi.fn>;
   listIdentities: ReturnType<typeof vi.fn>;
   detectAgents: ReturnType<typeof vi.fn>;
   configureAgent: ReturnType<typeof vi.fn>;
-  getSpawnLimits: ReturnType<typeof vi.fn>;
-  setSpawnLimits: ReturnType<typeof vi.fn>;
 } {
   return {
     listAgents: vi.fn().mockResolvedValue(agents),
     listIdentities: vi.fn().mockResolvedValue(identities),
     detectAgents: vi.fn().mockResolvedValue(detected),
     configureAgent: vi.fn().mockResolvedValue(undefined),
-    getSpawnLimits: vi.fn().mockResolvedValue({ max_per_config: maxPerConfig }),
-    setSpawnLimits: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -90,7 +86,7 @@ describe("AgentsScreen", () => {
 
     const claudeRow = await screen.findByTestId("agent-row-claude_code");
     expect(within(claudeRow).getByText("Claude Code")).toBeInTheDocument();
-    expect(within(claudeRow).getByText(/small: claude-haiku-4-5/)).toBeInTheDocument();
+    expect(within(claudeRow).getByText(/S×1/)).toBeInTheDocument();
     expect(within(claudeRow).getByTestId("agent-enabled-claude_code")).toBeChecked();
 
     const codexRow = screen.getByTestId("agent-row-codex");
@@ -257,44 +253,11 @@ describe("AgentsScreen", () => {
       listIdentities: vi.fn().mockResolvedValue(IDENTITIES),
       detectAgents: vi.fn().mockResolvedValue([]),
       configureAgent: vi.fn(),
-      getSpawnLimits: vi.fn().mockResolvedValue({ max_per_config: 2 }),
-      setSpawnLimits: vi.fn(),
     };
     renderScreen(adapter);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("rpc down");
   });
 
-  it("renders the persisted max-agents-per-type value", async () => {
-    const adapter = makeAdapter(AGENTS, IDENTITIES, { maxPerConfig: 3 });
-    renderScreen(adapter);
-    const input = await screen.findByTestId("agents-max-per-type");
-    expect(input).toHaveValue(3);
-  });
-
-  it("persists max-agents-per-type via setSpawnLimits on blur", async () => {
-    const adapter = makeAdapter(AGENTS, IDENTITIES);
-    renderScreen(adapter);
-    const input = await screen.findByTestId("agents-max-per-type");
-    await userEvent.clear(input);
-    await userEvent.type(input, "4");
-    await userEvent.tab();
-    await waitFor(() => {
-      expect(adapter.setSpawnLimits).toHaveBeenCalledWith({ max_per_config: 4 });
-    });
-  });
-
-  it("rejects out-of-range max-agents-per-type and snaps back", async () => {
-    const adapter = makeAdapter(AGENTS, IDENTITIES, { maxPerConfig: 2 });
-    renderScreen(adapter);
-    const input = await screen.findByTestId("agents-max-per-type");
-    await userEvent.clear(input);
-    await userEvent.type(input, "99");
-    await userEvent.tab();
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/between 1 and 32/);
-    });
-    expect(input).toHaveValue(2);
-    expect(adapter.setSpawnLimits).not.toHaveBeenCalled();
-  });
 });
+

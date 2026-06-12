@@ -65,9 +65,11 @@ _PR_AUTHOR_FEATURES: Final[int] = 4
 _MAX_CLUSTERS: Final[int] = 10
 # Saturation points for normalization. ``_MAX_AGENTS`` bounds the
 # idle/busy counts *within* a single (agent_type, model_tier) cell in
-# the per-config block — sized loosely above ``AgentSpawnConfig.max_per_config``
-# (default 2, desktop-ty04) so a user raising the cap to 4 doesn't immediately
-# saturate the feature.  ``_MAX_TOTAL_AGENTS`` bounds fleet-wide counts
+# the per-config block. It covers the common case (tier ``max`` defaults to 1;
+# budgets keep most cells small); a tier ``max`` raised well above 5 will
+# saturate this normalization feature, which is acceptable since the absolute
+# count past that point carries little policy signal.  ``_MAX_TOTAL_AGENTS``
+# bounds fleet-wide counts
 # (tier-fleet block, active-count, in-flight, busy-agents) — sized to cover
 # a typical multi-cell expansion (e.g. 4 types × 3 tiers × 2 = 24 theoretical
 # max, capped at 10 because realistic budgets keep PPO well under that).

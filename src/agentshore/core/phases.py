@@ -643,7 +643,10 @@ def _author_labels_for_config(cfg: RuntimeConfig, prefix: str) -> list[tuple[str
     """
     _ = cfg  # retained for signature compatibility; no longer filters by enabled
     return [
-        (f"{prefix}author:{agent_type.value}", _AUTHOR_LABEL_COLORS.get(agent_type.value, _AUTHOR_LABEL_DEFAULT_COLOR))
+        (
+            f"{prefix}author:{agent_type.value}",
+            _AUTHOR_LABEL_COLORS.get(agent_type.value, _AUTHOR_LABEL_DEFAULT_COLOR),
+        )
         for agent_type in AgentType
     ]
 

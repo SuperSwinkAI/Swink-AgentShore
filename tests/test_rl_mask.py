@@ -483,7 +483,6 @@ def _make_cfg(
 ):
     from agentshore.config.models import (
         AgentConfig,
-        AgentSpawnConfig,
         ModelTierConfig,
         RuntimeConfig,
     )
@@ -492,21 +491,15 @@ def _make_cfg(
     for name in ("claude_code", "codex", "gemini"):
         agents[name] = AgentConfig(
             enabled=name in enabled,
-            model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+            model_tiers={"medium": ModelTierConfig(model="m", enabled=True, max=max_per_config)},
         )
-    return RuntimeConfig(
-        agents=agents,
-        agent_spawn=AgentSpawnConfig(
-            max_per_config=max_per_config,
-        ),
-    )
+    return RuntimeConfig(agents=agents)
 
 
 def _make_large_qa_cfg():
     from agentshore.config.models import (
         AgentConfig,
         AgentPreferencesConfig,
-        AgentSpawnConfig,
         ModelTierConfig,
         RuntimeConfig,
     )
@@ -518,7 +511,6 @@ def _make_large_qa_cfg():
                 model_tiers={"large": ModelTierConfig(model="m", enabled=True)},
             )
         },
-        agent_spawn=AgentSpawnConfig(),
         agent_preferences=AgentPreferencesConfig(),
     )
 
@@ -849,7 +841,6 @@ def test_terminal_no_work_config_mask_filters_to_large_qa_configs():
     from agentshore.config.models import (
         AgentConfig,
         AgentPreferencesConfig,
-        AgentSpawnConfig,
         ModelTierConfig,
         RuntimeConfig,
     )
@@ -869,7 +860,6 @@ def test_terminal_no_work_config_mask_filters_to_large_qa_configs():
                 model_tiers={"large": ModelTierConfig(model="m", enabled=True)},
             ),
         },
-        agent_spawn=AgentSpawnConfig(),
         agent_preferences=AgentPreferencesConfig(),
     )
     config_index = (("codex", "medium"), ("codex", "large"), ("unknown_agent", "large"))
@@ -1249,7 +1239,6 @@ def _make_cfg_with_prefs(
     from agentshore.config.models import (
         AgentConfig,
         AgentPreferencesConfig,
-        AgentSpawnConfig,
         ModelTierConfig,
         RuntimeConfig,
     )
@@ -1262,7 +1251,6 @@ def _make_cfg_with_prefs(
         )
     return RuntimeConfig(
         agents=agents,
-        agent_spawn=AgentSpawnConfig(),
         agent_preferences=AgentPreferencesConfig(exclude=exclude or {}),
     )
 

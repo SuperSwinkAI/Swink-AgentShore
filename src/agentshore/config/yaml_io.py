@@ -2,9 +2,9 @@
 
 These wrap the ruamel.yaml round-trip boilerplate (``preserve_quotes``, load
 existing or start fresh, dump back to the same path) so the CLI ``init`` wizard
-prompts that persist a single nested key — ``project.target_branch``,
-``agent_spawn.max_per_config`` — share one implementation instead of
-re-spelling the same load/mutate/dump dance per key.
+prompts that persist a single nested key — e.g. ``project.target_branch`` —
+share one implementation instead of re-spelling the same load/mutate/dump
+dance per key.
 """
 
 from __future__ import annotations

@@ -890,7 +890,7 @@ def compute_config_mask(
     - the agent_type is enabled in agentshore.yaml
     - the model_tier is in that agent's enabled tiers
     - no IDLE agent already exists for the same (agent_type, model_tier)
-    - live count for the (type, tier) pair is below ``agent_spawn.max_per_config``
+    - live count for the (type, tier) pair is below that tier's ``max``
 
     The previous global ``max_total`` ceiling was removed in desktop-ty04 —
     per-(type, tier) gating is sufficient because PPO can't concentrate
@@ -899,8 +899,6 @@ def compute_config_mask(
     n = len(config_index)
     if n == 0:
         return np.zeros(0, dtype=bool)
-
-    spawn_cfg = cfg.agent_spawn
 
     # Per-(type, tier) live counts. Rate-limited ERROR agents are included
     # so a quota-exhausted type isn't immediately re-spawned; other ERROR /
@@ -931,11 +929,14 @@ def compute_config_mask(
         agent_cfg = cfg.agents.get(agent_type)
         if agent_cfg is None or not agent_cfg.enabled:
             continue
-        configured_model = None
         try:
             agent_type_enum = AgentType(agent_type)
-            configured_model = effective_model_tier_config(agent_type_enum, agent_cfg, tier).model
         except ValueError:
+            continue  # unrecognised agent type — skip
+        configured_model: str | None = None
+        try:
+            configured_model = effective_model_tier_config(agent_type_enum, agent_cfg, tier).model
+        except Exception:
             configured_model = None
         if _auth_config_blocked(
             blocked_auth_configs,
@@ -953,7 +954,8 @@ def compute_config_mask(
             continue
         if (agent_type, tier) in idle_configs:
             continue
-        if counts.get((agent_type, tier), 0) >= spawn_cfg.max_per_config:
+        tier_cap = effective_model_tier_config(agent_type_enum, agent_cfg, tier).max
+        if counts.get((agent_type, tier), 0) >= tier_cap:
             continue
         mask[i] = True
     return mask

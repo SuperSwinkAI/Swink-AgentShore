@@ -9,7 +9,6 @@ from typing import TypedDict, cast, overload
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
-    AgentSpawnConfig,
     AutoDetectConfig,
     BootstrapConfig,
     BudgetConfig,
@@ -88,6 +87,7 @@ class _RawModelTier(TypedDict, total=False):
     enabled: bool
     model: str | None
     reasoning_effort: str | None
+    max: int
 
 
 _RawModelTiers = dict[str, str | _RawModelTier]
@@ -139,15 +139,6 @@ class _RawAgentPreferences(TypedDict, total=False):
 
 
 _RawAgents = dict[str, object]
-
-
-class _RawAgentSpawn(TypedDict, total=False):
-    cooldown_plays: int
-    max_per_config: int
-    # ``max_total`` was removed (desktop-ty04); kept in the TypedDict so
-    # legacy YAML still parses, but ``_parse_agent_spawn`` ignores it and
-    # logs a deprecation warning.
-    max_total: int
 
 
 class _RawPlayPacing(TypedDict, total=False):
@@ -321,7 +312,6 @@ class _RawConfig(TypedDict, total=False):
     trusted_ids: _RawTrustedIds
     identities: _RawIdentities
     agents: _RawAgents
-    agent_spawn: _RawAgentSpawn
     play_pacing: _RawPlayPacing
     bootstrap: _RawBootstrap
     circuit_breaker: _RawCircuitBreaker
@@ -430,14 +420,21 @@ def _parse_budget(raw: _RawBudget) -> BudgetConfig:
     return parse_budget_raw(dict(raw))
 
 
-def _parse_agent(name: str, raw: _RawAgent) -> AgentConfig:
+def _parse_agent(
+    name: str, raw: _RawAgent, *, legacy_max_default: int | None = None
+) -> AgentConfig:
     timeout_raw = raw.get("timeout")
     flags_raw = raw.get("extra_flags", ())
     extra_flags = tuple(str(f) for f in flags_raw) if isinstance(flags_raw, list) else ()
     models_raw = raw.get("approved_models", ())
     approved_models = tuple(str(m) for m in models_raw) if isinstance(models_raw, list) else ()
     model_tiers_raw = raw.get("model_tiers", {}) or {}
-    model_tiers = _parse_model_tiers(model_tiers_raw if isinstance(model_tiers_raw, dict) else {})
+    model_tiers = _parse_model_tiers(
+        model_tiers_raw if isinstance(model_tiers_raw, dict) else {},
+        legacy_max_default=legacy_max_default,
+    )
+    if legacy_max_default is not None:
+        model_tiers = _apply_legacy_default_tiers(name, model_tiers, legacy_max_default)
     identity_raw = raw.get("identity")
     identity = canonical_identity_name(str(identity_raw)) if identity_raw is not None else None
     return AgentConfig(
@@ -665,20 +662,73 @@ def _validate_agent_identities(
             )
 
 
-def _parse_model_tiers(raw: _RawModelTiers) -> dict[str, ModelTierConfig]:
+def _clamp_tier_max(value: object) -> int:
+    """Clamp a raw tier max value to the valid 1–20 range.
+
+    Non-integer or bool values fall back to 1 (the default).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 1
+    return min(20, max(1, value))
+
+
+def _parse_model_tiers(
+    raw: _RawModelTiers,
+    *,
+    legacy_max_default: int | None = None,
+) -> dict[str, ModelTierConfig]:
     tiers: dict[str, ModelTierConfig] = {}
     if not isinstance(raw, dict):
         return tiers
+    default_max = legacy_max_default if legacy_max_default is not None else 1
     for tier, value in raw.items():
         if isinstance(value, str):
-            tiers[str(tier)] = ModelTierConfig(model=value)
+            tiers[str(tier)] = ModelTierConfig(model=value, max=default_max)
         elif isinstance(value, dict):
+            raw_max = value.get("max")
+            tier_max = _clamp_tier_max(raw_max) if raw_max is not None else default_max
             tiers[str(tier)] = ModelTierConfig(
                 enabled=value.get("enabled", True),
                 model=value.get("model"),
                 reasoning_effort=value.get("reasoning_effort"),
+                max=tier_max,
             )
     return tiers
+
+
+def _apply_legacy_default_tiers(
+    agent_name: str,
+    parsed: dict[str, ModelTierConfig],
+    legacy_max: int,
+) -> dict[str, ModelTierConfig]:
+    """Materialize an agent's default tiers carrying a migrated legacy cap.
+
+    When a legacy ``agent_spawn.max_per_config`` is migrated, agents that rely
+    entirely on default tiers (no ``model_tiers`` block, or only a partial one)
+    would otherwise fall back to ``max=1`` and silently lose the old global cap.
+    Fill in every default tier the user didn't explicitly configure, carrying
+    the migrated ``max`` so the per-(type, tier) ceiling survives the upgrade.
+
+    Unknown agent types (no built-in defaults — e.g. ``api_*`` or custom keys)
+    are returned unchanged.
+    """
+    import dataclasses
+
+    from agentshore.agents.model_tiers import default_model_tiers_for
+    from agentshore.state import AgentType
+
+    try:
+        agent_type = AgentType(agent_name)
+    except ValueError:
+        return parsed
+    defaults = default_model_tiers_for(agent_type)
+    if not defaults:
+        return parsed
+    merged = dict(parsed)
+    for tier, default_cfg in defaults.items():
+        if tier not in merged:
+            merged[tier] = dataclasses.replace(default_cfg, max=legacy_max)
+    return merged
 
 
 def _parse_circuit_breaker(raw: _RawCircuitBreaker) -> CircuitBreakerConfig:
@@ -708,6 +758,8 @@ def _parse_data_integrity(raw: _RawDataIntegrity) -> DataIntegrityConfig:
 
 def _parse_agents(
     raw: _RawAgents,
+    *,
+    legacy_max_default: int | None = None,
 ) -> tuple[
     dict[str, AgentConfig],
     FreshStartConfig,
@@ -721,7 +773,9 @@ def _parse_agents(
         if name in {"fresh_start", "preferences"}:
             continue
         if isinstance(agent_raw, dict):
-            agents[name] = _parse_agent(name, cast("_RawAgent", agent_raw))
+            agents[name] = _parse_agent(
+                name, cast("_RawAgent", agent_raw), legacy_max_default=legacy_max_default
+            )
 
     fresh = FreshStartConfig(
         max_plays_before_reset=fresh_raw.get("max_plays_before_reset", 20),
@@ -979,21 +1033,6 @@ def _parse_task_validation(raw: _RawTaskValidation) -> TaskValidationConfig:
     )
 
 
-def _parse_agent_spawn(raw: _RawAgentSpawn) -> AgentSpawnConfig:
-    if "max_total" in raw:
-        warnings.warn(
-            "agent_spawn.max_total is deprecated (desktop-ty04) — "
-            "the per-(agent_type, model_tier) cap in max_per_config supersedes it; "
-            "remove the field from agentshore.yaml to silence this warning",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    return AgentSpawnConfig(
-        cooldown_plays=raw.get("cooldown_plays", 2),
-        max_per_config=raw.get("max_per_config", 2),
-    )
-
-
 def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
     cooldown = raw.get("standard_cooldown_plays", STANDARD_PLAY_COOLDOWN_PLAYS)
     if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
@@ -1048,8 +1087,23 @@ def _parse_play_timeouts(raw: object) -> dict[str, int]:
 
 
 def _build_config(data: _RawConfig) -> RuntimeConfig:
+    # Migration: legacy agent_spawn block → per-tier max
+    legacy_max_default: int | None = None
+    agent_spawn_raw = data.get("agent_spawn")
+    if isinstance(agent_spawn_raw, dict):
+        raw_mpc = agent_spawn_raw.get("max_per_config")
+        if isinstance(raw_mpc, int) and not isinstance(raw_mpc, bool) and raw_mpc >= 1:
+            legacy_max_default = min(20, max(1, raw_mpc))
+        warnings.warn(
+            "agent_spawn is deprecated; max_per_config has been migrated to per-tier "
+            "'max' on each model tier. Remove the agent_spawn block from "
+            "agentshore.yaml to silence this warning.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     agents_raw = cast("_RawAgents", dict(data.get("agents", {}) or {}))
-    agents, fresh_start, prefs = _parse_agents(agents_raw)
+    agents, fresh_start, prefs = _parse_agents(agents_raw, legacy_max_default=legacy_max_default)
     identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
     trusted_ids_raw = data.get("trusted_ids", {})
     _validate_agent_identities(agents, identities)
@@ -1070,7 +1124,6 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         trusted_ids=_parse_trusted_ids(trusted_ids_raw if trusted_ids_raw is not None else {}),
         identities=identities,
         agents=agents,
-        agent_spawn=_parse_agent_spawn(data.get("agent_spawn", {}) or {}),
         play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
         bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
         fresh_start=fresh_start,

@@ -1063,8 +1063,8 @@ class LoopRunner:
         # PPO sees the full mask every tick — the eligibility mask
         # (``compute_agent_eligibility_mask``) already zeros out worker
         # plays when no IDLE agent matches, and ``compute_config_mask``
-        # still bounds INSTANTIATE_AGENT by per-(type, tier)
-        # ``max_per_config`` / ``cooldown_plays``. Letting selection run
+        # still bounds INSTANTIATE_AGENT by the per-(type, tier) ``max``
+        # on each model tier config. Letting selection run
         # even when the fleet
         # is fully busy lets PPO grow the fleet under sustained pressure;
         # if nothing is pickable, the ``selection is None`` path below
