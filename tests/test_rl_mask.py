@@ -619,7 +619,10 @@ def test_reverse_failsafe_unmasks_work_when_enabled_with_open_issue_and_idle_age
     mask = compute_action_mask(state, _registry_all_false(), apply_reverse_failsafe=True)
 
     assert mask.any()
-    assert mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+    # With an idle agent already present the failsafe lifts WORK plays but no
+    # longer grows the fleet — INSTANTIATE_AGENT stays masked (#163); spawning
+    # more idle agents cannot unblock work, the bottleneck is masked dispatch.
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
     assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
     assert mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
     assert mask[PLAY_TO_INDEX[PlayType.RUN_QA]]
@@ -657,8 +660,136 @@ def test_reverse_failsafe_masks_write_plan_when_all_open_issues_are_planned():
     mask = compute_reverse_failsafe_mask(state)
 
     assert not mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
-    # Plays with no candidate-required gate are still open.
-    assert mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+    # INSTANTIATE_AGENT is no longer lifted under the failsafe when an idle agent
+    # already exists — spawning more cannot unblock work (#163).
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+
+
+# ---------------------------------------------------------------------------
+# #159 config-index fail-closed + #163 lifecycle-churn breaker
+# ---------------------------------------------------------------------------
+
+
+def _churn_state(**kwargs):
+    """Idle fleet + open work + a stale work play → lifecycle-churn conditions (#163)."""
+    from agentshore.state import AgentType
+
+    base = dict(
+        open_issues=[_issue_snapshot(901)],
+        agents=[
+            _agent_snapshot("a0", AgentType.CLAUDE_CODE),
+            _agent_snapshot("a1", AgentType.CODEX),
+        ],
+        # Every work play that has run is now stale (>= 6 plays ago); only the
+        # lifecycle plays are fresh — the churn signature from session 8cbc74cb.
+        plays_since_last_play_type={
+            PlayType.ISSUE_PICKUP: 7,
+            PlayType.SEED_PROJECT: 9,
+            PlayType.DESIGN_AUDIT: 8,
+            PlayType.INSTANTIATE_AGENT: 0,
+            PlayType.END_AGENT: 1,
+        },
+    )
+    base.update(kwargs)
+    return _state(**base)
+
+
+def test_lifecycle_churn_active_fires_when_work_stale_with_idle_capacity():
+    from agentshore.rl.mask import _lifecycle_churn_active
+
+    assert _lifecycle_churn_active(_churn_state())
+
+
+def test_lifecycle_churn_inactive_during_cold_start():
+    """No work play has ever run → cold-start bootstrap, not churn (guard 2)."""
+    from agentshore.rl.mask import _lifecycle_churn_active
+    from agentshore.state import AgentType
+
+    state = _state(
+        open_issues=[_issue_snapshot(902)],
+        agents=[_agent_snapshot("a0", AgentType.CLAUDE_CODE)],
+        plays_since_last_play_type={PlayType.INSTANTIATE_AGENT: 0},
+    )
+    assert not _lifecycle_churn_active(state)
+
+
+def test_lifecycle_churn_inactive_when_no_idle_agent():
+    """All agents BUSY → instantiate may legitimately grow the fleet (guard 1)."""
+    from agentshore.rl.mask import _lifecycle_churn_active
+    from agentshore.state import AgentStatus, AgentType
+
+    state = _churn_state(
+        agents=[
+            _agent_snapshot("a0", AgentType.CLAUDE_CODE, status=AgentStatus.BUSY),
+            _agent_snapshot("a1", AgentType.CODEX, status=AgentStatus.BUSY),
+        ],
+    )
+    assert not _lifecycle_churn_active(state)
+
+
+def test_lifecycle_churn_inactive_when_work_recent():
+    """A work play ran within the threshold → healthy interleaving, not churn (guard 3)."""
+    from agentshore.rl.mask import _lifecycle_churn_active
+
+    state = _churn_state(
+        plays_since_last_play_type={
+            PlayType.SEED_PROJECT: 0,
+            PlayType.DESIGN_AUDIT: 0,
+            PlayType.ISSUE_PICKUP: 2,  # fresh < 6
+            PlayType.INSTANTIATE_AGENT: 0,
+        },
+    )
+    assert not _lifecycle_churn_active(state)
+
+
+def test_lifecycle_churn_breaker_masks_instantiate():
+    """Under churn, compute_action_mask masks INSTANTIATE_AGENT even with a free cell (#163)."""
+    from agentshore.state import AgentType
+
+    cfg = _make_cfg()  # claude_code + codex, medium max=5
+    config_index = (("claude_code", "medium"), ("codex", "medium"))
+    # One idle codex agent occupies codex/medium (masked as idle); claude_code/medium
+    # is free so instantiate is otherwise base-valid — the churn breaker masks it.
+    state = _churn_state(agents=[_agent_snapshot("c0", AgentType.CODEX)])
+    mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=config_index)
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+
+
+def test_lifecycle_churn_breaker_leaves_end_agent_for_wedged_agent():
+    """END_AGENT stays available under churn when an agent needs reaping (#163)."""
+    cfg = _make_cfg()
+    config_index = (("claude_code", "medium"), ("codex", "medium"))
+    state = _churn_state(recovery_exhausted_agent_ids=frozenset({"a0"}))
+    mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=config_index)
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+    assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
+
+
+def test_empty_config_index_hard_masks_instantiate_base():
+    """An empty config_index must HARD-mask INSTANTIATE_AGENT, not bypass the gate (#159)."""
+    from agentshore.state import AgentType
+
+    cfg = _make_cfg()
+    state = _state(
+        open_issues=[_issue_snapshot(903)],
+        agents=[_agent_snapshot("a0", AgentType.CLAUDE_CODE)],
+    )
+    mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=())
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
+
+
+def test_empty_config_index_masks_instantiate_reverse_failsafe():
+    """The reverse failsafe must not lift INSTANTIATE_AGENT on an empty config (#159)."""
+    from agentshore.rl.mask import compute_reverse_failsafe_mask
+    from agentshore.state import AgentType
+
+    cfg = _make_cfg()
+    state = _state(
+        open_issues=[_issue_snapshot(904)],
+        agents=[_agent_snapshot("a0", AgentType.CLAUDE_CODE)],
+    )
+    mask = compute_reverse_failsafe_mask(state, cfg=cfg, config_index=())
+    assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
 
 
 def test_reverse_failsafe_keeps_write_plan_open_when_unplanned_issue_exists():
