@@ -67,8 +67,19 @@ def build_argv(
     extra_flags: tuple[str, ...],
     project_dir: str | None,
     prompt_on_stdin: bool,
+    prompt_file: str | None = None,
 ) -> list[str]:
-    """Return argv for one non-interactive Grok CLI invocation."""
+    """Return argv for one non-interactive Grok CLI invocation.
+
+    Unlike claude/codex/gemini, the Grok CLI has **no stdin prompt mode**: its
+    ``-p/--single`` flag validates that the prompt value is non-empty before
+    reading anything, so the empty ``-p ""`` headless shape the other CLIs use
+    on Windows fails immediately with ``Error: --single: prompt is empty``
+    (issue #160). When the caller cannot pass the prompt as an argv element
+    (Windows arg-length limits), it writes the prompt to a temp file and passes
+    its path as *prompt_file*; Grok reads it via ``--prompt-file``. Otherwise
+    the prompt is passed directly via ``-p`` — never as an empty string.
+    """
     resolved_binary = binary or default_binary()
     resolved_model = cli_model(model) if model else None
     args = [
@@ -85,7 +96,10 @@ def build_argv(
     if reasoning_effort:
         args += ["--reasoning-effort", reasoning_effort]
     args.extend(extra_flags)
-    args += ["-p", "" if prompt_on_stdin else prompt]
+    if prompt_file is not None:
+        args += ["--prompt-file", prompt_file]
+    else:
+        args += ["-p", prompt]
     return args
 
 
