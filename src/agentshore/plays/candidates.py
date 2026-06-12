@@ -56,6 +56,14 @@ _logger = get_logger(__name__)
 # import (resolver imports candidates already).
 _TRUNK_RESOURCE_KEY = "trunk:main_repo"
 
+# Backpressure: once the open-PR queue reaches this many PRs, ``issue_pickup`` is
+# masked so the policy clears review/merge work before opening more PRs. Shared
+# single source of truth — ``issue_pickup`` imports it for the mask, and
+# ``build_candidate_plan`` derives ``pr_queue_human_blocked`` from ``MAX_OPEN_PRS
+# - 1`` so the END_SESSION escape hatch stays coupled to the cap that creates the
+# jam (a queue of human-blocked PRs at/near the cap cannot make progress).
+MAX_OPEN_PRS = 10
+
 _SIZE_RANK: dict[str, int] = {
     "size/S": 0,
     "size/M": 1,
@@ -107,6 +115,13 @@ class WorkAvailability:
     mergeable_pr_count: int
     unblockable_pr_count: int
     actionable_pr_work_count: int
+    # Count of open PRs parked behind MANUAL_REQUIRED_LABEL (human intervention
+    # required). When this reaches MAX_OPEN_PRS - 1 the open-PR backpressure cap
+    # is effectively saturated with human-blocked PRs and no new issue work can
+    # produce a mergeable PR — pr_queue_human_blocked flags that wedge so the
+    # END_SESSION gate can offer a terminal play.
+    manual_required_open_pr_count: int
+    pr_queue_human_blocked: bool
     terminal_no_work: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -324,6 +339,22 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
 
 def pr_review_needed(pr: object) -> bool:
     return bool(not getattr(pr, "is_draft", False) and needs_review(pr))
+
+
+def pr_reviewable(pr: object) -> bool:
+    """code_review is actionable only when the PR needs review AND is not parked
+    for human intervention.
+
+    Mirrors :func:`pr_unblockable` and :func:`pr_merge_ready`, which already
+    exclude ``MANUAL_REQUIRED_LABEL`` (via ``_pr_blocked_reasons``), so all three
+    actionable-PR predicates agree: a manual-required PR is never agent-actionable.
+    Without this, an unreviewed manual-required PR leaks into the reviewable set,
+    keeping ``has_actionable_work`` (and thus ``terminal_no_work``) wrong and
+    pinning END_SESSION masked forever.
+    """
+    if MANUAL_REQUIRED_LABEL in _labels(pr):
+        return False
+    return pr_review_needed(pr)
 
 
 def pr_unblockable(pr: object) -> bool:
@@ -609,10 +640,19 @@ class PlayCandidateAnalyzer:
 
         in_flight_review_prs = _in_flight_prs(state, PlayType.CODE_REVIEW)
         pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
+
+        def _pr_manual_required(pr_number: int) -> bool:
+            # A manual-required PR is parked for human intervention — never an
+            # actionable review target (mirrors pr_reviewable). _labels(None)
+            # returns [] so a queue row without a PR record is treated as not
+            # manual-required.
+            return MANUAL_REQUIRED_LABEL in _labels(pr_by_number.get(pr_number))
+
         pending_pr_numbers = {
             row.pr_number
             for row in state.pending_review_queue
-            if resource_conflict_reason(
+            if not _pr_manual_required(row.pr_number)
+            and resource_conflict_reason(
                 pr_resource_keys_for_pr(pr_by_number[row.pr_number])
                 if row.pr_number in pr_by_number
                 else pr_resource_keys(row.pr_number),
@@ -621,7 +661,7 @@ class PlayCandidateAnalyzer:
             is None
         }
         for index, row in enumerate(state.pending_review_queue):
-            if row.pr_number in in_flight_review_prs:
+            if row.pr_number in in_flight_review_prs or _pr_manual_required(row.pr_number):
                 continue
             pr = pr_by_number.get(row.pr_number)
             resource_keys = (
@@ -644,7 +684,7 @@ class PlayCandidateAnalyzer:
             )
         if not state.pending_review_queue:
             for index, pr in enumerate(self.open_prs):
-                if pr.pr_number in in_flight_review_prs or not pr_review_needed(pr):
+                if pr.pr_number in in_flight_review_prs or not pr_reviewable(pr):
                     continue
                 add(
                     PlayCandidate(
@@ -746,6 +786,15 @@ class PlayCandidateAnalyzer:
         actionable_pr_numbers = (
             reviewable_pr_numbers | mergeable_pr_numbers | unblockable_pr_numbers
         )
+        manual_required_open_pr_count = sum(
+            1 for pr in self.open_prs if MANUAL_REQUIRED_LABEL in _labels(pr)
+        )
+        # The open-PR cap blocks new issue_pickup; when (cap - 1) of those PRs are
+        # parked for a human, the queue cannot drain into mergeable work and the
+        # session is wedged on human action — surface that so END_SESSION becomes
+        # a valid terminal choice even while nominal issue/task work still looks
+        # plannable (#166).
+        pr_queue_human_blocked = manual_required_open_pr_count >= MAX_OPEN_PRS - 1
         has_actionable_work = (
             planning_count > 0
             or implementation_count > 0
@@ -792,6 +841,8 @@ class PlayCandidateAnalyzer:
             mergeable_pr_count=len(mergeable_pr_numbers),
             unblockable_pr_count=len(unblockable_pr_numbers),
             actionable_pr_work_count=len(actionable_pr_numbers),
+            manual_required_open_pr_count=manual_required_open_pr_count,
+            pr_queue_human_blocked=pr_queue_human_blocked,
             terminal_no_work=terminal_no_work,
         )
         return PlayCandidatePlan(
@@ -963,6 +1014,11 @@ class PlayCandidateService:
                 if pr is None and row.queue_id is not None:
                     await self._store.complete_review(row.queue_id)
                     continue
+                # A manual-required PR is parked for a human — never dispatch a
+                # reviewer at it (mirrors pr_reviewable / the build_candidate_plan
+                # filter), so it can't churn the review queue (#167).
+                if pr is not None and MANUAL_REQUIRED_LABEL in _labels(pr):
+                    continue
                 reviewer = pick_reviewer_for_pr(
                     pr.github_author if pr is not None else None,
                     idle_reviewers,
@@ -1126,7 +1182,7 @@ class PlayCandidateService:
             candidates: list[PlayCandidate] = []
             active_keys = active_resource_keys(state)
             for index, pr in enumerate(prs):
-                if pr.pr_number in excluded:
+                if pr.pr_number in excluded or MANUAL_REQUIRED_LABEL in _labels(pr):
                     continue
                 reviewer = pick_reviewer_for_pr(pr.github_author, idle_reviewers)
                 if reviewer is None:

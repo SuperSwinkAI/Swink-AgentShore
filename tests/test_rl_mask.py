@@ -14,7 +14,12 @@ from agentshore.rl.mask import (
     compute_terminal_no_work_decision,
 )
 from agentshore.rl.mask_reason import MaskSource
-from agentshore.state import OrchestratorState, PlayType, SessionState
+from agentshore.state import (
+    OrchestratorState,
+    PlayType,
+    PullRequestSnapshot,
+    SessionState,
+)
 
 
 def _state(**kwargs: object) -> OrchestratorState:
@@ -137,6 +142,65 @@ def test_end_session_requires_successful_terminal_audits_even_at_full_closure():
     )
 
     assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def _manual_required_pr(number: int) -> PullRequestSnapshot:
+    from agentshore.github.labels import MANUAL_REQUIRED_LABEL
+
+    return PullRequestSnapshot(
+        pr_number=number,
+        title=f"PR {number}",
+        state="open",
+        branch=f"branch-{number}",
+        issue_number=None,
+        labels=[MANUAL_REQUIRED_LABEL],
+        review_decision=None,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+    )
+
+
+def _graph_with_ready_tasks() -> MagicMock:
+    from types import SimpleNamespace
+
+    graph = MagicMock()
+    graph.has_epics = True
+    graph.global_closure_ratio = 0.5
+    graph.has_ready_tasks = True
+    graph.tasks_ready = 1
+    graph.tasks = [SimpleNamespace(issue_number=99, ready=True)]
+    return graph
+
+
+def test_end_session_masked_with_ready_tasks_when_queue_not_human_blocked():
+    """Baseline for the escape hatch: ready beads tasks mask END_SESSION (point 6),
+    and 8 manual-required PRs (< MAX_OPEN_PRS - 1) do not lift it."""
+    from agentshore.plays.candidates import MAX_OPEN_PRS
+
+    prs = [_manual_required_pr(100 + i) for i in range(MAX_OPEN_PRS - 2)]
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), pull_requests=prs),
+        _registry_all_true(),
+    )
+
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_end_session_unmasked_when_pr_queue_human_blocked_despite_ready_tasks():
+    """#166 escape hatch: with >= MAX_OPEN_PRS - 1 manual-required PRs the queue is
+    wedged on a human, so END_SESSION becomes valid even though ready beads tasks
+    would otherwise mask it via point 6."""
+    from agentshore.plays.candidates import MAX_OPEN_PRS
+
+    prs = [_manual_required_pr(100 + i) for i in range(MAX_OPEN_PRS - 1)]
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), pull_requests=prs),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
 def test_end_session_requires_design_audit_after_successful_seed_audit():

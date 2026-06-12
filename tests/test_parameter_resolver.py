@@ -1170,6 +1170,56 @@ async def test_resolve_code_review_skips_draft_prs_in_state_fallback() -> None:
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_code_review_skips_manual_required_prs_in_state_fallback() -> None:
+    """A manual-required PR is parked for a human — never dispatched to a reviewer
+    (#167). Mirrors pr_reviewable / the build_candidate_plan exclusion so the queue
+    can't churn reviewers on a human-blocked PR."""
+    from agentshore.github.labels import MANUAL_REQUIRED_LABEL
+
+    store = AsyncMock()
+    store.list_pending_reviews = AsyncMock(return_value=[])
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    manual_pr = PullRequestSnapshot(
+        pr_number=42,
+        title="Blocked PR",
+        state="open",
+        branch="feature/42",
+        issue_number=None,
+        labels=[MANUAL_REQUIRED_LABEL],
+        review_decision=None,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+    )
+    state = OrchestratorState(
+        session_id="sess-test",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[
+            _make_snapshot(
+                "a-codex",
+                agent_type=AgentType.CODEX,
+                model_tier="medium",
+                github_identity="user_x",
+            )
+        ],
+        open_issues=[],
+        pull_requests=[manual_pr],
+        budget=BudgetSnapshot(
+            total_budget=5.0, spent=0.0, remaining=5.0, estimated_cost_per_play=0.1
+        ),
+    )
+    result = await resolver.resolve(PlayType.CODE_REVIEW, state)
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # MERGE_PR
 # ---------------------------------------------------------------------------
