@@ -434,9 +434,20 @@ class EligibilityAuthority:
         # 6. END_SESSION while actionable work remains, or while the beads
         #    backlog is non-empty. GitHub workable-issue counts can lag
         #    calibrate_alignment syncs; ready_task_count is authoritative.
-        if pt == PlayType.END_SESSION and (
-            not plan.work_availability.terminal_no_work
-            or plan.work_availability.ready_task_count > 0
+        #    Escape hatch (#166): when the open-PR queue is wedged on human
+        #    intervention (>= MAX_OPEN_PRS - 1 PRs carry manual-required, so the
+        #    backpressure cap blocks new issue_pickup and nothing can drain into
+        #    a mergeable PR), END_SESSION becomes a valid choice even while
+        #    nominal issue/task work still looks plannable. It is non-forcing —
+        #    the PPO still weighs it against any genuinely-actionable PR play, and
+        #    _stage_end_session_in_flight still prevents a double-fire.
+        if (
+            pt == PlayType.END_SESSION
+            and not plan.work_availability.pr_queue_human_blocked
+            and (
+                not plan.work_availability.terminal_no_work
+                or plan.work_availability.ready_task_count > 0
+            )
         ):
             return MaskReason(
                 text="Actionable work still remains",
