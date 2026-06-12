@@ -55,6 +55,9 @@ def _check_bd_version(bd_binary: str) -> None:
             text=True,
             timeout=10,
             check=True,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a subprocess probing it can wedge session startup (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(

@@ -265,6 +265,7 @@ def kill_tree_sync(pid: int) -> None:
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 creationflags=no_window_creationflags(),
                 timeout=10,
                 check=False,

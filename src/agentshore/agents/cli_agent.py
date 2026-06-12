@@ -1501,6 +1501,9 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
                 str(pgid),
                 "-o",
                 "pid=",
+                # Never inherit the sidecar's stdin (the live Tauri JSON-RPC
+                # pipe); a child probing it can wedge teardown (#155).
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

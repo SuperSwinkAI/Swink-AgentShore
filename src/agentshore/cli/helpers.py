@@ -93,6 +93,9 @@ def _check_ssh_signing_key_loaded() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=5,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a child probing it can wedge session startup (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"ssh-add probe failed: {exc}"

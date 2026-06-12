@@ -82,6 +82,9 @@ def _run_capture(
             capture_output=True,
             check=False,
             timeout=timeout,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a subprocess probing it can wedge the caller (#155).
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return None, f"{args[0]} not found"
@@ -177,6 +180,9 @@ def _caffeinate_status() -> dict[str, Any]:
             capture_output=True,
             check=False,
             timeout=3.0,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a child probing it can wedge session startup (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return {"_error": str(exc)}

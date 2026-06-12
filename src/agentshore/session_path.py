@@ -603,6 +603,7 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
                 args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
@@ -705,7 +706,6 @@ def request_reload_config(project_path: Path) -> str:
         return "timeout"
     except (AttributeError, OSError):
         return "error"
-
 
 
 def request_add_budget(
