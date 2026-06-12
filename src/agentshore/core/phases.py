@@ -65,11 +65,12 @@ if TYPE_CHECKING:
 GITHUB_ISSUE_FETCH_LIMIT = 200
 GITHUB_PR_FETCH_LIMIT = 50
 
-# Colors matched to agent brand: Claude = violet, Codex = blue, others = grey.
+# Colors matched to dashboard agent brand (dashboard/src/characters/types.ts AGENT_COLORS).
 _AUTHOR_LABEL_COLORS: dict[str, str] = {
-    "claude_code": "6f42c1",
-    "codex": "0052cc",
-    "grok": "111827",
+    "claude_code": "E07B39",
+    "codex": "F4D44D",
+    "gemini": "4285F4",
+    "grok": "14B8A6",
 }
 _AUTHOR_LABEL_DEFAULT_COLOR = "cccccc"
 _AGENTSHORE_SYSTEM_LABELS: tuple[tuple[str, str], ...] = AGENTSHORE_WORKFLOW_LABELS
@@ -634,20 +635,17 @@ async def _phase_clear_beads_in_progress(*, repo_root: Path, sid: str) -> None:
 
 
 def _author_labels_for_config(cfg: RuntimeConfig, prefix: str) -> list[tuple[str, str]]:
-    """Return (label_name, hex_color) pairs for every enabled agent type."""
-    result: list[tuple[str, str]] = []
-    for type_val, agent_cfg in cfg.agents.items():
-        try:
-            AgentType(type_val)
-        except ValueError:
-            continue
-        enabled = getattr(agent_cfg, "enabled", False) if not isinstance(agent_cfg, dict) else False
-        if not enabled:
-            continue
-        name = f"{prefix}author:{type_val}"
-        color = _AUTHOR_LABEL_COLORS.get(type_val, _AUTHOR_LABEL_DEFAULT_COLOR)
-        result.append((name, color))
-    return result
+    """Return (label_name, hex_color) pairs for every known AgentType.
+
+    All supported platforms get labels bootstrapped regardless of which agents
+    are enabled in the current config — labels are cheap, and missing labels
+    cause silent failures when an agent type is later enabled mid-project.
+    """
+    _ = cfg  # retained for signature compatibility; no longer filters by enabled
+    return [
+        (f"{prefix}author:{agent_type.value}", _AUTHOR_LABEL_COLORS.get(agent_type.value, _AUTHOR_LABEL_DEFAULT_COLOR))
+        for agent_type in AgentType
+    ]
 
 
 async def _mirror_issues_to_beads(
