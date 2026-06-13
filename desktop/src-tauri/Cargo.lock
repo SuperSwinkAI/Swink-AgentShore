@@ -29,6 +29,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentshore-provisioner"
+version = "0.3.1"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
