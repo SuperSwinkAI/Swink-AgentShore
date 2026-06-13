@@ -385,11 +385,13 @@ class WorktreeManager:
             worktree_root=self._worktree_root,
             scan=scan,
         )
-        if reconcile.deleted or reconcile.preserved_dirty:
+        if reconcile.deleted or reconcile.quarantined or reconcile.preserved_dirty:
             log.info(
                 "worktree_reconcile_summary",
                 deleted_count=len(reconcile.deleted),
                 deleted_paths=[str(p) for p in reconcile.deleted],
+                quarantined_count=len(reconcile.quarantined),
+                quarantined_paths=[str(p) for p in reconcile.quarantined],
                 preserved_dirty_count=len(reconcile.preserved_dirty),
                 preserved_dirty_paths=[str(p) for p in reconcile.preserved_dirty],
             )
