@@ -756,7 +756,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_instantiate_under_pressure_log_skips_override_queue(
+async def test_instantiate_override_queue_dequeues_with_in_flight_work(
     tmp_path: Path,
 ) -> None:
     selector = MagicMock()
@@ -827,11 +827,10 @@ async def test_instantiate_under_pressure_log_skips_override_queue(
 
     names = [call.args[0] for call in info_log.call_args_list if call.args]
     assert "override_queue_dequeued" in names
-    assert "ppo_instantiate_under_pressure" not in names
 
 
 @pytest.mark.asyncio
-async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
+async def test_instantiate_selector_pick_dispatches_with_in_flight_work(
     tmp_path: Path,
 ) -> None:
     selector = MagicMock()
@@ -871,6 +870,7 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
 
     async with orch:
         orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
+        dispatch_mock = AsyncMock(return_value=False)
 
         async def _wait_once(*_args: object, **_kwargs: object) -> None:
             for task in orch._in_flight.values():
@@ -882,7 +882,7 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
             patch.object(
                 orch._state_builder, "build_state", new=AsyncMock(return_value=busy_state)
             ),
-            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock(return_value=False)),
+            patch.object(orch._dispatcher, "dispatch_play", new=dispatch_mock),
             patch.object(
                 orch._completion, "wait_for_in_flight", new=AsyncMock(side_effect=_wait_once)
             ),
@@ -891,12 +891,12 @@ async def test_instantiate_under_pressure_log_still_fires_for_selector_pick(
                 "continue_if_selector_idle_work_remains",
                 new=AsyncMock(return_value=False),
             ),
-            patch("agentshore.core.helpers._logger.info") as info_log,
         ):
             await orch.run_until_idle()
 
-    names = [call.args[0] for call in info_log.call_args_list if call.args]
-    assert names.count("ppo_instantiate_under_pressure") == 1
+    dispatch_mock.assert_awaited()
+    first_play_type = dispatch_mock.await_args_list[0].args[0]
+    assert first_play_type == PlayType.INSTANTIATE_AGENT
 
 
 # ---------------------------------------------------------------------------
