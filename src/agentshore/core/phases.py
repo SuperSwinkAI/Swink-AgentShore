@@ -25,9 +25,9 @@ from agentshore.core.git_safety import (
     ensure_gitignore_entries,
     ensure_ssh_signing_key_loaded,
     find_path_escape_siblings,
-    ssh_signing_setup_hint,
     resolve_default_branch,
     restore_default_branch,
+    ssh_signing_setup_hint,
     untrack_ignored_entries,
 )
 from agentshore.core.helpers import (

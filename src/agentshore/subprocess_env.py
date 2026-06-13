@@ -76,7 +76,12 @@ def no_window_creationflags() -> int:
     if sys.platform == "win32":
         import subprocess
 
-        return subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        # ``getattr`` with a 0 default: the flags are Windows-only attributes, so
+        # tests that fake ``sys.platform == "win32"`` on a POSIX host (where the
+        # attributes are absent) exercise this branch without an AttributeError.
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
     return 0
 
 

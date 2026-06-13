@@ -101,9 +101,7 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     from agentshore.plays.skill_backed.write_plan import WriteImplementationPlanPlay
 
     standard_cooldown_plays = (
-        cfg.play_pacing.standard_cooldown_plays
-        if cfg is not None
-        else STANDARD_PLAY_COOLDOWN_PLAYS
+        cfg.play_pacing.standard_cooldown_plays if cfg is not None else STANDARD_PLAY_COOLDOWN_PLAYS
     )
     seed_project_ceiling = (
         cfg.scope.seed_project_mid_session_issue_ceiling if cfg is not None else 10
