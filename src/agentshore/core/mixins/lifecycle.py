@@ -7,7 +7,6 @@ import dataclasses
 import time
 from typing import TYPE_CHECKING, Protocol
 
-from agentshore.budget import budget_reserve_reached, time_budget_reserve_reached
 from agentshore.config import load_config
 from agentshore.core.git_safety import resolve_default_branch
 from agentshore.core.helpers import _logger, _ppo_selector_cls
@@ -48,21 +47,20 @@ class _LifecycleHost(Protocol):
     """Orchestrator runtime/control state read OR written live by :class:`LifecycleController`.
 
     These members are accessed fresh via ``self._host.<attr>`` on every call so
-    SIGHUP config swaps (``_cfg``) and per-tick mutation (pause latches, budget
-    override, feedback-cadence counters) are always current — never captured at
+    SIGHUP config swaps (``_cfg``) and per-tick mutation (pause latches,
+    feedback-cadence counters) are always current — never captured at
     construction. Fields the controller *writes* (``_cfg``, ``_pause_reason``,
-    ``_pause_deadline``, ``_budget_override``, the feedback-cadence counters) are
-    declared as plain annotated attributes (not read-only ``@property``) so the
-    assignments type-check. ``_OrchestratorBase`` structurally satisfies this
-    Protocol; the cross-component methods (``_safe_call``, ``begin_drain``) and
-    the ``_state_builder`` reference are resolved live on the composition root.
+    ``_pause_deadline``, the feedback-cadence counters) are declared as plain
+    annotated attributes (not read-only ``@property``) so the assignments
+    type-check. ``_OrchestratorBase`` structurally satisfies this Protocol; the
+    cross-component methods (``_safe_call``, ``begin_drain``) and the
+    ``_state_builder`` reference are resolved live on the composition root.
     """
 
     # --- written by the controller -----------------------------------------
     _cfg: RuntimeConfig  # reassigned atomically on SIGHUP reload
     _pause_reason: str | None
     _pause_deadline: float | None
-    _budget_override: bool
     _feedback_cadence_plays_since_ack: int
     _feedback_cadence_last_ack_monotonic: float
     # --- read by the controller --------------------------------------------
@@ -156,23 +154,9 @@ class LifecycleController:
         budget = state.budget
         if budget is None:
             return state
-        # Two independent reserves — whichever is hit first begins the drain.
-        dollar_reserve = budget.enabled and budget_reserve_reached(
-            spent=budget.spent, total_budget=budget.total_budget
-        )
-        time_reserve = (
-            budget.time_enabled
-            and budget.time_total_minutes is not None
-            and budget.time_elapsed_minutes is not None
-            and time_budget_reserve_reached(
-                elapsed_minutes=budget.time_elapsed_minutes,
-                total_minutes=budget.time_total_minutes,
-            )
-        )
-        if not dollar_reserve and not time_reserve:
+        reason = budget.reserve_reason()
+        if reason is None:
             return state
-
-        reason = "budget_reserve_reached" if dollar_reserve else "time_budget_reserve_reached"
         await self._host._drain.begin_drain(reason)
         return await self._host._state_builder.build_state()
 
@@ -229,14 +213,8 @@ class LifecycleController:
             except (RuntimeError, ValueError) as exc:
                 _logger.warning("ppo_flush_on_pause_failed", error=str(exc))
 
-    async def resume(self, override_budget: bool = False) -> None:
-        """Resume the orchestrator loop after a pause.
-
-        ``override_budget`` is accepted for compatibility with older feedback
-        flows; budget reserve drain is handled separately.
-        """
-        if override_budget:
-            self._host._budget_override = True
+    async def resume(self) -> None:
+        """Resume the orchestrator loop after a pause."""
         self._host._pause_reason = None
         self._host._pause_deadline = None
         await self._host._safe_call(
@@ -246,9 +224,7 @@ class LifecycleController:
         self._host._pause_event.set()
         self._host._feedback_cadence_plays_since_ack = 0
         self._host._feedback_cadence_last_ack_monotonic = time.monotonic()
-        _logger.info(
-            "session_resumed", session_id=self._session_id, budget_override=override_budget
-        )
+        _logger.info("session_resumed", session_id=self._session_id)
 
     async def reload_config(self) -> None:
         """Reload configuration from disk (triggered by SIGHUP)."""

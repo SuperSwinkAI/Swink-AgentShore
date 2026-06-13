@@ -28,13 +28,6 @@ def _make_adapter(
     return adapter, mock_store
 
 
-def _mock_subprocess(returncode: int = 0, stdout: str = "[]", stderr: str = "") -> MagicMock:
-    proc = MagicMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
-    return proc
-
-
 # ---------------------------------------------------------------------------
 # probe
 # ---------------------------------------------------------------------------
@@ -43,8 +36,8 @@ def _mock_subprocess(returncode: int = 0, stdout: str = "[]", stderr: str = "") 
 @pytest.mark.asyncio
 async def test_probe_sets_available_true_on_success(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=0)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "", "")
         await adapter.probe()
     assert adapter.available is True
 
@@ -52,8 +45,8 @@ async def test_probe_sets_available_true_on_success(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_probe_sets_available_false_on_nonzero(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "")
         await adapter.probe()
     assert adapter.available is False
 
@@ -61,7 +54,9 @@ async def test_probe_sets_available_false_on_nonzero(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_probe_sets_available_false_when_gh_missing(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("not found")):
+    # gh missing now surfaces as a normal return value (127, ...), not an exception.
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (127, "", "gh not found")
         await adapter.probe()
     assert adapter.available is False
 
@@ -88,8 +83,8 @@ async def test_list_issues_returns_records(tmp_path: Path) -> None:
             }
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
@@ -133,8 +128,8 @@ async def test_list_issues_extracts_priority_from_labels(tmp_path: Path) -> None
             _issue_json(3, labels=["priority/medium"]),
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
@@ -169,8 +164,8 @@ async def test_list_issues_applies_exclude_filter(tmp_path: Path) -> None:
             _issue_json(2, labels=["bug"]),
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
@@ -195,8 +190,8 @@ async def test_list_issues_applies_include_filter(tmp_path: Path) -> None:
             _issue_json(2, labels=["agentshore/active"]),
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
@@ -207,8 +202,8 @@ async def test_list_issues_applies_include_filter(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_list_issues_returns_none_on_gh_error(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    proc = _mock_subprocess(returncode=1, stderr="not found")
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "not found")
         records = await adapter.list_issues()
     assert records is None
 
@@ -224,8 +219,8 @@ async def test_list_issues_filters_pull_requests(tmp_path: Path) -> None:
             _issue_json(3, labels=["bug"]),
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
@@ -240,12 +235,13 @@ async def test_list_issues_paginates_until_short_page(tmp_path: Path) -> None:
     page2 = json.dumps([_issue_json(i) for i in range(26, 30)])  # short → last
     call_count = {"n": 0}
 
-    def make_proc(*args: object, **kwargs: object) -> MagicMock:
+    async def fake(args: object, *a: object, **k: object) -> tuple[int, str, str]:
         call_count["n"] += 1
         stdout = page1 if call_count["n"] == 1 else page2
-        return _mock_subprocess(stdout=stdout)
+        return (0, stdout, "")
 
-    with patch("asyncio.create_subprocess_exec", side_effect=make_proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.side_effect = fake
         records = await adapter.list_issues()
 
     assert records is not None
@@ -257,17 +253,18 @@ async def test_list_issues_paginates_until_short_page(tmp_path: Path) -> None:
 async def test_list_issues_passes_since_in_query(tmp_path: Path) -> None:
     """``since=`` is forwarded to gh api as a query-string parameter."""
     adapter, _ = _make_adapter(tmp_path)
-    captured: dict[str, tuple[object, ...]] = {}
+    captured: dict[str, list[str]] = {}
 
-    def make_proc(*args: object, **kwargs: object) -> MagicMock:
+    async def fake(args: list[str], *a: object, **k: object) -> tuple[int, str, str]:
         captured["args"] = args
-        return _mock_subprocess(stdout="[]")
+        return (0, "[]", "")
 
-    with patch("asyncio.create_subprocess_exec", side_effect=make_proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.side_effect = fake
         records = await adapter.list_issues(since="2026-05-23T22:00:00+00:00")
 
     assert records == []
-    # gh argv: ["gh", "api", "repos/{owner}/{repo}/issues?...&since=..."]
+    # gh argv (no leading "gh"): ["api", "repos/{owner}/{repo}/issues?...&since=..."]
     argv = captured["args"]
     assert any("since=2026-05-23T22:00:00+00:00" in str(a) for a in argv)
     assert any(str(a) == "api" for a in argv)
@@ -300,8 +297,8 @@ async def test_list_pull_requests_returns_metadata_records(tmp_path: Path) -> No
             }
         ]
     )
-    proc = _mock_subprocess(stdout=payload)
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, payload, "")
         records = await adapter.list_pull_requests()
 
     assert len(records) == 1
@@ -352,8 +349,8 @@ async def test_mutation_dedup_on_existing_key(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_create_issue_records_mutation(tmp_path: Path) -> None:
     adapter, mock_store = _make_adapter(tmp_path)
-    proc = _mock_subprocess(stdout='{"number": 1}')
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, '{"number": 1}', "")
         await adapter.create_issue(
             title="New issue",
             body="body",

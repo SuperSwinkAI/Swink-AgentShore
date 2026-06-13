@@ -32,9 +32,17 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from agentshore.logging import get_logger
 from agentshore.paths import GLOBAL_SESSIONS_DIR
 
+_logger = get_logger(__name__)
+
 _SESSIONS_DIR = GLOBAL_SESSIONS_DIR
+
+# Win32 constants for the no-side-effect liveness probe (_process_alive_windows).
+_WIN_SYNCHRONIZE = 0x00100000
+_WIN_WAIT_TIMEOUT = 0x00000102
+_WIN_ERROR_INVALID_PARAMETER = 87
 
 # Time we'll wait for SIGTERM to land before escalating to SIGKILL.
 _STOP_GRACE_SECONDS = 60.0
@@ -132,6 +140,32 @@ def find_dashboard_port(start: int = 9400, end: int = 9410) -> int:
     return start
 
 
+def find_ipc_tcp_port(host: str = "127.0.0.1", start: int = 9411, end: int = 9512) -> int:
+    """Return the first free TCP port in a stable application range for IPC.
+
+    Deliberately scans a fixed low range (just above the dashboard's 9400-block)
+    instead of letting the OS hand out an ephemeral port via
+    :func:`find_free_tcp_port`. On Windows, security suites that proxy loopback
+    traffic (e.g. Avast's Web Shield) camp on freshly-freed ports in the
+    ephemeral range (49152+). An ephemeral ``bind(port=0)`` then loses a race to
+    such a proxy, and a later bind of that exact port fails with WSAEACCES
+    (WinError 10013, *not* the in-use 10048) — which crashes the orchestrator's
+    IPC server, since it binds a concrete pre-resolved port with no retry. A
+    fixed app-range port sidesteps the ephemeral lottery entirely; the dashboard
+    bridge already proves this range is reachable under the same AV. Falls back
+    to an ephemeral port only if the whole range is occupied (≈100 concurrent
+    sessions), which is strictly no worse than the prior behaviour.
+    """
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, port))
+                return port
+            except OSError:
+                continue
+    return find_free_tcp_port(host)
+
+
 def resolve_start_ipc_endpoint(
     project_path: Path,
     *,
@@ -157,7 +191,7 @@ def resolve_start_ipc_endpoint(
     if socket_override is None:
         ipc_endpoint = default_ipc_endpoint(project_path, host=ipc_host, port=ipc_port)
         if ipc_endpoint.kind == "tcp" and ipc_endpoint.port == 0:
-            ipc_endpoint = IpcEndpoint.tcp(ipc_endpoint.host, find_free_tcp_port(ipc_endpoint.host))
+            ipc_endpoint = IpcEndpoint.tcp(ipc_endpoint.host, find_ipc_tcp_port(ipc_endpoint.host))
         return ipc_endpoint, str(well_known_socket)
 
     resolved_socket = socket_override
@@ -208,6 +242,8 @@ def dashboard_pid_path(project_path: Path) -> Path:
 
 def is_unix_socket_path(path: Path) -> bool:
     """Return True only for a real Unix socket path, not symlinks or files."""
+    if sys.platform.startswith("win"):
+        return False
     try:
         return stat.S_ISSOCK(path.lstat().st_mode)
     except OSError:
@@ -232,6 +268,9 @@ def _has_live_unix_socket_listener(path: Path, *, connect_timeout: float = 0.3) 
     unlinking the file made the running session unreachable to ``agentshore
     dashboard``.
     """
+    if sys.platform.startswith("win"):
+        return False
+
     import socket as _socket
 
     if not is_unix_socket_path(path):
@@ -372,6 +411,28 @@ def read_session_info(project_path: Path) -> dict[str, object] | None:
     return data
 
 
+def read_session_id_by_dir(sdir: Path) -> str | None:
+    """Read ``session_id`` from a session directory's ``info.json``.
+
+    Like :func:`read_session_info` but keyed by the resolved session directory
+    rather than a project path: the dashboard bridge holds the ``session_dir``
+    it is tailing (not the project path) yet needs to know *which* session it
+    serves so it can reject a prior session's stale snapshot. Returns None when
+    the sidecar is absent, unreadable, or carries no string ``session_id``.
+    """
+    info_path = sdir / "info.json"
+    if not info_path.exists():
+        return None
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    return session_id if isinstance(session_id, str) else None
+
+
 def timelapse_info_path(project_path: Path) -> Path:
     """Return the ``timelapse.json`` sidecar path for a project session.
 
@@ -458,7 +519,49 @@ def is_session_running(project_path: Path) -> bool:
 # -- low-level process utilities --------------------------------------------
 
 
+def _process_alive_windows(pid: int) -> bool:
+    """Liveness probe for Windows that has no side effects.
+
+    ``os.kill(pid, 0)`` is **not** a null-signal probe on Windows: signal ``0``
+    is ``signal.CTRL_C_EVENT``, so CPython routes the call to
+    ``GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)``. That delivers a Ctrl+C to a
+    console process group and its success/failure depends on whether the caller
+    shares the target's console — not on whether the process is alive. For a
+    detached, no-window orchestrator a fresh ``agentshore stop`` shares no
+    console with it, so the call raises and the old probe wrongly reported the
+    live session as dead (it then cleaned up the PID/sidecar, so ``stop`` said
+    "no running session" and ``dashboard``/``add_budget`` lost the endpoint).
+
+    Probe via the Win32 API instead: open the process and wait zero seconds on
+    its handle. ``WAIT_TIMEOUT`` means the process object is unsignalled — still
+    running; ``WAIT_OBJECT_0`` means it has exited. If ``OpenProcess`` fails with
+    ``ERROR_INVALID_PARAMETER`` the PID does not exist (dead); any other failure
+    (e.g. access denied) means the process exists but we lack rights — treat as
+    alive so we never wrongly discard a running session.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+
+    handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, False, pid)
+    if not handle:
+        # No such PID -> dead. Any other failure (e.g. access denied) means the
+        # process exists but we lack rights -> treat as alive, never discard a
+        # live session.
+        last_err: int = ctypes.get_last_error()  # type: ignore[attr-defined]
+        return last_err != _WIN_ERROR_INVALID_PARAMETER
+    try:
+        return bool(kernel32.WaitForSingleObject(handle, 0) == _WIN_WAIT_TIMEOUT)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _process_alive(pid: int) -> bool:
+    if sys.platform.startswith("win"):
+        return _process_alive_windows(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -495,12 +598,27 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
         args = ["taskkill", "/PID", str(pid), "/T"]
         if force:
             args.append("/F")
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(  # nosec B603
+        try:
+            completed = subprocess.run(  # nosec B603
                 args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # taskkill could not be launched at all — never raise from teardown.
+            return
+        # taskkill returns non-zero for an already-dead PID (e.g. 128 "process
+        # not found") as well as for genuine privilege failures. Only the
+        # latter is worth a warning — if the process is actually gone, teardown
+        # succeeded regardless of the exit code.
+        if completed.returncode != 0 and _process_alive(pid):
+            _logger.warning(
+                "taskkill_failed",
+                pid=pid,
+                returncode=completed.returncode,
+                force=force,
             )
         return
 
@@ -553,28 +671,41 @@ def request_drain(
         return "error"
 
 
-def budget_from_state_line(line: bytes | None) -> dict[str, object] | None:
-    """Extract the ``budget`` mapping from a single ``state_update`` reply line.
+def request_reload_config(project_path: Path) -> str:
+    """Send a reload_config request to the running orchestrator over IPC.
 
-    ``get_state`` replies with the enveloped ``state_update`` message
-    (``{"type": "state_update", ..., "payload": {..., "budget": {...}}}``), so the
-    budget lives under ``payload``. Tolerates a flat shape too. Returns ``None``
-    for a blank/unparseable/error line or a missing budget.
+    Instructs the orchestrator to re-read ``agentshore.yaml`` and apply the
+    updated configuration atomically.  This is the cross-platform equivalent of
+    ``kill -HUP`` for callers on Windows where SIGHUP does not exist.
+
+    Returns a status string: ``"sent"``, ``"timeout"``, ``"error"``, or
+    ``"fallback_hard"`` (no IPC endpoint found).
     """
     import json as _json
+    import socket as _socket
 
-    if line is None or not line.strip():
-        return None
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return "fallback_hard"
+
     try:
-        env = _json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, _json.JSONDecodeError):
-        return None
-    if not isinstance(env, dict) or env.get("type") == "error":
-        return None
-    payload = env.get("payload")
-    container = payload if isinstance(payload, dict) else env
-    budget = container.get("budget")
-    return budget if isinstance(budget, dict) else None
+        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
+        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            if endpoint.kind == "unix":
+                if endpoint.path is None:
+                    return "fallback_hard"
+                sock.connect(str(endpoint.path))
+            else:
+                sock.connect((endpoint.host, endpoint.port))
+            cmd = {"command": "reload_config"}
+            encoded = _json.dumps(cmd) + "\n"
+            sock.sendall(encoded.encode())
+        return "sent"
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
 
 
 def request_add_budget(
@@ -585,21 +716,18 @@ def request_add_budget(
 ) -> str | dict[str, object]:
     """Additively top up / extend the live session budget over IPC.
 
-    The NDJSON control channel is fire-and-forget for mutating commands, but the
-    server answers ``get_state`` from its cached ``state_update``. Because
-    ``add_budget`` is applied asynchronously by the orchestrator's command pump,
-    a single immediate ``get_state`` can race ahead of the change. So this reads a
-    baseline, sends ``add_budget``, then polls ``get_state`` until the cached
-    budget reflects the new caps (or a short deadline elapses) and returns it, so
-    the CLI reports the *applied* caps rather than the pre-change snapshot.
+    Sends ``add_budget`` and reads the orchestrator's synchronous reply on the
+    same connection (``{"type": "add_budget_ok", ...applied caps...}`` on
+    success, ``{"type": "error", ...}`` on rejection).
 
-    Returns ``"no_session"`` when no IPC endpoint is discoverable, ``"error"`` /
-    ``"timeout"`` on transport failure, or the budget dict on success (``{}`` if
-    the snapshot never carried a budget).
+    Returns ``"no_session"`` when no IPC endpoint is discoverable,
+    ``"timeout"`` when the server does not reply within 12 s,
+    ``"error"`` on any other transport or protocol failure,
+    ``"rejected:<msg>"`` when the orchestrator rejects the request, or
+    the applied-caps dict on success.
     """
     import json as _json
     import socket as _socket
-    import time as _time
 
     endpoint = discover_ipc_endpoint(project_path)
     if endpoint is None:
@@ -610,11 +738,13 @@ def request_add_budget(
         add_cmd["delta_usd"] = delta_usd
     if delta_minutes is not None:
         add_cmd["delta_minutes"] = delta_minutes
-    get_state = (_json.dumps({"command": "get_state"}) + "\n").encode()
 
     def _read_line(sock: _socket.socket, buf: bytes) -> tuple[bytes | None, bytes]:
         while b"\n" not in buf:
-            chunk = sock.recv(65536)
+            try:
+                chunk = sock.recv(65536)
+            except OSError:
+                return None, buf
             if not chunk:
                 return None, buf
             buf += chunk
@@ -624,7 +754,7 @@ def request_add_budget(
     try:
         family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
         with _socket.socket(family, _socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(12.0)
             if endpoint.kind == "unix":
                 if endpoint.path is None:
                     return "no_session"
@@ -632,35 +762,42 @@ def request_add_budget(
             else:
                 sock.connect((endpoint.host, endpoint.port))
 
-            buf = b""
-            # Baseline so we can tell when the async apply lands.
-            sock.sendall(get_state)
-            line, buf = _read_line(sock, buf)
-            baseline = budget_from_state_line(line)
-
             sock.sendall((_json.dumps(add_cmd) + "\n").encode())
 
-            applied = baseline
-            deadline = _time.monotonic() + 3.0
-            while _time.monotonic() < deadline:
-                _time.sleep(0.15)
-                sock.sendall(get_state)
-                line, buf = _read_line(sock, buf)
-                current = budget_from_state_line(line)
-                if current is not None and current != baseline:
-                    applied = current
-                    break
+            buf = b""
+            line, _buf = _read_line(sock, buf)
     except TimeoutError:
         return "timeout"
     except (AttributeError, OSError):
         return "error"
 
-    return applied if isinstance(applied, dict) else {}
+    if line is None or not line.strip():
+        return "error"
+    try:
+        msg = _json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError):
+        return "error"
+    if not isinstance(msg, dict):
+        return "error"
+    msg_type = msg.get("type")
+    if msg_type == "add_budget_ok":
+        return {k: v for k, v in msg.items() if k != "type"}
+    if msg_type == "error":
+        return f"rejected:{msg.get('error', 'unknown')}"
+    return "error"
 
 
-def stop_dashboard_process(project_path: Path) -> bool:
-    """Terminate the recorded dashboard bridge process, if one exists."""
-    pid = read_dashboard_pid(project_path)
+def stop_dashboard_process(project_path: Path, *, pid: int | None = None) -> bool:
+    """Terminate the recorded dashboard bridge process, if one exists.
+
+    ``pid`` lets a caller terminate a specific, already-validated process
+    instead of re-reading ``dashboard.pid``. The supervisor path writes the new
+    child's pid into that file concurrently, so a caller superseding a *prior*
+    dashboard must pin the pid it checked to avoid killing the freshly-written
+    one (itself).
+    """
+    if pid is None:
+        pid = read_dashboard_pid(project_path)
     if pid is None:
         return False
 

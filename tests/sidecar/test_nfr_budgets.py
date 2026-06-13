@@ -49,8 +49,9 @@ ACTIVE_RSS_WARN_MB = 4500.0
 
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("ps") is None,
-    reason="NFR rss read uses POSIX ps; skipping on this platform",
+    sys.platform.startswith("win") or shutil.which("ps") is None,
+    reason="NFR rss read uses POSIX `ps -o rss=`; a git-bash ps on Windows can't "
+    "read a native process's RSS, so skip there too",
 )
 
 

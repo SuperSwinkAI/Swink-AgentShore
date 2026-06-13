@@ -17,7 +17,7 @@ from agentshore.agents.model_catalog import (
 )
 
 # ---------------------------------------------------------------------------
-# models_for_agent — baseline
+# models_for_agent - baseline
 # ---------------------------------------------------------------------------
 
 
@@ -43,6 +43,13 @@ def test_models_for_agent_in_running_loop_skips_live_fetch() -> None:
     result = asyncio.run(_call())
     assert result == KNOWN_MODELS["codex"]
     async_models.assert_not_called()
+
+
+def test_claude_catalog_includes_fable_as_opt_in_after_opus() -> None:
+    claude_models = KNOWN_MODELS["claude_code"]
+
+    assert "claude-fable-5" in claude_models
+    assert claude_models.index("claude-opus-4-8") < claude_models.index("claude-fable-5")
 
 
 def test_known_models_first_in_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,10 +91,13 @@ def test_openai_fetch_used_for_codex(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "gpt-99" in result
 
 
-def test_codex_known_models_exclude_legacy_o_series() -> None:
+def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     assert "o1" not in KNOWN_MODELS["codex"]
     assert "o3" not in KNOWN_MODELS["codex"]
     assert "o4-mini" not in KNOWN_MODELS["codex"]
+    assert "gpt-5.2" not in KNOWN_MODELS["codex"]
+    assert "gpt-5.3-codex" not in KNOWN_MODELS["codex"]
+    assert "gpt-5.4-nano" in KNOWN_MODELS["codex"]
 
 
 def test_gemini_falls_back_to_known_models_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,6 +138,7 @@ def test_grok_known_models_include_build_aliases() -> None:
     assert KNOWN_MODELS["grok"] == [
         "grok-build",
         "grok-build-0.1",
+        "grok-4.3",
         "grok-code-fast-1",
         "grok-code-fast",
         "grok-code-fast-1-0825",
@@ -146,7 +157,7 @@ def test_xai_fetch_used_for_grok(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_anthropic_models — failure modes
+# _fetch_anthropic_models - failure modes
 # ---------------------------------------------------------------------------
 
 
@@ -191,7 +202,7 @@ def test_fetch_anthropic_filters_non_claude_ids(monkeypatch: pytest.MonkeyPatch)
 
 
 # ---------------------------------------------------------------------------
-# _fetch_openai_models — failure modes
+# _fetch_openai_models - failure modes
 # ---------------------------------------------------------------------------
 
 
@@ -218,7 +229,7 @@ def test_fetch_openai_returns_empty_on_http_error(monkeypatch: pytest.MonkeyPatc
 
 
 # ---------------------------------------------------------------------------
-# _fetch_gemini_models — failure modes
+# _fetch_gemini_models - failure modes
 # ---------------------------------------------------------------------------
 
 

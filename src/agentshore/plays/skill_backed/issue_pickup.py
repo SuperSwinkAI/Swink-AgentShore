@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore.github.labels import ISSUE_PICKUP_SKIP_LABELS
+from agentshore.plays.candidates import MAX_OPEN_PRS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
+from agentshore.plays.skill_backed.gates import DependenciesResolvedGate
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
@@ -17,12 +19,12 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Backpressure: when the open-PR queue grows past this threshold, mask
-# issue_pickup so the policy clears review/merge work before opening more
-# PRs. Past sessions have accumulated 20+ open PRs while every
-# code_review either deduped or returned BLOCK; the queue grows without
-# bound and the budget burns on context for PRs that never merge.
-_MAX_OPEN_PRS = 10
+# Backpressure: when the open-PR queue reaches MAX_OPEN_PRS, mask issue_pickup so
+# the policy clears review/merge work before opening more PRs. Past sessions have
+# accumulated 20+ open PRs while every code_review either deduped or returned
+# BLOCK; the queue grows without bound and the budget burns on context for PRs
+# that never merge. The threshold lives in ``plays.candidates`` (single source of
+# truth) so the END_SESSION human-jam escape hatch stays coupled to it.
 
 # Per-issue circuit breaker. Two failure classes flip the same streak:
 #   (1) The EligibilityAuthority's live ``confirm`` rejects the selected
@@ -51,7 +53,7 @@ class IssuePickupPlay(SkillBackedPlay):
     Preconditions:
     - At least one open issue exists.
     - At least one IDLE agent with can_implement capability is available.
-    - Fewer than ``_MAX_OPEN_PRS`` open PRs in the queue (backpressure gate, inclusive).
+    - Fewer than ``MAX_OPEN_PRS`` open PRs in the queue (backpressure gate, inclusive).
     - The linked beads task (if any) is not already ``in_progress`` (double-pickup guard, C3).
     - At least one open issue is not currently on the per-bead skip cooldown
       (env-state circuit breaker; see ``_SKIP_CIRCUIT_THRESHOLD``). An issue
@@ -165,14 +167,17 @@ class IssuePickupPlay(SkillBackedPlay):
                     source=MaskSource.CANDIDATE,
                 )
             )
+        dep_reason = DependenciesResolvedGate()(state)
+        if dep_reason is not None:
+            issues.append(dep_reason)
         issues += self._capability_check(state)
         open_prs = {pr.pr_number for pr in state.pull_requests if pr.state == "open"}
         open_pr_count = len(open_prs)
-        if open_pr_count >= _MAX_OPEN_PRS:
+        if open_pr_count >= MAX_OPEN_PRS:
             issues.append(
                 MaskReason(
                     text=(
-                        f"too many open PRs ({open_pr_count} >= {_MAX_OPEN_PRS}); "
+                        f"too many open PRs ({open_pr_count} >= {MAX_OPEN_PRS}); "
                         "drain review/merge queue first"
                     ),
                     classification=MaskClassification.HARD,

@@ -6,12 +6,12 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import signal
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
+from agentshore import subprocess_env
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
@@ -37,6 +37,76 @@ _DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
 _LINE_DRIFT_WARN_BYTES = 1_048_576  # warn once if any single line exceeds 1MB
 _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from skill+params
+
+
+# ---------------------------------------------------------------------------
+# Inline helpers (migrated from agents/cli_process.py, #107)
+# ---------------------------------------------------------------------------
+
+
+def _prompt_on_stdin(python_executable: str | None) -> bool:
+    """Return True when Windows npm shims should receive the prompt over stdin."""
+    import sys
+
+    return python_executable is None and sys.platform == "win32"
+
+
+def _resolve_executable(argv: list[str]) -> list[str]:
+    """On Windows resolve argv[0] to its full path so .cmd/.bat shims run.
+
+    ``subprocess_env.resolve_tool`` is for known tools (git/gh); here we need
+    the same PATHEXT-aware which() for arbitrary agent CLI names (claude.cmd,
+    codex.cmd, gemini.cmd) that are npm shims on Windows.
+    """
+    import os
+    import shutil
+    import sys
+
+    if sys.platform != "win32" or not argv or os.path.isabs(argv[0]):
+        return argv
+    resolved = shutil.which(argv[0])
+    if resolved is None:
+        return argv
+    return [resolved, *argv[1:]]
+
+
+def _write_grok_prompt_file(prompt: str) -> Path:
+    """Write *prompt* to a temp file for Grok's ``--prompt-file`` (issue #160).
+
+    Grok has no stdin prompt mode and rejects an empty ``-p`` value, so on
+    Windows — where we can't pass a large prompt as an argv element — the
+    prompt is delivered through a file instead. The caller owns cleanup
+    (``unlink`` in its ``finally``).
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    fd, path = tempfile.mkstemp(prefix="agentshore-grok-prompt-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+    return Path(path)
+
+
+async def _feed_prompt_stdin(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write *prompt* to the child's stdin and close it."""
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
+
 
 # YOLO permission flags applied by default per agent type. AgentShore is an
 # autonomous orchestrator — agents can't pause for human approval on each
@@ -144,9 +214,9 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
-# Transient network/socket failures. desktop/agentic_jane observed claude_code
-# exits with "API Error: The socket connection was closed unexpectedly" falling
-# into the generic "unknown" bucket (#23). These are distinctive enough to match
+# Transient network/socket failures. claude_code has been observed to exit with
+# "API Error: The socket connection was closed unexpectedly" falling into the
+# generic "unknown" bucket (#23). These are distinctive enough to match
 # in either stream and are genuinely transient (a retry/take_break recovers), so
 # pulling them out of "unknown" gives operators an accurate signal instead of a
 # catch-all while keeping the same recovery treatment.
@@ -268,12 +338,6 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
 }
-_GROK_CLI_MODEL_ALIASES: dict[str, str] = {
-    "grok-build-0.1": "grok-build",
-    "grok-code-fast-1": "grok-build",
-    "grok-code-fast": "grok-build",
-    "grok-code-fast-1-0825": "grok-build",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,20 +396,6 @@ def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> 
     return _DEFAULT_YOLO_FLAGS.get(agent_type, ())
 
 
-def _default_grok_binary() -> str:
-    """Prefer ``grok`` but support hosts that only have the ``grok-build`` alias."""
-    if shutil.which("grok") is not None:
-        return "grok"
-    if shutil.which("grok-build") is not None:
-        return "grok-build"
-    return "grok"
-
-
-def _grok_cli_model(model: str) -> str:
-    """Return the model id accepted by the installed Grok CLI."""
-    return _GROK_CLI_MODEL_ALIASES.get(model, model)
-
-
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -361,6 +411,8 @@ def build_argv(
     extra_flags: tuple[str, ...] = (),
     context_path: str | None = None,
     project_dir: str | None = None,
+    prompt_on_stdin: bool = False,
+    prompt_file: str | None = None,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -368,6 +420,17 @@ def build_argv(
     `feedback_persistent_sessions` memory: ``--resume`` was buggy in
     production (silent state-rot late in long sessions) and is no longer
     used.
+
+    When *prompt_on_stdin* is set the prompt is delivered over the child's
+    stdin instead of as an argv element — on Windows the agent CLIs resolve to
+    npm ``.cmd`` shims, which expand a large prompt argument through cmd.exe and
+    hit its ~8191-char command-line limit ("The command line is too long.").
+    Each CLI is told to read the prompt from stdin: codex via the ``-`` prompt
+    placeholder, claude via ``-p`` with no prompt argument, gemini via an empty
+    ``-p`` (its ``--prompt`` value is appended to whatever arrives on stdin).
+    Grok is the exception — it has no stdin prompt mode, so the caller writes
+    the prompt to a temp file and passes its path as *prompt_file*, which Grok
+    reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -380,7 +443,8 @@ def build_argv(
         args.extend(extra_flags)
         if context_path:
             args += ["--append-system-prompt", f"Context file: {context_path}"]
-        args.append(prompt)
+        if not prompt_on_stdin:
+            args.append(prompt)
         return args
 
     if agent_type == AgentType.CODEX:
@@ -403,7 +467,8 @@ def build_argv(
         args.extend(extra_flags)
         if project_dir:
             args += ["-C", project_dir]
-        args.append(prompt)
+        # "-" tells `codex exec` to read the prompt from stdin.
+        args.append("-" if prompt_on_stdin else prompt)
         return args
 
     if agent_type == AgentType.GEMINI:
@@ -412,29 +477,25 @@ def build_argv(
         if model:
             args += ["--model", model]
         args.extend(extra_flags)
-        args += ["-p", prompt]
+        # Empty -p keeps headless mode while the real prompt arrives on stdin.
+        args += ["-p", "" if prompt_on_stdin else prompt]
         return args
 
     if agent_type == AgentType.GROK:
-        binary = binary or _default_grok_binary()
-        if model:
-            model = _grok_cli_model(model)
-        args = [
-            binary,
-            "--no-auto-update",
-            "--no-subagents",
-            "--verbatim",
-        ]
-        if project_dir:
-            args += ["--cwd", project_dir]
-        args += ["--output-format", "streaming-json"]
-        if model:
-            args += ["-m", model]
-        if reasoning_effort:
-            args += ["--reasoning-effort", reasoning_effort]
-        args.extend(extra_flags)
-        args += ["-p", prompt]
-        return args
+        # Imported lazily: cli_grok imports private helpers from this module at
+        # import time, so a top-level import here would form a circular import.
+        from agentshore.agents import cli_grok
+
+        return cli_grok.build_argv(
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
     raise ValueError(msg)
@@ -443,8 +504,6 @@ def build_argv(
 # ---------------------------------------------------------------------------
 # Core dispatch helpers
 # ---------------------------------------------------------------------------
-
-
 def _build_dispatch_argv(
     handle: AgentHandle,
     prompt: str,
@@ -453,13 +512,16 @@ def _build_dispatch_argv(
     python_executable: str | None,
     resume_session_id: str | None,
     effective_cwd: Path,
+    prompt_file: str | None = None,
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
     Encapsulates the test-shim path (``python_executable``), the normal
     ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
-    (desktop-dy2j).
+    (desktop-dy2j). *prompt_file*, when set, routes a Grok dispatch's prompt
+    through ``--prompt-file`` instead of an argv element (issue #160).
     """
+    prompt_on_stdin = _prompt_on_stdin(python_executable)
     if python_executable is not None:
         # Test shim: invoke cfg.binary as a Python script.
         argv: list[str] = [python_executable, cfg.binary or ""]
@@ -472,6 +534,8 @@ def _build_dispatch_argv(
             reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
             extra_flags=cfg.extra_flags,
             project_dir=str(effective_cwd),
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
         )
 
     # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
@@ -485,8 +549,11 @@ def _build_dispatch_argv(
             "--verbose",
             "--output-format",
             "stream-json",
-            prompt,
         ]
+        # On Windows the prompt rides stdin (see build_argv); elsewhere it is
+        # the trailing argv element.
+        if not prompt_on_stdin:
+            argv.append(prompt)
 
     prompt_bytes = len(prompt.encode("utf-8"))
 
@@ -705,6 +772,15 @@ async def dispatch_cli(
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
 
+    # Grok can't take the prompt over stdin (no stdin mode) and rejects an empty
+    # ``-p`` ("--single: prompt is empty", issue #160). Where the other CLIs
+    # would route the prompt over stdin (Windows arg-length limits), Grok
+    # instead reads it from a temp file via ``--prompt-file``. Cleaned up in the
+    # ``finally`` below.
+    grok_prompt_file: Path | None = None
+    if handle.agent_type == AgentType.GROK and _prompt_on_stdin(python_executable):
+        grok_prompt_file = _write_grok_prompt_file(prompt)
+
     _argv = _build_dispatch_argv(
         handle,
         prompt,
@@ -712,6 +788,7 @@ async def dispatch_cli(
         python_executable=python_executable,
         resume_session_id=resume_session_id,
         effective_cwd=effective_cwd,
+        prompt_file=str(grok_prompt_file) if grok_prompt_file is not None else None,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
@@ -731,17 +808,32 @@ async def dispatch_cli(
 
     env = {**os.environ, **identity_env} if identity_env else None
 
+    # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
+    # spawn on Windows; CreateProcess only finds bare names ending in .exe.
+    argv = _resolve_executable(argv)
+
+    # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
+    # limit (see build_argv); elsewhere stdin stays closed. Grok is the
+    # exception: it never reads the prompt from stdin (it's in --prompt-file),
+    # so we keep stdin closed for it — opening a PIPE and writing a prompt Grok
+    # never drains could block on a full pipe buffer.
+    prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
+
     proc = await asyncio.create_subprocess_exec(
         *argv,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(effective_cwd),
         limit=cfg.line_limit_bytes,
         start_new_session=True,
+        creationflags=subprocess_env.no_window_creationflags(),
         env=env,
     )
     handle.process = proc
+    stdin_feeder: asyncio.Task[None] | None = None
+    if prompt_on_stdin and proc.stdin is not None:
+        stdin_feeder = asyncio.create_task(_feed_prompt_stdin(proc, prompt))
     if on_subprocess_spawned is not None and proc.pid is not None:
         await on_subprocess_spawned(proc.pid)
 
@@ -785,6 +877,12 @@ async def dispatch_cli(
         _close_process_transport(proc)
         raise
     finally:
+        if stdin_feeder is not None:
+            stdin_feeder.cancel()
+            with contextlib.suppress(Exception):
+                await stdin_feeder
+        if grok_prompt_file is not None:
+            grok_prompt_file.unlink(missing_ok=True)
         if on_subprocess_exited is not None and proc.pid is not None:
             with contextlib.suppress(Exception):
                 await on_subprocess_exited(proc.pid, proc.returncode)
@@ -1008,7 +1106,7 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
     AgentType.GEMINI: frozenset({"result"}),
-    AgentType.GROK: frozenset({"result", "done", "completed", "turn.completed", "end"}),
+    AgentType.GROK: frozenset({"end"}),
 }
 
 
@@ -1031,7 +1129,10 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
         return False
     if not isinstance(event, dict):
         return False
-    return event.get("type") in terminal_types or event.get("event") in terminal_types
+    # Grok CLI uses ``event`` (not ``type``) as the event-type key in some output shapes.
+    return event.get("type") in terminal_types or (
+        agent_type == AgentType.GROK and event.get("event") in terminal_types
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1104,18 +1205,12 @@ def _usage_totals_from_dict(
         turn_usage = last_usage
         input_includes_cache = True
 
-    input_tokens = _first_int(
-        usage, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-    )
+    input_tokens = _first_int(usage, "input_tokens")
     cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
         usage.get("cache_read_input_tokens")
     )
-    if cache_read_tokens == 0:
-        cache_read_tokens = _first_int(usage, "cachedContentTokenCount")
     cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(
-        usage, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-    )
+    output_tokens = _first_int(usage, "output_tokens")
     reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
 
     tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
@@ -1229,60 +1324,10 @@ def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | 
 
 
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    session_id: str | None = None
-    usage_totals = _UsageTotals()
-    messages: list[str] = []
-    final_response: str | None = None
+    """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
+    from agentshore.agents.cli_grok import parse_grok_jsonl
 
-    for event in _iter_json_events(raw):
-        session_id = session_id or _extract_gemini_session_id(event)
-
-        usage = _extract_usage_dict(event)
-        if usage is not None:
-            usage_totals = _max_usage(
-                usage_totals,
-                _usage_totals_from_dict(usage, input_includes_cache=True),
-            )
-
-        event_type = str(event.get("type") or event.get("event") or "").lower()
-        if event_type == "text":
-            text = _extract_text_value(event.get("data"))
-            if text:
-                messages.append(text)
-            continue
-        if event_type == "end":
-            continue
-
-        role = event.get("role")
-        message = event.get("message")
-        if role is None and isinstance(message, dict):
-            role = message.get("role")
-        is_terminal = event_type in {"result", "done", "completed", "turn.completed"} or any(
-            key in event for key in ("result", "response", "final", "output")
-        )
-        if (
-            isinstance(role, str)
-            and role.lower() not in {"assistant", "agent", "model"}
-            and not is_terminal
-        ):
-            continue
-
-        text = _extract_text_value(event.get("delta"))
-        if text is None:
-            text = _extract_text_value(event.get("message"))
-        if text is None:
-            text = _extract_text_value(event.get("data"))
-        if text is None:
-            text = _extract_text_value(event)
-        if not text:
-            continue
-
-        if is_terminal:
-            final_response = text
-        else:
-            messages.append(text)
-
-    return (final_response or "".join(messages) or raw), usage_totals, session_id
+    return parse_grok_jsonl(raw)
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
@@ -1318,13 +1363,13 @@ def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
 
 def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
+    for key in ("session_id", "sessionId", "thread_id", "id"):
         value = event.get(key)
         if isinstance(value, str) and value:
             return value
     metadata = event.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("session_id", "sessionId", "thread_id", "conversation_id", "id"):
+        for key in ("session_id", "sessionId", "thread_id", "id"):
             value = metadata.get(key)
             if isinstance(value, str) and value:
                 return value
@@ -1340,7 +1385,7 @@ def _extract_text_value(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
 
-    for key in ("text", "content", "response", "result", "final", "output"):
+    for key in ("text", "content", "response", "result"):
         text = _extract_text_value(value.get(key))
         if text:
             return text
@@ -1451,6 +1496,29 @@ def _safe_int(value: object) -> int:
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
     """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
+    if not hasattr(os, "killpg"):
+        # Windows: no process groups. ``start_new_session=True`` is a no-op
+        # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
+        # absent entirely. Tear the tree down by PID via taskkill instead.
+        if proc.pid is None:
+            _close_process_transport(proc)
+            return
+        subprocess_env.kill_tree_sync(proc.pid)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+        except TimeoutError:
+            _logger.warning("sending_sigkill", agent_id=agent_id)
+            subprocess_env.kill_tree_sync(proc.pid)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+        if proc.returncode is None:
+            _logger.warning(
+                "taskkill_failed",
+                agent_id=agent_id,
+                pid=proc.pid,
+            )
+        _close_process_transport(proc)
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, TypeError):
@@ -1479,6 +1547,9 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
                 str(pgid),
                 "-o",
                 "pid=",
+                # Never inherit the sidecar's stdin (the live Tauri JSON-RPC
+                # pipe); a child probing it can wedge teardown (#155).
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

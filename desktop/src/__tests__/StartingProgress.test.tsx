@@ -9,6 +9,8 @@ import { StartingProgress } from "../StartingProgress";
 import {
   buildInitialSteps,
   applyProgressEvent,
+  STEP_INIT_BEADS,
+  STEP_METADATA,
   type StartupStepState,
 } from "../startupSteps";
 
@@ -43,6 +45,10 @@ function renderScreen(
 }
 
 describe("StartingProgress", () => {
+  it("routes init_beads repair to the readiness setup screen", () => {
+    expect(STEP_METADATA[STEP_INIT_BEADS].repairScreen).toBe("/setup/readiness");
+  });
+
   let steps: StartupStepState[];
 
   beforeEach(() => {

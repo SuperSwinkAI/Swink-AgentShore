@@ -9,11 +9,13 @@ OrchestratorState fixtures and assert on the returned MaskReason | None.
 
 from __future__ import annotations
 
+from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
 from agentshore.errors import ErrorClass
 from agentshore.plays.skill_backed.gates import (
     ArmedByFailureGate,
     CapabilityGate,
     CooldownGate,
+    DependenciesResolvedGate,
     InFlightGate,
     WarmupGate,
 )
@@ -23,6 +25,7 @@ from agentshore.state import (
     AgentStatus,
     AgentType,
     BudgetSnapshot,
+    IssueSnapshot,
     OrchestratorState,
     PlayType,
     SessionState,
@@ -188,6 +191,15 @@ def test_cooldown_gate_passes_at_window_edge() -> None:
 def test_cooldown_gate_passes_past_window() -> None:
     gate = CooldownGate(PlayType.CLEANUP, plays=20)
     assert gate(_state(plays_since_last_play_type={PlayType.CLEANUP: 50})) is None
+
+
+def test_cooldown_gate_in_flight_is_owned_by_inflight_gate_not_cooldown() -> None:
+    """A same-type play in flight (counter absent) is the InFlightGate's job, not
+    this gate's — CooldownGate must not emit a duplicate reason for it. Standard
+    plays declare both gates; the persist race for completed plays is closed
+    upstream by _recent_play_completions."""
+    gate = CooldownGate(PlayType.CLEANUP, plays=20)
+    assert gate(_state(in_flight_plays=[PlayType.CLEANUP])) is None
 
 
 # --- ArmedByFailureGate (the new logic) -------------------------------------
@@ -397,3 +409,162 @@ def test_warmup_gate_with_prereq_enforces_when_prereq_ran() -> None:
     reason = gate(state)
     assert reason is not None
     assert "warmup floor" in reason.text
+
+
+# --- DependenciesResolvedGate (#96) -----------------------------------------
+
+
+def _issue(number: int = 1, state: str = "OPEN") -> IssueSnapshot:
+    return IssueSnapshot(
+        issue_number=number,
+        title=f"Issue #{number}",
+        state=state,
+        priority=None,
+        labels=[],
+        source=None,
+    )
+
+
+def _epic() -> EpicStatus:
+    return EpicStatus(
+        bead_id="e1", title="Epic 1", total_tasks=2, closed_tasks=0, closure_ratio=0.0
+    )
+
+
+def _graph_task(
+    *,
+    bead_id: str = "t1",
+    issue_number: int | None = 1,
+    blocked_by_ids: frozenset[str] = frozenset(),
+) -> GraphTask:
+    return GraphTask(
+        bead_id=bead_id,
+        title="Task",
+        status=BeadStatus.OPEN,
+        issue_number=issue_number,
+        ready=not bool(blocked_by_ids),
+        blocked_by_ids=blocked_by_ids,
+    )
+
+
+def _dep_state(
+    *,
+    graph: ProjectGraph | None,
+    open_issues: list[IssueSnapshot] | None = None,
+) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="sess",
+        session_state=SessionState.RUNNING,
+        total_plays=10,
+        total_cost=0.0,
+        agents=[_agent()],
+        budget=BudgetSnapshot(5.0, 0.0, 5.0, 0.1),
+        in_flight_plays=[],
+        plays_since_last_play_type={},
+        last_play_success_by_type={},
+        last_play_skipped_by_type={},
+        graph=graph,
+        open_issues=[_issue()] if open_issues is None else open_issues,
+    )
+
+
+def test_dep_gate_passes_when_no_graph() -> None:
+    """Gate is silent when beads is not initialised (state.graph is None)."""
+    gate = DependenciesResolvedGate()
+    assert gate(_dep_state(graph=None)) is None
+
+
+def test_dep_gate_passes_when_graph_has_no_epics() -> None:
+    """Gate is silent when the graph exists but has no epics."""
+    graph = ProjectGraph(epics=[], tasks=[], tasks_ready=0, tasks_total=0)
+    assert DependenciesResolvedGate()(_dep_state(graph=graph)) is None
+
+
+def test_dep_gate_passes_when_no_tasks_have_blocked_by_ids() -> None:
+    """Gate is silent when no task in the graph has unresolved deps."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[_graph_task(blocked_by_ids=frozenset())],
+        tasks_ready=1,
+        tasks_total=1,
+    )
+    assert DependenciesResolvedGate()(_dep_state(graph=graph)) is None
+
+
+def test_dep_gate_passes_when_some_issues_have_no_blocked_deps() -> None:
+    """When at least one open issue is dep-free, the gate passes."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[
+            _graph_task(bead_id="t1", issue_number=1, blocked_by_ids=frozenset({"dep-task-id"})),
+            _graph_task(bead_id="t2", issue_number=2, blocked_by_ids=frozenset()),
+        ],
+        tasks_ready=1,
+        tasks_total=2,
+    )
+    state = _dep_state(graph=graph, open_issues=[_issue(1), _issue(2)])
+    assert DependenciesResolvedGate()(state) is None
+
+
+def test_dep_gate_masks_when_all_open_issues_have_unresolved_deps() -> None:
+    """Mask is applied when every open issue is linked to a dep-blocked task."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[
+            _graph_task(bead_id="t1", issue_number=1, blocked_by_ids=frozenset({"dep-task-id"})),
+        ],
+        tasks_ready=0,
+        tasks_total=1,
+        tasks_blocked=1,
+    )
+    state = _dep_state(graph=graph, open_issues=[_issue(1)])
+    reason = DependenciesResolvedGate()(state)
+    assert reason is not None
+    assert "blocked by unresolved beads dependencies" in reason.text
+    assert reason.classification == MaskClassification.TRANSIENT
+    assert reason.source == MaskSource.PRECONDITION
+
+
+def test_dep_gate_masks_multiple_all_blocked_issues() -> None:
+    """Mask fires when multiple open issues all have unresolved deps."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[
+            _graph_task(bead_id="t1", issue_number=1, blocked_by_ids=frozenset({"dep-a"})),
+            _graph_task(bead_id="t2", issue_number=2, blocked_by_ids=frozenset({"dep-b"})),
+        ],
+        tasks_ready=0,
+        tasks_total=2,
+        tasks_blocked=2,
+    )
+    state = _dep_state(graph=graph, open_issues=[_issue(1), _issue(2)])
+    reason = DependenciesResolvedGate()(state)
+    assert reason is not None
+    assert "2" in reason.text  # count of blocked issues mentioned
+
+
+def test_dep_gate_passes_when_no_open_issues() -> None:
+    """Gate is silent when there are no open issues (other checks handle that)."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[_graph_task(blocked_by_ids=frozenset({"dep"}))],
+        tasks_ready=0,
+        tasks_total=1,
+    )
+    assert DependenciesResolvedGate()(_dep_state(graph=graph, open_issues=[])) is None
+
+
+def test_dep_gate_ignores_issues_not_linked_to_blocked_tasks() -> None:
+    """Open issues with no matching bead task are not considered blocked."""
+    graph = ProjectGraph(
+        epics=[_epic()],
+        tasks=[
+            # issue 2 is blocked, but issue 1 has no task entry at all
+            _graph_task(bead_id="t2", issue_number=2, blocked_by_ids=frozenset({"dep"})),
+        ],
+        tasks_ready=0,
+        tasks_total=1,
+    )
+    # Issue 1 is open and not in the blocked set → at least one dep-free issue
+    state = _dep_state(graph=graph, open_issues=[_issue(1), _issue(2)])
+    assert DependenciesResolvedGate()(state) is None

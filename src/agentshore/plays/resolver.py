@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
     MODEL_TIER_PRIORITY,
+    effective_model_tier_config,
     enabled_model_tiers,
 )
 from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS, TRUNK_SCOPED_PLAYS
@@ -304,8 +305,17 @@ class ParameterResolver:
                 target_agent_type=override_agent_type,
                 target_model_tier=override_model_tier,
             )
+        # Count only live agents (not ERROR / TERMINATED), mirroring the
+        # capacity definition in instantiate_agent.execute() and the eligibility
+        # config mask. Counting dead agents here let the resolver both skip
+        # reclaimable cells and deterministically re-pick a cell that is already
+        # at its live per-tier max — the latter is #159's instantiate spin
+        # (mask allows INSTANTIATE_AGENT, then execute() rejects "at per-tier
+        # max"). The resolver must only ever return a cell execute() will accept.
         existing = Counter(
-            (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER) for s in state.agents
+            (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER)
+            for s in state.agents
+            if s.status.value not in ("error", "terminated")
         )
         idle_configs = {
             (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER)
@@ -313,6 +323,7 @@ class ParameterResolver:
             if s.status == AgentStatus.IDLE
         }
         enabled_agents = []
+        tier_caps: dict[tuple[str, str], int] = {}
         for agent_key, agent_cfg in self._cfg.agents.items():
             try:
                 agent_type = AgentType(agent_key)
@@ -320,7 +331,12 @@ class ParameterResolver:
                 continue
             if not agent_cfg.enabled:
                 continue
-            enabled_agents.append((agent_type, enabled_model_tiers(agent_type, agent_cfg)))
+            enabled_tiers = enabled_model_tiers(agent_type, agent_cfg)
+            enabled_agents.append((agent_type, enabled_tiers))
+            for tier in enabled_tiers:
+                tier_caps[(agent_type.value, tier)] = effective_model_tier_config(
+                    agent_type, agent_cfg, tier
+                ).max
 
         candidates: list[tuple[str, str]] = []
         for model_tier in MODEL_TIER_PRIORITY:
@@ -336,7 +352,11 @@ class ParameterResolver:
                     )
 
         if candidates:
-            available_candidates = [pair for pair in candidates if pair not in idle_configs]
+            available_candidates = [
+                pair
+                for pair in candidates
+                if pair not in idle_configs and existing[pair] < tier_caps.get(pair, 1)
+            ]
             if not available_candidates:
                 return None
             agent_key, model_tier = min(available_candidates, key=lambda pair: existing[pair])

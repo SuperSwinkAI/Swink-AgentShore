@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import BeadsInitializedGate, CooldownGate, InFlightGate
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
@@ -43,11 +44,12 @@ def _has_untracked_gh_issues(state: OrchestratorState) -> bool:
 class GroomBacklogPlay(SkillBackedPlay):
     """Audit and reorganise the beads project graph — close stale beads, fix labels, relink."""
 
-    gates = (
-        BeadsInitializedGate(),
-        InFlightGate(PlayType.GROOM_BACKLOG),
-        CooldownGate(PlayType.GROOM_BACKLOG, plays=20),
-    )
+    def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
+        self.gates = (
+            BeadsInitializedGate(),
+            InFlightGate(PlayType.GROOM_BACKLOG),
+            CooldownGate(PlayType.GROOM_BACKLOG, plays=cooldown_plays),
+        )
 
     @property
     def play_type(self) -> PlayType:

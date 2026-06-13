@@ -48,16 +48,15 @@ class _DrainHost(Protocol):
     """Orchestrator runtime/control state read OR written live by :class:`DrainController`.
 
     These members are accessed fresh via ``self._host.<attr>`` on every call so
-    per-tick mutation (stop/drain latches, budget override, ESR request flags,
-    in-flight maps) is always current — never captured at construction. Fields
-    the controller *writes* (the stop/drain latches, ``_stop_reason``,
-    ``_extra_budget``, ``_budget_override``, the ESR request flags, the ESR-ready
-    callback) are declared as plain annotated attributes (not read-only
-    ``@property``) so the assignments type-check. ``_OrchestratorBase``
-    structurally satisfies this Protocol; the cross-component methods
-    (``_safe_call``, ``_weights_dir``, ``stop_loop_liveness_watchdog``) and the
-    ``_completion`` component (for the shutdown-time GitHub refresh) are resolved
-    live on the composition root.
+    per-tick mutation (stop/drain latches, ESR request flags, in-flight maps) is
+    always current — never captured at construction. Fields the controller
+    *writes* (the stop/drain latches, ``_stop_reason``, the live-cap override
+    fields, the ESR request flags, the ESR-ready callback) are declared as plain
+    annotated attributes (not read-only ``@property``) so the assignments
+    type-check. ``_OrchestratorBase`` structurally satisfies this Protocol; the
+    cross-component methods (``_safe_call``, ``_weights_dir``,
+    ``stop_loop_liveness_watchdog``) and the ``_completion`` component (for the
+    shutdown-time GitHub refresh) are resolved live on the composition root.
     """
 
     # --- written by the controller -----------------------------------------
@@ -68,8 +67,6 @@ class _DrainHost(Protocol):
     _draining: bool
     _drain_reason: str | None
     _drain_initialized: bool
-    _extra_budget: float
-    _budget_override: bool
     # Live mid-session cap overrides (Feature B, #41/#42).
     _budget_override_enabled: bool | None
     _budget_override_total: float | None
@@ -99,6 +96,10 @@ class _DrainHost(Protocol):
 
     def effective_budget_caps(self) -> BudgetConfig:
         """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        ...
+
+    async def resume(self) -> None:
+        """Canonical resume — updates DB, resets cadence counters, emits event."""
         ...
 
     _completion: CompletionProcessor
@@ -154,15 +155,10 @@ class DrainController:
 
         mergeable = build_candidate_plan(state).work_availability.mergeable_pr_count
         if mergeable > 0:
-            _logger.error(
+            _logger.info(
                 "drain_complete_with_mergeable_prs",
                 session_id=self._session_id,
                 mergeable_pr_count=mergeable,
-                note=(
-                    "session draining to completion while merge-ready PRs remain "
-                    "unmerged — finished work abandoned; the auto-stop entry guard "
-                    "should have prevented this drain"
-                ),
             )
 
     def request_stop(self, reason: str = "stop_requested") -> None:
@@ -241,23 +237,6 @@ class DrainController:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
         await self.stop()
 
-    def adjust_budget(self, delta_usd: float) -> bool:
-        """Increase session budget; return True when a budget pause should resume."""
-        if delta_usd > 0:
-            self._host._extra_budget += delta_usd
-            self._host._budget_override = False  # allow budget checks to run again
-            _logger.info("budget_adjusted", delta_usd=delta_usd, session_id=self._session_id)
-            return (
-                not getattr(self._host, "_draining", False)
-                and not getattr(self._host, "_stop_requested", False)
-                and not self._host._pause_event.is_set()
-                and getattr(self._host, "_pause_reason", None)
-                in {"budget_exhausted", "budget_predictive"}
-            )
-        else:
-            _logger.info("budget_adjust_ignored", delta_usd=delta_usd, session_id=self._session_id)
-            return False
-
     # ------------------------------------------------------------------
     # Live budget control (Feature B: #41 sidecar RPC, #42 CLI add-budget)
     # ------------------------------------------------------------------
@@ -273,10 +252,10 @@ class DrainController:
     ) -> dict[str, object]:
         """Absolute-set the live dollar/time caps (sidecar RPC + desktop dialog).
 
-        Validates bounds, applies the caps via the override fields, clears the
-        additive ``_extra_budget`` accumulator, and re-arms (or reverses) the
-        drain when a raised cap moves the session back outside its reserve.
-        Persists to ``agentshore.yaml`` when *persist* so caps survive restart.
+        Validates bounds, applies the caps via the override fields, and re-arms
+        (or reverses) the drain when a raised cap moves the session back outside
+        its reserve. Persists to ``agentshore.yaml`` when *persist* so caps
+        survive restart.
         """
         self._validate_dollar(dollars_enabled, dollars)
         self._validate_time(time_enabled, time_minutes)
@@ -288,7 +267,6 @@ class DrainController:
         self._host._time_override_minutes = (
             int(time_minutes) if time_enabled and time_minutes is not None else 0
         )
-        self._host._extra_budget = 0.0
         resumed = await self._rearm_after_budget_change()
         if persist:
             self._persist_budget()
@@ -298,7 +276,6 @@ class DrainController:
             dollars=self._host._budget_override_total,
             time_enabled=time_enabled,
             time_minutes=self._host._time_override_minutes,
-            resumed=resumed,
             session_id=self._session_id,
         )
         return await self._apply_and_publish(resumed=resumed)
@@ -318,7 +295,7 @@ class DrainController:
         caps = self._host.effective_budget_caps()
         if has_dollar:
             base = caps.total if caps.enabled else 0.0
-            new_total = base + self._host._extra_budget + float(delta_usd)  # type: ignore[arg-type]
+            new_total = base + float(delta_usd)  # type: ignore[arg-type]
             if new_total < MIN_ENABLED_BUDGET_USD:
                 raise OrchestratorError(
                     f"resulting dollar cap ${new_total:.2f} is below the "
@@ -326,7 +303,6 @@ class DrainController:
                 )
             self._host._budget_override_enabled = True
             self._host._budget_override_total = new_total
-            self._host._extra_budget = 0.0
         if has_time:
             base_min = caps.time_total_minutes if caps.time_enabled else 0
             new_minutes = int(base_min) + int(delta_minutes)  # type: ignore[arg-type]
@@ -344,7 +320,6 @@ class DrainController:
             "budget_added",
             delta_usd=delta_usd,
             delta_minutes=delta_minutes,
-            resumed=resumed,
             session_id=self._session_id,
         )
         return await self._apply_and_publish(resumed=resumed)
@@ -352,6 +327,7 @@ class DrainController:
     async def current_budget(self) -> dict[str, object]:
         """Return the live-effective caps + spend/remaining (prefill/echo)."""
         state = await self._state_builder.build_state()
+        # A pure read never resumes/reverses anything.
         return self._applied_from_state(state, resumed=False)
 
     # --- live-budget helpers ----------------------------------------------
@@ -382,7 +358,7 @@ class DrainController:
         caps = self._host.effective_budget_caps()
         persisted = BudgetConfig(
             enabled=caps.enabled,
-            total=caps.total + self._host._extra_budget,
+            total=caps.total,
             warning_threshold=caps.warning_threshold,
             time_enabled=caps.time_enabled,
             time_total_minutes=caps.time_total_minutes,
@@ -391,12 +367,13 @@ class DrainController:
 
         write_budget_to_config(config_path, persisted)
 
-    async def _apply_and_publish(self, *, resumed: bool) -> dict[str, object]:
+    async def _apply_and_publish(self, *, resumed: bool = False) -> dict[str, object]:
         """Build a fresh state, push it so the dashboard repaints immediately, echo it.
 
         A live cap change must not wait for the next loop tick to surface — emit
         ``on_state_update`` right away so the budget bar reflects the new caps the
-        instant the RPC/command returns.
+        instant the RPC/command returns. ``resumed`` reflects whether the cap
+        change un-paused or reversed a drain (see ``_rearm_after_budget_change``).
         """
         state = await self._state_builder.build_state()
         await self._host._safe_call(
@@ -405,7 +382,9 @@ class DrainController:
         return self._applied_from_state(state, resumed=resumed)
 
     @staticmethod
-    def _applied_from_state(state: OrchestratorState, *, resumed: bool) -> dict[str, object]:
+    def _applied_from_state(
+        state: OrchestratorState, *, resumed: bool = False
+    ) -> dict[str, object]:
         b = state.budget
         if b is None:
             return {"resumed": resumed}
@@ -425,8 +404,13 @@ class DrainController:
         }
 
     async def _rearm_after_budget_change(self) -> bool:
-        """Resume a budget pause or reverse a budget/time drain if now in-bounds."""
-        self._host._budget_override = False  # allow budget checks to run again
+        """Resume a budget pause or reverse a budget/time drain if now in-bounds.
+
+        Routes resume through the single canonical :meth:`_DrainHost.resume`
+        path so the DB session row, feedback-cadence counters, and the
+        ``session_resumed`` event are always updated consistently. Returns
+        ``True`` when the cap change actually un-paused or reversed a drain.
+        """
         # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
         paused_on_budget = (
             not self._host._draining
@@ -435,8 +419,7 @@ class DrainController:
             and self._host._pause_reason in {"budget_exhausted", "budget_predictive"}
         )
         if paused_on_budget and not await self._reserve_still_reached():
-            self._host._pause_reason = None
-            self._host._pause_event.set()
+            await self._host.resume()
             return True
         # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
         if (
@@ -447,6 +430,7 @@ class DrainController:
             and not await self._reserve_still_reached()
         ):
             await self._exit_drain()
+            await self._host.resume()
             return True
         return False
 
@@ -594,14 +578,16 @@ class DrainController:
             n_pending_after=n_pending_after,
         )
 
-        # Clear all agent handles concurrently
+        # Clear all agent handles concurrently.  force=True because in-flight
+        # asyncio tasks were cancelled above; the active-play guard in clear()
+        # must not block teardown.
         t = time.perf_counter()
         agent_ids = list(self._manager.handles)
         if agent_ids:
 
             async def _clear_one(aid: str) -> None:
                 try:
-                    await self._manager.clear(aid)
+                    await self._manager.clear(aid, force=True)
                 except (OrchestratorError, OSError, KeyError, aiosqlite.Error) as exc:
                     _logger.warning("agent_clear_failed", agent_id=aid, error=str(exc))
 

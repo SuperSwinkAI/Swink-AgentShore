@@ -205,16 +205,16 @@ def test_approved_or_pass_at_head_mergeable_pr_is_mergeable() -> None:
     assert plan.work_availability.mergeable_pr_count == 2
 
 
-def test_changes_requested_with_agentshore_pass_at_head_is_mergeable() -> None:
-    """When AgentShore logs PASS at the current head SHA, a CHANGES_REQUESTED review
-    is treated as stale and does not block merge_pr.
+def test_changes_requested_with_agentshore_pass_at_head_blocks_merge() -> None:
+    """#344: an AgentShore PASS at head never overrides a live CHANGES_REQUESTED.
 
-    This is the data-layer half of the unblock_pr stale-review short-circuit:
-    after the agent dismisses the stale review on GitHub (skill Step 2.2/6) and
-    AgentShore records PASS at head_sha, merge_pr must be eligible. The previous
-    regression (#315 — merge_pr thrashing) is now guarded by requiring humans
-    to use the agentshore/manual-required or do-not-merge label to durably block,
-    rather than relying on CHANGES_REQUESTED state alone.
+    A PASS logged at the same head SHA as a fresh human CHANGES_REQUESTED is
+    indistinguishable in order from the legit unblock case, so the old
+    stale-review dismissal could not tell a co-SHA human block from a cleared
+    one — it fired on the live verdict and merge_pr fixated on a PR a human had
+    explicitly blocked, starving every genuinely-approved PR. A current
+    CHANGES_REQUESTED now always blocks; it clears only when GitHub's
+    reviewDecision changes (a fresh review/approval at the new head).
     """
 
     plan = build_candidate_plan(
@@ -232,8 +232,8 @@ def test_changes_requested_with_agentshore_pass_at_head_is_mergeable() -> None:
         )
     )
 
-    assert [c.params.pr_number for c in plan.candidates_for(PlayType.MERGE_PR)] == [290]
-    assert plan.work_availability.mergeable_pr_count == 1
+    assert plan.candidates_for(PlayType.MERGE_PR) == ()
+    assert plan.work_availability.mergeable_pr_count == 0
 
 
 def test_changes_requested_without_pass_at_head_blocks_merge() -> None:
@@ -316,6 +316,25 @@ def test_issue_candidates_exclude_every_issue_linked_to_open_pr() -> None:
         c.params.issue_number for c in plan.candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN)
     ] == [111]
     assert plan.work_availability.covered_by_open_pr_count == 2
+
+
+def test_needs_human_label_excludes_issue_from_plan_and_pickup() -> None:
+    """#458: an issue parked with agentshore/needs-human is dropped from both
+    write_implementation_plan and issue_pickup, so the planner stops
+    re-selecting an un-plannable issue every tick."""
+    plan = build_candidate_plan(
+        _state(
+            open_issues=[_issue(1), _issue(458, labels=["agentshore/needs-human"])],
+        )
+    )
+
+    plan_nums = [
+        c.params.issue_number for c in plan.candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN)
+    ]
+    pickup_nums = [c.params.issue_number for c in plan.candidates_for(PlayType.ISSUE_PICKUP)]
+    assert 458 not in plan_nums
+    assert 458 not in pickup_nums
+    assert 1 in plan_nums
 
 
 def test_issue_pickup_excludes_only_matching_in_progress_bead() -> None:

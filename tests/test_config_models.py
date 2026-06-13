@@ -20,6 +20,41 @@ def test_play_timeouts_defaults_to_empty_mapping() -> None:
     assert dict(cfg.play_timeouts) == {}
 
 
+def test_play_pacing_default_standard_cooldown_is_42() -> None:
+    cfg = RuntimeConfig()
+    assert cfg.play_pacing.standard_cooldown_plays == 42
+
+
+def test_play_pacing_yaml_round_trip(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "play_pacing:\n  standard_cooldown_plays: 7\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yaml_path)
+    assert cfg.play_pacing.standard_cooldown_plays == 7
+
+
+def test_play_pacing_rejects_negative_cooldown(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "play_pacing:\n  standard_cooldown_plays: -1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="standard_cooldown_plays"):
+        load_config(yaml_path)
+
+
+def test_play_pacing_rejects_boolean_cooldown(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "play_pacing:\n  standard_cooldown_plays: true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="standard_cooldown_plays"):
+        load_config(yaml_path)
+
+
 def test_play_timeouts_yaml_round_trip(tmp_path: Path) -> None:
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text(

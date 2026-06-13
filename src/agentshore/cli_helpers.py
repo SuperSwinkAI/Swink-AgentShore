@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess  # nosec B404
 from pathlib import Path
 
+from agentshore import command
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
-from agentshore.environment import resolve_executable
+from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.errors import OrchestratorError
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.state import AgentType
 
 # ---------------------------------------------------------------------------
@@ -71,26 +72,23 @@ def _find_repo_root(start: Path) -> Path:
 
 def _detect_gh_remote(cwd: Path | None = None) -> dict[str, str]:
     """Return ``{"url": ..., "nameWithOwner": ...}`` from `gh repo view`."""
-    gh_path = resolve_executable("gh")
-    if gh_path is None:
+    result = command.gh_sync("repo", "view", "--json", "url,nameWithOwner", cwd=cwd)
+    if result.tool_missing:
         raise OrchestratorError(
             "`gh` CLI not found on PATH.  Install the GitHub CLI.",
             recoverable=False,
         )
-    try:
-        result = subprocess.run(  # nosec B603
-            [gh_path, "repo", "view", "--json", "url,nameWithOwner"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=15,
+    if result.returncode != 0:
+        raise OrchestratorError(
+            f"Failed to detect GitHub remote: {result.stderr or result.stdout}",
+            recoverable=False,
         )
+    try:
         parsed = json.loads(result.stdout)
         if not isinstance(parsed, dict):
             raise RuntimeError(f"Unexpected gh response: {result.stdout!r}")
         return {str(k): str(v) for k, v in parsed.items()}
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+    except (json.JSONDecodeError, RuntimeError) as exc:
         raise OrchestratorError(
             f"Failed to detect GitHub remote: {exc}",
             recoverable=False,
@@ -203,9 +201,7 @@ def _generate_default_config(
     time_total_minutes = time_minutes if time_minutes is not None else 0
     agent_blocks = []
     for binary in agents:
-        agent = (
-            "claude_code" if binary == "claude" else ("grok" if binary == "grok-build" else binary)
-        )
+        agent = BINARY_TO_AGENT_KEY.get(binary, binary)
         model_lines = ""
         try:
             agent_type = AgentType(agent)
@@ -249,6 +245,8 @@ def _generate_default_config(
         "trusted_ids:\n"
         "  github_logins: []\n"
         "  restrict_issues_to_trusted_authors: false\n"
+        "play_pacing:\n"
+        f"  standard_cooldown_plays: {STANDARD_PLAY_COOLDOWN_PLAYS}\n"
         "rl:\n"
         "  policy_mode: learning\n"
         "  reverse_failsafe_enabled: false\n"

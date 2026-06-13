@@ -1,0 +1,199 @@
+; Inno Setup template for the AgentShore Windows desktop installer.
+;
+; Built by scripts/build-windows.ps1. The wizard mirrors the macOS pkg
+; distribution choices: required Desktop, opt-in Timelapse, opt-out CLI.
+
+#ifndef AppVersion
+  #error AppVersion must be supplied by build-windows.ps1
+#endif
+#ifndef StageDir
+  #error StageDir must be supplied by build-windows.ps1
+#endif
+#ifndef OutputDir
+  #error OutputDir must be supplied by build-windows.ps1
+#endif
+#ifndef WheelFileName
+  #error WheelFileName must be supplied by build-windows.ps1
+#endif
+#ifndef UvFileName
+  #error UvFileName must be supplied by build-windows.ps1
+#endif
+#ifndef ProvisionerFileName
+  #error ProvisionerFileName must be supplied by build-windows.ps1
+#endif
+#ifndef LicenseFile
+  #error LicenseFile must be supplied by build-windows.ps1
+#endif
+#ifndef IconFile
+  #error IconFile must be supplied by build-windows.ps1
+#endif
+
+[Setup]
+AppId={{7DD0F0F8-B88E-4CB4-A6D8-0F7E4B843F5A}
+AppName=AgentShore
+AppVersion={#AppVersion}
+AppPublisher=SuperSwink
+AppPublisherURL=https://github.com/SuperSwinkAI/Swink-AgentShore
+AppSupportURL=https://github.com/SuperSwinkAI/Swink-AgentShore/issues
+AppUpdatesURL=https://github.com/SuperSwinkAI/Swink-AgentShore/releases
+DefaultDirName={autopf}\AgentShore
+DefaultGroupName=AgentShore
+DisableProgramGroupPage=yes
+DisableReadyPage=no
+LicenseFile={#LicenseFile}
+OutputDir={#OutputDir}
+OutputBaseFilename=AgentShoreSetup-{#AppVersion}-x64
+SetupIconFile={#IconFile}
+UninstallDisplayIcon={app}\agentshore-desktop.exe
+WizardStyle=modern
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+Compression=lzma2
+SolidCompression=yes
+CloseApplications=yes
+RestartIfNeededByRun=no
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Types]
+Name: "custom"; Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "desktop"; Description: "AgentShore Desktop"; Types: custom; Flags: fixed
+Name: "timelapse"; Description: "Timelapse Capture (optional)"; Types: custom
+Name: "cli"; Description: "AgentShore CLI"; Types: custom
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+[Files]
+Source: "{#StageDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: desktop
+Source: "{#StageDir}\installer\*"; DestDir: "{app}\installer"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: desktop
+
+[Icons]
+Name: "{autoprograms}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop
+Name: "{autodesktop}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop; Tasks: desktopicon
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\installer"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\venv"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\bin"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\runtime"
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\install-logs"
+
+[Run]
+Filename: "{app}\agentshore-desktop.exe"; Description: "Launch AgentShore"; Flags: nowait postinstall skipifsilent; Components: desktop
+
+[Code]
+function Quote(Value: String): String;
+begin
+  Result := '"' + Value + '"';
+end;
+
+function RunProvisionerStep(
+  StepName: String;
+  Subcommand: String;
+  NeedsWheel: Boolean;
+  NeedsUv: Boolean;
+  Optional: Boolean;
+  OriginalUser: Boolean
+): Boolean;
+var
+  Params: String;
+  ResultCode: Integer;
+  ProvisionerPath: String;
+begin
+  Result := False;
+  ProvisionerPath := ExpandConstant('{app}\installer\{#ProvisionerFileName}');
+  Params := Subcommand;
+
+  if NeedsWheel then
+  begin
+    Params := Params + ' --wheel ' + Quote(ExpandConstant('{app}\installer\{#WheelFileName}'));
+  end;
+
+  if NeedsUv then
+  begin
+    Params := Params + ' --uv ' + Quote(ExpandConstant('{app}\installer\{#UvFileName}'));
+  end;
+
+  WizardForm.StatusLabel.Caption := StepName + '...';
+
+  if OriginalUser then
+  begin
+    if not ExecAsOriginalUser(ProvisionerPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      MsgBox('Could not launch ' + StepName + '. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
+      exit;
+    end;
+  end
+  else
+  begin
+    if not Exec(ProvisionerPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      MsgBox('Could not launch ' + StepName + '. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
+      exit;
+    end;
+  end;
+
+  if ResultCode <> 0 then
+  begin
+    if Optional then
+    begin
+      if not WizardSilent then
+      begin
+        MsgBox(StepName + ' did not finish successfully. The desktop app is installed, and this optional component can be retried later. Logs are under %ProgramData%\AgentShore\install-logs.', mbInformation, MB_OK);
+      end;
+      Result := True;
+      exit;
+    end;
+
+    MsgBox(StepName + ' failed. See %ProgramData%\AgentShore\install-logs for details.', mbError, MB_OK);
+    exit;
+  end;
+
+  Result := True;
+end;
+
+procedure CleanupInstallerPayload();
+begin
+  DelTree(ExpandConstant('{app}\installer'), True, True, True);
+end;
+
+procedure InitializeWizard();
+begin
+  { Desktop is fixed. CLI mirrors the macOS pkg's opt-out default; Timelapse
+    mirrors its opt-in default. }
+  WizardSelectComponents('desktop,cli');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not RunProvisionerStep('Provisioning AgentShore Desktop sidecar', 'sidecar', True, True, False, False) then
+    begin
+      RaiseException('AgentShore Desktop sidecar provisioning failed.');
+    end;
+
+    if WizardIsComponentSelected('timelapse') then
+    begin
+      if not RunProvisionerStep('Provisioning Timelapse Capture', 'timelapse', False, False, True, True) then
+      begin
+        { Optional step already surfaced a warning. }
+      end;
+    end;
+
+    if WizardIsComponentSelected('cli') then
+    begin
+      if not RunProvisionerStep('Installing AgentShore CLI', 'cli', True, True, True, True) then
+      begin
+        { Optional step already surfaced a warning. }
+      end;
+    end;
+
+    CleanupInstallerPayload();
+  end;
+end;

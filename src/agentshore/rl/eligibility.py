@@ -434,9 +434,20 @@ class EligibilityAuthority:
         # 6. END_SESSION while actionable work remains, or while the beads
         #    backlog is non-empty. GitHub workable-issue counts can lag
         #    calibrate_alignment syncs; ready_task_count is authoritative.
-        if pt == PlayType.END_SESSION and (
-            not plan.work_availability.terminal_no_work
-            or plan.work_availability.ready_task_count > 0
+        #    Escape hatch (#166): when the open-PR queue is wedged on human
+        #    intervention (>= MAX_OPEN_PRS - 1 PRs carry manual-required, so the
+        #    backpressure cap blocks new issue_pickup and nothing can drain into
+        #    a mergeable PR), END_SESSION becomes a valid choice even while
+        #    nominal issue/task work still looks plannable. It is non-forcing —
+        #    the PPO still weighs it against any genuinely-actionable PR play, and
+        #    _stage_end_session_in_flight still prevents a double-fire.
+        if (
+            pt == PlayType.END_SESSION
+            and not plan.work_availability.pr_queue_human_blocked
+            and (
+                not plan.work_availability.terminal_no_work
+                or plan.work_availability.ready_task_count > 0
+            )
         ):
             return MaskReason(
                 text="Actionable work still remains",
@@ -555,8 +566,19 @@ class EligibilityAuthority:
                 classification=MaskClassification.INDEFINITE_WAIT,
                 source=MaskSource.PRECONDITION,
             )
-        if self._cfg is None or self._config_index is None:
+        if self._cfg is None:
             return None
+        if not self._config_index:
+            # None OR empty tuple → no (agent_type, tier) cell exists to spawn
+            # into. Fail closed: an empty config_index must HARD-mask the action,
+            # not leave it selectable (the selector coerces () -> None, so the
+            # old ``is None`` guard let an empty index bypass the cap and spin
+            # against execute()'s slot check; #159).
+            return MaskReason(
+                text="No agent configuration index — nothing to spawn",
+                classification=MaskClassification.HARD,
+                source=MaskSource.CONFIG,
+            )
         if not compute_config_mask(state, self._cfg, self._config_index).any():
             return MaskReason(
                 text="No eligible agent configuration",

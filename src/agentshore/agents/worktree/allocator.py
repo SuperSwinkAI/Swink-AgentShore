@@ -7,7 +7,6 @@ play verdicts.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import structlog
 
+from agentshore import command
 from agentshore.errors import OrchestratorError
 
 log = structlog.get_logger(__name__)
@@ -98,31 +98,19 @@ async def _run_git(
     return code is non-zero, raises ``WorktreeAllocationFailed`` with the
     failing command embedded in the reason.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout)
+    if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after {timeout:.0f}s",
             reason="git_timeout",
-        ) from exc
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
-    rc = proc.returncode if proc.returncode is not None else -1
+        )
+    rc = result.returncode
     if check and rc != 0:
         raise WorktreeAllocationFailed(
-            f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
+            f"git {' '.join(args)} failed (rc={rc}): {result.stderr.strip()}",
             reason=f"git_{args[0]}_failed",
         )
-    return rc, stdout, stderr
+    return rc, result.stdout, result.stderr
 
 
 _PICKUP_COLLISION_RE = re.compile(
@@ -149,26 +137,16 @@ async def _add_worktree_with_collision_retry(
     rekeyed), force-remove it and retry the original add exactly once.
     Anything else bubbles through the existing failure path.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(main_repo),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=180.0)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+    result = await command.git(*args, cwd=main_repo, timeout_seconds=180.0)
+    if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after 180s",
             reason="git_timeout",
-        ) from exc
-    rc = proc.returncode if proc.returncode is not None else -1
+        )
+    rc = result.returncode
     if rc == 0:
         return
-    stderr = stderr_b.decode("utf-8", errors="replace")
+    stderr = result.stderr
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
     is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")
@@ -551,8 +529,18 @@ async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
     force-killed mid-allocate, or ``git worktree prune`` dropped the
     registration). They are never re-adopted and their gitignored build caches
     are never reused, so a *clean* orphan is rebuildable debris (committed work
-    is already in git) and is deleted. An orphan with *uncommitted* changes is
-    left in place — preserved for manual recovery rather than destroyed.
+    is already in git) and is deleted. An orphan with uncommitted changes to
+    *tracked* files is left in place — preserved for manual recovery.
+
+    "Dirty" is measured with ``--untracked-files=no`` so only changes to files
+    git already tracks block deletion; untracked files (``??``) never do. Every
+    worktree carries untracked agent-harness scaffolding (the files the agent
+    CLIs read, created at dispatch) plus build artifacts; counting those as
+    "uncommitted work" preserved every orphan forever and permanently wedged any
+    play needing that branch. We deliberately do NOT hard-code scaffolding
+    filenames — a target repo may legitimately own any of them — and instead let
+    git's own tracked/untracked distinction decide: committed work is safe in
+    git, and abandoned untracked files in a dead orphan are debris.
 
     Returns ``"deleted"`` or ``"preserved"``. Best-effort; never raises.
     """
@@ -561,7 +549,9 @@ async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
     # uncommitted work; if repair/status still can't introspect the dir, treat
     # it as detached debris and delete (committed work is safe in git).
     await _run_git("worktree", "repair", str(path), cwd=main_repo, check=False)
-    rc, out, _ = await _run_git("status", "--porcelain", cwd=path, check=False)
+    rc, out, _ = await _run_git(
+        "status", "--porcelain", "--untracked-files=no", cwd=path, check=False
+    )
     if rc == 0 and out.strip():
         log.warning(
             "worktree_orphan_preserved_dirty",

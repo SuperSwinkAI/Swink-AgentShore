@@ -22,7 +22,6 @@ def _make(pattern: str, confidence: float) -> Learning:
 
 
 def _base_kwargs(top_learnings: list[dict[str, object]]) -> dict[str, object]:
-
     from agentshore.plays.base import PlayParams
 
     return dict(

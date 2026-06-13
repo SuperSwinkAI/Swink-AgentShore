@@ -19,7 +19,7 @@ Babysit a live AgentShore session that the **user already started** in a
 target directory. This skill never runs `agentshore start` — it observes,
 reports, files bugs, and (only when the session wedges) runs `agentshore
 stop`. Argument: the project directory, e.g. `/monitor_run
-/Users/wes/Development/agentic_jane`.
+/path/to/my-project`.
 
 > **CLI carve-out.** The repo rule forbids invoking `agentshore` CLI
 > subcommands from Claude Code. `/monitor_run` is a named exception, and **only
@@ -35,12 +35,14 @@ CHECKIN_SECONDS = 1200    # 20 minutes between check-ins
 STALE_AGE_S     = 300     # newest log line older than this + no process => exited
 SNAPSHOT        = <this skill dir>/snapshot.py         # human-readable readout
 PROGRESS        = <this skill dir>/progress.py         # machine-readable counters
-STATE_FILE      = /tmp/agentshore-monitor-<sanitized-DIR>.json
+STATE_FILE      = <os-temp-dir>/agentshore-monitor-<sanitized-DIR>.json
 ```
 
 Resolve `<this skill dir>` to the directory holding this `SKILL.md`.
-`<sanitized-DIR>` = `DIR` with `/` replaced by `_` (keeps the state file
-unique per target, in `/tmp` so the monitored project is never touched).
+`<os-temp-dir>` = the platform temp directory (`$TMPDIR` or `/tmp` on
+macOS/Linux, `$env:TEMP` on Windows). `<sanitized-DIR>` = `DIR` with path
+separators replaced by `_` (keeps the state file unique per target, outside
+the project tree so the monitored project is never touched).
 
 ## How the cadence works
 
@@ -63,7 +65,7 @@ print the summary and finish.
    project has no AgentShore session history; tell the user there's nothing to
    monitor and stop.
 3. Load `STATE_FILE` if it exists. First run (no state file) → initialise:
-   `checkin_count=0, prev_play_completed=null, prev_loop_detected=0,
+   `checkin_count=0, prev_ok_plays=null, prev_loop_detected=0,
    idle_streak=0, filed_issues=[]`. Record `started_at` from `date +%s`.
 
 ## Step 1 — Locate the live log
@@ -89,8 +91,10 @@ python3 <PROGRESS> "$LOG_FILE"   # capture the JSON line for the logic below
 
 Show the user the snapshot block plus a one-line check-in header
 (`Check-in #N — HH:MM`). The `progress.py` JSON drives Steps 3–6; its fields
-are documented at the top of `progress.py` (`play_completed`, `loop_detected`,
-`error_lines`, `traceback_lines`, `ended`, `last_event_age_s`, …).
+are documented at the top of `progress.py` (`play_completed`, `ok_plays`,
+`fail_plays`, `loop_detected`, `error_lines`, `traceback_lines`, `ended`,
+`last_event_age_s`, …). Note `play_completed = ok_plays + fail_plays`; the
+idle rule (Step 5) keys on `ok_plays`, not `play_completed`.
 
 ## Step 3 — Liveness / exit detection
 
@@ -136,14 +140,25 @@ expected — never file or auto-stop on those alone.
 
 ## Step 5 — Idle rule (auto-stop)
 
-`new_completed = progress.play_completed - prev_play_completed` (skip on the
-very first check-in, where `prev_play_completed` is null — that one only sets
+`new_ok = progress.ok_plays - prev_ok_plays` (skip on the
+very first check-in, where `prev_ok_plays` is null — that one only sets
 the baseline).
 
-- A check-in is **idle** when `new_completed == 0` (no real work finished since
-  last check-in). A rising `loop_detected` with `new_completed == 0` is the
-  same idle condition, more strongly confirmed (wedged orchestrator).
-- Idle check-in → `idle_streak += 1`. Any progress (`new_completed > 0`) →
+> **Key on `ok_plays`, not `play_completed`.** `play_completed` counts
+> *failed* plays too, so an orchestrator stuck re-selecting a play that
+> always fails (e.g. an `end_agent` self-deadlock spinning hundreds of
+> failures) keeps incrementing `play_completed` and masquerades as healthy
+> progress — the idle rule would never fire. `ok_plays` only counts
+> successful plays, so a fast-failing spin-wedge correctly reads as idle.
+> When `new_ok == 0` but `play_completed` is climbing, you're almost
+> certainly looking at exactly this kind of wedge — say so in the check-in.
+
+- A check-in is **idle** when `new_ok == 0` (no *successful* work finished
+  since last check-in, regardless of how many failed plays completed). A
+  rising `loop_detected` with `new_ok == 0`, or `fail_plays` climbing while
+  `ok_plays` is flat, is the same idle condition, more strongly confirmed
+  (wedged orchestrator).
+- Idle check-in → `idle_streak += 1`. Any real progress (`new_ok > 0`) →
   `idle_streak = 0`.
 - When `idle_streak >= 2` (two consecutive idle check-ins), **auto-stop**:
   ```bash
@@ -153,7 +168,7 @@ the baseline).
   stopped (idle for two check-ins; cite the counters). Then go to **Step 7**
   and do not reschedule.
 
-> Idle for two check-ins ≈ ~40 minutes of no completed plays. This is the
+> Idle for two check-ins ≈ ~40 minutes of no *successful* plays. This is the
 > documented orchestrator-wedge remedy (an unattended wedged session burns API
 > spend; see the loop-detection auto-stop intent, issue #9).
 
@@ -185,7 +200,7 @@ For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
 ## Step 7 — Persist state and schedule (or summarize)
 
 **Always** write `STATE_FILE` with updated counters before finishing:
-`checkin_count+1`, `prev_play_completed`, `prev_loop_detected`, `idle_streak`,
+`checkin_count+1`, `prev_ok_plays`, `prev_loop_detected`, `idle_streak`,
 `filed_issues`.
 
 - **Session still running and not auto-stopped** → schedule the next cycle and

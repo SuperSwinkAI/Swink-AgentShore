@@ -10,6 +10,8 @@ from agentshore.data.store.rows import _row_to_play_record
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import aiosqlite
 
     from agentshore.data.models import PlayRecord
@@ -174,6 +176,58 @@ class _PlaysMixin:
         )
         await self._conn.commit()
         return (claim_cursor.rowcount, play_cursor.rowcount)
+
+    async def count_running_trunk_plays(
+        self, session_id: str, *, exclude_play_id: int, play_types: Sequence[str]
+    ) -> int:
+        """Count still-running plays of the given types, excluding one play.
+
+        "Running" == ``ended_at IS NULL`` (the row is inserted at dispatch with a
+        NULL ``ended_at`` and stamped on completion). The per-play trunk-artifact
+        reclaim hook calls this to detect a *concurrent* trunk-scoped play: when
+        one exists, a newly-appeared root file's ownership is ambiguous across the
+        overlapping plays (#162), so reclaim is deferred to the session-start
+        sweep rather than risk pulling a sibling's in-flight artifact.
+        """
+        if not play_types:
+            return 0
+        placeholders = ",".join("?" for _ in play_types)
+        async with self._conn.execute(
+            f"""
+            SELECT COUNT(*) FROM plays
+             WHERE session_id = ?
+               AND ended_at IS NULL
+               AND play_id != ?
+               AND play_type IN ({placeholders})
+            """,
+            (session_id, exclude_play_id, *play_types),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def list_trunk_play_windows(
+        self, *, play_types: Sequence[str]
+    ) -> list[tuple[int, str, str | None]]:
+        """Return ``(play_id, started_at, ended_at)`` for plays of the given types.
+
+        Spans **every** session — the session-start trunk-artifact sweep uses
+        these windows to attribute leftover untracked root files to a closed
+        trunk-scoped play by mtime, including a play killed in a prior session
+        that never stamped ``ended_at`` (#164). ``ended_at`` is ``None`` for such
+        rows.
+        """
+        if not play_types:
+            return []
+        placeholders = ",".join("?" for _ in play_types)
+        async with self._conn.execute(
+            f"""
+            SELECT play_id, started_at, ended_at FROM plays
+             WHERE play_type IN ({placeholders})
+            """,
+            tuple(play_types),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(int(r[0]), str(r[1]), (str(r[2]) if r[2] is not None else None)) for r in rows]
 
     async def get_play_history(self, session_id: str) -> list[PlayRecord]:
         """Return all plays for a session, ordered by play_id."""

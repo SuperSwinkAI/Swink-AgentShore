@@ -1256,7 +1256,10 @@ async def test_mark_pr_merged_preserves_existing_merged_at(tmp_path) -> None:
         pr = PullRequestRecord(
             pr_number=43,
             session_id="s1",
-            state="open",
+            # A real merged_at only ever coexists with a merged state — GitHub
+            # reports MERGED and the timestamp together. (An open row carrying
+            # merged_at is a phantom; see test_pull_request_refresh_clears_phantom.)
+            state="MERGED",
             created_at="2026-05-06T00:00:00+00:00",
             head_sha="abc123",
             merged_at=gh_merged_at,
@@ -1273,6 +1276,49 @@ async def test_mark_pr_merged_preserves_existing_merged_at(tmp_path) -> None:
         assert row["state"] == "MERGED"
         # COALESCE(merged_at, ?) — existing value wins
         assert row["merged_at"] == gh_merged_at
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_pull_request_refresh_clears_phantom_merged_at(tmp_path) -> None:
+    """#344: a GitHub refresh that reports a PR as NOT merged clears a stale
+    merged_at. mark_pr_merged optimistically writes state=MERGED + merged_at on
+    the merge_pr success path; when the merge did not actually land, GitHub still
+    reports the PR open. The upsert overwrites state back to open, and previously
+    COALESCE-preserved merged_at left a phantom timestamp that masked the live
+    blocked state. merged_at is now valid only while the PR stays merged."""
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        pr = PullRequestRecord(
+            pr_number=344,
+            session_id="s1",
+            state="open",
+            created_at="2026-05-06T00:00:00+00:00",
+            head_sha="abc123",
+            mergeable="MERGEABLE",
+        )
+        await store.cache_pull_requests("s1", [pr])
+        # Optimistic write-through stamps the phantom merge.
+        await store.mark_pr_merged(344, "s1")
+        async with store._conn.execute(
+            "SELECT merged_at FROM pull_requests WHERE pr_number = 344 AND session_id = 's1'",
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row["merged_at"] is not None
+
+        # GitHub refresh: the PR is still open (the merge never completed).
+        await store.cache_pull_requests("s1", [pr])
+
+        async with store._conn.execute(
+            "SELECT state, merged_at FROM pull_requests WHERE pr_number = 344 AND session_id = 's1'",
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert row["state"] == "open"
+        assert row["merged_at"] is None
     finally:
         await store.close()
 

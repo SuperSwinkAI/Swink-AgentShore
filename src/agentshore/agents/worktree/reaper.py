@@ -17,6 +17,7 @@ Three reap modes:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -176,6 +177,19 @@ async def sweep_session_start(
     return report
 
 
+def _canon_path(path: str | Path) -> str:
+    """Canonical key for comparing paths from different sources.
+
+    ``git worktree list --porcelain`` prints forward-slash paths on Windows,
+    while DB rows and ``main_repo.resolve()`` carry native separators. Without
+    folding them to one form the "never touch the main checkout" and
+    "skip DB-known worktrees" guards below silently miss on Windows and the
+    reaper deletes the main repo and live worktrees. normcase+normpath
+    converts ``/``→``\\`` and case-folds on case-insensitive filesystems.
+    """
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
 async def reap_git_orphans(
     store: DataStore,
     *,
@@ -218,8 +232,8 @@ async def reap_git_orphans(
     for line in stdout.splitlines():
         if line.startswith("worktree "):
             listed_paths.append(line[len("worktree ") :].strip())
-    main_resolved = str(main_repo.resolve())
-    candidates = [p for p in listed_paths if p and p != main_resolved]
+    main_resolved = _canon_path(main_repo.resolve())
+    candidates = [p for p in listed_paths if p and _canon_path(p) != main_resolved]
     if not candidates:
         return []
 
@@ -231,10 +245,11 @@ async def reap_git_orphans(
     except Exception as exc:  # noqa: BLE001 — best-effort, never abort bootstrap
         log.warning("reap_git_orphans_db_query_failed", error=str(exc))
         return []
+    db_canon = {_canon_path(d) for d in db_paths}
 
     removed: list[str] = []
     for path in candidates:
-        if path in db_paths:
+        if _canon_path(path) in db_canon:
             continue
         try:
             await _run_git("worktree", "remove", "--force", path, cwd=main_repo, check=False)
@@ -245,7 +260,9 @@ async def reap_git_orphans(
                 error=str(exc),
             )
             continue
-        removed.append(path)
+        # Return native-normalised paths so the report matches the DB/manager
+        # convention rather than git's forward-slash output on Windows.
+        removed.append(os.path.normpath(path))
         log.warning(
             "session_start_git_worktree_orphan_reaped",
             path=path,

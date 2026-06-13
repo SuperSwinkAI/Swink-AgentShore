@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.groom_backlog import GroomBacklogPlay
 from agentshore.state import (
     AgentSnapshot,
@@ -57,7 +58,7 @@ def _state(
         graph=graph,
         agents=agents if agents is not None else [_idle_agent()],
         plays_since_last_play_type=(
-            {PlayType.GROOM_BACKLOG: 25}
+            {PlayType.GROOM_BACKLOG: STANDARD_PLAY_COOLDOWN_PLAYS}
             if plays_since_last_play_type is None
             else plays_since_last_play_type
         ),
@@ -251,7 +252,9 @@ def test_bypass1_unlinked_ready_tasks_respects_recent_groom_cooldown() -> None:
 
     errors = GroomBacklogPlay().preconditions(state)
 
-    assert [e.text for e in errors] == ["groom_backlog cooldown (0/20 plays since last)"]
+    assert [e.text for e in errors] == [
+        f"groom_backlog cooldown (0/{STANDARD_PLAY_COOLDOWN_PLAYS} plays since last)"
+    ]
 
 
 def test_bypass2_untracked_gh_issues_respects_recent_groom_cooldown() -> None:
@@ -266,7 +269,9 @@ def test_bypass2_untracked_gh_issues_respects_recent_groom_cooldown() -> None:
 
     errors = GroomBacklogPlay().preconditions(state)
 
-    assert [e.text for e in errors] == ["groom_backlog cooldown (3/20 plays since last)"]
+    assert [e.text for e in errors] == [
+        f"groom_backlog cooldown (3/{STANDARD_PLAY_COOLDOWN_PLAYS} plays since last)"
+    ]
 
 
 def test_bypass2_untracked_gh_issues_bypasses_first_run_floor() -> None:

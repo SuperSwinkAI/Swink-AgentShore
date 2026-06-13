@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agentshore.config import PlayPacingConfig, RuntimeConfig
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.registry import build_default_registry
 from agentshore.plays.skill_backed.cleanup import CleanupPlay
 from agentshore.state import (
@@ -102,24 +104,38 @@ def test_cleanup_preconditions_in_flight() -> None:
 
 
 def test_cleanup_blocked_during_cooldown() -> None:
-    plays_left = 20 - 1
+    plays_left = STANDARD_PLAY_COOLDOWN_PLAYS - 1
     errors = CleanupPlay().preconditions(
         _state(plays_since_last_play_type={PlayType.CLEANUP: plays_left})
     )
-    assert [e.text for e in errors] == [f"cleanup cooldown ({plays_left}/{20} plays since last)"]
+    assert [e.text for e in errors] == [
+        f"cleanup cooldown ({plays_left}/{STANDARD_PLAY_COOLDOWN_PLAYS} plays since last)"
+    ]
 
 
 def test_cleanup_allowed_after_cooldown() -> None:
     assert (
-        CleanupPlay().preconditions(_state(plays_since_last_play_type={PlayType.CLEANUP: 20})) == []
+        CleanupPlay().preconditions(
+            _state(plays_since_last_play_type={PlayType.CLEANUP: STANDARD_PLAY_COOLDOWN_PLAYS})
+        )
+        == []
     )
+
+
+def test_cleanup_registry_uses_configured_standard_cooldown() -> None:
+    cfg = RuntimeConfig(play_pacing=PlayPacingConfig(standard_cooldown_plays=7))
+    play = build_default_registry(cfg).get(PlayType.CLEANUP)
+
+    errors = play.preconditions(_state(plays_since_last_play_type={PlayType.CLEANUP: 6}))
+    assert [e.text for e in errors] == ["cleanup cooldown (6/7 plays since last)"]
+    assert play.preconditions(_state(plays_since_last_play_type={PlayType.CLEANUP: 7})) == []
 
 
 def test_cleanup_not_blocked_by_large_open_issue_backlog() -> None:
     """The open-issue ceiling was removed: a big backlog must not mask cleanup.
 
     Trunk quality debt accumulates precisely when there's a large backlog, so
-    cleanup stays reachable (rate-limited only by the 20-play cooldown).
+    cleanup stays reachable (rate-limited only by the standard cooldown).
     """
     many_issues = [_issue(num=i) for i in range(1, 60)]
     assert CleanupPlay().preconditions(_state(issues=many_issues)) == []

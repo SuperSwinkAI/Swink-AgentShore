@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { callJsonRpc } from "./jsonRpcClient";
+import { callJsonRpc } from "../rpc/jsonrpc";
 
 export interface ReportSection {
   id: string;

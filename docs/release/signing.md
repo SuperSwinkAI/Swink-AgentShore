@@ -1,145 +1,204 @@
-# AgentShore Desktop — Code Signing & Notarization
+# AgentShore Desktop - Code Signing & Installer Builds
 
-This document is the maintainer runbook for producing signed, notarized
-release builds of the AgentShore Desktop application. The shipping pipeline is
-**macOS-only** and lives entirely in `scripts/build-macos.sh` — there is no
-Windows or Linux signing path, and no GitHub Actions release job. Builds are
-cut locally from a maintainer's machine.
+This document is the maintainer runbook for producing desktop release builds of
+AgentShore. macOS signing and notarization live in `scripts/build-macos.sh`.
+Windows has a machine-wide installer build script at `scripts/build-windows.ps1`
+with optional Authenticode signing when `signtool.exe` and a code-signing
+certificate are available. CI release automation is not wired yet.
 
-It complements `docs/design/desktop/DESIGN.md` §6.5 ("Code signing & trust").
+It complements `docs/design/desktop/DESIGN.md` section 6.5, "Code signing &
+trust".
 
 ## 1. Overview
 
-AgentShore Desktop bundles a Tauri 2 shell around a Python sidecar (the
-AgentShore core, provisioned at install time into a managed venv from a wheel
-shipped inside the `.pkg`). To ship a release that does not trigger Gatekeeper
-warnings, the `.app` and `.pkg` must be signed with Developer ID certs and —
-optionally but recommended for distribution — notarized by Apple.
+AgentShore Desktop bundles a Tauri 2 shell around a Python sidecar. The
+AgentShore core is provisioned at install time into a managed venv from a wheel
+shipped inside the platform installer.
 
-The current shipping version is **0.2.1** (`desktop/src-tauri/tauri.conf.json`
-`version`). `scripts/build-macos.sh` produces, in order:
+The current shipping version is `0.2.1`
+(`desktop/src-tauri/tauri.conf.json` version).
+
+macOS `scripts/build-macos.sh` produces:
 
 | Stage | Tool / command | Notes |
 | --- | --- | --- |
-| Resolve identity | `security find-identity -v -p codesigning` | Auto-detects the first `Developer ID Application` cert |
-| Build + sign `.app` | `npx tauri build` (Tauri bundler) | Hardened runtime + entitlements; also emits the `.dmg` (`targets: "all"`) |
+| Resolve identity | `security find-identity -v -p codesigning` | Auto-detects the first Developer ID Application cert |
+| Build and sign `.app` | `npx tauri build` | Hardened runtime plus entitlements; also emits the `.dmg` |
 | Verify `.app` | `codesign --verify --deep --strict` | Only when an Application cert was found |
-| Build `.pkg` | `pkgbuild` + `productbuild` | Three components (see §4); signed with `Developer ID Installer` if present |
-| (optional) Notarize | `xcrun notarytool submit --wait` + `xcrun stapler staple` | `--notarize` flag; requires an Installer cert + keychain profile |
-| Publish | Upload to GitHub Releases (manual) | `.app`/`.dmg`/`.pkg` |
-| Update manifest | `scripts/generate_update_manifest.py` → `latest.json` | Signed with the Tauri updater key; uploaded to the release |
+| Build `.pkg` | `pkgbuild` plus `productbuild` | Three components; signed with Developer ID Installer if present |
+| Notarize, optional | `xcrun notarytool submit --wait` plus `xcrun stapler staple` | Requires Installer cert and notarytool profile |
+| Publish | Upload manually to GitHub Releases | `.app`, `.dmg`, `.pkg` |
+| Update manifest | `scripts/generate_update_manifest.py` to `latest.json` | Signed with the Tauri updater key |
 
-Signing config lives in `desktop/src-tauri/tauri.conf.json` (`bundle.macOS`).
-Hardened-runtime entitlements live in
-`desktop/src-tauri/entitlements.plist`.
+Windows `scripts\build-windows.ps1` produces:
+
+| Stage | Tool / command | Notes |
+| --- | --- | --- |
+| Build dashboard | `npm run build`, `npm run build:lib` | Same dashboard artifacts as macOS |
+| Build provisioner | `cargo build --bin agentshore-provisioner --locked` | Compiled Windows postinstall helper |
+| Stage uv | pinned `uv.exe` | Build fails unless `uv --version` starts with the pinned baseline |
+| Provision bd | provisioner | Windows provisions pinned `bd.exe` into `%ProgramData%\AgentShore\bin` |
+| Build wheel | `uv build --wheel` | Bundled into the installer |
+| Build app executable | `npx tauri build --no-bundle -- --locked` | Inno wraps the executable instead of Tauri NSIS/MSI |
+| Sign app/provisioner executables, optional | `signtool sign` | Auto-detects a current-user code-signing cert, or use `-CertificateThumbprint` |
+| Build `.exe` wizard | Inno Setup 6 `ISCC.exe` | Emits `desktop\dist\AgentShoreSetup-<version>-x64.exe` |
+| Sign installer, optional | `signtool sign` | Same certificate and timestamp settings as the app executable |
+
+For local Windows installer testing, `scripts\build-windows.ps1 -SelfSign`
+creates or reuses a current-user self-signed Authenticode code-signing
+certificate named `CN=AgentShore Local Dev Code Signing` and uses it for the
+app, provisioner, and setup executable. Add `-TrustSelfSignedCertificate` if the
+local machine should trust that development certificate for verification. Use
+`-SetupSelfSignedCertificateOnly` to provision the certificate without building.
+
+Self-signed builds are for local QA only. They do not establish publisher
+reputation, they do not reduce SmartScreen warnings for public users, and they
+must not be shipped as public releases.
 
 ## 2. macOS Developer ID
 
-### 2.1 Certificates
-
 Two Developer ID certificates are used:
 
-- **Developer ID Application** — signs the `.app` (via the Tauri bundler).
-- **Developer ID Installer** — signs the `.pkg` (via `productbuild --sign`).
-  Required if you intend to notarize; without it the build emits an unsigned
-  `.pkg` and `--notarize` fails fast.
+- **Developer ID Application** signs the `.app` through the Tauri bundler.
+- **Developer ID Installer** signs the `.pkg` through `productbuild --sign`.
+  It is required for notarization.
 
 To provision them:
 
-1. Enroll in the Apple Developer Program (~$99/yr).
-2. In Xcode → Settings → Accounts → Manage Certificates, create both a
-   "Developer ID Application" and a "Developer ID Installer" certificate.
+1. Enroll in the Apple Developer Program.
+2. In Xcode Settings, Accounts, Manage Certificates, create both Developer ID
+   certificate types.
 3. Confirm they resolve from the login Keychain with `security find-identity`.
-   The build script auto-detects the first matching identity of each kind —
-   no env var or config edit is required. If no Application cert is present
-   the build proceeds **unsigned** (Gatekeeper right-click-Open expected on
-   first launch); pass `--no-sign` to skip detection deliberately.
 
-### 2.2 Notarization profile
+If no Application cert is present, the macOS build proceeds unsigned. Pass
+`--no-sign` to skip detection deliberately.
 
-Notarization is opt-in via the `--notarize` flag and uses a stored `notarytool`
-keychain profile (default name `agentshore-notary`). Create it once with
-`xcrun notarytool store-credentials`, using either an App Store Connect API key
-(preferred) or an Apple ID + app-specific password.
+## 3. Notarization
 
-The build then runs `xcrun notarytool submit "$PKG" --keychain-profile
-agentshore-notary --wait` followed by `xcrun stapler staple "$PKG"`. Use
-`--keychain-profile NAME` on the build script to point at a different profile.
+Notarization is opt-in via `--notarize` and uses a stored `notarytool`
+keychain profile. The default profile name is `agentshore-notary`.
 
-### 2.3 Hardened runtime entitlements
+Create the profile once with `xcrun notarytool store-credentials`, using either
+an App Store Connect API key or an Apple ID plus app-specific password.
 
-`bundle.macOS.hardenedRuntime` is `true` and the bundler applies
-`desktop/src-tauri/entitlements.plist`, which enables four entitlements
-required by the embedded Python sidecar:
+The build then runs:
+
+```bash
+xcrun notarytool submit "$PKG" --keychain-profile agentshore-notary --wait
+xcrun stapler staple "$PKG"
+```
+
+Use `--keychain-profile NAME` to choose a different profile.
+
+## 4. Hardened Runtime
+
+macOS signing config lives in `desktop/src-tauri/tauri.conf.json`
+(`bundle.macOS`). Hardened-runtime entitlements live in
+`desktop/src-tauri/entitlements.plist`.
+
+The app enables entitlements needed by the embedded Python sidecar:
 
 | Key | Reason |
 | --- | --- |
-| `com.apple.security.cs.allow-jit` | CPython's regex engine and downstream libraries may JIT |
-| `com.apple.security.cs.allow-unsigned-executable-memory` | Python and native dependencies may map executable memory |
+| `com.apple.security.cs.allow-jit` | Python and downstream libraries may JIT |
+| `com.apple.security.cs.allow-unsigned-executable-memory` | Python/native deps may map executable memory |
 | `com.apple.security.cs.disable-library-validation` | Allows loading Python dylibs not signed by the same team |
 | `com.apple.security.cs.allow-dyld-environment-variables` | Lets the sidecar set `DYLD_*` for its managed venv |
 
-If a signed build is rejected, inspect `Console.app` for
-`com.apple.security.*` denials and add the matching entitlement.
-
-## 3. Tauri updater keypair
+## 5. Tauri Updater Keypair
 
 Tauri's auto-updater verifies `latest.json` against a public key embedded in
-the application. Generate the keypair once with `tauri signer generate` and
-store it long-term.
+the app. Generate the keypair once with `tauri signer generate`.
 
-Put the printed public key in `desktop/src-tauri/tauri.conf.json` at
-`plugins.updater.pubkey` (replacing the `TAURI_SIGNING_PUBLIC_KEY`
-placeholder). Store the private key off-host (1Password / a hardware key) —
-losing it forces every existing install to re-bootstrap.
+Put the public key in `desktop/src-tauri/tauri.conf.json` at
+`plugins.updater.pubkey`. Store the private key off-host. Losing it forces
+existing installs to re-bootstrap.
 
-The updater fetches its manifest from
-`https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/latest.json`
-(`plugins.updater.endpoints`). After a `tauri build`, sign each artifact with
-`tauri signer sign` and assemble the manifest with
-`scripts/generate_update_manifest.py`.
+The updater fetches:
 
-`generate_update_manifest.py` is a multi-platform helper and still accepts
-`--sig-windows-x64` / `--sig-linux-x64` flags, but only the macOS signatures
-are populated for current releases. Upload `latest.json` to the GitHub Release
-alongside the `.dmg`/`.pkg`.
+```text
+https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/latest.json
+```
 
-## 4. Pkg component layout
+After a Tauri build, sign each artifact with `tauri signer sign` and assemble
+the manifest with `scripts/generate_update_manifest.py`.
 
-`productbuild` wraps three `pkgbuild` components into one distribution
-installer (`packaging/desktop/Distribution.xml.in`), each a deliberate choice
-in Installer.app's Customize panel:
+## 6. Installer Component Layout
 
-| Component identifier | Payload | Choice |
+Both platform installers expose the same deliberate choices:
+
+| Component | Payload | Default |
 | --- | --- | --- |
-| `ai.agentshore.desktop` | `.app` + postinstall that provisions the managed sidecar venv from the bundled wheel | Required |
-| `ai.agentshore.cli` | nopayload; `uv tool install` of the bundled wheel → `~/.local/bin/agentshore` | Opt-out |
-| `ai.agentshore.timelapse` | nopayload; drives `install_timelapse()` (ffmpeg + Node + capture CLI) in the managed venv | Opt-in |
+| AgentShore Desktop | Desktop app plus managed sidecar venv from bundled wheel | Required |
+| Timelapse Capture | Runs `install_timelapse()` for ffmpeg, Node, capture CLI, and browser deps | Opt-in |
+| AgentShore CLI | Installs `agentshore` from the bundled wheel via `uv tool install --force --reinstall --python 3.12` | Opt-out |
 
-The desktop component pins `BundleIsRelocatable=false` (via an explicit
-component plist) so the `.app` always installs to `/Applications`. The desktop
-and timelapse components also patch their `pkgbuild` postinstall timeout from
-600 s to 3600 s, since first-run provisioning pulls large dependencies.
+The Windows installer is machine-wide (`PrivilegesRequired=admin`) and installs
+the desktop app under `%ProgramFiles%\AgentShore`. The managed venv is under
+`%ProgramData%\AgentShore\venv`, matching the Rust supervisor's Windows lookup
+path. The provisioner also installs the pinned desktop `bd.exe` under
+`%ProgramData%\AgentShore\bin` and writes install logs under
+`%ProgramData%\AgentShore\install-logs`.
 
-## 5. Building a signed release
+## 7. Windows Local Self-Signing
 
-The whole pipeline is `scripts/build-macos.sh` with no flags (per repo
-convention, "build" always means this). Useful variants are `--notarize`,
-`--no-sign`, and `--no-pkg`.
+Install the Windows SDK first so `signtool.exe` is available. Then run:
 
-Signing is automatic whenever the Developer ID certs are in the Keychain
-(phases 6 and 9 of the script); no env vars are required. `--notarize`
-implies the `.pkg` and requires the Installer cert plus the notarytool
-keychain profile. Output lands in `desktop/dist/AgentShore.pkg` and the
-Tauri bundle dir; the script reveals the `.pkg` in Finder.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
+  -SelfSign `
+  -TrustSelfSignedCertificate `
+  -SetupSelfSignedCertificateOnly
+```
 
-## 6. Secrets handling
+Build and sign with the local development certificate:
 
-* Never commit a `.p12`, `.pfx`, `.cer`, `.p8`, `.mobileprovision`, or the
-  Tauri private key. `desktop/src-tauri/.gitignore` excludes cert material by
-  extension.
-* The notarytool keychain profile and the Developer ID private keys live in
-  the login Keychain / off-host secret storage — never in the repo or env
-  files committed to it.
-* Rotate the Developer ID certs at the start of each renewal cycle to avoid a
-  release gap.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
+  -SelfSign `
+  -TrustSelfSignedCertificate
+```
+
+The script creates the certificate in `Cert:\CurrentUser\My` with a non-
+exportable private key, then signs the Tauri app, the provisioner, and the final
+Inno setup executable. With `-TrustSelfSignedCertificate`, it also adds the
+certificate to `Cert:\CurrentUser\Root` so local verification succeeds. With
+`-SetupSelfSignedCertificateOnly`, it exits after certificate setup.
+
+To use a different local-dev subject:
+
+```powershell
+.\scripts\build-windows.ps1 `
+  -SelfSign `
+  -SelfSignedCertificateSubject "CN=AgentShore Dev Build Signing"
+```
+
+To verify the resulting installer:
+
+```powershell
+signtool verify /pa /all /v desktop\dist\AgentShoreSetup-0.2.1-x64.exe
+```
+
+To remove the local trust entry later:
+
+```powershell
+$thumbprint = "<thumbprint shown by build-windows.ps1>"
+Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$thumbprint"
+```
+
+Remove the private-key-bearing certificate only after confirming no local build
+flow still needs it:
+
+```powershell
+Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint"
+```
+
+## 8. Secrets Handling
+
+- Never commit `.p12`, `.pfx`, `.cer`, `.p8`, `.mobileprovision`, or the Tauri
+  private updater key.
+- `desktop/src-tauri/.gitignore` excludes certificate material by extension.
+- Developer ID private keys and notarization profiles live in Keychain or
+  off-host secret storage.
+- Treat unsigned Windows `.exe` artifacts as internal test builds only. Public
+  releases should be Authenticode-signed and timestamped.

@@ -109,6 +109,15 @@ class AgentType(enum.Enum):
     GROK = "grok"
 
 
+# Single canonical definition of which AgentType values are CLI (subprocess)
+# agents — used by the health monitor to check liveness and by the agent
+# manager to gate identity resolution. Define it once here, adjacent to the
+# enum, so adding a new CLI agent type requires only one edit.
+CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
+)
+
+
 class AgentStatus(enum.Enum):
     """Runtime status of a managed agent."""
 
@@ -139,6 +148,15 @@ RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
 # single failed dispatch burned a full ~30-min idle timeout). The mask lifts
 # automatically the moment the agent completes any play (``tasks_completed > 0``).
 CIRCUIT_BREAKER_FAILURE_LIMIT = 2
+# Consecutive stream-idle/wall-clock timeouts since an agent's last success that
+# bench it regardless of prior completions (#161). A previously-productive agent
+# that hangs producing no stdout returns to IDLE and is NOT caught by the
+# 0-completion breaker below, so reconcile_state (self-heal, deliberately never
+# play-benched) re-selects it and it hangs for the full stream-idle window again,
+# repeatedly. Two consecutive timeouts is a hung agent — bench it so dispatch
+# routes elsewhere; the counter resets on any success, so a one-off stall costs
+# at most a single retry.
+CONSECUTIVE_TIMEOUT_BENCH_LIMIT = 2
 
 
 def is_agent_circuit_broken(
@@ -146,8 +164,11 @@ def is_agent_circuit_broken(
     tasks_completed: int,
     tasks_failed: int,
     timeout_count: int,
+    consecutive_timeouts: int = 0,
 ) -> bool:
-    """Return True when an agent should be benched as non-functional (#22)."""
+    """Return True when an agent should be benched as non-functional (#22, #161)."""
+    if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT:
+        return True
     if tasks_completed > 0:
         return False
     return timeout_count >= 1 or tasks_failed >= CIRCUIT_BREAKER_FAILURE_LIMIT
@@ -315,6 +336,9 @@ class AgentSnapshot:
     current_play_branch: str | None = None
     last_error_class: ErrorClass | None = None
     timeout_count: int = 0
+    # Timeouts since this agent's last successful dispatch (reset on success).
+    # The consecutive-timeout-storm signal — see ``is_agent_circuit_broken`` (#161).
+    consecutive_timeouts: int = 0
     github_identity: str | None = None
     # desktop-31h2: cumulative dispatch count and the agent's share of the
     # fleet-wide total. Built from the agents.dispatch_count column at
@@ -408,6 +432,36 @@ class BudgetSnapshot:
     time_total_minutes: float | None = None
     time_elapsed_minutes: float | None = None
     time_remaining_minutes: float | None = None
+
+    def dollar_reserve_reached(self) -> bool:
+        """Return ``True`` when dollar spend is inside the reserve window."""
+        from agentshore.budget import budget_reserve_reached
+
+        return self.enabled and budget_reserve_reached(
+            spent=self.spent, total_budget=self.total_budget
+        )
+
+    def time_reserve_reached(self) -> bool:
+        """Return ``True`` when elapsed wall-clock time is inside the reserve window."""
+        from agentshore.budget import time_budget_reserve_reached
+
+        return (
+            self.time_enabled
+            and self.time_total_minutes is not None
+            and self.time_elapsed_minutes is not None
+            and time_budget_reserve_reached(
+                elapsed_minutes=self.time_elapsed_minutes,
+                total_minutes=self.time_total_minutes,
+            )
+        )
+
+    def reserve_reason(self) -> str | None:
+        """Return the drain-reason string if either reserve is reached, else ``None``."""
+        if self.dollar_reserve_reached():
+            return "budget_reserve_reached"
+        if self.time_reserve_reached():
+            return "time_budget_reserve_reached"
+        return None
 
 
 @dataclass(frozen=True, slots=True)

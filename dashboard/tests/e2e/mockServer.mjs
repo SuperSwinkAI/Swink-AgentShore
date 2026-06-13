@@ -137,6 +137,7 @@ wss.on("connection", (ws) => {
   ws.send(
     JSON.stringify({
       type: "play_event",
+      session_id: state.session_id,
       status: "started",
       play_type: "code_review",
       agent_id: "agent-codex",
@@ -161,18 +162,32 @@ wss.on("connection", (ws) => {
     }
     if (text.includes('"command":"drain"')) {
       ws.send(
-        JSON.stringify({ type: "session_draining", reason: "user_request" }),
+        JSON.stringify({
+          type: "session_draining",
+          session_id: state.session_id,
+          reason: "user_request",
+        }),
       );
       ws.send(JSON.stringify({ ...state, session_state: "draining" }));
       setTimeout(() => {
         ws.send(
-          JSON.stringify({ type: "session_ended", reason: "drain_complete" }),
+          JSON.stringify({
+            type: "session_ended",
+            session_id: state.session_id,
+            reason: "drain_complete",
+          }),
         );
       }, 1000);
     }
     if (text.includes('"command":"hard_stop"')) {
       ws.send(JSON.stringify({ ...state, session_state: "shutting_down" }));
-      ws.send(JSON.stringify({ type: "session_ended", reason: "hard_stop" }));
+      ws.send(
+        JSON.stringify({
+          type: "session_ended",
+          session_id: state.session_id,
+          reason: "hard_stop",
+        }),
+      );
     }
     if (text.includes('"command":"adjust_budget"')) {
       // acknowledge with a state_update (no budget model in mock)

@@ -231,6 +231,7 @@ def select_agent_for(
                 tasks_completed=successes,
                 tasks_failed=failures,
                 timeout_count=int(getattr(h, "timeout_count", 0) or 0),
+                consecutive_timeouts=int(getattr(h, "consecutive_timeouts", 0) or 0),
             )
             else 0
         )

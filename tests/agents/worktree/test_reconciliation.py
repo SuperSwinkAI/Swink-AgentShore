@@ -55,10 +55,10 @@ async def test_dispose_orphan_deletes_clean_worktree(
     assert not target.exists()
 
 
-async def test_dispose_orphan_preserves_dirty_worktree(
+async def test_dispose_orphan_preserves_tracked_uncommitted_changes(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
-    """A worktree with uncommitted changes is preserved, not deleted."""
+    """An orphan with uncommitted changes to a TRACKED file is preserved."""
     target = worktree_root / "dirty-feature"
     await ensure_worktree(
         main_repo=main_repo,
@@ -67,13 +67,48 @@ async def test_dispose_orphan_preserves_dirty_worktree(
         base_ref=f"origin/{remote_branch}",
         fetch=True,
     )
-    (target / "uncommitted_work.txt").write_text("precious unsaved changes\n")
+    # Modify a tracked file (README.md is committed on the base branch). Only
+    # changes to tracked files count as uncommitted work worth preserving.
+    readme = target / "README.md"
+    readme.write_text(readme.read_text() + "locally modified, uncommitted\n")
 
     result = await _dispose_orphan(main_repo=main_repo, path=target)
 
     assert result == "preserved"
     assert target.exists()
-    assert (target / "uncommitted_work.txt").read_text() == "precious unsaved changes\n"
+    assert "locally modified, uncommitted" in readme.read_text()
+
+
+async def test_dispose_orphan_deletes_untracked_only_worktree(
+    main_repo: Path, worktree_root: Path, remote_branch: str
+) -> None:
+    """An orphan whose only "dirt" is UNTRACKED files is deleted, not preserved.
+
+    Every worktree carries untracked agent-harness scaffolding (the files the
+    agent CLIs create at dispatch). Counting those as uncommitted work used to
+    preserve every orphan forever and permanently wedge any play needing that
+    branch. Untracked files never block disposal -- committed work is safe in
+    git, and only changes to *tracked* files count. This is filename-agnostic:
+    arbitrary untracked files (no scaffolding names assumed) must not block.
+    """
+    target = worktree_root / "scaffolded-feature"
+    await ensure_worktree(
+        main_repo=main_repo,
+        worktree_path=target,
+        branch_name=remote_branch,
+        base_ref=f"origin/{remote_branch}",
+        fetch=True,
+    )
+    # Stand-ins for untracked agent-harness scaffolding (.claude/, AGENTS.md,
+    # CLAUDE.md seen in the wild) -- arbitrary untracked paths, nothing special.
+    (target / "AGENTS.md").write_text("agent harness scaffolding\n")
+    (target / ".claude").mkdir()
+    (target / ".claude" / "settings.json").write_text("{}\n")
+
+    result = await _dispose_orphan(main_repo=main_repo, path=target)
+
+    assert result == "deleted"
+    assert not target.exists()
 
 
 async def test_dispose_orphan_deletes_non_git_debris(worktree_root: Path, main_repo: Path) -> None:

@@ -22,6 +22,7 @@ from agentshore.data.store import PlayRecord, PullRequestRecord
 from agentshore.errors import ErrorClass
 from agentshore.github.labels import (
     MANUAL_REQUIRED_LABEL,
+    NEEDS_HUMAN_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
 )
 from agentshore.plays.base import PlayParams
@@ -101,6 +102,25 @@ _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "ci config or infrastructure",
 )
 
+# Markers in a failed write_implementation_plan outcome that mean the issue
+# cannot be turned into a plan by re-dispatching an agent — it needs a human to
+# split or clarify it. Matching any parks the issue with NEEDS_HUMAN_LABEL on the
+# FIRST such failure (#458) so the planner stops re-selecting it every tick
+# (comment spam + wasted budget). Transient/ambiguous failures do NOT match and
+# stay retryable.
+_WRITE_PLAN_UNPLANNABLE_MARKERS: tuple[str, ...] = (
+    "too ambiguous",
+    "too large",
+    "too broad",
+    "cannot produce a plan",
+    "cannot be planned",
+    "unable to plan",
+    "needs human",
+    "needs decomposition",
+    "must be split",
+    "requires human",
+)
+
 # Used by ``refresh_issues`` — declared module-level so renaming inside the
 # function body doesn't drift them away from the constants the original
 # monolithic ``core.py`` referenced.
@@ -161,6 +181,24 @@ def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     except (TypeError, ValueError):
         return False
     return any(sig in serialised for sig in _ALREADY_CLOSED_SIGNATURES)
+
+
+def _outcome_blocked_by_sibling_pr(outcome: PlayOutcome) -> bool:
+    """Return True when an unblock_pr outcome reports the target is gated on an
+    unmerged sibling PR (a structured ``blocked_by_pr`` artifact).
+
+    Such a failure is not the target PR's own fault — it is waiting on another
+    open PR that this dispatch could not finish merging. It must therefore NOT
+    tick the per-PR exhaustion counter or trip the ``manual-required`` park; the
+    PPO will pick the blocker as its own candidate, after which the target
+    becomes unblockable. ``PlayOutcome`` carries no structured ``blocked_by``
+    field, so the artifact is the signal (an error-text marker would risk
+    colliding with the ``_UNBLOCK_MANUAL_REQUIRED_MARKERS`` substring scan).
+    """
+    return any(
+        isinstance(artifact, dict) and artifact.get("type") == "blocked_by_pr"
+        for artifact in outcome.artifacts
+    )
 
 
 class _CompletionHost(Protocol):
@@ -399,6 +437,7 @@ class CompletionProcessor:
                 pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
+        await self._park_unplannable_issue_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
         await self._record_completion_experience(
             ctx,
@@ -688,6 +727,18 @@ class CompletionProcessor:
         # match set and the counter never gets exercised again — so this
         # change costs nothing in the happy path.
         if completed_play_type == PlayType.UNBLOCK_PR and ctx.params.pr_number is not None:
+            # A target blocked only by an unmerged sibling PR is not at fault —
+            # do NOT count it toward exhaustion and do NOT park it. Otherwise a
+            # stacked/mutually-blocking PR is wrongly stamped manual-required
+            # after 3 dispatches that each failed solely because the sibling had
+            # not merged yet (the bug this whole change fixes).
+            if _outcome_blocked_by_sibling_pr(outcome):
+                _logger.info(
+                    "unblock_pr_blocked_by_sibling",
+                    session_id=self._session_id,
+                    pr_number=ctx.params.pr_number,
+                )
+                return
             exhausted = self._executor._resolver.record_unblock_pr_failure(ctx.params.pr_number)
             # Fast-path (#6): a failure that names a human/CI-infra blocker can
             # never be resolved by re-dispatching an agent, so mark it
@@ -701,6 +752,59 @@ class CompletionProcessor:
                     self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
+
+    async def _park_unplannable_issue_if_needed(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
+        # #458: a write_implementation_plan that fails because the issue is
+        # un-plannable (too ambiguous/large to decompose by re-running an agent)
+        # must not be re-selected next tick — the deterministic priority sort
+        # picks the same issue, the agent no-ops with the same diagnosis, and the
+        # session spams comments while burning budget. Park it with
+        # NEEDS_HUMAN_LABEL so _base_issue_available drops it from plan/pickup/
+        # refine/debug until a human (or a grooming split) clears the label.
+        if (
+            completed_play_type != PlayType.WRITE_IMPLEMENTATION_PLAN
+            or outcome.success
+            or not isinstance(ctx.params.issue_number, int)
+        ):
+            return
+        error_text = (outcome.error or "").lower()
+        if not any(m in error_text for m in _WRITE_PLAN_UNPLANNABLE_MARKERS):
+            return
+        await self._host._safe_call(
+            self.mark_issue_needs_human(ctx.params.issue_number),
+            "mark_issue_needs_human",
+        )
+        # Shadow the label so the very next state build excludes the issue, before
+        # the gh CLI add + add_issue_labels write is visible to a fresh
+        # get_open_issues read (same WAL/refresh lag as the systematic_debugging
+        # ROOT_CAUSE_FOUND_LABEL shadow above).
+        self._host._recent_applied_labels.append((ctx.params.issue_number, NEEDS_HUMAN_LABEL))
+
+    async def mark_issue_needs_human(self, issue_number: int) -> None:
+        """Park an un-plannable issue behind NEEDS_HUMAN_LABEL (store + GitHub)."""
+        await self._store.add_issue_labels(
+            issue_number,
+            self._session_id,
+            [NEEDS_HUMAN_LABEL],
+        )
+        github = getattr(self._executor, "_github", None)
+        if github is not None:
+            await github.label_issue(
+                issue_number,
+                [NEEDS_HUMAN_LABEL],
+                f"needs_human:issue{issue_number}",
+            )
+        _logger.warning(
+            "issue_needs_human",
+            session_id=self._session_id,
+            issue_number=issue_number,
+            label=NEEDS_HUMAN_LABEL,
+        )
 
     async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
         next_state = await self._state_builder.build_state()
@@ -983,7 +1087,10 @@ class CompletionProcessor:
             self._host, "_stop_requested", False
         )
         if draining and final_status == AgentStatus.ERROR:
-            await self._host._safe_call(self._manager.clear(agent_id), "drain_clear_errored_agent")
+            # force=True: session is winding down; in-flight tasks already cancelled.
+            await self._host._safe_call(
+                self._manager.clear(agent_id, force=True), "drain_clear_errored_agent"
+            )
             return
         self._maybe_enqueue_error_recovery(agent_id, final_status)
 
@@ -1295,9 +1402,17 @@ class CompletionProcessor:
                 # issues whose only linked beads are closed duplicates.
                 if full_sync and issues is not None:
                     open_issues = [iss for iss in issues if iss.state == "open"]
-                    from agentshore.beads import BeadStatus, GraphTask, load_graph
+                    from agentshore.beads import (
+                        BeadStatus,
+                        GraphReadError,
+                        GraphTask,
+                        load_graph,
+                    )
 
-                    graph = await load_graph(self._repo_root)
+                    try:
+                        graph = await load_graph(self._repo_root)
+                    except GraphReadError:
+                        graph = None
                     if graph is not None:
                         tasks_by_issue: dict[int, list[GraphTask]] = {}
                         for task in graph.tasks:
@@ -1366,7 +1481,7 @@ class CompletionProcessor:
 
             loaded, detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
             if not loaded:
-                _logger.warning("ssh_signing_key_refresh_failed", detail=detail)
+                _logger.debug("ssh_signing_key_refresh_failed", detail=detail)
         except Exception:
             pass
 

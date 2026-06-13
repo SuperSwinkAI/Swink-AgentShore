@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import subprocess
+import io
+import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +12,31 @@ import pytest
 
 from agentshore.agents import identity as identity_mod
 from agentshore.agents.identity import reset_token_cache, resolve_identity_env
+from agentshore.command import CommandResult, CommandStatus
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 from agentshore.errors import AgentAuthError
+
+
+def _cmd(
+    stdout: str = "",
+    *,
+    returncode: int = 0,
+    stderr: str = "",
+    tool_missing: bool = False,
+) -> CommandResult:
+    """Build a ``CommandResult`` mirroring what ``command.gh_sync``/``git_sync`` return."""
+    if tool_missing:
+        return CommandResult(
+            args=("gh",),
+            returncode=127,
+            stdout="",
+            stderr=stderr,
+            status=CommandStatus.TOOL_NOT_FOUND,
+        )
+    status = CommandStatus.OK if returncode == 0 else CommandStatus.NONZERO
+    return CommandResult(
+        args=("gh",), returncode=returncode, stdout=stdout, stderr=stderr, status=status
+    )
 
 
 def _cfg(
@@ -139,37 +164,29 @@ def test_strict_token_env_rejects_wrong_login(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_token_login_uses_gh_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[str, ...]] = []
 
-    class _Result:
-        stdout = "ghp_from_gh_cli\n"
+    def fake_gh_sync(*args: str, **_: Any) -> CommandResult:
+        calls.append(args)
+        return _cmd("ghp_from_gh_cli\n")
 
-    def fake_run(argv: list[str], **_: Any) -> _Result:
-        calls.append(argv)
-        return _Result()
-
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     fc, ac = _cfg()  # default uses gh_token_login="example-user"
     env = resolve_identity_env(fc, ac)
 
     assert env["GH_TOKEN"] == "ghp_from_gh_cli"
-    assert calls == [["/usr/bin/gh", "auth", "token", "-h", "github.com", "-u", "example-user"]]
+    assert calls == [("auth", "token", "-h", "github.com", "-u", "example-user")]
 
 
 def test_token_login_cached(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[str, ...]] = []
 
-    class _Result:
-        stdout = "ghp_cached\n"
+    def fake_gh_sync(*args: str, **_: Any) -> CommandResult:
+        calls.append(args)
+        return _cmd("ghp_cached\n")
 
-    def fake_run(argv: list[str], **_: Any) -> _Result:
-        calls.append(argv)
-        return _Result()
-
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     fc, ac = _cfg()
     resolve_identity_env(fc, ac)
@@ -184,16 +201,13 @@ def test_token_login_uses_gh_config_dir_for_lookup(
 ) -> None:
     calls: list[str | None] = []
 
-    class _Result:
-        stdout = "ghp_from_config_dir\n"
+    def fake_gh_sync(*args: str, **kwargs: Any) -> CommandResult:
+        assert args[:2] == ("auth", "token")
+        overlay = kwargs.get("env_overlay") or {}
+        calls.append(overlay.get("GH_CONFIG_DIR"))
+        return _cmd("ghp_from_config_dir\n")
 
-    def fake_run(argv: list[str], **kwargs: Any) -> _Result:
-        assert argv[1:3] == ["auth", "token"]
-        calls.append(kwargs["env"].get("GH_CONFIG_DIR"))
-        return _Result()
-
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     config_dir = tmp_path / "gh-one"
     fc, ac = _cfg(
@@ -219,18 +233,13 @@ def test_token_login_cache_is_scoped_by_gh_config_dir(
 ) -> None:
     calls: list[str | None] = []
 
-    class _Result:
-        def __init__(self, stdout: str) -> None:
-            self.stdout = stdout
-
-    def fake_run(argv: list[str], **kwargs: Any) -> _Result:
-        assert argv[1:3] == ["auth", "token"]
-        config_dir = kwargs["env"].get("GH_CONFIG_DIR")
+    def fake_gh_sync(*args: str, **kwargs: Any) -> CommandResult:
+        assert args[:2] == ("auth", "token")
+        config_dir = (kwargs.get("env_overlay") or {}).get("GH_CONFIG_DIR")
         calls.append(config_dir)
-        return _Result(f"token_for_{config_dir}\n")
+        return _cmd(f"token_for_{config_dir}\n")
 
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     one = str(tmp_path / "one")
     two = str(tmp_path / "two")
@@ -260,12 +269,10 @@ def test_token_login_cache_is_scoped_by_gh_config_dir(
 
 
 def test_token_login_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
+    def fake_gh_sync(*_args: str, **_: Any) -> CommandResult:
+        return _cmd(returncode=1, stderr="not logged in")
 
-    def fake_run(argv: list[str], **_: Any) -> Any:
-        raise subprocess.CalledProcessError(returncode=1, cmd=argv, stderr="not logged in")
-
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     fc, ac = _cfg()
     env = resolve_identity_env(fc, ac)
@@ -275,7 +282,7 @@ def test_token_login_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_gh_cli_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: None)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", lambda *_a, **_k: _cmd(tool_missing=True))
     fc, ac = _cfg()
     env = resolve_identity_env(fc, ac)
     assert "GH_TOKEN" not in env
@@ -439,14 +446,12 @@ def test_report_env_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
-    import keyring
+    from agentshore import keyring_child
 
     monkeypatch.setattr(
-        keyring,
-        "get_password",
-        lambda service, username: (
-            "ghp_keychain_token" if service == "agentshore/unseriousAI" else None
-        ),
+        keyring_child,
+        "keyring_get",
+        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousAI" else None,
     )
 
     fc = RuntimeConfig(
@@ -464,14 +469,12 @@ def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.MonkeyPatch) -> None:
-    import keyring
+    from agentshore import keyring_child
 
     monkeypatch.setattr(
-        keyring,
-        "get_password",
-        lambda service, username: (
-            "ghp_keychain_token" if service == "agentshore/unseriousai" else None
-        ),
+        keyring_child,
+        "keyring_get",
+        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousai" else None,
     )
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -640,6 +643,85 @@ def test_keychain_backend_error_returns_none(monkeypatch: pytest.MonkeyPatch) ->
     assert env["GIT_AUTHOR_NAME"] == "x"
 
 
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://github.com/Owner/Repo.git", "Owner/Repo"),
+        ("git@github.com:Owner/Repo.git", "Owner/Repo"),
+        ("ssh://git@github.com/Owner/Repo.git", "Owner/Repo"),
+    ],
+)
+def test_parse_github_remote_name_supports_common_formats(remote: str, expected: str) -> None:
+    assert identity_mod._parse_github_remote_name(remote) == expected
+
+
+def test_verify_repo_access_uses_github_rest_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, str | None] = {}
+
+    def fake_git_sync(*args: str, **_: Any) -> CommandResult:
+        assert args == ("config", "--get", "remote.origin.url")
+        return _cmd("https://github.com/Owner/Repo.git\n")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"full_name": "Owner/Repo"}).encode("utf-8")
+
+    def fake_urlopen(request: Any, **_: Any) -> Response:
+        calls["url"] = request.full_url
+        calls["authorization"] = request.get_header("Authorization")
+        calls["user_agent"] = request.get_header("User-agent")
+        return Response()
+
+    monkeypatch.setattr(identity_mod.command, "git_sync", fake_git_sync)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    assert calls == {
+        "url": "https://api.github.com/repos/Owner/Repo",
+        "authorization": "Bearer token-secret",
+        "user_agent": "AgentShore",
+    }
+
+
+def test_verify_repo_access_reports_github_api_denial_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_git_sync(*_args: str, **_: Any) -> CommandResult:
+        return _cmd("git@github.com:Owner/Repo.git\n")
+
+    def fake_urlopen(_request: Any, **_: Any) -> None:
+        raise urllib.error.HTTPError(
+            url="https://api.github.com/repos/Owner/Repo",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message":"Not Found"}'),
+        )
+
+    monkeypatch.setattr(identity_mod.command, "git_sync", fake_git_sync)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AgentAuthError) as exc_info:
+        identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    detail = str(exc_info.value)
+    assert "Owner/Repo returned HTTP 404: Not Found" in detail
+    assert "token-secret" not in detail
+
+
 def test_report_identity_repo_access_flags_wrong_repo_pat(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -732,21 +814,14 @@ identities:
 
 
 def test_report_gh_login_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Result:
-        def __init__(self, stdout: str, returncode: int = 0) -> None:
-            self.stdout = stdout
-            self.stderr = ""
-            self.returncode = returncode
+    def fake_gh_sync(*args: str, **_: Any) -> CommandResult:
+        if args[:2] == ("auth", "token"):
+            return _cmd("ghp_login_token\n")
+        if args[:2] == ("api", "user"):
+            return _cmd("example-user\n")
+        raise AssertionError(args)
 
-    def fake_run(argv: list[str], **_: Any) -> _Result:
-        if argv[1:3] == ["auth", "token"]:
-            return _Result("ghp_login_token\n")
-        if argv[1:3] == ["api", "user"]:
-            return _Result("example-user\n")
-        raise AssertionError(argv)
-
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: "/usr/bin/gh")
-    monkeypatch.setattr(identity_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
     rows = _report(
         identities={
@@ -899,7 +974,7 @@ def test_require_two_identities_accepts_keychain_token(monkeypatch: pytest.Monke
     # whose timing under parallel load made this flaky (#13). With both inert the
     # resolver falls back to config-derived logins — exactly the path under test
     # (a gh_token_keychain service name encodes its login).
-    monkeypatch.setattr(identity_mod, "resolve_executable", lambda _name: None)
+    monkeypatch.setattr(identity_mod.command, "gh_sync", lambda *_a, **_k: _cmd(tool_missing=True))
     monkeypatch.setattr(IdentityResolver, "read_keychain_token", lambda self, service: None)
 
     fc = RuntimeConfig(

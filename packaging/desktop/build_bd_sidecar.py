@@ -31,23 +31,25 @@ table below are the supply-chain anchor for the bundled binary. They are kept in
 lockstep with the runtime pin (``agentshore.beads.setup.REQUIRED_BD_VERSION``);
 ``tests/sidecar/test_bd_sidecar.py`` fails if they drift. To bump bd: update
 both, then refresh the checksums from the release's ``checksums.txt``.
+
+Extraction and asset-name logic is delegated to ``agentshore.beads.setup`` so
+the two code paths stay in sync — this file keeps only the pinned-checksum
+verification (a build-time-only concern) and the orchestration.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import os
 import platform
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import urllib.request
-import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from typing import cast
 
 PACKAGING_DIR = Path(__file__).resolve().parent
 DEFAULT_DIST = PACKAGING_DIR / "dist"
@@ -83,19 +85,29 @@ PINNED_CHECKSUMS: dict[str, str] = {
 
 _RELEASE_URL = "https://github.com/gastownhall/beads/releases/download/v{version}/{asset}"
 
-# Runtime pin, imported lazily so this script still runs in a bare interpreter
-# (e.g. the unit tests load it by path). When importable, main() asserts it
-# matches PINNED_BD_VERSION so the two pins can never silently diverge.
+# Imports from agentshore.beads.setup are lazy so this script runs in a bare
+# interpreter (e.g. unit tests load it by path). When importable:
+#   - main() asserts REQUIRED_BD_VERSION == PINNED_BD_VERSION (no silent drift)
+#   - _release_asset_name and _extract_bd delegate to the shared implementations
+_RUNTIME_BD_VERSION: str | None = None
+_BEADS_SETUP_AVAILABLE = False
 try:
     from agentshore.beads.setup import REQUIRED_BD_VERSION as _RUNTIME_BD_VERSION
+    from agentshore.beads.setup import _extract_bd as _extract_bd_impl
+
+    _BEADS_SETUP_AVAILABLE = True
 except Exception:  # pragma: no cover - import path depends on the build env
-    _RUNTIME_BD_VERSION = None
+    pass
 
 
-def _target_parts() -> tuple[str, str]:
-    if sys.platform.startswith("win"):
-        return "agentshore-bd", ".exe"
-    return "agentshore-bd", ""
+def _extension_for_triple(triple: str) -> str:
+    """Sidecar binary extension for the *target* triple, not the build host.
+
+    Tauri names the sidecar after the target platform, so a Windows target
+    gets ``.exe`` even when cross-built from Linux/macOS (and a Linux target
+    gets no extension even when built on a Windows host).
+    """
+    return ".exe" if "windows" in triple else ""
 
 
 def _resolve_target_triple() -> str:
@@ -119,14 +131,21 @@ def _validate_source(path: Path) -> Path:
     if not resolved.is_file():
         print(f"bd binary not found: {resolved}", file=sys.stderr)
         raise SystemExit(2)
-    if not os.access(resolved, os.X_OK):
+    # The POSIX exec bit doesn't exist on Windows (os.access(X_OK) is True for
+    # any readable file), so the check is meaningful only off-Windows.
+    if not sys.platform.startswith("win") and not os.access(resolved, os.X_OK):
         print(f"bd binary is not executable: {resolved}", file=sys.stderr)
         raise SystemExit(2)
     return resolved
 
 
 def _release_asset_name(version: str, system: str, machine: str) -> str:
-    """Map the build host's (system, machine) to a beads release asset name."""
+    """Map the build host's (system, machine) to a beads release asset name.
+
+    The mapping logic mirrors ``agentshore.beads.setup._beads_release_asset``
+    exactly. The tests in ``test_bd_sidecar.py`` pin both sides so they cannot
+    drift independently.
+    """
     os_map = {"darwin": "darwin", "linux": "linux", "windows": "windows"}
     arch_map = {
         "arm64": "arm64",
@@ -149,7 +168,7 @@ def _download(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "agentshore-build-bd-sidecar"})
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 (pinned host)
-            return resp.read()
+            return cast("bytes", resp.read())
     except OSError as exc:
         raise SystemExit(f"Failed to download bd release from {url}: {exc}") from exc
 
@@ -170,32 +189,48 @@ def _verify_checksum(asset: str, data: bytes) -> None:
 
 
 def _extract_bd(asset: str, data: bytes, dest_dir: Path) -> Path:
-    """Extract the bd binary from a downloaded archive into *dest_dir*."""
+    """Extract the bd binary from a downloaded archive into *dest_dir*.
+
+    Delegates to ``agentshore.beads.setup._extract_bd`` when available so the
+    extraction logic stays in one place. Falls back to an inline implementation
+    for bare-interpreter contexts (CI cross-builds without the agentshore package).
+    """
+    kind = "zip" if asset.endswith(".zip") else "tar.gz"
     binary_name = "bd.exe" if asset.endswith(".zip") else "bd"
     target = dest_dir / binary_name
 
-    if asset.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            member = _match_member(zf.namelist(), binary_name, asset)
-            target.write_bytes(zf.read(member))
+    if _BEADS_SETUP_AVAILABLE:
+        _extract_bd_impl(data, kind, binary_name, target)
     else:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-            member = _match_member(tf.getnames(), binary_name, asset)
-            extracted = tf.extractfile(member)
-            if extracted is None:
-                raise SystemExit(f"'{member}' in {asset} is not a regular file")
-            target.write_bytes(extracted.read())
+        # Bare-interpreter fallback.
+        import io
+        import tarfile
+        import zipfile
+        from pathlib import PurePosixPath
+
+        if kind == "zip":
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                member = next(
+                    (n for n in zf.namelist() if PurePosixPath(n).name == binary_name), None
+                )
+                if member is None:
+                    raise SystemExit(f"No '{binary_name}' entry found inside {asset}")
+                target.write_bytes(zf.read(member))
+        else:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                member = next(
+                    (n for n in tf.getnames() if PurePosixPath(n).name == binary_name), None
+                )
+                if member is None:
+                    raise SystemExit(f"No '{binary_name}' entry found inside {asset}")
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    raise SystemExit(f"'{member}' in {asset} is not a regular file")
+                target.write_bytes(extracted.read())
 
     if not sys.platform.startswith("win"):
         os.chmod(target, 0o755)
     return target
-
-
-def _match_member(names: list[str], binary_name: str, asset: str) -> str:
-    for name in names:
-        if PurePosixPath(name).name == binary_name:
-            return name
-    raise SystemExit(f"No '{binary_name}' entry found inside {asset}")
 
 
 def _fetch_pinned_bd(version: str, stage_dir: Path) -> Path:
@@ -240,9 +275,10 @@ def main(argv: list[str] | None = None) -> int:
 
     bundle_dir = args.out / "agentshore-bd"
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    base_name, extension = _target_parts()
-    target = bundle_dir / f"{base_name}{extension}"
     triple = args.target_triple or _resolve_target_triple()
+    base_name = "agentshore-bd"
+    extension = _extension_for_triple(triple)
+    target = bundle_dir / f"{base_name}{extension}"
     target_with_triple = bundle_dir / f"{base_name}-{triple}{extension}"
 
     with tempfile.TemporaryDirectory(prefix="agentshore-bd-") as tmp:

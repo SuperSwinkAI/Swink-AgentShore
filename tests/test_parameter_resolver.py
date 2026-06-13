@@ -1170,6 +1170,56 @@ async def test_resolve_code_review_skips_draft_prs_in_state_fallback() -> None:
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_code_review_skips_manual_required_prs_in_state_fallback() -> None:
+    """A manual-required PR is parked for a human — never dispatched to a reviewer
+    (#167). Mirrors pr_reviewable / the build_candidate_plan exclusion so the queue
+    can't churn reviewers on a human-blocked PR."""
+    from agentshore.github.labels import MANUAL_REQUIRED_LABEL
+
+    store = AsyncMock()
+    store.list_pending_reviews = AsyncMock(return_value=[])
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    manual_pr = PullRequestSnapshot(
+        pr_number=42,
+        title="Blocked PR",
+        state="open",
+        branch="feature/42",
+        issue_number=None,
+        labels=[MANUAL_REQUIRED_LABEL],
+        review_decision=None,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+    )
+    state = OrchestratorState(
+        session_id="sess-test",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[
+            _make_snapshot(
+                "a-codex",
+                agent_type=AgentType.CODEX,
+                model_tier="medium",
+                github_identity="user_x",
+            )
+        ],
+        open_issues=[],
+        pull_requests=[manual_pr],
+        budget=BudgetSnapshot(
+            total_budget=5.0, spent=0.0, remaining=5.0, estimated_cost_per_play=0.1
+        ),
+    )
+    result = await resolver.resolve(PlayType.CODE_REVIEW, state)
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # MERGE_PR
 # ---------------------------------------------------------------------------
@@ -1694,6 +1744,54 @@ async def test_resolve_instantiate_agent_returns_none_when_only_config_has_idle_
     result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_instantiate_agent_returns_none_when_only_config_at_per_tier_max() -> None:
+    """#159: a BUSY (non-idle) agent that fills the only cell's per-tier max must
+    not be re-picked. Previously the fallback excluded only IDLE cells, so the
+    resolver deterministically returned a full cell that execute() then rejected
+    ("at per-tier max"), spinning instantiate_agent."""
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+            ),
+            "codex": AgentConfig(enabled=False),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[_make_snapshot("busy-claude", status=AgentStatus.BUSY, model_tier="medium")]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_instantiate_agent_ignores_dead_agents_for_capacity() -> None:
+    """A TERMINATED/ERROR agent does not occupy its cell — the resolver may
+    refill it, matching execute()'s live-agent capacity definition."""
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True)},
+            ),
+            "codex": AgentConfig(enabled=False),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[_make_snapshot("dead-claude", status=AgentStatus.TERMINATED, model_tier="medium")]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result == PlayParams(target_agent_type="claude_code", target_model_tier="medium")
 
 
 @pytest.mark.asyncio

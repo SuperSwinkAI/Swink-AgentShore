@@ -49,15 +49,34 @@ class IpcStateProvider:
     directly without waiting for the next heartbeat.
     """
 
-    def __init__(self, writer: _WriterProtocol, server: _ServerProtocol | None = None) -> None:
+    def __init__(
+        self,
+        writer: _WriterProtocol,
+        server: _ServerProtocol | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> None:
         self._writer = writer
         self._server = server
+        self._session_id = session_id
+
+    def _emit(self, msg_type: str, payload: dict[str, object]) -> str:
+        """Build a wire message, stamping ``session_id`` when known.
+
+        Stamping every outbound frame (not just ``state_update``) lets the
+        bridge and browser enforce "one bridge serves one session" and reset
+        the client cleanly on a new session. ``state_update`` already carries
+        the id via ``serialize_state``; re-stamping the same value is harmless.
+        """
+        if self._session_id is not None:
+            payload = {**payload, "session_id": self._session_id}
+        return make_message(msg_type, payload)
 
     # -- StateProvider hooks --------------------------------------------------
 
     async def on_state_update(self, state: OrchestratorState) -> None:
         """Persist the latest full state snapshot."""
-        msg = make_message("state_update", serialize_state(state))
+        msg = self._emit("state_update", serialize_state(state))
         await self._writer.write_state(msg)
         if self._server is not None:
             self._server.set_cached_state(msg)
@@ -77,19 +96,19 @@ class IpcStateProvider:
             "trigger_agent_type": params.extras.get("trigger_agent_type"),
             "trigger_error_class": params.extras.get("trigger_error_class"),
         }
-        await self._writer.append_event(make_message("play_event", payload))
+        await self._writer.append_event(self._emit("play_event", payload))
 
     async def on_play_completed(self, play: PlayOutcome) -> None:
         """Append a play-completed (or failed) event."""
         status: Literal["completed", "failed"] = "completed" if play.success else "failed"
         await self._writer.append_event(
-            make_message("play_event", serialize_play_event(play, status))
+            self._emit("play_event", serialize_play_event(play, status))
         )
 
     async def on_agent_changed(self, agent_id: str, status: AgentStatus) -> None:
         """Append an agent status change event."""
         await self._writer.append_event(
-            make_message(
+            self._emit(
                 "agent_changed",
                 {"agent_id": agent_id, "status": status.value},
             )
@@ -100,7 +119,7 @@ class IpcStateProvider:
     ) -> None:
         """Append an agent subprocess-spawned event."""
         await self._writer.append_event(
-            make_message(
+            self._emit(
                 "agent.subprocess_spawned",
                 {
                     "agent_id": agent_id,
@@ -115,7 +134,7 @@ class IpcStateProvider:
     ) -> None:
         """Append an agent subprocess-exited event."""
         await self._writer.append_event(
-            make_message(
+            self._emit(
                 "agent.subprocess_exited",
                 {
                     "agent_id": agent_id,
@@ -129,25 +148,25 @@ class IpcStateProvider:
     async def on_feedback_requested(self, reason: str) -> None:
         """Append a feedback-requested escalation event."""
         await self._writer.append_event(
-            make_message("feedback_requested", serialize_feedback_requested(reason))
+            self._emit("feedback_requested", serialize_feedback_requested(reason))
         )
 
     async def on_session_paused(self, reason: str) -> None:
         """Append a session-paused event."""
-        await self._writer.append_event(make_message("session_paused", {"reason": reason}))
+        await self._writer.append_event(self._emit("session_paused", {"reason": reason}))
 
     async def on_session_draining(self, reason: str) -> None:
         """Append a session-draining event: graceful shutdown has begun."""
-        await self._writer.append_event(make_message("session_draining", {"reason": reason}))
+        await self._writer.append_event(self._emit("session_draining", {"reason": reason}))
 
     async def on_session_ended(self, reason: str) -> None:
         """Append a session-ended event (clean completion, not a crash)."""
-        await self._writer.append_event(make_message("session_ended", {"reason": reason}))
+        await self._writer.append_event(self._emit("session_ended", {"reason": reason}))
 
     async def on_bootstrap_phase(self, phase: str, status: str, elapsed_ms: float) -> None:
         """Append a bootstrap-phase event so the dashboard can render a loading modal."""
         await self._writer.append_event(
-            make_message(
+            self._emit(
                 "bootstrap_phase",
                 {"phase": phase, "status": status, "elapsed_ms": elapsed_ms},
             )

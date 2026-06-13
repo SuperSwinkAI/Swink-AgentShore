@@ -14,7 +14,6 @@ VALID_COMMANDS: frozenset[str] = frozenset(
         "shutdown",
         "drain",
         "hard_stop",
-        "adjust_budget",
         "add_budget",
         "rescan_issues",
         "feedback_response",
@@ -24,6 +23,7 @@ VALID_COMMANDS: frozenset[str] = frozenset(
         "archive_session",
         "list_archives",
         "get_state",
+        "reload_config",
     }
 )
 
@@ -31,16 +31,13 @@ VALID_COMMANDS: frozenset[str] = frozenset(
 _REQUIRED_PARAMS: dict[str, frozenset[str]] = {
     "feedback_response": frozenset({"action"}),
     "verification_response": frozenset({"checkpoint_id", "passed"}),
-    "adjust_budget": frozenset({"delta_usd"}),
 }
 
 _BOOL_PARAMS: dict[str, frozenset[str]] = {
     "drain": frozenset({"end_session_report", "open_report"}),
 }
 
-_NUMERIC_POSITIVE_PARAMS: dict[str, frozenset[str]] = {
-    "adjust_budget": frozenset({"delta_usd"}),
-}
+_NUMERIC_POSITIVE_PARAMS: dict[str, frozenset[str]] = {}
 
 # Commands that require at least one of a set of optional positive-number params.
 # Each named field, when present, must be a finite positive number; ``delta_minutes``

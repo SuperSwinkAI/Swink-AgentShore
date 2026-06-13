@@ -141,7 +141,6 @@ def test_snapshot_time_fields_when_enabled() -> None:
         total_plays=10,
         total_cost=50.0,
         budget_cfg=cfg,
-        extra_budget=0.0,
         elapsed_minutes=100.0,
     )
     assert snap.time_enabled is True
@@ -156,7 +155,6 @@ def test_snapshot_time_remaining_clamped_at_zero() -> None:
         total_plays=1,
         total_cost=0.0,
         budget_cfg=cfg,
-        extra_budget=0.0,
         elapsed_minutes=120.0,  # past the cap
     )
     assert snap.time_remaining_minutes == 0.0
@@ -168,7 +166,6 @@ def test_snapshot_time_fields_none_when_disabled() -> None:
         total_plays=1,
         total_cost=10.0,
         budget_cfg=cfg,
-        extra_budget=0.0,
         elapsed_minutes=100.0,
     )
     assert snap.time_enabled is False

@@ -6,8 +6,8 @@ in the collector; separated so the aggregation modules stay side-effect-free.
 
 from __future__ import annotations
 
-import asyncio
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,23 +24,17 @@ def _repo_url_from_github_child_url(url: str) -> str | None:
 
 
 async def _git_remote_url(project_path: str) -> str | None:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            project_path,
-            "config",
-            "--get",
-            "remote.origin.url",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-    except OSError:
+    from agentshore import command
+
+    result = await command.git(
+        "config",
+        "--get",
+        "remote.origin.url",
+        cwd=Path(project_path),
+    )
+    if result.returncode != 0:
         return None
-    stdout, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return None
-    remote = stdout.decode(errors="replace").strip()
+    remote = result.stdout.strip()
     return remote or None
 
 

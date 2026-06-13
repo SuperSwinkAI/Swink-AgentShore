@@ -20,7 +20,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.state import AgentStatus, AgentType
+from agentshore.state import AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -171,12 +171,17 @@ async def test_dispatch_success_updates_handle_and_store(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
     agent_id = handle.agent_id
+    # A prior stream-idle timeout left the storm counter elevated; a successful
+    # dispatch must reset it so a one-off stall doesn't accumulate toward the
+    # bench limit (#161).
+    handle.consecutive_timeouts = 3
 
     result = await mgr.dispatch(agent_id, "do the work")
 
     assert result.exit_code == 0
     assert result.tokens_in == 500
     assert result.tokens_out == 200
+    assert handle.consecutive_timeouts == 0
 
     # Parse the raw output using the shared result parser
     sr = parse_skill_result(result.raw_output)
@@ -438,6 +443,7 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.status == AgentStatus.IDLE
     assert handle.last_error_class == "timeout_transient"
     assert handle.timeout_count == 1
+    assert handle.consecutive_timeouts == 1
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +510,140 @@ async def test_clear_unknown_agent_raises(store: DataStore, tmp_path: Path) -> N
     mgr = _make_manager(store, tmp_path)
     with pytest.raises(PreconditionFailed, match="Unknown agent_id"):
         await mgr.clear("does-not-exist")
+
+
+async def test_clear_refuses_to_kill_agent_with_active_play(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """clear() without force=True must not kill an agent with an active in-flight play.
+
+    This is the #93 regression guard: reconcile_state was calling clear() on agents
+    that were mid-play.  The guard prevents any non-teardown caller from doing that.
+    """
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    # Simulate the agent being mid-play (as dispatch() would set it).
+    handle.start_play(
+        play_type=AgentType.CODEX,  # type: ignore[arg-type]  # value only matters for message
+        play_id=42,
+        started_at="2026-06-09T00:00:00+00:00",
+        issue_number=7,
+        pr_number=None,
+        branch="feature/foo",
+    )
+    assert handle.current_play_id == 42
+
+    with pytest.raises(PreconditionFailed, match="active in-flight play"):
+        await mgr.clear(agent_id)
+
+    # Agent must still be alive.
+    assert agent_id in mgr.handles
+
+
+async def test_clear_force_bypasses_active_play_guard(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """clear(force=True) must succeed even when the agent has an active play.
+
+    This preserves the session-teardown path (drain) which cancels asyncio tasks
+    first and then needs to hard-clear every agent regardless of play state.
+    """
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    handle.start_play(
+        play_type=AgentType.CODEX,  # type: ignore[arg-type]
+        play_id=99,
+        started_at="2026-06-09T00:00:00+00:00",
+        issue_number=None,
+        pr_number=None,
+        branch=None,
+    )
+    assert handle.current_play_id == 99
+
+    # Must not raise.
+    await mgr.clear(agent_id, force=True)
+
+    assert agent_id not in mgr.handles
+
+
+async def test_clear_allows_agent_whose_inflight_play_is_end_agent(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """An agent whose in-flight play is END_AGENT is clearable without force.
+
+    #154 regression guard: the executor marks the retirement target with the
+    end_agent play's own marker before the play body runs, so that marker must
+    never block the retirement it belongs to — even if a caller forgets
+    force=True.
+    """
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    # Simulate the executor's _mark_agent_current_play for an end_agent play.
+    handle.start_play(
+        play_type=PlayType.END_AGENT,
+        play_id=7,
+        started_at="2026-06-10T00:00:00+00:00",
+        issue_number=None,
+        pr_number=None,
+        branch=None,
+    )
+    assert handle.current_play_id == 7
+
+    # Must not raise despite force defaulting to False.
+    await mgr.clear(agent_id)
+
+    assert agent_id not in mgr.handles
+
+
+async def test_active_play_agent_ids_reflects_live_state(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """active_play_agent_ids() returns only agents with a non-None current_play_id."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle_a = await mgr.instantiate(AgentType.CODEX)
+    handle_b = await mgr.instantiate(AgentType.CODEX)
+
+    # Initially no active plays.
+    assert mgr.active_play_agent_ids() == frozenset()
+
+    # Give handle_a an active play.
+    handle_a.start_play(
+        play_type=AgentType.CODEX,  # type: ignore[arg-type]
+        play_id=1,
+        started_at="2026-06-09T00:00:00+00:00",
+        issue_number=None,
+        pr_number=None,
+        branch=None,
+    )
+
+    active = mgr.active_play_agent_ids()
+    assert handle_a.agent_id in active
+    assert handle_b.agent_id not in active
+
+    # Give handle_b one too.
+    handle_b.start_play(
+        play_type=AgentType.CODEX,  # type: ignore[arg-type]
+        play_id=2,
+        started_at="2026-06-09T00:00:00+00:00",
+        issue_number=None,
+        pr_number=None,
+        branch=None,
+    )
+    active = mgr.active_play_agent_ids()
+    assert handle_a.agent_id in active
+    assert handle_b.agent_id in active
+
+    # Clear handle_a's play.
+    handle_a.clear_play()
+    active = mgr.active_play_agent_ids()
+    assert handle_a.agent_id not in active
+    assert handle_b.agent_id in active
 
 
 async def test_clear_handles_concurrent_process_null(

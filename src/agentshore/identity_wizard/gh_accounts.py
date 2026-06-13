@@ -7,10 +7,9 @@ regexes, and the PAT heuristic.
 from __future__ import annotations
 
 import re
-import subprocess  # nosec B404
 from dataclasses import dataclass
 
-from agentshore.environment import resolve_executable
+from agentshore import command
 
 
 @dataclass(frozen=True)
@@ -80,18 +79,8 @@ def detect_gh_accounts() -> list[GhAccount]:
 
     Empty list if gh is missing or no accounts are logged in.
     """
-    gh_path = resolve_executable("gh")
-    if gh_path is None:
-        return []
-    try:
-        result = subprocess.run(  # nosec B603
-            [gh_path, "auth", "status", "-a"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (subprocess.SubprocessError, OSError):
+    result = command.gh_sync("auth", "status", "-a", timeout_seconds=10.0)
+    if result.tool_missing:
         return []
     # `gh auth status` writes to stderr historically and stdout in newer
     # versions; combine both to be safe.

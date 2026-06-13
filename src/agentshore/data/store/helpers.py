@@ -75,7 +75,18 @@ _PULL_REQUEST_UPSERT_SQL = f"""
             excluded.author_agent_type
         ),
         created_at = COALESCE(excluded.created_at, pull_requests.created_at),
-        merged_at = COALESCE(excluded.merged_at, pull_requests.merged_at),
+        -- merged_at is valid only while the PR is actually MERGED. A GitHub
+        -- refresh overwrites state above (state = excluded.state); preserving a
+        -- prior merged_at via COALESCE when the refreshed state is NOT merged
+        -- leaves a phantom (an optimistic mark_pr_merged write-through that the
+        -- merge never actually completed — #344). Clear it whenever GitHub no
+        -- longer reports the PR as merged so the stale timestamp can't mask the
+        -- live blocked state; keep the precise timestamp while it stays merged.
+        merged_at = CASE
+            WHEN lower(excluded.state) = 'merged'
+                THEN COALESCE(excluded.merged_at, pull_requests.merged_at)
+            ELSE NULL
+        END,
         head_sha = COALESCE(excluded.head_sha, pull_requests.head_sha),
         mergeable = COALESCE(excluded.mergeable, pull_requests.mergeable),
         base_ref = COALESCE(excluded.base_ref, pull_requests.base_ref),

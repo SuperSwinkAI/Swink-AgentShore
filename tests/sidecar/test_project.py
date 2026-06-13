@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import cast
 
@@ -154,7 +155,7 @@ def test_deselect_is_noop_when_unset() -> None:
 
 def test_inspect_without_active_raises() -> None:
     with pytest.raises(project_rpc.ProjectError):
-        project_rpc.inspect()
+        asyncio.run(project_rpc.inspect())
 
 
 def test_inspect_returns_envelope_for_git_repo(git_repo: Path) -> None:
@@ -163,7 +164,7 @@ def test_inspect_returns_envelope_for_git_repo(git_repo: Path) -> None:
     (git_repo / ".beads").mkdir()
 
     project_rpc.select(str(git_repo))
-    payload = project_rpc.inspect()
+    payload = asyncio.run(project_rpc.inspect())
 
     assert payload["path"] == str(git_repo.resolve())
     assert payload["branch"] == "main"
@@ -185,13 +186,103 @@ def test_inspect_returns_envelope_for_git_repo(git_repo: Path) -> None:
     assert "git" in prereqs
 
 
+def test_prerequisites_uses_managed_bd_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_resolve(name: str) -> str | None:
+        if name in {"git", "gh"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    monkeypatch.setattr(project_rpc.subprocess_env, "resolve_tool", fake_resolve)
+    monkeypatch.setattr(
+        project_rpc, "resolve_bd_binary", lambda: r"C:\Users\x\AppData\Local\Programs\bd\bd.exe"
+    )
+
+    assert project_rpc._prerequisites() == {"git": True, "bd": True, "gh": True}  # noqa: SLF001
+
+
 def test_inspect_handles_non_git_path(tmp_path: Path) -> None:
     project_rpc.select(str(tmp_path))
-    payload = project_rpc.inspect()
+    payload = asyncio.run(project_rpc.inspect())
     identity = cast("dict[str, object]", payload["repo_identity"])
     assert identity["is_git"] is False
     assert payload["agentshore_yaml"] is None
     assert cast("dict[str, object]", payload["beads_status"])["initialised"] is False
+
+
+def test_run_git_times_out_instead_of_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Resolve git to a fixed fake path so the probe is hermetic regardless of
+    # whether git is installed on the test box, then make the spawn time out.
+    monkeypatch.setattr(
+        "agentshore.subprocess_env.resolve_tool",
+        lambda name: "/usr/bin/git" if name == "git" else None,
+    )
+
+    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["git", "rev-parse", "HEAD"], timeout=0.01)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = project_rpc._run_git(  # noqa: SLF001 - regression coverage for probe boundary
+        ["rev-parse", "HEAD"],
+        tmp_path,
+        timeout_seconds=0.01,
+    )
+
+    assert result.returncode == project_rpc.GIT_TIMEOUT_RETURN_CODE
+    assert "timed out" in result.stderr
+
+
+def test_inspect_treats_git_probe_timeout_as_unknown_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_git(
+        args: list[str],
+        cwd: Path,
+        *,
+        timeout_seconds: float = project_rpc.GIT_PROBE_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout_seconds
+        if args == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(
+                ["git", *args],
+                project_rpc.GIT_TIMEOUT_RETURN_CODE,
+                stdout="",
+                stderr="git rev-parse HEAD timed out",
+            )
+        return subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(project_rpc, "_run_git", fake_run_git)
+
+    project_rpc.select(str(tmp_path))
+    payload = asyncio.run(project_rpc.inspect())
+
+    identity = cast("dict[str, object]", payload["repo_identity"])
+    assert identity["is_git"] is True
+    assert identity["root"] == str(tmp_path.resolve())
+    assert identity["head_sha"] == ""
+    assert "timed out" in cast("str", identity["probe_error"])
+
+
+def test_inspect_times_out_slow_readiness_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow_repo_identity(_path: Path) -> dict[str, object]:
+        time.sleep(5)
+        return {"is_git": False}
+
+    monkeypatch.setattr(project_rpc, "_repo_identity", slow_repo_identity)
+    project_rpc.select(str(tmp_path))
+
+    started = time.monotonic()
+    payload = asyncio.run(project_rpc.inspect())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    identity = cast("dict[str, object]", payload["repo_identity"])
+    assert identity["is_git"] is True
+    assert "timed out" in cast("str", identity["probe_error"])
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +292,7 @@ def test_inspect_handles_non_git_path(tmp_path: Path) -> None:
 
 def test_branches_lists_local_and_remote(git_repo: Path) -> None:
     project_rpc.select(str(git_repo))
-    rows = project_rpc.branches()
+    rows = asyncio.run(project_rpc.branches())
 
     names = {row["name"] for row in rows}
     assert "main" in names
@@ -217,32 +308,90 @@ def test_branches_lists_local_and_remote(git_repo: Path) -> None:
     assert feature_row["is_current"] is False
 
 
-def test_branches_computes_ahead_behind(git_repo: Path) -> None:
-    # Add an extra commit on main locally; it should be 1 ahead of origin/main.
+def test_branches_passive_load_returns_null_ahead_behind(git_repo: Path) -> None:
+    """Default branches() path returns ahead/behind=None — never fabricated 0."""
+    project_rpc.select(str(git_repo))
+
+    rows = asyncio.run(project_rpc.branches())
+
+    assert {row["name"] for row in rows} >= {"main", "feature/x"}
+    assert all(row["ahead"] is None and row["behind"] is None for row in rows)
+
+
+def test_branches_refresh_reports_ahead_behind(git_repo: Path) -> None:
+    # Add an extra commit on main locally. Explicit refresh computes actual
+    # ahead/behind values (non-None) via rev-list.
     (git_repo / "extra.txt").write_text("e\n")
     _git(["add", "extra.txt"], git_repo)
     _git(["commit", "-m", "extra"], git_repo)
 
     project_rpc.select(str(git_repo))
-    rows = project_rpc.branches()
+    rows = asyncio.run(project_rpc.branches(refresh=True))
 
     main_row = next(r for r in rows if r["name"] == "main" and not r["is_remote"])
     assert main_row["ahead"] == 1
     assert main_row["behind"] == 0
 
 
-def test_branches_refresh_runs_fetch(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ahead_behind_sync_returns_none_on_git_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_ahead_behind_sync returns None when git rev-list fails."""
+
+    def fail_run_git(
+        args: list[str],
+        cwd: Path,
+        *,
+        timeout_seconds: float = project_rpc.GIT_PROBE_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["git", *args], 1, stdout="", stderr="error")
+
+    monkeypatch.setattr(project_rpc, "_run_git", fail_run_git)
+
+    result = project_rpc._ahead_behind_sync(  # noqa: SLF001 - regression coverage
+        tmp_path,
+        "main",
+        "origin/main",
+        timeout_seconds=5.0,
+    )
+    assert result is None
+
+
+def test_branches_refresh_fetches_and_bounds_git_probes(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project_rpc.select(str(git_repo))
-    seen: list[list[str]] = []
-    real_run = subprocess.run
+    calls: list[tuple[list[str], float]] = []
 
-    def fake_run(args, *a, **kw):  # type: ignore[no-untyped-def]
-        seen.append(list(args))
-        return real_run(args, *a, **kw)
+    def fake_run_git(
+        args: list[str],
+        _cwd: Path,
+        *,
+        timeout_seconds: float = project_rpc.GIT_PROBE_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((args, timeout_seconds))
+        stdout = ""
+        if args == ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]:
+            stdout = "origin/main\n"
+        elif args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            stdout = "main\n"
+        elif args == ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]:
+            stdout = "main\nfeature/x\n"
+        elif args == ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"]:
+            stdout = "origin/HEAD\norigin/main\norigin/feature/x\n"
+        elif args[0] == "rev-list":
+            stdout = "0 0\n"
+        return subprocess.CompletedProcess(["git", *args], 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    project_rpc.branches(refresh=True)
-    assert any(args[:3] == ["git", "fetch", "--prune"] for args in seen)
+    monkeypatch.setattr(project_rpc, "_run_git", fake_run_git)
+    rows = asyncio.run(project_rpc.branches(refresh=True))
+
+    assert rows[0]["name"] == "main"
+    assert calls[0][0] == ["fetch", "--prune", "origin"]
+    assert 0 < calls[0][1] <= project_rpc.BRANCH_LIST_TIMEOUT_SECONDS
+    called_args = [call[0] for call in calls]
+    assert ["for-each-ref", "--format=%(refname:short)", "refs/heads/"] in called_args
+    assert ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"] in called_args
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +414,17 @@ def test_set_target_branch_writes_yaml(git_repo: Path) -> None:
     assert "goals: ship it" in new_text
 
 
+def test_set_target_branch_uses_git_for_validation(git_repo: Path) -> None:
+    """set_target_branch validates via git check-ref-format + for-each-ref."""
+    yaml_path = git_repo / "agentshore.yaml"
+    yaml_path.write_text("project:\n  path: .\n")
+
+    project_rpc.select(str(git_repo))
+    result = project_rpc.set_target_branch("main")
+
+    assert result["target_branch"] == "main"
+
+
 def test_set_target_branch_creates_yaml_when_missing(git_repo: Path) -> None:
     yaml_path = git_repo / "agentshore.yaml"
     assert not yaml_path.exists()
@@ -274,11 +434,25 @@ def test_set_target_branch_creates_yaml_when_missing(git_repo: Path) -> None:
     assert "target_branch: main" in yaml_path.read_text()
 
 
-def test_set_target_branch_rejects_unknown_branch(git_repo: Path) -> None:
+def test_set_target_branch_rejects_unfetched_branch(git_repo: Path) -> None:
     (git_repo / "agentshore.yaml").write_text("project:\n")
     project_rpc.select(str(git_repo))
     with pytest.raises(project_rpc.ProjectError) as info:
-        project_rpc.set_target_branch("does-not-exist")
+        project_rpc.set_target_branch("does-not-exist-yet")
+    assert info.value.code == -32002
+
+
+@pytest.mark.parametrize(
+    "branch_name",
+    ["has space", "-bad", "bad..name", "bad@{name", "bad.lock", "bad\\name", "bad:name"],
+)
+def test_set_target_branch_rejects_invalid_branch_name(
+    git_repo: Path,
+    branch_name: str,
+) -> None:
+    project_rpc.select(str(git_repo))
+    with pytest.raises(project_rpc.ProjectError) as info:
+        project_rpc.set_target_branch(branch_name)
     assert info.value.code == -32002
 
 
@@ -810,7 +984,7 @@ def test_set_budget_capabilities_advertised() -> None:
 
 
 def test_dispatch_project_select_returns_result_envelope(tmp_path: Path) -> None:
-    response = handle_request(
+    response = _drive(
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -818,7 +992,6 @@ def test_dispatch_project_select_returns_result_envelope(tmp_path: Path) -> None
             "params": {"path": str(tmp_path)},
         }
     )
-    assert response is not None
     assert "result" in response
     result = cast("dict[str, object]", response["result"])
     assert result["path"] == str(tmp_path.resolve())
@@ -861,16 +1034,14 @@ def test_dispatch_project_select_rejects_switch_while_session_active(tmp_path: P
 
 
 def test_dispatch_project_inspect_without_active() -> None:
-    response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "project.inspect"})
-    assert response is not None
+    response = _drive({"jsonrpc": "2.0", "id": 1, "method": "project.inspect"})
     assert "error" in response
     assert response["error"]["code"] == ERR_NO_ACTIVE_PROJECT
 
 
 def test_dispatch_project_branches_without_active_remaps_to_public_code() -> None:
     """project.branches must surface ERR_NO_ACTIVE_PROJECT, not internal -32004."""
-    response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "project.branches"})
-    assert response is not None
+    response = _drive({"jsonrpc": "2.0", "id": 1, "method": "project.branches"})
     assert "error" in response
     assert response["error"]["code"] == ERR_NO_ACTIVE_PROJECT
 
@@ -892,7 +1063,7 @@ def test_dispatch_project_set_target_branch_without_active_remaps_to_public_code
 
 def test_dispatch_project_branches_rejects_non_bool_refresh(tmp_path: Path) -> None:
     project_rpc.select(str(tmp_path))
-    response = handle_request(
+    response = _drive(
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -900,7 +1071,7 @@ def test_dispatch_project_branches_rejects_non_bool_refresh(tmp_path: Path) -> N
             "params": {"refresh": "yes"},
         }
     )
-    assert response is not None
+    assert "error" in response
     assert response["error"]["code"] == INVALID_PARAMS
 
 
@@ -1029,7 +1200,7 @@ def test_unknown_project_method_falls_through_to_method_not_found() -> None:
 
 def test_request_payload_is_json_serialisable(git_repo: Path) -> None:
     project_rpc.select(str(git_repo))
-    response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "project.inspect"})
+    response = _drive({"jsonrpc": "2.0", "id": 1, "method": "project.inspect"})
     json.dumps(response)
 
 
@@ -1057,6 +1228,43 @@ def test_dispatch_project_select_response_includes_inspect_envelope(git_repo: Pa
     assert identity["is_git"] is True
     # ``inspect`` must reflect the just-selected project, not any prior slot.
     assert inspect_payload["branch"] == "main"
+
+
+def test_dispatch_project_select_can_skip_inspect_for_desktop_fast_path(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chooser can bind the active path without waiting on readiness probes."""
+
+    def fail_inspect() -> dict[str, object]:
+        raise AssertionError("project.inspect should not run")
+
+    monkeypatch.setattr(project_rpc, "inspect", fail_inspect)
+
+    response = _drive(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "project.select",
+            "params": {"path": str(git_repo), "include_inspect": False},
+        }
+    )
+    assert "result" in response
+    result = cast("dict[str, object]", response["result"])
+    assert result == {"path": str(git_repo.resolve())}
+
+
+def test_dispatch_project_select_rejects_non_bool_include_inspect(tmp_path: Path) -> None:
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "project.select",
+            "params": {"path": str(tmp_path), "include_inspect": "no"},
+        }
+    )
+    assert response is not None
+    assert "error" in response
+    assert response["error"]["code"] == INVALID_PARAMS
 
 
 def test_dispatch_project_select_switch_closes_existing_data_store(tmp_path: Path) -> None:

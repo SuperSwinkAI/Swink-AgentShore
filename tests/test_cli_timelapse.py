@@ -9,6 +9,7 @@ or a capture error must never block start/stop).
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -26,7 +27,9 @@ from agentshore.timelapse import TimelapseError, TimelapseRun
 
 @pytest.fixture
 def sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
-    d = Path(tempfile.mkdtemp(prefix="tl_sessions_", dir="/tmp"))
+    # POSIX uses /tmp to keep AF_UNIX socket paths short; Windows has no /tmp.
+    tmp_root = None if sys.platform.startswith("win") else "/tmp"
+    d = Path(tempfile.mkdtemp(prefix="tl_sessions_", dir=tmp_root))
     monkeypatch.setattr(sp, "_SESSIONS_DIR", d)
     return d
 

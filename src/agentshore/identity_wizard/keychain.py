@@ -1,13 +1,17 @@
 """OS keychain / keyring helpers for the identity wizard.
 
-All keyring imports are lazy so the wizard degrades gracefully when the
-``keyring`` library or an OS credential backend is unavailable.
+All keyring operations route through :mod:`agentshore.keyring_child` — the
+single killable child-process implementation — so the "keyring can wedge" fix
+applies uniformly.  Functions that only need to introspect the backend *type*
+(for UI labels) still do a direct non-blocking import; they never call
+``get_password`` or ``set_password`` directly.
 """
 
 from __future__ import annotations
 
 import sys
 
+from agentshore import keyring_child
 from agentshore.identity_names import (
     canonical_keychain_service,
     keychain_service_for_login,
@@ -16,66 +20,44 @@ from agentshore.identity_names import (
 
 
 def _keychain_backend_label() -> str | None:
-    try:
-        import keyring
-        from keyring.backends.fail import Keyring as FailKeyring
-    except ImportError:
+    """Return a human-readable keyring backend label, or ``None`` if unavailable."""
+    backend_name = keyring_child.keyring_backend_name()
+    if not backend_name or backend_name.startswith("unavailable"):
         return None
-    backend = keyring.get_keyring()
-    if isinstance(backend, FailKeyring):
+    # "FailKeyring" is the keyring sentinel that means "no working backend".
+    if "fail" in backend_name.casefold():
         return None
-    cls = type(backend).__name__
     if sys.platform == "darwin":
-        return f"macOS Keychain ({cls})"
+        return f"macOS Keychain ({backend_name})"
     if sys.platform.startswith("win"):
-        return f"Windows Credential Manager ({cls})"
-    return f"OS credential store ({cls})"
+        return f"Windows Credential Manager ({backend_name})"
+    return f"OS credential store ({backend_name})"
 
 
 def _store_in_keychain(service: str, token: str) -> tuple[bool, str]:
     try:
-        import keyring
-        from keyring.errors import KeyringError
-    except ImportError:
-        return False, "keyring library not installed"
-    try:
-        keyring.set_password(service, service, token)
-    except KeyringError as exc:
+        keyring_child.keyring_set(service, token)
+    except keyring_child.KeyringTimeoutError as exc:
+        return False, f"keyring write timed out: {exc}"
+    except RuntimeError as exc:
         return False, f"keyring write failed: {exc}"
     return True, f"Stored under service {service!r} ({_keychain_backend_label()})"
 
 
 def _migrate_keychain_token(from_service: str, to_service: str) -> bool:
     """Copy a token from one keychain service to another. Returns True on success."""
-    try:
-        import keyring
-        from keyring.errors import KeyringError
-    except ImportError:
-        return False
-    try:
-        token = keyring.get_password(from_service, from_service)
-    except KeyringError:
-        return False
+    token = keyring_child.keyring_get(from_service)
     if not token or not token.strip():
         return False
     try:
-        keyring.set_password(to_service, to_service, token)
-    except KeyringError:
+        keyring_child.keyring_set(to_service, token)
+    except Exception:
         return False
     return True
 
 
 def _keychain_has_token(service: str) -> bool:
-    try:
-        import keyring
-        from keyring.errors import KeyringError
-    except ImportError:
-        return False
-    try:
-        token = keyring.get_password(service, service)
-    except KeyringError:
-        return False
-    return bool(token and token.strip())
+    return keyring_child.keychain_has_token(service)
 
 
 def _managed_keychain_service(login: str, repo_name_with_owner: str | None) -> str:

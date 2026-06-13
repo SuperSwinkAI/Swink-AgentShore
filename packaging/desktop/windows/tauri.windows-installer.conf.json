@@ -1,0 +1,8 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build:tauri-frontend"
+  },
+  "bundle": {
+    "externalBin": []
+  }
+}

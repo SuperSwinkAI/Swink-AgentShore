@@ -13,14 +13,17 @@ boundaries and the session-start sweeper.
 
 from __future__ import annotations
 
-import contextlib
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
+from agentshore import command
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from agentshore.command import CommandResult
 
 _logger = get_logger(__name__)
 
@@ -43,7 +46,7 @@ def _run_git(
     cwd: Path,
     *,
     timeout: float = 10.0,
-) -> subprocess.CompletedProcess[str]:
+) -> CommandResult:
     """Run ``git`` synchronously in *cwd* and capture text output.
 
     Returned ``returncode`` is non-zero on failure; callers branch on it
@@ -51,13 +54,7 @@ def _run_git(
     orchestrator's main loop. Timeout protects against hung git processes
     (e.g. an interactive credential prompt sneaking in).
     """
-    return subprocess.run(  # noqa: S603, S607 — fixed argv, no shell
-        ["git", "-C", str(cwd), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    return command.git_sync(*args, cwd=cwd, timeout_seconds=timeout)
 
 
 def resolve_default_branch(repo_root: Path) -> tuple[str, bool]:
@@ -72,10 +69,7 @@ def resolve_default_branch(repo_root: Path) -> tuple[str, bool]:
     1. ``git symbolic-ref refs/remotes/origin/HEAD`` (the GitHub default).
     2. Fallback to :data:`DEFAULT_BRANCH_FALLBACK` with ``assumed=True``.
     """
-    try:
-        result = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo_root)
-    except (OSError, subprocess.SubprocessError):
-        return DEFAULT_BRANCH_FALLBACK, True
+    result = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo_root)
     if result.returncode == 0:
         ref = result.stdout.strip()
         prefix = "refs/remotes/origin/"
@@ -94,10 +88,7 @@ def current_head_ref(repo_root: Path) -> str | None:
     boundary guard treats both cases identically — any normal play should
     leave HEAD on a branch.
     """
-    try:
-        result = _run_git(["symbolic-ref", "HEAD"], repo_root)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    result = _run_git(["symbolic-ref", "HEAD"], repo_root)
     if result.returncode != 0:
         return None
     ref = result.stdout.strip()
@@ -125,10 +116,7 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     """
 
     def _checkout() -> bool:
-        try:
-            result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
-        except (OSError, subprocess.SubprocessError):
-            return False
+        result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
         return result.returncode == 0
 
     if _checkout():
@@ -142,8 +130,7 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     for recovery in (["merge", "--abort"], ["reset", "--hard"]):
         if recovery == ["merge", "--abort"] and not merge_in_progress:
             continue
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_git(recovery, repo_root, timeout=30.0)
+        _run_git(recovery, repo_root, timeout=30.0)
         if _checkout():
             return True
     return _checkout()
@@ -287,13 +274,74 @@ def check_main_repo_branch_mutated(
     return True, post_ref, restored
 
 
+def _resolve_signing_key() -> str:
+    """Return the SSH signing key path to use, as a display string.
+
+    Checks ``gpg.ssh.signingKey`` in the global git config first, then probes
+    common default key filenames under ``~/.ssh``. Falls back to the generic
+    placeholder ``<your-signing-key>`` when nothing is found.
+    """
+    import pathlib
+
+    # Use the hardened git_sync wrapper (stdin=DEVNULL, CREATE_NO_WINDOW) rather
+    # than raw subprocess.run. In the desktop sidecar, the process's stdin is the
+    # live Tauri JSON-RPC pipe; git's MSYS2 runtime probes stdin on startup and
+    # wedges at 0 CPU forever when it inherits that pipe.
+    result = command.git_sync(
+        "config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+
+    ssh_dir = pathlib.Path.home() / ".ssh"
+    for name in ("id_ed25519", "id_ecdsa", "id_rsa"):
+        if (ssh_dir / name).exists():
+            return str(ssh_dir / name)
+
+    return "<your-signing-key>"
+
+
+def ssh_signing_setup_hint() -> str:
+    """Platform-appropriate command(s) to load an SSH signing key into the agent.
+
+    The macOS ``--apple-use-keychain`` flag does not exist on Windows or Linux,
+    so the user-facing fix text must vary by platform. On Windows the usual
+    blocker is that the OpenSSH ``ssh-agent`` service is not running.
+    """
+    key = _resolve_signing_key()
+    if sys.platform == "darwin":
+        return f"ssh-add --apple-use-keychain {key}"
+    if sys.platform.startswith("win"):
+        return (
+            f"Start-Service ssh-agent; ssh-add {key}  "
+            "(first time only: Set-Service ssh-agent -StartupType Manual)"
+        )
+    return f"ssh-add {key}"
+
+
+def ssh_signing_enabled(repo_root: Path) -> bool:
+    """True when the repo's effective git config enables SSH commit signing.
+
+    Checks ``commit.gpgsign`` (truthy) and ``gpg.format == ssh`` via the merged
+    git config (repo + global + system). The SSH-key pre-flight should only
+    fire for setups that actually sign commits — otherwise it cries wolf on the
+    majority of repos (and every Windows box) that commit unsigned. Returns
+    False on any git error.
+    """
+    gpgsign = _run_git(["config", "--type=bool", "--get", "commit.gpgsign"], repo_root)
+    if gpgsign.returncode != 0 or gpgsign.stdout.strip() != "true":
+        return False
+    fmt = _run_git(["config", "--get", "gpg.format"], repo_root)
+    return fmt.returncode == 0 and fmt.stdout.strip().lower() == "ssh"
+
+
 def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     """Attempt to load the SSH signing key from the macOS Keychain.
 
     Runs ``ssh-add -l`` to check if any identity is loaded. If not,
-    attempts ``ssh-add --apple-use-keychain ~/.ssh/id_ed25519`` (macOS)
-    or ``ssh-add ~/.ssh/id_ed25519`` (Linux/other) to load it
-    non-interactively.
+    resolves the signing key via ``_resolve_signing_key()`` (git config
+    ``gpg.ssh.signingKey`` → common key file probe) and attempts a
+    non-interactive ``ssh-add`` with the platform-appropriate flags.
 
     Returns ``(loaded, detail)`` where *loaded* is True when at least
     one identity is available after the attempt, and *detail* is a
@@ -319,6 +367,9 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                # Never inherit the sidecar's stdin (the live Tauri JSON-RPC
+                # pipe); a subprocess probing it can wedge the session (#155).
+                stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return False, f"ssh-add probe failed: {exc}"
@@ -334,15 +385,17 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     # Attempt non-interactive load from the platform keychain / default key.
     import pathlib
 
-    default_key = pathlib.Path.home() / ".ssh" / "id_ed25519"
+    key_str = _resolve_signing_key()
+    if key_str == "<your-signing-key>":
+        return False, "no identities loaded and no SSH signing key found under ~/.ssh"
+
+    default_key = pathlib.Path(key_str).expanduser()
     if not default_key.exists():
         return False, f"no identities loaded and {default_key} does not exist"
 
     system = platform.system()
     if system == "Darwin":
         add_cmd = [ssh_add, "--apple-use-keychain", str(default_key)]
-    elif system == "Windows":
-        add_cmd = [ssh_add, str(default_key)]
     else:
         add_cmd = [ssh_add, str(default_key)]
 
@@ -352,6 +405,10 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=10,
+            # A passphrase-protected key would otherwise prompt on the inherited
+            # stdin (the live Tauri JSON-RPC pipe); DEVNULL fails fast instead of
+            # contending the pipe (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"ssh-add load attempt failed: {exc}"

@@ -65,13 +65,12 @@ def dashboard(
       agentshore dashboard --socket /tmp/agentshore.sock --port 8080
     """
     import asyncio
-    import os
 
+    from agentshore.dashboard.lifecycle import claim_bridge_pid, supersede_prior_bridge
     from agentshore.session_path import (
         IpcEndpoint,
         discover_ipc_endpoint,
         session_dir,
-        write_dashboard_pid,
     )
 
     project_path = Path(project).resolve()
@@ -106,9 +105,14 @@ def dashboard(
         )
         raise SystemExit(1)
 
-    # Record this process's PID so a stale dashboard.pid from an earlier
-    # supervisor-launched sidecar can be distinguished from a manual restart.
-    write_dashboard_pid(project_path, os.getpid())
+    # Supersede any prior dashboard bridge for this project so launches don't
+    # accumulate orphaned (often wedged) listeners, then record our own real pid
+    # (this bridge is the single source of truth for dashboard.pid; the
+    # supervisor never pre-writes the trampoline pid). The Windows uv-trampoline
+    # self-kill guard lives inside supersede_prior_bridge.
+    if supersede_prior_bridge(project_path):
+        click.echo("Superseded a prior dashboard process for this project.")
+    claim_bridge_pid(project_path)
 
     from agentshore.dashboard import DashboardBridge
 

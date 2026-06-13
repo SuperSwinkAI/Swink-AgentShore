@@ -1,3 +1,4 @@
+import { AGENT_REGISTRY } from "../agentRegistry";
 import type { Tile } from "../office/layout";
 
 export enum CharacterState {
@@ -109,9 +110,10 @@ export interface AgentColors {
   label: string;
 }
 
-export const AGENT_COLORS: Record<string, AgentColors> = {
-  claude_code: { fill: "#E07B39", label: "C" },
-  codex: { fill: "#F4D44D", label: "X" },
-  gemini: { fill: "#4285F4", label: "G" },
-  grok: { fill: "#14B8A6", label: "K" },
-};
+// Derived from the canonical AGENT_REGISTRY — no second color definition needed.
+export const AGENT_COLORS: Record<string, AgentColors> = Object.fromEntries(
+  Object.entries(AGENT_REGISTRY).map(([key, entry]) => [
+    key,
+    { fill: entry.colorFill, label: entry.colorLabel },
+  ]),
+);

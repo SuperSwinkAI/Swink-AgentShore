@@ -5,18 +5,7 @@ import {
 } from "../office/layout";
 import type { Camera } from "../engine/camera";
 import { dashboardLogger } from "../logger";
-import claudeLargeSpriteUrl from "../assets/agents/v2/claude-large-humanoid.png";
-import claudeMediumSpriteUrl from "../assets/agents/v2/claude-medium-humanoid.png";
-import claudeSmallSpriteUrl from "../assets/agents/v2/claude-small-ball.png";
-import codexLargeSpriteUrl from "../assets/agents/v2/codex-large-humanoid.png";
-import codexMediumSpriteUrl from "../assets/agents/v2/codex-medium-humanoid.png";
-import codexSmallSpriteUrl from "../assets/agents/v2/codex-small-ball.png";
-import geminiLargeSpriteUrl from "../assets/agents/v2/gemini-large-humanoid.png";
-import geminiMediumSpriteUrl from "../assets/agents/v2/gemini-medium-humanoid.png";
-import geminiSmallSpriteUrl from "../assets/agents/v2/gemini-small-ball.png";
-import grokLargeSpriteUrl from "../assets/agents/v2/grok-large-humanoid.png";
-import grokMediumSpriteUrl from "../assets/agents/v2/grok-medium-humanoid.png";
-import grokSmallSpriteUrl from "../assets/agents/v2/grok-small-ball.png";
+import { AGENT_REGISTRY } from "../agentRegistry";
 import {
   type Character,
   type CharacterBubble,
@@ -69,30 +58,37 @@ function v2SpriteSpec(key: string, url: string): AgentSpriteSpec {
   };
 }
 
+// The sprite key is the asset filename stem (e.g. ".../grok-small-ball.png" →
+// "grok-small-ball"). The filename carries the canonical key — both the label
+// form (claude_code → claude) and the per-tier shape suffix (small → ball,
+// medium/large → humanoid) — so it stays in lockstep with the PNG assets
+// without a separate mapping.
+function spriteKeyFromUrl(url: string, fallback: string): string {
+  const file = url.split(/[?#]/)[0].split("/").pop() ?? "";
+  const stem = file.replace(/\.[a-z0-9]+$/i, "");
+  return stem || fallback;
+}
+
+// Derived from the canonical AGENT_REGISTRY — sprite specs are built once from
+// the registry entries, so adding a new agent type only requires updating the
+// registry and supplying the PNG assets.
 const V2_AGENT_SPRITE_SPECS: Partial<
   Record<string, Record<AgentModelTier, AgentSpriteSpec>>
-> = {
-  claude_code: {
-    small: v2SpriteSpec("claude-small-ball", claudeSmallSpriteUrl),
-    medium: v2SpriteSpec("claude-medium-humanoid", claudeMediumSpriteUrl),
-    large: v2SpriteSpec("claude-large-humanoid", claudeLargeSpriteUrl),
-  },
-  codex: {
-    small: v2SpriteSpec("codex-small-ball", codexSmallSpriteUrl),
-    medium: v2SpriteSpec("codex-medium-humanoid", codexMediumSpriteUrl),
-    large: v2SpriteSpec("codex-large-humanoid", codexLargeSpriteUrl),
-  },
-  gemini: {
-    small: v2SpriteSpec("gemini-small-ball", geminiSmallSpriteUrl),
-    medium: v2SpriteSpec("gemini-medium-humanoid", geminiMediumSpriteUrl),
-    large: v2SpriteSpec("gemini-large-humanoid", geminiLargeSpriteUrl),
-  },
-  grok: {
-    small: v2SpriteSpec("grok-small-ball", grokSmallSpriteUrl),
-    medium: v2SpriteSpec("grok-medium-humanoid", grokMediumSpriteUrl),
-    large: v2SpriteSpec("grok-large-humanoid", grokLargeSpriteUrl),
-  },
-};
+> = Object.fromEntries(
+  Object.entries(AGENT_REGISTRY)
+    .filter(([, entry]) => entry.spriteUrls !== null)
+    .map(([key, entry]) => {
+      const urls = entry.spriteUrls!;
+      return [
+        key,
+        {
+          small: v2SpriteSpec(spriteKeyFromUrl(urls.small, `${key}-small`), urls.small),
+          medium: v2SpriteSpec(spriteKeyFromUrl(urls.medium, `${key}-medium`), urls.medium),
+          large: v2SpriteSpec(spriteKeyFromUrl(urls.large, `${key}-large`), urls.large),
+        } satisfies Record<AgentModelTier, AgentSpriteSpec>,
+      ];
+    }),
+);
 
 const agentSprites = new Map<string, HTMLImageElement>();
 
@@ -336,7 +332,32 @@ function drawSpriteCharacter(
     bounds.footY + 2,
     zoom,
   );
-  drawBubble(ctx, char.bubble, sx + w / 2, sy - bob - 8 * zoom, zoom);
+  ctx.restore();
+}
+
+export function drawCharacterBubble(
+  ctx: CanvasRenderingContext2D,
+  char: Character,
+  zoom: number,
+  camera: Camera,
+): void {
+  if (char.npcKind || !char.bubble) return;
+
+  const bounds = characterScreenBounds(char, zoom, camera);
+  const bob =
+    char.state === CharacterState.WALK
+      ? Math.sin(char.animFrame * Math.PI) * 2 * zoom
+      : 0;
+
+  ctx.save();
+  ctx.globalAlpha = char.opacity;
+  drawBubble(
+    ctx,
+    char.bubble,
+    bounds.left + bounds.width / 2,
+    bounds.top - bob - 8 * zoom,
+    zoom,
+  );
   ctx.restore();
 }
 
@@ -416,7 +437,6 @@ function drawPlaceholderAgentCharacter(
     bounds.footY + 2,
     zoom,
   );
-  drawBubble(ctx, char.bubble, sx + w / 2, sy - bob - 8 * zoom, zoom);
   ctx.restore();
 }
 

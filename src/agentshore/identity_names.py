@@ -94,25 +94,17 @@ def resolve_github_login_for_token(token: str) -> str | None:
     or the ``gh`` CLI is unavailable. Used at identity-add time to catch
     typos before they're persisted to ``agentshore.yaml``.
     """
-    import os
-    import shutil
-    import subprocess  # noqa: S404
+    from agentshore import command
 
-    gh_bin = shutil.which("gh")
-    if gh_bin is None:
+    result = command.gh_sync(
+        "api",
+        "user",
+        "--jq",
+        ".login",
+        env_overlay={"GH_TOKEN": token, "GITHUB_TOKEN": token},
+        timeout_seconds=10.0,
+    )
+    if result.tool_missing or result.returncode != 0:
         return None
-    try:
-        proc = subprocess.run(  # noqa: S603 — resolved absolute path
-            [gh_bin, "api", "user", "--jq", ".login"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-            env={**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token},
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    login = proc.stdout.strip()
+    login = result.stdout.strip()
     return login or None

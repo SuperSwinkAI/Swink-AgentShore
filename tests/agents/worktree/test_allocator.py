@@ -376,3 +376,42 @@ async def test_ensure_worktree_uses_branch_when_not_checked_out_elsewhere(
     assert result.created is True
     assert result.detached is False
     assert _head_is_detached(target) is False
+
+
+@pytest.mark.asyncio
+async def test_run_git_pins_stdin_to_devnull(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A git child must never inherit the sidecar's stdin (the live Tauri
+    JSON-RPC pipe): Git-for-Windows' MSYS2 runtime wedges at 0 CPU probing that
+    contended pipe. Regression guard for the Windows worktree-reconcile hang
+    (the fix is ``stdin=DEVNULL``, independent of async-vs-sync).
+    """
+    import asyncio
+
+    from agentshore.agents.worktree import allocator
+
+    captured: dict[str, object] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:  # noqa: A002
+            return (b"", b"")
+
+        async def wait(self) -> int:
+            return 0
+
+        def kill(self) -> None:  # pragma: no cover - not reached on success
+            pass
+
+    async def fake_exec(*_args: object, **kwargs: object) -> _FakeProc:
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    rc, _out, _err = await allocator._run_git("worktree", "list", cwd=Path.cwd(), check=False)
+
+    assert rc == 0
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("stdin") is asyncio.subprocess.DEVNULL

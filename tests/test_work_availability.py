@@ -5,7 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agentshore.plays.candidates import build_candidate_plan
+from agentshore.github.labels import MANUAL_REQUIRED_LABEL
+from agentshore.plays.candidates import MAX_OPEN_PRS, build_candidate_plan
 from agentshore.state import (
     IssueSnapshot,
     OrchestratorState,
@@ -186,3 +187,50 @@ def test_ready_beads_tasks_without_actionable_candidate_do_not_block_terminal_no
 
     assert summary.ready_task_count == 1
     assert summary.terminal_no_work is True
+
+
+def test_unreviewed_pr_without_manual_required_is_reviewable() -> None:
+    # Baseline for the manual-required test below: an ordinary unreviewed PR
+    # (review_decision=None) IS a reviewable, actionable target.
+    summary = build_candidate_plan(
+        _state(graph=_seeded_graph(), pull_requests=[_pr(20)])
+    ).work_availability
+
+    assert summary.reviewable_pr_count == 1
+    assert summary.actionable_pr_work_count == 1
+    assert summary.manual_required_open_pr_count == 0
+    assert summary.terminal_no_work is False
+
+
+def test_manual_required_pr_is_not_reviewable_so_terminal_no_work() -> None:
+    # A manual-required PR is parked for a human: it must not leak into the
+    # reviewable set (the bug that pinned END_SESSION masked). With no other
+    # work, the session reaches terminal no-work.
+    summary = build_candidate_plan(
+        _state(graph=_seeded_graph(), pull_requests=[_pr(20, labels=[MANUAL_REQUIRED_LABEL])])
+    ).work_availability
+
+    assert summary.reviewable_pr_count == 0
+    assert summary.actionable_pr_work_count == 0
+    assert summary.manual_required_open_pr_count == 1
+    assert summary.terminal_no_work is True
+
+
+def test_pr_queue_human_blocked_at_cap_minus_one() -> None:
+    prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(MAX_OPEN_PRS - 1)]
+    summary = build_candidate_plan(
+        _state(graph=_seeded_graph(), pull_requests=prs)
+    ).work_availability
+
+    assert summary.manual_required_open_pr_count == MAX_OPEN_PRS - 1
+    assert summary.pr_queue_human_blocked is True
+
+
+def test_pr_queue_not_human_blocked_below_threshold() -> None:
+    prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(MAX_OPEN_PRS - 2)]
+    summary = build_candidate_plan(
+        _state(graph=_seeded_graph(), pull_requests=prs)
+    ).work_availability
+
+    assert summary.manual_required_open_pr_count == MAX_OPEN_PRS - 2
+    assert summary.pr_queue_human_blocked is False

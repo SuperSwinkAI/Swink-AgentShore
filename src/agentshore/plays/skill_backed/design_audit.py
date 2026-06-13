@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from agentshore.play_rules import DESIGN_AUDIT_COOLDOWN_PLAYS
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     BeadsInitializedGate,
@@ -23,12 +23,13 @@ if TYPE_CHECKING:
 class DesignAuditPlay(SkillBackedPlay):
     """Create GitHub/beads work items for gaps found in specs and design docs."""
 
-    gates = (
-        BeadsInitializedGate(),
-        InFlightGate(PlayType.DESIGN_AUDIT),
-        CapabilityGate("can_run_skill"),
-        CooldownGate(PlayType.DESIGN_AUDIT, plays=DESIGN_AUDIT_COOLDOWN_PLAYS),
-    )
+    def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
+        self.gates = (
+            BeadsInitializedGate(),
+            InFlightGate(PlayType.DESIGN_AUDIT),
+            CapabilityGate("can_run_skill"),
+            CooldownGate(PlayType.DESIGN_AUDIT, plays=cooldown_plays),
+        )
 
     @property
     def play_type(self) -> PlayType:

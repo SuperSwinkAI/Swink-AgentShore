@@ -128,29 +128,22 @@ def _wait_for_session_exit(project_path: Path) -> bool | None:
     (process exited on its own), ``False`` when an escalated hard stop succeeded,
     and ``None`` when that hard stop ran but the process is still alive (#31).
     """
-    import os
     import time
 
-    from agentshore.session_path import hard_stop_session, read_pid
+    from agentshore.session_path import _process_alive, hard_stop_session, read_pid
 
     pid = read_pid(project_path)
     if pid is None:
         return True
 
+    # NB: probe via _process_alive, never a bare ``os.kill(pid, 0)`` — on Windows
+    # signal 0 is CTRL_C_EVENT, so that "probe" delivers a Ctrl+C and its result
+    # reflects console-group membership, not liveness (see _process_alive_windows).
     interrupted = False
     try:
-        while True:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return True
-            except PermissionError:
-                click.echo(
-                    "Warning: cannot check PID ownership; escalating to hard stop...",
-                    err=True,
-                )
-                break
+        while _process_alive(pid):
             time.sleep(_DRAIN_WAIT_POLL_INTERVAL_S)
+        return True
     except KeyboardInterrupt:
         interrupted = True
 

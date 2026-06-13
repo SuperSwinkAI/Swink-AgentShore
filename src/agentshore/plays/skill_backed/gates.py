@@ -64,6 +64,7 @@ class CapabilityGate:
                 tasks_completed=a.tasks_completed,
                 tasks_failed=a.tasks_failed,
                 timeout_count=a.timeout_count,
+                consecutive_timeouts=a.consecutive_timeouts,
             )
             and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(self.capability, False))
         ]
@@ -101,6 +102,16 @@ class CooldownGate:
     """Mask for ``plays`` plays after the named play type last completed.
 
     Lifted from ``SkillBackedPlay._cooldown_check``.
+
+    Counts only *completed* occurrences: ``plays_since_last_play_type`` is built
+    from ended plays, and a just-completed play is bridged into it via
+    ``_recent_play_completions`` (closing the WAL-flush persist race that let
+    same-tick duplicates slip the cooldown). A same-type play that is still
+    *in flight* is owned by the sibling ``InFlightGate`` — every standard-cooldown
+    play declares both — so this gate intentionally does not re-mask it (doing so
+    would only emit a duplicate reason). The effective cooldown reaching this gate
+    is pinned by ``test_registry_cooldown_plumbing`` after the #344-session
+    finding that a stale build enforced ~20 instead of the configured value.
     """
 
     __slots__ = ("play_type", "plays")
@@ -222,6 +233,67 @@ class BeadsInitializedGate:
                 source=MaskSource.PRECONDITION,
             )
         return None
+
+
+class DependenciesResolvedGate:
+    """Mask if the selected candidate issue has unresolved blocked_by_ids.
+
+    When the beads graph is present, each ``GraphTask`` carries a
+    ``blocked_by_ids`` frozenset — the IDs of dependency tasks that are not yet
+    closed.  A non-empty set means the task is blocked and the issue linked to
+    it must not be dispatched: the agent would spend real API budget (typically
+    ~$0.27) before discovering the dependency is still open.
+
+    Gate behaviour:
+    - If ``state.graph`` is ``None`` (beads not initialised), pass — other
+      gates / candidate validity handle the no-graph case.
+    - If the graph has no tasks with ``blocked_by_ids``, pass.
+    - If *every* open issue is linked to a task with unresolved
+      ``blocked_by_ids``, mask — the play cannot make progress this tick.
+    - If at least one open issue has no unresolved dep, pass — the candidate
+      selector will pick that issue.
+
+    This is a play-level gate (state-only, no per-candidate view), so it masks
+    the whole play type only when every candidate would be dep-blocked.  The
+    per-candidate ``bead_blocked_issue_numbers`` filter in
+    ``PlayCandidateAnalyzer.issue_available_for_pickup / issue_available_for_plan``
+    is the fine-grained filter; this gate is the coarse-grained early exit that
+    prevents the play from being selected at all when nothing is workable.
+    """
+
+    __slots__ = ()
+
+    def __call__(self, state: OrchestratorState) -> MaskReason | None:
+        graph = state.graph
+        if graph is None or not graph.has_epics:
+            return None
+
+        # Build the set of issue numbers whose linked bead task has unresolved deps.
+        blocked_issue_numbers: set[int] = {
+            task.issue_number
+            for task in graph.tasks
+            if task.issue_number is not None and bool(task.blocked_by_ids)
+        }
+        if not blocked_issue_numbers:
+            return None  # no blocked tasks → nothing to gate
+
+        open_numbers = {i.issue_number for i in state.open_issues if i.state.upper() == "OPEN"}
+        if not open_numbers:
+            return None  # no open issues → CapabilityGate / candidate validity handles this
+
+        # If there is at least one open issue NOT in the blocked set, the play can proceed.
+        if open_numbers - blocked_issue_numbers:
+            return None
+
+        # Every open issue is dep-blocked.
+        return MaskReason(
+            text=(
+                f"all {len(open_numbers)} open issue(s) blocked by unresolved beads dependencies"
+                " — dispatch would discover this post-launch and waste agent budget"
+            ),
+            classification=MaskClassification.TRANSIENT,
+            source=MaskSource.PRECONDITION,
+        )
 
 
 class FirstRunWarmupGate:

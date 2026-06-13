@@ -27,6 +27,7 @@ from agentshore.config.models import (
     LoggingConfig,
     LoopDetectionConfig,
     ModelTierConfig,
+    PlayPacingConfig,
     PolicyMode,
     PPOConfig,
     ProjectConfig,
@@ -45,6 +46,7 @@ from agentshore.config.models import (
     WorktreeConfig,
 )
 from agentshore.errors import ConfigError
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,6 +75,7 @@ __all__ = [
     "ModelTierConfig",
     "PPOConfig",
     "PolicyMode",
+    "PlayPacingConfig",
     "ProjectConfig",
     "RewardConfig",
     "RLConfig",
@@ -208,6 +211,11 @@ agents:
     affinity: {}
     exclude: {}
 
+play_pacing:
+  # Standard post-run cooldown for heavyweight skill-backed plays such as
+  # cleanup, run_qa, design_audit, groom_backlog, calibrate_alignment, and prune.
+  standard_cooldown_plays: $STANDARD_PLAY_COOLDOWN_PLAYS
+
 circuit_breaker:
   failures: 3
   window_seconds: 300
@@ -316,7 +324,7 @@ socket: null
 # play_timeouts:
 #   issue_pickup: 3600
 #   unblock_pr: 5400
-"""
+""".replace("$STANDARD_PLAY_COOLDOWN_PLAYS", str(STANDARD_PLAY_COOLDOWN_PLAYS))
 
 
 # ---------------------------------------------------------------------------
