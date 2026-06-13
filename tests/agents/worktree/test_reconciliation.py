@@ -6,8 +6,10 @@ at a path where a prior session left an unregistered directory. The
 93 consecutive code_review failures observed in example-project session
 c78d7074 (2026-05-22). The behaviour now **deletes** a clean orphan and
 proceeds, so allocation converges to a clean registered worktree from any
-starting state. An orphan that still holds uncommitted work is preserved in
-place (never destroyed) and surfaced for manual resolution.
+starting state. An orphan that still holds uncommitted work is **quarantined**
+— its working tree is moved under ``.agentshore/reclaimed/`` (recoverable) and
+the orphan removed so allocation never wedges (#164); only a quarantine failure
+leaves it in place for manual resolution.
 
 These tests exercise the **real** ``git`` binary against the per-test
 ``main_repo`` + ``worktree_root`` fixtures from ``conftest.py``. No mocks
@@ -16,6 +18,7 @@ of git or filesystem — schema/git bugs that mocks would hide are surfaced.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -25,11 +28,23 @@ from agentshore.agents.worktree.allocator import (
     ReconcileReport,
     WorktreeAllocationFailed,
     _dispose_orphan,
+    _unique_reclaim_dest,
     ensure_worktree,
     reconcile_worktrees,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_unique_reclaim_dest_suffix_bumps_on_collision(tmp_path: Path) -> None:
+    """A second orphan with the same dir name lands at ``<name>-1``, not on top."""
+    root = tmp_path / "reclaimed"
+    root.mkdir()
+    assert _unique_reclaim_dest(root, "feature-x") == root / "feature-x"
+    (root / "feature-x").mkdir()
+    assert _unique_reclaim_dest(root, "feature-x") == root / "feature-x-1"
+    (root / "feature-x-1").mkdir()
+    assert _unique_reclaim_dest(root, "feature-x") == root / "feature-x-2"
 
 
 # --- _dispose_orphan ----------------------------------------------------------
@@ -49,16 +64,20 @@ async def test_dispose_orphan_deletes_clean_worktree(
     )
     assert target.exists()
 
-    result = await _dispose_orphan(main_repo=main_repo, path=target)
+    result = await _dispose_orphan(
+        main_repo=main_repo, path=target, reclaimed_root=worktree_root.parent / "reclaimed"
+    )
 
     assert result == "deleted"
     assert not target.exists()
 
 
-async def test_dispose_orphan_preserves_tracked_uncommitted_changes(
+async def test_dispose_orphan_quarantines_tracked_uncommitted_changes(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
-    """An orphan with uncommitted changes to a TRACKED file is preserved."""
+    """An orphan with uncommitted changes to a TRACKED file is quarantined, not
+    blocked: its working tree is moved under ``reclaimed/`` (recoverable) and the
+    orphan is removed so allocation can proceed (#164)."""
     target = worktree_root / "dirty-feature"
     await ensure_worktree(
         main_repo=main_repo,
@@ -68,14 +87,46 @@ async def test_dispose_orphan_preserves_tracked_uncommitted_changes(
         fetch=True,
     )
     # Modify a tracked file (README.md is committed on the base branch). Only
-    # changes to tracked files count as uncommitted work worth preserving.
+    # changes to tracked files count as uncommitted work worth recovering.
     readme = target / "README.md"
     readme.write_text(readme.read_text() + "locally modified, uncommitted\n")
 
-    result = await _dispose_orphan(main_repo=main_repo, path=target)
+    reclaimed_root = worktree_root.parent / "reclaimed"
+    result = await _dispose_orphan(main_repo=main_repo, path=target, reclaimed_root=reclaimed_root)
+
+    assert result == "quarantined"
+    assert not target.exists(), "orphan must be removed so allocation unblocks"
+    salvaged = reclaimed_root / "dirty-feature" / "README.md"
+    assert salvaged.exists(), "uncommitted work must be recoverable under reclaimed/"
+    assert "locally modified, uncommitted" in salvaged.read_text()
+
+
+async def test_dispose_orphan_preserves_when_quarantine_fails(
+    main_repo: Path, worktree_root: Path, remote_branch: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If quarantine itself fails, the dirty orphan is left in place (never lost)."""
+    target = worktree_root / "dirty-feature"
+    await ensure_worktree(
+        main_repo=main_repo,
+        worktree_path=target,
+        branch_name=remote_branch,
+        base_ref=f"origin/{remote_branch}",
+        fetch=True,
+    )
+    readme = target / "README.md"
+    readme.write_text(readme.read_text() + "locally modified, uncommitted\n")
+
+    async def fail_quarantine(*, main_repo: Path, path: Path, reclaimed_root: Path) -> bool:
+        return False
+
+    monkeypatch.setattr(alloc_mod, "_quarantine_dirty_orphan", fail_quarantine)
+
+    result = await _dispose_orphan(
+        main_repo=main_repo, path=target, reclaimed_root=worktree_root.parent / "reclaimed"
+    )
 
     assert result == "preserved"
-    assert target.exists()
+    assert target.exists(), "work must be left in place when quarantine fails"
     assert "locally modified, uncommitted" in readme.read_text()
 
 
@@ -105,7 +156,9 @@ async def test_dispose_orphan_deletes_untracked_only_worktree(
     (target / ".claude").mkdir()
     (target / ".claude" / "settings.json").write_text("{}\n")
 
-    result = await _dispose_orphan(main_repo=main_repo, path=target)
+    result = await _dispose_orphan(
+        main_repo=main_repo, path=target, reclaimed_root=worktree_root.parent / "reclaimed"
+    )
 
     assert result == "deleted"
     assert not target.exists()
@@ -118,7 +171,9 @@ async def test_dispose_orphan_deletes_non_git_debris(worktree_root: Path, main_r
     (debris / "target").mkdir()  # rebuildable build-cache stand-in
     (debris / "stale.txt").write_text("leftover\n")
 
-    result = await _dispose_orphan(main_repo=main_repo, path=debris)
+    result = await _dispose_orphan(
+        main_repo=main_repo, path=debris, reclaimed_root=worktree_root.parent / "reclaimed"
+    )
 
     assert result == "deleted"
     assert not debris.exists()
@@ -223,18 +278,59 @@ async def test_ensure_worktree_deletes_clean_orphan_at_target_path(
     assert not sibling.exists()
 
 
-async def test_ensure_worktree_raises_on_dirty_orphan_at_target(
+async def test_ensure_worktree_quarantines_dirty_orphan_and_proceeds(
     main_repo: Path,
     worktree_root: Path,
     remote_branch: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dirty orphan at the target path is preserved; allocate fails loudly."""
+    """When a dirty orphan at the target is quarantined, allocation proceeds —
+    no more "resolve manually" wedge (#164). The real move-then-remove is
+    covered by ``test_dispose_orphan_quarantines_tracked_uncommitted_changes``;
+    here we assert ``ensure_worktree`` treats ``"quarantined"`` as success.
+    """
     target = worktree_root / "feature-x"
     target.mkdir()
     (target / "uncommitted.txt").write_text("unsaved\n")
 
-    async def fake_dispose(*, main_repo: Path, path: Path) -> str:
+    captured: dict[str, Path] = {}
+
+    async def fake_dispose(*, main_repo: Path, path: Path, reclaimed_root: Path) -> str:
+        captured["reclaimed_root"] = reclaimed_root
+        # Stand in for the real quarantine: remove the orphan dir so the
+        # subsequent ``git worktree add`` has a clean target path.
+        shutil.rmtree(path, ignore_errors=True)
+        return "quarantined"
+
+    monkeypatch.setattr(alloc_mod, "_dispose_orphan", fake_dispose)
+
+    result = await ensure_worktree(
+        main_repo=main_repo,
+        worktree_path=target,
+        branch_name=remote_branch,
+        base_ref=f"origin/{remote_branch}",
+        fetch=True,
+    )
+
+    assert result.created is True
+    assert (target / ".git").exists(), "target should now be a fresh registered worktree"
+    # ensure_worktree derives the reclaimed root as a sibling of worktrees/.
+    assert captured["reclaimed_root"] == worktree_root.parent / "reclaimed"
+
+
+async def test_ensure_worktree_raises_when_quarantine_fails(
+    main_repo: Path,
+    worktree_root: Path,
+    remote_branch: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If quarantine fails, the dirty orphan is left in place and allocate fails
+    loudly with ``orphan_dirty_uncommitted`` (the rare last-resort path)."""
+    target = worktree_root / "feature-x"
+    target.mkdir()
+    (target / "uncommitted.txt").write_text("unsaved\n")
+
+    async def fake_dispose(*, main_repo: Path, path: Path, reclaimed_root: Path) -> str:
         return "preserved"
 
     monkeypatch.setattr(alloc_mod, "_dispose_orphan", fake_dispose)
@@ -248,7 +344,7 @@ async def test_ensure_worktree_raises_on_dirty_orphan_at_target(
             fetch=True,
         )
     assert excinfo.value.reason == "orphan_dirty_uncommitted"
-    assert target.exists(), "preserved dirty orphan must be left in place"
+    assert target.exists(), "dirty orphan must be left in place when quarantine fails"
 
 
 async def test_ensure_worktree_reuses_registered_worktree(
