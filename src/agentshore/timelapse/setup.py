@@ -407,6 +407,9 @@ async def _harden_windows_daemon_spawn(cwd: Path) -> None:
 
     Best-effort and Windows-only: the empty window is cosmetic, so a missing
     anchor or an unwritable global install must warn, never fail the install.
+
+    This is a stopgap for upstream Open-Agent-Tools/timelapse-capture#408 — once
+    a fixed release ships, bump ``_CLI_VERSION`` and delete this patch step.
     """
     if not sys.platform.startswith("win"):
         return
