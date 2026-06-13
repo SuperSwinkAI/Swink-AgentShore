@@ -598,6 +598,40 @@ async def test_dispatch_cli_does_not_resume_by_default(
     assert "-C" in captured[0]
 
 
+@pytest.mark.parametrize("identity_env", [None, {"GH_TOKEN": "tok"}])
+async def test_dispatch_cli_pins_noninteractive_git_editor(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_env: dict[str, str] | None,
+) -> None:
+    """Agent subprocesses run git rebase/commit inside skills; the env must
+    carry a non-interactive editor so a rebase-internal ``git commit -e`` can't
+    open vim and hang forever, leaking the worktree (#168). The editor must be
+    pinned with or without an identity overlay (None previously leaked raw
+    os.environ with no editor set)."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_kwargs.append(kwargs)
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, identity_env=identity_env)
+
+    assert result.exit_code == 0
+    env = captured_kwargs[0]["env"]
+    assert env is not None
+    assert env["GIT_EDITOR"] == "true"
+    assert env["GIT_SEQUENCE_EDITOR"] == "true"
+    if identity_env is not None:
+        assert env["GH_TOKEN"] == "tok"
+
+
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="prompt-on-stdin is Windows-only")
 async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
     monkeypatch: pytest.MonkeyPatch,
@@ -1386,10 +1420,18 @@ async def test_dispatch_cli_no_identity_env_inherits_parent(
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
     handle = _make_handle(agent_type=AgentType.CODEX)
 
+    monkeypatch.setenv("PRE_EXISTING", "kept")
     await dispatch_cli(handle, "prompt", cfg=cfg)
 
-    # When no identity_env is supplied, env=None so the child inherits parent.
-    assert captured["env"] is None
+    # With no identity_env the child still inherits the full parent environment
+    # — but env is now an explicit superset dict (not None) so the
+    # non-interactive git editor can be pinned to stop a rebase-internal
+    # ``git commit -e`` opening vim and hanging (#168).
+    env = captured["env"]
+    assert env is not None
+    assert env["PRE_EXISTING"] == "kept"
+    assert env["GIT_EDITOR"] == "true"
+    assert env["GIT_SEQUENCE_EDITOR"] == "true"
 
 
 async def test_dispatch_cli_identity_env_overlays_parent(

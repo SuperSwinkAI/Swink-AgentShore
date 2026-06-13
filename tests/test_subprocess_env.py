@@ -64,6 +64,27 @@ def test_hardened_env_git_is_non_interactive() -> None:
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_hardened_env_git_pins_noninteractive_editor() -> None:
+    # The git editor is a separate interactive surface from the credential
+    # prompt; without these a rebase-internal ``git commit -e`` opens vim and
+    # hangs forever on a detached subprocess, leaking the worktree (#168).
+    # ``true`` (not "") is the no-op editor git honours.
+    env = subprocess_env.hardened_env(for_git=True)
+    assert env[subprocess_env.GIT_EDITOR_ENV] == "true"
+    assert env[subprocess_env.GIT_SEQUENCE_EDITOR_ENV] == "true"
+
+
+def test_hardened_env_non_git_does_not_pin_editor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Don't let a host-level GIT_EDITOR leak in and mask the assertion.
+    monkeypatch.delenv(subprocess_env.GIT_EDITOR_ENV, raising=False)
+    monkeypatch.delenv(subprocess_env.GIT_SEQUENCE_EDITOR_ENV, raising=False)
+    env = subprocess_env.hardened_env(for_gh=True)
+    assert subprocess_env.GIT_EDITOR_ENV not in env
+    assert subprocess_env.GIT_SEQUENCE_EDITOR_ENV not in env
+
+
 def test_hardened_env_gh_disables_prompts_and_pager() -> None:
     env = subprocess_env.hardened_env(for_gh=True)
     assert env["GH_PROMPT_DISABLED"] == "1"
