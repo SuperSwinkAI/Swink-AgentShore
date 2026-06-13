@@ -183,6 +183,24 @@ def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     return any(sig in serialised for sig in _ALREADY_CLOSED_SIGNATURES)
 
 
+def _outcome_blocked_by_sibling_pr(outcome: PlayOutcome) -> bool:
+    """Return True when an unblock_pr outcome reports the target is gated on an
+    unmerged sibling PR (a structured ``blocked_by_pr`` artifact).
+
+    Such a failure is not the target PR's own fault — it is waiting on another
+    open PR that this dispatch could not finish merging. It must therefore NOT
+    tick the per-PR exhaustion counter or trip the ``manual-required`` park; the
+    PPO will pick the blocker as its own candidate, after which the target
+    becomes unblockable. ``PlayOutcome`` carries no structured ``blocked_by``
+    field, so the artifact is the signal (an error-text marker would risk
+    colliding with the ``_UNBLOCK_MANUAL_REQUIRED_MARKERS`` substring scan).
+    """
+    return any(
+        isinstance(artifact, dict) and artifact.get("type") == "blocked_by_pr"
+        for artifact in outcome.artifacts
+    )
+
+
 class _CompletionHost(Protocol):
     """Orchestrator runtime/control state read OR written live by :class:`CompletionProcessor`.
 
@@ -709,6 +727,18 @@ class CompletionProcessor:
         # match set and the counter never gets exercised again — so this
         # change costs nothing in the happy path.
         if completed_play_type == PlayType.UNBLOCK_PR and ctx.params.pr_number is not None:
+            # A target blocked only by an unmerged sibling PR is not at fault —
+            # do NOT count it toward exhaustion and do NOT park it. Otherwise a
+            # stacked/mutually-blocking PR is wrongly stamped manual-required
+            # after 3 dispatches that each failed solely because the sibling had
+            # not merged yet (the bug this whole change fixes).
+            if _outcome_blocked_by_sibling_pr(outcome):
+                _logger.info(
+                    "unblock_pr_blocked_by_sibling",
+                    session_id=self._session_id,
+                    pr_number=ctx.params.pr_number,
+                )
+                return
             exhausted = self._executor._resolver.record_unblock_pr_failure(ctx.params.pr_number)
             # Fast-path (#6): a failure that names a human/CI-infra blocker can
             # never be resolved by re-dispatching an agent, so mark it
