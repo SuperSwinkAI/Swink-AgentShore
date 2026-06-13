@@ -602,24 +602,61 @@ fn remove_dir_all(path: &Path, code: i32, label: &str) -> ProvisionResult<()> {
     })
 }
 
+#[cfg(windows)]
 pub(crate) fn agentshore_programdata_root() -> PathBuf {
     install_layout::agentshore_data_root()
 }
 
+#[cfg(windows)]
 pub(crate) fn managed_venv_path() -> PathBuf {
     install_layout::managed_venv_path()
 }
 
+#[cfg(windows)]
 pub(crate) fn managed_venv_python_path() -> PathBuf {
     install_layout::managed_venv_python_path()
 }
 
+#[cfg(windows)]
 pub(crate) fn machine_bin_path() -> PathBuf {
     install_layout::managed_bin_path()
 }
 
+#[cfg(windows)]
 pub(crate) fn runtime_dir() -> PathBuf {
     install_layout::runtime_dir()
+}
+
+// Non-Windows stubs. The provisioner is a Windows-only installer helper, but it
+// lives in the cross-platform desktop crate and so must still compile on
+// macOS/Linux. install_layout's machine paths are `#[cfg(target_os =
+// "windows")]`-only by design (ProgramData layout), so mirror that layout under
+// a temp root purely to satisfy the build — this path is never exercised on a
+// real macOS/Linux install, where the bundled .app/.deb does not run the
+// provisioner.
+#[cfg(not(windows))]
+pub(crate) fn agentshore_programdata_root() -> PathBuf {
+    std::env::temp_dir().join("agentshore")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn managed_venv_path() -> PathBuf {
+    agentshore_programdata_root().join("venv")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn managed_venv_python_path() -> PathBuf {
+    managed_venv_path().join("bin").join("python")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn machine_bin_path() -> PathBuf {
+    agentshore_programdata_root().join("bin")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn runtime_dir() -> PathBuf {
+    agentshore_programdata_root().join("runtime")
 }
 
 pub(crate) fn safe_log_name(step_name: &str) -> String {
