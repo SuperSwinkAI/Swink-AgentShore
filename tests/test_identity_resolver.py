@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import ssl
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -677,10 +678,11 @@ def test_verify_repo_access_uses_github_rest_api(
         def read(self) -> bytes:
             return json.dumps({"full_name": "Owner/Repo"}).encode("utf-8")
 
-    def fake_urlopen(request: Any, **_: Any) -> Response:
+    def fake_urlopen(request: Any, **kwargs: Any) -> Response:
         calls["url"] = request.full_url
         calls["authorization"] = request.get_header("Authorization")
         calls["user_agent"] = request.get_header("User-agent")
+        calls["context"] = kwargs.get("context")
         return Response()
 
     monkeypatch.setattr(identity_mod.command, "git_sync", fake_git_sync)
@@ -688,11 +690,25 @@ def test_verify_repo_access_uses_github_rest_api(
 
     identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
 
+    # A CA-backed SSL context must be supplied: the managed sidecar venv's Python
+    # ships no CA bundle, so urllib's default context fails with
+    # CERTIFICATE_VERIFY_FAILED. Regression guard for that bug.
+    context = calls.pop("context")
+    assert isinstance(context, ssl.SSLContext)
+    assert context.get_ca_certs(), "preflight SSL context has no CA certificates"
     assert calls == {
         "url": "https://api.github.com/repos/Owner/Repo",
         "authorization": "Bearer token-secret",
         "user_agent": "AgentShore",
     }
+
+
+def test_github_api_ssl_context_is_ca_backed() -> None:
+    # On macOS/Linux the preflight context must come from certifi (the managed
+    # venv Python has no usable system CA store); assert it has CAs loaded.
+    context = identity_mod._github_api_ssl_context()
+    assert isinstance(context, ssl.SSLContext)
+    assert context.get_ca_certs()
 
 
 def test_verify_repo_access_reports_github_api_denial_without_token(

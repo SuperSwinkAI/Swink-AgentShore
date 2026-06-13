@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -167,6 +169,23 @@ def _parse_github_remote_name(remote: str) -> str:
     return f"{owner}/{repo}"
 
 
+def _github_api_ssl_context() -> ssl.SSLContext:
+    """TLS context for the GitHub API preflight.
+
+    The managed sidecar venv's Python (uv / python-build-standalone) ships no CA
+    bundle, so urllib's default context fails with CERTIFICATE_VERIFY_FAILED
+    ("unable to get local issuer certificate"). Use certifi's bundle on
+    macOS/Linux; on Windows use native trust loading, since enterprise roots live
+    in the Windows certificate store rather than certifi (mirrors
+    ``beads.downloader._httpx_verify_config``).
+    """
+    if sys.platform.startswith("win"):
+        return ssl.create_default_context()
+    import certifi
+
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def _verify_github_repo_access_via_api(name_with_owner: str, token: str) -> None:
     owner, repo = name_with_owner.split("/", 1)
     url = (
@@ -186,6 +205,7 @@ def _verify_github_repo_access_via_api(name_with_owner: str, token: str) -> None
         with urllib.request.urlopen(  # nosec B310 - fixed GitHub API host.
             request,
             timeout=_REPO_ACCESS_TIMEOUT_SECONDS,
+            context=_github_api_ssl_context(),
         ) as response:
             status = getattr(response, "status", 200)
             body = response.read()
