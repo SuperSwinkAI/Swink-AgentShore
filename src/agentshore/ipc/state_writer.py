@@ -30,7 +30,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -43,12 +45,77 @@ _logger = structlog.get_logger(__name__)
 STATE_FILENAME = "dashboard_state.json"
 EVENTS_FILENAME = "dashboard_events.ndjson"
 
+# Windows file-locking tolerance. The dashboard bridge opens these files
+# read-only and closes them again on every poll; CPython's open() grants no
+# FILE_SHARE_DELETE, so while that momentary handle is live an ``os.replace``
+# or ``unlink`` of the target raises ``PermissionError`` (WinError 5/32) — a
+# POSIX rename-over-open has no such problem. The bridge's hold is sub-poll, so
+# a short bounded retry clears it; an orphaned prior-session bridge is the worst
+# case and must never crash the orchestrator. POSIX takes the single-shot path.
+_WIN_LOCK_RETRIES = 10
+_WIN_LOCK_BACKOFF_S = 0.02
+
+
+def _replace_with_retry(src: str, dst: Path) -> None:
+    """``os.replace`` that tolerates a momentary Windows reader lock on *dst*."""
+    if not sys.platform.startswith("win"):
+        os.replace(src, dst)
+        return
+    last: OSError | None = None
+    for _ in range(_WIN_LOCK_RETRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last = exc
+            time.sleep(_WIN_LOCK_BACKOFF_S)
+    assert last is not None
+    raise last
+
+
 # Rotation: when the events file exceeds ``_EVENTS_ROTATE_BYTES``, keep
 # only the trailing ``_EVENTS_ROTATE_KEEP_BYTES`` (rounded to a line
 # boundary). Historical events are recoverable from agentshore.db; the file
 # is a tail consumed by the dashboard, so unbounded retention is wasted.
 _EVENTS_ROTATE_BYTES = 5 * 1024 * 1024
 _EVENTS_ROTATE_KEEP_BYTES = 1 * 1024 * 1024
+
+
+def _unlink_best_effort(path: Path) -> None:
+    """Remove a stale prior-session file without ever crashing boot.
+
+    On Windows an orphaned prior-session dashboard bridge can still hold the
+    file (no FILE_SHARE_DELETE), so ``unlink`` raises ``PermissionError`` rather
+    than ``FileNotFoundError`` — which a bare ``suppress`` would not catch,
+    taking the orchestrator down on startup. Retry briefly, then give up
+    quietly: the fresh session coalesces the latest state on its first write, so
+    a lingering stale file is self-correcting.
+    """
+    retries = _WIN_LOCK_RETRIES if sys.platform.startswith("win") else 1
+    for attempt in range(retries):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 < retries:
+                time.sleep(_WIN_LOCK_BACKOFF_S)
+                continue
+            _logger.warning("state_writer.reset_unlink_failed", path=str(path))
+            return
+
+
+def reset_session_files(session_dir: Path) -> None:
+    """Remove a prior session's dashboard state/event files (best-effort).
+
+    Exposed at module scope so the reset-before-prime ordering can run from the
+    sidecar's start_bridge phase — before the embedded bridge primes — without
+    prematurely constructing a :class:`StateWriter`. The ``StateWriter``
+    constructor calls this too, so the orchestrator path stays self-resetting.
+    """
+    _unlink_best_effort(session_dir / STATE_FILENAME)
+    _unlink_best_effort(session_dir / EVENTS_FILENAME)
 
 
 class StateWriter:
@@ -74,13 +141,7 @@ class StateWriter:
         # so prior sessions for the same project leave events behind. The
         # bridge's prime-from-disk would otherwise replay a prior session's
         # `session_ended` and trigger uvicorn `should_exit` on startup.
-        self._reset_session_files()
-
-    def _reset_session_files(self) -> None:
-        with contextlib.suppress(FileNotFoundError):
-            self._state_path.unlink()
-        with contextlib.suppress(FileNotFoundError):
-            self._events_path.unlink()
+        reset_session_files(session_dir)
 
     @property
     def state_path(self) -> Path:
@@ -124,10 +185,16 @@ class StateWriter:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(blob)
-            os.replace(tmp_path, self._state_path)
-        except OSError:
+            _replace_with_retry(tmp_path, self._state_path)
+        except OSError as exc:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
+            if sys.platform.startswith("win"):
+                # A dropped snapshot is recoverable — state is coalesced, so the
+                # next write carries the latest. Never crash the orchestrator
+                # over a transient dashboard-reader lock on Windows.
+                _logger.warning("state_writer.write_state_failed", error=str(exc))
+                return
             raise
 
     def _sync_append_event(self, line: str) -> None:
@@ -173,7 +240,7 @@ class StateWriter:
             )
             with os.fdopen(fd, "wb") as fh:
                 fh.write(tail)
-            os.replace(tmp_path, self._events_path)
+            _replace_with_retry(tmp_path, self._events_path)
         except OSError as exc:
             _logger.warning("state_writer.rotate_write_failed", error=str(exc))
 

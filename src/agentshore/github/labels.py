@@ -32,6 +32,14 @@ PLANNED_LABELS: frozenset[str] = frozenset({"agentshore/planned", "agentshore/ha
 DISALLOWED_LABEL = "agentshore/disallowed"
 MANUAL_REQUIRED_LABEL = "agentshore/manual-required"
 
+# Applied to an issue the planner could not turn into an implementation plan
+# (too ambiguous / too large / needs a human to decompose). Stops
+# write_implementation_plan — and every other implementation-style play — from
+# re-selecting the same un-plannable issue every tick, which otherwise spams
+# comments and burns agent budget with no progress (#458). Cleared by a human
+# (or a grooming pass that splits the issue) removing the label.
+NEEDS_HUMAN_LABEL = "agentshore/needs-human"
+
 # Labels that AgentShore's own skills may add/remove during PR and issue
 # workflows. Bootstrap ensures these exist before agents attempt gh label ops.
 AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
@@ -39,6 +47,7 @@ AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
     (DEBUG_TRIGGER_LABEL, "d4c5f9"),
     (ROOT_CAUSE_FOUND_LABEL, "5319e7"),
     (MANUAL_REQUIRED_LABEL, "fbca04"),
+    (NEEDS_HUMAN_LABEL, "b60205"),
     ("agentshore/approved", "2ea44f"),
     ("agentshore/blocked", "d73a4a"),
     ("agentshore/review", "0366d6"),
@@ -63,7 +72,7 @@ AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
 # plays. ``agentshore/blocked`` is a broad legacy/manual gate; ``agentshore/disallowed``
 # is the terminal policy-out-of-scope gate.
 ISSUE_PICKUP_SKIP_LABELS: frozenset[str] = frozenset(
-    {"agentshore/blocked", DISALLOWED_LABEL, "agentshore/needs-refinement"}
+    {"agentshore/blocked", DISALLOWED_LABEL, "agentshore/needs-refinement", NEEDS_HUMAN_LABEL}
 )
 
 # Priority labels map to numeric ranks where lower = more urgent. The store's

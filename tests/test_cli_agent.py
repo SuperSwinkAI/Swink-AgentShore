@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,6 +33,25 @@ from agentshore.errors import (
 )
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
+
+
+@pytest.fixture(autouse=True)
+def _identity_executable_resolution(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep dispatch argv deterministic across hosts. On Windows,
+    _resolve_executable() rewrites a bare 'codex' to the real codex.CMD path
+    via shutil.which; pin which() to identity so argv assertions (e.g.
+    argv[0] == 'codex') hold regardless of what npm shims are installed. The
+    dedicated _resolve_executable tests opt out via @pytest.mark.real_resolve_executable
+    so they exercise the genuine function.
+    """
+    if request.node.get_closest_marker("real_resolve_executable") is not None:
+        return
+
+    import agentshore.agents.cli_agent as ca
+
+    monkeypatch.setattr(ca, "_resolve_executable", lambda argv: argv)
 
 
 def _make_cfg(*, timeout: int | None = None, max_output_size: int = 10_000_000) -> AgentConfig:
@@ -72,6 +92,23 @@ class _AsyncBytes:
         return self._read_bytes
 
 
+class _FakeStdin:
+    """Minimal StreamWriter stand-in so the Windows prompt-on-stdin path works."""
+
+    def __init__(self) -> None:
+        self.data = b""
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.data += data
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeProcess:
     def __init__(
         self,
@@ -82,6 +119,7 @@ class _FakeProcess:
     ) -> None:
         self.stdout = _AsyncBytes(lines)
         self.stderr = _AsyncBytes([], read_bytes=stderr)
+        self.stdin = _FakeStdin()
         self.returncode = returncode
         self.pid = 4242
 
@@ -293,6 +331,63 @@ def test_build_argv_gemini_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
+def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
+    """Windows: the prompt rides stdin to dodge the cmd.exe command-line limit,
+    so the (possibly huge) prompt text must never appear as an argv element."""
+    huge = "x" * 20000
+    claude = build_argv(AgentType.CLAUDE_CODE, huge, binary="claude", prompt_on_stdin=True)
+    codex = build_argv(
+        AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
+    )
+    gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
+    # Grok has no stdin prompt mode, so the dispatch layer hands it a prompt-file
+    # path instead (issue #160); that is what keeps the prompt out of argv.
+    grok = build_argv(
+        AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
+    )
+
+    for argv in (claude, codex, gemini, grok):
+        assert huge not in argv
+
+    # claude -p with no prompt arg reads stdin (last token stays a flag/value).
+    assert "-p" in claude
+    assert claude[-1] != huge
+    # codex exec reads the prompt from stdin when handed "-".
+    assert codex[-1] == "-"
+    # gemini stays headless via an empty -p while the prompt arrives on stdin.
+    assert gemini[-2:] == ["-p", ""]
+    # grok reads the prompt from a file (no stdin mode; empty -p errors).
+    assert grok[-2:] == ["--prompt-file", "/tmp/p.txt"]
+
+
+def test_build_argv_grok_empty_prompt_never_emits_empty_dash_p() -> None:
+    """Regression for #160: grok must never be invoked with ``-p ""``.
+
+    The Grok CLI validates that ``-p/--single`` is non-empty before reading
+    anything, so an empty value fails with ``--single: prompt is empty``. With
+    no prompt-file the real prompt must be passed via ``-p``; with one it must
+    use ``--prompt-file`` — never an empty ``-p``.
+    """
+    direct = build_argv(AgentType.GROK, "real prompt", binary="grok", prompt_on_stdin=True)
+    assert direct[-2:] == ["-p", "real prompt"]
+    assert "" not in direct
+
+    via_file = build_argv(
+        AgentType.GROK, "real prompt", binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p"
+    )
+    assert via_file[-2:] == ["--prompt-file", "/tmp/p"]
+
+
+async def test_feed_prompt_stdin_writes_and_closes() -> None:
+    from agentshore.agents.cli_agent import _feed_prompt_stdin
+
+    proc = _FakeProcess(_codex_json_lines())
+    await _feed_prompt_stdin(proc, "the full prompt")  # type: ignore[arg-type]
+
+    assert proc.stdin.data == b"the full prompt"
+    assert proc.stdin.closed is True
+
+
 def test_build_argv_grok_shape() -> None:
     argv = build_argv(
         AgentType.GROK,
@@ -342,7 +437,7 @@ def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyP
     def fake_which(name: str) -> str | None:
         return f"/usr/local/bin/{name}" if name in {"grok", "grok-build"} else None
 
-    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+    monkeypatch.setattr("agentshore.agents.cli_grok.shutil.which", fake_which)
 
     argv = build_argv(AgentType.GROK, "do the thing")
 
@@ -355,7 +450,7 @@ def test_build_argv_grok_falls_back_to_grok_build_alias(
     def fake_which(name: str) -> str | None:
         return "/usr/local/bin/grok-build" if name == "grok-build" else None
 
-    monkeypatch.setattr("agentshore.agents.cli_agent.shutil.which", fake_which)
+    monkeypatch.setattr("agentshore.agents.cli_grok.shutil.which", fake_which)
 
     argv = build_argv(AgentType.GROK, "do the thing")
 
@@ -458,7 +553,7 @@ def test_build_argv_codex_reasoning_effort() -> None:
 
 
 def test_build_argv_codex_no_resume() -> None:
-    """Regression — `session_id` / `is_resume` were removed; every dispatch
+    """Regression â€” `session_id` / `is_resume` were removed; every dispatch
     builds a fresh-session argv. See `feedback_persistent_sessions` memory."""
     argv = build_argv(
         AgentType.CODEX,
@@ -503,10 +598,45 @@ async def test_dispatch_cli_does_not_resume_by_default(
     assert "-C" in captured[0]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="prompt-on-stdin is Windows-only")
+async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows a large prompt is delivered over stdin, not as an argv element,
+    so npm .cmd shims can't trip the cmd.exe command-line limit."""
+    captured_argv: list[list[str]] = []
+    captured_kwargs: list[dict[str, Any]] = []
+    procs: list[_FakeProcess] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_argv.append(list(argv))
+        captured_kwargs.append(kwargs)
+        proc = _FakeProcess(_codex_json_lines())
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    big_prompt = "groom the backlog " * 2000  # ~36 KB â€” over cmd.exe's ~8191 limit
+    result = await dispatch_cli(handle, big_prompt, cfg=cfg)
+
+    assert result.exit_code == 0
+    assert big_prompt not in captured_argv[0]
+    assert captured_argv[0][-1] == "-"  # codex reads the prompt from stdin
+    assert captured_kwargs[0]["stdin"] is asyncio.subprocess.PIPE
+    assert procs[0].stdin.data == big_prompt.encode("utf-8")
+    assert procs[0].stdin.closed is True
+
+
 async def test_dispatch_cli_never_resumes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression — every CLI dispatch starts a fresh session. --resume was
+    """Regression â€” every CLI dispatch starts a fresh session. --resume was
     removed because it produced silent state-rot late in long sessions
     (observed in a prior long session)."""
     captured: list[list[str]] = []
@@ -534,7 +664,7 @@ async def test_dispatch_cli_never_resumes(
 
 
 # ---------------------------------------------------------------------------
-# Happy path — plain output (Codex-style)
+# Happy path â€” plain output (Codex-style)
 # ---------------------------------------------------------------------------
 
 
@@ -678,7 +808,7 @@ async def test_dispatch_cli_codex_json_records_cumulative_and_per_turn_usage(
 
 
 # ---------------------------------------------------------------------------
-# Happy path — stream-json output (Claude-style)
+# Happy path â€” stream-json output (Claude-style)
 # ---------------------------------------------------------------------------
 
 
@@ -751,7 +881,7 @@ async def test_dispatch_cli_failure_result(
 
 
 # ---------------------------------------------------------------------------
-# Non-zero exit → AgentProcessError
+# Non-zero exit â†’ AgentProcessError
 # ---------------------------------------------------------------------------
 
 
@@ -797,7 +927,7 @@ async def test_dispatch_cli_gemini_model_not_found_is_concise(
 
 
 # ---------------------------------------------------------------------------
-# Output overflow → AgentOutputInvalid
+# Output overflow â†’ AgentOutputInvalid
 # ---------------------------------------------------------------------------
 
 
@@ -808,7 +938,7 @@ async def test_dispatch_cli_output_overflow_raises(
         enabled=True,
         binary=str(mock_agent_path),
         timeout=10,
-        max_output_size=10,  # tiny cap — mock output will exceed this
+        max_output_size=10,  # tiny cap â€” mock output will exceed this
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(AgentOutputInvalid, match="max_output_size"):
@@ -816,7 +946,7 @@ async def test_dispatch_cli_output_overflow_raises(
 
 
 # ---------------------------------------------------------------------------
-# Per-line buffer cap (asyncio readline limit) → AgentOutputInvalid
+# Per-line buffer cap (asyncio readline limit) â†’ AgentOutputInvalid
 # ---------------------------------------------------------------------------
 
 
@@ -870,7 +1000,7 @@ async def test_dispatch_cli_warns_on_large_line(
     handle = _make_handle(agent_type=AgentType.CODEX)
     with caplog.at_level("WARNING"):
         await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
-    # structlog routing varies by test ordering — accept the warning surfacing
+    # structlog routing varies by test ordering â€” accept the warning surfacing
     # via either capsys (printed structlog) or caplog (stdlib propagation).
     captured = capsys.readouterr()
     in_capsys = "cli_agent_large_line" in (captured.out + captured.err)
@@ -879,7 +1009,7 @@ async def test_dispatch_cli_warns_on_large_line(
 
 
 # ---------------------------------------------------------------------------
-# Timeout → PlayTimeoutError + SIGTERM/SIGKILL
+# Timeout â†’ PlayTimeoutError + SIGTERM/SIGKILL
 # ---------------------------------------------------------------------------
 
 
@@ -890,7 +1020,7 @@ async def test_dispatch_cli_timeout_raises(
     cfg = AgentConfig(
         enabled=True,
         binary=str(mock_agent_path),
-        timeout=1,  # 1 second — mock sleeps forever
+        timeout=1,  # 1 second â€” mock sleeps forever
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(PlayTimeoutError, match="timed out"):
@@ -1042,7 +1172,183 @@ async def test_dispatch_cli_cleans_up_process_for_cancellation(
 
 
 # ---------------------------------------------------------------------------
-# multi_block — parser uses last result block
+# _kill_process â€” Windows teardown path (no os.killpg / os.getpgid)
+# ---------------------------------------------------------------------------
+
+
+class _FakeKillProcess:
+    """Minimal proc stand-in for _kill_process: a pid and an awaitable wait()."""
+
+    def __init__(self, pid: int | None = 9999, *, returncode: int = 0) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._transport = None
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+async def test_kill_process_uses_taskkill_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under Windows-simulation, _kill_process tears the tree down by PID via
+    ``subprocess_env.kill_tree_sync`` (taskkill) and never touches os.killpg
+    (which is absent on Windows -> AttributeError)."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    # Simulate Windows: hasattr(os, "killpg") is False, getpgid absent too.
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+
+    killed_pids: list[int] = []
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda pid: killed_pids.append(pid),
+    )
+
+    proc = _FakeKillProcess(pid=4321)
+    # Must not raise AttributeError despite os.killpg being absent.
+    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+
+    # The process tree was torn down by pid; the process exited within grace so
+    # there is no post-grace retry.
+    assert killed_pids == [4321]
+
+
+async def test_kill_process_windows_no_warn_when_process_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process that has already exited is benign: the tree kill is attempted
+    but teardown succeeds, so nothing is logged as a failure."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda _pid: None,
+    )
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ca, "_logger", mock_logger)
+
+    # _FakeKillProcess.returncode is 0 -> the process exited, so teardown
+    # succeeded and nothing is logged.
+    proc = _FakeKillProcess(pid=4321)
+    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+
+    warnings = [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ]
+    assert warnings == []
+
+
+async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the tree kill cannot stop the process, teardown still completes via a
+    bounded wait instead of hanging the session forever (codex review P2)."""
+    import os as _os
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.01)
+
+    killed_pids: list[int] = []
+    # taskkill is a no-op here: the process never dies, simulating an
+    # unkillable tree.
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        lambda pid: killed_pids.append(pid),
+    )
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ca, "_logger", mock_logger)
+
+    class _HangingProc(_FakeKillProcess):
+        async def wait(self) -> int:
+            await asyncio.sleep(3600)  # never exits on its own
+            return 0
+
+    # returncode stays None — the process never dies, so the tree kill genuinely
+    # failed and the warning must fire (unlike the already-gone benign case).
+    proc = _HangingProc(pid=4321, returncode=None)  # type: ignore[arg-type]
+    # Guard the test itself: a regression would hang here instead of returning.
+    await asyncio.wait_for(ca._kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
+
+    # The tree kill was attempted twice (initial + post-grace retry) and the
+    # unrecoverable failure was surfaced as a warning, not raised.
+    assert killed_pids == [4321, 4321]
+    warnings = [
+        c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].kwargs["pid"] == 4321
+
+
+@pytest.mark.real_resolve_executable
+def test_resolve_executable_resolves_npm_shim_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex/claude/gemini are .cmd npm shims; CreateProcess only finds bare
+    names ending in .exe, so resolve to the full .cmd path via shutil.which."""
+    import shutil
+    import sys
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _name: r"C:\npm\codex.CMD")
+
+    out = ca._resolve_executable(["codex", "exec", "--json"])
+    assert out == [r"C:\npm\codex.CMD", "exec", "--json"]
+
+
+@pytest.mark.real_resolve_executable
+def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert ca._resolve_executable(["codex", "exec"]) == ["codex", "exec"]
+
+
+@pytest.mark.real_resolve_executable
+def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import shutil
+    import sys
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    called: list[str] = []
+    monkeypatch.setattr(shutil, "which", lambda n: called.append(n) or None)
+    abs_path = os.path.abspath("python")  # absolute on the test runner
+
+    assert ca._resolve_executable([abs_path, "script"]) == [abs_path, "script"]
+    assert called == []  # absolute paths are not re-resolved
+
+
+@pytest.mark.real_resolve_executable
+def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+    import sys
+
+    from agentshore.agents import cli_agent as ca
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    assert ca._resolve_executable(["missing", "arg"]) == ["missing", "arg"]
+
+
+# ---------------------------------------------------------------------------
+# multi_block â€” parser uses last result block
 # ---------------------------------------------------------------------------
 
 
@@ -1287,7 +1593,7 @@ def test_classify_error_empty_both() -> None:
 
 def test_classify_error_sigkill_is_crash_not_unknown() -> None:
     """SIGKILL (-9, e.g. OS OOM kill) must be a crash, not the rate-limit-eligible
-    'unknown' bucket (#7 — the mass -9 burst was misclassified as rate_limit)."""
+    'unknown' bucket (#7 â€” the mass -9 burst was misclassified as rate_limit)."""
     assert _classify_error(-9, "", "") == "crash_signal"
     assert _classify_error(-6, "", "build was a long compile") == "crash_signal"
 
@@ -1304,7 +1610,7 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _is_terminal_event (#21 — response-complete fast-kill for all agent types)
+# _is_terminal_event (#21 â€” response-complete fast-kill for all agent types)
 # ---------------------------------------------------------------------------
 
 
@@ -1317,12 +1623,13 @@ def test_is_terminal_event_detects_each_agent_type() -> None:
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
     )
-    assert _is_terminal_event(b'{"event":"completed","response":"ok"}', AgentType.GROK)
-    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GROK)
+    # Grok's real terminal event uses type:"end".
     assert _is_terminal_event(
         b'{"type":"end","stopReason":"EndTurn","sessionId":"grok-session"}',
         AgentType.GROK,
     )
+    # Grok CLI may also use the ``event`` key instead of ``type``.
+    assert _is_terminal_event(b'{"event":"end","stopReason":"EndTurn"}', AgentType.GROK)
 
 
 def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
@@ -1381,7 +1688,7 @@ def test_transient_network_is_recoverable_and_in_unknown_path() -> None:
 
 def test_codex_rollout_is_in_take_break_recovery_set() -> None:
     # If this assertion ever fails, the classifier name changed but the
-    # recovery set did not — the agent will skip the take_break override and
+    # recovery set did not â€” the agent will skip the take_break override and
     # surface a permanent ERROR instead of rotating to a fresh codex process.
     # codex_rollout now lives in the unknown-error recovery path (split from
     # rate-limit recovery in #23/#24), not the rate-limit set.
@@ -1421,12 +1728,25 @@ def test_extract_text_from_gemini_jsonl_handles_whitespace_lines() -> None:
     assert usage.tokens_out == 0
 
 
-def test_extract_text_from_grok_jsonl_handles_nested_events() -> None:
-    raw = (
-        '\n  {"type":"session.started","metadata":{"sessionId":"grok-1"}}  \n'
-        '  {"type":"message","role":"assistant","delta":{"text":"hel"}}  \n'
-        '  {"event":"completed","response":{"content":"hello"},'
-        '"usage":{"prompt_tokens":10,"cached_input_tokens":3,"completion_tokens":4}}  \n'
+def test_extract_text_from_grok_jsonl_real_format_with_usage() -> None:
+    """Narrow parser: text stream + end terminal with Grok-native usage keys."""
+    raw = "\n".join(
+        [
+            json.dumps({"type": "session.started", "metadata": {"sessionId": "grok-1"}}),
+            json.dumps({"type": "text", "data": "hel"}),
+            json.dumps({"type": "text", "data": "lo"}),
+            json.dumps(
+                {
+                    "type": "end",
+                    "stopReason": "EndTurn",
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "cached_input_tokens": 3,
+                        "completion_tokens": 4,
+                    },
+                }
+            ),
+        ]
     )
     text, usage, session_id = _extract_text_from_grok_jsonl(raw)
     assert text == "hello"
@@ -1495,6 +1815,48 @@ def test_extract_text_from_grok_jsonl_keeps_terminal_result_with_non_assistant_r
     assert text == "final answer"
 
 
+def test_extract_text_from_grok_jsonl_result_extraction_succeeds_94() -> None:
+    """Regression: #94 — groom_backlog play emitted agent_json_retry with 'no
+    valid result block found'.  The narrow parser must correctly extract the
+    result JSON from a realistic Grok CLI transcript so that result extraction
+    succeeds on the first attempt."""
+    result_payload = {
+        "schema_version": 1,
+        "success": True,
+        "artifacts": [],
+        "issues_created": [],
+        "requested_mutations": [],
+        "metrics": {},
+        "error": None,
+    }
+    raw = "\n".join(
+        [
+            json.dumps({"type": "session.started", "sessionId": "grok-94-regression"}),
+            json.dumps({"type": "text", "data": "```json\n"}),
+            json.dumps({"type": "text", "data": json.dumps(result_payload)}),
+            json.dumps({"type": "text", "data": "\n```"}),
+            json.dumps(
+                {
+                    "type": "end",
+                    "stopReason": "EndTurn",
+                    "sessionId": "grok-94-regression",
+                    "usage": {"input_tokens": 200, "output_tokens": 50},
+                }
+            ),
+        ]
+    )
+
+    text, usage, session_id = _extract_text_from_grok_jsonl(raw)
+
+    # Result block must be parseable — if this fails the play retries with
+    # agent_json_retry (the #94 symptom).
+    parsed = parse_skill_result(text)
+    assert parsed.success is True
+    assert session_id == "grok-94-regression"
+    assert usage.tokens_in == 200
+    assert usage.tokens_out == 50
+
+
 def test_extract_text_from_stream_json_handles_whitespace_lines() -> None:
     raw = '\n  {"type":"result","result":"ok"}  \n'
     assert _extract_text_from_stream_json(raw) == "ok"
@@ -1514,7 +1876,7 @@ async def test_watch_stream_idle_error_includes_tier_and_prompt_bytes() -> None:
     with pytest.raises(PlayTimeoutError) as excinfo:
         await _watch_stream_idle(
             activity,
-            timeout=0.01,  # tiny — fires immediately on first poll
+            timeout=0.01,  # tiny â€” fires immediately on first poll
             agent_id="agent-abc",
             agent_type="claude_code",
             model_tier="medium",
@@ -1565,14 +1927,14 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     from agentshore.agents.cli_agent import _StdoutActivity, _watch_stream_idle
     from agentshore.errors import PlayTimeoutError
 
-    # received_any stays False — no stdout ever arrived.
+    # received_any stays False â€” no stdout ever arrived.
     activity = _StdoutActivity(last_stdout_at=time.monotonic() - 10.0)
     assert activity.received_any is False
 
     with pytest.raises(PlayTimeoutError) as excinfo:
         await _watch_stream_idle(
             activity,
-            timeout=0.01,  # tiny — fires on first poll
+            timeout=0.01,  # tiny â€” fires on first poll
             agent_id="agent-silent",
             agent_type="claude_code",
             model_tier="large",

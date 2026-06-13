@@ -39,7 +39,13 @@ from agentshore.rl.mask_reason import (
     MaskReason,
     MaskSource,
 )
-from agentshore.state import AgentStatus, AgentType, PlayType, SessionState
+from agentshore.state import (
+    CONSECUTIVE_TIMEOUT_BENCH_LIMIT,
+    AgentStatus,
+    AgentType,
+    PlayType,
+    SessionState,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -74,9 +80,11 @@ _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
 # COOLDOWN_PLAYS`` have elapsed since its last attempt, then the policy may
 # retry it once (a fresh strike re-arms it). This benches a play that can only
 # skip — e.g. write_implementation_plan losing the resolve-time TOCTOU race —
-# instead of letting the policy re-select it every tick. Cooldown matches the
-# project-standard 20-play window (cf. SEED/DESIGN_AUDIT cooldowns). Internal
-# control plays and RECONCILE_STATE (self-heal must stay available) are excluded.
+# instead of letting the policy re-select it every tick. This breaker cooldown
+# is intentionally separate from ``play_pacing.standard_cooldown_plays`` because
+# it is a retry bench for nonproductive outcomes, not a normal post-run play
+# cadence. Internal control plays and RECONCILE_STATE (self-heal must stay
+# available) are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
 _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {
@@ -84,6 +92,28 @@ _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED
     PlayType.DESIGN_AUDIT,
     PlayType.CALIBRATE_ALIGNMENT,
 }
+
+# Lifecycle-churn breaker (#163): once a session can no longer dispatch
+# productive work (PR-candidate gates, anti-confirmation, blocked worktree
+# allocation), the PPO can still pick the lifecycle plays and oscillates
+# INSTANTIATE_AGENT <-> END_AGENT with zero dispatches, burning budget. When the
+# recent play tail is exclusively lifecycle AND idle capacity already exists AND
+# a work play has run before but is now stale, mask the lifecycle plays so the
+# engine goes quiescent (the selector idles safely on an all-masked tick) and
+# resumes when work unblocks. Pure option-removal, like the circuit breaker.
+_LIFECYCLE_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
+    {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
+)
+# "Productive work" for staleness detection: dispatching work plays plus the
+# maintenance plays that make real progress. RECONCILE_STATE is excluded on
+# purpose — a repeatedly-failing self-heal must not reset the staleness guard —
+# as are the control/terminal/reserved plays.
+_WORK_PLAY_TYPES: Final[frozenset[PlayType]] = _CIRCUIT_BREAKER_ELIGIBLE_PLAYS | {
+    PlayType.SEED_PROJECT,
+    PlayType.CLEANUP,
+    PlayType.PRUNE,
+}
+_LIFECYCLE_CHURN_THRESHOLD: Final[int] = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +233,49 @@ def compute_terminal_no_work_decision(
     return None
 
 
+def _agent_needs_reaping(state: OrchestratorState) -> bool:
+    """True when some agent genuinely needs retiring (wedged / terminal error).
+
+    Mirrors the wedged-END_AGENT re-enable condition in the EligibilityAuthority
+    (recovery-exhausted or non-recoverable ERROR). Used to carve END_AGENT out of
+    the lifecycle-churn breaker so a stuck agent can still be retired (#163).
+    """
+    if state.recovery_exhausted_agent_ids:
+        return True
+    # A consecutive-timeout-benched agent (#161) sits IDLE but is excluded from
+    # selection, so it never recovers on its own — keep END_AGENT available so
+    # the PPO can reap it and instantiate a fresh one instead of wedging.
+    if any(a.consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT for a in state.agents):
+        return True
+    return EligibilityAuthority._has_terminal_error_agent(state)
+
+
+def _lifecycle_churn_active(state: OrchestratorState) -> bool:
+    """True when the session is oscillating on lifecycle plays with no work (#163).
+
+    Fires only when ALL hold, so it cannot suppress legitimate fleet growth:
+      0. NOT terminal-no-work (a terminal final-QA spawn is legitimate).
+      1. an IDLE agent exists — with no idle capacity INSTANTIATE_AGENT may
+         legitimately grow the fleet, so that is not churn.
+      2. a work play has run at least once — else this is cold-start bootstrap,
+         where a burst of INSTANTIATE_AGENT is correct.
+      3. the most-recently-run work play is now stale (>= the threshold) — the
+         recent tail is lifecycle / no-op churn rather than progress.
+    """
+    if build_candidate_plan(state).work_availability.terminal_no_work:
+        return False
+    if not any(a.status == AgentStatus.IDLE for a in state.agents):
+        return False
+    since = [
+        state.plays_since_last_play_type[pt]
+        for pt in _WORK_PLAY_TYPES
+        if pt in state.plays_since_last_play_type
+    ]
+    if not since:
+        return False
+    return min(since) >= _LIFECYCLE_CHURN_THRESHOLD
+
+
 def reverse_failsafe_should_unmask(state: OrchestratorState) -> bool:
     """Return True when the all-masked escape hatch should expose fallback plays."""
     if state.session_state != SessionState.RUNNING:
@@ -242,13 +315,19 @@ def compute_reverse_failsafe_mask(
         ):
             lifted[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
 
-    if (
-        cfg is not None
-        and config_index is not None
-        and PlayType.INSTANTIATE_AGENT in V1_ACTION_ORDER
-        and not compute_config_mask(state, cfg, config_index).any()
-    ):
-        lifted[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
+    if PlayType.INSTANTIATE_AGENT in V1_ACTION_ORDER:
+        # Don't grow the fleet via the failsafe when idle capacity already exists
+        # (spawning more can't unblock work — the bottleneck is masked dispatch,
+        # not fleet size; #163) or when no config is spawnable at all (empty or
+        # saturated config_index; #159). The failsafe only ever runs with an idle
+        # agent present (reverse_failsafe_should_unmask), so genuine cold-start
+        # (zero agents) is unaffected — that first spawn comes from the base mask.
+        idle_agent_exists = any(a.status == AgentStatus.IDLE for a in state.agents)
+        no_spawnable_config = cfg is not None and (
+            not config_index or not compute_config_mask(state, cfg, config_index).any()
+        )
+        if idle_agent_exists or no_spawnable_config:
+            lifted[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
 
     candidate_plan = build_candidate_plan(state)
     for candidate_pt in CANDIDATE_REQUIRED_PLAY_TYPES:
@@ -343,6 +422,21 @@ class ActionMaskBuilder:
             if pt in V1_ACTION_ORDER and self._breaker_benched(pt):
                 self._mask[V1_ACTION_ORDER.index(pt)] = False
 
+    def _stage_lifecycle_churn_breaker(self) -> None:
+        """Mask lifecycle plays when the session is churning them with no work (#163).
+
+        Stops the INSTANTIATE_AGENT <-> END_AGENT oscillation that burns budget
+        once work becomes undispatchable. END_AGENT stays available when an agent
+        genuinely needs reaping (wedged / terminal error) so a stuck agent can
+        still be retired. Pure option-removal; an all-masked result idles safely
+        in the selector.
+        """
+        if not _lifecycle_churn_active(self._state):
+            return
+        self._mask[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
+        if not _agent_needs_reaping(self._state):
+            self._mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = False
+
     def _stage_reserved_slots(self) -> None:
         for reserved in (PlayType.FUTURE_4, PlayType.FUTURE_7, PlayType.FUTURE_8):
             if reserved in V1_ACTION_ORDER:
@@ -412,6 +506,7 @@ class ActionMaskBuilder:
         self._mask = self._eligibility_report().mask()
 
         self._stage_consecutive_failure_breaker()
+        self._stage_lifecycle_churn_breaker()
         self._stage_reserved_slots()
         self._stage_end_session_in_flight()
 
@@ -473,6 +568,19 @@ class ActionMaskBuilder:
                     text=(
                         f"circuit breaker: {strikes} consecutive non-productive "
                         f"outcomes — cooling down ({_CIRCUIT_BREAKER_COOLDOWN_PLAYS} plays)"
+                    ),
+                    classification=MaskClassification.TRANSIENT,
+                    source=MaskSource.CIRCUIT_BREAKER,
+                )
+                continue
+
+            # Lifecycle-churn breaker (B-type overlay): a lifecycle play masked to
+            # stop instantiate<->end_agent churn while no work is dispatchable.
+            if pt in _LIFECYCLE_PLAY_TYPES and _lifecycle_churn_active(state):
+                reasons[pt] = MaskReason(
+                    text=(
+                        "lifecycle-churn breaker: only lifecycle plays selectable with no "
+                        "dispatchable work — idling until work unblocks"
                     ),
                     classification=MaskClassification.TRANSIENT,
                     source=MaskSource.CIRCUIT_BREAKER,

@@ -145,7 +145,7 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
     """Scripted / CI ``agentshore init`` (no TTY, no flag) does not write the key.
 
     Tests that omit the flag in non-interactive contexts must remain
-    deterministic — no surprise YAML mutations.
+    deterministic - no surprise YAML mutations.
     """
     import yaml as _yaml
 
@@ -695,7 +695,7 @@ def test_init_recognises_agentshore_without_trailing_slash(tmp_path: Path) -> No
     assert result.exit_code == 0
     contents = (repo / ".gitignore").read_text()
     lines = contents.splitlines()
-    # Should not duplicate — .agentshore and .agentshore/ are equivalent for git
+    # Should not duplicate - .agentshore and .agentshore/ are equivalent for git
     assert lines.count(".agentshore") == 1
     assert lines.count(".agents") == 1
     assert lines.count(".beads") == 1

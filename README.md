@@ -15,7 +15,26 @@ Install the CLI from a checkout with `uv tool install --editable .`.
 
 For development, `uv sync --group dev` sets up the full toolchain in `.venv/` and you can run the CLI with `uv run agentshore`.
 
-The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `scripts/build-macos.sh`, which produces a signed `.app`, `.dmg`, and `.pkg` installer.
+### Windows 11
+
+The `agentshore` CLI runs on Windows 11. Install it either way:
+
+```powershell
+# Recommended: the bootstrap script (locates/installs uv, then `uv tool install`)
+powershell -ExecutionPolicy Bypass -File scripts\install-agentshore.ps1
+# or, against the GitHub source / an explicit wheel:
+.\scripts\install-agentshore.ps1 -Wheel dist\agentshore-0.3.0-py3-none-any.whl
+```
+
+```powershell
+# Or a plain pip install of the wheel into any Python 3.12+ venv:
+py -m venv .venv; .venv\Scripts\Activate.ps1
+pip install dist\agentshore-0.3.0-py3-none-any.whl
+```
+
+The wheel is self-contained (schema, dashboard assets, and skill templates are bundled), so a plain `pip install` yields a fully working CLI — no extras required. Timelapse capture is an optional, separately-provisioned npm/ffmpeg toolchain and is **not** part of the CLI install. If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.
+
+The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `scripts/build-macos.sh`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `scripts\build-windows.ps1`, which produces a per-user Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices.
 
 ## Quick start
 

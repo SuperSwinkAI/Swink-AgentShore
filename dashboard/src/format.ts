@@ -1,3 +1,4 @@
+import { AGENT_REGISTRY } from "./agentRegistry";
 import type { ActivePlay, AgentSnapshot } from "./types";
 
 const COMPACT_PLAY_LABELS: Record<string, string> = {
@@ -81,18 +82,12 @@ function formatModelTier(modelTier: string | null | undefined): string {
 }
 
 function formatAgentKind(agentType: string): string {
-  switch (agentType) {
-    case "claude_code":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "gemini":
-      return "Gemini";
-    case "grok":
-      return "Grok";
-    default:
-      return titleCase(agentType.replace(/_/g, " "));
+  const entry = (AGENT_REGISTRY as Record<string, { label: string } | undefined>)[agentType];
+  if (entry) {
+    // Strip the " CLI" suffix for the short form used in e.g. "Medium Codex"
+    return entry.label.replace(/ CLI$/, "");
   }
+  return titleCase(agentType.replace(/_/g, " "));
 }
 
 function titleCase(value: string): string {

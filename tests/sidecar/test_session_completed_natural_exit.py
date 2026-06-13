@@ -48,8 +48,9 @@ EXPECTED_ESR_KEYS = frozenset(
 )
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("ps") is None,
-    reason="sidecar subprocess tests are POSIX-only; mirrors test_nfr_budgets",
+    sys.platform.startswith("win") or shutil.which("ps") is None,
+    reason="sidecar subprocess tests are POSIX-only (select() on a pipe fails on "
+    "Windows with WSAENOTSOCK); mirrors test_nfr_budgets",
 )
 
 

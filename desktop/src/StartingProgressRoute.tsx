@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState, type JSX } from "react";
+import { useContext, useEffect, useRef, useState, type JSX } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { SessionContext } from "./services/sessionContext";
@@ -75,6 +75,7 @@ export function StartingProgressRoute(): JSX.Element {
   const [steps, setSteps] = useState(() => buildInitialSteps());
   const [startError, setStartError] = useState<string | null>(null);
   const [startResult, setStartResult] = useState<StartSessionResult | null>(null);
+  const expectedProgressTokenRef = useRef<string | number | null>(null);
 
   // Floor: dismiss the overlay after SESSION_STARTING_TIMEOUT_MS even
   // if nothing fires, so a silent orchestrator hang doesn't lock the UI
@@ -104,8 +105,21 @@ export function StartingProgressRoute(): JSX.Element {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
 
+    const state = location.state as StartingLocationState | null;
+    const handoffResult =
+      state?.sessionStarted === true && state.startResult != null
+        ? state.startResult
+        : (state?.preflightResult ?? null);
+    const progressToken =
+      handoffResult === null
+        ? `desktop-start-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        : null;
+    expectedProgressTokenRef.current = progressToken;
+
     void subscribeProgress((params) => {
       if (cancelled) return;
+      const expectedToken = expectedProgressTokenRef.current;
+      if (expectedToken !== null && params.token !== expectedToken) return;
       if (!params.step || !params.status) return;
       setSteps((current) =>
         applyProgressEvent(current, params.step!, params.status!, params.error ?? null),
@@ -121,11 +135,6 @@ export function StartingProgressRoute(): JSX.Element {
         // Start) fires session.start before navigating and hands us the
         // resolved result via location state. We must NOT re-fire the
         // RPC in that case — that's the double-start regression.
-        const state = location.state as StartingLocationState | null;
-        const handoffResult =
-          state?.sessionStarted === true && state.startResult != null
-            ? state.startResult
-            : (state?.preflightResult ?? null);
         if (handoffResult !== null) {
           // The helper already finished session.start before this
           // route mounted, so the $/progress stream is already
@@ -168,7 +177,7 @@ export function StartingProgressRoute(): JSX.Element {
         // to this specific call (DESIGN §2.4).
         const seedInputPath = state?.seedInputPath ?? null;
         void startSession({
-          progressToken: `desktop-start-${Date.now()}`,
+          progressToken: progressToken ?? undefined,
           seedInputPath,
           ...(state?.timelapse !== undefined ? { timelapse: state.timelapse } : {}),
         })
@@ -189,6 +198,7 @@ export function StartingProgressRoute(): JSX.Element {
 
     return () => {
       cancelled = true;
+      expectedProgressTokenRef.current = null;
       unlisten?.();
     };
   }, [location.state]);

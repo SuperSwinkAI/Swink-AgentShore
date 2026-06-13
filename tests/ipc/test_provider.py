@@ -264,3 +264,51 @@ async def test_on_session_paused_appends() -> None:
     msg = _last_event_msg(writer)
     assert msg["type"] == "session_paused"
     assert msg["payload"]["reason"] == "user_requested"
+
+
+# ---------------------------------------------------------------------------
+# Session-id stamping (Tier 1 contract)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_events_carry_session_id_when_provider_has_one() -> None:
+    """Every outbound event payload carries session_id so the bridge/browser
+    can enforce one-bridge-one-session and reset cleanly on a new session."""
+    writer = _mock_writer()
+    provider = IpcStateProvider(writer, session_id="sess-xyz")
+
+    await provider.on_play_started(
+        PlayType.ISSUE_PICKUP, PlayParams(agent_id="agent-1", issue_number=1)
+    )
+    assert _last_event_msg(writer)["payload"]["session_id"] == "sess-xyz"
+
+    await provider.on_agent_changed("agent-1", AgentStatus.BUSY)
+    assert _last_event_msg(writer)["payload"]["session_id"] == "sess-xyz"
+
+    await provider.on_bootstrap_phase("init_github", "started", 0.0)
+    assert _last_event_msg(writer)["payload"]["session_id"] == "sess-xyz"
+
+    await provider.on_session_ended("cli_request")
+    assert _last_event_msg(writer)["payload"]["session_id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+async def test_state_update_carries_session_id_when_provider_has_one() -> None:
+    writer = _mock_writer()
+    provider = IpcStateProvider(writer, session_id="sess-xyz")
+
+    # The provider's id wins even if it differs from the state snapshot's
+    # (in practice they match; this just asserts the stamp is applied).
+    await provider.on_state_update(_make_state(session_id="test"))
+    assert _last_state_msg(writer)["payload"]["session_id"] == "sess-xyz"
+
+
+@pytest.mark.asyncio
+async def test_events_omit_session_id_without_provider_id() -> None:
+    """Back-compat: with no provider id, event payloads carry no session_id."""
+    writer = _mock_writer()
+    provider = IpcStateProvider(writer)
+
+    await provider.on_session_ended("cli_request")
+    assert "session_id" not in _last_event_msg(writer)["payload"]

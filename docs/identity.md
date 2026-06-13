@@ -82,6 +82,29 @@ source (gh login, keychain paste, or env var), merges the resulting bindings
 back into the config, and leaves the SQLite database untouched. This is the
 path to add or fix an identity without re-initializing the project.
 
+## Windows SSH agent setup
+
+AgentShore uses SSH-signed commits for merge-play provenance. On Windows,
+`ssh-add` may not be on PATH even with Git for Windows installed, because
+the OpenSSH `ssh-agent` service ships disabled by default.
+
+One-time setup (run once in an elevated PowerShell session):
+
+```powershell
+Set-Service ssh-agent -StartupType Manual
+Start-Service ssh-agent
+ssh-add $env:USERPROFILE\.ssh\<your-key>
+```
+
+With `StartupType Manual` the service persists across reboots; run only
+`Start-Service ssh-agent` and `ssh-add` at the start of each session if
+you prefer to start it on demand.
+
+If `ssh-add` is absent or the agent is not running, AgentShore emits a
+structured warning rather than crashing. `agentshore identity` surfaces the
+exact fix hint shown above. Merge and review plays that depend on SSH
+authorship report the problem clearly; they do not fail silently.
+
 ## Constraint: one identity per agent type
 
 Each agent type (claude_code, codex, gemini) binds to exactly one GitHub

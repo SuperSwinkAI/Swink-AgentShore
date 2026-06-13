@@ -139,6 +139,79 @@ def test_constructor_clears_stale_session_files(tmp_path: Path) -> None:
     assert not events_file.exists()
 
 
+def test_constructor_survives_locked_prior_session_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior-session file the OS won't let us delete (Windows: an orphaned
+    dashboard bridge holds it, no FILE_SHARE_DELETE) must not crash boot.
+
+    The old code suppressed only FileNotFoundError, so the PermissionError a
+    locked file raises propagated and took the orchestrator down on startup.
+    """
+    import agentshore.ipc.state_writer as sw
+
+    monkeypatch.setattr(sw.sys, "platform", "win32")
+    monkeypatch.setattr(sw, "_WIN_LOCK_BACKOFF_S", 0.0)
+    (tmp_path / STATE_FILENAME).write_text(_msg({"stale": 1}), encoding="utf-8")
+    (tmp_path / EVENTS_FILENAME).write_text(_msg({"stale": 1}) + "\n", encoding="utf-8")
+
+    def _locked_unlink(self: Path, *a: object, **k: object) -> None:
+        raise PermissionError(32, "in use by another process")
+
+    monkeypatch.setattr(Path, "unlink", _locked_unlink)
+
+    # Must not raise despite both files being unremovable.
+    StateWriter(tmp_path)
+
+
+async def test_write_state_retries_transient_lock_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A momentary reader lock on the snapshot (bridge mid-poll) is retried,
+    not fatal — the replace succeeds once the reader's handle closes."""
+    import agentshore.ipc.state_writer as sw
+
+    monkeypatch.setattr(sw.sys, "platform", "win32")
+    monkeypatch.setattr(sw, "_WIN_LOCK_BACKOFF_S", 0.0)
+    writer = StateWriter(tmp_path)
+
+    real_replace = sw.os.replace
+    calls = {"n": 0}
+
+    def _flaky_replace(src: str, dst: object) -> None:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(sw.os, "replace", _flaky_replace)
+    await writer.write_state(_msg({"k": "v"}))
+
+    assert calls["n"] == 3
+    assert json.loads((tmp_path / STATE_FILENAME).read_text(encoding="utf-8")) == {"k": "v"}
+
+
+async def test_write_state_drops_snapshot_after_persistent_lock_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the lock never clears, a coalesced snapshot is dropped (recoverable)
+    rather than crashing the orchestrator loop."""
+    import agentshore.ipc.state_writer as sw
+
+    monkeypatch.setattr(sw.sys, "platform", "win32")
+    monkeypatch.setattr(sw, "_WIN_LOCK_BACKOFF_S", 0.0)
+    monkeypatch.setattr(sw, "_WIN_LOCK_RETRIES", 3)
+    writer = StateWriter(tmp_path)
+
+    def _always_locked(src: str, dst: object) -> None:
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(sw.os, "replace", _always_locked)
+    # Must return cleanly, leaving no temp files behind.
+    await writer.write_state(_msg({"k": "v"}))
+    assert not list(tmp_path.glob(".dashboard_state-*.tmp"))
+
+
 async def test_null_writer_is_noop(tmp_path: Path) -> None:
     """NullStateWriter accepts both methods without touching the disk."""
     writer = NullStateWriter()

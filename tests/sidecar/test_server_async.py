@@ -18,6 +18,7 @@ from agentshore.data.store import DataStore
 from agentshore.sidecar.handshake import PROTOCOL_VERSION, build_response
 from agentshore.sidecar.server import (
     ERR_SESSION_ACTIVE,
+    INTERNAL_ERROR,
     INVALID_PARAMS,
     METHOD_HANDLERS,
     REQUEST_CANCELLED,
@@ -255,6 +256,37 @@ async def test_serve_async_cancel_swallows_non_cancelled_error_from_handler_clea
             "error": {"code": REQUEST_CANCELLED, "message": "request cancelled"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_request_emits_internal_error_not_cancelled_on_handler_exception() -> None:
+    """Non-CancelledError escaping an async handler must emit INTERNAL_ERROR (-32603).
+
+    Regression for #130: before the central ``except Exception`` catch in
+    ``run_request``, any non-CancelledError exception fell through to the
+    ``finally`` block and was emitted as REQUEST_CANCELLED (-32800), making
+    real handler failures look like client cancellations.
+    """
+
+    async def _bad_handler(_payload: object) -> object:
+        raise RuntimeError("handler exploded")
+
+    METHOD_HANDLERS["test.raises_runtime"] = _bad_handler
+    try:
+        stdin = io.StringIO(
+            json.dumps({"jsonrpc": "2.0", "id": 42, "method": "test.raises_runtime"}) + "\n"
+        )
+        stdout = io.StringIO()
+        await asyncio.wait_for(_serve_async(stdin, stdout, health_interval_seconds=0), timeout=3.0)
+    finally:
+        METHOD_HANDLERS.pop("test.raises_runtime", None)
+
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    assert len(replies) == 1
+    assert replies[0]["id"] == 42
+    assert replies[0]["error"]["code"] == INTERNAL_ERROR
+    assert "RuntimeError" in replies[0]["error"]["message"]
+    assert replies[0]["error"]["code"] != REQUEST_CANCELLED
 
 
 @pytest.mark.asyncio
@@ -746,3 +778,91 @@ async def test_serve_async_terminates_when_stdin_raises_mid_stream() -> None:
     """_serve_async drains the queue and exits cleanly after a mid-stream stdin error."""
     stdout = io.StringIO()
     await asyncio.wait_for(_serve_async(_RaisingAfterLinesStdin(), stdout), timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Post-EOF teardown is bounded and hard (#155)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_serve_async_eof_cancels_wedged_inflight_and_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stdin EOF must hard-stop the sidecar even mid-drain (#155).
+
+    The desktop shell closing its end of the pipe means nobody is left to
+    receive a graceful result. A wedged in-flight handler (stand-in for a
+    graceful ``session.stop`` whose drain never finishes) and a running
+    orchestrator task must both be cancelled within the bounded deadlines —
+    previously the post-EOF ``gather`` waited forever and the sidecar
+    lingered headless.
+    """
+    import agentshore.sidecar.server as server_module
+
+    monkeypatch.setattr(server_module, "EOF_IN_FLIGHT_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(server_module, "EOF_TEARDOWN_DEADLINE_SECONDS", 0.5)
+
+    # Own the ServerState so the test can plant a running orchestrator task.
+    state = ServerState()
+    orch_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
+    state.orchestrator_task = orch_task
+    monkeypatch.setattr(server_module, "ServerState", lambda: state)
+
+    def _wedge_handler(_payload: object) -> object:
+        async def _hang() -> object:
+            await asyncio.sleep(3600)
+            return {}
+
+        return _hang()
+
+    monkeypatch.setitem(METHOD_HANDLERS, "test.wedge", _wedge_handler)
+
+    stdin = io.StringIO(json.dumps({"jsonrpc": "2.0", "id": "w", "method": "test.wedge"}) + "\n")
+    stdout = io.StringIO()
+
+    # Regression mode: the unbounded gather never returns and wait_for fires.
+    await asyncio.wait_for(
+        _serve_async(stdin, stdout, health_interval_seconds=0),
+        timeout=5.0,
+    )
+
+    assert orch_task.cancelled(), "orchestrator task must be cancelled on EOF"
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    wedge_replies = [r for r in replies if r.get("id") == "w"]
+    assert wedge_replies, "cancelled in-flight handler must still emit a reply"
+    assert wedge_replies[0]["error"]["code"] == REQUEST_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_serve_async_eof_lets_quick_inflight_drain_and_emit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The EOF grace preserves the documented request-then-close-stdin pattern.
+
+    A handler that finishes quickly after EOF must still drain naturally and
+    emit its real result — the #155 hard-teardown only cancels handlers that
+    outlive ``EOF_IN_FLIGHT_GRACE_SECONDS``.
+    """
+
+    def _quick_handler(_payload: object) -> object:
+        async def _finish() -> object:
+            await asyncio.sleep(0.01)
+            return {"ok": True}
+
+        return _finish()
+
+    monkeypatch.setitem(METHOD_HANDLERS, "test.quick", _quick_handler)
+
+    stdin = io.StringIO(json.dumps({"jsonrpc": "2.0", "id": "q", "method": "test.quick"}) + "\n")
+    stdout = io.StringIO()
+
+    await asyncio.wait_for(
+        _serve_async(stdin, stdout, health_interval_seconds=0),
+        timeout=5.0,
+    )
+
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    quick_replies = [r for r in replies if r.get("id") == "q"]
+    assert quick_replies, "quick handler must drain and emit after EOF"
+    assert quick_replies[0]["result"] == {"ok": True}

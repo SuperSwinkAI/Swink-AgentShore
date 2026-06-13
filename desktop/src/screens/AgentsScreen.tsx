@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { AGENT_TYPES, agentLabel } from "@agentshore/dashboard";
 import {
   configureAgent,
   detectAgents,
@@ -11,17 +12,6 @@ import {
 import { listIdentities, type IdentityRow } from "../rpc/identitiesClient";
 
 import styles from "./AgentsScreen.module.css";
-
-const AGENT_TYPE_LABELS: Record<string, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex CLI",
-  gemini: "Gemini CLI",
-  grok: "Grok CLI",
-};
-
-function agentLabel(type: string): string {
-  return AGENT_TYPE_LABELS[type] ?? type;
-}
 
 function tierSummary(row: AgentRow): string {
   const TIER_INITIALS: Record<string, string> = { small: "S", medium: "M", large: "L" };
@@ -65,6 +55,7 @@ export function AgentsScreen({
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
   const [identities, setIdentities] = useState<IdentityRow[]>([]);
   const [detectedTypes, setDetectedTypes] = useState<string[]>([]);
+  const [agentDetectionSucceeded, setAgentDetectionSucceeded] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -88,23 +79,33 @@ export function AgentsScreen({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      adapter.listAgents(),
-      adapter.listIdentities(),
-      adapter.detectAgents(),
-    ])
-      .then(([agentRows, identityRows, detected]) => {
+    setAgentDetectionSucceeded(false);
+    Promise.all([adapter.listAgents(), adapter.listIdentities()])
+      .then(([agentRows, identityRows]) => {
         if (cancelled) return;
         setAgents(agentRows);
         onAgentRowsChange?.(agentRows);
         setIdentities(identityRows);
-        setDetectedTypes(detected);
         setError(null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setAgents([]);
         setError(err instanceof Error ? err.message : String(err));
+      });
+    void adapter
+      .detectAgents()
+      .then((detected) => {
+        if (!cancelled) {
+          setDetectedTypes(detected);
+          setAgentDetectionSucceeded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetectedTypes([]);
+          setAgentDetectionSucceeded(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -161,6 +162,10 @@ export function AgentsScreen({
   const unconfiguredDetected = loaded
     ? detectedTypes.filter((type) => !agents.some((a) => a.type === type))
     : [];
+  const detectedTypeSet = new Set(detectedTypes);
+  const unavailableSupportedTypes = agentDetectionSucceeded
+    ? AGENT_TYPES.filter((type) => !detectedTypeSet.has(type))
+    : [];
 
   return (
     <main className={styles.screen}>
@@ -172,8 +177,26 @@ export function AgentsScreen({
             least two runners must be enabled to start a session.
           </p>
         </div>
-        <div className={styles.summary} data-testid="agents-enabled-count">
-          {enabledCount} enabled
+        <div className={styles.summaryGroup}>
+          <div className={styles.summary} data-testid="agents-enabled-count">
+            {enabledCount} enabled
+          </div>
+          {unavailableSupportedTypes.length > 0 && (
+            <div
+              className={styles.unavailableList}
+              aria-label="Supported runners not detected"
+            >
+              {unavailableSupportedTypes.map((type) => (
+                <span
+                  key={type}
+                  className={styles.unavailableChip}
+                  data-testid={`agent-unavailable-${type}`}
+                >
+                  {agentLabel(type)} — not detected
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </header>
 

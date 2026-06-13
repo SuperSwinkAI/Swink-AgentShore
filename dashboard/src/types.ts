@@ -1,9 +1,10 @@
+// AgentType is derived from the canonical AGENT_REGISTRY so it stays in sync
+// automatically when new agent types are added.  Import it here for use within
+// this file, and re-export it so downstream consumers still find it in types.ts.
+import type { AgentType } from "./agentRegistry";
+
+export type { AgentType };
 export type AgentStatus = "idle" | "busy" | "error" | "terminated";
-export type AgentType =
-  | "claude_code"
-  | "codex"
-  | "gemini"
-  | "grok";
 export type SessionState =
   | "initializing"
   | "running"
@@ -133,10 +134,10 @@ export interface BudgetSnapshot {
   estimated_cost_per_play: number;
   // Wall-clock soft cap (minutes), independent of the dollar cap above.
   // null when time_enabled is false (no wall-clock limit).
-  time_enabled?: boolean;
-  time_total_minutes?: number | null;
-  time_elapsed_minutes?: number | null;
-  time_remaining_minutes?: number | null;
+  time_enabled: boolean;
+  time_total_minutes: number | null;
+  time_elapsed_minutes: number | null;
+  time_remaining_minutes: number | null;
 }
 
 export interface TrajectorySnapshot {
@@ -232,6 +233,11 @@ export interface MessageEnvelope {
    *  seq <= lastSeenSeq to prevent stale or out-of-order messages from corrupting
    *  state. May be absent on synthetic client-side messages (demo transport). */
   seq?: number;
+  /** Session this frame belongs to (Tier 1 contract). Stamped on every
+   *  server-emitted frame so the client can detect a session boundary on any
+   *  message type and reset cleanly. StateUpdate narrows this to required;
+   *  synthetic client messages (ConnectionLost/Restored) omit it. */
+  session_id?: string;
 }
 
 export interface StateUpdate extends MessageEnvelope {

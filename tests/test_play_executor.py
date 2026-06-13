@@ -1660,3 +1660,70 @@ def test_build_idempotency_key_rejects_empty_session_id() -> None:
 
     with pytest.raises(ValueError, match="session_id"):
         build_idempotency_key("", {"type": "label_issue", "target": "1"})
+
+
+# ---------------------------------------------------------------------------
+# end_agent through the executor (#154 regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_end_agent_play_clears_agent_through_executor(
+    tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """Dispatching END_AGENT via the executor must actually retire the agent.
+
+    #154 regression guard. The executor marks the target agent in-flight
+    (_mark_agent_current_play -> handle.start_play) before the play body runs,
+    so EndAgentPlay's manager.clear() call races against the agent's own
+    END_AGENT marker. #144 added an active-play guard to clear() but never
+    updated end_agent.py, making every RL-driven retirement fail with
+    PreconditionFailed. Unit tests on clear() alone could not catch this —
+    only a dispatch through the real executor against a real AgentManager
+    exercises the marker-then-clear sequence.
+    """
+    import sys
+
+    from agentshore.agents.manager import AgentManager
+    from agentshore.config import AgentConfig
+    from agentshore.data.store import DataStore, SessionRecord
+    from agentshore.plays.internal.end_agent import EndAgentPlay
+
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    await store.create_session(
+        SessionRecord(
+            session_id="sess-test",
+            project_path=str(tmp_path),
+            started_at="2026-06-10T00:00:00+00:00",
+        )
+    )
+    try:
+        manager = AgentManager(
+            session_id="sess-test",
+            store=store,
+            cfg=RuntimeConfig(
+                agents={
+                    "codex": AgentConfig(  # type: ignore[assignment]
+                        enabled=True, binary=str(mock_agent_path), timeout=10
+                    )
+                }
+            ),
+            working_dir=tmp_path,
+            python_executable=sys.executable,
+        )
+        handle = await manager.instantiate(AgentType.CODEX)
+        agent_id = handle.agent_id
+
+        executor = _make_executor(
+            play=EndAgentPlay(),  # type: ignore[arg-type]  # real play, not a mock
+            params=PlayParams(agent_id=agent_id),
+            manager=manager,  # type: ignore[arg-type]  # real manager, not a mock
+        )
+
+        outcome = await executor.execute(PlayType.END_AGENT, _make_state(agents=[_agent(agent_id)]))
+
+        assert outcome.success is True, f"end_agent failed: {outcome.error}"
+        assert agent_id not in manager.handles, "agent handle must be removed"
+    finally:
+        await store.close()

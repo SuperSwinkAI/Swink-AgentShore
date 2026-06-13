@@ -8,8 +8,10 @@ import pytest
 from click.testing import CliRunner
 
 from agentshore.cli import main
-from agentshore.session_path import budget_from_state_line
 
+# Canonical wire encoding returned by the orchestrator's IPC reply.
+# Keys match ``DrainController._applied_from_state`` and ``_serialize_budget``
+# (both now use ``total`` for the dollar cap).
 _APPLIED: dict[str, object] = {
     "enabled": True,
     "total": 75.0,
@@ -19,7 +21,6 @@ _APPLIED: dict[str, object] = {
     "time_total_minutes": 180.0,
     "time_elapsed_minutes": 30.0,
     "time_remaining_minutes": 150.0,
-    "resumed": False,
 }
 
 
@@ -133,6 +134,22 @@ def test_add_budget_ipc_error_exits_nonzero(
     assert "Failed to add budget" in result.output
 
 
+def test_add_budget_rejection_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, project_dir: str
+) -> None:
+    """Orchestrator rejection (rejected:<msg>) exits non-zero and surfaces the message."""
+    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
+    monkeypatch.setattr(
+        "agentshore.session_path.request_add_budget",
+        lambda p, **k: "rejected:resulting dollar cap $0.01 is below the $1.00 minimum",
+    )
+
+    result = CliRunner().invoke(main, ["add-budget", "--project", project_dir, "--budget", "25"])
+
+    assert result.exit_code == 1
+    assert "rejected" in result.output.lower()
+
+
 def test_add_budget_rejects_non_positive_dollars(project_dir: str) -> None:
     result = CliRunner().invoke(main, ["add-budget", "--project", project_dir, "--budget", "0"])
     assert result.exit_code != 0
@@ -152,38 +169,87 @@ def test_add_budget_command_name_is_hyphenated() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# budget_from_state_line — get_state envelope parsing (the readback that fed the
-# CLI's resulting-caps echo; budget lives under payload, not top-level).
+# request_add_budget — IPC reply parsing
+# The new implementation reads an ``add_budget_ok`` reply directly; no polling.
 # --------------------------------------------------------------------------- #
 
 
-def test_budget_from_state_line_reads_payload_nesting() -> None:
+def test_request_add_budget_returns_no_session_when_no_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Returns ``"no_session"`` when IPC endpoint is not discoverable."""
+    from agentshore.session_path import request_add_budget
+
+    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: None)
+    result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
+    assert result == "no_session"
+
+
+def test_request_add_budget_parses_ok_reply(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Returns the applied-caps dict from an ``add_budget_ok`` reply."""
     import json
+    import socket
+    import threading
 
-    env = json.dumps(
-        {"type": "state_update", "payload": {"budget": {"enabled": True, "total": 45.0}}}
-    ).encode()
-    budget = budget_from_state_line(env)
-    assert budget == {"enabled": True, "total": 45.0}
+    from agentshore.session_path import IpcEndpoint, request_add_budget
+
+    reply = json.dumps({"type": "add_budget_ok", "enabled": True, "total": 60.0}) + "\n"
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.bind(("127.0.0.1", 0))
+    server_sock.listen(1)
+    host, port = server_sock.getsockname()[:2]
+
+    def _serve() -> None:
+        conn, _ = server_sock.accept()
+        conn.recv(4096)  # consume the command
+        conn.sendall(reply.encode())
+        conn.close()
+        server_sock.close()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    endpoint = IpcEndpoint.tcp(host, port)
+    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: endpoint)
+    result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
+    t.join(timeout=5)
+
+    assert isinstance(result, dict)
+    assert result.get("total") == 60.0
+    assert result.get("enabled") is True
 
 
-def test_budget_from_state_line_tolerates_flat_shape() -> None:
+def test_request_add_budget_returns_rejected_on_error_reply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Returns ``"rejected:<msg>"`` for an error reply from the server."""
     import json
+    import socket
+    import threading
 
-    env = json.dumps({"type": "state_update", "budget": {"enabled": False}}).encode()
-    assert budget_from_state_line(env) == {"enabled": False}
+    from agentshore.session_path import IpcEndpoint, request_add_budget
 
+    reply = json.dumps({"type": "error", "error": "cap too low"}) + "\n"
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.bind(("127.0.0.1", 0))
+    server_sock.listen(1)
+    host, port = server_sock.getsockname()[:2]
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        None,
-        b"",
-        b"   ",
-        b"not json",
-        b'{"type": "error", "error": "boom"}',
-        b'{"type": "state_update", "payload": {}}',
-    ],
-)
-def test_budget_from_state_line_returns_none_on_no_budget(line: bytes | None) -> None:
-    assert budget_from_state_line(line) is None
+    def _serve() -> None:
+        conn, _ = server_sock.accept()
+        conn.recv(4096)
+        conn.sendall(reply.encode())
+        conn.close()
+        server_sock.close()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    endpoint = IpcEndpoint.tcp(host, port)
+    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: endpoint)
+    result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
+    t.join(timeout=5)
+
+    assert isinstance(result, str)
+    assert result.startswith("rejected:")
+    assert "cap too low" in result

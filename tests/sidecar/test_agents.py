@@ -166,6 +166,7 @@ def test_agents_catalog_includes_grok_defaults() -> None:
     assert isinstance(defaults, dict)
     assert "grok-build" in models["grok"]
     assert "grok-build-0.1" in models["grok"]
+    assert "grok-4.3" in models["grok"]
     assert defaults["grok"]["small"] == {
         "model": "grok-build",
         "reasoning_effort": "low",
@@ -214,7 +215,7 @@ def test_configure_agent_rejects_invalid_tier(tmp_path: Path) -> None:
 def test_rpc_agents_list_requires_no_params() -> None:
     response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.list"})
     assert response is not None
-    # Without a configured cwd this returns [] — the call itself must succeed.
+    # Without a configured cwd this returns [] - the call itself must succeed.
     assert "error" not in response
 
 

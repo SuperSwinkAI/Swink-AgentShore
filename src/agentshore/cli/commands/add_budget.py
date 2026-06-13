@@ -82,6 +82,10 @@ def add_budget(project: str, budget: float | None, time: str | None) -> None:
     if result in ("error", "timeout"):
         click.echo("Error: Failed to add budget over IPC.", err=True)
         raise SystemExit(1)
+    if isinstance(result, str) and result.startswith("rejected:"):
+        msg = result[len("rejected:") :]
+        click.echo(f"Error: Budget update rejected: {msg}", err=True)
+        raise SystemExit(1)
 
     parts: list[str] = []
     if delta_usd is not None:

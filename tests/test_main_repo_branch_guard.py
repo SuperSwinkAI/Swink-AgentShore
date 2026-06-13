@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,10 @@ def test_path_contains_backslash_space() -> None:
     assert path_contains_backslash_space("/tmp/no-space") is False
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="a backslash in a filename is impossible on Windows ('\\' is a path separator)",
+)
 def test_find_path_escape_siblings_finds_bad_sibling(tmp_path: Path) -> None:
     parent = tmp_path / "parent"
     parent.mkdir()

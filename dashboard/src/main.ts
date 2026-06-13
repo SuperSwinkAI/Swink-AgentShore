@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 
 import { Dashboard } from "./components/Dashboard";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { createDemoTransport } from "./demoTransport";
 import { getOrCreateReactRoot } from "./reactEntry";
 
@@ -20,8 +21,12 @@ const wsUrl = `ws://${window.location.host}/ws`;
 
 const root = createRoot(getOrCreateReactRoot());
 root.render(
-  createElement(Dashboard, {
-    wsUrl: useDemoTransport ? undefined : wsUrl,
-    transport: useDemoTransport ? createDemoTransport(params) : undefined,
-  }),
+  createElement(
+    ErrorBoundary,
+    null,
+    createElement(Dashboard, {
+      wsUrl: useDemoTransport ? undefined : wsUrl,
+      transport: useDemoTransport ? createDemoTransport(params) : undefined,
+    }),
+  ),
 );

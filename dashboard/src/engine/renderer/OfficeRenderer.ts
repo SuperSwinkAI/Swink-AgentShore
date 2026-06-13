@@ -8,7 +8,7 @@ import type { Tile } from "../../office/layout";
 import type { ResolvedTheme } from "../../theme";
 import type { Character } from "../../characters/types";
 import type { Camera } from "../camera";
-import { renderCharacters } from "./characters";
+import { renderCharacterBubbles, renderCharacters } from "./characters";
 import type {
   RenderContext,
   SceneRenderable,
@@ -65,6 +65,12 @@ export class OfficeRenderer {
 
     renderables.sort((a, b) => a.depth - b.depth);
     for (const renderable of renderables) {
+      renderable.draw();
+    }
+
+    const bubbleRenderables = renderCharacterBubbles(rctx, characters);
+    bubbleRenderables.sort((a, b) => a.depth - b.depth);
+    for (const renderable of bubbleRenderables) {
       renderable.draw();
     }
   }

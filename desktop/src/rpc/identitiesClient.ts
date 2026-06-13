@@ -5,6 +5,7 @@ export interface IdentityRow {
   source: string;
   token_status: string;
   repo_access: string;
+  repo_access_detail?: string;
 }
 
 export async function listIdentities(): Promise<IdentityRow[]> {
@@ -18,12 +19,36 @@ export interface KeychainStatus {
   has_token: boolean;
 }
 
-export async function checkKeychainToken(login: string): Promise<KeychainStatus> {
-  const result = await callJsonRpc<KeychainStatus | null>("identities.check_keychain", { login });
+export async function checkKeychainToken(
+  login: string,
+): Promise<KeychainStatus> {
+  const result = await callJsonRpc<KeychainStatus | null>(
+    "identities.check_keychain",
+    { login },
+  );
   return result ?? { login, service: "", has_token: false };
 }
 
-export async function addIdentity(login: string, tokenSource: string, pat?: string): Promise<void> {
+export async function checkIdentityAccess(login: string): Promise<IdentityRow> {
+  const result = await callJsonRpc<IdentityRow | null>(
+    "identities.check_access",
+    { login },
+  );
+  return (
+    result ?? {
+      login,
+      source: "ambient",
+      token_status: "ambient",
+      repo_access: "unknown",
+    }
+  );
+}
+
+export async function addIdentity(
+  login: string,
+  tokenSource: string,
+  pat?: string,
+): Promise<void> {
   const params: Record<string, string> = { login, token_source: tokenSource };
   if (pat) {
     params.pat = pat;

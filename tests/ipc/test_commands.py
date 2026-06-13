@@ -111,37 +111,6 @@ def test_roundtrip_parse_and_validate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# adjust_budget numeric validation tests
-# ---------------------------------------------------------------------------
-
-
-def test_adjust_budget_rejects_non_numeric_string() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": "abc"})
-
-
-def test_adjust_budget_rejects_nan() -> None:
-    import math
-
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": math.nan})
-
-
-def test_adjust_budget_rejects_zero() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": 0})
-
-
-def test_adjust_budget_rejects_negative() -> None:
-    with pytest.raises(ValueError, match="delta_usd"):
-        validate_command({"command": "adjust_budget", "delta_usd": -1})
-
-
-def test_adjust_budget_accepts_positive_float() -> None:
-    validate_command({"command": "adjust_budget", "delta_usd": 5.0})  # must not raise
-
-
-# ---------------------------------------------------------------------------
 # add_budget validation tests
 # ---------------------------------------------------------------------------
 
@@ -193,3 +162,13 @@ def test_add_budget_rejects_non_integer_minutes() -> None:
 
 def test_add_budget_accepts_integer_valued_float_minutes() -> None:
     validate_command({"command": "add_budget", "delta_minutes": 30.0})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# reload_config tests
+# ---------------------------------------------------------------------------
+
+
+def test_reload_config_is_valid_command() -> None:
+    """reload_config requires no additional parameters and must not raise."""
+    validate_command({"command": "reload_config"})

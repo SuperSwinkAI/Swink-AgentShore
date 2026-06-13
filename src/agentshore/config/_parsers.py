@@ -6,11 +6,6 @@ import warnings
 from pathlib import Path
 from typing import TypedDict, cast, overload
 
-from agentshore.budget import (
-    MAX_TIME_BUDGET_MINUTES,
-    MIN_ENABLED_BUDGET_USD,
-    MIN_TIME_BUDGET_MINUTES,
-)
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
@@ -28,6 +23,7 @@ from agentshore.config.models import (
     LoggingConfig,
     LoopDetectionConfig,
     ModelTierConfig,
+    PlayPacingConfig,
     PolicyMode,
     PPOConfig,
     ProjectConfig,
@@ -47,6 +43,7 @@ from agentshore.config.models import (
 )
 from agentshore.errors import ConfigError
 from agentshore.identity_names import canonical_identity_name, is_valid_github_login
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 
 _RawNumber = int | float | str
 _RawStrictNumber = int | float
@@ -142,6 +139,10 @@ class _RawAgentPreferences(TypedDict, total=False):
 
 
 _RawAgents = dict[str, object]
+
+
+class _RawPlayPacing(TypedDict, total=False):
+    standard_cooldown_plays: int
 
 
 class _RawBootstrap(TypedDict, total=False):
@@ -311,6 +312,7 @@ class _RawConfig(TypedDict, total=False):
     trusted_ids: _RawTrustedIds
     identities: _RawIdentities
     agents: _RawAgents
+    play_pacing: _RawPlayPacing
     bootstrap: _RawBootstrap
     circuit_breaker: _RawCircuitBreaker
     health: _RawHealth
@@ -413,51 +415,9 @@ def _parse_intake(raw: _RawIntake) -> IntakeConfig:
 
 
 def _parse_budget(raw: _RawBudget) -> BudgetConfig:
-    enabled = raw.get("enabled", False)
-    total = raw.get("total", 0.0)
-    warning = raw.get("warning_threshold", 0.20)
-    if not isinstance(enabled, bool):
-        raise ConfigError(f"budget.enabled must be a boolean, got {enabled!r}")
-    if not isinstance(total, int | float):
-        raise ConfigError(f"budget.total must be numeric, got {total!r}")
-    if enabled and total < MIN_ENABLED_BUDGET_USD:
-        msg = (
-            "budget.total must be at least "
-            f"{MIN_ENABLED_BUDGET_USD:.2f} when budget.enabled is true, got {total!r}"
-        )
-        raise ConfigError(msg)
-    if not enabled and total < 0:
-        raise ConfigError(f"budget.total must be non-negative, got {total!r}")
-    if not isinstance(warning, int | float) or not (0.0 <= warning <= 1.0):
-        raise ConfigError(f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}")
-    time_enabled = raw.get("time_enabled", False)
-    time_total_minutes = raw.get("time_total_minutes", 0)
-    if not isinstance(time_enabled, bool):
-        raise ConfigError(f"budget.time_enabled must be a boolean, got {time_enabled!r}")
-    # ``bool`` is an ``int`` subclass — reject it so True/False can't pose as minutes.
-    if isinstance(time_total_minutes, bool) or not isinstance(time_total_minutes, int):
-        raise ConfigError(
-            f"budget.time_total_minutes must be an integer, got {time_total_minutes!r}"
-        )
-    if time_enabled and not (
-        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
-    ):
-        raise ConfigError(
-            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
-            f"got {time_total_minutes!r}"
-        )
-    if not time_enabled and time_total_minutes < 0:
-        raise ConfigError(
-            f"budget.time_total_minutes must be non-negative, got {time_total_minutes!r}"
-        )
-    return BudgetConfig(
-        enabled=enabled,
-        total=float(total),
-        warning_threshold=float(warning),
-        time_enabled=time_enabled,
-        time_total_minutes=time_total_minutes,
-    )
+    from agentshore.budget import parse_budget_raw
+
+    return parse_budget_raw(dict(raw))
 
 
 def _parse_agent(
@@ -1073,6 +1033,15 @@ def _parse_task_validation(raw: _RawTaskValidation) -> TaskValidationConfig:
     )
 
 
+def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
+    cooldown = raw.get("standard_cooldown_plays", STANDARD_PLAY_COOLDOWN_PLAYS)
+    if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
+        raise ConfigError(
+            f"play_pacing.standard_cooldown_plays must be a non-negative integer, got {cooldown!r}"
+        )
+    return PlayPacingConfig(standard_cooldown_plays=cooldown)
+
+
 def _parse_bootstrap(raw: _RawBootstrap) -> BootstrapConfig:
     threshold = raw.get("cleanup_threshold", 50)
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
@@ -1149,10 +1118,12 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         project=_parse_project(data.get("project", {}) or {}),
         auto=_parse_auto(data.get("auto", {}) or {}),
         intake=_parse_intake(data.get("intake", {}) or {}),
-        budget=_parse_budget(data.get("budget", {}) or {}),
+        budget=_parse_budget(data["budget"]) if "budget" in data else BudgetConfig(),
+        budget_absent="budget" not in data,
         trusted_ids=_parse_trusted_ids(trusted_ids_raw if trusted_ids_raw is not None else {}),
         identities=identities,
         agents=agents,
+        play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
         bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
         fresh_start=fresh_start,
         agent_preferences=prefs,

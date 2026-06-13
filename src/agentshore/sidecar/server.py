@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, TypedDict
 
 from agentshore.ipc.wire import frame
+from agentshore.platform_compat import ensure_windows_event_loop_policy, force_utf8_stdio
 from agentshore.sidecar import archive_rpc
 from agentshore.sidecar import project as project_rpc
 from agentshore.sidecar.agents import (
@@ -50,6 +52,7 @@ from agentshore.sidecar.handshake import build_response, validate_params
 from agentshore.sidecar.identities import (
     add_identity,
     add_trusted_source,
+    check_identity_access,
     keychain_status,
     list_identities,
     list_trusted_sources,
@@ -252,8 +255,12 @@ async def _close_project_handles(state: ServerState) -> None:
         await store.close()
 
 
-def _finalize_project_select(
-    resolved: str, state: ServerState, req_id: int | str | None
+async def _finalize_project_select(
+    resolved: str,
+    state: ServerState,
+    req_id: int | str | None,
+    *,
+    include_inspect: bool = True,
 ) -> JsonRpcResponse:
     state.active_project_path = resolved
     # When the desktop launches from Finder the sidecar's cwd is "/".
@@ -263,8 +270,10 @@ def _finalize_project_select(
     # subprocess spawns will inherit it unless they pass an explicit cwd.
     with contextlib.suppress(OSError):
         os.chdir(resolved)
+    if not include_inspect:
+        return _result(req_id, {"path": resolved})
     try:
-        inspect_result = project_rpc.inspect()
+        inspect_result = await project_rpc.inspect()
     except project_rpc.ProjectError as exc:
         return _error(req_id, exc.code, str(exc))
     return _result(req_id, {"path": resolved, "inspect": inspect_result})
@@ -290,6 +299,9 @@ def _dispatch_project_select(
     path = obj_params.get("path")
     if not isinstance(path, str):
         return _error(req_id, INVALID_PARAMS, "project.select requires string 'path'")
+    include_inspect = obj_params.get("include_inspect", True)
+    if not isinstance(include_inspect, bool):
+        return _error(req_id, INVALID_PARAMS, "project.select 'include_inspect' must be a boolean")
 
     prior_path = state.active_project_path
     if state.session_active and prior_path is not None and prior_path != path:
@@ -308,11 +320,16 @@ def _dispatch_project_select(
 
         async def _switch_with_close() -> JsonRpcResponse:
             await _close_project_handles(state)
-            return _finalize_project_select(resolved, state, req_id)
+            return await _finalize_project_select(
+                resolved,
+                state,
+                req_id,
+                include_inspect=include_inspect,
+            )
 
         return _switch_with_close()
 
-    return _finalize_project_select(resolved, state, req_id)
+    return _finalize_project_select(resolved, state, req_id, include_inspect=include_inspect)
 
 
 def _active_project_path(state: ServerState) -> Path:
@@ -811,6 +828,28 @@ def _dispatch_project_rpc(
         return _dispatch_project_select(raw_params, state, req_id)
     if method == "project.install_timelapse":
         return _dispatch_install_timelapse(req_id)
+
+    # project.inspect and project.branches are async coroutines — wrap them so
+    # ProjectError / _ParamError raised during await is handled consistently.
+    if method in ("project.inspect", "project.branches"):
+
+        async def _run_async_project() -> JsonRpcResponse:
+            try:
+                coro = _dispatch_project(method, raw_params, state)
+                result = await coro  # type: ignore[misc]
+            except _ParamError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+            except project_rpc.ProjectError as exc:
+                if (
+                    method in _PROJECT_NO_ACTIVE_REMAP
+                    and exc.code == project_rpc.ERR_PROJECT_NOT_ACTIVE
+                ):
+                    return _error(req_id, ERR_NO_ACTIVE_PROJECT, str(exc))
+                return _error(req_id, exc.code, str(exc))
+            return _result(req_id, result)
+
+        return _run_async_project()
+
     try:
         result = _dispatch_project(method, raw_params, state)
         if method == "project.deselect":
@@ -864,28 +903,25 @@ def _dispatch_session_budget(
             obj_params = _as_dict(raw_params)
         except _ParamError as exc:
             return _error(req_id, INVALID_PARAMS, str(exc))
-        budget = obj_params.get("budget")
-        if not isinstance(budget, dict):
+        budget_raw = obj_params.get("budget")
+        if not isinstance(budget_raw, dict):
             return _error(req_id, INVALID_PARAMS, "session.set_budget requires object 'budget'")
-        if "enabled" not in budget:
-            return _error(req_id, INVALID_PARAMS, "budget.enabled is required")
-        enabled = budget["enabled"]
-        if not isinstance(enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.enabled must be a boolean")
-        time_enabled = budget.get("time_enabled", False)
-        if not isinstance(time_enabled, bool):
-            return _error(req_id, INVALID_PARAMS, "budget.time_enabled must be a boolean")
+        from agentshore.budget import validate_budget_payload
+        from agentshore.errors import ConfigError, OrchestratorError
 
-        from agentshore.errors import OrchestratorError
+        try:
+            validated = validate_budget_payload(budget_raw)
+        except ConfigError as exc:
+            return _error(req_id, INVALID_PARAMS, str(exc))
 
         async def _run_set() -> JsonRpcResponse:
             set_budget = orch.set_budget  # type: ignore[attr-defined]
             try:
                 applied = await set_budget(
-                    dollars_enabled=enabled,
-                    dollars=budget.get("total"),
-                    time_enabled=time_enabled,
-                    time_minutes=budget.get("time_total_minutes"),
+                    dollars_enabled=validated.enabled,
+                    dollars=validated.total if validated.enabled else None,
+                    time_enabled=validated.time_enabled,
+                    time_minutes=validated.time_total_minutes if validated.time_enabled else None,
                     persist=True,
                 )
             except OrchestratorError as exc:
@@ -983,10 +1019,47 @@ def _dispatch_identities_rpc(
         login = raw_params.get("login")
         if not isinstance(login, str):
             return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
-        try:
-            return _result(req_id, keychain_status(login))
-        except ValueError as exc:
-            return _error(req_id, INVALID_PARAMS, str(exc))
+        keychain_login: str = login
+
+        # Run off the serve loop: keychain_status spawns a killable child
+        # subprocess that can take seconds (Windows Credential Manager under
+        # antivirus). Returning a coroutine lets the dispatcher schedule it as a
+        # task so concurrent setup-screen RPCs don't serialize behind it — the
+        # Windows "nearly every screen times out" cascade.
+        async def _run_check_keychain() -> JsonRpcResponse:
+            try:
+                return _result(req_id, await asyncio.to_thread(keychain_status, keychain_login))
+            except ValueError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+
+        return _run_check_keychain()
+
+    if method == "identities.check_access":
+        if not isinstance(raw_params, dict):
+            return _error(req_id, INVALID_PARAMS, "identities.check_access requires object params")
+        login = raw_params.get("login")
+        if not isinstance(login, str):
+            return _error(req_id, INVALID_PARAMS, "identities.check_access requires login")
+        access_login: str = login
+        project_path = _active_project_path(state)
+
+        # Off the serve loop (see check_keychain): check_identity_access is async
+        # and runs its blocking gh/keyring/repo-access calls inside threads
+        # internally.  The Identities screen fires one per configured identity
+        # concurrently; they complete in parallel because each awaits its own
+        # to_thread call instead of serialising through a single thread pool entry.
+        async def _run_check_access() -> JsonRpcResponse:
+            try:
+                return _result(
+                    req_id,
+                    await check_identity_access(project_path, access_login),
+                )
+            except ValueError as exc:
+                return _error(req_id, INVALID_PARAMS, str(exc))
+            except OSError as exc:
+                return _error(req_id, INTERNAL_ERROR, f"identities.check_access: {exc}")
+
+        return _run_check_access()
 
     if method == "identities.add":
         if not isinstance(raw_params, dict):
@@ -1267,6 +1340,23 @@ def _reader_loop(
 DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
 """Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
 
+EOF_IN_FLIGHT_GRACE_SECONDS: float = 5.0
+"""How long after stdin EOF in-flight handlers may finish naturally.
+
+Long enough for quick requests to drain and emit their responses (the
+documented "request then close stdin" pattern tests rely on); short enough
+that a wedged handler — e.g. a graceful ``session.stop`` whose drain will
+never finish — cannot keep the sidecar alive after the shell is gone (#155).
+"""
+
+EOF_TEARDOWN_DEADLINE_SECONDS: float = 10.0
+"""Hard bound on post-EOF teardown (cancelled handlers + orchestrator task).
+
+stdin EOF means the desktop shell exited or the pipe broke; "sidecar death ==
+orchestrator death" (DESIGN §1.2) only holds if the serve loop is guaranteed
+to return promptly after EOF, so every post-EOF wait is bounded (#155).
+"""
+
 
 async def _serve_async(
     stdin: IO[str],
@@ -1282,7 +1372,10 @@ async def _serve_async(
     fixed interval (DESIGN §5.1) so the Tauri shell can detect a stalled
     sidecar. Pass ``health_interval_seconds <= 0`` to disable the heartbeat
     (used by tests that drive a quick request and then close stdin). Returns
-    when ``stdin`` reaches EOF and any in-flight async requests have drained.
+    when ``stdin`` reaches EOF and in-flight async requests have drained —
+    bounded by ``EOF_IN_FLIGHT_GRACE_SECONDS`` / ``EOF_TEARDOWN_DEADLINE_SECONDS``
+    and with the orchestrator task hard-cancelled, so EOF always means a
+    prompt exit even mid-drain (#155).
     """
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -1360,6 +1453,10 @@ async def _serve_async(
                 _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
                 emitted = True
             raise
+        except Exception as exc:  # noqa: BLE001 — real failures → INTERNAL_ERROR, not -32800
+            if req_id not in cancelled_ids:
+                _emit(_error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"))
+                emitted = True
         finally:
             if not emitted and req_id not in cancelled_ids:
                 _emit(_error(req_id, REQUEST_CANCELLED, "request cancelled"))
@@ -1435,10 +1532,40 @@ async def _serve_async(
         health_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await health_task
+
+    # stdin EOF: the desktop shell is gone (window closed, host exited, or the
+    # pipe broke). EOF is always HARD-stop semantics — nobody is left to
+    # receive a graceful drain's result, so never wait for one (#155).
+    #
+    # 1. Cancel the supervised orchestrator run loop immediately. An in-flight
+    #    graceful ``session.stop`` awaits it through ``asyncio.shield``, so
+    #    cancelling only the handler would leave the orchestrator running
+    #    headless; the task itself must be cancelled.
+    # 2. Give in-flight handlers a short grace to finish naturally (quick
+    #    requests still drain and emit, as documented), then cancel stragglers.
+    # 3. Bound the final wait so the serve loop is guaranteed to return and
+    #    ``asyncio.run`` can tear the loop down — the sidecar process must
+    #    always exit promptly once the pipe closes.
+    orch_task = state.orchestrator_task
+    if orch_task is not None and not orch_task.done():
+        orch_task.cancel()
     if in_flight:
-        await asyncio.gather(*in_flight.values(), return_exceptions=True)
-    if drain_tasks:
-        await asyncio.gather(*drain_tasks, return_exceptions=True)
+        _done, pending = await asyncio.wait(
+            set(in_flight.values()), timeout=EOF_IN_FLIGHT_GRACE_SECONDS
+        )
+        for task in pending:
+            task.cancel()
+    remaining: list[asyncio.Task[None]] = [
+        task
+        for task in (orch_task, *in_flight.values(), *drain_tasks)
+        if task is not None and not task.done()
+    ]
+    if remaining:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(*remaining, return_exceptions=True),
+                timeout=EOF_TEARDOWN_DEADLINE_SECONDS,
+            )
 
 
 def serve(
@@ -1450,7 +1577,8 @@ def serve(
     """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
 
     Synchronous wrapper around :func:`_serve_async`. Returns when ``stdin``
-    reaches EOF and any in-flight async requests have drained.
+    reaches EOF and in-flight async requests have drained (bounded — see
+    :func:`_serve_async`).
     """
     asyncio.run(_serve_async(stdin, stdout, health_interval_seconds=health_interval_seconds))
 
@@ -1469,7 +1597,55 @@ def _configure_sidecar_logging() -> None:
     setup_logging("info")
 
 
+def _preload_native_libraries() -> None:
+    """Import numpy/torch up front, while the sidecar is still single-threaded.
+
+    Windows loader-lock deadlock guard. numpy (OpenBLAS) and torch spawn native
+    worker threads during their C-extension initialization, and that runs under
+    the OS loader lock held by the importing thread. When the import happens
+    later instead — the ``from agentshore.core import Orchestrator`` inside
+    ``session.start`` runs on the asyncio event loop while the ``project.inspect``
+    probe pool and the ``asyncio.to_thread`` executor already have live threads —
+    those native libs' freshly spawned threads block in ``DllMain(THREAD_ATTACH)``
+    waiting for the loader lock the importing thread still holds, and the sidecar
+    wedges at 0 CPU forever (observed live: a 9-minute hang in
+    ``numpy/_core/multiarray`` ``create_module``; reproduced deterministically
+    with 6 live worker threads, while the same import is 0.33s single-threaded).
+
+    Importing here — before :func:`serve` starts the stdin reader thread, the
+    event loop, or any executor — maps both native DLLs once in a single-threaded
+    context (~3s); every later import is then a ``sys.modules`` no-op, so
+    ``session.start`` no longer pays (or deadlocks on) the native load. Off-loading
+    the import to a worker thread does NOT help: the deadlock fires whenever the
+    import runs while *other* threads are alive, regardless of which thread does
+    it. POSIX ``dlopen`` has no equivalent loader-lock/thread-attach hazard, so
+    this is win32-only — it also keeps torch's import cost off macOS/Linux boots.
+    """
+    if sys.platform != "win32":
+        return
+    import structlog
+
+    log = structlog.get_logger()
+    started = time.perf_counter()
+    try:
+        import numpy  # noqa: F401
+        import torch  # noqa: F401
+    except Exception as exc:  # pragma: no cover - a failed import is fatal regardless
+        log.warning("sidecar_preload_native_libs_failed", error=str(exc))
+        return
+    log.info(
+        "sidecar_preload_native_libs",
+        elapsed_seconds=round(time.perf_counter() - started, 2),
+    )
+
+
 def run() -> None:
     """Sync entry point. Wraps :func:`serve` against the real stdio streams."""
+    force_utf8_stdio()
+    ensure_windows_event_loop_policy()
     _configure_sidecar_logging()
+    # Map numpy/torch native DLLs while single-threaded — see docstring. Must run
+    # before serve() spawns the reader thread / event loop / executors, or the
+    # later session.start import deadlocks on the Windows loader lock.
+    _preload_native_libraries()
     serve(sys.stdin, sys.stdout)

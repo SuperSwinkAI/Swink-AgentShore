@@ -145,4 +145,5 @@ describe("TargetBranchScreen", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/Unable to load branches/);
   });
+
 });

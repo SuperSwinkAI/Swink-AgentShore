@@ -32,7 +32,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.logging import get_logger
-from agentshore.state import AgentStatus, AgentType
+from agentshore.state import CLI_AGENT_TYPES, AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -42,10 +42,6 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
 
 _logger = get_logger(__name__)
-
-_CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
-)
 
 
 class AgentManager:
@@ -113,10 +109,27 @@ class AgentManager:
         atexit.register(self._kill_tracked_subprocesses_atexit)
 
     def _kill_tracked_subprocesses_atexit(self) -> None:
-        """Best-effort SIGTERM all live agent subprocesses on Python exit."""
+        """Best-effort SIGTERM all live agent subprocesses on Python exit.
+
+        Skips any agent whose ``current_play_id`` is non-None — that agent is
+        mid-play and the atexit path should not forcibly kill it.  In practice
+        the session teardown (drain) has already cancelled in-flight asyncio
+        tasks before this fires, but the atexit handler has no asyncio context,
+        so we treat a set ``current_play_id`` as the authoritative "still live"
+        marker and leave those processes alone rather than risk a mid-play
+        SIGTERM that looks like a crash.
+        """
         import signal
 
         for handle in list(self._handles.values()):
+            # Do not kill agents that are still mid-play.
+            if handle.current_play_id is not None:
+                _logger.debug(
+                    "atexit_skip_active_play_agent",
+                    agent_id=handle.agent_id,
+                    current_play_id=handle.current_play_id,
+                )
+                continue
             proc = getattr(handle, "process", None)
             if proc is None:
                 continue
@@ -179,7 +192,7 @@ class AgentManager:
         # and return it without leaving a half-constructed agent live in the
         # manager. On success the validated overlay is cached on the handle so
         # dispatch() never re-resolves the token or re-runs `gh repo view`.
-        if agent_type in _CLI_AGENT_TYPES and ident_name:
+        if agent_type in CLI_AGENT_TYPES and ident_name:
             try:
                 identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
                 await asyncio.to_thread(
@@ -343,6 +356,7 @@ class AgentManager:
                     else ErrorClass.UNKNOWN
                 )
                 handle.timeout_count += 1
+                handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)
                 await self._store.increment_agent_tasks(agent_id, failed=1)
                 elapsed_seconds = round(time.perf_counter() - dispatch_started_at, 3)
@@ -381,6 +395,7 @@ class AgentManager:
             raise
 
         cb.record_success()
+        handle.consecutive_timeouts = 0
         handle.accumulate(
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,
@@ -397,9 +412,49 @@ class AgentManager:
 
         return result
 
-    async def clear(self, agent_id: str) -> None:
-        """Terminate an agent, persist final stats, and remove it from the manager."""
+    def active_play_agent_ids(self) -> frozenset[str]:
+        """Return the set of agent IDs that currently have an active in-flight play.
+
+        An agent is considered active when its ``current_play_id`` is non-None
+        (set by ``AgentHandle.start_play()`` and cleared by ``AgentHandle.clear_play()``).
+        This is the authoritative in-process signal for "agent is mid-work right now"
+        and is the cross-check that ``reconcile_state``'s zombie-kill path must consult
+        before issuing any ``kill`` to a PID backed by a known agent.
+        """
+        return frozenset(
+            aid for aid, handle in self._handles.items() if handle.current_play_id is not None
+        )
+
+    async def clear(self, agent_id: str, *, force: bool = False) -> None:
+        """Terminate an agent, persist final stats, and remove it from the manager.
+
+        ``force=False`` (the default): raises ``PreconditionFailed`` when the
+        agent still has an active in-flight play (``current_play_id`` is not
+        None).  This prevents ``reconcile_state`` and other housekeeping code
+        from killing an agent that is legitimately executing a play.
+
+        ``force=True``: skip the active-play guard.  Use this only from
+        session-teardown paths (drain, completion mixin) where in-flight asyncio
+        tasks have already been cancelled and the session is being wound down.
+
+        Exception: an agent whose in-flight play *is* ``END_AGENT`` is always
+        clearable.  The executor marks the retirement target with the end_agent
+        play's own marker before the play body runs, so that marker must never
+        block the retirement it belongs to (#154).
+        """
         handle = self._get_handle(agent_id)
+
+        if (
+            not force
+            and handle.current_play_id is not None
+            and handle.current_play_type is not PlayType.END_AGENT
+        ):
+            raise PreconditionFailed(
+                f"Cannot clear agent {agent_id!r}: it has an active in-flight play "
+                f"(current_play_id={handle.current_play_id!r}, "
+                f"play_type={handle.current_play_type!r}). "
+                "Pass force=True only from session teardown paths."
+            )
 
         def _ms(t0: float) -> float:
             return round((time.perf_counter() - t0) * 1000, 1)

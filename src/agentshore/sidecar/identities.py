@@ -1,17 +1,30 @@
-"""Identity RPC helpers for the desktop sidecar."""
+"""Identity RPC helpers for the desktop sidecar — credential probing layer.
+
+This module handles token resolution, repo-access verification, and diagnostics.
+YAML persistence lives in ``sidecar/identity_config.py``; the single killable
+keyring child is in ``agentshore/keyring_child.py``.
+
+Public symbols re-exported here (imported by ``sidecar/server.py``):
+
+- :func:`add_identity` — adds an identity with token-match validation
+- :func:`update_identity`, :func:`remove_identity`, :func:`list_identities`
+- :func:`add_trusted_source`, :func:`remove_trusted_source`, :func:`list_trusted_sources`
+- :func:`check_identity_access`, :func:`keychain_status`
+- :class:`IdentityRow`, :class:`TokenSource`
+"""
 
 from __future__ import annotations
 
+import asyncio
 import os
-import shutil
-import subprocess
-import tempfile
-from enum import StrEnum
-from typing import TYPE_CHECKING, TypedDict
+import sys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import yaml
-
+from agentshore import keyring_child as _kc
+from agentshore import subprocess_env
 from agentshore.agents.identity import IdentityResolutionError, verify_identity_repo_access
+from agentshore.command import gh_sync
 from agentshore.errors import AgentAuthError
 from agentshore.identity_names import (
     canonical_identity_name,
@@ -19,37 +32,109 @@ from agentshore.identity_names import (
     keychain_service_for_login,
     resolve_github_login_for_token,
 )
+from agentshore.sidecar.identity_config import (
+    _TOKEN_SOURCE_FIELDS,
+    IdentityRow,
+    TokenSource,
+    _apply_source,
+    _config_path,
+    _load_yaml,
+    _source_for_identity,
+    _write_yaml_atomic,
+    add_trusted_source,
+    list_identities,
+    list_trusted_sources,
+    remove_identity,
+    remove_trusted_source,
+    update_identity,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+# Re-export for callers that import directly from this module.
+__all__ = [
+    "IdentityRow",
+    "TokenSource",
+    "add_identity",
+    "add_trusted_source",
+    "check_identity_access",
+    "keychain_status",
+    "list_identities",
+    "list_trusted_sources",
+    "remove_identity",
+    "remove_trusted_source",
+    "update_identity",
+]
 
-class IdentityRow(TypedDict):
-    login: str
-    source: str
-    token_status: str
-    repo_access: str
+
+class _KeyringTimeoutError(RuntimeError):
+    """Raised when the local OS credential backend does not answer promptly."""
 
 
-class TokenSource(StrEnum):
-    """Token-source kinds for a configured identity.
+@dataclass(frozen=True)
+class _CredentialResolution:
+    token: str | None
+    status: str
+    detail: str
 
-    Values are the exact YAML field names written into ``agentshore.yaml`` so
-    that enum members round-trip through config I/O and test assertions without
-    any mapping step.
+
+def _resolve_github_login_for_token(token: str) -> str | None:
+    token = _clean_token(token) or ""
+    return resolve_github_login_for_token(token)
+
+
+def _clean_token(token: str | None) -> str | None:
+    if token is None:
+        return None
+    cleaned = "".join(ch for ch in token if ch.isprintable()).strip()
+    return cleaned or None
+
+
+# ---------------------------------------------------------------------------
+# Keyring helpers — thin wrappers over the single killable child in keyring_child
+# ---------------------------------------------------------------------------
+
+
+def _run_keyring_child(request: dict[str, object]) -> dict[str, object]:
+    """Delegate to the canonical killable keyring child in ``agentshore.keyring_child``.
+
+    Translates :exc:`agentshore.keyring_child.KeyringTimeoutError` to the module-
+    local :exc:`_KeyringTimeoutError` so existing call sites don't change.
     """
+    try:
+        return _kc.run_keyring_child(request)
+    except _kc.KeyringTimeoutError as exc:
+        raise _KeyringTimeoutError(str(exc)) from exc
 
-    LOGIN = "gh_token_login"
-    ENV = "gh_token_env"
-    KEYCHAIN = "gh_token_keychain"
-    AMBIENT = "ambient"
+
+def _keyring_get(service: str) -> str | None:
+    """Read a stored OS credential for *service*, returning ``None`` on failure."""
+    return _kc.keyring_get(service)
 
 
-# Derived from the enum so the validation set stays in sync with the enum members.
-_TOKEN_SOURCE_FIELDS = frozenset(s.value for s in TokenSource if s is not TokenSource.AMBIENT)
-_KNOWN_PATCH_KEYS = frozenset(
-    {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
-)
+def _keychain_has_token(service: str) -> bool:
+    """Return True when the OS credential store has a non-empty token for *service*."""
+    return _kc.keychain_has_token(service)
+
+
+def _keyring_set_password(service: str, pat: str) -> None:
+    """Store *pat* in the OS credential store without risking a hung setup RPC."""
+    try:
+        _kc.keyring_set(service, pat)
+    except _kc.KeyringTimeoutError as exc:
+        raise ValueError(f"credential store did not respond in time: {exc}") from exc
+    except RuntimeError as exc:
+        raise ValueError(f"failed to store PAT in Keychain/Credential Manager: {exc}") from exc
+
+
+def _keyring_backend_name() -> str:
+    return _kc.keyring_backend_name()
+
+
+# ---------------------------------------------------------------------------
+# Token resolution
+# ---------------------------------------------------------------------------
 
 
 def _validate_token_matches_login(entry: dict[str, object], expected_login: str) -> None:
@@ -63,7 +148,7 @@ def _validate_token_matches_login(entry: dict[str, object], expected_login: str)
     token, _source = _token_for_identity(entry)
     if token is None:
         return
-    actual_login = resolve_github_login_for_token(token)
+    actual_login = _resolve_github_login_for_token(token)
     if actual_login is None:
         return
     if canonical_identity_name(actual_login) != canonical_identity_name(expected_login):
@@ -73,100 +158,115 @@ def _validate_token_matches_login(entry: dict[str, object], expected_login: str)
         )
 
 
-def _config_path(project_path: Path) -> Path:
-    return project_path / "agentshore.yaml"
-
-
-def _load_yaml(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError("agentshore.yaml must be a mapping")
-    return loaded
-
-
-def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".agentshore_", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as handle:
-            yaml.safe_dump(data, handle, sort_keys=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        try:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-        except OSError:
-            pass
-
-
-def _keyring_get(service: str) -> str | None:
-    """Read a Keychain token for *service*, returning ``None`` on any failure.
-
-    Swallows the keyring import (its macOS backend runs setup at import time)
-    and a get that raises ``KeyringError`` or any backend-specific error, so
-    callers never have to repeat the import + double-except dance.
-    """
-    try:
-        import keyring  # local import: keyring's macOS backend runs setup at import time
-    except Exception:
-        return None
-    try:
-        return keyring.get_password(service, service)
-    except Exception:
-        return None
-
-
-def _keychain_has_token(service: str) -> bool:
-    """Return True when the macOS Keychain holds a non-empty token for *service*."""
-    token = _keyring_get(service)
-    return bool(token and token.strip())
-
-
-def keychain_status(login: str) -> dict[str, object]:
-    """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
-
-    Mirrors the CLI wizard's pre-flight check (``identity_wizard.keychain._keychain_has_token``)
-    so the desktop "Add identity" form can offer to reuse a stored PAT instead of
-    forcing the user to paste it again. Returns the canonical login, the managed
-    keychain service name, and whether a non-empty token is present there.
-    """
-    if not is_valid_github_login(login):
-        raise ValueError(f"invalid GitHub login: {login!r}")
-    canonical = canonical_identity_name(login)
-    service = keychain_service_for_login(canonical)
-    return {
-        "login": canonical,
-        "service": service,
-        "has_token": _keychain_has_token(service),
-    }
-
-
 def _resolve_login_token(raw: dict[str, object]) -> str | None:
     """Resolve a token via ``gh auth token`` for the configured GitHub login."""
-    env = os.environ.copy()
+    return _resolve_login_auth(raw).token
+
+
+def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
+    """Resolve GitHub CLI auth for the configured login.
+
+    This is separate from PAT/keychain token handling because setup should
+    surface gh-auth problems as gh-auth problems, not as generic missing tokens.
+
+    Routes through ``command.gh_sync`` so ``stdin=DEVNULL`` is applied
+    (critical in the sidecar where stdin is the live Tauri JSON-RPC pipe).
+    """
+    expected_login = canonical_identity_name(str(raw["gh_token_login"]))
     gh_config_dir = raw.get("gh_config_dir")
-    if isinstance(gh_config_dir, str) and gh_config_dir:
-        env["GH_CONFIG_DIR"] = gh_config_dir
-    gh_bin = shutil.which("gh")
-    if gh_bin is None:
-        return None
-    try:
-        proc = subprocess.run(  # noqa: S603 — resolved absolute path
-            [gh_bin, "auth", "token", "--user", str(raw["gh_token_login"])],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
+    overlay = (
+        {"GH_CONFIG_DIR": gh_config_dir}
+        if isinstance(gh_config_dir, str) and gh_config_dir
+        else None
+    )
+
+    result = gh_sync(
+        "auth",
+        "token",
+        "-h",
+        "github.com",
+        "-u",
+        str(raw["gh_token_login"]),
+        env_overlay=overlay,
+        op_class="gh",
+    )
+    if result.tool_missing:
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail="GitHub CLI auth could not be checked because gh.exe is not on PATH.",
         )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    if result.timed_out:
+        return _CredentialResolution(
+            token=None,
+            status="auth_timeout",
+            detail=f"GitHub CLI auth lookup timed out while resolving {raw['gh_token_login']!r}.",
+        )
+    token = _clean_token(result.stdout) if result.ok else None
+    if token:
+        return _CredentialResolution(
+            token=token,
+            status="auth_ok",
+            detail=f"GitHub CLI auth resolved for {raw['gh_token_login']}.",
+        )
+
+    fallback = gh_sync(
+        "auth",
+        "token",
+        "-h",
+        "github.com",
+        env_overlay=overlay,
+        op_class="gh",
+    )
+    if fallback.timed_out:
+        return _CredentialResolution(
+            token=None,
+            status="auth_timeout",
+            detail=(
+                "GitHub CLI active-auth lookup timed out after the configured "
+                f"login {raw['gh_token_login']!r} did not return a token."
+            ),
+        )
+    if fallback.tool_missing:
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail="GitHub CLI auth could not be checked because gh.exe is not on PATH.",
+        )
+    token = _clean_token(fallback.stdout) if fallback.ok else None
+    if not token:
+        detail = (result.stderr or fallback.stderr or "gh auth token returned no token").strip()
+        return _CredentialResolution(
+            token=None,
+            status="auth_missing",
+            detail=f"GitHub CLI auth could not resolve {raw['gh_token_login']!r}: {detail[:500]}",
+        )
+    actual_login = _resolve_github_login_for_token(token)
+    if actual_login and canonical_identity_name(actual_login) == expected_login:
+        return _CredentialResolution(
+            token=token,
+            status="auth_ok",
+            detail=(
+                f"GitHub CLI active auth matched the configured login {raw['gh_token_login']}."
+            ),
+        )
+    if actual_login:
+        return _CredentialResolution(
+            token=None,
+            status="auth_mismatch",
+            detail=(
+                f"GitHub CLI active auth belongs to {actual_login!r}, "
+                f"not {raw['gh_token_login']!r}."
+            ),
+        )
+    return _CredentialResolution(
+        token=None,
+        status="auth_missing",
+        detail=(
+            "GitHub CLI active auth produced a token, but AgentShore could not "
+            f"confirm that it belongs to {raw['gh_token_login']!r}."
+        ),
+    )
 
 
 # Per-source token resolver: dict[TokenSource, callable(raw) -> str | None].
@@ -182,73 +282,14 @@ def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
     for source in (TokenSource.LOGIN, TokenSource.ENV, TokenSource.KEYCHAIN):
         if isinstance(raw.get(source.value), str) and raw[source.value]:
             resolver = _TOKEN_RESOLVERS[source]
-            token = resolver(raw)  # type: ignore[operator]
+            token = _clean_token(resolver(raw))  # type: ignore[operator]
             return token, source.value
     return None, TokenSource.AMBIENT.value
 
 
-def _apply_source(entry: dict[str, object], source: str, canonical: str) -> None:
-    """Write the token-source field(s) for *source* into *entry* (in-place).
-
-    Used by both ``add_identity`` and ``update_identity`` so the logic for
-    mapping a token-source kind onto the corresponding YAML field lives in one place.
-    """
-    if source == TokenSource.LOGIN:
-        entry["gh_token_login"] = canonical
-    elif source == TokenSource.ENV:
-        entry["gh_token_env"] = f"{canonical.upper().replace('-', '_')}_GH_TOKEN"
-    else:
-        entry["gh_token_keychain"] = keychain_service_for_login(canonical)
-
-
-def list_identities(project_path: Path) -> list[IdentityRow]:
-    cfg_path = _config_path(project_path)
-    if not cfg_path.exists():
-        return []
-    data = _load_yaml(cfg_path)
-    identities_raw = data.get("identities")
-    if not isinstance(identities_raw, dict):
-        return []
-    rows: list[IdentityRow] = []
-    for login_raw, ident_raw in sorted(identities_raw.items()):
-        login = canonical_identity_name(str(login_raw))
-        if not isinstance(ident_raw, dict):
-            continue
-        token, source = _token_for_identity(ident_raw)
-        if source == "ambient":
-            rows.append(
-                {
-                    "login": login,
-                    "source": source,
-                    "token_status": "ambient",
-                    "repo_access": "unknown",
-                }
-            )
-            continue
-        if not token:
-            rows.append(
-                {
-                    "login": login,
-                    "source": source,
-                    "token_status": "missing",
-                    "repo_access": "unknown",
-                }
-            )
-            continue
-        try:
-            verify_identity_repo_access(project_path, {"GH_TOKEN": token, "GITHUB_TOKEN": token})
-            repo_access = "ok"
-        except (IdentityResolutionError, AgentAuthError):
-            repo_access = "blocked"
-        rows.append(
-            {
-                "login": login,
-                "source": source,
-                "token_status": "configured",
-                "repo_access": repo_access,
-            }
-        )
-    return rows
+# ---------------------------------------------------------------------------
+# Public identity CRUD (add_identity with token validation)
+# ---------------------------------------------------------------------------
 
 
 def add_identity(
@@ -282,152 +323,255 @@ def add_identity(
     _apply_source(entry, source, canonical)
     if source == TokenSource.KEYCHAIN and pat:
         service = keychain_service_for_login(canonical)
-        try:
-            import keyring  # local import: keyring's macOS backend runs setup at import time
-            from keyring.errors import KeyringError
-        except Exception as exc:
-            raise ValueError(f"keyring package unavailable: {exc}") from exc
-        try:
-            keyring.set_password(service, service, pat)
-        except KeyringError as exc:
-            raise ValueError(f"failed to store PAT in Keychain: {exc}") from exc
+        _keyring_set_password(service, pat)
     _validate_token_matches_login(entry, login)
     identities[canonical] = entry
     _write_yaml_atomic(cfg_path, data)
 
 
-def update_identity(project_path: Path, login: str, patch: dict[str, object]) -> None:
-    unknown = set(patch) - _KNOWN_PATCH_KEYS
-    if unknown:
-        raise ValueError(f"unknown patch keys: {sorted(unknown)}")
-    canonical = canonical_identity_name(login)
-    cfg_path = _config_path(project_path)
-    data = _load_yaml(cfg_path)
-    identities = data.get("identities")
-    if not isinstance(identities, dict):
-        raise ValueError("identities block must be a mapping")
-    raw = identities.get(canonical)
-    if not isinstance(raw, dict):
-        raise ValueError(f"identity not found: {canonical}")
-
-    next_raw = dict(raw)
-    if "token_source" in patch:
-        source = str(patch["token_source"]).strip()
-        if source not in _TOKEN_SOURCE_FIELDS:
-            raise ValueError(f"unsupported token_source: {source}")
-        for key in _TOKEN_SOURCE_FIELDS:
-            next_raw.pop(key, None)
-        _apply_source(next_raw, source, canonical)
-    for key in ("git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"):
-        if key in patch and patch[key] is not None:
-            next_raw[key] = patch[key]
-
-    identities[canonical] = next_raw
-    _write_yaml_atomic(cfg_path, data)
+# ---------------------------------------------------------------------------
+# Keychain status (sidecar RPC: identities.check_keychain)
+# ---------------------------------------------------------------------------
 
 
-def _trusted_ids_mapping(data: dict[str, object]) -> dict[str, object]:
-    """Get-or-create the ``trusted_ids`` mapping inside *data* (in-place).
+def keychain_status(login: str) -> dict[str, object]:
+    """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
 
-    Raises ``ValueError`` if a non-mapping ``trusted_ids`` is already present.
-    """
-    trusted = data.get("trusted_ids")
-    if trusted is None:
-        trusted = {}
-        data["trusted_ids"] = trusted
-    if not isinstance(trusted, dict):
-        raise ValueError("trusted_ids block must be a mapping")
-    return trusted
-
-
-def _read_trusted_source_logins(trusted: dict[str, object]) -> list[str]:
-    """Return the canonicalized, de-duplicated ``github_logins`` list."""
-    raw = trusted.get("github_logins", [])
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ValueError("trusted_ids.github_logins must be a list")
-    logins: list[str] = []
-    seen: set[str] = set()
-    for value in raw:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("trusted_ids.github_logins contains a non-string value")
-        canonical = canonical_identity_name(value)
-        if canonical not in seen:
-            logins.append(canonical)
-            seen.add(canonical)
-    return logins
-
-
-def list_trusted_sources(project_path: Path) -> list[str]:
-    """List the no-auth trusted GitHub logins (``trusted_ids.github_logins``).
-
-    These are identities trusted as *sources* of issues/PRs only — they are
-    never assigned to an agent and carry no token. Returned sorted for a
-    stable UI ordering.
-    """
-    cfg_path = _config_path(project_path)
-    if not cfg_path.exists():
-        return []
-    data = _load_yaml(cfg_path)
-    trusted_raw = data.get("trusted_ids")
-    if not isinstance(trusted_raw, dict):
-        return []
-    return sorted(_read_trusted_source_logins(trusted_raw))
-
-
-def add_trusted_source(project_path: Path, login: str) -> None:
-    """Add *login* to ``trusted_ids.github_logins`` (idempotent).
-
-    Validates the GitHub login and canonicalizes it. Leaves ``pr_allow_list``
-    and ``restrict_issues_to_trusted_authors`` untouched.
+    Mirrors the CLI wizard's pre-flight check (``identity_wizard.keychain._keychain_has_token``)
+    so the desktop "Add identity" form can offer to reuse a stored PAT instead of
+    forcing the user to paste it again. Returns the canonical login, the managed
+    keychain service name, and whether a non-empty token is present there.
     """
     if not is_valid_github_login(login):
         raise ValueError(f"invalid GitHub login: {login!r}")
     canonical = canonical_identity_name(login)
-    cfg_path = _config_path(project_path)
-    data = _load_yaml(cfg_path)
-    trusted = _trusted_ids_mapping(data)
-    logins = _read_trusted_source_logins(trusted)
-    if canonical not in logins:
-        logins.append(canonical)
-        trusted["github_logins"] = logins
-        _write_yaml_atomic(cfg_path, data)
+    service = keychain_service_for_login(canonical)
+    return {
+        "login": canonical,
+        "service": service,
+        "has_token": _keychain_has_token(service),
+    }
 
 
-def remove_trusted_source(project_path: Path, login: str) -> None:
-    """Remove *login* from ``trusted_ids.github_logins`` (idempotent)."""
+# ---------------------------------------------------------------------------
+# Async identity access check (sidecar RPC: identities.check_access)
+# ---------------------------------------------------------------------------
+
+
+async def check_identity_access(project_path: Path, login: str) -> IdentityRow:
+    """Resolve one configured identity and verify its token can see the repo.
+
+    This is intentionally separate from ``list_identities`` so the setup screen
+    can render from YAML immediately, then update live access badges without
+    making first paint depend on ``gh`` or the OS credential backend.
+
+    Runs the blocking gh / keyring / repo-access calls inside a thread so the
+    serve loop stays pumping while concurrent identity checks complete in
+    parallel.  A monotonic deadline (``timeout_for("identity_check")``) caps
+    the total time — every individual operation already has its own inner
+    timeout, so this outer cap is a safety net only.
+    """
     canonical = canonical_identity_name(login)
     cfg_path = _config_path(project_path)
     data = _load_yaml(cfg_path)
-    trusted_raw = data.get("trusted_ids")
-    if not isinstance(trusted_raw, dict):
-        return
-    logins = _read_trusted_source_logins(trusted_raw)
-    updated = [item for item in logins if item != canonical]
-    if updated != logins:
-        trusted_raw["github_logins"] = updated
-        _write_yaml_atomic(cfg_path, data)
-
-
-def remove_identity(project_path: Path, login: str) -> None:
-    canonical = canonical_identity_name(login)
-    cfg_path = _config_path(project_path)
-    data = _load_yaml(cfg_path)
-    identities = data.get("identities")
-    if not isinstance(identities, dict):
+    identities_raw = data.get("identities")
+    if not isinstance(identities_raw, dict):
         raise ValueError("identities block must be a mapping")
-    if canonical not in identities:
+    raw = identities_raw.get(canonical)
+    if not isinstance(raw, dict):
         raise ValueError(f"identity not found: {canonical}")
-    identities.pop(canonical, None)
 
-    agents = data.get("agents")
-    if isinstance(agents, dict):
-        for _, body in agents.items():
-            if (
-                isinstance(body, dict)
-                and canonical_identity_name(str(body.get("identity", ""))) == canonical
-            ):
-                body.pop("identity", None)
+    token_status, source = _source_for_identity(raw)
+    row: IdentityRow = {
+        "login": canonical,
+        "source": source,
+        "token_status": token_status,
+        "repo_access": "unknown",
+    }
+    if source == TokenSource.AMBIENT:
+        row["token_status"] = "ambient"
+        row["repo_access_detail"] = "Ambient gh authentication is verified when the agent starts."
+        return row
+    if token_status != "configured":
+        row["repo_access_detail"] = _unconfigured_source_message(source)
+        return row
 
-    _write_yaml_atomic(cfg_path, data)
+    def _run_check() -> IdentityRow:
+        if source == TokenSource.LOGIN.value:
+            return _check_gh_auth_identity_access(project_path, raw, row)
+        return _check_token_identity_access(project_path, raw, row, source)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run_check),
+            timeout=subprocess_env.timeout_for("identity_check"),
+        )
+    except TimeoutError:
+        timed_out: IdentityRow = dict(row)  # type: ignore[assignment]
+        timed_out["repo_access"] = "check_failed"
+        timed_out["token_status"] = (
+            "auth_timeout" if source == TokenSource.LOGIN.value else "token_timeout"
+        )
+        timed_out["repo_access_detail"] = _with_identity_diagnostics(
+            _timeout_message(source),
+            raw,
+            source,
+            include_gh_status=False,
+        )
+        return timed_out
+
+
+def _check_gh_auth_identity_access(
+    project_path: Path,
+    raw: dict[str, object],
+    row: IdentityRow,
+) -> IdentityRow:
+    checked: IdentityRow = dict(row)  # type: ignore[assignment]
+    resolution = _resolve_login_auth(raw)
+    if not resolution.token:
+        checked["token_status"] = resolution.status
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            resolution.detail,
+            raw,
+            TokenSource.LOGIN.value,
+        )
+        return checked
+
+    checked["token_status"] = "auth_ok"
+    try:
+        verify_identity_repo_access(
+            project_path,
+            {"GH_TOKEN": resolution.token, "GITHUB_TOKEN": resolution.token},
+        )
+    except (IdentityResolutionError, AgentAuthError) as exc:
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            str(exc) or "GitHub repository access preflight failed.",
+            raw,
+            TokenSource.LOGIN.value,
+        )
+    else:
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub CLI auth and repository access verified."
+    return checked
+
+
+def _check_token_identity_access(
+    project_path: Path,
+    raw: dict[str, object],
+    row: IdentityRow,
+    source: str,
+) -> IdentityRow:
+    checked: IdentityRow = dict(row)  # type: ignore[assignment]
+    token, _resolved_source = _token_for_identity(raw)
+    if not token:
+        checked["token_status"] = "missing"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            f"Token could not be resolved from {source}.",
+            raw,
+            source,
+        )
+        return checked
+
+    checked["token_status"] = "configured"
+    try:
+        verify_identity_repo_access(project_path, {"GH_TOKEN": token, "GITHUB_TOKEN": token})
+    except (IdentityResolutionError, AgentAuthError) as exc:
+        checked["repo_access"] = "blocked"
+        checked["repo_access_detail"] = _with_identity_diagnostics(
+            str(exc) or "GitHub repository access preflight failed.",
+            raw,
+            source,
+        )
+    else:
+        checked["repo_access"] = "ok"
+        checked["repo_access_detail"] = "GitHub token and repository access verified."
+    return checked
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic helpers
+# ---------------------------------------------------------------------------
+
+
+def _unconfigured_source_message(source: str) -> str:
+    if source == TokenSource.LOGIN.value:
+        return "GitHub CLI auth login is not configured in this desktop process."
+    return "Token source is not configured in this desktop process."
+
+
+def _timeout_message(source: str) -> str:
+    secs = subprocess_env.timeout_for("identity_check")
+    if source == TokenSource.LOGIN.value:
+        return f"GitHub CLI auth and repository access verification timed out after {secs:.0f}s."
+    return f"GitHub token and repository access verification timed out after {secs:.0f}s."
+
+
+def _with_identity_diagnostics(
+    message: str,
+    raw: dict[str, object],
+    source: str,
+    *,
+    include_gh_status: bool = True,
+) -> str:
+    diagnostics = _identity_diagnostics(raw, source, include_gh_status=include_gh_status)
+    return f"{message} Diagnostics: {diagnostics}" if diagnostics else message
+
+
+def _identity_diagnostics(
+    raw: dict[str, object],
+    source: str,
+    *,
+    include_gh_status: bool = True,
+) -> str:
+    """Return redacted desktop environment hints for setup-screen failures."""
+    parts = [
+        f"python={sys.executable}",
+        f"gh={subprocess_env.resolve_tool('gh') or '<missing>'}",
+        f"GH_CONFIG_DIR={_gh_env(raw).get('GH_CONFIG_DIR', '<unset>')}",
+    ]
+    for key in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
+        parts.append(f"{key}={'set' if os.environ.get(key) else 'missing'}")
+    if source == TokenSource.KEYCHAIN.value:
+        parts.append(f"keyring={_keyring_backend_name()}")
+    if include_gh_status:
+        status = _gh_auth_status_summary(raw)
+        if status:
+            parts.append(f"gh_status={status}")
+    return "; ".join(parts)
+
+
+def _gh_env(raw: dict[str, object]) -> dict[str, str]:
+    gh_config_dir = raw.get("gh_config_dir")
+    overlay = (
+        {"GH_CONFIG_DIR": gh_config_dir}
+        if isinstance(gh_config_dir, str) and gh_config_dir
+        else None
+    )
+    return subprocess_env.hardened_env(overlay, for_gh=True)
+
+
+def _gh_auth_status_summary(raw: dict[str, object]) -> str:
+    """Run ``gh auth status`` and return a compact diagnostic summary string."""
+    gh_config_dir = raw.get("gh_config_dir")
+    overlay = (
+        {"GH_CONFIG_DIR": gh_config_dir}
+        if isinstance(gh_config_dir, str) and gh_config_dir
+        else None
+    )
+    result = gh_sync(
+        "auth",
+        "status",
+        "-h",
+        "github.com",
+        env_overlay=overlay,
+        op_class="gh",
+    )
+    if result.tool_missing:
+        return "gh missing"
+    if result.timed_out:
+        return "timed out"
+    output = " ".join((result.stdout or result.stderr or "").split())
+    if len(output) > 240:
+        output = f"{output[:237]}..."
+    return f"exit={result.returncode}; {output or '<no output>'}"

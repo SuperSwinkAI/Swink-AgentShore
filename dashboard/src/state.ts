@@ -71,6 +71,16 @@ export class AgentShoreStateManager {
   connected = true;
   sessionEnded = false;
 
+  // The session_id this manager is bound to. With session_id stamped on every
+  // frame (Tier 1), any frame naming a different id marks a new orchestrator
+  // run and triggers a full reset. Null until the first id-bearing frame.
+  currentSessionId: string | null = null;
+  // Host hook (set by Dashboard) to run component-level resets — play bar,
+  // event drawer, agent stats, bootstrap modal — when the manager crosses a
+  // session boundary. Invoked from handleMessage before the new frame is
+  // processed, so the UI is cleared before the new session repopulates it.
+  onSessionReset: (() => void) | null = null;
+
   // Bootstrap progress (desktop-afp). bootstrapPhase is the currently-running
   // step name, or null once bootstrap has emitted its final ("ready", "completed").
   // bootstrapStartedAt is wall-clock ms when the first bootstrap_phase event
@@ -84,11 +94,13 @@ export class AgentShoreStateManager {
 
   /**
    * Wipe per-session state: agent characters, previous-agents map, the
-   * latest state snapshot, and seq counter. Called when the transport
-   * sees a state_update with a new session_id and the previous session
+   * latest state snapshot, seq counter, and bootstrap progress. Called
+   * when the transport sees a new session_id and the previous session
    * never sent a clean session_ended (e.g. Tauri shell was killed).
-   * NPCs and bootstrap progress are preserved across sessions — they
-   * are properties of the office, not of any one orchestrator run.
+   * Only NPCs are preserved across sessions — they are properties of the
+   * office, not of any one orchestrator run. Bootstrap is per-run: each
+   * orchestrator re-runs it and must be able to re-show the modal, so it
+   * is reset here too.
    */
   resetSession(): void {
     this.characters.clear();
@@ -96,9 +108,12 @@ export class AgentShoreStateManager {
     this.latestState = null;
     this.feedbackPending = null;
     this.sessionEnded = false;
-    // Don't reset lastSeenSeq; the new session's bridge starts at seq=0
-    // anyway and we only need to drop strictly older messages.
+    // Reset the seq de-dup floor: the new session's bridge restarts at
+    // seq=1, so a stale-high lastSeenSeq from the prior run would drop the
+    // new session's low-seq frames (the missing-bootstrap-modal bug).
     this.lastSeenSeq = 0;
+    this.bootstrapPhase = null;
+    this.bootstrapStartedAt = null;
   }
 
   getCharacters(): Character[] {
@@ -118,6 +133,20 @@ export class AgentShoreStateManager {
   }
 
   handleMessage(msg: AgentShoreMessage): boolean {
+    // Session boundary (Tier 1): with session_id stamped on every frame, a new
+    // id means a new orchestrator run. Reset everything (incl. seq + bootstrap,
+    // via resetSession) before processing so the new run's low-seq frames are
+    // accepted and the modal re-shows. The first id-bearing frame of a fresh
+    // mount only adopts the id — there is nothing to reset yet.
+    const sid = (msg as { session_id?: unknown }).session_id;
+    if (typeof sid === "string" && sid !== this.currentSessionId) {
+      if (this.currentSessionId !== null) {
+        this.resetSession();
+        this.onSessionReset?.();
+      }
+      this.currentSessionId = sid;
+    }
+
     // Drop out-of-order or replayed messages using the monotonic seq number.
     // Not all message types carry seq (ConnectionLost/Restored are client-synthetic).
     if ("seq" in msg && typeof msg.seq === "number") {
@@ -151,6 +180,9 @@ export class AgentShoreStateManager {
         return false;
       case "session_ended":
         this.sessionEnded = true;
+        // A surviving manager (the instance persists across reconnects)
+        // must accept the next run's seq=1 frames, so drop the de-dup floor.
+        this.lastSeenSeq = 0;
         return false;
       case "connection_lost":
         this.connected = false;
@@ -158,6 +190,10 @@ export class AgentShoreStateManager {
       case "connection_restored":
         this.connected = true;
         this.sessionEnded = false;
+        // A reconnect may attach to a new orchestrator whose seq restarts at
+        // 1; the bridge only replays the current session, so clearing the
+        // floor here is safe and avoids dropping the fresh stream.
+        this.lastSeenSeq = 0;
         return false;
       case "active_play_replay":
         this.patchActivePlayReplay(msg.active_play);

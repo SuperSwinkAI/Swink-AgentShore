@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from agentshore.cli.helpers import _check_ssh_signing_key_loaded
 from agentshore.config.coerce import str_or_none
 
@@ -83,3 +85,170 @@ class TestCheckSshSigningKeyLoaded:
             loaded, detail = _check_ssh_signing_key_loaded()
         assert loaded is False
         assert "probe failed" in detail
+
+
+class TestSshSigningSetupHint:
+    """The fix text must be platform-appropriate (#68): --apple-use-keychain is
+    macOS-only and invalid on Windows/Linux."""
+
+    def test_macos_hint_uses_apple_keychain(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with (
+            patch("sys.platform", "darwin"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
+        ):
+            hint = ssh_signing_setup_hint()
+        assert "--apple-use-keychain" in hint
+        assert "/home/user/.ssh/id_ed25519" in hint
+
+    def test_windows_hint_starts_agent_service_not_apple(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
+        ):
+            hint = ssh_signing_setup_hint()
+        assert "ssh-agent" in hint
+        assert "--apple-use-keychain" not in hint
+
+    def test_linux_hint_is_plain_ssh_add(self) -> None:
+        from agentshore.core.git_safety import ssh_signing_setup_hint
+
+        with (
+            patch("sys.platform", "linux"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
+        ):
+            hint = ssh_signing_setup_hint()
+        assert hint == "ssh-add /home/user/.ssh/id_ed25519"
+
+
+class TestSshSigningEnabled:
+    """The pre-flight only fires when the repo actually SSH-signs commits."""
+
+    @staticmethod
+    def _fake_git(values: dict[str, str]):
+        import subprocess
+
+        def _run(args: list[str], cwd: object, **_kw: object) -> subprocess.CompletedProcess[str]:
+            key = args[-1]
+            if key not in values:
+                return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=values[key] + "\n", stderr=""
+            )
+
+        return _run
+
+    def test_enabled_when_gpgsign_true_and_format_ssh(self) -> None:
+        from pathlib import Path
+
+        from agentshore.core import git_safety
+
+        with patch.object(
+            git_safety,
+            "_run_git",
+            side_effect=self._fake_git({"commit.gpgsign": "true", "gpg.format": "ssh"}),
+        ):
+            assert git_safety.ssh_signing_enabled(Path("repo")) is True
+
+    def test_disabled_when_gpgsign_unset(self) -> None:
+        from pathlib import Path
+
+        from agentshore.core import git_safety
+
+        with patch.object(git_safety, "_run_git", side_effect=self._fake_git({})):
+            assert git_safety.ssh_signing_enabled(Path("repo")) is False
+
+    def test_disabled_when_format_is_not_ssh(self) -> None:
+        from pathlib import Path
+
+        from agentshore.core import git_safety
+
+        with patch.object(
+            git_safety,
+            "_run_git",
+            side_effect=self._fake_git({"commit.gpgsign": "true", "gpg.format": "openpgp"}),
+        ):
+            assert git_safety.ssh_signing_enabled(Path("repo")) is False
+
+
+class TestReportSshSigningStatus:
+    """The init/bootstrap pre-flight printer: only probes the agent when the
+    repo SSH-signs commits, with a platform-correct hint."""
+
+    def test_unconfigured_signing_is_quiet_and_skips_agent_probe(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from pathlib import Path
+
+        from agentshore.cli import helpers
+
+        with (
+            patch("agentshore.core.git_safety.ssh_signing_enabled", return_value=False),
+            patch.object(helpers, "_check_ssh_signing_key_loaded") as probe,
+        ):
+            result = helpers.report_ssh_signing_status(Path("repo"))
+        out = capsys.readouterr().out
+        assert result is True
+        assert "not configured" in out
+        assert "NOT LOADED" not in out
+        probe.assert_not_called()
+
+    def test_signed_repo_with_key_prints_ok_and_returns_true(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from pathlib import Path
+
+        from agentshore.cli import helpers
+
+        with (
+            patch("agentshore.core.git_safety.ssh_signing_enabled", return_value=True),
+            patch.object(
+                helpers,
+                "_check_ssh_signing_key_loaded",
+                return_value=(True, "256 SHA256:abc (ED25519)"),
+            ),
+        ):
+            result = helpers.report_ssh_signing_status(Path("repo"))
+        out = capsys.readouterr().out
+        assert result is True
+        assert "SSH signing key: ok" in out
+
+    def test_signed_repo_no_key_prints_windows_hint_and_returns_false(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from pathlib import Path
+
+        from agentshore.cli import helpers
+
+        with (
+            patch("agentshore.core.git_safety.ssh_signing_enabled", return_value=True),
+            patch.object(
+                helpers, "_check_ssh_signing_key_loaded", return_value=(False, "agent unreachable")
+            ),
+            # Stub the key probe so the faked-win32 hint doesn't run the real
+            # ``shutil.which`` (its win32 branch calls ``_winapi``, absent off
+            # Windows); the hint's platform-branching logic still runs for real.
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="~/.ssh/id_ed25519",
+            ),
+            patch("sys.platform", "win32"),
+        ):
+            result = helpers.report_ssh_signing_status(Path("repo"))
+        out = capsys.readouterr().out
+        assert result is False
+        assert "NOT LOADED" in out
+        assert "ssh-agent" in out
+        assert "--apple-use-keychain" not in out

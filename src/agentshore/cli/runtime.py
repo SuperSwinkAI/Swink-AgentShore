@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 import structlog
@@ -23,16 +23,85 @@ if TYPE_CHECKING:
     from agentshore.config import RuntimeConfig
     from agentshore.config.models import BudgetConfig
     from agentshore.core import Orchestrator
+    from agentshore.ipc import IpcServer
 
 _logger = structlog.get_logger("agentshore.cli")
 
 
-async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
+def _background_spawn_kwargs() -> dict[str, Any]:
+    """Popen flags that detach a long-lived child from this console.
+
+    POSIX uses ``start_new_session`` (setsid). On Windows that flag is a no-op,
+    so the child stays in the launcher's console process group — and a console
+    Ctrl-C / close event then cascades across the orchestrator + dashboard (and
+    back into the launcher), aborting the "background" session within seconds
+    even though nobody pressed anything.
+
+    ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`` gives the child its own
+    process group and a hidden console: isolated from the launcher's console
+    signals, with no visible window. (``DETACHED_PROCESS`` also isolates, but a
+    detached console-less process makes its own console children — e.g. spawned
+    agent CLIs — allocate fresh *visible* windows, so we use the hidden-console
+    flag instead, which grandchildren inherit.)
+    """
+    if sys.platform == "win32":
+        import subprocess
+
+        return {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+        }
+    return {"start_new_session": True}
+
+
+def _wait_for_ipc_endpoint_ready(endpoint: object, proc: Any, log_file: Path) -> bool:
+    """Wait for the detached orchestrator to publish a reachable IPC endpoint."""
+    import socket
+    import time
+
+    from agentshore.session_path import IpcEndpoint
+
+    ipc_endpoint = endpoint if isinstance(endpoint, IpcEndpoint) else IpcEndpoint.unix("")
+    for _ in range(_SOCKET_WAIT_RETRIES):
+        poll = getattr(proc, "poll", None)
+        if callable(poll) and poll() is not None:
+            click.echo(
+                f"Warning: AgentShore exited before IPC was ready - check the log: {log_file}",
+                err=True,
+            )
+            return False
+
+        if ipc_endpoint.kind == "tcp":
+            try:
+                with socket.create_connection(
+                    (ipc_endpoint.host, ipc_endpoint.port),
+                    timeout=_SOCKET_POLL_INTERVAL_S,
+                ):
+                    return True
+            except OSError:
+                pass
+        elif ipc_endpoint.path is not None and ipc_endpoint.path.exists():
+            return True
+
+        time.sleep(_SOCKET_POLL_INTERVAL_S)
+
+    click.echo("Warning: timed out waiting for IPC endpoint - check the log.", err=True)
+    return False
+
+
+async def _dispatch_command(
+    cmd: dict[str, object],
+    orch: Orchestrator,
+    server: IpcServer | None = None,
+) -> None:
     """Dispatch a single IPC command dict to the orchestrator.
 
     Every validated command must have a handler here.  Commands without a full
     backend implementation return an explicit ``not_implemented`` log entry rather
     than silently doing nothing.
+
+    *server* is the :class:`~agentshore.ipc.IpcServer` instance, required for
+    ``add_budget`` replies.  When ``None`` (e.g. in tests that don't use a real
+    server) the reply is silently dropped.
     """
     command = cmd.get("command")
     if command == "pause":
@@ -48,16 +117,8 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
         await orch.begin_drain(reason)
     elif command == "hard_stop":
         await orch.hard_stop()
-    elif command == "adjust_budget":
-        delta_raw = cmd.get("delta_usd", 0)
-        try:
-            delta = float(delta_raw if isinstance(delta_raw, (int, float, str)) else 0)
-        except ValueError:
-            _logger.warning("ipc.adjust_budget_invalid", delta_usd=delta_raw)
-            return
-        if orch.adjust_budget(delta):
-            await orch.resume()
     elif command == "add_budget":
+        reply_id = cmd.get("_reply_id")
         delta_usd_raw = cmd.get("delta_usd")
         delta_minutes_raw = cmd.get("delta_minutes")
         delta_usd: float | None = None
@@ -72,6 +133,12 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             _logger.warning("ipc.add_budget_invalid_minutes", delta_minutes=delta_minutes_raw)
         if delta_usd is None and delta_minutes is None:
             _logger.warning("ipc.add_budget_no_delta")
+            if isinstance(reply_id, str) and server is not None:
+                from agentshore.errors import OrchestratorError
+
+                server.post_reply(
+                    reply_id, OrchestratorError("add_budget requires a positive delta")
+                )
             return
         from agentshore.errors import OrchestratorError
 
@@ -79,9 +146,11 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
             applied = await orch.add_budget(delta_usd=delta_usd, delta_minutes=delta_minutes)
         except OrchestratorError as exc:
             _logger.warning("ipc.add_budget_rejected", error=str(exc))
+            if isinstance(reply_id, str) and server is not None:
+                server.post_reply(reply_id, exc)
             return
-        if isinstance(applied, dict) and applied.get("resumed") is True:
-            await orch.resume()
+        if isinstance(reply_id, str) and server is not None:
+            server.post_reply(reply_id, applied)
     elif command == "rescan_issues":
         await orch.refresh_issues()
     elif command == "feedback_response":
@@ -138,6 +207,8 @@ async def _dispatch_command(cmd: dict[str, object], orch: Orchestrator) -> None:
     # "start" is accepted by the validator (so connecting clients can send it)
     # but is a no-op at dispatch time — the orchestrator is already running by
     # the time IPC commands are processed.
+    elif command == "reload_config":
+        await orch.reload_config()
     elif command == "start":
         _logger.info("ipc.start_received_noop", message="Orchestrator already running")
 
@@ -158,7 +229,7 @@ def _launch_dashboard_background(
     """Launch AgentShore + dashboard as two detached background processes and return.
 
     1. Starts the orchestrator (agent mode) with stdout/stderr → session log.
-    2. Waits up to 15 s for the Unix IPC socket to appear when using Unix IPC.
+    2. Waits up to 15 s for the IPC endpoint to become reachable.
     3. Starts ``agentshore dashboard`` (the bridge) with stdout/stderr → dashboard log.
     4. Opens the browser once the bridge is up.
     5. Returns immediately — terminal is freed.
@@ -167,12 +238,25 @@ def _launch_dashboard_background(
     import time
     import webbrowser
 
-    from agentshore.session_path import IpcEndpoint, find_dashboard_port, session_dir
+    from agentshore.dashboard.lifecycle import (
+        reap_before_orchestrator_spawn,
+        select_dashboard_port,
+    )
+    from agentshore.session_path import IpcEndpoint, session_dir
 
     endpoint = ipc_endpoint if isinstance(ipc_endpoint, IpcEndpoint) else IpcEndpoint.unix("")
     log_dir = session_dir(project_path)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "agentshore.log"
+
+    # Reap any prior dashboard bridge for this project BEFORE spawning the
+    # orchestrator. The dead-bridge holds dashboard_events.ndjson open (no
+    # FILE_SHARE_DELETE on Windows), so the orchestrator's StateWriter reset
+    # can't unlink it — leaving a prior session's `session_ended` in place,
+    # which the new bridge then ingests and self-exits on ("dies on its own").
+    # Reaping first releases the file so the reset succeeds; it also frees 9400.
+    if reap_before_orchestrator_spawn(project_path):
+        click.echo("Reaped a stale dashboard process for this project.")
 
     cmd: list[str] = [
         sys.executable,
@@ -217,30 +301,20 @@ def _launch_dashboard_background(
         cmd.extend(["--config", config_path])
 
     with log_file.open("w") as lf:
-        subprocess.Popen(  # nosec B603
+        orchestrator_proc = subprocess.Popen(  # nosec B603
             cmd,
             stdout=lf,
             stderr=lf,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **_background_spawn_kwargs(),
         )
 
     click.echo(f"AgentShore starting in background (log: {log_file})")
 
-    # Sync-only wait: this runs pre-event-loop, before asyncio.run() is called.
-    # time.sleep is correct here; using asyncio.sleep would require an event loop
-    # that does not yet exist at this point in the process lifecycle.
-    for _ in range(_SOCKET_WAIT_RETRIES):
-        if endpoint.kind == "tcp":
-            break
-        if endpoint.path is not None and endpoint.path.exists():
-            break
-        time.sleep(_SOCKET_POLL_INTERVAL_S)
-    else:
-        click.echo("Warning: timed out waiting for IPC socket — check the log.", err=True)
+    if not _wait_for_ipc_endpoint_ready(endpoint, orchestrator_proc, log_file):
         return
 
-    port = find_dashboard_port()
+    port = select_dashboard_port()
     dashboard_cmd: list[str] = [
         sys.executable,
         "-m",
@@ -258,17 +332,21 @@ def _launch_dashboard_background(
         dashboard_cmd.extend(["--ipc-host", endpoint.host, "--ipc-port", str(endpoint.port)])
     dashboard_log = log_dir / "dashboard.log"
     with dashboard_log.open("w") as dl:
-        dashboard_proc = subprocess.Popen(  # nosec B603
+        # The dashboard child owns dashboard.pid: it records its *own*
+        # os.getpid() once started (see commands/dashboard.py). The supervisor
+        # must NOT pre-write dashboard_proc.pid here — on Windows agentshore is a
+        # uv tool whose Scripts\python.exe is a trampoline, so Popen's pid is the
+        # trampoline, not the bridge process. Recording it would make the bridge
+        # read its own launcher pid back as a "prior dashboard" and taskkill /T
+        # its own process tree on startup, so nothing ever binds the port. (Any
+        # genuinely-stale prior bridge is already reaped above before spawn.)
+        subprocess.Popen(  # nosec B603
             dashboard_cmd,
             stdout=dl,
             stderr=dl,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **_background_spawn_kwargs(),
         )
-
-    from agentshore.session_path import write_dashboard_pid
-
-    write_dashboard_pid(project_path, dashboard_proc.pid)
 
     # Sync-only delay: give the dashboard bridge a moment to bind its port
     # before opening the browser.  This runs pre-event-loop (background launch
@@ -391,7 +469,7 @@ async def _run_agent_mode(
     # The StateWriter persists state snapshots + events into the session
     # directory for file-tailing consumers (next-gen dashboard sidecar).
     writer = StateWriter(session_dir(repo_root))
-    provider = IpcStateProvider(writer, server=server)
+    provider = IpcStateProvider(writer, server=server, session_id=session_id)
 
     orch = await Orchestrator.bootstrap(
         cfg=cfg,
@@ -452,7 +530,7 @@ async def _run_agent_mode(
             except asyncio.CancelledError:
                 break
             try:
-                await _dispatch_command(cmd, orch)
+                await _dispatch_command(cmd, orch, server)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

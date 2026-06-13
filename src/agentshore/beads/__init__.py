@@ -250,6 +250,15 @@ class BdError(RuntimeError):
     """Raised when a bd subcommand exits with a non-zero return code."""
 
 
+class GraphReadError(BdError):
+    """Raised when load_graph exhausts all retries and cannot return a fresh graph.
+
+    Callers must handle this explicitly; returning stale data silently is not
+    acceptable because it hides permanent failures (uninstalled bd binary,
+    corrupted store, wedged lock) from the RL loop.
+    """
+
+
 def resolve_bd_binary() -> str | None:
     """Resolve the bd binary path from env override first, then PATH."""
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
@@ -554,25 +563,63 @@ def _graph_task_from_bead(
     )
 
 
+_GRAPH_READ_RETRIES = 3
+_GRAPH_READ_RETRY_DELAY = 0.5  # seconds between attempts
+
+
+async def _read_graph_raw(project_path: Path) -> list[RawBead]:
+    """Run ``bd list --all --json`` with retries, returning the raw bead list.
+
+    Raises ``GraphReadError`` after exhausting all retries.  This ensures
+    callers cannot silently consume stale data — a persistent failure surfaces
+    immediately rather than being hidden behind a fallback cache.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, _GRAPH_READ_RETRIES + 1):
+        try:
+            raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+            return _as_json_list(raw)
+        except BdError as exc:
+            last_exc = exc
+            _logger.warning(
+                "beads_graph_load_failed",
+                project_path=str(project_path),
+                attempt=attempt,
+                max_attempts=_GRAPH_READ_RETRIES,
+                error=str(exc),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_exc = exc
+            _logger.warning(
+                "beads_graph_parse_failed",
+                project_path=str(project_path),
+                attempt=attempt,
+                max_attempts=_GRAPH_READ_RETRIES,
+                error=str(exc),
+            )
+        if attempt < _GRAPH_READ_RETRIES:
+            await asyncio.sleep(_GRAPH_READ_RETRY_DELAY)
+
+    raise GraphReadError(
+        f"bd list failed after {_GRAPH_READ_RETRIES} attempts for {project_path}"
+    ) from last_exc
+
+
 async def load_graph(project_path: Path) -> ProjectGraph | None:
     """Load the beads project graph for *project_path*.
 
     Returns ``None`` when beads is not initialised for the project
     (no ``.beads/`` directory). Returns an empty ``ProjectGraph`` when
     beads is present but has no epics yet.
+
+    Raises ``GraphReadError`` if the bd binary fails after all retries.
+    Callers must handle this explicitly — silent stale-graph fallback is
+    not acceptable because it hides permanent failures from the RL loop.
     """
     if not (project_path / ".beads").exists():
         return None
 
-    try:
-        raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
-        bead_items = _as_json_list(raw)
-    except BdError as exc:
-        _logger.warning("beads_graph_load_failed", project_path=str(project_path), error=str(exc))
-        return None
-    except (json.JSONDecodeError, ValueError) as exc:
-        _logger.warning("beads_graph_parse_failed", project_path=str(project_path), error=str(exc))
-        return None
+    bead_items = await _read_graph_raw(project_path)
 
     beads = [_parse_bead(item) for item in bead_items]
     beads_by_id = {bead.bead_id: bead for bead in beads if bead.bead_id}

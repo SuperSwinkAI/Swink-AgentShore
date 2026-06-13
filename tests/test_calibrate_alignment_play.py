@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agentshore.beads import EpicStatus, ProjectGraph
+from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.calibrate_alignment import CalibrateAlignmentPlay
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
@@ -21,7 +22,7 @@ def _state(
         graph=graph,
         in_flight_plays=[] if in_flight is None else in_flight,
         plays_since_last_play_type=(
-            {PlayType.CALIBRATE_ALIGNMENT: 25}
+            {PlayType.CALIBRATE_ALIGNMENT: STANDARD_PLAY_COOLDOWN_PLAYS}
             if plays_since_last_play_type is None and total_plays >= 20
             else (plays_since_last_play_type or {})
         ),

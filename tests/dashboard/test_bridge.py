@@ -63,6 +63,8 @@ def _make_bridge(
     sock_path: Endpoint,
     static_dir: Path,
     session_dir: Path,
+    *,
+    session_id: str | None = None,
 ) -> DashboardBridge:
     endpoint = sock_path if isinstance(sock_path, IpcEndpoint) else IpcEndpoint.unix(sock_path)
     return DashboardBridge(
@@ -70,6 +72,7 @@ def _make_bridge(
         session_dir=session_dir,
         port=0,
         static_dir=static_dir,
+        session_id=session_id,
         state_poll_interval=0.02,
         events_poll_interval=0.02,
     )
@@ -212,6 +215,76 @@ async def test_bridge_replay_to_new_client(
 
 
 @pytest.mark.asyncio
+async def test_bridge_caches_and_replays_bootstrap_phase(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """A live bootstrap_phase is cached and replayed so a (re)connecting tab
+    renders the loading modal instead of a blank screen (desktop-afp)."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    writer = StateWriter(session_dir)
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "init_github", "status": "started", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    for line in await asyncio.to_thread(bridge._read_new_events_sync):
+        bridge._ingest_event_line(line, broadcast=True)
+
+    assert bridge._bootstrap_phase_raw is not None
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    replayed = [json.loads(m) for m in ws.sent]
+    phase_msgs = [m for m in replayed if m.get("type") == "bootstrap_phase"]
+    assert len(phase_msgs) == 1
+    assert phase_msgs[0]["payload"]["phase"] == "init_github"
+
+
+@pytest.mark.asyncio
+async def test_bridge_clears_bootstrap_phase_when_ready(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """Once bootstrap reaches ready/completed the cached phase is dropped, so a
+    post-bootstrap connect does not show a stale loading modal."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    writer = StateWriter(session_dir)
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "init_github", "status": "started", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    await writer.append_event(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "ready", "status": "completed", "elapsed_ms": 0.0},
+            }
+        )
+    )
+    for line in await asyncio.to_thread(bridge._read_new_events_sync):
+        bridge._ingest_event_line(line, broadcast=True)
+
+    assert bridge._bootstrap_phase_raw is None
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    types = [json.loads(m).get("type") for m in ws.sent]
+    assert "bootstrap_phase" not in types
+
+
+@pytest.mark.asyncio
 async def test_bridge_prime_from_disk_loads_existing_files(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path
 ) -> None:
@@ -281,6 +354,161 @@ async def test_prime_from_disk_ignores_stale_session_ended(
         broadcast=True,
     )
     assert bridge._session_ended is True
+
+
+# ---------------------------------------------------------------------------
+# Session-aware replay gate (Tier 0)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_rejects_cross_session_snapshot(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """A prior session's stale snapshot is never adopted or replayed.
+
+    Reproduces the stale-data + missing-modal bug: on Windows the engine can
+    fail to unlink a prior session's ``dashboard_state.json`` (a live bridge
+    holds the handle). A bridge serving session B must drop that file rather
+    than serve its high-seq snapshot, which would poison the client's seq
+    de-dup and suppress B's bootstrap frames.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / STATE_FILENAME).write_text(
+        json.dumps(
+            {"type": "state_update", "seq": 4000, "payload": {"session_id": "A", "tick": 1}}
+        ),
+        encoding="utf-8",
+    )
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir, session_id="B")
+    changed = await asyncio.to_thread(bridge._poll_state_file_sync)
+
+    assert changed is False
+    assert bridge._latest_state is None
+    assert bridge._observed_current_state is False
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_poll_accepts_matching_session_snapshot(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """A snapshot for the session we serve is adopted and replayed."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / STATE_FILENAME).write_text(
+        json.dumps({"type": "state_update", "seq": 1, "payload": {"session_id": "B", "tick": 1}}),
+        encoding="utf-8",
+    )
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir, session_id="B")
+    changed = await asyncio.to_thread(bridge._poll_state_file_sync)
+
+    assert changed is True
+    assert bridge._latest_state is not None
+    assert bridge._observed_current_state is True
+
+    ws = FakeWS()
+    await bridge._replay_to_ws(ws)  # type: ignore[arg-type]
+    assert [json.loads(m).get("type") for m in ws.sent] == ["state_update"]
+
+
+@pytest.mark.asyncio
+async def test_poll_adopts_first_session_when_id_unknown(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """With no pinned id and no info.json, the first observed session is adopted."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / STATE_FILENAME).write_text(
+        json.dumps({"type": "state_update", "seq": 1, "payload": {"session_id": "Z", "tick": 1}}),
+        encoding="utf-8",
+    )
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    assert bridge._current_session_id is None
+
+    changed = await asyncio.to_thread(bridge._poll_state_file_sync)
+    assert changed is True
+    assert bridge._current_session_id == "Z"
+    assert bridge._observed_current_state is True
+
+
+@pytest.mark.asyncio
+async def test_poll_serves_snapshot_without_session_id(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """Back-compat: a snapshot with no session_id can't be gated, so it serves."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / STATE_FILENAME).write_text(
+        json.dumps({"type": "state_update", "seq": 1, "payload": {"tick": 1}}),
+        encoding="utf-8",
+    )
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir, session_id="B")
+    changed = await asyncio.to_thread(bridge._poll_state_file_sync)
+
+    assert changed is True
+    assert bridge._latest_state is not None
+    assert bridge._observed_current_state is True
+
+
+@pytest.mark.asyncio
+async def test_prime_skips_event_caches_for_stale_session(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """Prime must not load a prior session's events when its snapshot is stale.
+
+    The events file carries no session_id, so the only safe signal is whether
+    the on-disk *state* belongs to us. When it doesn't, prime caches nothing and
+    advances the tail offset past the stale backlog so the live tail won't
+    replay it.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / STATE_FILENAME).write_text(
+        json.dumps(
+            {"type": "state_update", "seq": 9000, "payload": {"session_id": "A", "tick": 1}}
+        ),
+        encoding="utf-8",
+    )
+    (session_dir / EVENTS_FILENAME).write_text(
+        json.dumps(
+            {
+                "type": "bootstrap_phase",
+                "payload": {"phase": "init_github", "status": "started", "elapsed_ms": 0.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir, session_id="B")
+    await bridge._prime_from_disk()
+
+    assert bridge._latest_state is None
+    assert bridge._observed_current_state is False
+    assert bridge._bootstrap_phase_raw is None
+    assert bridge._events_offset == (session_dir / EVENTS_FILENAME).stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_session_id_resolved_from_info_json(
+    sock_path: Endpoint, static_dir: Path, tmp_path: Path
+) -> None:
+    """When not pinned, the bridge resolves its session id from info.json."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "info.json").write_text(json.dumps({"session_id": "INFO-1"}), encoding="utf-8")
+
+    bridge = _make_bridge(sock_path, static_dir, session_dir)
+    assert bridge._current_session_id == "INFO-1"
 
 
 @pytest.mark.asyncio

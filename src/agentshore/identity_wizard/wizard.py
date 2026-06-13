@@ -344,13 +344,17 @@ def _prompt_token_strategy(
         f"(stored in {backend}, never written to agentshore.yaml)",
         default=is_new_account,
     ):
-        token = click.prompt(
-            "    Paste PAT (input hidden; press Enter to back out)",
-            hide_input=True,
-            default="",
-            show_default=False,
+        from beaupy import prompt as beaupy_prompt
+
+        # Masked echo (one ``*`` per character) so a pasted PAT is visibly
+        # registered. click's ``hide_input`` shows nothing, which left users
+        # unsure the paste landed. beaupy returns "" on an empty Enter and
+        # None on ESC/Ctrl-C (raise_on_* default False) — both back out here.
+        token = beaupy_prompt(
+            "    Paste PAT (masked; press Enter to back out): ",
+            secure=True,
         )
-        token_str = token.strip()
+        token_str = (token or "").strip()
         if token_str:
             if not looks_like_pat(token_str):
                 click.echo(

@@ -2,19 +2,33 @@ use crate::jsonrpc_stdio::{
     decode_response_line, encode_line, handshake_request, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse,
 };
+use crate::sidecar_env::{
+    apply_no_window_creation_flags, apply_user_path_overlay, apply_windows_headless_env,
+};
+use crate::sidecar_pid::{remove_sidecar_pid_file, write_sidecar_pid_file};
+use crate::sidecar_runtime::{
+    development_sidecar_command, locate_machine_managed_bd, locate_managed_venv_python,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 const CLIENT_NAME: &str = "agentshore-desktop";
 const MAX_STDERR_LINES: usize = 50;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+const SETUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Env override for the handshake budget (seconds). Lets support widen it on a
+/// pathologically slow box without a rebuild.
+const HANDSHAKE_TIMEOUT_ENV: &str = "AGENTSHORE_HANDSHAKE_TIMEOUT_SECS";
+const SESSION_START_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const SESSION_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
+const INSTALL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
 
 /// Tauri event name carrying forwarded sidecar JSON-RPC notifications
@@ -42,6 +56,79 @@ pub fn resolve_build_id() -> String {
     match std::env::var(BUILD_ID_ENV) {
         Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
         _ => DEV_BUILD_ID.to_string(),
+    }
+}
+
+/// Budget for the initial ``app.handshake`` round-trip.
+///
+/// A Windows cold start under antivirus (Defender/Avast scanning ``python.exe``
+/// and the first ``import agentshore.sidecar``) routinely exceeds a 30s wall and
+/// would otherwise trip the supervisor into the fatal-error screen even though
+/// the sidecar is alive and about to answer. Give Windows a wider budget; other
+/// platforms keep the original 30s. Overridable via
+/// ``AGENTSHORE_HANDSHAKE_TIMEOUT_SECS`` for field diagnosis.
+fn handshake_response_timeout() -> Duration {
+    if let Ok(raw) = std::env::var(HANDSHAKE_TIMEOUT_ENV) {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            if secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    if cfg!(target_os = "windows") {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(30)
+    }
+}
+
+/// Single source of truth for per-method timeout classification.
+///
+/// Both this file (via ``include_str!``) and the TypeScript frontend (via a
+/// JSON import) read ``desktop/rpc-method-classes.json``.  Edit that file to
+/// change which methods belong to which bucket — do not add method names here.
+const METHOD_CLASSES_JSON: &str = include_str!("../../rpc-method-classes.json");
+
+#[derive(serde::Deserialize)]
+struct MethodClasses {
+    setup: Vec<String>,
+    uncapped: Vec<String>,
+}
+
+struct MethodBuckets {
+    setup: HashSet<String>,
+    uncapped: HashSet<String>,
+}
+
+fn method_buckets() -> &'static MethodBuckets {
+    static BUCKETS: OnceLock<MethodBuckets> = OnceLock::new();
+    BUCKETS.get_or_init(|| {
+        let classes: MethodClasses = serde_json::from_str(METHOD_CLASSES_JSON)
+            .expect("rpc-method-classes.json must be valid JSON with setup/uncapped arrays");
+        MethodBuckets {
+            setup: classes.setup.into_iter().collect(),
+            uncapped: classes.uncapped.into_iter().collect(),
+        }
+    })
+}
+
+fn response_timeout_for_method(method: &str) -> Duration {
+    let buckets = method_buckets();
+    if buckets.uncapped.contains(method) {
+        // session.start / session.stop / project.install_timelapse: these
+        // are long-running lifecycle calls driven by $/progress; the Rust
+        // side gives them their own generous caps rather than sharing the
+        // setup/default budgets.
+        match method {
+            "session.start" => SESSION_START_RESPONSE_TIMEOUT,
+            "session.stop" => SESSION_STOP_RESPONSE_TIMEOUT,
+            "project.install_timelapse" => INSTALL_RESPONSE_TIMEOUT,
+            _ => RESPONSE_TIMEOUT,
+        }
+    } else if buckets.setup.contains(method) {
+        SETUP_RESPONSE_TIMEOUT
+    } else {
+        RESPONSE_TIMEOUT
     }
 }
 
@@ -135,6 +222,7 @@ impl SidecarSupervisor {
         let mut child = cmd.spawn().map_err(|e| SupervisorStartError::Other {
             reason: format!("spawn sidecar: {e}"),
         })?;
+        write_sidecar_pid_file(child.id());
 
         let stdin = child
             .stdin
@@ -183,7 +271,7 @@ impl SidecarSupervisor {
         let build_id = resolve_build_id();
         let handshake = handshake_request(1, CLIENT_NAME, &build_id);
         let response = supervisor
-            .send_request(&handshake)
+            .send_request(&handshake, handshake_response_timeout())
             .map_err(|reason| SupervisorStartError::Other { reason })?;
 
         if let Some(err) = response.error {
@@ -237,6 +325,28 @@ impl SidecarSupervisor {
         snapshot
     }
 
+    /// Explicit sidecar teardown: kill the entire sidecar process tree and
+    /// reap the direct child. Called from the window-close path (which holds
+    /// only an ``Arc`` — in-flight RPC threads may keep the supervisor alive
+    /// past the holder's ``take()``, so ``Drop`` is not guaranteed to run at
+    /// quit time); ``Drop`` delegates here as the backstop.
+    ///
+    /// The tree-kill matters on Windows (#155): the sidecar may be spawned
+    /// through a ``uv`` trampoline (development fallback), so killing only
+    /// the direct child leaves the real python — and its ``bd`` daemon
+    /// children — running headless. ``taskkill /T`` walks the whole tree;
+    /// ``Child::kill`` + ``wait`` stays as the direct-child backstop and
+    /// reaper. On Unix the process group dies with the direct kill as before.
+    pub fn kill_sidecar(&self) {
+        remove_sidecar_pid_file();
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(proc_ref) = guard.as_mut() {
+                kill_process_tree(proc_ref);
+            }
+            *guard = None;
+        }
+    }
+
     pub fn call(&self, method: String, params: Option<Value>) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = JsonRpcRequest {
@@ -246,7 +356,8 @@ impl SidecarSupervisor {
             params,
         };
 
-        let response = self.send_request(&req)?;
+        let timeout = response_timeout_for_method(&req.method);
+        let response = self.send_request(&req, timeout)?;
 
         if let Some(error) = response.error {
             return Ok(json!({"error": serialize_error(error)}));
@@ -255,7 +366,11 @@ impl SidecarSupervisor {
         Ok(response.result.unwrap_or(Value::Null))
     }
 
-    fn send_request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, String> {
+    fn send_request(
+        &self,
+        req: &JsonRpcRequest,
+        timeout: Duration,
+    ) -> Result<JsonRpcResponse, String> {
         let id = req
             .id
             .as_i64()
@@ -294,13 +409,11 @@ impl SidecarSupervisor {
             return Err(err);
         }
 
-        match rx.recv_timeout(RESPONSE_TIMEOUT) {
+        match rx.recv_timeout(timeout) {
             Ok(response) => Ok(response),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 self.discard_pending(id);
-                Err(format!(
-                    "sidecar response timed out after {RESPONSE_TIMEOUT:?}"
-                ))
+                Err(format!("sidecar response timed out after {timeout:?}"))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 self.discard_pending(id);
@@ -339,6 +452,7 @@ impl SidecarSupervisor {
             };
 
             if let Some(status) = maybe_exit {
+                remove_sidecar_pid_file();
                 let payload = SidecarCrashPayload {
                     exit_code: status.code(),
                     last_stderr_lines: snapshot_stderr(&stderr_lines),
@@ -368,13 +482,7 @@ impl SidecarSupervisor {
 
 impl Drop for SidecarSupervisor {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(proc_ref) = guard.as_mut() {
-                let _ = proc_ref.kill();
-                let _ = proc_ref.wait();
-            }
-            *guard = None;
-        }
+        self.kill_sidecar();
     }
 }
 
@@ -387,9 +495,10 @@ impl Drop for SidecarSupervisor {
 /// postinstall script which pip-installs the bundled agentshore wheel.
 ///
 /// Development: when the managed venv is not present (running outside
-/// an installed .pkg), fall back to ``uv run python -m agentshore.sidecar``
-/// against the in-tree source so ``tauri dev`` and ``cargo test`` work
-/// without an install step.
+/// an installed .pkg), fall back to the repo's ``.venv`` Python against
+/// the in-tree source so ``tauri dev`` and ``cargo test`` work without an
+/// install step. If the repo venv does not exist, use ``uv run`` as a
+/// last-resort development fallback.
 fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     let mut cmd = match locate_managed_venv_python() {
         Some(python) => {
@@ -397,96 +506,21 @@ fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
             prod.arg("-m").arg("agentshore.sidecar");
             prod
         }
-        None => {
-            let mut dev = Command::new("uv");
-            dev.arg("run")
-                .arg("python")
-                .arg("-m")
-                .arg("agentshore.sidecar")
-                .env("PYTHONPATH", "../../src");
-            dev
-        }
+        None => development_sidecar_command(),
     };
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+    apply_no_window_creation_flags(&mut cmd);
+    apply_windows_headless_env(&mut cmd);
     if let Some(p) = bd_path {
+        cmd.env(AGENTSHORE_BD_BIN_ENV, p);
+    } else if let Some(p) = locate_machine_managed_bd() {
         cmd.env(AGENTSHORE_BD_BIN_ENV, p);
     }
     apply_user_path_overlay(&mut cmd);
     cmd
-}
-
-/// When the Tauri .app launches from Finder/Dock/Spotlight, its PATH is
-/// the minimal launchd default (``/usr/bin:/bin:/usr/sbin:/sbin``) — the
-/// shell rc files that populate the user's terminal PATH never run. The
-/// sidecar inherits that minimal PATH, so its readiness check
-/// (``shutil.which("bd")`` / ``which("gh")``) reports tooling as missing
-/// even when the user has it installed in standard user-install
-/// locations. Prepend those locations so the sidecar's checks see
-/// what the user's terminal sees.
-fn apply_user_path_overlay(cmd: &mut Command) {
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries: Vec<std::path::PathBuf> = std::env::split_paths(&existing).collect();
-
-    let mut candidates: Vec<std::path::PathBuf> = vec![
-        std::path::PathBuf::from("/opt/homebrew/bin"),
-        std::path::PathBuf::from("/opt/homebrew/sbin"),
-        std::path::PathBuf::from("/usr/local/bin"),
-        std::path::PathBuf::from("/usr/local/sbin"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(std::path::PathBuf::from(&home).join(".local/bin"));
-        candidates.push(std::path::PathBuf::from(&home).join(".cargo/bin"));
-    }
-
-    // Prepend (in reverse so the first candidate ends up first), skipping
-    // any already-present entry to avoid PATH duplication.
-    for dir in candidates.into_iter().rev() {
-        if !entries.iter().any(|e| e == &dir) {
-            entries.insert(0, dir);
-        }
-    }
-
-    if let Ok(joined) = std::env::join_paths(entries) {
-        cmd.env("PATH", joined);
-    }
-}
-
-/// Locate the Python interpreter inside the pkg-installer's managed venv.
-///
-/// The .pkg's postinstall script provisions a per-user venv inside the
-/// launching user's home directory (no sudo required for installation)
-/// and pip-installs the bundled agentshore wheel into it. Returns ``None``
-/// in development builds where the .pkg has never been installed;
-/// ``sidecar_command()`` then falls back to ``uv run``.
-fn locate_managed_venv_python() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    locate_managed_venv_python_in_home(std::path::Path::new(&home))
-}
-
-fn locate_managed_venv_python_in_home(home: &std::path::Path) -> Option<std::path::PathBuf> {
-    let path = managed_venv_python_path(home);
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-fn managed_venv_python_path(home: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        home.join("Library/Application Support/AgentShore/venv/bin/python")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        home.join(".local/share/agentshore/venv/bin/python")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
-    }
 }
 
 fn spawn_stdout_dispatcher(
@@ -622,11 +656,35 @@ fn kill_agent_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
-        // ``taskkill /F /PID`` is the standard Windows equivalent.
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
+        // ``taskkill /F /T /PID`` is the standard Windows equivalent. ``/T``
+        // kills the agent's whole process tree — CLI agents spawn their own
+        // children (node, git, MCP servers) which Windows does not reap on
+        // parent death, so a direct-PID kill leaks them (#155).
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        crate::sidecar_env::apply_no_window_creation_flags(&mut cmd);
+        let _ = cmd.output();
     }
+}
+
+/// Kill *proc_ref* and (on Windows) its entire descendant tree, then reap it.
+///
+/// Windows does not kill children when a parent dies and the sidecar may be
+/// spawned through a ``uv`` trampoline (development fallback), so a plain
+/// ``Child::kill`` strands the real python — and its ``bd`` daemon children —
+/// running headless (#155). ``taskkill /T`` walks the tree first;
+/// ``kill`` + ``wait`` stays as the direct-child backstop and reaper. On Unix
+/// the direct kill suffices (the sidecar is spawned directly, no trampoline).
+fn kill_process_tree(proc_ref: &mut Child) {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &proc_ref.id().to_string()]);
+        crate::sidecar_env::apply_no_window_creation_flags(&mut cmd);
+        let _ = cmd.output();
+    }
+    let _ = proc_ref.kill();
+    let _ = proc_ref.wait();
 }
 
 #[cfg(unix)]
@@ -701,28 +759,6 @@ mod tests {
     }
 
     #[test]
-    fn locate_managed_venv_python_in_home_returns_none_when_absent() {
-        let root = unique_temp_dir("absent-managed-venv");
-        std::fs::create_dir_all(&root).expect("create temp home");
-        let result = locate_managed_venv_python_in_home(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn locate_managed_venv_python_in_home_returns_python_when_present() {
-        let root = unique_temp_dir("present-managed-venv");
-        let python = managed_venv_python_path(&root);
-        std::fs::create_dir_all(python.parent().expect("python parent")).expect("create venv bin");
-        std::fs::write(&python, b"#!/bin/sh\n").expect("write fake python");
-
-        let result = locate_managed_venv_python_in_home(&root);
-        let _ = std::fs::remove_dir_all(&root);
-
-        assert_eq!(result, Some(python));
-    }
-
-    #[test]
     fn sidecar_command_with_bd_path_sets_agentshore_bd_bin_env() {
         let bd_path = std::path::Path::new("/tmp/agentshore-bd-fixture");
         let cmd = sidecar_command(Some(bd_path));
@@ -737,18 +773,28 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_command_without_bd_path_omits_agentshore_bd_bin_env() {
+    fn sidecar_command_without_bd_path_uses_machine_managed_bd_when_available() {
         let cmd = sidecar_command(None);
-        let found = cmd.get_envs().any(|(k, _)| k == AGENTSHORE_BD_BIN_ENV);
-        assert!(
-            !found,
-            "AGENTSHORE_BD_BIN must not be set when bd_path is None"
-        );
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(AGENTSHORE_BD_BIN_ENV))
+            .and_then(|(_, value)| value.map(std::ffi::OsString::from));
+        if let Some(path) = value {
+            assert!(
+                std::path::Path::new(&path).is_file(),
+                "machine-managed AGENTSHORE_BD_BIN should point at an existing bd executable"
+            );
+        }
     }
 
     #[test]
     fn sidecar_round_trip_handshake_and_recents_list() {
-        let mut cmd = sidecar_command(None);
+        let mut cmd = development_sidecar_command();
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+        apply_no_window_creation_flags(&mut cmd);
         let mut child = cmd.spawn().expect("spawn sidecar");
         let mut stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
@@ -811,6 +857,75 @@ mod tests {
         );
 
         std::env::remove_var(BUILD_ID_ENV);
+    }
+
+    #[test]
+    fn handshake_response_timeout_covers_env_and_default() {
+        // Env override wins.
+        std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "7");
+        assert_eq!(handshake_response_timeout(), Duration::from_secs(7));
+        // Non-positive / non-numeric override falls back to the platform default.
+        std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "  0 ");
+        let default_secs = if cfg!(target_os = "windows") { 90 } else { 30 };
+        assert_eq!(
+            handshake_response_timeout(),
+            Duration::from_secs(default_secs)
+        );
+        std::env::remove_var(HANDSHAKE_TIMEOUT_ENV);
+        assert_eq!(
+            handshake_response_timeout(),
+            Duration::from_secs(default_secs)
+        );
+    }
+
+    #[test]
+    fn setup_rpc_methods_use_short_response_timeout() {
+        assert_eq!(
+            response_timeout_for_method("project.inspect"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("project.select"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("recents.list"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("identities.check_keychain"),
+            SETUP_RESPONSE_TIMEOUT
+        );
+        assert_eq!(
+            response_timeout_for_method("project.branches"),
+            SETUP_RESPONSE_TIMEOUT,
+            "project.branches is in the setup bucket per rpc-method-classes.json"
+        );
+        assert_eq!(
+            response_timeout_for_method("identities.list"),
+            RESPONSE_TIMEOUT,
+            "identity listing may invoke gh/keychain/repo-access checks"
+        );
+        assert_eq!(
+            response_timeout_for_method("agents.detect"),
+            RESPONSE_TIMEOUT,
+            "agent discovery inherits Windows PATH and executable lookup cost"
+        );
+        assert_eq!(
+            response_timeout_for_method("project.install_timelapse"),
+            INSTALL_RESPONSE_TIMEOUT,
+            "dependency installers are allowed to outlive quick setup probes"
+        );
+        assert_eq!(
+            response_timeout_for_method("session.start"),
+            SESSION_START_RESPONSE_TIMEOUT,
+            "session.start may need first-run Windows setup and bootstrap time"
+        );
+        assert_eq!(
+            response_timeout_for_method("session.stop"),
+            SESSION_STOP_RESPONSE_TIMEOUT,
+            "session.stop drain can wait for active agents and ESR/timelapse cleanup"
+        );
     }
 
     /// Pure unit test for the dispatch logic. Constructs a stub
@@ -942,14 +1057,42 @@ mod tests {
         assert!(pids.lock().unwrap().is_empty());
     }
 
-    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "agentshore-desktop-{label}-{}-{nanos}",
-            std::process::id()
-        ))
+    /// #155 regression guard: the explicit teardown must terminate and reap
+    /// a still-running child. (On Windows ``kill_process_tree`` additionally
+    /// walks the descendant tree via ``taskkill /T`` — that part is
+    /// taskkill's contract; this pins the direct kill + reap.)
+    #[test]
+    fn kill_process_tree_terminates_and_reaps_a_live_child() {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping -n 60 127.0.0.1 > NUL"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("60");
+            c
+        };
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn long-running child");
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "child should still be running before the kill"
+        );
+
+        kill_process_tree(&mut child);
+
+        // kill_process_tree wait()ed, so the child must be reaped: try_wait
+        // reports an exit status immediately.
+        assert!(
+            child.try_wait().expect("try_wait after kill").is_some(),
+            "child must be terminated and reaped after kill_process_tree"
+        );
     }
 }

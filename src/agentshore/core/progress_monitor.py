@@ -26,8 +26,7 @@ from typing import Final
 
 # Consecutive no-progress ticks before the session drains. A tick with any busy
 # agent, any agent dispatch, or a graph-fingerprint change resets the counter,
-# so this is a sustained full stall — matches the project-standard 20-play
-# cooldown window.
+# so this is a sustained full stall independent of normal play cooldown pacing.
 _DEFAULT_NO_PROGRESS_TICKS: Final[int] = 20
 
 # Fingerprint of project advancement. Comparing this tuple across ticks detects

@@ -44,7 +44,9 @@ async def test_start_capture_parses_alias_and_run_dir(
     run = await timelapse.start_capture("http://localhost:9400/", tmp_path)
 
     assert run.run_id == "swift-otter-042"
-    assert run.run_dir.endswith("/x")
+    # run_dir echoes the tool's native path (backslashes on Windows); assert the
+    # final component rather than a hardcoded forward-slash suffix.
+    assert Path(run.run_dir).name == "x"
     # start uses the default runs dir (no --out) so the alias resolves later.
     assert "--out" not in captured["args"]
     assert "start" in captured["args"]

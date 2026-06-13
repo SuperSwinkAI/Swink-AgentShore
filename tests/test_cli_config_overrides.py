@@ -23,7 +23,6 @@ from agentshore.config.models import PolicyMode
 from agentshore.session.bootstrap import (
     _load_config_with_overrides,
     validate_budget_flag,
-    validate_time_flag,
 )
 
 
@@ -208,28 +207,3 @@ def test_validate_budget_zero_raises() -> None:
 def test_validate_budget_below_floor_raises() -> None:
     with pytest.raises(click.BadParameter, match="at least"):
         validate_budget_flag(19.99)
-
-
-# --------------------------------------------------------------------------- #
-# validate_time_flag (parsed minutes; bounds 60–4320)
-# --------------------------------------------------------------------------- #
-
-
-def test_validate_time_none_is_ok() -> None:
-    validate_time_flag(None)  # omitted defers to config
-
-
-def test_validate_time_in_range_is_ok() -> None:
-    validate_time_flag(60)
-    validate_time_flag(1440)
-    validate_time_flag(4320)
-
-
-def test_validate_time_below_floor_raises() -> None:
-    with pytest.raises(click.BadParameter, match="between 60 and 4320"):
-        validate_time_flag(59)
-
-
-def test_validate_time_above_ceiling_raises() -> None:
-    with pytest.raises(click.BadParameter, match="between 60 and 4320"):
-        validate_time_flag(4321)

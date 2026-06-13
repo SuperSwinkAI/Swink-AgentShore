@@ -143,6 +143,9 @@ def recover_via_sqlite_recover(
             capture_output=True,
             check=False,
             timeout=timeout_seconds,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a subprocess probing it can wedge the caller (#155).
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return False, ["sqlite3 CLI not found on PATH"]

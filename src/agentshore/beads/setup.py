@@ -55,6 +55,9 @@ def _check_bd_version(bd_binary: str) -> None:
             text=True,
             timeout=10,
             check=True,
+            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
+            # a subprocess probing it can wedge session startup (#155).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(
@@ -85,13 +88,29 @@ _BD_ACTOR_NAMES: dict[AgentType, str] = {
 def ensure_bd_installed() -> None:
     """Verify that `bd` is on PATH and matches the pinned version.
 
-    Raises RuntimeError with install instructions if bd is not found, or if
-    its version does not match REQUIRED_BD_VERSION (see AGENTSHORE_BD_VERSION
-    override). This check is intentionally synchronous so it can be called
-    from the Click-based `agentshore init` command without an event loop.
+    If bd is absent, delegates to ``downloader.provision_bd`` which enforces
+    the consent gate: interactive sessions may prompt the user; headless
+    sessions fail with instructions unless ``AGENTSHORE_AUTO_INSTALL_BD=1``
+    is set. This function never silently downloads a binary in headless mode.
+
+    Raises RuntimeError with install instructions if bd is not found (and
+    consent for download is absent), or if its version does not match
+    REQUIRED_BD_VERSION (see AGENTSHORE_BD_VERSION override). This check is
+    intentionally synchronous so it can be called from the Click-based
+    `agentshore init` command without an event loop.
     """
+    from agentshore.beads.downloader import provision_bd
+
+    # provision_bd returns the existing bd path when already installed,
+    # downloads + returns the installed path when consent is present, or raises
+    # with instructions when bd is absent and no consent is given (the
+    # headless-fail invariant).
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
+        bd_binary = provision_bd(REQUIRED_BD_VERSION)
+    if bd_binary is None:
+        # Reachable only when the download was attempted and failed (best-effort
+        # path returns None); the no-consent path raises inside provision_bd.
         raise RuntimeError(
             "The bd binary was not found. Set AGENTSHORE_BD_BIN to a bundled binary or install "
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."

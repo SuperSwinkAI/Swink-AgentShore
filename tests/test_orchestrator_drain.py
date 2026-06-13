@@ -1,4 +1,4 @@
-"""Tests for Orchestrator drain-mode: begin_drain idempotency, _should_terminate, adjust_budget."""
+"""Tests for Orchestrator drain-mode: begin_drain idempotency, _should_terminate."""
 
 from __future__ import annotations
 
@@ -40,7 +40,6 @@ def _make_orch() -> Orchestrator:
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
     orch._pause_reason = None
-    orch._extra_budget = 0.0
     orch._in_flight = {}
     orch._stop_requested = False
     orch._draining = False
@@ -293,63 +292,6 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
     assert orch._overrides.empty()
 
 
-# ---------------------------------------------------------------------------
-# adjust_budget
-# ---------------------------------------------------------------------------
-
-
-def test_adjust_budget_increments_extra_budget() -> None:
-    """adjust_budget() adds delta_usd to _extra_budget."""
-    orch = _make_orch()
-    should_resume = orch.adjust_budget(5.0)
-    assert orch._extra_budget == pytest.approx(5.0)
-    assert should_resume is False
-
-
-def test_adjust_budget_accumulates() -> None:
-    """Multiple adjust_budget calls accumulate."""
-    orch = _make_orch()
-    orch._extra_budget = 0.0
-    orch.adjust_budget(3.0)
-    orch.adjust_budget(2.5)
-    assert orch._extra_budget == pytest.approx(5.5)
-
-
-@pytest.mark.parametrize("reason", ["budget_exhausted", "budget_predictive"])
-def test_adjust_budget_requests_resume_for_budget_pause(reason: str) -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = reason
-
-    assert orch.adjust_budget(5.0) is True
-
-
-@pytest.mark.parametrize("reason", ["user_request", "loop_detected", None])
-def test_adjust_budget_does_not_resume_non_budget_pause(reason: str | None) -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = reason
-
-    assert orch.adjust_budget(5.0) is False
-
-
-def test_adjust_budget_does_not_resume_while_draining() -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = "budget_exhausted"
-    orch._draining = True
-
-    assert orch.adjust_budget(5.0) is False
-
-
-def test_adjust_budget_ignored_delta_never_resumes() -> None:
-    orch = _make_orch()
-    orch._pause_event.is_set = MagicMock(return_value=False)
-    orch._pause_reason = "budget_exhausted"
-
-    assert orch.adjust_budget(-1.0) is False
-
-
 def test_request_drain_twice_keeps_first_reason() -> None:
     """Second request_drain() is a no-op once _drain_initialized is True."""
     orch = _make_orch()
@@ -420,3 +362,54 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
 
     assert events.index("generate") < events.index("store_close")
     assert events.index("ended") < events.index("open")
+
+
+@pytest.mark.asyncio
+async def test_stop_inner_clears_agents_with_force(tmp_path: Path) -> None:
+    """Teardown must clear every agent handle with force=True (#154).
+
+    #144 added an active-play guard to AgentManager.clear() and passed
+    force=True from this teardown path; #149 silently reverted it in a bad
+    conflict resolution, so any agent still holding a current_play_id at
+    drain time refused to clear. Pin the force=True so a future rebase
+    cannot drop it again.
+    """
+    orch = Orchestrator.__new__(Orchestrator)
+    orch._session_id = "sess-test"
+    orch._repo_root = tmp_path
+    orch._stop_reason = "stop_requested"
+    orch._in_flight = {}
+    orch._dispatch_ctx = {}
+    orch._manager = MagicMock()
+    orch._manager.handles = {"agent-1": MagicMock(), "agent-2": MagicMock()}
+    orch._manager.clear = AsyncMock()
+    orch._health = None
+    orch._integrity = None
+    orch._power_assertion = None
+    orch._loop = MagicMock()
+    orch._end_session_report_requested = False
+    orch._end_session_report_open_browser = False
+    orch._state_builder = MagicMock()
+    orch._state_builder.build_state = AsyncMock(
+        return_value=_state(SessionState.DRAINING, agents=[])
+    )
+    orch._completion = MagicMock()
+    orch._store = AsyncMock()
+    orch._state_provider = MagicMock()
+    orch._state_provider.on_session_ended = AsyncMock()
+    orch._drain = DrainController(
+        host=orch,
+        store=orch._store,
+        manager=orch._manager,
+        session_id=orch._session_id,
+        repo_root=orch._repo_root,
+        state_builder=orch._state_builder,
+    )
+
+    await orch._drain.stop_inner(0.0)
+
+    assert orch._manager.clear.await_count == 2
+    for call in orch._manager.clear.await_args_list:
+        assert call.kwargs.get("force") is True, (
+            f"teardown clear() must pass force=True, got {call}"
+        )

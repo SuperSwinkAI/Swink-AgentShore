@@ -1,15 +1,20 @@
 [package]
 name = "agentshore-desktop"
-version = "0.2.1"
+version = "0.3.1"
 description = "AgentShore desktop shell"
 authors = ["SuperSwink"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.77"
+default-run = "agentshore-desktop"
 
 [lib]
 name = "agentshore_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "agentshore-provisioner"
+path = "src/bin/agentshore-provisioner.rs"
 
 # Supply-chain hardening: all crates are pinned to exact versions with the
 # `=` operator (not caret ranges) and matched to Cargo.lock. Builds run with
@@ -44,6 +49,9 @@ libc = "=0.2.186"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.4"
 objc2-foundation = { version = "=0.3.2", features = ["NSProcessInfo", "NSString", "NSObject"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [features]
 default = ["custom-protocol"]

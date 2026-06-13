@@ -1,28 +1,35 @@
-# Desktop sidecar packaging
+# Desktop Sidecar Packaging
 
-Tooling for the `.pkg` installer that ships the AgentShore desktop shell.
-Implements `docs/design/desktop/DESIGN.md` §6.2 (pkg-installer model).
+Tooling for the macOS `.pkg` and Windows `.exe` installers that ship the
+AgentShore desktop shell. The shared model is: keep the Tauri app thin, ship a
+platform app shell, and provision the Python sidecar into a managed
+venv from the exact wheel built with the installer. macOS bundles the pinned
+`bd` sidecar beside the desktop executable; Windows provisions the pinned `bd`
+dependency through a compiled install-time provisioner.
 
 ## Architecture
 
-The Tauri `.app` ships a thin Rust supervisor + JS shell only. The Python
-sidecar (`agentshore.sidecar`) is **not** bundled inside the `.app`. Instead the
-`.pkg` installer provisions a managed venv at a fixed system path and
-pip-installs a bundled agentshore wheel into it. The Rust supervisor then
-spawns `<venv>/bin/python -m agentshore.sidecar`.
+The Tauri desktop bundle ships a Rust supervisor plus JS shell only.
+`agentshore.sidecar` is not frozen into the desktop executable. Instead, the
+installer provisions a managed venv and pip-installs the bundled AgentShore
+wheel into it. The Rust supervisor then spawns:
 
-Current packaging is macOS-only. The managed venv lives at
-`$HOME/Library/Application Support/AgentShore/venv`.
+```text
+<venv>/python -m agentshore.sidecar
+```
 
-Rationale: keeps the `.app` thin, allows AgentShore updates to ship as a new
-wheel without re-downloading PyTorch, and surfaces dependency-install failures
-during installation instead of first launch.
+Managed venv paths:
 
-The bundled `bd` CLI (a single static Go binary) is the only externalBin
-that stays inside the `.app`. The Rust supervisor passes its path to the
-Python sidecar via `AGENTSHORE_BD_BIN` so the sidecar can shell out to `bd`.
+- macOS: `$HOME/Library/Application Support/AgentShore/venv`
+- Windows: `%ProgramData%\AgentShore\venv`
 
-## bd sidecar build
+On macOS, the bundled `bd` CLI is the only external binary that stays beside
+the desktop executable. The Rust supervisor passes its path to the Python
+sidecar via `AGENTSHORE_BD_BIN`. On Windows, `agentshore-provisioner.exe`
+drives `agentshore.beads.setup.provision_bd()` into
+`%ProgramData%\AgentShore\bin` after installing the wheel.
+
+## Build Inputs
 
 `packaging/desktop/build_bd_sidecar.py` builds the bundled `bd` binary into
 `desktop/src-tauri/binaries/`. By default it **downloads the pinned `bd`
@@ -37,73 +44,85 @@ runtime pin (`agentshore.beads.setup.REQUIRED_BD_VERSION`);
 `tests/sidecar/test_bd_sidecar.py` fails if they drift. To bump bd, update both
 constants and refresh the checksums from the release's `checksums.txt`.
 
-## agentshore wheel build
+The Python wheel is built from the repo root with `uv build --wheel`. Both
+platform installers include that wheel for the desktop sidecar component and
+the optional CLI component.
 
-The wheel that the `.pkg` postinstall pip-installs is built from the repo root
-with `uv build --wheel`. The `.pkg` payload includes that wheel in both the
-desktop sidecar component (`install-agentshore-venv.sh`) and the CLI component
-(`install-agentshore-cli.sh`).
+## macOS Installer
 
-## Installer flow
+`scripts/build-macos.sh` builds the dashboard, bd sidecar, Tauri app, Python
+wheel, Tauri `.app`, `.dmg`, and distribution `.pkg`.
 
-The `.pkg` is a distribution archive with two user-visible components
-declared in `Distribution.xml.in`:
+The `.pkg` has three user-visible choices in `Distribution.xml.in`:
 
-- **AgentShore Desktop** (`ai.agentshore.desktop`) — required; greyed out in
-  the wizard's Customize panel.
-- **AgentShore CLI** (`ai.agentshore.cli`) — opt-out checkbox; installs the
-  shell `agentshore` command via `uv tool install`.
+- **AgentShore Desktop** (`ai.agentshore.desktop`) - required.
+- **Timelapse Capture** (`ai.agentshore.timelapse`) - opt-in.
+- **AgentShore CLI** (`ai.agentshore.cli`) - opt-out.
 
-Each component carries its own postinstall:
+The desktop postinstall provisions the managed venv from the bundled wheel. The
+Timelapse postinstall drives `agentshore.timelapse.setup.install_timelapse()`
+from that venv. The CLI postinstall installs `agentshore[all]` from the same
+wheel via `uv tool install`.
 
-1. **Desktop postinstall** (`postinstall`) — runs as root, then:
-   - Verifies Python 3.12 is present; downloads + installs python.org's
-     signed .pkg if not (signature-checked).
-   - Hands off to `install-agentshore-venv.sh` under the console user via
-     `launchctl asuser` to provision
-     `~/Library/Application Support/AgentShore/venv` from the bundled wheel.
-   - Smoke-tests `python -c "import agentshore.sidecar"` and schedules a
-     one-shot LaunchAgent that waits for Installer to close, then opens
-     `/Applications/AgentShore.app` by absolute path.
-2. **CLI postinstall** (`cli-postinstall`) — runs as root, then hands
-   off to `install-agentshore-cli.sh` under the console user. The helper:
-   - Searches well-known per-user locations for `uv`
-     (`~/.local/bin/uv`, `~/.cargo/bin/uv`, `/opt/homebrew/bin/uv`,
-     `/usr/local/bin/uv`, `/opt/local/bin/uv`) — the .pkg postinstall's
-     sparse PATH normally misses these.
-   - Bootstraps uv via the official installer if absent.
-   - Runs `uv tool install --force --reinstall --from <wheel>
-     'agentshore[all]'` so `~/.local/bin/agentshore` tracks the same wheel as
-     the desktop sidecar.
-   - Surfaces failure via an osascript alert (silent skip was the bug
-     this component split was added to fix).
+## Windows Installer
 
-The build pipeline for the `.pkg` artifact lives in
-`scripts/build-macos.sh`. Local-only signing uses the
-`Developer ID Application` certificate; the `.pkg` itself requires the
-`Developer ID Installer` certificate (acquisition tracked separately).
+`scripts/build-windows.ps1` builds the dashboard, Tauri frontend, Python wheel,
+Tauri executable, compiled Windows provisioner, regenerates `EULA.rtf`,
+optionally Authenticode-signs the app/provisioner/setup executables, and emits
+an Inno Setup wizard `.exe`.
 
-## Build identifier
+For local installer QA, pass `-SelfSign` to create or reuse a current-user
+self-signed code-signing certificate. Add `-TrustSelfSignedCertificate` when the
+build machine should trust that certificate for local signature verification, or
+`-SetupSelfSignedCertificateOnly` to provision the certificate without building.
+Self-signed installers are never public release artifacts.
 
-In the pkg-installer model both halves run unfrozen, so
-`agentshore.sidecar.build_id.load_build_info()` returns the sentinel
-`"dev"` (no `sys._MEIPASS`). The Rust supervisor's `resolve_build_id()`
-falls back to `"dev"` for the same reason, so the handshake build-ids match
-by construction.
+The Windows wizard is machine-wide (`PrivilegesRequired=admin`) and installs
+the desktop app under:
 
-A future change can re-introduce build-id mismatch detection if version
-drift between the installed wheel and the bundled `.app` becomes a real
-operational concern. For now the wheel version itself is the authoritative
-identifier of what's installed.
+```text
+%ProgramFiles%\AgentShore
+```
 
-## Running the sidecar in development
+It uses `packaging/desktop/windows/AgentShore.iss.in` and mirrors the macOS
+component defaults:
 
-The Rust supervisor's `sidecar_command()` falls back to
-`uv run python -m agentshore.sidecar` when the managed venv path is absent, so
-`npm run tauri:dev` from `desktop/` works against a clean clone.
+- **AgentShore Desktop** - required.
+- **Timelapse Capture (optional)** - unchecked by default.
+- **AgentShore CLI** - checked by default.
+
+Bundled Windows install-time payloads:
+
+- `agentshore-provisioner.exe` owns Windows post-install provisioning. It uses
+  direct process execution, timeout-aware logging, and stable exit codes.
+- `uv.exe` is copied from the build host and pinned by the build script to the
+  expected baseline before packaging.
+- The bundled wheel is installed into `%ProgramData%\AgentShore\venv`.
+- The pinned `bd.exe` dependency is provisioned into
+  `%ProgramData%\AgentShore\bin`.
+
+Provisioning logs are written under `%ProgramData%\AgentShore\install-logs`.
+
+The installer removes the previous internal per-user desktop install under
+`%LocalAppData%\Programs\AgentShore` and the previous per-user managed venv
+under `%LocalAppData%\AgentShore\venv` from the provisioner during install.
+
+## Build Identifier
+
+In this installer model both halves run unfrozen, so
+`agentshore.sidecar.build_id.load_build_info()` returns `"dev"` without
+`sys._MEIPASS`. The Rust supervisor's `resolve_build_id()` falls back to
+`"dev"` for the same reason. The wheel version is the authoritative installed
+runtime version.
+
+## Development
+
+When the managed venv is absent, the Rust supervisor falls back to
+the checkout's `.venv` Python, then `uv run python -m agentshore.sidecar` if
+no `.venv` exists, so `npm run tauri:dev` works against a clean checkout.
 
 ## Verification
 
 `tests/sidecar/` covers the JSON-RPC handshake and build-id loading.
-End-to-end install flow is exercised via the desktop CI pipeline
-(`desktop-c8i.7`).
+`tests/packaging/test_windows_installer.py` guards the Windows installer
+component defaults and build-script staging contract.

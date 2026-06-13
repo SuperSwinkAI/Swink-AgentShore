@@ -34,6 +34,7 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.rl.reverse_failsafe_after_idle_ticks == 3
     assert config.rl.stale_idle_claim_release_ticks == 3
     assert config.rl.update_every == 16
+    assert config.play_pacing.standard_cooldown_plays == 42
     assert set(config.agents) == {"claude_code", "codex", "gemini", "grok"}
     assert config.agents["claude_code"].binary == "claude"
     assert config.agents["codex"].binary == "codex"
@@ -74,6 +75,7 @@ def test_default_config_uses_v1_reward_names() -> None:
     assert config.rl.reverse_failsafe_after_idle_ticks == 3
     assert config.rl.stale_idle_claim_release_ticks == 3
     assert config.rl.update_every == 16
+    assert config.play_pacing.standard_cooldown_plays == 42
     assert config.rl.reward.issue_inflation_penalty == 2.0
     assert config.rl.reward.concurrent_agent_bonus == 0.1
 

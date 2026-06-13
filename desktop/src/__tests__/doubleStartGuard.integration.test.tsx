@@ -1,10 +1,11 @@
 /**
  * Integration coverage for issue #582: Repeat (#561) and Quick Start
  * (#565) both walk the user into ``/starting``. Before this fix the
- * shared helper ``startSessionFromPersistedSetup`` dispatched
- * ``session.start`` AND then handed control to ``StartingProgressRoute``
+ * shared helper ``startSessionFromPersistedSetup`` used to dispatch
+ * ``session.start`` before handing control to ``StartingProgressRoute``,
  * which dispatched ``session.start`` a SECOND time, double-billing the
- * sidecar and risking duplicate orchestrator boots.
+ * sidecar and risking duplicate orchestrator boots. The helper now
+ * navigates into ``/starting`` and lets that route own the single start.
  *
  * These tests walk each entrypoint into a mocked ``/starting`` route
  * inside a ``MemoryRouter`` and assert that ``session.start`` is
@@ -50,6 +51,13 @@ vi.mock("../rpc/projectClient", () => ({
   selectProject: selectProjectMock,
   inspectProject: inspectProjectMock,
   setBudget: setBudgetMock,
+  budgetSelectionToConfig: (s: { mode: string; total: number; timeMode?: string; timeMinutes?: number }) => ({
+    enabled: s.mode === "capped",
+    total: s.mode === "capped" ? s.total : 0,
+    time_enabled: s.timeMode === "capped",
+    time_total_minutes: s.timeMode === "capped" ? (s.timeMinutes ?? 0) : 0,
+  }),
+  budgetHydrationToSelection: () => null,
 }));
 
 vi.mock("../services/sessionClient", () => ({
@@ -110,7 +118,10 @@ function makeInspectResult() {
     repo_identity: { is_git: true },
     branch: null,
     detected_tools: [],
-    agentshore_yaml: { path: "/agentshore.yaml", raw: "budget:\n  enabled: true\n  total: 25\n" },
+    agentshore_yaml: {
+      path: "/agentshore.yaml",
+      raw: "budget:\n  enabled: true\n  total: 25\n",
+    },
     beads_status: { initialised: true },
     prerequisites: { git: true, bd: true, gh: true },
   };
@@ -210,19 +221,25 @@ describe("issue #582: session.start fires exactly once through Repeat / Quick St
       budget: { enabled: true, total: 25, warning_threshold: 0.2 },
       yaml_path: "/agentshore.yaml",
     });
-    startSessionMock.mockResolvedValue({
-      session_id: "sid-repeat",
-      ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
-    });
-    // subscribeProgress is awaited by /starting before firing session.start.
-    // The mock captures the handler and emits the final progress event after
-    // a microtask so the route's gate effect transitions to dashboard.
+    let progressHandler: ProgressHandler | null = null;
     subscribeProgressMock.mockImplementation(
       async (handler: ProgressHandler) => {
-        queueMicrotask(() => {
-          handler({ step: "first_snapshot", status: "ok", error: null });
-        });
+        progressHandler = handler;
         return () => undefined;
+      },
+    );
+    startSessionMock.mockImplementation(
+      async (params?: { progressToken?: string | number }) => {
+        progressHandler?.({
+          token: params?.progressToken,
+          step: "first_snapshot",
+          status: "ok",
+          error: null,
+        });
+        return {
+          session_id: "sid-repeat",
+          ipc_endpoint: { kind: "tcp", host: "127.0.0.1", port: 9999 },
+        };
       },
     );
     listRecentsMock.mockResolvedValue([RECENT_ENTRY]);
@@ -251,8 +268,6 @@ describe("issue #582: session.start fires exactly once through Repeat / Quick St
       screen.getByRole("button", { name: /repeat with same settings/i }),
     );
 
-    // The handoff path latches first_snapshot internally, so /starting
-    // navigates straight to the dashboard sentinel.
     expect(await screen.findByTestId("session-dashboard")).toBeInTheDocument();
     expect(startSessionMock).toHaveBeenCalledTimes(1);
   });

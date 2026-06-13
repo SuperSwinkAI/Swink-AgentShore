@@ -26,7 +26,15 @@ from agentshore.core.wedge_signals import (
     collect_recent_failed_plays,
     write_session_start_dirty_baseline,
 )
-from agentshore.state import BudgetSnapshot, OrchestratorState, PlayType, SessionState
+from agentshore.state import (
+    AgentSnapshot,
+    AgentStatus,
+    AgentType,
+    BudgetSnapshot,
+    OrchestratorState,
+    PlayType,
+    SessionState,
+)
 
 # --- agentshore-owned filter ---------------------------------------------------
 
@@ -270,3 +278,70 @@ def test_baseline_overwrites_prior_sidecar(tmp_path: Path) -> None:
     payload = json.loads(dest.read_text())
     assert payload["session_id"] == "s4-new"
     assert payload["session_start_utc"] == "2026-05-23T02:00:00Z"
+
+
+# --- owned_by_active_play annotation (#162) ---------------------------------
+
+
+def _agent_running(play_type: PlayType, started_at: str) -> AgentSnapshot:
+    return AgentSnapshot(
+        agent_id="a1",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.BUSY,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        current_play_type=play_type,
+        current_play_id=99,
+        current_play_started_at=started_at,
+    )
+
+
+def _state_with_agent(agent: AgentSnapshot) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="sess",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        budget=BudgetSnapshot(5.0, 0.0, 5.0, 0.1),
+        agents=[agent],
+    )
+
+
+def _dirty_entry(signals: dict, path: str) -> dict:
+    return next(e for e in signals["dirty_trunk_paths"] if e["path"] == path)
+
+
+def test_untracked_root_owned_by_active_trunk_play(tmp_path: Path) -> None:
+    """An untracked root file newer than an active trunk play's start is in-flight work."""
+    repo = _init_repo_with_dirty_state(tmp_path)
+    artifact = repo / "in_flight.json"
+    artifact.write_text("{}")
+    os.utime(artifact, (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "in_flight.json")["owned_by_active_play"] is True
+
+
+def test_untracked_root_not_owned_when_no_active_trunk_play(tmp_path: Path) -> None:
+    """Same file, but the active play is not trunk-scoped -> not owned."""
+    repo = _init_repo_with_dirty_state(tmp_path)
+    artifact = repo / "orphan.json"
+    artifact.write_text("{}")
+    os.utime(artifact, (2_000_000_000, 2_000_000_000))
+    agent = _agent_running(PlayType.ISSUE_PICKUP, "2030-01-01T00:00:00Z")  # not trunk-scoped
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "orphan.json")["owned_by_active_play"] is False
+
+
+def test_untracked_root_not_owned_when_predates_active_play(tmp_path: Path) -> None:
+    """A file older than the active trunk play's start cannot be its in-flight output."""
+    repo = _init_repo_with_dirty_state(tmp_path)
+    artifact = repo / "older.json"
+    artifact.write_text("{}")
+    os.utime(artifact, (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    agent = _agent_running(PlayType.CLEANUP, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "older.json")["owned_by_active_play"] is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,10 @@ from agentshore.config.models import (
     PolicyMode,
     RuntimeConfig,
 )
+
+# POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char sun_path
+# limit (macOS). Windows has neither AF_UNIX nor /tmp -> use the system temp.
+_TMP_ROOT = None if sys.platform.startswith("win") else "/tmp"
 
 
 def _close_asyncio_run_arg(coro: object) -> None:
@@ -148,7 +153,7 @@ def test_start_validation_failure_does_not_write_session_metadata(
     project = tmp_path / "not-a-repo"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     result = runner.invoke(main, ["start", "--project", str(project), "--headless"])
@@ -239,17 +244,15 @@ def test_start_rejects_existing_session_without_overwriting_pid(
 ) -> None:
     repo = _make_git_repo(tmp_path)
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
     pid_path = sp.session_pid_path(repo)
     pid_path.parent.mkdir(parents=True)
     pid_path.write_text("12345", encoding="utf-8")
 
-    def fake_kill(pid: int, signal_number: int) -> None:
-        assert pid == 12345
-        assert signal_number == 0
-
-    monkeypatch.setattr(sp.os, "kill", fake_kill)
+    # Liveness goes through _process_alive (not a bare os.kill, which is
+    # CTRL_C_EVENT on Windows) — mock it so the recorded PID reads as alive.
+    monkeypatch.setattr(sp, "_process_alive", lambda pid: pid == 12345)
 
     result = runner.invoke(main, ["start", "--project", str(repo), "--headless"])
 
@@ -264,7 +267,7 @@ def test_start_runtime_error_cleans_session_metadata(
     repo = _make_git_repo(tmp_path)
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     def fail_asyncio_run(coro: object) -> None:
@@ -513,15 +516,19 @@ def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
     """No deadline: the wait polls across many ticks until the process exits."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        # Stays alive for several polls, then the orchestrator exits on its own.
-        patch("os.kill", side_effect=[None, None, None, ProcessLookupError()]) as kill,
+        # Liveness is probed via _process_alive (never os.kill(pid, 0), which is
+        # CTRL_C_EVENT on Windows): alive for several polls, then it exits.
+        patch(
+            "agentshore.session_path._process_alive",
+            side_effect=[True, True, True, False],
+        ) as alive,
         patch("time.sleep") as sleep,
         patch("agentshore.session_path.hard_stop_session") as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
 
     assert clean_exit is True
-    assert kill.call_count == 4
+    assert alive.call_count == 4
     sleep.assert_called_with(_DRAIN_WAIT_POLL_INTERVAL_S)
     hard_stop.assert_not_called()
 
@@ -533,8 +540,8 @@ def test_wait_for_session_exit_escalates_on_keyboard_interrupt(
     """Ctrl+C during the drain wait escalates to a hard stop (the only deadline)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill", side_effect=KeyboardInterrupt),
-        patch("time.sleep"),
+        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("time.sleep", side_effect=KeyboardInterrupt),
         patch("agentshore.session_path.hard_stop_session", return_value=True) as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
@@ -551,8 +558,8 @@ def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
     """When the escalated hard stop can't kill the process, return None (#31)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("os.kill", side_effect=KeyboardInterrupt),
-        patch("time.sleep"),
+        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("time.sleep", side_effect=KeyboardInterrupt),
         patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
     ):
         outcome = _wait_for_session_exit(tmp_path)
@@ -649,7 +656,7 @@ def test_phase2_warning_removed(
     sock = str(tmp_path / "test.sock")
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     with (
@@ -674,7 +681,7 @@ def test_start_cleanup_stops_recorded_dashboard_process(
     repo = _make_git_repo(tmp_path)
     cfg = _mock_cfg()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     with (
@@ -787,6 +794,9 @@ def test_explicit_socket_matching_well_known_path_does_not_self_symlink(
     assert captured["exists"] is False, "no socket file should exist before bind()"
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only; Windows uses TCP discovery"
+)
 def test_dashboard_auto_discovers_socket_for_project(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -797,7 +807,7 @@ def test_dashboard_auto_discovers_socket_for_project(
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     # Pretend a session is running by writing a live PID and the socket file.
@@ -820,6 +830,65 @@ def test_dashboard_auto_discovers_socket_for_project(
     assert kwargs["ipc_endpoint"].path == sock_path
 
 
+def test_dashboard_does_not_reap_its_own_parent_pid(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r"""Regression: the startup self-guard must never reap the bridge's own
+    lineage. On Windows the uv-tool launcher is a Scripts\python.exe trampoline
+    that spawns the bridge as a grandchild, so dashboard.pid can hold the
+    bridge's *parent* pid; reaping it with taskkill /T would kill the bridge's
+    own process tree before the server binds (the Windows dashboard never
+    showed). The guard excludes both os.getpid() and os.getppid()."""
+    import os
+
+    from agentshore.cli import main as cli_main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
+    )
+
+    # Simulate a supervisor/trampoline having recorded our *parent's* pid.
+    sp.write_dashboard_pid(project, os.getppid())
+
+    reaped: list[int | None] = []
+
+    def fake_stop(_project: Path, *, pid: int | None = None) -> bool:
+        reaped.append(pid)
+        return True
+
+    bridge = MagicMock()
+    bridge.start = AsyncMock()
+
+    with (
+        patch("agentshore.session_path.stop_dashboard_process", side_effect=fake_stop),
+        patch("agentshore.dashboard.DashboardBridge", return_value=bridge),
+    ):
+        result = runner.invoke(
+            cli_main,
+            [
+                "dashboard",
+                "--project",
+                str(project),
+                "--ipc-host",
+                "127.0.0.1",
+                "--ipc-port",
+                "49999",
+                "--no-open",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    # The parent pid must NOT have been reaped (no self-kill)...
+    assert reaped == []
+    # ...and the bridge must record its OWN real pid, overwriting the parent's.
+    assert sp.read_dashboard_pid(project) == os.getpid()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="AF_UNIX is POSIX-only; Windows uses TCP discovery"
+)
 def test_dashboard_reports_no_session_when_socket_stale(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -830,7 +899,7 @@ def test_dashboard_reports_no_session_when_socket_stale(
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
-        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir="/tmp"))
+        sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
     _create_unix_socket(sp.session_socket_path(project))
@@ -872,39 +941,6 @@ def test_dashboard_ipc_host_requires_ipc_port(runner: CliRunner, tmp_path: Path)
 
 
 @pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_bad_string_logs_warning() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock()
-    # Should not raise
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": "abc"}, orch)
-    orch.adjust_budget.assert_not_called()
-
-
-@pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_resumes_budget_pause() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock(return_value=True)
-    orch.resume = AsyncMock()
-
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": 5.0}, orch)
-
-    orch.adjust_budget.assert_called_once_with(5.0)
-    orch.resume.assert_awaited_once()
-
-
-@pytest.mark.asyncio()
-async def test_dispatch_adjust_budget_does_not_resume_when_not_needed() -> None:
-    orch = MagicMock()
-    orch.adjust_budget = MagicMock(return_value=False)
-    orch.resume = AsyncMock()
-
-    await _dispatch_command({"command": "adjust_budget", "delta_usd": 5.0}, orch)
-
-    orch.adjust_budget.assert_called_once_with(5.0)
-    orch.resume.assert_not_awaited()
-
-
-@pytest.mark.asyncio()
 async def test_dispatch_verification_response_uses_passed_field() -> None:
     orch = MagicMock()
     orch.resume = AsyncMock()
@@ -913,3 +949,12 @@ async def test_dispatch_verification_response_uses_passed_field() -> None:
         orch,
     )
     orch.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio()
+async def test_dispatch_reload_config_calls_orchestrator() -> None:
+    """reload_config IPC command calls orch.reload_config() exactly once."""
+    orch = MagicMock()
+    orch.reload_config = AsyncMock()
+    await _dispatch_command({"command": "reload_config"}, orch)
+    orch.reload_config.assert_awaited_once_with()

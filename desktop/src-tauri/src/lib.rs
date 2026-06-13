@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Manager, WindowEvent};
@@ -12,9 +12,13 @@ use tauri::{Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
 pub mod activity;
+pub mod install_layout;
 pub mod jsonrpc_stdio;
 pub mod readiness;
 pub mod sidecar;
+mod sidecar_env;
+mod sidecar_pid;
+mod sidecar_runtime;
 
 const UI_STATE_STORE_PATH: &str = "ui-state.json";
 const UI_STATE_KEY: &str = "ui_state";
@@ -77,7 +81,11 @@ fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> 
 }
 
 struct SidecarHolder {
-    supervisor: sidecar::SidecarSupervisor,
+    // Arc so callers can clone the supervisor OUT of the holder lock and run
+    // (possibly hours-long) blocking RPCs without holding the lock — holding
+    // it across a wedged ``session.stop`` deadlocked the window-close
+    // teardown and left the app running headless (#155).
+    supervisor: Arc<sidecar::SidecarSupervisor>,
 }
 
 /// Optional supervisor handle. When the supervisor failed to start
@@ -188,19 +196,45 @@ fn with_supervisor<R>(
     app: &AppHandle,
     f: impl FnOnce(&sidecar::SidecarSupervisor) -> R,
 ) -> Result<R, String> {
-    let state = app.state::<SidecarHolderState>();
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    match guard.as_ref() {
-        Some(holder) => Ok(f(&holder.supervisor)),
-        None => Err("sidecar unavailable (shell is in fatal-error state)".to_string()),
-    }
+    // Clone the Arc out under a short-lived lock, then run `f` OUTSIDE the
+    // lock. `f` is typically a blocking JSON-RPC call that can run for
+    // minutes (session.start) to hours (session.stop drain); holding the
+    // holder lock for that duration blockaded shutdown_sidecar_and_agents'
+    // lock acquisition on window close, so the Tauri run loop never returned
+    // and the app lingered headless with the orchestrator still running (#155).
+    let supervisor = {
+        let state = app.state::<SidecarHolderState>();
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        match guard.as_ref() {
+            Some(holder) => Arc::clone(&holder.supervisor),
+            None => {
+                return Err("sidecar unavailable (shell is in fatal-error state)".to_string());
+            }
+        }
+    };
+    Ok(f(&supervisor))
 }
 
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
-fn jsonrpc_call(app: AppHandle, method: String, params: Option<Value>) -> Result<Value, String> {
+async fn jsonrpc_call(
+    app: AppHandle,
+    method: String,
+    params: Option<Value>,
+) -> Result<Value, String> {
     let method_for_hook = method.clone();
-    let result = with_supervisor(&app, |sup| sup.call(method, params))?;
+    // Run the (blocking) supervisor call OFF the main thread. `jsonrpc_call`
+    // used to be a synchronous command, and Tauri runs sync commands on the
+    // main UI thread — so a long RPC (session.start can take many seconds to
+    // minutes for the PPO/beads/bridge bringup) froze the window ("not
+    // responding") and stalled $/progress rendering. spawn_blocking keeps the
+    // event loop pumping so the UI stays live and the startup checklist updates.
+    let app_for_call = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        with_supervisor(&app_for_call, |sup| sup.call(method, params))
+    })
+    .await
+    .map_err(|e| format!("sidecar call task failed: {e}"))??;
     // desktop-bzr2: hold an NSProcessInfo activity assertion while a
     // AgentShore session is alive so App Nap can't throttle the Tauri UI's
     // event loop while the window is backgrounded. Acquire on
@@ -329,22 +363,51 @@ fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, o
 /// anything they spawned) FIRST. If we drop the supervisor before killing the
 /// agents, the sidecar's tracked-PID map disappears and the agent subprocesses
 /// are reparented to launchd, burning API tokens silently (desktop-ieql).
+/// How long the quit path may spend on graceful teardown before the watchdog
+/// hard-exits the process. Generous enough for taskkill sweeps and final
+/// stats persistence; short enough that a wedged teardown can never leave the
+/// app running headless (#155).
+const TEARDOWN_WATCHDOG_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Arm a detached watchdog thread that hard-exits the process after
+/// [`TEARDOWN_WATCHDOG_DEADLINE`]. Called ONLY from the quit path
+/// (`ExitRequested` fall-through / `Exit`) — never from `session.stop`, whose
+/// graceful drain is allowed to take as long as it needs while the window is
+/// open. If teardown finishes first, the run loop returns and the process
+/// exits normally, taking the watchdog thread with it; the watchdog only ever
+/// fires when teardown has stalled past the deadline (#155: a blocked mutex
+/// or hung kill must degrade to a hard exit, not a headless orchestrator).
+#[cfg_attr(test, allow(dead_code))]
+fn arm_teardown_watchdog() {
+    std::thread::spawn(|| {
+        std::thread::sleep(TEARDOWN_WATCHDOG_DEADLINE);
+        eprintln!(
+            "[agentshore-desktop] teardown exceeded {TEARDOWN_WATCHDOG_DEADLINE:?}; hard-exiting"
+        );
+        std::process::exit(0);
+    });
+}
+
 #[cfg_attr(test, allow(dead_code))]
 fn shutdown_sidecar_and_agents(app_handle: &AppHandle) {
-    {
+    // Take the supervisor OUT of the holder under a short-lived lock, then do
+    // all the killing outside it. In-flight RPC threads may still hold Arc
+    // clones of the supervisor, so its Drop impl is NOT guaranteed to run
+    // here — kill_sidecar() is the explicit teardown and Drop is only the
+    // backstop (#155).
+    let supervisor: Option<Arc<sidecar::SidecarSupervisor>> = {
         let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
-        let lock_result = sidecar_state.lock();
-        if let Ok(guard) = lock_result {
-            if let Some(holder) = guard.as_ref() {
-                let _ = holder.supervisor.kill_all_agents();
-            }
-        }
-    }
-    // Now drop the supervisor so its Drop impl SIGKILLs the Python sidecar.
-    let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
-    let lock_result = sidecar_state.lock();
-    if let Ok(mut guard) = lock_result {
-        *guard = None;
+        let taken = match sidecar_state.lock() {
+            Ok(mut guard) => guard.take().map(|holder| holder.supervisor),
+            Err(_) => None,
+        };
+        taken
+    };
+    if let Some(sup) = supervisor {
+        // Kill the AGENT subprocesses first (see doc comment above), then
+        // the Python sidecar tree.
+        let _ = sup.kill_all_agents();
+        sup.kill_sidecar();
     }
     // desktop-bzr2: release the App Nap activity assertion if a session was
     // still running at quit time. Without this the assertion can linger in
@@ -617,7 +680,14 @@ pub fn run() {
             let menu = build_app_menu(&app_handle)?;
             app.set_menu(menu)?;
 
-            let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd")).ok();
+            let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd"))
+                .ok()
+                .filter(|path| path.is_file());
+            // Show the shell before sidecar startup. On Windows, process
+            // launch or handshake failures otherwise leave an invisible
+            // but still-running GUI process because the window starts hidden.
+            apply_restored_window_state(&app_handle);
+            attach_window_persistence(&app_handle);
 
             // DESIGN §2.6 — survive a supervisor-startup failure: store
             // the structured error in FatalShellState, emit an "app:fatal_error"
@@ -634,7 +704,9 @@ pub fn run() {
                     let mut guard = holder_state
                         .lock()
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    *guard = Some(SidecarHolder { supervisor });
+                    *guard = Some(SidecarHolder {
+                        supervisor: Arc::new(supervisor),
+                    });
                 }
                 Err(err) => {
                     let fatal = app_handle.state::<FatalShellState>();
@@ -644,9 +716,6 @@ pub fn run() {
                     let _ = app_handle.emit("app:fatal_error", err);
                 }
             }
-
-            apply_restored_window_state(&app_handle);
-            attach_window_persistence(&app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -672,6 +741,7 @@ pub fn run() {
                 // and has to minimize every other app to find the
                 // AgentShore window underneath. Mirror what
                 // tauri_plugin_single_instance does for relaunch.
+                #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen {
                     has_visible_windows,
                     ..
@@ -690,8 +760,7 @@ pub fn run() {
                 // running, confirm — quitting force-kills it with no drain and
                 // no end-of-session report.
                 tauri::RunEvent::ExitRequested { api, .. } => {
-                    let session_active =
-                        app_handle.state::<activity::ActivityHolder>().is_active();
+                    let session_active = app_handle.state::<activity::ActivityHolder>().is_active();
                     let already_confirmed = app_handle.state::<QuitConfirmed>().get();
                     if quit_requires_confirmation(session_active, already_confirmed) {
                         api.prevent_exit();
@@ -704,9 +773,14 @@ pub fn run() {
                         });
                         return;
                     }
+                    // Quit is going ahead: bound the teardown. If anything
+                    // below (or in the Exit handler) stalls, the watchdog
+                    // hard-exits instead of leaving a headless orchestrator.
+                    arm_teardown_watchdog();
                     shutdown_sidecar_and_agents(app_handle);
                 }
                 tauri::RunEvent::Exit => {
+                    arm_teardown_watchdog();
                     shutdown_sidecar_and_agents(app_handle);
                 }
                 _ => {}
@@ -816,6 +890,9 @@ mod tests {
     fn resolve_bundled_sidecar_path_keeps_binary_stem() {
         let path = resolve_bundled_sidecar_path(std::path::Path::new("agentshore-bd"))
             .expect("resolve sidecar path");
-        assert!(path.ends_with("agentshore-bd"));
+        assert_eq!(
+            path.file_stem().and_then(|stem| stem.to_str()),
+            Some("agentshore-bd")
+        );
     }
 }

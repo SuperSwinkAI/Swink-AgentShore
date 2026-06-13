@@ -30,6 +30,7 @@ from agentshore.core.base import _OrchestratorBase
 from agentshore.core.helpers import (
     _bootstrap_phase_publisher,
     _emit_weights_dir_inventory,
+    _logger,
 )
 from agentshore.core.mixins.drain import SHUTDOWN_GRACE_PERIOD_SECONDS
 
@@ -196,6 +197,13 @@ class Orchestrator(_OrchestratorBase):
             # attribute dirty paths to prior sessions even when the DB/log was
             # recovered or rotated.
             await phases._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
+            # Reclaim untracked root artifacts orphaned by killed trunk-scoped
+            # plays (prior sessions) so they don't wedge merge_pr / reconcile
+            # (#162/#164). Runs after the dirty baseline so the baseline still
+            # records pre-reclaim trunk state, and before dispatch opens.
+            await phases._phase_session_start_trunk_artifacts(
+                store=store, cfg=cfg, repo_root=repo_root, sid=sid
+            )
             # desktop-kqo5: cache default branch + sweep main-repo HEAD before
             # opening dispatch. Must run before _phase_install_skills so the
             # cached value is available to any phase that needs it.
@@ -215,9 +223,18 @@ class Orchestrator(_OrchestratorBase):
                 # on the no-seed path must route to the seed recipe (seedless
                 # SEED_PROJECT bootstraps epics) instead of grooming an empty
                 # graph and deadlocking.
+                from agentshore.beads import GraphReadError
                 from agentshore.beads import load_graph as _load_graph
 
-                _bootstrap_graph = await _load_graph(repo_root)
+                try:
+                    _bootstrap_graph = await _load_graph(repo_root)
+                except GraphReadError as exc:
+                    _logger.warning(
+                        "beads_graph_read_failed_at_bootstrap",
+                        error=str(exc),
+                        session_id=sid,
+                    )
+                    _bootstrap_graph = None
                 phases._phase_queue_agent_instantiation(
                     orch=orch,
                     cfg=cfg,
@@ -327,10 +344,6 @@ class Orchestrator(_OrchestratorBase):
         """Pause the orchestrator loop after the current play completes."""
         await self._lifecycle.pause(reason)
 
-    async def resume(self, override_budget: bool = False) -> None:
-        """Resume the orchestrator loop after a pause."""
-        await self._lifecycle.resume(override_budget)
-
     async def reload_config(self) -> None:
         """Reload configuration from the configured path."""
         await self._lifecycle.reload_config()
@@ -360,10 +373,6 @@ class Orchestrator(_OrchestratorBase):
     async def hard_stop(self) -> None:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
         await self._drain.hard_stop()
-
-    def adjust_budget(self, delta_usd: float) -> bool:
-        """Increase session budget; return True when a budget pause should resume."""
-        return self._drain.adjust_budget(delta_usd)
 
     async def set_budget(
         self,

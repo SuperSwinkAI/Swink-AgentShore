@@ -38,7 +38,6 @@ def _make_orch(tmp_path: Path, feedback: FeedbackConfig | None = None) -> Any:
     orch._last_play_id = None
     orch._draining = False
     orch._drain_reason = None
-    orch._budget_override = False
     orch._feedback_cadence_plays_since_ack = 0
     orch._feedback_cadence_last_ack_monotonic = 0.0
     orch._main_repo = MainRepoGuard()
