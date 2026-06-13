@@ -130,13 +130,14 @@ async def test_ensure_worktree_raises_on_dirty_orphan_target(
     remote_branch: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dirty orphan at the target path is preserved; allocate fails loudly.
+    """A dirty orphan that can't be quarantined fails loudly; work left intact.
 
     ``ensure_worktree`` delegates orphan disposition to ``_dispose_orphan``;
-    when that returns ``"preserved"`` (the orphan has uncommitted work), the
-    allocator must surface ``WorktreeAllocationFailed
-    (reason="orphan_dirty_uncommitted")`` rather than destroy the work, so
-    downstream play-verdict mapping categorises it and the dir is left intact.
+    a dirty orphan is normally quarantined (work moved under reclaimed/) and
+    allocation proceeds (#164). Only when quarantine itself fails does
+    ``_dispose_orphan`` return ``"preserved"``, and then the allocator must
+    surface ``WorktreeAllocationFailed(reason="orphan_dirty_uncommitted")``
+    rather than destroy the work, so the dir is left intact.
     """
     from agentshore.agents.worktree import allocator as alloc_mod
 
@@ -144,7 +145,7 @@ async def test_ensure_worktree_raises_on_dirty_orphan_target(
     target.mkdir()
     (target / "uncommitted.txt").write_text("unsaved\n")
 
-    async def fake_dispose(*, main_repo: Path, path: Path) -> str:
+    async def fake_dispose(*, main_repo: Path, path: Path, reclaimed_root: Path) -> str:
         return "preserved"
 
     monkeypatch.setattr(alloc_mod, "_dispose_orphan", fake_dispose)

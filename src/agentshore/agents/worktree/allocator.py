@@ -19,6 +19,13 @@ from agentshore.errors import OrchestratorError
 
 log = structlog.get_logger(__name__)
 
+#: Sibling of ``worktrees/`` under ``.agentshore/`` where a dirty orphan's
+#: working tree is moved before the orphan is removed, so uncommitted work is
+#: recoverable rather than destroyed (#164). Kept as a local literal to keep this
+#: module dependency-light; the canonical owner of the name is
+#: ``agentshore.core.trunk_artifacts.QUARANTINE_DIRNAME`` (same ``"reclaimed"``).
+_RECLAIMED_DIRNAME = "reclaimed"
+
 
 class WorktreeAllocationFailed(OrchestratorError):
     """``git worktree add`` (or a precursor command) failed unrecoverably."""
@@ -395,13 +402,20 @@ async def ensure_worktree(
         # are never re-adopted), so delete it and proceed — raising here used to
         # permanently block any future play that needed the same branch (93
         # consecutive code_review dispatches failed against orphan dirs). A
-        # dirty orphan holds uncommitted work, so we refuse to destroy it and
-        # surface it for manual resolution instead.
-        disposition = await _dispose_orphan(main_repo=main_repo, path=worktree_path)
+        # dirty orphan's working tree is quarantined under ``.agentshore/
+        # reclaimed/`` (recoverable) and then removed, so uncommitted work
+        # survives without wedging allocation (#164). Only a quarantine *failure*
+        # leaves the dir in place — the rare last resort that still surfaces for
+        # manual resolution rather than risk losing the work.
+        reclaimed_root = worktree_path.parent.parent / _RECLAIMED_DIRNAME
+        disposition = await _dispose_orphan(
+            main_repo=main_repo, path=worktree_path, reclaimed_root=reclaimed_root
+        )
         if disposition == "preserved":
             raise WorktreeAllocationFailed(
-                f"orphan worktree at {worktree_path} has uncommitted changes; "
-                "resolve it manually (commit or remove) before this play can run",
+                f"orphan worktree at {worktree_path} has uncommitted changes that "
+                "could not be quarantined; resolve it manually (commit or remove) "
+                "before this play can run",
                 reason="orphan_dirty_uncommitted",
             )
 
@@ -513,36 +527,93 @@ async def remove_worktree(
 class ReconcileReport:
     """Outcome of ``reconcile_worktrees``.
 
-    ``deleted`` are orphan dirs (on disk, not registered with git) that were
-    removed. ``preserved_dirty`` are orphans left in place because they held
-    uncommitted work. Both empty = nothing diverged.
+    ``deleted`` are *clean* orphan dirs (on disk, not registered with git) that
+    were removed. ``quarantined`` are *dirty* orphans whose working tree was
+    moved under ``.agentshore/reclaimed/`` (recoverable) before the orphan was
+    removed, so allocation unblocks without destroying uncommitted work (#164).
+    ``preserved_dirty`` are dirty orphans left in place only because quarantine
+    itself failed (e.g. the move raised) — the last-resort fallback. All empty =
+    nothing diverged.
     """
 
     deleted: list[Path] = field(default_factory=list)
+    quarantined: list[Path] = field(default_factory=list)
     preserved_dirty: list[Path] = field(default_factory=list)
 
 
-async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
-    """Delete an orphan worktree dir, preserving only genuinely-uncommitted work.
+def _unique_reclaim_dest(reclaimed_root: Path, name: str) -> Path:
+    """Pick a non-colliding ``reclaimed_root/<name>`` path, suffix-bumping on hit.
+
+    Deterministic (no timestamp/random) so the destination is reproducible in
+    tests; a second orphan with the same dir name lands at ``<name>-1`` etc.
+    """
+    dest = reclaimed_root / name
+    if not dest.exists():
+        return dest
+    counter = 1
+    while True:
+        candidate = reclaimed_root / f"{name}-{counter}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+async def _quarantine_dirty_orphan(*, main_repo: Path, path: Path, reclaimed_root: Path) -> bool:
+    """Move a dirty orphan's working tree to ``reclaimed_root`` then remove it.
+
+    The moved copy is for human recovery only — its ``.git`` link dangles once
+    the registration is pruned, but the uncommitted working-tree files are
+    preserved verbatim. Returns ``True`` when the orphan was moved out and
+    removed (allocation can proceed), ``False`` on any failure so the caller can
+    fall back to leaving the dir in place rather than risk losing the work.
+    """
+    try:
+        reclaimed_root.mkdir(parents=True, exist_ok=True)
+        dest = _unique_reclaim_dest(reclaimed_root, path.name)
+        shutil.move(str(path), str(dest))
+    except (OSError, shutil.Error) as exc:
+        log.warning(
+            "worktree_orphan_quarantine_failed",
+            orphan_path=str(path),
+            error=str(exc),
+        )
+        return False
+    # The working tree was moved out from under git's registration; drop the
+    # registration for real (best-effort remove + prune) so the path is free.
+    await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
+    log.info(
+        "worktree_orphan_quarantined",
+        orphan_path=str(path),
+        reclaimed_path=str(dest),
+    )
+    return True
+
+
+async def _dispose_orphan(*, main_repo: Path, path: Path, reclaimed_root: Path) -> str:
+    """Clear an orphan worktree dir; quarantine uncommitted work rather than lose it.
 
     Orphans are on-disk worktree dirs git no longer tracks (a prior session was
     force-killed mid-allocate, or ``git worktree prune`` dropped the
     registration). They are never re-adopted and their gitignored build caches
     are never reused, so a *clean* orphan is rebuildable debris (committed work
-    is already in git) and is deleted. An orphan with uncommitted changes to
-    *tracked* files is left in place — preserved for manual recovery.
+    is already in git) and is deleted outright. An orphan with uncommitted
+    changes to *tracked* files is **quarantined** — its working tree is moved
+    under ``.agentshore/reclaimed/`` (recoverable) and then the orphan is
+    removed, so allocation is never blocked indefinitely by a dead agent's
+    leftover dirt (#164). Leaving it in place used to raise "resolve manually",
+    which is incompatible with unattended 24h sessions.
 
     "Dirty" is measured with ``--untracked-files=no`` so only changes to files
-    git already tracks block deletion; untracked files (``??``) never do. Every
-    worktree carries untracked agent-harness scaffolding (the files the agent
-    CLIs read, created at dispatch) plus build artifacts; counting those as
-    "uncommitted work" preserved every orphan forever and permanently wedged any
-    play needing that branch. We deliberately do NOT hard-code scaffolding
+    git already tracks trigger quarantine; untracked files (``??``) never do.
+    Every worktree carries untracked agent-harness scaffolding (the files the
+    agent CLIs read, created at dispatch) plus build artifacts; counting those
+    as "uncommitted work" preserved every orphan forever and permanently wedged
+    any play needing that branch. We deliberately do NOT hard-code scaffolding
     filenames — a target repo may legitimately own any of them — and instead let
-    git's own tracked/untracked distinction decide: committed work is safe in
-    git, and abandoned untracked files in a dead orphan are debris.
+    git's own tracked/untracked distinction decide.
 
-    Returns ``"deleted"`` or ``"preserved"``. Best-effort; never raises.
+    Returns ``"deleted"``, ``"quarantined"``, or ``"preserved"`` (the last only
+    when quarantine itself failed). Best-effort; never raises.
     """
     # Orphans are de-registered, so ``git status`` inside them fails until the
     # admin link is repaired. Re-link best-effort so we can inspect for
@@ -554,10 +625,15 @@ async def _dispose_orphan(*, main_repo: Path, path: Path) -> str:
     )
     if rc == 0 and out.strip():
         log.warning(
-            "worktree_orphan_preserved_dirty",
+            "worktree_orphan_dirty_quarantining",
             orphan_path=str(path),
             dirty_summary=out.strip()[:500],
         )
+        if await _quarantine_dirty_orphan(
+            main_repo=main_repo, path=path, reclaimed_root=reclaimed_root
+        ):
+            return "quarantined"
+        # Quarantine failed — leave the work in place rather than destroy it.
         return "preserved"
     await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
     log.info("worktree_orphan_deleted", orphan_path=str(path))
@@ -662,11 +738,18 @@ async def reconcile_worktrees(
         # Cannot enumerate git's view → can't safely identify orphans.
         return ReconcileReport()
 
+    reclaimed_root = worktree_root.parent / _RECLAIMED_DIRNAME
     deleted: list[Path] = []
+    quarantined: list[Path] = []
     preserved_dirty: list[Path] = []
     for entry in scan.orphan_dirs:
-        if await _dispose_orphan(main_repo=main_repo, path=entry) == "deleted":
+        disposition = await _dispose_orphan(
+            main_repo=main_repo, path=entry, reclaimed_root=reclaimed_root
+        )
+        if disposition == "deleted":
             deleted.append(entry)
+        elif disposition == "quarantined":
+            quarantined.append(entry)
         else:
             preserved_dirty.append(entry)
 
@@ -674,4 +757,6 @@ async def reconcile_worktrees(
     if main_repo.exists():
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
 
-    return ReconcileReport(deleted=deleted, preserved_dirty=preserved_dirty)
+    return ReconcileReport(
+        deleted=deleted, quarantined=quarantined, preserved_dirty=preserved_dirty
+    )
