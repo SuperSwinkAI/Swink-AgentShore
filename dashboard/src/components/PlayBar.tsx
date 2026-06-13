@@ -137,6 +137,32 @@ function formatElapsed(ms: number): string {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
+const LOCAL_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const LOCAL_MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function formatLocalTimestamp(date: Date): string {
+  const hour = date.getHours();
+  const displayHour = hour % 12 || 12;
+  const minute = date.getMinutes().toString().padStart(2, "0");
+  const meridiem = hour >= 12 ? "PM" : "AM";
+  return `${LOCAL_DAYS[date.getDay()]} ${
+    LOCAL_MONTHS[date.getMonth()]
+  } ${date.getDate()} ${displayHour}:${minute} ${meridiem}`;
+}
+
 function useMode(): DisplayMode {
   const [mode, setMode] = useState<DisplayMode>(latestMode);
   useEffect(() => {
@@ -161,6 +187,16 @@ function useElapsed(startMs: number | null): string {
   return formatElapsed(now - startMs);
 }
 
+function useLocalTimestamp(): string {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    setNow(new Date());
+    const handle = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(handle);
+  }, []);
+  return formatLocalTimestamp(now);
+}
+
 function agentLabelForSingle(play: ActivePlay): string {
   if (play.agent_id) return `Agent: ${play.agent_id.slice(0, 8)}`;
   if (play.trigger_agent_id) {
@@ -176,6 +212,7 @@ export default function PlayBar(): React.ReactElement {
   const mode = useMode();
   const startMs = mode.kind === "inactive" ? null : mode.startMs;
   const elapsed = useElapsed(startMs);
+  const localTimestamp = useLocalTimestamp();
 
   let typeLabel: string;
   let agentLabel: string;
@@ -209,6 +246,9 @@ export default function PlayBar(): React.ReactElement {
       </span>
       <span className="play-elapsed" id="play-elapsed">
         {inactive ? "" : elapsed}
+      </span>
+      <span className="play-local-time" id="play-local-time">
+        {localTimestamp}
       </span>
     </div>
   );

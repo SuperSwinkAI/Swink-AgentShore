@@ -8,9 +8,11 @@ import {
   FeedbackModal,
   HUD,
   KanbanStage,
+  PlayBar,
   PlaysPanel,
   notifyFeedbackModalHide,
   notifyFeedbackModalShow,
+  notifyPlayBarClear,
   notifyPlaysPanelUpdate,
 } from "../src/index";
 import EventDrawer, {
@@ -43,6 +45,7 @@ beforeEach(() => {
   root = createRoot(container);
   notifyEventDrawerReset();
   notifyFeedbackModalHide();
+  notifyPlayBarClear();
 });
 
 afterEach(() => {
@@ -50,6 +53,7 @@ afterEach(() => {
     root.unmount();
   });
   container.remove();
+  vi.useRealTimers();
 });
 
 describe("DashboardCanvas", () => {
@@ -380,6 +384,29 @@ describe("PlaysPanel", () => {
     expect(container.textContent).not.toContain("left");
     const fill = container.querySelector("#budget-fill") as HTMLElement;
     expect(fill.style.width).toBe("0%");
+  });
+});
+
+describe("PlayBar", () => {
+  it("renders a local timestamp for timelapse captures", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 13, 9, 26, 0));
+
+    await act(async () => {
+      root.render(<PlayBar />);
+    });
+
+    const localTime = container.querySelector(
+      "#play-local-time",
+    ) as HTMLElement;
+    expect(localTime.textContent).toBe("Sat Jun 13 9:26 AM");
+
+    vi.setSystemTime(new Date(2026, 5, 13, 9, 27, 0));
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(localTime.textContent).toBe("Sat Jun 13 9:27 AM");
   });
 });
 
