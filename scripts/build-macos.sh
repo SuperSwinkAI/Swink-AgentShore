@@ -29,7 +29,8 @@
 #       the .pkg so postinstall can provision the managed sidecar venv.
 #   6. Resolve macOS code-signing identity (auto-detect Developer ID Application)
 #   7. Build Tauri app bundle (`npx tauri build`)
-#   8. Verify .app code signature via `codesign --verify --deep --strict`
+#   8. Verify .app artifact via scripts/buildkit/verify.py: exact Contents/MacOS
+#      payload (no stray binaries), embedded version == source, signature (if signed)
 #   9. Build three component .pkgs via `pkgbuild`:
 #      - ai.agentshore.desktop    .app + install-agentshore-venv.sh + bundled wheel
 #                            → provisions ~/Library/Application Support/AgentShore/venv
@@ -256,14 +257,19 @@ BUILT_APP="$DESKTOP_DIR/src-tauri/target/$BUILD_MODE/bundle/macos/$APP_NAME.app"
 [[ -d "$BUILT_APP" ]] || die "Tauri build finished but $BUILT_APP does not exist"
 info "Bundle ready at $BUILT_APP"
 
-# ── 8. Verify .app code signature ────────────────────────────────────────────
+# ── 8. Verify the .app artifact (payload manifest + version + signature) ─────
+#
+# Single durable gate (scripts/buildkit/verify.py): the Contents/MacOS payload
+# must be exactly the expected binary set — no stray/stale binaries such as a
+# leftover agentshore-provisioner (the "false green" this replaced) — the
+# embedded CFBundleShortVersionString must match the canonical source version,
+# and, when the build was signed, the signature must verify.
 
-if [[ -n "$APP_SIGNING_ID" ]]; then
-  log "Verifying .app code signature"
-  codesign --verify --deep --strict --verbose=2 "$BUILT_APP" \
-    || die ".app signature verification failed — check codesign output above"
-  info "Signature OK"
-fi
+log "Verifying .app artifact"
+VERIFY_ARGS=(--target macos --app "$BUILT_APP")
+[[ -n "$APP_SIGNING_ID" ]] && VERIFY_ARGS+=(--require-signature)
+(cd "$REPO_ROOT" && uv run python -m scripts.buildkit verify "${VERIFY_ARGS[@]}") \
+  || die "artifact verification failed — see problems above"
 
 # ── 9. Wrap .app in .pkg installer ───────────────────────────────────────────
 
