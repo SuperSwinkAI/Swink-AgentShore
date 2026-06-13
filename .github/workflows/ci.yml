@@ -21,6 +21,12 @@ jobs:
         # --locked: fail if uv.lock is stale vs pyproject.toml (no silent re-resolve)
         run: uv sync --group dev --locked
 
+      - name: Verify version single-source
+        # pyproject.toml is canonical; fail fast if any mirror (Tauri config,
+        # Cargo manifests, package.json files) has drifted. See
+        # docs/design/build-pipeline-unification.md.
+        run: uv run python -m scripts.buildkit version --check
+
       - name: Lint (ruff)
         run: uv run ruff check src/ tests/
 
