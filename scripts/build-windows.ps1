@@ -451,27 +451,20 @@ if (-not (Test-Path $AppExe)) { Die "Tauri build finished but $AppExe does not e
 Write-Step "Building Windows provisioner ($BuildMode)"
 Push-Location $TauriDir
 try {
-    # agentshore-provisioner is a [[bin]] in the agentshore-desktop crate, so this
-    # cargo build runs that crate's build.rs -> tauri_build::build(), which validates
-    # bundle.externalBin. On Windows bd is provisioned at install time (never bundled),
-    # so feed tauri_build the same externalBin:[] override the Tauri-exe phase passes
-    # via --config; without it the build fails on the missing agentshore-bd sidecar.
-    $env:AGENTSHORE_SKIP_BD_SIDECAR = "1"
-    $env:TAURI_CONFIG = (Get-Content -Raw -LiteralPath $WindowsTauriConfig)
+    # agentshore-provisioner is its own workspace crate (./provisioner) with no
+    # build.rs / tauri_build, so — unlike the Tauri-exe phase — it needs neither an
+    # externalBin override nor the bd-skip flag. Build the package directly from the
+    # workspace root; the binary lands in the shared target/$BuildMode dir.
     if ($AllowNoRevocationCheck) {
         $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
         $env:CARGO_HTTP_CHECK_REVOKE = "false"
     }
-    # The provisioner [[bin]] is gated behind `required-features = ["provisioner"]`
-    # so macOS/Linux `tauri build` skips it; build it explicitly with the feature.
     if ($DebugBuild) {
-        Invoke-Checked "cargo" "build" "--bin" "agentshore-provisioner" "--features" "provisioner" "--locked"
+        Invoke-Checked "cargo" "build" "-p" "agentshore-provisioner" "--locked"
     } else {
-        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-provisioner" "--features" "provisioner" "--locked"
+        Invoke-Checked "cargo" "build" "--release" "-p" "agentshore-provisioner" "--locked"
     }
 } finally {
-    Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
-    Remove-Item Env:\TAURI_CONFIG -ErrorAction SilentlyContinue
     if ($AllowNoRevocationCheck) {
         if ($null -eq $PreviousCargoHttpCheckRevoke) {
             Remove-Item Env:\CARGO_HTTP_CHECK_REVOKE -ErrorAction SilentlyContinue
