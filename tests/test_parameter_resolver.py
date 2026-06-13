@@ -1713,6 +1713,31 @@ async def test_resolve_instantiate_agent_uses_config_index_override() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_instantiate_agent_rejects_override_for_provider_in_take_break() -> None:
+    resolver = _make_resolver()
+    state = _make_state(
+        agents=[
+            _make_snapshot(
+                "cooling-codex",
+                agent_type=AgentType.CODEX,
+                status=AgentStatus.ERROR,
+                model_tier="small",
+                last_error_class=ErrorClass.RATE_LIMIT,
+                current_play_type=PlayType.TAKE_BREAK,
+            )
+        ]
+    )
+
+    result = await resolver.resolve(
+        PlayType.INSTANTIATE_AGENT,
+        state,
+        config_index_override=("codex", "small"),
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_instantiate_agent_falls_back_when_override_is_none() -> None:
     """No override → use the configured round-robin logic."""
     resolver = _make_resolver()
@@ -1772,9 +1797,8 @@ async def test_resolve_instantiate_agent_returns_none_when_only_config_at_per_ti
 
 
 @pytest.mark.asyncio
-async def test_resolve_instantiate_agent_ignores_dead_agents_for_capacity() -> None:
-    """A TERMINATED/ERROR agent does not occupy its cell — the resolver may
-    refill it, matching execute()'s live-agent capacity definition."""
+async def test_resolve_instantiate_agent_ignores_terminated_agents_for_capacity() -> None:
+    """A TERMINATED agent frees its cell, matching execute()'s capacity definition."""
     cfg = RuntimeConfig(
         agents={
             "claude_code": AgentConfig(
@@ -1792,6 +1816,66 @@ async def test_resolve_instantiate_agent_ignores_dead_agents_for_capacity() -> N
     result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
 
     assert result == PlayParams(target_agent_type="claude_code", target_model_tier="medium")
+
+
+@pytest.mark.asyncio
+async def test_resolve_instantiate_agent_counts_error_agents_for_capacity() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True, max=1)},
+            ),
+            "codex": AgentConfig(enabled=False),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[
+            _make_snapshot(
+                "error-claude",
+                status=AgentStatus.ERROR,
+                model_tier="medium",
+                last_error_class=ErrorClass.UNKNOWN,
+            )
+        ]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_instantiate_agent_skips_provider_in_take_break() -> None:
+    cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True, max=3)},
+            ),
+            "codex": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="m", enabled=True, max=3)},
+            ),
+        }
+    )
+    resolver = _make_resolver(cfg)
+    state = _make_state(
+        agents=[
+            _make_snapshot(
+                "cooling-claude",
+                status=AgentStatus.ERROR,
+                model_tier="medium",
+                last_error_class=ErrorClass.RATE_LIMIT,
+                current_play_type=PlayType.TAKE_BREAK,
+            )
+        ]
+    )
+
+    result = await resolver.resolve(PlayType.INSTANTIATE_AGENT, state)
+
+    assert result == PlayParams(target_agent_type="codex", target_model_tier="medium")
 
 
 @pytest.mark.asyncio

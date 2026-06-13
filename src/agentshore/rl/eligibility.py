@@ -911,8 +911,9 @@ def compute_config_mask(
     A config is spawnable when:
     - the agent_type is enabled in agentshore.yaml
     - the model_tier is in that agent's enabled tiers
+    - no same-provider agent is currently in TAKE_BREAK
     - no IDLE agent already exists for the same (agent_type, model_tier)
-    - live count for the (type, tier) pair is below that tier's ``max``
+    - non-terminated count for the (type, tier) pair is below that tier's ``max``
 
     The previous global ``max_total`` ceiling was removed in desktop-ty04 —
     per-(type, tier) gating is sufficient because PPO can't concentrate
@@ -922,11 +923,12 @@ def compute_config_mask(
     if n == 0:
         return np.zeros(0, dtype=bool)
 
-    # Per-(type, tier) live counts. Rate-limited ERROR agents are included
-    # so a quota-exhausted type isn't immediately re-spawned; other ERROR /
-    # TERMINATED agents are excluded so their slots stay open.
+    # Per-(type, tier) counts. ERROR agents are included so a failing or
+    # quota-exhausted type cannot respawn past its configured cap; TERMINATED
+    # agents are excluded because end_agent has freed their slot.
     counts: dict[tuple[str, str], int] = {}
     idle_configs: set[tuple[str, str]] = set()
+    providers_in_take_break: set[str] = set()
     blocked_auth_configs: set[tuple[str, str, str | None]] = set()
     blocked_model_configs: set[tuple[str, str, str | None]] = set()
     for a in state.agents:
@@ -934,22 +936,22 @@ def compute_config_mask(
             continue
         tier = a.model_tier or "medium"
         key = (a.agent_type.value, tier)
+        if a.current_play_type == PlayType.TAKE_BREAK:
+            providers_in_take_break.add(a.agent_type.value)
         if a.status == AgentStatus.IDLE:
             idle_configs.add(key)
         if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.AUTH:
             blocked_auth_configs.add((a.agent_type.value, tier, a.github_identity))
-            continue
         if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.INVALID_MODEL:
             blocked_model_configs.add((a.agent_type.value, tier, a.model))
-            continue
-        if a.status == AgentStatus.ERROR and a.last_error_class != ErrorClass.RATE_LIMIT:
-            continue
         counts[key] = counts.get(key, 0) + 1
 
     mask = np.zeros(n, dtype=bool)
     for i, (agent_type, tier) in enumerate(config_index):
         agent_cfg = cfg.agents.get(agent_type)
         if agent_cfg is None or not agent_cfg.enabled:
+            continue
+        if agent_type in providers_in_take_break:
             continue
         try:
             agent_type_enum = AgentType(agent_type)

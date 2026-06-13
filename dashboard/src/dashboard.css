@@ -680,15 +680,23 @@ body.dashboard-active .agentshore-dashboard-canvas {
   font-weight: bold;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 #play-bar .play-agent {
   color: var(--fm-text-body);
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 #play-bar .play-elapsed {
   color: var(--color-fm-mute);
   flex: 0 0 auto;
+}
+#play-bar .play-local-time {
+  color: var(--color-fm-mute);
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 #play-bar.inactive {
   color: var(--color-fm-mute);

@@ -309,23 +309,29 @@ class ParameterResolver:
         If ``config_index_override`` is supplied (PPO config head pick), it is
         used directly and the config-order round-robin path is skipped.
         """
+        providers_in_take_break = {
+            s.agent_type.value
+            for s in state.agents
+            if (
+                s.status != AgentStatus.TERMINATED
+                and s.current_play_type == PlayType.TAKE_BREAK
+            )
+        }
         if config_index_override is not None:
             override_agent_type, override_model_tier = config_index_override
+            if override_agent_type in providers_in_take_break:
+                return None
             return PlayParams(
                 target_agent_type=override_agent_type,
                 target_model_tier=override_model_tier,
             )
-        # Count only live agents (not ERROR / TERMINATED), mirroring the
-        # capacity definition in instantiate_agent.execute() and the eligibility
-        # config mask. Counting dead agents here let the resolver both skip
-        # reclaimable cells and deterministically re-pick a cell that is already
-        # at its live per-tier max — the latter is #159's instantiate spin
-        # (mask allows INSTANTIATE_AGENT, then execute() rejects "at per-tier
-        # max"). The resolver must only ever return a cell execute() will accept.
+        # Count every non-terminated agent, mirroring instantiate_agent.execute()
+        # and the eligibility config mask. ERROR agents still occupy their tier
+        # slot until recovery or end_agent terminates them.
         existing = Counter(
             (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER)
             for s in state.agents
-            if s.status.value not in ("error", "terminated")
+            if s.status != AgentStatus.TERMINATED
         )
         idle_configs = {
             (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER)
@@ -340,6 +346,8 @@ class ParameterResolver:
             except ValueError:
                 continue
             if not agent_cfg.enabled:
+                continue
+            if agent_type.value in providers_in_take_break:
                 continue
             enabled_tiers = enabled_model_tiers(agent_type, agent_cfg)
             enabled_agents.append((agent_type, enabled_tiers))
