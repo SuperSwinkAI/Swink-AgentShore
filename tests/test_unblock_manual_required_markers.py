@@ -18,6 +18,7 @@ from agentshore.core.mixins.completion import (
     _UNBLOCK_MANUAL_REQUIRED_MARKERS,
     CompletionProcessor,
     _outcome_blocked_by_sibling_pr,
+    _outcome_resolved_target_pr,
 )
 from agentshore.state import PlayType
 
@@ -61,8 +62,10 @@ def test_transient_failures_do_not_match(error: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _outcome(artifacts: list[object], error: str | None = None) -> SimpleNamespace:
-    return SimpleNamespace(artifacts=artifacts, error=error)
+def _outcome(
+    artifacts: list[object], error: str | None = None, *, success: bool = False
+) -> SimpleNamespace:
+    return SimpleNamespace(artifacts=artifacts, error=error, success=success)
 
 
 def test_blocked_by_pr_artifact_detected() -> None:
@@ -152,3 +155,78 @@ async def test_exhaustion_still_parks() -> None:
     resolver.record_unblock_pr_failure.assert_called_once_with(40)
     proc._host._safe_call.assert_awaited_once()
     proc.mark_pr_manual_required.assert_called_once_with(40)
+
+
+# ---------------------------------------------------------------------------
+# resolved-target: a successful unblock that merged the target or cleared its
+# sole stale CHANGES_REQUESTED review is a win — never counted or parked
+# (blocky PR #517: three successful stale-review short-circuits parked a
+# merge-ready PR because every completion ticked the failure counter).
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_target_detects_merged_and_stale_review() -> None:
+    assert (
+        _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 40}], success=True), 40)
+        is True
+    )
+    assert (
+        _outcome_resolved_target_pr(
+            _outcome([{"type": "stale_review_state", "pr": 40}], success=True), 40
+        )
+        is True
+    )
+    # An artifact carrying no pr/number is treated as the dispatch target.
+    assert _outcome_resolved_target_pr(_outcome([{"type": "pr_merged"}], success=True), 40) is True
+
+
+def test_resolved_target_negatives() -> None:
+    # success=False is never a resolution, even with a pr_merged artifact.
+    assert (
+        _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 40}], success=False), 40)
+        is False
+    )
+    # A merged *sibling* (different pr number) does not resolve the target.
+    assert (
+        _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 99}], success=True), 40)
+        is False
+    )
+    # Unrelated artifact types do not count; non-dict artifacts don't crash.
+    assert (
+        _outcome_resolved_target_pr(
+            _outcome([{"type": "pr_unblock_attempt", "number": 40}, "noise"], success=True),
+            40,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolved_target_skips_increment_and_resets_counter() -> None:
+    """A successful merge of the target must not tick the counter — and must
+    clear any prior failures so a later genuine block starts fresh."""
+    proc, resolver = _processor()
+    outcome = _outcome(
+        [{"type": "pr_merged", "pr": 40, "reason": "target_merge_ready"}], success=True
+    )
+
+    await proc._record_unblock_attempt_if_needed(_ctx(), outcome, PlayType.UNBLOCK_PR)
+
+    resolver.record_unblock_pr_failure.assert_not_called()
+    resolver.reset_unblock_pr_failures.assert_called_once_with(40)
+    proc._host._safe_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_three_stale_review_short_circuits_never_park() -> None:
+    """The #517 trap: three successful stale-review short-circuits in a row
+    must never reach exhaustion or stamp manual-required."""
+    proc, resolver = _processor(record_returns=True)
+    outcome = _outcome([{"type": "stale_review_state", "pr": 40, "head_sha": "abc"}], success=True)
+
+    for _ in range(3):
+        await proc._record_unblock_attempt_if_needed(_ctx(), outcome, PlayType.UNBLOCK_PR)
+
+    resolver.record_unblock_pr_failure.assert_not_called()
+    proc.mark_pr_manual_required.assert_not_called()
+    proc._host._safe_call.assert_not_awaited()

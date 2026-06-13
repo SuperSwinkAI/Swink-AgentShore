@@ -201,6 +201,31 @@ def _outcome_blocked_by_sibling_pr(outcome: PlayOutcome) -> bool:
     )
 
 
+def _outcome_resolved_target_pr(outcome: PlayOutcome, pr_number: int) -> bool:
+    """Return True when a *successful* unblock_pr outcome resolved the target PR.
+
+    Resolution means the dispatch either merged the target (``pr_merged``) or
+    dismissed the sole stale ``CHANGES_REQUESTED`` review and left the PR ready
+    (``stale_review_state``). Both are definitive wins, not failed attempts, so
+    they must NOT tick the per-PR exhaustion counter or trip the
+    ``manual-required`` park — counting them parked a merge-ready PR after three
+    no-op short-circuit successes (blocky PR #517). The artifact carries the PR
+    number under ``pr`` or ``number``; an artifact with neither (legacy/loose
+    shape) is treated as referring to the dispatch target.
+    """
+    if not outcome.success:
+        return False
+    for artifact in outcome.artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("type") not in {"pr_merged", "stale_review_state"}:
+            continue
+        artifact_pr = artifact.get("pr", artifact.get("number", pr_number))
+        if artifact_pr == pr_number:
+            return True
+    return False
+
+
 class _CompletionHost(Protocol):
     """Orchestrator runtime/control state read OR written live by :class:`CompletionProcessor`.
 
@@ -739,6 +764,18 @@ class CompletionProcessor:
                     pr_number=ctx.params.pr_number,
                 )
                 return
+            # A dispatch that merged the target or cleared its sole stale
+            # CHANGES_REQUESTED review is a definitive win — never count it toward
+            # exhaustion or park a now-merge-ready PR. Reset any prior failures so
+            # a later genuine block starts the count fresh (blocky PR #517).
+            if _outcome_resolved_target_pr(outcome, ctx.params.pr_number):
+                self._executor._resolver.reset_unblock_pr_failures(ctx.params.pr_number)
+                _logger.info(
+                    "unblock_pr_resolved_target",
+                    session_id=self._session_id,
+                    pr_number=ctx.params.pr_number,
+                )
+                return
             exhausted = self._executor._resolver.record_unblock_pr_failure(ctx.params.pr_number)
             # Fast-path (#6): a failure that names a human/CI-infra blocker can
             # never be resolved by re-dispatching an agent, so mark it
@@ -920,6 +957,10 @@ class CompletionProcessor:
             PlayType.GROOM_BACKLOG,
             PlayType.ISSUE_PICKUP,
             PlayType.MERGE_PR,
+            # unblock_pr can now merge a merge-ready target or dismiss a stale
+            # review; re-read GitHub promptly so the cache reflects the merge /
+            # cleared review instead of waiting up to ISSUE_REFRESH_INTERVAL.
+            PlayType.UNBLOCK_PR,
             PlayType.CODE_REVIEW,
             PlayType.WRITE_IMPLEMENTATION_PLAN,
             PlayType.REFINE_TASK_BREAKDOWN,
