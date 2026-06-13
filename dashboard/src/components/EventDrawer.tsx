@@ -13,7 +13,6 @@ import {
 } from "../format";
 
 const MAX_FINISHED_EVENTS = 8;
-const MAX_ERROR_MESSAGE_CHARS = 140;
 
 type EventFilter = "all" | "started" | "completed" | "failed";
 
@@ -91,8 +90,7 @@ function errorMessageText(event: PlayEvent): string | null {
   if (event.status !== "failed" || !event.error) return null;
   const normalized = event.error.trim().replace(/\s+/g, " ");
   if (!normalized) return null;
-  if (normalized.length <= MAX_ERROR_MESSAGE_CHARS) return normalized;
-  return `${normalized.slice(0, MAX_ERROR_MESSAGE_CHARS - 1)}…`;
+  return normalized;
 }
 
 function knownTimestamp(value: string | null | undefined): string | null {
