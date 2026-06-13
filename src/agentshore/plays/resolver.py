@@ -194,6 +194,16 @@ class ParameterResolver:
             return True
         return False
 
+    def reset_unblock_pr_failures(self, pr_number: int) -> None:
+        """Clear the session-level unblock failure count for *pr_number*.
+
+        Called when an unblock_pr dispatch definitively resolves the target
+        (merged it, or dismissed the sole stale CHANGES_REQUESTED review). A
+        resolution is a win, not a failed attempt, so prior failures must not
+        accumulate toward the exhaustion park.
+        """
+        self._unblock_pr_failures.pop(pr_number, None)
+
     async def resolve(
         self,
         play_type: PlayType,

@@ -63,7 +63,15 @@ _PULL_REQUEST_UPSERT_SQL = f"""
         url = COALESCE(excluded.url, pull_requests.url),
         github_author = COALESCE(pull_requests.github_author, excluded.github_author),
         labels = COALESCE(excluded.labels, pull_requests.labels),
-        review_decision = COALESCE(excluded.review_decision, pull_requests.review_decision),
+        -- review_decision is taken authoritatively from GitHub, NOT COALESCE-preserved.
+        -- GitHub's reviewDecision is the source of truth: an empty/NULL value means
+        -- "no current decision" — e.g. a CHANGES_REQUESTED dismissed by a new commit —
+        -- which is real state, not a transient gap. COALESCE-preserving it froze a stale
+        -- CHANGES_REQUESTED forever, which kept pr_merge_ready() false and parked
+        -- otherwise merge-ready PRs as manual-required (blocky PR #517). The #344 guarantee
+        -- (a LIVE CHANGES_REQUESTED blocks and an AgentShore PASS cannot override it) is
+        -- enforced in pr_state.blocked_reasons, not here, so it is unaffected.
+        review_decision = excluded.review_decision,
         status_check_summary = COALESCE(
             excluded.status_check_summary,
             pull_requests.status_check_summary

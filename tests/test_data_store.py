@@ -1323,6 +1323,108 @@ async def test_pull_request_refresh_clears_phantom_merged_at(tmp_path) -> None:
         await store.close()
 
 
+@pytest.mark.asyncio
+async def test_pull_request_refresh_clears_dismissed_review_decision(tmp_path) -> None:
+    """blocky PR #517: a CHANGES_REQUESTED dismissed by a new commit makes GitHub
+    report an empty (None) reviewDecision. review_decision is taken authoritatively
+    from GitHub — NOT COALESCE-preserved — so the stale CHANGES_REQUESTED clears and
+    the PR can become merge-ready again. Previously COALESCE froze it forever, which
+    parked the merge-ready PR as manual-required."""
+    from agentshore.plays.candidates import pr_merge_ready
+
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        # First sync: GitHub reports CHANGES_REQUESTED at the original head.
+        await store.cache_pull_requests(
+            "s1",
+            [
+                PullRequestRecord(
+                    pr_number=517,
+                    session_id="s1",
+                    state="open",
+                    created_at="2026-06-13T00:45:00+00:00",
+                    base_ref="main",
+                    head_sha="f0ba516",
+                    mergeable="MERGEABLE",
+                    review_decision="CHANGES_REQUESTED",
+                )
+            ],
+        )
+
+        # A new commit lands; AgentShore records its PASS at the new head and the
+        # unblock skill dismisses the stale review. The next GitHub refresh reports
+        # an advanced head with an empty (None) reviewDecision.
+        await store.update_pr_last_reviewed_sha(517, "s1", "0ace3e6", status="PASS")
+        await store.cache_pull_requests(
+            "s1",
+            [
+                PullRequestRecord(
+                    pr_number=517,
+                    session_id="s1",
+                    state="open",
+                    created_at="2026-06-13T00:45:00+00:00",
+                    base_ref="main",
+                    head_sha="0ace3e6",
+                    mergeable="MERGEABLE",
+                    review_decision=None,
+                )
+            ],
+        )
+
+        async with store._conn.execute(
+            "SELECT review_decision FROM pull_requests WHERE pr_number = 517 AND session_id = 's1'",
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert row["review_decision"] is None
+
+        pr = await store.get_pull_request("s1", 517)
+        assert pr is not None
+        assert pr_merge_ready(pr, target_branch="main") is True
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_pull_request_refresh_keeps_live_changes_requested(tmp_path) -> None:
+    """Guard: an authoritative review_decision overwrite must still let a LIVE
+    CHANGES_REQUESTED from GitHub block — it is not dropped, so a freshly-blocked
+    PR is not merge-ready (the #344 guarantee, enforced together with blocked_reasons)."""
+    from agentshore.plays.candidates import pr_merge_ready
+
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        await store.cache_pull_requests(
+            "s1",
+            [
+                PullRequestRecord(
+                    pr_number=517,
+                    session_id="s1",
+                    state="open",
+                    created_at="2026-06-13T00:45:00+00:00",
+                    base_ref="main",
+                    head_sha="deadbee",
+                    mergeable="MERGEABLE",
+                    review_decision="CHANGES_REQUESTED",
+                )
+            ],
+        )
+        # PASS-at-head is present, so the ONLY thing keeping it un-mergeable is the
+        # live CHANGES_REQUESTED — which must not be dropped by the authoritative write.
+        await store.update_pr_last_reviewed_sha(517, "s1", "deadbee", status="PASS")
+
+        pr = await store.get_pull_request("s1", 517)
+        assert pr is not None
+        assert pr.review_decision == "CHANGES_REQUESTED"
+        assert pr_merge_ready(pr, target_branch="main") is False
+    finally:
+        await store.close()
+
+
 # ---------------------------------------------------------------------------
 # list_recently_closed_issues — Done column window
 # ---------------------------------------------------------------------------

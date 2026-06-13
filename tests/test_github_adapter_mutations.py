@@ -333,82 +333,22 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# merge_pr
+# merge_pr — DISABLED dead code (merges run only via merge_pr / unblock_pr plays)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_merge_pr_runs_gh_pr_merge_with_strategy_flag(tmp_path: Path) -> None:
-    """Default strategy is 'merge'; gh receives '--merge' and '--auto'."""
+async def test_merge_pr_is_disabled(tmp_path: Path) -> None:
+    """GitHubAdapter.merge_pr is hard-disabled: merges must run only through the
+    merge_pr / unblock_pr plays, never an orchestrator-side adapter call."""
     adapter, _ = _make_adapter(tmp_path)
 
-    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
-        run_gh.return_value = (0, "merged", "")
-        ok = await adapter.merge_pr(pr_number=42, idempotency_key="mp-1")
+    with (
+        patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh,
+        pytest.raises(NotImplementedError),
+    ):
+        await adapter.merge_pr(pr_number=42, idempotency_key="mp-1")
 
-    assert ok is True
-    rest = list(run_gh.call_args.args[0])
-    assert rest[0:3] == ["pr", "merge", "42"]
-    assert "--merge" in rest
-    assert "--auto" in rest
-
-
-@pytest.mark.asyncio
-async def test_merge_pr_supports_squash_strategy(tmp_path: Path) -> None:
-    adapter, _ = _make_adapter(tmp_path)
-
-    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
-        run_gh.return_value = (0, "merged", "")
-        ok = await adapter.merge_pr(pr_number=7, idempotency_key="mp-sq", strategy="squash")
-
-    assert ok is True
-    rest = list(run_gh.call_args.args[0])
-    assert "--squash" in rest
-    assert "--merge" not in rest
-
-
-@pytest.mark.asyncio
-async def test_merge_pr_returns_false_on_gh_failure(tmp_path: Path) -> None:
-    adapter, mock_store = _make_adapter(tmp_path)
-
-    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
-        run_gh.return_value = (1, "", "merge conflict")
-        ok = await adapter.merge_pr(pr_number=42, idempotency_key="mp-err")
-
-    assert ok is False
-    update_args = mock_store.update_external_mutation_status.call_args.args
-    assert update_args[2] == "error"
-    assert "merge conflict" in update_args[3]
-
-
-@pytest.mark.asyncio
-async def test_merge_pr_returns_false_when_unavailable(tmp_path: Path) -> None:
-    adapter, _ = _make_adapter(tmp_path)
-    adapter._available = False
-    ok = await adapter.merge_pr(pr_number=1, idempotency_key="mp-na")
-    assert ok is False
-
-
-@pytest.mark.asyncio
-async def test_merge_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
-    """A repeat merge_pr call with the same idempotency key must short-circuit
-    so we never double-issue the same merge."""
-    adapter, mock_store = _make_adapter(tmp_path)
-    mock_store.get_external_mutation = AsyncMock(
-        return_value=ExternalMutationRecord(
-            session_id="test-session",
-            idempotency_key="merge_pr:dup",
-            mutation_type="merge_pr",
-            target="42",
-            status="ok",
-            created_at="2024-01-01T00:00:00Z",
-        )
-    )
-
-    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
-        ok = await adapter.merge_pr(pr_number=42, idempotency_key="dup")
-
-    assert ok is True
     run_gh.assert_not_called()
 
 
