@@ -3,8 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROVISIONER = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore-provisioner.rs"
-PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore_provisioner/mod.rs"
+PROVISIONER = REPO_ROOT / "desktop/src-tauri/provisioner/src/main.rs"
+PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/provisioner/src/agentshore_provisioner.rs"
+
+# Windows build logic moved off the shell script onto the Python spine; the shim
+# only maps PowerShell params to the spine CLI, the native signing carve-out is
+# the .ps1 helper.
+WINDOWS_PY = REPO_ROOT / "scripts/buildkit/windows.py"
+WIN_SIGN_HELPER = REPO_ROOT / "scripts/buildkit/_win_signing.ps1"
+BUILD_WIN_SHIM = REPO_ROOT / "scripts/build-windows.ps1"
 
 
 def _provisioner_source() -> str:
@@ -68,74 +75,79 @@ def test_windows_inno_template_avoids_per_user_cleanup_warning() -> None:
     assert r'Type: filesandordirs; Name: "{commonappdata}\AgentShore\runtime"' in template
 
 
-def test_windows_build_script_stages_provisioner_uv_and_wheel() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+def test_windows_spine_stages_provisioner_uv_and_wheel() -> None:
+    spine = WINDOWS_PY.read_text()
 
-    assert "AGENTSHORE_SKIP_BD_SIDECAR" in script
-    assert "CARGO_HTTP_CHECK_REVOKE" in script
-    assert "tauri.windows-installer.conf.json" in script
-    assert '"cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"' in script
-    assert "Copy-Item -LiteralPath $ProvisionerExe" in script
-    assert "Copy-Item -LiteralPath $UvPath" in script
-    assert '"/DProvisionerFileName=agentshore-provisioner.exe"' in script
-    assert '"/DUvFileName=uv.exe"' in script
-    assert "agentshore-github-helper" not in script
-    assert "install-agentshore-venv.ps1" not in script
-    assert "install-agentshore-cli.ps1" not in script
-    assert "install-timelapse.ps1" not in script
-    assert "run-windows-installer-step.ps1" not in script
-    assert "Split-Path -Leaf $WheelPath" in script
-    assert "AgentShoreSetup-$Version-x64.exe" in script
+    assert "AGENTSHORE_SKIP_BD_SIDECAR" in spine
+    assert "CARGO_HTTP_CHECK_REVOKE" in spine
+    assert "tauri.windows-installer.conf.json" in spine
+    assert '"-p", "agentshore-provisioner", "--locked"' in spine
+    assert 'installer_stage / "agentshore-provisioner.exe"' in spine
+    assert 'installer_stage / "uv.exe"' in spine
+    assert "/DProvisionerFileName=agentshore-provisioner.exe" in spine
+    assert "/DUvFileName=uv.exe" in spine
+    assert "agentshore-github-helper" not in spine
+    assert "AgentShoreSetup-{version}-x64.exe" in spine
 
 
-def test_windows_build_script_pins_uv_for_installer_payload() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+def test_windows_shim_forwards_params_to_spine() -> None:
+    shim = BUILD_WIN_SHIM.read_text()
 
-    assert '$PinnedUvVersion = "uv 0.8.11"' in script
-    assert "function Resolve-Uv" in script
-    assert "function Assert-UvVersion" in script
-    assert ".StartsWith($PinnedUvVersion)" in script
-
-
-def test_windows_build_script_signs_provisioner_when_cert_exists() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
-
-    assert "Invoke-AuthenticodeSign -FilePath $AppExe" in script
-    assert "Invoke-AuthenticodeSign -FilePath $ProvisionerExe" in script
-    assert "Invoke-AuthenticodeSign -FilePath $SetupOut" in script
+    # Thin shim: maps the historical PowerShell params to the spine CLI flags.
+    assert "scripts.buildkit" in shim and "windows" in shim
+    assert '$cliArgs += "--no-sign"' in shim
+    assert '$cliArgs += "--self-sign"' in shim
+    assert '$cliArgs += "--debug"' in shim
+    assert "[switch]$NoSign" in shim
+    assert "[switch]$SelfSign" in shim
 
 
-def test_windows_build_script_can_create_local_self_signed_cert() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+def test_windows_spine_pins_uv_for_installer_payload() -> None:
+    spine = WINDOWS_PY.read_text()
 
-    assert "[switch]$SelfSign" in script
-    assert "[switch]$TrustSelfSignedCertificate" in script
-    assert "[switch]$SetupSelfSignedCertificateOnly" in script
-    assert "CN=AgentShore Local Dev Code Signing" in script
-    assert "function New-AgentShoreSelfSignedCodeSigningCertificate" in script
-    assert "New-SelfSignedCertificate" in script
-    assert "-Type CodeSigningCert" in script
-    assert "CurrentUser\\Root" in script
-    assert "Use either -SelfSign or -CertificateThumbprint, not both." in script
-    assert "-SetupSelfSignedCertificateOnly requires -SelfSign." in script
-    assert "Self-signed certificate setup complete" in script
+    assert 'PINNED_UV_VERSION = "uv 0.8.11"' in spine
+    assert "def resolve_uv" in spine
+    assert "startswith(PINNED_UV_VERSION)" in spine
+
+
+def test_windows_spine_signs_app_provisioner_and_setup() -> None:
+    spine = WINDOWS_PY.read_text()
+
+    assert "_sign_required_or_fail(app_exe" in spine
+    assert "_sign_required_or_fail(provisioner_exe" in spine
+    assert "_sign_file(setup_out" in spine
+
+
+def test_windows_signing_helper_can_create_local_self_signed_cert() -> None:
+    helper = WIN_SIGN_HELPER.read_text()
+    spine = WINDOWS_PY.read_text()
+
+    assert "[switch]$SelfSign" in helper
+    assert "[switch]$TrustSelfSignedCertificate" in helper
+    assert "CN=AgentShore Local Dev Code Signing" in helper
+    assert "New-SelfSignedCertificate" in helper
+    assert "-Type CodeSigningCert" in helper
+    assert "CurrentUser\\Root" in helper
+    assert "Self-signed certificate setup complete" in spine
+    assert "Use either --self-sign or --certificate-thumbprint, not both." in spine
+    assert "--setup-self-signed-certificate-only requires --self-sign." in spine
 
 
 def test_windows_release_build_requires_signing_unless_explicitly_disabled() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+    spine = WINDOWS_PY.read_text()
 
-    assert "Release Windows builds must be Authenticode-signed" in script
-    assert "or intentionally pass -NoSign for local-only testing" in script
-    assert "if (-not $DebugBuild)" in script
+    assert "Release Windows builds must be Authenticode-signed" in spine
+    assert "pass --no-sign for local testing" in spine
+    assert 'ctx.build_mode != "debug"' in spine
 
 
-def test_windows_build_script_removes_stale_setup_artifacts_before_tauri_build() -> None:
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+def test_windows_spine_removes_stale_setup_artifacts_before_tauri_build() -> None:
+    spine = WINDOWS_PY.read_text()
 
-    assert "function Clear-StaleSetupArtifacts" in script
-    assert '"AgentShoreSetup-*.exe"' in script
-    assert "Clear-StaleSetupArtifacts" in script
-    assert "Close any open installer windows or security scanner handles" in script
+    assert "def _clear_stale_setups" in spine
+    assert "AgentShoreSetup-*.exe" in spine
+    assert "_clear_stale_setups(ctx)" in spine
+    assert "security-scanner handles" in spine
 
 
 def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
@@ -168,11 +180,11 @@ def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
 
 def test_windows_installer_does_not_ship_github_helper() -> None:
     cargo = (REPO_ROOT / "desktop/src-tauri/Cargo.toml").read_text()
-    script = (REPO_ROOT / "scripts/build-windows.ps1").read_text()
+    spine = WINDOWS_PY.read_text()
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
     assert "agentshore-github-helper" not in cargo
-    assert "agentshore-github-helper" not in script
+    assert "agentshore-github-helper" not in spine
     assert "GitHubHelperFileName" not in template
     assert "octocrab" not in cargo
     assert "Win32_Security_Credentials" not in cargo
