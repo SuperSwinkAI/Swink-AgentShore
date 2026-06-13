@@ -697,23 +697,35 @@ class LoopRunner:
                 )
                 await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
                 return True
-            # Every action slot is masked AND the graph signal says no work. This
-            # is NOT a termination signal: bare-returning False here breaks
-            # run_until_idle WITHOUT setting _natural_exit_reason, stranding the
-            # loop at 0 CPU with no drain and no session.completed (the
-            # park-and-stop-polling wedge). A real end must route through
-            # initiate_autonomous_stop (the fleet-idle backstop above, or a
-            # PPO-selected END_SESSION once it unmasks). Until then, keep polling
-            # so the next state transition / the idle backstop can act.
-            _logger.warning(
-                "selector_idle_all_masked",
-                reason=reason,
-                session_id=self._session_id,
-                idle_streak=self._host._idle_streak,
-                top_mask_reasons=reason_counts,
-            )
-            await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
-            return True
+            # Every action slot is masked AND the graph signal says no work. What
+            # this means depends on the selector:
+            #
+            # * Live PPO — an all-masked idle tick is COMMON and transient: it
+            #   happens routinely while agents are mid-issue and work is
+            #   reconciling between refreshes. It is NOT a terminal signal and
+            #   must NOT end the session, or we would tear down live runs out from
+            #   under in-progress work. Keep polling; a live session only ever ends
+            #   from here via the fleet-idle backstop above (a clean drain after
+            #   the WHOLE fleet sits idle past the limit) or once PPO unmasks and
+            #   selects END_SESSION. (Bare-``return False`` here would also park:
+            #   it breaks run_until_idle without setting _natural_exit_reason, so
+            #   the sidecar supervisor returns without calling stop().)
+            #
+            # * Scripted/replay selector (FixedPlanSelector, test mocks) — a None
+            #   selection with an exhausted plan is definitively terminal: nothing
+            #   more will ever come, there is no fleet-idle backstop semantics, and
+            #   the harness owns teardown. Break the loop.
+            if isinstance(self._host._selector, _ppo_selector_cls()):
+                _logger.debug(
+                    "selector_idle_all_masked_keep_polling",
+                    reason=reason,
+                    session_id=self._session_id,
+                    idle_streak=self._host._idle_streak,
+                    top_mask_reasons=reason_counts,
+                )
+                await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
+                return True
+            return False
         wait_class = self.classify_selector_idle(state, reason_counts)
 
         log = (
