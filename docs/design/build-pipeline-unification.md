@@ -29,7 +29,8 @@ post-build verification gate that makes a "false green" impossible.
 scripts/
   build-macos.sh          # THIN shim (~25 lines): bootstrap uv, exec spine --target macos "$@"
   build-windows.ps1       # THIN shim (~30 lines): bootstrap uv, exec spine --target windows "$@"
-  build/                  # the cross-platform spine (uv run python -m scripts.build ...)
+  buildkit/               # the cross-platform spine (uv run python -m scripts.buildkit ...)
+                          # (named buildkit, not build/, which .gitignore swallows)
     __main__.py           # arg parse, target dispatch, top-level error/exit handling
     context.py            # BuildContext: paths, version, mode(release/debug), flags
     version.py            # single-source version resolve + drift check / --write
@@ -104,12 +105,14 @@ exactly the gate that would have caught #105. Required check.
 
 ### C. Version single source of truth + drift check
 - Canonical: `pyproject.toml [project].version`.
-- `scripts/build/version.py`:
+- `scripts/buildkit/version.py` (the 5 mirrors include the new provisioner crate manifest):
   - `read_canonical()` → the one true version.
-  - `check()` → assert the 4 mirrors equal it; raise `BuildError` with a `--write` hint on drift.
-  - `write()` → rewrite all mirrors from canonical (used when bumping, e.g. `uv run python -m scripts.build version --write`).
-- Spine runs `version.check()` immediately after `clean`; CI adds a `verify-versions` step
-  (`uv run python -m scripts.build version --check`) to `ci.yml`'s python job.
+  - `find_drift()` → list every mirror != canonical; the CLI exits 1 with a `--write` hint on drift.
+  - `write()` → rewrite all mirrors from canonical via targeted, formatting-preserving
+    line replacement (used when bumping, e.g. `uv run python -m scripts.buildkit version --write`).
+- Spine runs the check immediately after `clean`; CI adds a `verify-versions` step
+  (`uv run python -m scripts.buildkit version --check`) to `ci.yml`'s python job, and a
+  pytest guard (`tests/packaging/test_version_consistency.py`) enforces it on every run.
 - Replaces every brittle `grep '"version"' | sed` (`build-macos.sh:279`, `build-windows.ps1:355-359`).
 
 ### D. Post-build verification gate
@@ -143,7 +146,7 @@ This is what makes a false green impossible: a stale/extra/mis-versioned artifac
 |---------|-----|-------|-------|
 | PR / push | python, dashboard, desktop unit tests | ✅ | ✅ + `verify-versions` |
 | PR / push | **desktop crate compile (mac+win)** | ❌ | ✅ (fix A — catches #105-class) |
-| PR touching `desktop/`,`packaging/`,`scripts/build/` | unsigned packaging **smoke build** (spine end-to-end, no sign/notarize) | ❌ | ✅ (path-filtered) |
+| PR touching `desktop/`,`packaging/`,`scripts/buildkit/` | unsigned packaging **smoke build** (spine end-to-end, no sign/notarize) | ❌ | ✅ (path-filtered) |
 | `v*` tag | Windows installer | ✅ unsigned | ✅ via spine + verify gate |
 | `v*` tag | **macOS `.pkg`** (signed+notarized) | ❌ | ✅ via spine (needs signing secrets) |
 | `v*` tag | PyPI publish | ✅ | ✅ (unchanged) |
