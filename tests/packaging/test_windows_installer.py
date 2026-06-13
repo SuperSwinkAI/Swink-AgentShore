@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROVISIONER = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore-provisioner.rs"
-PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/src/bin/agentshore_provisioner/mod.rs"
+PROVISIONER = REPO_ROOT / "desktop/src-tauri/provisioner/src/main.rs"
+PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/provisioner/src/agentshore_provisioner.rs"
 
 
 def _provisioner_source() -> str:
@@ -74,7 +74,7 @@ def test_windows_build_script_stages_provisioner_uv_and_wheel() -> None:
     assert "AGENTSHORE_SKIP_BD_SIDECAR" in script
     assert "CARGO_HTTP_CHECK_REVOKE" in script
     assert "tauri.windows-installer.conf.json" in script
-    assert '"cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"' in script
+    assert '"cargo" "build" "--release" "-p" "agentshore-provisioner" "--locked"' in script
     assert "Copy-Item -LiteralPath $ProvisionerExe" in script
     assert "Copy-Item -LiteralPath $UvPath" in script
     assert '"/DProvisionerFileName=agentshore-provisioner.exe"' in script
