@@ -1,7 +1,13 @@
 # Build Pipeline Unification
 
-Status: **Proposed** · Owner: build/release · Supersedes the ad-hoc divergence between
-`scripts/build-macos.sh` and `scripts/build-windows.ps1`.
+Status: **Implemented** (branch `build-pipeline-unification`) · Owner: build/release ·
+Supersedes the ad-hoc divergence between `scripts/build-macos.sh` and `scripts/build-windows.ps1`.
+
+> Implementation note: the spine package shipped as `scripts/buildkit/` (not `build/`, which
+> `.gitignore` swallows) with **flat** modules — `macos.py`, `windows.py`, `phases.py`,
+> `verify.py`, `version.py`, `context.py`, `_proc.py`, plus the `_win_signing.ps1` carve-out —
+> rather than the `phases/` + `platforms/` subpackages originally sketched below. The behaviour
+> matches this design; only the file layout is flatter.
 
 ## Goal
 
@@ -153,16 +159,18 @@ This is what makes a false green impossible: a stale/extra/mis-versioned artifac
 
 ## Rollout (incremental, value-first — each step independently shippable)
 
-1. **CI desktop compile gate** (fix A). One file, biggest durability win, zero refactor risk.
-2. **Version single-source + drift check** (fix C) + `verify-versions` CI step.
-3. **Provisioner separate crate** (fix B); drop the `required-features` band-aid.
-4. **Stand up the Python spine skeleton** + port **macOS** onto it; `build-macos.sh` becomes a shim. Keep `build-windows.ps1` intact this step.
-5. **Verification gate** (fix D) wired into the macOS spine path.
-6. **Port Windows** onto the spine; `build-windows.ps1` becomes a shim; verify gate on Windows.
-7. **Toolchain pins** + **packaging smoke** CI job + bd-sidecar phase extraction.
+1. ✅ **CI desktop compile gate** (fix A) + toolchain pins (`99b1464`).
+2. ✅ **Version single-source + drift check** (fix C) + `verify-versions` CI step + pytest guard (`1b48e02`).
+3. ✅ **Provisioner separate crate** (fix B); dropped the `required-features` band-aid (`400a8d1`).
+4. ✅ **Python spine + macOS port**; `build-macos.sh` → shim. Validated by a real `--no-sign --no-pkg` build (`cb1df74`).
+5. ✅ **Verification gate** (fix D) wired into the macOS spine path (`a17e27c`, exercised in step 4).
+6. ✅ **Windows port** onto the spine; `build-windows.ps1` → shim; `_win_signing.ps1` carve-out (`8c1046e`).
+7. ◻️ **packaging smoke** — partial: a `windows-spine` CI job validates the Windows spine imports/parses
+   + `.ps1` syntax on `windows-latest` (the full signed Inno build stays tag-triggered). A macOS PR
+   packaging-smoke and the **bd-sidecar phase extraction from `build.rs`** remain optional follow-ups.
 
-Steps 1–3 are pure durability and land before any spine refactor, so the pipeline is safer
-even if 4–7 slip.
+Steps 1–3 (pure durability) landed before the spine refactor; all four selected durability fixes
+(A/B/C/D) plus the full macOS+Windows port are done. Step 7's remainder is optional polish.
 
 ## Risks / open questions
 
