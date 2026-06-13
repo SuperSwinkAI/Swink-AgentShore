@@ -3,7 +3,7 @@ name: agentshore-merge-pr
 description: "Action slot 6 — Merge PR. Verifies and merges; closes linked issues."
 argument-hint: [pr_number]
 disable-model-invocation: true
-allowed-tools: Bash(gh:*, git:*)
+allowed-tools: Read, Bash(gh:*, git:*)
 ---
 
 # agentshore-merge-pr
