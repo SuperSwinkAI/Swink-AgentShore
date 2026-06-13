@@ -141,13 +141,11 @@ jobs:
       - name: Packaging guards (version · verify · windows installer)
         run: uv run pytest tests/packaging/ -q --no-cov
 
-      - name: PowerShell parse (shim + signing helper)
+      - name: PowerShell parse (signing helper)
         shell: pwsh
         run: |
-          $files = "scripts/build-windows.ps1", "scripts/buildkit/_win_signing.ps1"
-          foreach ($f in $files) {
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors) | Out-Null
-            if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
-            Write-Host "OK: $f"
-          }
+          $f = "scripts/buildkit/_win_signing.ps1"
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host "OK: $f"

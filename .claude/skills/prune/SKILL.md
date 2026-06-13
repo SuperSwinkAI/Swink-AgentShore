@@ -160,7 +160,7 @@ rm -rf dashboard/dist/
 # Vite cache
 rm -rf dashboard/.vite/ dashboard/.cache/
 
-# Desktop build outputs — the signed .app/.dmg/.pkg (rebuilt by scripts/build-macos.sh)
+# Desktop build outputs — the signed .app/.dmg/.pkg (rebuilt by `python -m scripts.buildkit macos`)
 rm -rf desktop/dist/ desktop/src-tauri/target/release/bundle/
 ```
 

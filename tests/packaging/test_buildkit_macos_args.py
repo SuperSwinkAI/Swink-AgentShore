@@ -1,8 +1,8 @@
-"""Guard: the macOS spine CLI maps flags to BuildContext as the shim expects.
+"""Guard: the macOS build CLI maps flags to BuildContext correctly.
 
-The thin scripts/build-macos.sh forwards flags verbatim to
-`python -m scripts.buildkit macos`, so the flag -> context contract must hold.
-Loaded by file path to stay independent of scripts/ being importable.
+`python -m scripts.buildkit macos` is the build entrypoint, so the flag ->
+context contract must hold. Loaded by file path to stay independent of
+scripts/ being importable.
 """
 
 from __future__ import annotations

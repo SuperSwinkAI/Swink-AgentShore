@@ -1,8 +1,7 @@
 """Cross-platform build phases shared by the macOS and Windows pipelines.
 
-These are the phases that were duplicated (and drifted) between
-build-macos.sh and build-windows.ps1. Keeping them here is the point of the
-spine: one implementation, no drift.
+These are the phases that the macOS and Windows pipelines share. Keeping them
+here is the point of the spine: one implementation, no drift.
 """
 
 from __future__ import annotations

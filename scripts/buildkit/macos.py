@@ -1,9 +1,9 @@
-"""macOS desktop build pipeline (the spine behind scripts/build-macos.sh).
+"""macOS desktop build pipeline (`python -m scripts.buildkit macos`).
 
 Builds AgentShore's package layout (dashboard + sidecar + Tauri 2 shell), signs
 the .app and .pkg with any available Developer ID certs, verifies the artifact,
-and reveals the .pkg in Finder. Faithful port of the original bash script; the
-cross-platform phases live in phases.py, the artifact gate in verify.py.
+and reveals the .pkg in Finder. The cross-platform phases live in phases.py, the
+artifact gate in verify.py.
 """
 
 from __future__ import annotations

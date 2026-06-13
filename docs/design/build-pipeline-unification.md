@@ -6,8 +6,13 @@ Supersedes the ad-hoc divergence between `scripts/build-macos.sh` and `scripts/b
 > Implementation note: the spine package shipped as `scripts/buildkit/` (not `build/`, which
 > `.gitignore` swallows) with **flat** modules — `macos.py`, `windows.py`, `phases.py`,
 > `verify.py`, `version.py`, `context.py`, `_proc.py`, plus the `_win_signing.ps1` carve-out —
-> rather than the `phases/` + `platforms/` subpackages originally sketched below. The behaviour
-> matches this design; only the file layout is flatter.
+> rather than the `phases/` + `platforms/` subpackages originally sketched below.
+>
+> **The shell shims were removed entirely** (the design below describes an interim shim phase).
+> The build entrypoint is the Python spine directly, run from the repo root:
+> `uv run python -m scripts.buildkit <macos|windows|version|verify>`. The only remaining
+> PowerShell is `_win_signing.ps1`, a native cert/signtool helper invoked by `windows.py` —
+> not an entrypoint. CI (`installer-windows.yml`) and all docs call the spine module.
 
 ## Goal
 

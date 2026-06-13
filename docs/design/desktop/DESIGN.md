@@ -128,10 +128,11 @@ channel and are out of scope for the JSON-RPC control plane.
 
 ## 6. Packaging and distribution
 
-The single build entry point is `scripts/build-macos.sh` (macOS only). With no
-flags it builds, signs, and reveals the installer; flags exist to skip phases,
-install, or notarize. Output artifacts: a signed `.app`, a `.dmg`, and a
-distribution `.pkg`.
+The single macOS build entry point is `uv run python -m scripts.buildkit macos`
+(the cross-platform build spine in `scripts/buildkit/`, run from the repo root).
+With no flags it builds, signs, verifies, and reveals the installer; flags exist
+to skip phases, install, or notarize. Output artifacts: a signed `.app`, a
+`.dmg`, and a distribution `.pkg`.
 
 ### 6.1 Build pipeline
 
