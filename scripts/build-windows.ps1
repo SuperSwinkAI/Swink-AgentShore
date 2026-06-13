@@ -462,10 +462,12 @@ try {
         $PreviousCargoHttpCheckRevoke = [Environment]::GetEnvironmentVariable("CARGO_HTTP_CHECK_REVOKE", "Process")
         $env:CARGO_HTTP_CHECK_REVOKE = "false"
     }
+    # The provisioner [[bin]] is gated behind `required-features = ["provisioner"]`
+    # so macOS/Linux `tauri build` skips it; build it explicitly with the feature.
     if ($DebugBuild) {
-        Invoke-Checked "cargo" "build" "--bin" "agentshore-provisioner" "--locked"
+        Invoke-Checked "cargo" "build" "--bin" "agentshore-provisioner" "--features" "provisioner" "--locked"
     } else {
-        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-provisioner" "--locked"
+        Invoke-Checked "cargo" "build" "--release" "--bin" "agentshore-provisioner" "--features" "provisioner" "--locked"
     }
 } finally {
     Remove-Item Env:\AGENTSHORE_SKIP_BD_SIDECAR -ErrorAction SilentlyContinue
