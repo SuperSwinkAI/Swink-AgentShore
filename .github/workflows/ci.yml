@@ -77,3 +77,39 @@ jobs:
 
       - name: Test desktop
         run: npm --prefix desktop run test
+
+  desktop-compile:
+    name: Desktop crate (cargo check · ${{ matrix.os }})
+    # Compile gate for the Rust desktop workspace on both shipping targets. The
+    # macOS/Windows .app/.exe builds never run in PR CI, so without this a Rust
+    # regression in the desktop crate (e.g. a platform-gated function only
+    # defined on one OS) reaches a local/tag build undetected — which is exactly
+    # how the #105 provisioner compile error slipped through.
+    #
+    # `--no-default-features` drops Tauri's custom-protocol asset embedding (no
+    # app code is gated on it), so the whole workspace type-checks WITHOUT a
+    # built frontend, bd sidecar, or npm — keeping the gate to seconds. The
+    # TAURI_CONFIG override empties externalBin so build.rs/tauri_build doesn't
+    # require the (skipped) bd binary.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+
+      # Rust version is pinned by rust-toolchain.toml; @stable just ensures
+      # rustup is present and a baseline is installed.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Compile desktop workspace (app + provisioner)
+        working-directory: desktop/src-tauri
+        env:
+          AGENTSHORE_SKIP_BD_SIDECAR: "1"
+          TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+        run: cargo check --locked --workspace --no-default-features
