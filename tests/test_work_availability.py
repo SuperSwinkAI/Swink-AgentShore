@@ -227,10 +227,27 @@ def test_pr_queue_human_blocked_at_cap_minus_one() -> None:
 
 
 def test_pr_queue_not_human_blocked_below_threshold() -> None:
+    # Below the cap AND not every open PR is manual-required (one plain PR keeps
+    # the queue drainable), so neither hatch path fires — a pure cap-boundary check.
     prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(MAX_OPEN_PRS - 2)]
+    prs.append(_pr(900))
     summary = build_candidate_plan(
         _state(graph=_seeded_graph(), pull_requests=prs)
     ).work_availability
 
     assert summary.manual_required_open_pr_count == MAX_OPEN_PRS - 2
     assert summary.pr_queue_human_blocked is False
+
+
+def test_pr_queue_human_blocked_when_all_open_prs_manual_required_and_no_work() -> None:
+    # End-session-wedge fix: every open PR manual-required AND no other actionable
+    # work → the queue cannot drain without a human even well below the cap, so
+    # pr_queue_human_blocked is True (this is what lets END_SESSION unmask and the
+    # session end cleanly instead of parking).
+    prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(4)]
+    summary = build_candidate_plan(
+        _state(graph=_seeded_graph(), pull_requests=prs)
+    ).work_availability
+
+    assert summary.manual_required_open_pr_count == 4
+    assert summary.pr_queue_human_blocked is True

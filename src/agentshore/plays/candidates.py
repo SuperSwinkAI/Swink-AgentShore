@@ -59,9 +59,11 @@ _TRUNK_RESOURCE_KEY = "trunk:main_repo"
 # Backpressure: once the open-PR queue reaches this many PRs, ``issue_pickup`` is
 # masked so the policy clears review/merge work before opening more PRs. Shared
 # single source of truth — ``issue_pickup`` imports it for the mask, and
-# ``build_candidate_plan`` derives ``pr_queue_human_blocked`` from ``MAX_OPEN_PRS
-# - 1`` so the END_SESSION escape hatch stays coupled to the cap that creates the
-# jam (a queue of human-blocked PRs at/near the cap cannot make progress).
+# ``build_candidate_plan`` derives ``pr_queue_human_blocked`` partly from
+# ``MAX_OPEN_PRS - 1`` so the END_SESSION escape hatch stays coupled to the cap
+# that creates the jam (a queue of human-blocked PRs at/near the cap cannot make
+# progress); it also fires below the cap when every open PR is manual-required
+# and no other actionable work remains.
 MAX_OPEN_PRS = 10
 
 _SIZE_RANK: dict[str, int] = {
@@ -116,10 +118,12 @@ class WorkAvailability:
     unblockable_pr_count: int
     actionable_pr_work_count: int
     # Count of open PRs parked behind MANUAL_REQUIRED_LABEL (human intervention
-    # required). When this reaches MAX_OPEN_PRS - 1 the open-PR backpressure cap
-    # is effectively saturated with human-blocked PRs and no new issue work can
-    # produce a mergeable PR — pr_queue_human_blocked flags that wedge so the
-    # END_SESSION gate can offer a terminal play.
+    # required). pr_queue_human_blocked flags the wedge so the END_SESSION gate
+    # can offer a terminal play. It is True when this reaches MAX_OPEN_PRS - 1
+    # (the open-PR backpressure cap is saturated with human-blocked PRs so no new
+    # issue work can produce a mergeable PR) OR when *every* open PR is
+    # manual-required and no other actionable work remains (the queue cannot drain
+    # without a human even below the cap).
     manual_required_open_pr_count: int
     pr_queue_human_blocked: bool
     terminal_no_work: bool
@@ -789,12 +793,6 @@ class PlayCandidateAnalyzer:
         manual_required_open_pr_count = sum(
             1 for pr in self.open_prs if MANUAL_REQUIRED_LABEL in _labels(pr)
         )
-        # The open-PR cap blocks new issue_pickup; when (cap - 1) of those PRs are
-        # parked for a human, the queue cannot drain into mergeable work and the
-        # session is wedged on human action — surface that so END_SESSION becomes
-        # a valid terminal choice even while nominal issue/task work still looks
-        # plannable (#166).
-        pr_queue_human_blocked = manual_required_open_pr_count >= MAX_OPEN_PRS - 1
         has_actionable_work = (
             planning_count > 0
             or implementation_count > 0
@@ -803,6 +801,25 @@ class PlayCandidateAnalyzer:
             or bool(actionable_pr_numbers)
             or self.backlog_sync_work_count > 0
             or groom_needed
+        )
+        # The open-PR cap blocks new issue_pickup; when (cap - 1) of those PRs are
+        # parked for a human, the queue cannot drain into mergeable work and the
+        # session is wedged on human action — surface that so END_SESSION becomes
+        # a valid terminal choice even while nominal issue/task work still looks
+        # plannable (#166). Also fire when *every* open PR is manual-required AND
+        # there is no other actionable work: with no selectable PR work and the
+        # remaining graph "ready tasks" all covered by those parked PRs, the
+        # session is equally wedged on a human even below the cap. This is the
+        # end-session-wedge fix — 4-of-4 manual-required PRs with phantom ready
+        # tasks slipped under the cap-only threshold and stranded the loop with
+        # END_SESSION masked. The ``not has_actionable_work`` guard keeps the
+        # hatch closed while genuine issue/PR work still remains to do.
+        open_pr_count = len(self.open_prs)
+        all_open_prs_manual_required = (
+            open_pr_count > 0 and manual_required_open_pr_count == open_pr_count
+        )
+        pr_queue_human_blocked = manual_required_open_pr_count >= MAX_OPEN_PRS - 1 or (
+            all_open_prs_manual_required and not has_actionable_work
         )
         terminal_no_work = (
             self._graph_has_epics

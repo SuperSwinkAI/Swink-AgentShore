@@ -162,6 +162,23 @@ def _manual_required_pr(number: int) -> PullRequestSnapshot:
     )
 
 
+def _plain_open_pr(number: int) -> PullRequestSnapshot:
+    """An open PR with no manual-required label (keeps the queue drainable)."""
+    return PullRequestSnapshot(
+        pr_number=number,
+        title=f"PR {number}",
+        state="open",
+        branch=f"branch-{number}",
+        issue_number=None,
+        labels=[],
+        review_decision=None,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+    )
+
+
 def _graph_with_ready_tasks() -> MagicMock:
     from types import SimpleNamespace
 
@@ -175,17 +192,36 @@ def _graph_with_ready_tasks() -> MagicMock:
 
 
 def test_end_session_masked_with_ready_tasks_when_queue_not_human_blocked():
-    """Baseline for the escape hatch: ready beads tasks mask END_SESSION (point 6),
-    and 8 manual-required PRs (< MAX_OPEN_PRS - 1) do not lift it."""
+    """Baseline for the escape hatch: ready beads tasks mask END_SESSION (point 6)
+    while the PR queue is NOT human-blocked. 8 manual-required PRs (< MAX_OPEN_PRS
+    - 1) plus one plain open PR keep the queue drainable (not every open PR is
+    parked), so neither hatch path fires and the ready tasks keep END_SESSION
+    masked."""
     from agentshore.plays.candidates import MAX_OPEN_PRS
 
     prs = [_manual_required_pr(100 + i) for i in range(MAX_OPEN_PRS - 2)]
+    prs.append(_plain_open_pr(900))
     mask = compute_action_mask(
         _state(graph=_graph_with_ready_tasks(), pull_requests=prs),
         _registry_all_true(),
     )
 
     assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_end_session_unmasked_when_all_open_prs_manual_required_and_no_work():
+    """End-session-wedge fix: when *every* open PR is manual-required and there is
+    no other actionable work, the queue cannot drain without a human even below
+    the cap. pr_queue_human_blocked fires, so END_SESSION is no longer masked by
+    the phantom ``ready_task_count > 0`` signal (the exact state that stranded the
+    loop: 4-of-4 manual-required PRs + ready tasks all covered by them)."""
+    prs = [_manual_required_pr(100 + i) for i in range(4)]
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), pull_requests=prs),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
 def test_end_session_unmasked_when_pr_queue_human_blocked_despite_ready_tasks():
