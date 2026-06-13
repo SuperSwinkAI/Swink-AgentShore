@@ -11,6 +11,7 @@ import pytest_asyncio
 
 from agentshore import __version__
 from agentshore.archive import Archiver
+from agentshore.data.models import PlayRecord
 from agentshore.data.store import DataStore, SessionRecord
 
 
@@ -190,3 +191,56 @@ async def test_archive_nonexistent_session(setup: tuple) -> None:
     _store, archiver, db_path, _archive_dir = setup
     with pytest.raises(ValueError, match="Session not found"):
         await archiver.create_archive("nonexistent-session", db_path=db_path)
+
+
+@pytest.mark.asyncio
+async def test_complete_session_persists_play_totals(tmp_path: Path) -> None:
+    """complete_session must persist total_plays/total_cost derived from the
+    plays table, so a non-empty session no longer archives as $0.00 / 0 plays
+    (#170). Covers the session row, the archive record, and the manifest."""
+    db_path = tmp_path / ".agentshore" / "agentshore.db"
+    db_path.parent.mkdir(parents=True)
+    store = DataStore(db_path)
+    await store.initialize()
+    try:
+        session_id = "totals-session-12345678"
+        await store.create_session(
+            SessionRecord(
+                session_id=session_id,
+                project_path=str(tmp_path),
+                started_at=datetime.now(UTC).isoformat(),
+            )
+        )
+        # Two finalized plays with non-zero cost; one mid-session play with cost.
+        for cost in (1.25, 2.50, 0.75):
+            await store.record_play(
+                PlayRecord(
+                    session_id=session_id,
+                    play_type="cleanup",
+                    started_at=datetime.now(UTC).isoformat(),
+                    success=True,
+                    dollar_cost=cost,
+                )
+            )
+
+        await store.complete_session(session_id, final_alignment=0.5)
+
+        # (a) session row carries the real aggregate, not the 0/0.0 defaults.
+        session = await store.get_session(session_id)
+        assert session is not None
+        assert session.total_plays == 3
+        assert session.total_cost == pytest.approx(4.50)
+
+        # (b) archive record + (c) manifest reflect the persisted totals.
+        archiver = Archiver(store, tmp_path / ".agentshore" / "archives")
+        result = await archiver.create_archive(session_id, db_path=db_path)
+        manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["total_plays"] == 3
+        assert manifest["total_cost"] == pytest.approx(4.50)
+
+        archives = await archiver.list_archives()
+        rec = next(a for a in archives if a.session_id == session_id)
+        assert rec.total_plays == 3
+        assert rec.total_cost == pytest.approx(4.50)
+    finally:
+        await store.close()

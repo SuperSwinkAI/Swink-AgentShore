@@ -27,6 +27,9 @@ class _SessionsMixin:
         # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
         async def _insert(self, table: str, **cols: object) -> int: ...
 
+        # Provided by _PlaysMixin; resolved via the MRO at runtime.
+        async def session_play_totals(self, session_id: str) -> tuple[int, float]: ...
+
     async def create_session(self, session: SessionRecord) -> None:
         """Insert a new session row."""
         await self._insert(
@@ -85,16 +88,27 @@ class _SessionsMixin:
         await self._conn.commit()
 
     async def complete_session(self, session_id: str, final_alignment: float) -> None:
-        """Mark a session as completed."""
+        """Mark a session as completed and persist the finalized play aggregate.
+
+        ``total_plays``/``total_cost`` are derived from the ``plays`` table in
+        the same transaction, so a completed session no longer reports
+        ``0``/``0.0`` despite a fully-populated play history (#170). The
+        archiver and manifest read these columns straight off the row, so
+        deriving here keeps every ``sessions.total_*`` consumer correct rather
+        than only the report (which already recomputes from ``plays``).
+        """
+        total_plays, total_cost = await self.session_play_totals(session_id)
         await self._conn.execute(
             """
             UPDATE sessions
             SET status = 'completed',
                 ended_at = ?,
-                final_alignment = ?
+                final_alignment = ?,
+                total_plays = ?,
+                total_cost = ?
             WHERE session_id = ?
             """,
-            (now_iso(), final_alignment, session_id),
+            (now_iso(), final_alignment, total_plays, total_cost, session_id),
         )
         await self._conn.commit()
 

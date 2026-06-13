@@ -229,6 +229,29 @@ class _PlaysMixin:
             rows = await cursor.fetchall()
         return [(int(r[0]), str(r[1]), (str(r[2]) if r[2] is not None else None)) for r in rows]
 
+    async def session_play_totals(self, session_id: str) -> tuple[int, float]:
+        """Return ``(play_count, total_dollar_cost)`` aggregated over a session.
+
+        Single source for the session aggregate that ``complete_session``
+        persists back onto the ``sessions`` row (#170), so any consumer trusting
+        ``sessions.total_plays``/``total_cost`` (e.g. the archiver / manifest)
+        gets the real values instead of the ``0``/``0.0`` creation defaults.
+        ``SUM`` is ``COALESCE``-d so a session with no plays returns
+        ``(0, 0.0)`` rather than ``(0, None)``.
+        """
+        async with self._conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(dollar_cost), 0.0)
+              FROM plays
+             WHERE session_id = ?
+            """,
+            (session_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return (0, 0.0)
+        return (int(row[0]), float(row[1]))
+
     async def get_play_history(self, session_id: str) -> list[PlayRecord]:
         """Return all plays for a session, ordered by play_id."""
         async with self._conn.execute(
