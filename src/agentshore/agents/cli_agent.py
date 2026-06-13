@@ -812,7 +812,17 @@ async def dispatch_cli(
 
     t_start = time.monotonic()
 
-    env = {**os.environ, **identity_env} if identity_env else None
+    # Agent subprocesses run ``git rebase``/``git commit`` inside skills, and
+    # those invocations don't route through ``command.git_sync``'s hardened
+    # env. Inject a non-interactive git editor so a rebase-internal
+    # ``git commit -e`` can't fall back to vim and hang forever, leaking the
+    # worktree (#168). Always set it — even with no identity overlay, where the
+    # agent would otherwise inherit raw ``os.environ`` with no editor pinned.
+    git_editor_env = {
+        subprocess_env.GIT_EDITOR_ENV: "true",
+        subprocess_env.GIT_SEQUENCE_EDITOR_ENV: "true",
+    }
+    env = {**os.environ, **git_editor_env, **(identity_env or {})}
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.

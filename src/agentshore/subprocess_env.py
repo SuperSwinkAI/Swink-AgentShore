@@ -52,10 +52,14 @@ __all__ = [
     "kill_tree_sync",
     "GIT_SSL_BACKEND_ENV",
     "TOOL_TIMEOUT_SCALE_ENV",
+    "GIT_EDITOR_ENV",
+    "GIT_SEQUENCE_EDITOR_ENV",
 ]
 
 GIT_SSL_BACKEND_ENV = "AGENTSHORE_GIT_SSL_BACKEND"
 TOOL_TIMEOUT_SCALE_ENV = "AGENTSHORE_TOOL_TIMEOUT_SCALE"
+GIT_EDITOR_ENV = "GIT_EDITOR"
+GIT_SEQUENCE_EDITOR_ENV = "GIT_SEQUENCE_EDITOR"
 
 # Env override knobs so support/enterprise can pin a tool path without a rebuild.
 # bd is not here — use agentshore.beads.resolve_bd_binary (single owner).
@@ -243,6 +247,17 @@ def hardened_env(
         env["GCM_INTERACTIVE"] = "Never"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_OPTIONAL_LOCKS"] = "0"
+        # The git *editor* is a separate interactive surface from the
+        # credential prompt. Without these, a rebase-internal ``git commit -e``
+        # falls back to ``core.editor -> EDITOR -> vi`` (MSYS2 vim on Windows),
+        # which opens with no usable console on a detached subprocess and hangs
+        # at 0 CPU forever, pinning the worktree (#168). ``true`` is the no-op
+        # editor: git treats it as "succeed immediately without editing".
+        # ``GIT_EDITOR`` propagates from a parent ``git rebase`` into its
+        # internal ``git commit``. (Empty string is wrong here — git reads it
+        # as "fall back to the next editor".)
+        env[GIT_EDITOR_ENV] = "true"
+        env[GIT_SEQUENCE_EDITOR_ENV] = "true"
     if for_gh:
         env["GH_PROMPT_DISABLED"] = "1"
         env["GH_NO_UPDATE_NOTIFIER"] = "1"
