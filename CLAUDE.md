@@ -46,6 +46,10 @@ Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` 
 
 **Any "build" request always means running `scripts/build-macos.sh` with no flags — never just `uv build`.** The shipping artifact is the signed `.app` and `.dmg` produced by that script (dashboard + bd sidecar + Tauri shell + Python wheel, signed with Developer ID and optionally notarized). A bare `uv build` only emits the wheel/sdist and skips every other phase, so it does not constitute a real build. Always run the full build with no flags unless the user explicitly requests a subset; never substitute a different command.
 
+**Unified build spine.** `scripts/build-macos.sh` and `scripts/build-windows.ps1` are now **thin shims** over a cross-platform Python build spine in `scripts/buildkit/` (`python -m scripts.buildkit <macos|windows>`). The shims only bootstrap `uv` and forward flags verbatim, so the invocation contract above is unchanged — keep calling `scripts/build-macos.sh`, not the spine directly. The spine owns every phase (clean → dashboard → sidecar → wheel → tauri build → **verify gate** → pkg/Inno → sign → notarize → reveal); shared phases live once in `phases.py`, OS-native packaging in `macos.py`/`windows.py`, and the Windows cert/signtool carve-out in `_win_signing.ps1`. Every build ends with a verification gate (`verify.py`) asserting the `.app` payload contains exactly the expected binaries (no stray/stale ones), the embedded version matches source, and the signature verifies. See `docs/design/build-pipeline-unification.md`.
+
+**Version is single-sourced.** `pyproject.toml [project].version` is canonical; the Tauri config, both Cargo manifests, and both `package.json` files are mirrors. To bump the version, edit `pyproject.toml` then run `uv run python -m scripts.buildkit version --write` (CI + a pytest guard fail on drift). Never hand-edit the mirrors.
+
 ## Architecture
 
 The system runs as a single asyncio process. The core loop is: observe state → RL policy selects a play → execute play via agent → compute reward → update policy → repeat.
