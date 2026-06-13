@@ -34,7 +34,7 @@ pip install dist\agentshore-0.3.0-py3-none-any.whl
 
 The wheel is self-contained (schema, dashboard assets, and skill templates are bundled), so a plain `pip install` yields a fully working CLI — no extras required. Timelapse capture is an optional, separately-provisioned npm/ffmpeg toolchain and is **not** part of the CLI install. If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.
 
-The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `scripts/build-macos.sh`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `scripts\build-windows.ps1`, which produces a per-user Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices.
+The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `uv run python -m scripts.buildkit macos`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `uv run python -m scripts.buildkit windows`, which produces a machine-wide Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices. Both run from the repo root through the cross-platform build spine in `scripts/buildkit/`.
 
 ## Quick start
 

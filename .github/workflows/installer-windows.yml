@@ -39,9 +39,10 @@ jobs:
         run: choco install innosetup --yes --no-progress
 
       - name: Build Windows installer
-        # -NoSign: Authenticode cert not yet provisioned in CI; see TODO above.
+        # --no-sign: Authenticode cert not yet provisioned in CI; see TODO above.
+        # The build entrypoint is the Python spine (scripts/buildkit); run from repo root.
         shell: pwsh
-        run: scripts\build-windows.ps1 -NoSign
+        run: uv run python -m scripts.buildkit windows --no-sign
 
       - name: Upload Windows installer artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

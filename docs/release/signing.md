@@ -1,10 +1,11 @@
 # AgentShore Desktop - Code Signing & Installer Builds
 
 This document is the maintainer runbook for producing desktop release builds of
-AgentShore. macOS signing and notarization live in `scripts/build-macos.sh`.
-Windows has a machine-wide installer build script at `scripts/build-windows.ps1`
-with optional Authenticode signing when `signtool.exe` and a code-signing
-certificate are available. CI release automation is not wired yet.
+AgentShore. The build entrypoint is the Python spine in `scripts/buildkit/`,
+run from the repo root: `uv run python -m scripts.buildkit macos` (signing +
+notarization) and `uv run python -m scripts.buildkit windows` (machine-wide Inno
+Setup installer with optional Authenticode signing when `signtool.exe` and a
+code-signing certificate are available). CI release automation is not wired yet.
 
 It complements `docs/design/desktop/DESIGN.md` section 6.5, "Code signing &
 trust".
@@ -18,7 +19,7 @@ shipped inside the platform installer.
 The current shipping version is `0.2.1`
 (`desktop/src-tauri/tauri.conf.json` version).
 
-macOS `scripts/build-macos.sh` produces:
+macOS `uv run python -m scripts.buildkit macos` produces:
 
 | Stage | Tool / command | Notes |
 | --- | --- | --- |
@@ -30,12 +31,12 @@ macOS `scripts/build-macos.sh` produces:
 | Publish | Upload manually to GitHub Releases | `.app`, `.dmg`, `.pkg` |
 | Update manifest | `scripts/generate_update_manifest.py` to `latest.json` | Signed with the Tauri updater key |
 
-Windows `scripts\build-windows.ps1` produces:
+Windows `uv run python -m scripts.buildkit windows` produces:
 
 | Stage | Tool / command | Notes |
 | --- | --- | --- |
 | Build dashboard | `npm run build`, `npm run build:lib` | Same dashboard artifacts as macOS |
-| Build provisioner | `cargo build --bin agentshore-provisioner --locked` | Compiled Windows postinstall helper |
+| Build provisioner | `cargo build -p agentshore-provisioner --locked` | Standalone workspace crate; compiled Windows postinstall helper |
 | Stage uv | pinned `uv.exe` | Build fails unless `uv --version` starts with the pinned baseline |
 | Provision bd | provisioner | Windows provisions pinned `bd.exe` into `%ProgramData%\AgentShore\bin` |
 | Build wheel | `uv build --wheel` | Bundled into the installer |
@@ -44,7 +45,7 @@ Windows `scripts\build-windows.ps1` produces:
 | Build `.exe` wizard | Inno Setup 6 `ISCC.exe` | Emits `desktop\dist\AgentShoreSetup-<version>-x64.exe` |
 | Sign installer, optional | `signtool sign` | Same certificate and timestamp settings as the app executable |
 
-For local Windows installer testing, `scripts\build-windows.ps1 -SelfSign`
+For local Windows installer testing, `uv run python -m scripts.buildkit windows --self-sign`
 creates or reuses a current-user self-signed Authenticode code-signing
 certificate named `CN=AgentShore Local Dev Code Signing` and uses it for the
 app, provisioner, and setup executable. Add `-TrustSelfSignedCertificate` if the
@@ -145,32 +146,33 @@ path. The provisioner also installs the pinned desktop `bd.exe` under
 Install the Windows SDK first so `signtool.exe` is available. Then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
-  -SelfSign `
-  -TrustSelfSignedCertificate `
-  -SetupSelfSignedCertificateOnly
+uv run python -m scripts.buildkit windows `
+  --self-sign `
+  --trust-self-signed-certificate `
+  --setup-self-signed-certificate-only
 ```
 
 Build and sign with the local development certificate:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 `
-  -SelfSign `
-  -TrustSelfSignedCertificate
+uv run python -m scripts.buildkit windows `
+  --self-sign `
+  --trust-self-signed-certificate
 ```
 
-The script creates the certificate in `Cert:\CurrentUser\My` with a non-
+The build creates the certificate in `Cert:\CurrentUser\My` with a non-
 exportable private key, then signs the Tauri app, the provisioner, and the final
-Inno setup executable. With `-TrustSelfSignedCertificate`, it also adds the
+Inno setup executable. With `--trust-self-signed-certificate`, it also adds the
 certificate to `Cert:\CurrentUser\Root` so local verification succeeds. With
-`-SetupSelfSignedCertificateOnly`, it exits after certificate setup.
+`--setup-self-signed-certificate-only`, it exits after certificate setup. (These
+options are handled by the native signing carve-out `scripts/buildkit/_win_signing.ps1`.)
 
 To use a different local-dev subject:
 
 ```powershell
-.\scripts\build-windows.ps1 `
-  -SelfSign `
-  -SelfSignedCertificateSubject "CN=AgentShore Dev Build Signing"
+uv run python -m scripts.buildkit windows `
+  --self-sign `
+  --self-signed-subject "CN=AgentShore Dev Build Signing"
 ```
 
 To verify the resulting installer:
@@ -182,7 +184,7 @@ signtool verify /pa /all /v desktop\dist\AgentShoreSetup-0.2.1-x64.exe
 To remove the local trust entry later:
 
 ```powershell
-$thumbprint = "<thumbprint shown by build-windows.ps1>"
+$thumbprint = "<thumbprint shown during the build>"
 Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$thumbprint"
 ```
 

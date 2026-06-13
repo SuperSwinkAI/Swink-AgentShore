@@ -6,12 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONER = REPO_ROOT / "desktop/src-tauri/provisioner/src/main.rs"
 PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/provisioner/src/agentshore_provisioner.rs"
 
-# Windows build logic moved off the shell script onto the Python spine; the shim
-# only maps PowerShell params to the spine CLI, the native signing carve-out is
-# the .ps1 helper.
+# The Windows build is the Python spine (`python -m scripts.buildkit windows`);
+# the only PowerShell left is the native signing carve-out it shells out to.
 WINDOWS_PY = REPO_ROOT / "scripts/buildkit/windows.py"
 WIN_SIGN_HELPER = REPO_ROOT / "scripts/buildkit/_win_signing.ps1"
-BUILD_WIN_SHIM = REPO_ROOT / "scripts/build-windows.ps1"
 
 
 def _provisioner_source() -> str:
@@ -88,18 +86,6 @@ def test_windows_spine_stages_provisioner_uv_and_wheel() -> None:
     assert "/DUvFileName=uv.exe" in spine
     assert "agentshore-github-helper" not in spine
     assert "AgentShoreSetup-{version}-x64.exe" in spine
-
-
-def test_windows_shim_forwards_params_to_spine() -> None:
-    shim = BUILD_WIN_SHIM.read_text()
-
-    # Thin shim: maps the historical PowerShell params to the spine CLI flags.
-    assert "scripts.buildkit" in shim and "windows" in shim
-    assert '$cliArgs += "--no-sign"' in shim
-    assert '$cliArgs += "--self-sign"' in shim
-    assert '$cliArgs += "--debug"' in shim
-    assert "[switch]$NoSign" in shim
-    assert "[switch]$SelfSign" in shim
 
 
 def test_windows_spine_pins_uv_for_installer_payload() -> None:

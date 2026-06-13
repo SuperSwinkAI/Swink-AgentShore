@@ -50,8 +50,8 @@ the optional CLI component.
 
 ## macOS Installer
 
-`scripts/build-macos.sh` builds the dashboard, bd sidecar, Tauri app, Python
-wheel, Tauri `.app`, `.dmg`, and distribution `.pkg`.
+`uv run python -m scripts.buildkit macos` builds the dashboard, bd sidecar,
+Tauri app, Python wheel, Tauri `.app`, `.dmg`, and distribution `.pkg`.
 
 The `.pkg` has three user-visible choices in `Distribution.xml.in`:
 
@@ -66,10 +66,11 @@ wheel via `uv tool install`.
 
 ## Windows Installer
 
-`scripts/build-windows.ps1` builds the dashboard, Tauri frontend, Python wheel,
-Tauri executable, compiled Windows provisioner, regenerates `EULA.rtf`,
-optionally Authenticode-signs the app/provisioner/setup executables, and emits
-an Inno Setup wizard `.exe`.
+`uv run python -m scripts.buildkit windows` builds the dashboard, Tauri frontend,
+Python wheel, Tauri executable, compiled Windows provisioner, regenerates
+`EULA.rtf`, optionally Authenticode-signs the app/provisioner/setup executables
+(via the `scripts/buildkit/_win_signing.ps1` carve-out), and emits an Inno Setup
+wizard `.exe`.
 
 For local installer QA, pass `-SelfSign` to create or reuse a current-user
 self-signed code-signing certificate. Add `-TrustSelfSignedCertificate` when the

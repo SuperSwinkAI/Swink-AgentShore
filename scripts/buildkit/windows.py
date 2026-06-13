@@ -1,13 +1,13 @@
-"""Windows desktop build pipeline (the spine behind scripts/build-windows.ps1).
+"""Windows desktop build pipeline (`python -m scripts.buildkit windows`).
 
 Windows parity for the macOS pipeline: builds the Tauri exe + the standalone
 provisioner crate, signs them (Authenticode, via the _win_signing.ps1 carve-out),
 stages the installer payload, and compiles the Inno Setup machine-wide installer.
 The cross-platform phases (dashboard/frontend/wheel) come from phases.py.
 
-Faithful port of build-windows.ps1. It is only ever exercised on Windows; this
-module must still IMPORT on any OS (no Windows-only Python imports at top level)
-so the test suite and ruff can load it.
+It is only ever exercised on Windows; this module must still IMPORT on any OS
+(no Windows-only Python imports at top level) so the test suite and ruff can
+load it.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .context import BuildContext, default_context
 from .phases import build_dashboard, build_frontend, build_wheel
 from .version import read_canonical
 
-# Pin uv for reproducible installer provisioning (mirrors build-windows.ps1).
+# Pin uv for reproducible installer provisioning.
 PINNED_UV_VERSION = "uv 0.8.11"
 
 _SIGN_HELPER = Path(__file__).resolve().parent / "_win_signing.ps1"

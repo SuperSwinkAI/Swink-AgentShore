@@ -10,7 +10,7 @@
 #   3. Emits RTF with the ACKNOWLEDGMENT header bold at 16pt and body bold
 #      at 14pt; everything else is 12pt Helvetica.
 #
-# Runs from build-macos.sh; safe to run manually.
+# Runs from the macOS build (scripts/buildkit/macos.py); safe to run manually.
 
 set -euo pipefail
 

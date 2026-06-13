@@ -34,7 +34,7 @@
 .NOTES
     Compatible with Windows PowerShell 5.1 and PowerShell 7+. Pure-ASCII so it
     parses correctly regardless of file encoding/BOM.
-    Pinned uv version: 0.8.11 (matches build-windows.ps1:PinnedUvVersion).
+    Pinned uv version: 0.8.11 (matches scripts/buildkit/windows.py PINNED_UV_VERSION).
 #>
 [CmdletBinding()]
 param(
@@ -65,7 +65,7 @@ if ($cmd) {
 
 if (-not $uv) {
     Write-Step "uv not found -- bootstrapping via the official installer (0.8.11)"
-    # Pin to 0.8.11 to match build-windows.ps1:PinnedUvVersion for reproducible installs.
+    # Pin to 0.8.11 to match scripts/buildkit/windows.py PINNED_UV_VERSION for reproducible installs.
     $env:UV_VERSION = "0.8.11"
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     $candidate = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
