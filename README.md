@@ -38,7 +38,12 @@ The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is bui
 
 ## Quick start
 
-From the target project directory, run `agentshore init`, then `agentshore start`.
+Choose the path that matches how you want to run AgentShore:
+
+- CLI from a checkout or Python install: [`docs/getting-started-cli.md`](docs/getting-started-cli.md)
+- macOS desktop app or `.pkg` installer: [`docs/getting-started-desktop.md`](docs/getting-started-desktop.md)
+
+Both paths end in selecting a project, configuring agents and identities, and starting a supervised session.
 
 ## Requirements
 

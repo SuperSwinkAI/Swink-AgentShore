@@ -591,8 +591,11 @@ describe("EventDrawer", () => {
     );
   });
 
-  it("renders a capped failure detail only for failed events", async () => {
-    const longError = "x".repeat(160);
+  it("renders the full failure detail only for failed events", async () => {
+    const longError =
+      "agent f037fff7 exited with code 1: " +
+      "x".repeat(160) +
+      " FINAL EXIT DETAIL";
     const failed = {
       type: "play_event",
       status: "failed",
@@ -636,8 +639,9 @@ describe("EventDrawer", () => {
       errorMessage?.textContent?.replace(/^FAILED:\s*/, "") ?? "";
 
     expect(errorMessage).not.toBeNull();
-    expect(messageText).toHaveLength(140);
-    expect(messageText.endsWith("…")).toBe(true);
+    expect(messageText).toBe(longError);
+    expect(messageText).toContain("FINAL EXIT DETAIL");
+    expect(messageText.endsWith("…")).toBe(false);
     expect(completedCard?.querySelector(".event-error-message")).toBeNull();
   });
 

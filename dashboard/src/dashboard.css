@@ -434,14 +434,10 @@ body.dashboard-active .agentshore-dashboard-canvas {
   border-top: 1px solid rgba(208, 52, 87, 0.24);
   background: rgba(208, 52, 87, 0.1);
   color: var(--color-fm-hot);
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
   overflow-wrap: anywhere;
   padding: 5px 6px;
   line-height: 1.25;
-  max-height: calc(2.5em + 10px);
+  white-space: normal;
 }
 .event-error-label {
   color: var(--color-fm-hot);
