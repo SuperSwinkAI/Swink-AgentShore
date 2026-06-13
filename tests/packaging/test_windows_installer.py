@@ -111,7 +111,7 @@ def test_windows_build_script_can_create_local_self_signed_cert() -> None:
     assert "[switch]$SelfSign" in script
     assert "[switch]$TrustSelfSignedCertificate" in script
     assert "[switch]$SetupSelfSignedCertificateOnly" in script
-    assert 'CN=AgentShore Local Dev Code Signing' in script
+    assert "CN=AgentShore Local Dev Code Signing" in script
     assert "function New-AgentShoreSelfSignedCodeSigningCertificate" in script
     assert "New-SelfSignedCertificate" in script
     assert "-Type CodeSigningCert" in script

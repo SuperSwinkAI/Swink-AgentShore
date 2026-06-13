@@ -58,6 +58,17 @@ function v2SpriteSpec(key: string, url: string): AgentSpriteSpec {
   };
 }
 
+// The sprite key is the asset filename stem (e.g. ".../grok-small-ball.png" →
+// "grok-small-ball"). The filename carries the canonical key — both the label
+// form (claude_code → claude) and the per-tier shape suffix (small → ball,
+// medium/large → humanoid) — so it stays in lockstep with the PNG assets
+// without a separate mapping.
+function spriteKeyFromUrl(url: string, fallback: string): string {
+  const file = url.split(/[?#]/)[0].split("/").pop() ?? "";
+  const stem = file.replace(/\.[a-z0-9]+$/i, "");
+  return stem || fallback;
+}
+
 // Derived from the canonical AGENT_REGISTRY — sprite specs are built once from
 // the registry entries, so adding a new agent type only requires updating the
 // registry and supplying the PNG assets.
@@ -71,9 +82,9 @@ const V2_AGENT_SPRITE_SPECS: Partial<
       return [
         key,
         {
-          small: v2SpriteSpec(`${key}-small`, urls.small),
-          medium: v2SpriteSpec(`${key}-medium`, urls.medium),
-          large: v2SpriteSpec(`${key}-large`, urls.large),
+          small: v2SpriteSpec(spriteKeyFromUrl(urls.small, `${key}-small`), urls.small),
+          medium: v2SpriteSpec(spriteKeyFromUrl(urls.medium, `${key}-medium`), urls.medium),
+          large: v2SpriteSpec(spriteKeyFromUrl(urls.large, `${key}-large`), urls.large),
         } satisfies Record<AgentModelTier, AgentSpriteSpec>,
       ];
     }),

@@ -1037,8 +1037,7 @@ def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
     cooldown = raw.get("standard_cooldown_plays", STANDARD_PLAY_COOLDOWN_PLAYS)
     if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
         raise ConfigError(
-            "play_pacing.standard_cooldown_plays must be a non-negative integer, "
-            f"got {cooldown!r}"
+            f"play_pacing.standard_cooldown_plays must be a non-negative integer, got {cooldown!r}"
         )
     return PlayPacingConfig(standard_cooldown_plays=cooldown)
 

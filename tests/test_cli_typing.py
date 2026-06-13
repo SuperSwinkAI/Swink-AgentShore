@@ -94,8 +94,12 @@ class TestSshSigningSetupHint:
     def test_macos_hint_uses_apple_keychain(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "darwin"), patch(
-            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        with (
+            patch("sys.platform", "darwin"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
         ):
             hint = ssh_signing_setup_hint()
         assert "--apple-use-keychain" in hint
@@ -104,8 +108,12 @@ class TestSshSigningSetupHint:
     def test_windows_hint_starts_agent_service_not_apple(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "win32"), patch(
-            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
         ):
             hint = ssh_signing_setup_hint()
         assert "ssh-agent" in hint
@@ -114,8 +122,12 @@ class TestSshSigningSetupHint:
     def test_linux_hint_is_plain_ssh_add(self) -> None:
         from agentshore.core.git_safety import ssh_signing_setup_hint
 
-        with patch("sys.platform", "linux"), patch(
-            "agentshore.core.git_safety._resolve_signing_key", return_value="/home/user/.ssh/id_ed25519"
+        with (
+            patch("sys.platform", "linux"),
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="/home/user/.ssh/id_ed25519",
+            ),
         ):
             hint = ssh_signing_setup_hint()
         assert hint == "ssh-add /home/user/.ssh/id_ed25519"
@@ -224,6 +236,13 @@ class TestReportSshSigningStatus:
             patch("agentshore.core.git_safety.ssh_signing_enabled", return_value=True),
             patch.object(
                 helpers, "_check_ssh_signing_key_loaded", return_value=(False, "agent unreachable")
+            ),
+            # Stub the key probe so the faked-win32 hint doesn't run the real
+            # ``shutil.which`` (its win32 branch calls ``_winapi``, absent off
+            # Windows); the hint's platform-branching logic still runs for real.
+            patch(
+                "agentshore.core.git_safety._resolve_signing_key",
+                return_value="~/.ssh/id_ed25519",
             ),
             patch("sys.platform", "win32"),
         ):
