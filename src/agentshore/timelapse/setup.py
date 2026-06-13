@@ -37,8 +37,12 @@ _logger = structlog.get_logger(__name__)
 
 #: Pinned because the driver depends on indefinite capture and
 #: ``status.outputPath`` JSON compatibility. Bump only after doctor/status
-#: verification.
-_CLI_PACKAGE = "timelapse-capture@0.5.0"
+#: verification. Split into name/version so the installer can both pin the
+#: ``npm install`` spec and *verify* the resulting binary is exactly the pin
+#: (see ``_verify_pinned_version``).
+_CLI_NAME = "timelapse-capture"
+_CLI_VERSION = "0.5.0"
+_CLI_PACKAGE = f"{_CLI_NAME}@{_CLI_VERSION}"
 _MIN_NODE_MAJOR = 24
 _WINGET_NODE_ID = "OpenJS.NodeJS"
 _WINGET_FFMPEG_ID = "Gyan.FFmpeg"
@@ -331,6 +335,102 @@ async def _install_cli(cwd: Path) -> None:
         raise TimelapseError(f"`npm install -g timelapse-capture` failed: {result.stderr.strip()}")
 
 
+async def _verify_pinned_version(cwd: Path) -> None:
+    """Fail the install unless the resolved binary is exactly the pinned version.
+
+    ``npm install -g <pkg>@<version>`` lands the pin, but the *resolved* binary
+    on PATH can still be a different, older global that shadows ours (a
+    machine-wide install ahead of the user one, a stale winget shim, etc.). The
+    doctor check only proves the toolchain *works*, not that it is the version
+    the driver was written against — so we assert the version explicitly and
+    surface drift as an actionable failure rather than silently running an
+    unpinned CLI.
+    """
+    binary = resolve_timelapse_binary()
+    if binary is None:
+        raise TimelapseError("timelapse-capture not on PATH after install")
+    result = await _run([binary, "--version"], cwd=cwd, timeout=15.0)
+    installed = result.stdout.strip()
+    if result.returncode != 0 or installed != _CLI_VERSION:
+        raise TimelapseError(
+            f"timelapse-capture resolves to {installed or 'an unknown version'} but the "
+            f"pinned version is {_CLI_VERSION}; the install did not land the pin "
+            f"(another global may be shadowing it on PATH)"
+        )
+
+
+#: The daemon-spawn options block in the pinned CLI source. The package spawns
+#: its long-lived detached capture daemon with these exact options and *no*
+#: ``windowsHide`` — see ``_harden_windows_daemon_spawn``. Pinned text, so this
+#: literal is stable for the pinned version.
+_DAEMON_SPAWN_ANCHOR = '    stdio: "ignore",\n    env: process.env,\n'
+_DAEMON_SPAWN_PATCHED = _DAEMON_SPAWN_ANCHOR + "    windowsHide: true,\n"
+
+
+def _patch_text_for_windows_hide(source: str) -> str | None:
+    """Return *source* with ``windowsHide: true`` on the daemon spawn, or None.
+
+    None means "no change needed/possible": either the spawn is already hardened
+    (idempotent re-run) or the anchor is absent (an unexpected CLI layout — we
+    refuse to blind-patch rather than risk corrupting the file).
+    """
+    if _DAEMON_SPAWN_PATCHED in source:
+        return None
+    if _DAEMON_SPAWN_ANCHOR not in source:
+        return None
+    return source.replace(_DAEMON_SPAWN_ANCHOR, _DAEMON_SPAWN_PATCHED, 1)
+
+
+async def _resolve_installed_cli_source(cwd: Path) -> Path | None:
+    """Locate the installed CLI's main ``.mjs`` under the global npm root."""
+    try:
+        result = await _run(["npm", "root", "-g"], cwd=cwd, timeout=30.0)
+    except TimelapseError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    candidate = Path(result.stdout.strip()) / _CLI_NAME / "src" / "timelapse-capture.mjs"
+    return candidate if candidate.is_file() else None
+
+
+async def _harden_windows_daemon_spawn(cwd: Path) -> None:
+    """Patch the pinned CLI so its capture daemon spawns without a console (#158).
+
+    ``timelapse-capture start`` is a launcher: it spawns a long-lived *detached*
+    node capture daemon. On Windows, Node spawns a ``detached: true`` child via
+    ``DETACHED_PROCESS`` and — absent ``windowsHide: true`` — Windows hands that
+    console app a fresh, empty console window for the life of the session. The
+    daemon is a grandchild of AgentShore's own ``CREATE_NO_WINDOW`` spawn, and
+    that flag does not propagate across the detach, so we cannot suppress the
+    window from the parent side. Patch the pinned, installed source in place to
+    add ``windowsHide: true`` to the daemon spawn.
+
+    Best-effort and Windows-only: the empty window is cosmetic, so a missing
+    anchor or an unwritable global install must warn, never fail the install.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    cli_path = await _resolve_installed_cli_source(cwd)
+    if cli_path is None:
+        _logger.warning("timelapse_windows_hide_patch_skipped", reason="cli source not found")
+        return
+    try:
+        source = cli_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _logger.warning("timelapse_windows_hide_patch_skipped", reason=str(exc))
+        return
+    patched = _patch_text_for_windows_hide(source)
+    if patched is None:
+        _logger.info("timelapse_windows_hide_noop", path=str(cli_path))
+        return
+    try:
+        cli_path.write_text(patched, encoding="utf-8")
+    except OSError as exc:
+        _logger.warning("timelapse_windows_hide_patch_failed", reason=str(exc))
+        return
+    _logger.info("timelapse_windows_hide_patched", path=str(cli_path))
+
+
 async def _install_timelapse_steps(work_dir: Path) -> None:
     if sys.platform == "darwin":
         await _ensure_ffmpeg(work_dir)
@@ -343,6 +443,8 @@ async def _install_timelapse_steps(work_dir: Path) -> None:
 
     await _ensure_node(work_dir)
     await _install_cli(work_dir)
+    await _verify_pinned_version(work_dir)
+    await _harden_windows_daemon_spawn(work_dir)
     await _verify_doctor(work_dir)
 
 

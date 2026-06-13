@@ -30,7 +30,7 @@ async def test_install_cli_uses_pinned_npm_package(
     # The installer must pull a pinned npm-registry version, not the GitHub
     # ``releases/latest`` tarball (which lagged at the broken 0.3.0 that
     # erroneously required ``--duration``). 0.3.1+ restores indefinite mode;
-    # the pin tracks the deliberately-adopted CLI version (currently 0.4.0).
+    # the pin tracks the deliberately-adopted CLI version (currently 0.5.0).
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(setup.shutil, "which", lambda _name: "/usr/bin/npm")
@@ -73,6 +73,12 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     async def record_cli(cwd: object) -> None:
         calls.append("cli")
 
+    async def record_verify_version(cwd: object) -> None:
+        calls.append("verify_version")
+
+    async def record_harden(cwd: object) -> None:
+        calls.append("harden")
+
     async def record_doctor(cwd: object) -> None:
         calls.append("doctor")
 
@@ -80,12 +86,16 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     monkeypatch.setattr(setup, "_ensure_windows_ffmpeg", record_windows_ffmpeg)
     monkeypatch.setattr(setup, "_ensure_node", record_node)
     monkeypatch.setattr(setup, "_install_cli", record_cli)
+    monkeypatch.setattr(setup, "_verify_pinned_version", record_verify_version)
+    monkeypatch.setattr(setup, "_harden_windows_daemon_spawn", record_harden)
     monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
 
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
 
     assert result.success is True
-    assert calls == ["ffmpeg", "node", "cli", "doctor"]
+    # The pin must be verified before the toolchain doctor runs, and the
+    # Windows daemon-spawn hardening must run against the just-installed pin.
+    assert calls == ["ffmpeg", "node", "cli", "verify_version", "harden", "doctor"]
 
 
 async def test_ensure_windows_node_reports_missing_winget(
@@ -317,3 +327,122 @@ def test_refresh_windows_tool_paths_prefers_winget_node_over_program_files(
 
     entries = os.environ["PATH"].split(os.pathsep)
     assert entries.index(str(node_dir)) < entries.index(str(pf_node))
+
+
+# The exact daemon-spawn block from the pinned timelapse-capture@0.5.0 source.
+_DAEMON_SPAWN_SOURCE = (
+    "async function spawnDetachedCapture(runDir) {\n"
+    '  const command = [process.execPath, __filename, "capture", "--run", runDir];\n'
+    "  const child = spawn(command[0], command.slice(1), {\n"
+    "    detached: true,\n"
+    '    stdio: "ignore",\n'
+    "    env: process.env,\n"
+    "  });\n"
+    "  child.unref();\n"
+    "}\n"
+)
+
+
+def test_patch_text_for_windows_hide_adds_flag_to_daemon_spawn() -> None:
+    patched = setup._patch_text_for_windows_hide(_DAEMON_SPAWN_SOURCE)
+    assert patched is not None
+    assert "windowsHide: true," in patched
+    # The flag lands inside the spawn options block, right after env.
+    assert "env: process.env,\n    windowsHide: true,\n" in patched
+
+
+def test_patch_text_for_windows_hide_is_idempotent() -> None:
+    once = setup._patch_text_for_windows_hide(_DAEMON_SPAWN_SOURCE)
+    assert once is not None
+    # A second pass over already-patched source is a no-op, never a double flag.
+    assert setup._patch_text_for_windows_hide(once) is None
+    assert once.count("windowsHide: true,") == 1
+
+
+def test_patch_text_for_windows_hide_refuses_unknown_layout() -> None:
+    # An unexpected CLI layout (anchor absent) must not be blind-patched.
+    assert setup._patch_text_for_windows_hide("function spawn() { /* different */ }") is None
+
+
+async def test_harden_windows_daemon_spawn_noop_off_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "linux")
+
+    async def fail_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        raise AssertionError("must not touch the filesystem off Windows")
+
+    monkeypatch.setattr(setup, "_run", fail_run)
+    # Must return without resolving or patching anything.
+    await setup._harden_windows_daemon_spawn(tmp_path)
+
+
+async def test_harden_windows_daemon_spawn_patches_installed_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    npm_root = tmp_path / "node_modules"
+    cli_src = npm_root / setup._CLI_NAME / "src" / "timelapse-capture.mjs"
+    cli_src.parent.mkdir(parents=True)
+    cli_src.write_text(_DAEMON_SPAWN_SOURCE, encoding="utf-8")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        assert cmd == ["npm", "root", "-g"]
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout=f"{npm_root}\n", stderr="")
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    await setup._harden_windows_daemon_spawn(tmp_path)
+
+    patched = cli_src.read_text(encoding="utf-8")
+    assert "windowsHide: true," in patched
+    # Re-running is idempotent — no second flag.
+    await setup._harden_windows_daemon_spawn(tmp_path)
+    assert cli_src.read_text(encoding="utf-8").count("windowsHide: true,") == 1
+
+
+async def test_harden_windows_daemon_spawn_warns_when_source_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        # npm root points at an empty tree — no installed CLI source there.
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout=f"{tmp_path}\n", stderr="")
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+    # Best-effort: a missing source must not raise.
+    await setup._harden_windows_daemon_spawn(tmp_path)
+
+
+async def test_verify_pinned_version_accepts_matching_pin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: "/usr/bin/timelapse-capture")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        assert cmd == ["/usr/bin/timelapse-capture", "--version"]
+        return setup.CommandResult(
+            args=tuple(cmd), returncode=0, stdout=f"{setup._CLI_VERSION}\n", stderr=""
+        )
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+    # Must not raise when the resolved binary is exactly the pin.
+    await setup._verify_pinned_version(tmp_path)
+
+
+async def test_verify_pinned_version_rejects_shadowing_older_global(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: "/usr/bin/timelapse-capture")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout="0.4.0\n", stderr="")
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    with pytest.raises(setup.TimelapseError) as exc:
+        await setup._verify_pinned_version(tmp_path)
+
+    assert "0.4.0" in str(exc.value)
+    assert setup._CLI_VERSION in str(exc.value)
