@@ -8,19 +8,17 @@ edition = "2021"
 rust-version = "1.77"
 default-run = "agentshore-desktop"
 
+# The agentshore-provisioner binary is a SEPARATE workspace crate (./provisioner),
+# not a [[bin]] of this app crate. Tauri's bundler enumerates every [[bin]] in the
+# crate it builds and copies it into the .app; keeping the provisioner out of this
+# crate is what structurally prevents that helper from ever landing in the macOS
+# bundle. The Windows build compiles it via `cargo build -p agentshore-provisioner`.
+[workspace]
+members = ["provisioner"]
+
 [lib]
 name = "agentshore_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
-
-[[bin]]
-name = "agentshore-provisioner"
-path = "src/bin/agentshore-provisioner.rs"
-# Windows-only installer helper. Gated behind a feature so a default
-# `cargo build` / `tauri build` (macOS .app/.dmg, Linux) skips it entirely and
-# Tauri's bundler never tries to fold this standalone bin into the app bundle.
-# The Windows build (scripts/build-windows.ps1) builds it explicitly with
-# `--features provisioner` and ships it via the installer, not the app bundle.
-required-features = ["provisioner"]
 
 # Supply-chain hardening: all crates are pinned to exact versions with the
 # `=` operator (not caret ranges) and matched to Cargo.lock. Builds run with
@@ -62,5 +60,3 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Syst
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-# Opt-in build of the Windows installer helper bin (see [[bin]] above).
-provisioner = []

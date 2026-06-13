@@ -17,7 +17,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 // Shared install-layout constants (single source of truth for all path literals).
-#[path = "../../install_layout.rs"]
+// install_layout.rs lives in the app crate's src/ (the desktop app's sidecar code
+// also depends on it); the provisioner is a separate workspace crate, so it
+// textually includes the same file via #[path] rather than duplicating it. This
+// keeps one source of truth for every machine-path literal across both binaries.
+#[path = "../../src/install_layout.rs"]
 mod install_layout;
 
 #[cfg(windows)]

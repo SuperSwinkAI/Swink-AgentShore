@@ -1,0 +1,21 @@
+[package]
+name = "agentshore-provisioner"
+version = "0.3.1"
+description = "AgentShore Windows installer provisioner helper"
+authors = ["SuperSwink"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77"
+
+# Windows-only installer helper, but kept in the cross-platform workspace so the
+# CI compile gate exercises it on macOS/Linux too (the path wrappers in
+# agentshore_provisioner.rs carry #[cfg(not(windows))] stubs for that). Only the
+# Windows build (scripts/build-windows.ps1) actually ships the resulting binary.
+# It is its OWN crate — never a [[bin]] of agentshore-desktop — so Tauri's
+# bundler can never fold it into the macOS .app (see desktop crate Cargo.toml).
+# The default bin (src/main.rs) is named after the package: agentshore-provisioner.
+
+# Supply-chain hardening: exact `=` version pins matched to Cargo.lock, built
+# with `cargo build --locked`. Do not loosen to caret ranges.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
