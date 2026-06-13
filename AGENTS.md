@@ -42,6 +42,14 @@ Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` 
 - **Debug a flaky parallel-only failure**: `uv run pytest tests/path -p no:xdist` — forces serial execution while keeping coverage + timeout.
 - **Never tail-pipe a long-running pytest** (`| tail -N` buffers until EOF, so a healthy run looks hung). Use `-q --tb=line` for compact output, or redirect to a file.
 
+## Desktop Builds
+
+**A "build" always means `scripts/build-macos.sh` with no flags — never just `uv build`** (which only emits the wheel/sdist). That script produces the shipping artifact: the signed `.app`/`.dmg`/`.pkg` (dashboard + bd sidecar + Tauri shell + Python wheel).
+
+Both `scripts/build-macos.sh` and `scripts/build-windows.ps1` are **thin shims** over a cross-platform Python build spine in `scripts/buildkit/` (`python -m scripts.buildkit <macos|windows>`). The shims bootstrap `uv` and forward flags verbatim — keep invoking the shell scripts, not the spine directly. The spine owns every phase and ends with a **verification gate** (`verify.py`) that asserts the `.app` payload is exactly the expected binaries (no stray/stale ones), the embedded version matches source, and the signature verifies. Shared phases live in `phases.py`; OS-native packaging in `macos.py`/`windows.py`; the Windows cert/signtool carve-out in `_win_signing.ps1`. See `docs/design/build-pipeline-unification.md`.
+
+**Version is single-sourced** from `pyproject.toml [project].version`; the Tauri config, both Cargo manifests, and both `package.json` files are mirrors. Bump by editing `pyproject.toml` then `uv run python -m scripts.buildkit version --write` — CI and a pytest guard fail on drift. Never hand-edit the mirrors.
+
 ## Architecture
 
 The system runs as a single asyncio process. The core loop is: observe state → RL policy selects a play → execute play via agent → compute reward → update policy → repeat.
