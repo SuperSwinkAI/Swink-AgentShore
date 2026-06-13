@@ -165,11 +165,19 @@ class InstantiateAgentPlay:
                 f"model tier {target_model_tier!r} is not enabled for {agent_type.value}",
             )
 
-        live_agents = [a for a in state.agents if a.status.value not in ("error", "terminated")]
+        counted_agents = [a for a in state.agents if a.status != AgentStatus.TERMINATED]
+        if any(
+            a.agent_type == agent_type and a.current_play_type == PlayType.TAKE_BREAK
+            for a in counted_agents
+        ):
+            return PlayOutcome.failed(
+                self.play_type,
+                f"{agent_type.value} has an agent in take_break",
+            )
 
         config_count = sum(
             1
-            for a in live_agents
+            for a in counted_agents
             if a.agent_type == agent_type
             and (a.model_tier or DEFAULT_MODEL_TIER) == target_model_tier
         )
@@ -184,7 +192,7 @@ class InstantiateAgentPlay:
             a.status.value == "idle"
             and a.agent_type == agent_type
             and (a.model_tier or DEFAULT_MODEL_TIER) == target_model_tier
-            for a in live_agents
+            for a in counted_agents
         ):
             return PlayOutcome.failed(
                 self.play_type,

@@ -1132,15 +1132,12 @@ class LoopRunner:
             # reason set but should_stop False → pause; loop blocks at wait() next iteration
             return Pause(reason)
 
-        # PPO sees the full mask every tick — the eligibility mask
-        # (``compute_agent_eligibility_mask``) already zeros out worker
-        # plays when no IDLE agent matches, and ``compute_config_mask``
-        # still bounds INSTANTIATE_AGENT by the per-(type, tier) ``max``
-        # on each model tier config. Letting selection run
-        # even when the fleet
-        # is fully busy lets PPO grow the fleet under sustained pressure;
-        # if nothing is pickable, the ``selection is None`` path below
-        # falls through to ``_wait_for_in_flight`` as before.
+        # PPO sees the full mask every tick. The eligibility mask
+        # (``compute_agent_eligibility_mask``) zeros out worker plays when no
+        # IDLE agent matches, and ``compute_config_mask`` bounds
+        # INSTANTIATE_AGENT by the per-(type, tier) ``max`` on each model tier.
+        # If nothing is pickable, the ``selection is None`` path below falls
+        # through to ``_wait_for_in_flight`` as before.
         idle_agents = [a for a in state.agents if a.status == AgentStatus.IDLE]
 
         # Skip ``select_play`` (and its log line) when nothing the selector
@@ -1163,7 +1160,6 @@ class LoopRunner:
         self._host._last_selection_digest = digest
 
         override_play = await self._dispatcher.consume_override(state)
-        from_override = override_play is not None
 
         selection = await self._dispatcher.select_play(state, override_play=override_play)
         # Fold this cycle's EligibilityAuthority confirm-repicks into the rolling
@@ -1203,19 +1199,6 @@ class LoopRunner:
 
         play_type, params = selection
 
-        if (
-            not from_override
-            and play_type == PlayType.INSTANTIATE_AGENT
-            and not idle_agents
-            and self._host._in_flight
-        ):
-            _logger.info(
-                "ppo_instantiate_under_pressure",
-                session_id=self._session_id,
-                in_flight=len(self._host._in_flight),
-                live_agents=len(state.agents),
-                open_issues=len(state.open_issues),
-            )
         if (
             self._dispatcher.shutdown_allows_only_end_agent(state)
             and play_type != PlayType.END_AGENT

@@ -136,7 +136,13 @@ _RATE_LIMIT_PATTERNS = (
     "retry after",
     "throttl",
 )
-_RATE_LIMIT_STDOUT = ("rate limit", "rate_limit", "too many requests", "retry after")
+_RATE_LIMIT_STDOUT = (
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "retry after",
+    "hit your session limit",
+)
 _AUTH_PATTERNS = (
     "unauthorized",
     "401",
