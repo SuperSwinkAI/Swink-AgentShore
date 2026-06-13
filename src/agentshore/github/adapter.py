@@ -567,16 +567,16 @@ class GitHubAdapter:
         idempotency_key: str,
         strategy: str = "merge",
     ) -> bool:
-        if not self._available:
-            return False
-        pre_key = f"merge_pr:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return True
-        await self._record_mutation(pre_key, "merge_pr", str(pr_number), "pending")
-        flag = f"--{strategy}"
-        cmd = ["pr", "merge", str(pr_number), flag, "--auto"]
-        result = await self._run_mutation(pre_key, "merge_pr", str(pr_number), cmd)
-        return result is not None
+        # DISABLED — dead code. Merges must run ONLY through the merge_pr and
+        # unblock_pr plays (agent-driven `gh pr merge` via their skills), never
+        # through an orchestrator-side adapter call. This method has no callers;
+        # it is hard-disabled so it cannot be wired in by accident.
+        # TODO(cleanup): delete this method (and its now-unused helpers, if any)
+        #   once confirmed no out-of-tree caller depends on it.
+        raise NotImplementedError(
+            "GitHubAdapter.merge_pr is disabled: merges run only through the "
+            "merge_pr / unblock_pr plays, not the adapter."
+        )
 
     # -------------------------------------------------------------------------
     # Internal helpers

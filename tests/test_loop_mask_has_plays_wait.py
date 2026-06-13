@@ -50,6 +50,7 @@ class _StateStub:
     action_mask: tuple[bool, ...] = ()
     open_issues: tuple[Any, ...] = ()
     pull_requests: tuple[Any, ...] = ()
+    agents: tuple[Any, ...] = ()
 
 
 def _orch() -> Orchestrator:
@@ -61,6 +62,11 @@ def _orch() -> Orchestrator:
     orch._last_selection_digest = None
     orch._session_id = "sess-562"
     orch._registry = None
+    # Default to a non-PPO selector: the all-masked + no-work branch treats a
+    # scripted/mock selector's idle as terminal (break). Tests exercising the
+    # live-PPO keep-polling path swap this for a stub matched by a patched
+    # _ppo_selector_cls.
+    orch._selector = MagicMock()
     orch._cfg = _Cfg()  # type: ignore[assignment]
     orch._loop = LoopRunner(
         host=orch,
@@ -144,11 +150,21 @@ async def test_continue_when_mask_has_plays_even_if_graph_has_no_work(
 
 
 @pytest.mark.asyncio
-async def test_exit_when_mask_empty_and_graph_has_no_work(
+async def test_all_masked_live_ppo_keeps_polling(
     info_calls: MagicMock,
 ) -> None:
-    """Mask all-False AND graph empty → genuine exit (return False)."""
+    """All-masked + no graph work under the LIVE PPO selector → keep polling.
+
+    An all-masked idle tick is common and transient for a live session (agents
+    mid-issue, work reconciling between refreshes); it must NOT end the run. The
+    loop keeps polling (return True + sleep) — a live session only ends from here
+    via the fleet-idle backstop or once PPO unmasks and selects END_SESSION. It
+    must also NOT bare-``return False`` (which would park: break without
+    ``_natural_exit_reason`` → the sidecar supervisor never calls ``stop()``).
+    """
     orch = _orch()
+    stub_ppo = MagicMock()
+    orch._selector = stub_ppo
     state = _StateStub(action_mask=(False, False, False, False))
 
     with (
@@ -156,6 +172,69 @@ async def test_exit_when_mask_empty_and_graph_has_no_work(
             "agentshore.plays.candidates.build_candidate_plan",
             return_value=_candidate_plan_stub(has_remaining_work=False),
         ),
+        patch(
+            "agentshore.core.mixins.loop._ppo_selector_cls",
+            return_value=type(stub_ppo),
+        ),
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
+    ):
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+            state, reason="unchanged_digest"
+        )
+
+    assert result is True, "live PPO all-masked is transient — keep polling, never park"
+    sleep_mock.assert_awaited_once()
+    stop_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_all_masked_scripted_selector_breaks(
+    info_calls: MagicMock,
+) -> None:
+    """All-masked + no graph work under a scripted/mock (non-PPO) selector →
+    break the loop. An exhausted FixedPlanSelector / test mock will never produce
+    another play and there is no fleet-idle backstop semantics in replay, so the
+    loop must terminate (return False) and let the harness own teardown."""
+    orch = _orch()  # default _selector is a non-PPO MagicMock
+    state = _StateStub(action_mask=(False, False, False, False))
+
+    with (
+        patch(
+            "agentshore.plays.candidates.build_candidate_plan",
+            return_value=_candidate_plan_stub(has_remaining_work=False),
+        ),
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
+    ):
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+            state, reason="unchanged_digest"
+        )
+
+    assert result is False, "scripted selector exhaustion is terminal — break"
+    stop_mock.assert_not_awaited()
+    sleep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fleet_idle_past_limit_ends_session_via_drain() -> None:
+    """Whole fleet idle (no in-flight, no busy agents) past the limit → the loop
+    initiates a clean autonomous drain (fire_natural_exit) rather than polling
+    forever. This is the liveness backstop for the end-session wedge."""
+    import time as _time
+
+    from agentshore.core.mixins import loop as loop_mod
+
+    orch = _orch()
+    state = _StateStub(action_mask=(False, False, False, False), agents=())
+    orch._loop._fleet_idle_since = _time.monotonic() - (
+        loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
+    )
+
+    with (
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
         patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
     ):
         result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
@@ -163,6 +242,45 @@ async def test_exit_when_mask_empty_and_graph_has_no_work(
         )
 
     assert result is False
+    stop_mock.assert_awaited_once()
+    args, kwargs = stop_mock.call_args
+    assert args[0] == "fleet_idle_timeout"
+    assert kwargs.get("fire_natural_exit") is True
+
+
+@pytest.mark.asyncio
+async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock) -> None:
+    """A busy agent means the fleet is not idle — the end-session clock resets to
+    None and the drain never fires, even if the prior idle stretch was long."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from agentshore.core.mixins import loop as loop_mod
+    from agentshore.state import AgentStatus
+
+    orch = _orch()
+    busy = SimpleNamespace(status=AgentStatus.BUSY)
+    state = _StateStub(action_mask=(True, False), agents=(busy,))
+    orch._loop._fleet_idle_since = _time.monotonic() - (
+        loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
+    )
+
+    with (
+        patch(
+            "agentshore.plays.candidates.build_candidate_plan",
+            return_value=_candidate_plan_stub(has_remaining_work=False),
+        ),
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+            state, reason="unchanged_digest"
+        )
+
+    stop_mock.assert_not_awaited()
+    assert orch._loop._fleet_idle_since is None
+    assert result is True
 
 
 @pytest.mark.asyncio
