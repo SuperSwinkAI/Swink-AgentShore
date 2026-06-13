@@ -39,14 +39,18 @@ def build_frontend(ctx: BuildContext) -> None:
     run([_npm(), "run", "build:tauri-frontend"], cwd=ctx.desktop_dir)
 
 
-def build_wheel(ctx: BuildContext) -> None:
-    """Build the agentshore wheel shipped inside the installer; sets ctx.bundled_wheel."""
+def build_wheel(ctx: BuildContext, *, uv_global_args: tuple[str, ...] = ()) -> None:
+    """Build the agentshore wheel shipped inside the installer; sets ctx.bundled_wheel.
+
+    `uv_global_args` are passed before the `build` subcommand (Windows uses
+    ("--native-tls",) for corporate TLS interception).
+    """
     log("Building agentshore python wheel")
     uv = require_tool("uv", "install uv (https://docs.astral.sh/uv/) and retry")
     stage = ctx.tauri_dir / "target" / "agentshore-wheel"
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True, exist_ok=True)
-    run([uv, "build", "--wheel", "--out-dir", str(stage)], cwd=ctx.root)
+    run([uv, *uv_global_args, "build", "--wheel", "--out-dir", str(stage)], cwd=ctx.root)
     wheels = sorted(
         stage.glob("agentshore-*-py3-none-any.whl"), key=lambda p: p.stat().st_mtime
     )

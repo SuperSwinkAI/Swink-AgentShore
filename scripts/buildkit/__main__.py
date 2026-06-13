@@ -12,11 +12,13 @@ import sys
 from . import macos as macos_cmd
 from . import verify as verify_cmd
 from . import version as version_cmd
+from . import windows as windows_cmd
 
 _SUBCOMMANDS = {
     "version": version_cmd.main,
     "verify": verify_cmd.main,
     "macos": macos_cmd.main,
+    "windows": windows_cmd.main,
 }
 
 

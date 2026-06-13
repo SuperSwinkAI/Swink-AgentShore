@@ -113,3 +113,41 @@ jobs:
           AGENTSHORE_SKIP_BD_SIDECAR: "1"
           TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
         run: cargo check --locked --workspace --no-default-features
+
+  windows-spine:
+    name: Windows spine (import · parse · ps1 syntax)
+    # The Windows build pipeline (scripts/buildkit/windows.py + the .ps1 shim +
+    # _win_signing.ps1) can't be exercised from a macOS dev box, so validate on a
+    # real Windows runner the parts a full Inno build would otherwise be the first
+    # to catch: the Python spine imports + arg-parses on Windows, and both
+    # PowerShell files parse. The full signed installer build remains the
+    # tag-triggered installer-windows.yml job (now routed through this same spine).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --group dev --locked
+
+      - name: Spine imports + CLI parse on Windows
+        run: |
+          uv run python -m scripts.buildkit windows --help
+          uv run python -m scripts.buildkit version --check
+
+      - name: Packaging guards (version · verify · windows installer)
+        run: uv run pytest tests/packaging/ -q --no-cov
+
+      - name: PowerShell parse (shim + signing helper)
+        shell: pwsh
+        run: |
+          $files = "scripts/build-windows.ps1", "scripts/buildkit/_win_signing.ps1"
+          foreach ($f in $files) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+            Write-Host "OK: $f"
+          }
