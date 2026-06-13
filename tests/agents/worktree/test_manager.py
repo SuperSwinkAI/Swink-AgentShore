@@ -384,6 +384,80 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
     assert persisted.status == "stale"
 
 
+async def test_finalize_branch_creating_failure_removes_worktree(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A *failed* branch-creating play also removes its registered worktree.
+
+    Regression for #33: the decline path (success, no branch) and the failure
+    path (``play_outcome.success=False``) both fall through to
+    ``_best_effort_remove`` + mark-stale, so neither leaks a git-registered
+    ``pickup-<N>`` worktree. This pins the failure branch with its distinct
+    ``branch_creating_failed:`` stale reason.
+    """
+    import subprocess
+
+    from agentshore.agents.worktree import WorktreeAllocation
+    from agentshore.agents.worktree.registry import insert_worktree, lookup_by_id
+    from agentshore.state import PlayOutcome, SkillResult
+
+    src = worktree_root / "pickup-340"
+    subprocess.check_call(
+        ["git", "worktree", "add", "--detach", str(src), "HEAD"],
+        cwd=str(main_repo),
+    )
+    row = await insert_worktree(
+        store,
+        session_id="sess-1",
+        branch_name=None,
+        pre_branch_key="pickup-340",
+        worktree_path=str(src),
+        original_play_type="issue_pickup",
+        base_ref="origin/HEAD",
+        head_sha=None,
+    )
+
+    wm = _make_manager(store, main_repo, worktree_root)
+    alloc = WorktreeAllocation(
+        worktree_id=row.worktree_id,
+        path=src,
+        branch_name=None,
+        pre_branch_key="pickup-340",
+        play_type=PlayType.ISSUE_PICKUP,
+        scope="branch_creating",
+    )
+    # Failure: the play errored before producing a branch.
+    skill_result = SkillResult(success=False, branch=None)
+    outcome = PlayOutcome(
+        play_type=PlayType.ISSUE_PICKUP,
+        agent_id=None,
+        success=False,
+        partial=False,
+        duration_seconds=0.0,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+        error="dispatch failed",
+    )
+
+    returned_branch = await wm.finalize_after_dispatch(
+        alloc, result=skill_result, play_outcome=outcome
+    )
+
+    assert returned_branch is None
+    listing_after = subprocess.check_output(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
+    )
+    assert str(src) not in listing_after
+    assert not src.exists()
+    persisted = await lookup_by_id(store, worktree_id=row.worktree_id)
+    assert persisted is not None
+    assert persisted.status == "stale"
+    assert persisted.failure_reason is not None
+    assert persisted.failure_reason.startswith("branch_creating_failed")
+
+
 async def test_finalize_pr_scoped_returns_none(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
