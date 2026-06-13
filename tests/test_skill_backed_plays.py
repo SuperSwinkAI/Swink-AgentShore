@@ -254,6 +254,159 @@ async def test_unblock_pr_attempt_counts_as_pass_review() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_unblock_pr_reconciles_merged_blocker() -> None:
+    """A `pr_merged` artifact (stacked blocker merged in place) is reconciled
+    into the local cache, and the target's own unblock still records a PASS."""
+    from unittest.mock import patch
+
+    from agentshore.plays.skill_backed.base import SkillBackedPlay
+    from agentshore.state import PlayOutcome
+
+    skill_outcome = PlayOutcome(
+        play_type=PlayType.UNBLOCK_PR,
+        agent_id="a1",
+        success=True,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=10,
+        dollar_cost=0.01,
+        artifacts=[
+            {"type": "pr_merged", "pr": 99, "head_sha": "blk999"},
+            {"type": "pr_unblock_attempt", "number": 40, "head_sha": "tgt040"},
+        ],
+        alignment_delta=0.0,
+    )
+
+    play = UnblockPrPlay()
+    ctx = _ctx()
+    ctx.store.update_pr_last_reviewed_sha = AsyncMock()
+    with (
+        patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)),
+        patch(
+            "agentshore.plays.skill_backed.unblock_pr.reconcile_merged_pr",
+            AsyncMock(return_value=[]),
+        ) as reconcile,
+    ):
+        outcome = await play.execute(_state(), PlayParams(pr_number=40), ctx=ctx)
+
+    assert outcome.success is True
+    reconcile.assert_awaited_once()
+    assert reconcile.await_args.args[0] == 99
+    # Only the target (pr_unblock_attempt) flows through the review loop; the
+    # merged blocker is handled by reconciliation, not review.
+    ctx.store.update_pr_last_reviewed_sha.assert_awaited_once_with(
+        40, "sess", "tgt040", status="PASS"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unblock_pr_reconciles_merged_blocker_on_failure() -> None:
+    """Partial success: the blocker merged but the target still has its own
+    blocker. The merged sibling must still be reconciled (runs before the
+    success early-return)."""
+    from unittest.mock import patch
+
+    from agentshore.plays.skill_backed.base import SkillBackedPlay
+    from agentshore.state import PlayOutcome
+
+    skill_outcome = PlayOutcome(
+        play_type=PlayType.UNBLOCK_PR,
+        agent_id="a1",
+        success=False,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=10,
+        dollar_cost=0.01,
+        artifacts=[{"type": "pr_merged", "pr": 99, "head_sha": "blk999"}],
+        alignment_delta=0.0,
+        error="merge_conflicts",
+    )
+
+    play = UnblockPrPlay()
+    ctx = _ctx()
+    with (
+        patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)),
+        patch(
+            "agentshore.plays.skill_backed.unblock_pr.reconcile_merged_pr",
+            AsyncMock(return_value=[]),
+        ) as reconcile,
+    ):
+        outcome = await play.execute(_state(), PlayParams(pr_number=40), ctx=ctx)
+
+    assert outcome.success is False
+    reconcile.assert_awaited_once()
+    assert reconcile.await_args.args[0] == 99
+
+
+@pytest.mark.asyncio
+async def test_unblock_pr_no_reconcile_without_pr_merged() -> None:
+    """No `pr_merged` artifact → reconciliation is never invoked."""
+    from unittest.mock import patch
+
+    from agentshore.plays.skill_backed.base import SkillBackedPlay
+    from agentshore.state import PlayOutcome
+
+    skill_outcome = PlayOutcome(
+        play_type=PlayType.UNBLOCK_PR,
+        agent_id="a1",
+        success=True,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=10,
+        dollar_cost=0.01,
+        artifacts=[{"type": "pr_unblock_attempt", "number": 40, "head_sha": "tgt040"}],
+        alignment_delta=0.0,
+    )
+
+    play = UnblockPrPlay()
+    ctx = _ctx()
+    ctx.store.update_pr_last_reviewed_sha = AsyncMock()
+    with (
+        patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)),
+        patch(
+            "agentshore.plays.skill_backed.unblock_pr.reconcile_merged_pr",
+            AsyncMock(return_value=[]),
+        ) as reconcile,
+    ):
+        await play.execute(_state(), PlayParams(pr_number=40), ctx=ctx)
+
+    reconcile.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_merged_pr_marks_completes_and_closes() -> None:
+    """The shared helper marks the PR merged, completes its reviews, and closes
+    its linked issues — mirroring merge_pr's post-merge propagation."""
+    from unittest.mock import patch
+
+    from agentshore.plays.skill_backed import _merge_reconcile
+
+    ctx = _ctx()
+    ctx.store.mark_pr_merged = AsyncMock()
+    ctx.store.complete_reviews_for_pr = AsyncMock()
+    ctx.store.update_issues_state_batch = AsyncMock()
+    ctx.cfg.project.target_branch = "integration"
+    state = _state()  # graph defaults to None → beads loop is a no-op
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed._merge_reconcile._fetch_pr_links",
+            AsyncMock(return_value=(7,)),
+        ),
+        patch(
+            "agentshore.plays.skill_backed._merge_reconcile.fast_forward_local_branch",
+            AsyncMock(),
+        ),
+    ):
+        result = await _merge_reconcile.reconcile_merged_pr(99, ctx=ctx, state=state)
+
+    ctx.store.mark_pr_merged.assert_awaited_once_with(99, "sess")
+    ctx.store.complete_reviews_for_pr.assert_awaited_once_with("sess", 99)
+    ctx.store.update_issues_state_batch.assert_awaited_once_with([7], "sess", "closed")
+    assert result == [7]
+
+
 def test_write_plan_precondition_requires_open_issue() -> None:
     assert WriteImplementationPlanPlay().preconditions(_state(issues=[])) != []
 
