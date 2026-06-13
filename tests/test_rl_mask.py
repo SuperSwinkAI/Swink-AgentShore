@@ -621,6 +621,7 @@ def _agent_snapshot(
     model_tier: str = "medium",
     github_identity: str | None = None,
     status=None,
+    current_play_type: PlayType | None = None,
 ):
     from agentshore.state import AgentSnapshot, AgentStatus
 
@@ -635,6 +636,7 @@ def _agent_snapshot(
         tasks_failed=0,
         model_tier=model_tier,
         github_identity=github_identity,
+        current_play_type=current_play_type,
     )
 
 
@@ -1359,7 +1361,7 @@ def test_compute_config_mask_per_type_cap_blocks_fully_saturated_cells():
     assert not mask.any()
 
 
-def test_compute_config_mask_rate_limit_error_blocks_repsawn():
+def test_compute_config_mask_rate_limit_error_blocks_respawn():
     """A rate_limit ERROR agent counts toward per-config cap to prevent re-spawn loops."""
     from agentshore.rl.mask import compute_config_mask
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
@@ -1383,8 +1385,8 @@ def test_compute_config_mask_rate_limit_error_blocks_repsawn():
     assert mask[1]  # claude_code unaffected
 
 
-def test_compute_config_mask_non_rate_limit_error_does_not_block():
-    """Non-rate_limit ERROR agents do NOT count toward per-config cap."""
+def test_compute_config_mask_non_rate_limit_error_counts_toward_cap():
+    """Any non-terminated ERROR agent occupies its per-config slot."""
     from agentshore.rl.mask import compute_config_mask
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
@@ -1403,7 +1405,52 @@ def test_compute_config_mask_non_rate_limit_error_does_not_block():
     )
     state = _state(agents=[unknown_error])
     mask = compute_config_mask(state, cfg, (("claude_code", "medium"),))
-    assert mask[0]  # non-rate_limit error slot stays open
+    assert not mask[0]
+
+
+def test_compute_config_mask_terminated_agent_frees_slot():
+    from agentshore.rl.mask import compute_config_mask
+    from agentshore.state import AgentSnapshot, AgentStatus, AgentType
+
+    cfg = _make_cfg(max_per_config=1, enabled=("claude_code",))
+    terminated = AgentSnapshot(
+        agent_id="cc-1",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.TERMINATED,
+        last_error_class=ErrorClass.UNKNOWN,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=1,
+        model_tier="medium",
+    )
+    state = _state(agents=[terminated])
+    mask = compute_config_mask(state, cfg, (("claude_code", "medium"),))
+    assert mask[0]
+
+
+def test_compute_config_mask_provider_in_take_break_blocks_only_that_provider():
+    from agentshore.rl.mask import compute_config_mask
+    from agentshore.state import AgentStatus, AgentType
+
+    cfg = _make_cfg(max_per_config=3, enabled=("claude_code", "codex"))
+    state = _state(
+        agents=[
+            _agent_snapshot(
+                "cooling-claude",
+                AgentType.CLAUDE_CODE,
+                "large",
+                status=AgentStatus.ERROR,
+                current_play_type=PlayType.TAKE_BREAK,
+            )
+        ]
+    )
+
+    mask = compute_config_mask(state, cfg, (("claude_code", "medium"), ("codex", "medium")))
+
+    assert not mask[0]
+    assert mask[1]
 
 
 def test_compute_config_mask_invalid_model_blocks_same_config():

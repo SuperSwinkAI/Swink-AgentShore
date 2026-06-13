@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, ModelTierConfig, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
+from agentshore.errors import ErrorClass
 from agentshore.plays.executor import PlayExecutor
 from agentshore.plays.internal.instantiate_agent import InstantiateAgentPlay
 from agentshore.plays.registry import PlayRegistry
@@ -193,6 +194,97 @@ async def test_instantiate_blocks_when_per_config_cap_reached() -> None:
 
     assert outcome.success is False
     assert "per-tier max" in (outcome.error or "")
+    ctx.manager.instantiate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_instantiate_blocks_when_error_agent_occupies_per_config_cap() -> None:
+    from agentshore.plays.base import PlayParams
+    from agentshore.state import AgentSnapshot
+
+    play = InstantiateAgentPlay()
+    state = _make_state(
+        agent_snapshots=[
+            AgentSnapshot(
+                agent_id="a0",
+                agent_type=AgentType.CLAUDE_CODE,
+                status=AgentStatus.ERROR,
+                last_error_class=ErrorClass.UNKNOWN,
+                context_size=0,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=1,
+                model_tier="medium",
+            )
+        ],
+    )
+
+    ctx = MagicMock()
+    ctx.cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="sonnet", enabled=True, max=1)},
+            )
+        }
+    )
+    ctx.manager.instantiate = AsyncMock()
+
+    outcome = await play.execute(
+        state,
+        PlayParams(target_agent_type="claude_code", target_model_tier="medium"),
+        ctx=ctx,
+    )
+
+    assert outcome.success is False
+    assert "per-tier max" in (outcome.error or "")
+    ctx.manager.instantiate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_instantiate_blocks_when_provider_has_agent_in_take_break() -> None:
+    from agentshore.plays.base import PlayParams
+    from agentshore.state import AgentSnapshot
+
+    play = InstantiateAgentPlay()
+    state = _make_state(
+        agent_snapshots=[
+            AgentSnapshot(
+                agent_id="a0",
+                agent_type=AgentType.CLAUDE_CODE,
+                status=AgentStatus.ERROR,
+                current_play_type=PlayType.TAKE_BREAK,
+                last_error_class=ErrorClass.RATE_LIMIT,
+                context_size=0,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=1,
+                model_tier="large",
+            )
+        ],
+    )
+
+    ctx = MagicMock()
+    ctx.cfg = RuntimeConfig(
+        agents={
+            "claude_code": AgentConfig(
+                enabled=True,
+                model_tiers={"medium": ModelTierConfig(model="sonnet", enabled=True, max=3)},
+            )
+        }
+    )
+    ctx.manager.instantiate = AsyncMock()
+
+    outcome = await play.execute(
+        state,
+        PlayParams(target_agent_type="claude_code", target_model_tier="medium"),
+        ctx=ctx,
+    )
+
+    assert outcome.success is False
+    assert "take_break" in (outcome.error or "")
     ctx.manager.instantiate.assert_not_called()
 
 

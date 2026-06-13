@@ -1476,6 +1476,17 @@ def test_classify_error_rate_limit_from_stdout() -> None:
     assert _classify_error(1, "", "some output\nrate limit exceeded\n") == "rate_limit"
 
 
+def test_classify_error_claude_session_limit_from_stdout() -> None:
+    assert (
+        _classify_error(
+            1,
+            "",
+            "You've hit your session limit · resets 6:20am (America/Chicago)",
+        )
+        is ErrorClass.RATE_LIMIT
+    )
+
+
 def test_classify_error_auth() -> None:
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
 
