@@ -1,0 +1,8 @@
+# Pin the Rust toolchain for reproducible desktop builds across local machines
+# and CI. Must be >= the crate MSRV (`rust-version` in
+# desktop/src-tauri/Cargo.toml). rustup reads this file for any cargo invocation
+# in the repo (it searches upward from the manifest dir), so it is the single
+# source of truth for the Rust version even when CI installs a generic "stable".
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
