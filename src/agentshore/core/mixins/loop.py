@@ -87,6 +87,15 @@ _WAITING_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 30.0, 60.0)
 # a trunk it cannot heal. At the 21s backoff ceiling this is ~3-4 minutes grace.
 _WEDGED_IDLE_STOP_TICKS = 12
 
+# Wall-clock seconds the *whole* fleet may sit idle (every agent idle, nothing
+# in flight) before the loop ends the session via a clean autonomous drain. This
+# is the liveness backstop for the end-session wedge: even if every action slot
+# is masked into a corner (e.g. the only open PRs are all manual-required, so no
+# work play is selectable and END_SESSION is gated), a fully-idle fleet must not
+# poll forever. Wall-clock rather than tick-count because idle_backoff makes the
+# tick spacing vary. Reset to None on any dispatch / busy agent.
+_FLEET_IDLE_END_SESSION_SECONDS: float = 1200.0
+
 # How many times an unanswered loop-detection auto-stop is deferred while
 # actionable work (merge-ready PRs / workable issues) still remains. Each
 # reprieve lifts the pause and resumes the loop (it never leaves the loop
@@ -207,6 +216,11 @@ class LoopRunner:
         # nothing in flight — the wedge signature. Drives the auto-stop in
         # continue_if_selector_idle_work_remains; reset on any dispatch.
         self._wedged_idle_ticks: int = 0
+        # Monotonic timestamp the fleet last became *fully* idle (every agent
+        # idle, nothing in flight), or None when not fully idle. Drives the
+        # fleet-idle end-session backstop in continue_if_selector_idle_work_remains;
+        # reset to None on any dispatch / busy agent.
+        self._fleet_idle_since: float | None = None
         # Bounded reprieves granted to an unanswered loop-detection auto-stop
         # while actionable work remains, so the session is not torn down on top
         # of finished work. Resets per loop.
@@ -615,6 +629,36 @@ class LoopRunner:
         else:
             self._wedged_idle_ticks = 0
 
+        # Fleet-idle end-session backstop: if every agent is idle with nothing in
+        # flight for _FLEET_IDLE_END_SESSION_SECONDS, the session has run out of
+        # things to do (or has been masked into a corner) — end it via a clean
+        # autonomous drain rather than polling forever. fire_natural_exit=True
+        # stamps _natural_exit_reason so run_until_idle fires session.completed
+        # and the normal teardown (end_agent per agent, checkpoint, beads clear),
+        # unlike a bare loop-break which would strand the process at 0 CPU.
+        fleet_fully_idle = not self._host._in_flight and not any(
+            a.status is AgentStatus.BUSY for a in state.agents
+        )
+        if fleet_fully_idle:
+            if self._fleet_idle_since is None:
+                self._fleet_idle_since = time.monotonic()
+            idle_seconds = time.monotonic() - self._fleet_idle_since
+            if idle_seconds >= _FLEET_IDLE_END_SESSION_SECONDS:
+                _logger.warning(
+                    "fleet_idle_end_session",
+                    session_id=self._session_id,
+                    idle_seconds=round(idle_seconds),
+                    limit_seconds=_FLEET_IDLE_END_SESSION_SECONDS,
+                    note=(
+                        "whole fleet idle past limit with nothing in flight — "
+                        "ending the session cleanly via drain"
+                    ),
+                )
+                await self.initiate_autonomous_stop("fleet_idle_timeout", fire_natural_exit=True)
+                return False
+        else:
+            self._fleet_idle_since = None
+
         diagnosis = self.compute_skip_diagnosis(state)
         candidate_plan = diagnosis.candidate_plan
         availability = candidate_plan.work_availability
@@ -653,7 +697,23 @@ class LoopRunner:
                 )
                 await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
                 return True
-            return False
+            # Every action slot is masked AND the graph signal says no work. This
+            # is NOT a termination signal: bare-returning False here breaks
+            # run_until_idle WITHOUT setting _natural_exit_reason, stranding the
+            # loop at 0 CPU with no drain and no session.completed (the
+            # park-and-stop-polling wedge). A real end must route through
+            # initiate_autonomous_stop (the fleet-idle backstop above, or a
+            # PPO-selected END_SESSION once it unmasks). Until then, keep polling
+            # so the next state transition / the idle backstop can act.
+            _logger.warning(
+                "selector_idle_all_masked",
+                reason=reason,
+                session_id=self._session_id,
+                idle_streak=self._host._idle_streak,
+                top_mask_reasons=reason_counts,
+            )
+            await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
+            return True
         wait_class = self.classify_selector_idle(state, reason_counts)
 
         log = (
@@ -1127,6 +1187,7 @@ class LoopRunner:
             self._fleet_idle_persistent_active = False
         self._host._idle_streak = 0
         self._wedged_idle_ticks = 0
+        self._fleet_idle_since = None
 
         play_type, params = selection
 
