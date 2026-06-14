@@ -259,8 +259,22 @@ async def _fetch(
     return True
 
 
-async def _remote_branch_exists(main_repo: Path, branch: str, *, remote: str = "origin") -> bool:
-    """Return True when ``remote/branch`` resolves via ``git ls-remote``."""
+async def _remote_branch_exists(
+    main_repo: Path,
+    branch: str,
+    *,
+    remote: str = "origin",
+    env_overlay: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True when ``remote/branch`` resolves via ``git ls-remote``.
+
+    ``env_overlay`` carries the fetch identity's credential (same overlay
+    ``_fetch`` uses). It is required for private HTTPS remotes: the hardened git
+    layer disables the ambient credential helper, so without the token header
+    this network probe authenticates as nobody, returns empty, and the caller
+    misreads a live branch as deleted (#179) — wedging every PR-scoped
+    allocation.
+    """
     try:
         rc, stdout, _ = await _run_git(
             "ls-remote",
@@ -270,6 +284,7 @@ async def _remote_branch_exists(main_repo: Path, branch: str, *, remote: str = "
             cwd=main_repo,
             check=False,
             timeout=30.0,
+            env_overlay=env_overlay,
         )
     except WorktreeAllocationFailed:
         return False
@@ -405,7 +420,9 @@ async def ensure_worktree(
     if (
         branch_name is not None
         and fetched
-        and not await _remote_branch_exists(main_repo, branch_name, remote=remote)
+        and not await _remote_branch_exists(
+            main_repo, branch_name, remote=remote, env_overlay=fetch_env_overlay
+        )
     ):
         raise WorktreeBranchGone(
             f"remote branch {remote}/{branch_name} is gone",
@@ -424,6 +441,7 @@ async def ensure_worktree(
                 cwd=worktree_path,
                 check=False,
                 timeout=120.0,
+                env_overlay=fetch_env_overlay,
             )
             await _run_git(
                 "merge",

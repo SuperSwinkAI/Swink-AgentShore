@@ -184,3 +184,65 @@ async def test_fast_forward_threads_fetch_overlay_to_git(monkeypatch) -> None:
     assert result.status is branch_sync.FFSyncStatus.FETCH_FAILED
     assert captured["args"][0] == "fetch"
     assert captured["overlay"] == overlay
+
+
+# --- worktree allocator ls-remote / fetch overlay (#179 + #151 audit) -------
+
+
+@pytest.mark.asyncio
+async def test_remote_branch_exists_threads_overlay_to_ls_remote(monkeypatch) -> None:
+    """The branch-existence probe must carry the fetch identity's auth (#179).
+
+    Without it, the hardened git layer (no credential helper) makes the
+    ``ls-remote`` authenticate as nobody on a private HTTPS remote → empty →
+    live branch misread as gone.
+    """
+    from agentshore.agents.worktree import allocator as alloc
+
+    captured: dict[str, object] = {}
+
+    async def fake_run_git(*args, cwd, check=True, timeout=60.0, env_overlay=None):  # type: ignore[no-untyped-def]
+        captured["args"] = args
+        captured["overlay"] = env_overlay
+        return (0, "deadbeef\trefs/heads/feature", "")
+
+    monkeypatch.setattr(alloc, "_run_git", fake_run_git)
+    overlay = {"GIT_CONFIG_COUNT": "3"}
+    ok = await alloc._remote_branch_exists(Path("/repo"), "feature", env_overlay=overlay)
+    assert ok is True
+    assert captured["args"][0] == "ls-remote"
+    assert captured["overlay"] == overlay
+
+
+@pytest.mark.asyncio
+async def test_ensure_worktree_passes_fetch_overlay_to_branch_check(monkeypatch, tmp_path) -> None:
+    """``ensure_worktree`` forwards ``fetch_env_overlay`` into the branch probe."""
+    from agentshore.agents.worktree import allocator as alloc
+
+    captured: dict[str, object] = {}
+
+    async def fake_fetch(main_repo, *, remote="origin", env_overlay=None):  # type: ignore[no-untyped-def]
+        return True
+
+    async def fake_exists(main_repo, branch, *, remote="origin", env_overlay=None):  # type: ignore[no-untyped-def]
+        captured["overlay"] = env_overlay
+        return True
+
+    async def stop_after_check(*a, **k):  # type: ignore[no-untyped-def]
+        raise RuntimeError("stop-after-branch-check")
+
+    monkeypatch.setattr(alloc, "_fetch", fake_fetch)
+    monkeypatch.setattr(alloc, "_remote_branch_exists", fake_exists)
+    monkeypatch.setattr(alloc, "_existing_worktree_for_path", stop_after_check)
+
+    overlay = {"GIT_CONFIG_COUNT": "3"}
+    with pytest.raises(RuntimeError, match="stop-after-branch-check"):
+        await alloc.ensure_worktree(
+            main_repo=tmp_path,
+            worktree_path=tmp_path / "wt",
+            branch_name="feature",
+            base_ref="origin/feature",
+            fetch=True,
+            fetch_env_overlay=overlay,
+        )
+    assert captured["overlay"] == overlay
