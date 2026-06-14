@@ -7,59 +7,21 @@ loop indefinitely. Explicit user/ipc pauses are NOT subject to the timeout.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agentshore.config import FeedbackConfig, RuntimeConfig
-from agentshore.core.main_repo_guard import MainRepoGuard
-from agentshore.core.mixins.lifecycle import LifecycleController
-from agentshore.core.mixins.loop import LoopRunner
-from agentshore.state import NullStateProvider
 
 
 def _make_orch(tmp_path: Path, feedback: FeedbackConfig | None = None) -> Any:
-    from agentshore.core import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = RuntimeConfig(feedback=feedback or FeedbackConfig())
+    orch = make_test_orchestrator(tmp_path, RuntimeConfig(feedback=feedback or FeedbackConfig()))
     orch._session_id = "test-session"
-    orch._store = AsyncMock()
-    orch._state_provider = NullStateProvider()
-    orch._selector = MagicMock()
-    orch._pause_event = asyncio.Event()
-    orch._pause_event.set()
-    orch._pause_reason = None
-    orch._pause_deadline = None
-    orch._last_play_id = None
-    orch._draining = False
-    orch._drain_reason = None
-    orch._feedback_cadence_plays_since_ack = 0
-    orch._feedback_cadence_last_ack_monotonic = 0.0
-    orch._main_repo = MainRepoGuard()
-    orch._lifecycle = LifecycleController(
-        host=orch,
-        store=orch._store,
-        session_id=orch._session_id,
-        repo_root=tmp_path,
-        main_repo=orch._main_repo,
-    )
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id=orch._session_id,
-        main_repo=orch._main_repo,
-        overrides=MagicMock(),
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=orch._lifecycle,
-        drain=MagicMock(),
-    )
     orch._loop._auto_stop_reprieves_used = 0
     return orch
 

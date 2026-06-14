@@ -452,21 +452,24 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
 
 @pytest.mark.asyncio
 async def test_idle_agent_active_claims_release_after_threshold() -> None:
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = _cfg()
-    orch._session_id = "s1"
+    from tests.orchestrator_factory import make_test_orchestrator
+
     claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g1", resource_key="issue:42")
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
-    orch._store = store
+
+    orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
+    orch._session_id = "s1"
     orch._state_builder = StateBuilder(
         host=orch,
+        runtime=orch._runtime,
         store=store,
         manager=MagicMock(),
         executor=MagicMock(),
         session_id="s1",
         repo_root=Path("/tmp"),
+        main_repo=orch._main_repo,
         snapshots=MagicMock(),
         velocity=MagicMock(),
         recovery=MagicMock(),

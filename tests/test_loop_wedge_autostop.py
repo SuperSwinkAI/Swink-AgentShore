@@ -9,41 +9,23 @@ nothing in flight) so healthy capacity-idle never trips it.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-from unittest.mock import MagicMock
+from pathlib import Path
 
 import pytest
 
-from agentshore.core.main_repo_guard import MainRepoGuard
-from agentshore.core.mixins.loop import _WEDGED_IDLE_STOP_TICKS, LoopRunner
+from agentshore.core.mixins.loop import _WEDGED_IDLE_STOP_TICKS
 from agentshore.core.orchestrator import Orchestrator
 from agentshore.state import OrchestratorState, SessionState
 
 
-def _harness(*, paused: bool, in_flight: bool, ticks: int) -> Orchestrator:
-    orch = Orchestrator.__new__(Orchestrator)
+def _harness(tmp_path: Path, *, paused: bool, in_flight: bool, ticks: int) -> Orchestrator:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
     orch._session_id = "t"
-    orch._main_repo = MainRepoGuard()
     orch._main_repo.dispatch_paused = paused
     orch._in_flight = {"a": object()} if in_flight else {}  # type: ignore[dict-item]
-    orch._draining = False
-    orch._drain_reason = None
-    orch._natural_exit_reason = None
-    orch._pause_deadline = None
-    orch._pause_event = asyncio.Event()
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id=orch._session_id,
-        main_repo=orch._main_repo,
-        overrides=MagicMock(),
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
-    )
     orch._loop._wedged_idle_ticks = ticks
     return orch
 
@@ -58,8 +40,8 @@ def _state() -> OrchestratorState:
 
 
 @pytest.mark.asyncio
-async def test_latched_pause_auto_stops_after_grace() -> None:
-    orch = _harness(paused=True, in_flight=False, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
+async def test_latched_pause_auto_stops_after_grace(tmp_path: Path) -> None:
+    orch = _harness(tmp_path, paused=True, in_flight=False, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
     cont = await orch._loop.continue_if_selector_idle_work_remains(
         _state(), reason="unchanged_digest"
     )
@@ -70,10 +52,10 @@ async def test_latched_pause_auto_stops_after_grace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_in_flight_work_does_not_trip_watchdog() -> None:
+async def test_in_flight_work_does_not_trip_watchdog(tmp_path: Path) -> None:
     # Pause latched but a play is in flight → not the wedge signature; the
     # counter must reset and no auto-stop fires from this guard.
-    orch = _harness(paused=True, in_flight=True, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
+    orch = _harness(tmp_path, paused=True, in_flight=True, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
     # The downstream candidate-plan path needs collaborators we don't stub here,
     # so we only assert the watchdog branch did not fire before that point.
     orch._registry = None

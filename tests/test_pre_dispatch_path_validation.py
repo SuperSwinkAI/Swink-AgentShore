@@ -15,9 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 
-from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.mixins.dispatch import Dispatcher
-from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import PlayType
 
@@ -52,25 +50,14 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     the executor. The branch we exercise is the early ``path_contains_backslash_space``
     rejection, so the rest never runs.
     """
-    from agentshore.core.orchestrator import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
-    orch = Orchestrator.__new__(Orchestrator)
+    orch = make_test_orchestrator(Path("/tmp/fake-repo"))
     orch._session_id = "test-pre-dispatch"
-    orch._repo_root = Path("/tmp/fake-repo")
-    orch._main_repo = MainRepoGuard()
-    orch._draining = False
-    orch._stop_requested = False
-    orch._end_session_dispatch_started = False
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
-    orch._overrides = OverrideQueue()
     orch._registry = None
-    orch._selector = None
-    orch._last_selection_digest = None
 
-    manager_mock = MagicMock()
+    manager_mock = orch._manager
     manager_mock._working_dir = working_dir
-    orch._manager = manager_mock  # type: ignore[assignment]
 
     # State stub for revalidation. Won't be reached on the early refuse path.
     state_mock = MagicMock()
@@ -80,15 +67,16 @@ def _build_dispatch_harness(working_dir: Path) -> object:
 
     orch._dispatcher = Dispatcher(
         host=orch,
-        store=MagicMock(),
+        runtime=orch._runtime,
+        store=orch._store,
         manager=manager_mock,
-        executor=MagicMock(),
+        executor=orch._executor,
         session_id=orch._session_id,
         repo_root=orch._repo_root,
         main_repo=orch._main_repo,
         overrides=orch._overrides,
-        state_builder=MagicMock(),
-        completion=MagicMock(),
+        state_builder=orch._state_builder,
+        completion=orch._completion,
     )
     # The drop helper writes to the store + emits a warning. We capture by
     # patching the method directly on the Dispatcher.

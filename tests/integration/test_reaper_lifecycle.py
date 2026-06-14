@@ -288,7 +288,7 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
     # _mark_worktrees_stale_for_closed_prs reads ``_worktrees`` via the host and
     # ``_store``/``_session_id`` as constructor deps on the processor itself.
     completion_stub = SimpleNamespace(
-        _host=SimpleNamespace(_worktrees=wm),
+        _runtime=SimpleNamespace(worktrees=wm),
         _store=store,
         _session_id="sess-current",
     )

@@ -10,6 +10,7 @@ shutting_down).
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,46 +18,39 @@ import pytest
 from agentshore.core import Orchestrator
 
 
-def _make_orch() -> Orchestrator:
+def _make_orch(tmp_path: Path) -> Orchestrator:
     """Construct a minimal Orchestrator via __new__ (same pattern as
     tests/test_orchestrator_drain.py)."""
-    orch = Orchestrator.__new__(Orchestrator)
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
+    orch._session_id = "sess-test"
     orch._state_provider = MagicMock()
     orch._state_provider.on_session_draining = AsyncMock()
-    orch._store = AsyncMock()
     orch._store.update_session_state = AsyncMock()
-    orch._session_id = "sess-test"
     orch._pause_event = MagicMock()
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
-    orch._pause_reason = None
-    orch._in_flight = {}
-    orch._stop_requested = False
-    orch._draining = False
-    orch._drain_initialized = False
-    orch._drain_reason = None
-    orch._natural_exit_reason = None
-    orch._natural_exit_callback = None
     return orch
 
 
-def test_on_natural_exit_registers_callback() -> None:
+def test_on_natural_exit_registers_callback(tmp_path: Path) -> None:
     """on_natural_exit stores the callback for later firing."""
-    orch = _make_orch()
+    orch = _make_orch(tmp_path)
     cb = AsyncMock()
     orch.on_natural_exit(cb)
     assert orch._natural_exit_callback is cb
 
 
 @pytest.mark.asyncio
-async def test_natural_exit_reason_starts_none() -> None:
+async def test_natural_exit_reason_starts_none(tmp_path: Path) -> None:
     """A fresh orchestrator has no natural-exit reason recorded."""
-    orch = _make_orch()
+    orch = _make_orch(tmp_path)
     assert orch._natural_exit_reason is None
 
 
 @pytest.mark.asyncio
-async def test_natural_exit_callback_fires_with_recorded_reason() -> None:
+async def test_natural_exit_callback_fires_with_recorded_reason(tmp_path: Path) -> None:
     """The registered callback receives the recorded exit reason.
 
     Mirrors the exit branch at the bottom of ``run_until_idle``: set the
@@ -66,7 +60,7 @@ async def test_natural_exit_callback_fires_with_recorded_reason() -> None:
     under test here; the contract is "callback fires with the recorded
     reason".
     """
-    orch = _make_orch()
+    orch = _make_orch(tmp_path)
     called: list[str] = []
 
     async def _cb(reason: str) -> None:
@@ -81,7 +75,7 @@ async def test_natural_exit_callback_fires_with_recorded_reason() -> None:
     assert called == ["drain_complete"]
 
 
-def test_natural_exit_reason_skipped_for_explicit_stop() -> None:
+def test_natural_exit_reason_skipped_for_explicit_stop(tmp_path: Path) -> None:
     """request_stop / explicit termination should not set natural_exit_reason.
 
     The run_until_idle exit branch checks
@@ -93,7 +87,7 @@ def test_natural_exit_reason_skipped_for_explicit_stop() -> None:
     # ("stop_requested",) when _stop_requested is True, and the gate in
     # run_until_idle skips setting _natural_exit_reason for that reason.
     # See src/agentshore/core.py:run_until_idle exit branch.
-    orch = _make_orch()
+    orch = _make_orch(tmp_path)
     orch._stop_requested = True
     # We can't run the loop here without full bootstrap; the inline gate
     # in core.py is the contract under test.

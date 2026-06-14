@@ -11,36 +11,15 @@ project.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agentshore.core import Orchestrator
-from agentshore.core.main_repo_guard import MainRepoGuard
-from agentshore.core.mixins.loop import LoopRunner
-from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import SessionState
-
-
-@dataclass
-class _CfgLoopDetection:
-    fleet_idle_threshold: int = 5
-    warn_after: int = 3
-    force_switch_after: int = 5
-    escalate_after: int = 7
-
-
-@dataclass
-class _CfgRL:
-    loop_detection: _CfgLoopDetection = field(default_factory=_CfgLoopDetection)
-    reverse_failsafe_enabled: bool = False
-
-
-@dataclass
-class _Cfg:
-    rl: _CfgRL = field(default_factory=_CfgRL)
 
 
 @dataclass
@@ -53,33 +32,15 @@ class _StateStub:
     agents: tuple[Any, ...] = ()
 
 
-def _orch() -> Orchestrator:
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._in_flight = {}
-    orch._overrides = OverrideQueue()
-    orch._main_repo = MainRepoGuard()
-    orch._idle_streak = 0
-    orch._last_selection_digest = None
+def _orch(tmp_path: Path) -> Orchestrator:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    # Default selector is a non-PPO MagicMock: the all-masked + no-work branch
+    # treats a scripted/mock selector's idle as terminal (break). Tests
+    # exercising the live-PPO keep-polling path swap this for a stub matched by
+    # a patched _ppo_selector_cls.
+    orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-562"
-    orch._registry = None
-    # Default to a non-PPO selector: the all-masked + no-work branch treats a
-    # scripted/mock selector's idle as terminal (break). Tests exercising the
-    # live-PPO keep-polling path swap this for a stub matched by a patched
-    # _ppo_selector_cls.
-    orch._selector = MagicMock()
-    orch._cfg = _Cfg()  # type: ignore[assignment]
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id=orch._session_id,
-        main_repo=orch._main_repo,
-        overrides=orch._overrides,
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
-    )
     return orch
 
 
@@ -124,10 +85,10 @@ def _candidate_plan_stub(*, has_remaining_work: bool) -> Any:
 
 @pytest.mark.asyncio
 async def test_continue_when_mask_has_plays_even_if_graph_has_no_work(
-    info_calls: MagicMock,
+    info_calls: MagicMock, tmp_path: Path
 ) -> None:
     """Mask shows 1+ ready play but has_remaining_work=False → wait (return True)."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub(action_mask=(True, False, True, False))
 
     with (
@@ -150,9 +111,7 @@ async def test_continue_when_mask_has_plays_even_if_graph_has_no_work(
 
 
 @pytest.mark.asyncio
-async def test_all_masked_live_ppo_keeps_polling(
-    info_calls: MagicMock,
-) -> None:
+async def test_all_masked_live_ppo_keeps_polling(info_calls: MagicMock, tmp_path: Path) -> None:
     """All-masked + no graph work under the LIVE PPO selector → keep polling.
 
     An all-masked idle tick is common and transient for a live session (agents
@@ -162,7 +121,7 @@ async def test_all_masked_live_ppo_keeps_polling(
     must also NOT bare-``return False`` (which would park: break without
     ``_natural_exit_reason`` → the sidecar supervisor never calls ``stop()``).
     """
-    orch = _orch()
+    orch = _orch(tmp_path)
     stub_ppo = MagicMock()
     orch._selector = stub_ppo
     state = _StateStub(action_mask=(False, False, False, False))
@@ -190,14 +149,12 @@ async def test_all_masked_live_ppo_keeps_polling(
 
 
 @pytest.mark.asyncio
-async def test_all_masked_scripted_selector_breaks(
-    info_calls: MagicMock,
-) -> None:
+async def test_all_masked_scripted_selector_breaks(info_calls: MagicMock, tmp_path: Path) -> None:
     """All-masked + no graph work under a scripted/mock (non-PPO) selector →
     break the loop. An exhausted FixedPlanSelector / test mock will never produce
     another play and there is no fleet-idle backstop semantics in replay, so the
     loop must terminate (return False) and let the harness own teardown."""
-    orch = _orch()  # default _selector is a non-PPO MagicMock
+    orch = _orch(tmp_path)  # default _selector is a non-PPO MagicMock
     state = _StateStub(action_mask=(False, False, False, False))
 
     with (
@@ -219,7 +176,7 @@ async def test_all_masked_scripted_selector_breaks(
 
 
 @pytest.mark.asyncio
-async def test_fleet_idle_past_limit_ends_session_via_drain() -> None:
+async def test_fleet_idle_past_limit_ends_session_via_drain(tmp_path: Path) -> None:
     """Whole fleet idle (no in-flight, no busy agents) past the limit → the loop
     initiates a clean autonomous drain (fire_natural_exit) rather than polling
     forever. This is the liveness backstop for the end-session wedge."""
@@ -227,7 +184,7 @@ async def test_fleet_idle_past_limit_ends_session_via_drain() -> None:
 
     from agentshore.core.mixins import loop as loop_mod
 
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub(action_mask=(False, False, False, False), agents=())
     orch._loop._fleet_idle_since = _time.monotonic() - (
         loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
@@ -249,7 +206,7 @@ async def test_fleet_idle_past_limit_ends_session_via_drain() -> None:
 
 
 @pytest.mark.asyncio
-async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock) -> None:
+async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock, tmp_path: Path) -> None:
     """A busy agent means the fleet is not idle — the end-session clock resets to
     None and the drain never fires, even if the prior idle stretch was long."""
     import time as _time
@@ -258,7 +215,7 @@ async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock) -> None
     from agentshore.core.mixins import loop as loop_mod
     from agentshore.state import AgentStatus
 
-    orch = _orch()
+    orch = _orch(tmp_path)
     busy = SimpleNamespace(status=AgentStatus.BUSY)
     state = _StateStub(action_mask=(True, False), agents=(busy,))
     orch._loop._fleet_idle_since = _time.monotonic() - (
@@ -285,10 +242,10 @@ async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock) -> None
 
 @pytest.mark.asyncio
 async def test_continue_when_graph_has_work_regardless_of_mask(
-    info_calls: MagicMock,
+    info_calls: MagicMock, tmp_path: Path
 ) -> None:
     """Existing behavior: has_remaining_work=True → wait (return True)."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub(action_mask=(False, False, False, False))
 
     with (

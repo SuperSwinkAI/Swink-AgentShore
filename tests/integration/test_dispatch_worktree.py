@@ -35,9 +35,7 @@ from agentshore.agents.worktree import (
     WorktreeAllocationFailed,
 )
 from agentshore.config import AgentConfig, RuntimeConfig
-from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.mixins.dispatch import Dispatcher
-from agentshore.core.override_queue import OverrideQueue
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.plays.base import PlayParams
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
@@ -304,7 +302,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
     ``WorktreeAllocationFailed``. The orchestrator stub is the same harness
     pattern used by ``tests/test_pre_dispatch_path_validation.py``.
     """
-    from agentshore.core.orchestrator import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
     branch = "feature-fail"
     main_repo = _init_repo_with_remote(tmp_path, branch)
@@ -323,26 +321,15 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         )
         monkeypatch.setattr(manager.worktrees, "allocate_for_dispatch", failing_allocate)
 
-        orch = Orchestrator.__new__(Orchestrator)
+        orch = make_test_orchestrator(main_repo, cfg, store=store)
         orch._session_id = "s-fail"
-        orch._store = store
-        orch._cfg = cfg
-        orch._repo_root = main_repo
-        orch._main_repo = MainRepoGuard()
-        orch._draining = False
-        orch._stop_requested = False
-        orch._end_session_dispatch_started = False
-        orch._in_flight = {}
-        orch._dispatch_ctx = {}
-        orch._overrides = OverrideQueue()
         orch._registry = None
-        orch._selector = None
-        orch._last_selection_digest = None
         orch._manager = manager  # real manager — its worktrees is patched above
         orch._state_provider = MagicMock()
 
         orch._dispatcher = Dispatcher(
             host=orch,
+            runtime=orch._runtime,
             store=store,
             manager=manager,
             executor=MagicMock(),
@@ -350,8 +337,8 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
             repo_root=main_repo,
             main_repo=orch._main_repo,
             overrides=orch._overrides,
-            state_builder=MagicMock(),
-            completion=MagicMock(),
+            state_builder=orch._state_builder,
+            completion=orch._completion,
         )
 
         # Capture the drop call without exercising the rest of the drop helper

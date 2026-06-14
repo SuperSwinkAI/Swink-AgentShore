@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -81,13 +82,13 @@ async def test_dispatch_abort_play_routes_to_abort_in_flight() -> None:
 
 
 @pytest.mark.asyncio()
-async def test_abort_in_flight_cancels_tasks() -> None:
+async def test_abort_in_flight_cancels_tasks(tmp_path: Path) -> None:
     """Orchestrator.abort_in_flight cancels every in-flight play task."""
-    from agentshore.core.orchestrator import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
     task1 = MagicMock()
     task2 = MagicMock()
-    orch = Orchestrator.__new__(Orchestrator)
+    orch = make_test_orchestrator(tmp_path)
     orch._in_flight = {"d1": task1, "d2": task2}
     await orch.abort_in_flight()
     task1.cancel.assert_called_once()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,18 +25,10 @@ from agentshore.core.mixins.loop import LoopRunner
 
 
 def _make_orch(feedback: FeedbackConfig | None = None) -> Any:
-    from agentshore.core import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = RuntimeConfig(feedback=feedback or FeedbackConfig())
+    orch = make_test_orchestrator(Path("."), RuntimeConfig(feedback=feedback or FeedbackConfig()))
     orch._session_id = "test-session"
-    orch._stop_requested = False
-    orch._stopped = False
-    orch._draining = False
-    orch._drain_reason = None
-    orch._natural_exit_reason = None
-    orch._pause_deadline = None
-    orch._in_flight = {}
     # begin_drain / stop are driven by the watchdog (via the DrainController);
     # stub them so the unit test observes the calls without running the full
     # teardown body.
@@ -46,17 +39,19 @@ def _make_orch(feedback: FeedbackConfig | None = None) -> Any:
     async def _safe_call(coro: Any, _label: str) -> None:
         await coro
 
-    orch._safe_call = _safe_call
+    orch._safe_call = _safe_call  # type: ignore[method-assign]
+    # Rebuild the loop so it references the stubbed drain controller.
     orch._loop = LoopRunner(
         host=orch,
+        runtime=orch._runtime,
         session_id=orch._session_id,
-        main_repo=MagicMock(),
-        overrides=MagicMock(),
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
+        main_repo=orch._main_repo,
+        overrides=orch._overrides,
+        velocity=orch._velocity,
+        state_builder=orch._state_builder,
+        dispatcher=orch._dispatcher,
+        completion=orch._completion,
+        lifecycle=orch._lifecycle,
         drain=orch._drain,
     )
     orch._loop._loop_liveness_task = None

@@ -168,13 +168,6 @@ def test_path_escape_marker_constant() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _StubManager:
-    """Minimal AgentManager substitute exposing the ``handles`` dict."""
-
-    def __init__(self) -> None:
-        self.handles: dict[str, object] = {}
-
-
 class _CompletionGuardHarness:
     """Wraps a real Orchestrator-by-MRO call into _check_main_repo_invariant.
 
@@ -183,13 +176,10 @@ class _CompletionGuardHarness:
     """
 
     def __init__(self, *, repo_root: Path, default_branch: str = "main") -> None:
-        from agentshore.core.orchestrator import Orchestrator
+        from tests.orchestrator_factory import make_test_orchestrator
 
-        orch = Orchestrator.__new__(Orchestrator)
-        orch._repo_root = repo_root
-        orch._session_id = "test-session"
+        orch = make_test_orchestrator(repo_root)
         orch._main_repo = MainRepoGuard(default_branch=default_branch)
-        orch._manager = _StubManager()  # type: ignore[assignment]
         self.orch = orch
 
 

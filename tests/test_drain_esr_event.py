@@ -40,17 +40,13 @@ def _minimal_orch(tmp_path: Path) -> Orchestrator:
     Mirrors the construction pattern used in tests/test_orchestrator_drain.py
     so the surface stays in lockstep when one is updated.
     """
-    orch = Orchestrator.__new__(Orchestrator)
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test"
-    orch._repo_root = tmp_path
     orch._stop_reason = "ppo_selected"
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
     orch._manager = MagicMock()
     orch._manager.handles = {}
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
     orch._loop = MagicMock()
     orch._end_session_report_requested = True
     orch._end_session_report_open_browser = True
@@ -65,6 +61,7 @@ def _minimal_orch(tmp_path: Path) -> Orchestrator:
     orch._state_provider.on_session_ended = AsyncMock()
     orch._drain = DrainController(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         manager=orch._manager,
         session_id=orch._session_id,

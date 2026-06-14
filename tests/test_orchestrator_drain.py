@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.core import Orchestrator
-from agentshore.core.main_repo_guard import MainRepoGuard
 from agentshore.core.mixins.dispatch import Dispatcher
 from agentshore.core.mixins.drain import DrainController
 from agentshore.core.mixins.lifecycle import LifecycleController
@@ -30,26 +29,24 @@ from agentshore.state import (
 
 def _make_orch() -> Orchestrator:
     """Create a minimal Orchestrator via __new__ to avoid full bootstrap."""
-    orch = Orchestrator.__new__(Orchestrator)
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(Path("."))
+    orch._session_id = "sess-test"
     orch._state_provider = MagicMock()
     orch._state_provider.on_session_draining = AsyncMock()
-    orch._store = AsyncMock()
     orch._store.update_session_state = AsyncMock()
-    orch._session_id = "sess-test"
+    # Drain tests assert on .set() of the pause event, so swap the real
+    # asyncio.Event for a MagicMock that records the call.
     orch._pause_event = MagicMock()
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
-    orch._pause_reason = None
-    orch._in_flight = {}
-    orch._stop_requested = False
-    orch._draining = False
-    orch._drain_initialized = False
-    orch._drain_reason = None
-    orch._end_session_report_requested = False
-    orch._end_session_report_open_browser = False
-    orch._main_repo = MainRepoGuard()
+    # Rebuild the drain/lifecycle components so they capture the test session_id
+    # (the factory baked in its own "test-session" at construction time, and
+    # assertions in this file match on "sess-test").
     orch._lifecycle = LifecycleController(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         session_id=orch._session_id,
         repo_root=Path("."),
@@ -57,6 +54,7 @@ def _make_orch() -> Orchestrator:
     )
     orch._drain = DrainController(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         manager=MagicMock(),
         session_id=orch._session_id,
@@ -276,6 +274,7 @@ async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass
     )
     orch._dispatcher = Dispatcher(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         manager=MagicMock(),
         executor=MagicMock(),
@@ -303,7 +302,9 @@ def test_request_drain_twice_keeps_first_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Path) -> None:
-    orch = Orchestrator.__new__(Orchestrator)
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
     events: list[str] = []
     report_path = tmp_path / ".agentshore" / "reports" / "end-session-sess-test.html"
 
@@ -324,15 +325,9 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
         events.append("ended")
 
     orch._session_id = "sess-test"
-    orch._repo_root = tmp_path
     orch._stop_reason = "ppo_selected"
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
     orch._manager = MagicMock()
     orch._manager.handles = {}
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
     orch._loop = MagicMock()
     orch._end_session_report_requested = True
     orch._end_session_report_open_browser = True
@@ -349,6 +344,7 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
     orch._state_provider.on_session_ended = AsyncMock(side_effect=_ended)
     orch._drain = DrainController(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         manager=orch._manager,
         session_id=orch._session_id,
@@ -374,18 +370,14 @@ async def test_stop_inner_clears_agents_with_force(tmp_path: Path) -> None:
     drain time refused to clear. Pin the force=True so a future rebase
     cannot drop it again.
     """
-    orch = Orchestrator.__new__(Orchestrator)
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test"
-    orch._repo_root = tmp_path
     orch._stop_reason = "stop_requested"
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
     orch._manager = MagicMock()
     orch._manager.handles = {"agent-1": MagicMock(), "agent-2": MagicMock()}
     orch._manager.clear = AsyncMock()
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
     orch._loop = MagicMock()
     orch._end_session_report_requested = False
     orch._end_session_report_open_browser = False
@@ -399,6 +391,7 @@ async def test_stop_inner_clears_agents_with_force(tmp_path: Path) -> None:
     orch._state_provider.on_session_ended = AsyncMock()
     orch._drain = DrainController(
         host=orch,
+        runtime=orch._runtime,
         store=orch._store,
         manager=orch._manager,
         session_id=orch._session_id,
