@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+import structlog
 
 from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
@@ -55,7 +56,13 @@ from agentshore.rl.mask_reason import (
     MaskReason,
     MaskSource,
 )
-from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, AgentType, PlayType
+from agentshore.state import (
+    CONSECUTIVE_TIMEOUT_BENCH_LIMIT,
+    RECOVERABLE_ERROR_CLASSES,
+    AgentStatus,
+    AgentType,
+    PlayType,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -73,6 +80,9 @@ if TYPE_CHECKING:
     # one live read ``confirm()`` is permitted, supplied by the dispatch layer
     # which owns the repo path.
     LiveGraphLoader = Callable[[], Awaitable[ProjectGraph | None]]
+
+
+_logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +203,7 @@ def _merge_pr_validity(state: OrchestratorState, plan: PlayCandidatePlan) -> lis
     wrong_base = [
         pr
         for pr in state.pull_requests
-        if state.target_branch
-        and isinstance(getattr(pr, "base_ref", None), str)
-        and pr.base_ref
-        and pr.base_ref != state.target_branch
+        if state.target_branch and pr.base_ref and pr.base_ref != state.target_branch
     ]
     if wrong_base:
         nums = ", ".join(f"#{pr.pr_number}" for pr in wrong_base)
@@ -327,6 +334,38 @@ _VALIDITY_FNS: dict[
 }
 
 
+def has_terminal_error_agent(state: OrchestratorState) -> bool:
+    """True if any agent is in a non-recoverable ERROR state (#20).
+
+    Such an agent has no TAKE_BREAK recovery path, so it never reaches
+    ``recovery_exhausted`` and END_AGENT would otherwise stay masked, leaking it
+    (and any subprocess it holds) until end_session. Unmasking END_AGENT hands
+    the retire decision to the PPO — it does not force one.
+    """
+    return any(
+        a.status == AgentStatus.ERROR and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
+        for a in state.agents
+    )
+
+
+def agent_needs_reaping(state: OrchestratorState) -> bool:
+    """True when some agent genuinely needs retiring (wedged / terminal error).
+
+    The single predicate behind the wedged-END_AGENT re-enable. An agent needs
+    reaping when it is recovery-exhausted, consecutive-timeout-benched (#161), or
+    in a non-recoverable ERROR state (#20). All three sit IDLE-or-ERROR but are
+    excluded from selection, so they never recover on their own — keeping
+    END_AGENT available lets the PPO reap them instead of wedging. Used both by
+    the authority's wedged re-enable and by the mask-pipeline lifecycle-churn
+    breaker so the two never drift.
+    """
+    if state.recovery_exhausted_agent_ids:
+        return True
+    if any(a.consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT for a in state.agents):
+        return True
+    return has_terminal_error_agent(state)
+
+
 class EligibilityAuthority:
     """Single source of truth for A-type play validity.
 
@@ -403,9 +442,7 @@ class EligibilityAuthority:
         # the sole re-enable — it hands the retire decision to the policy). It
         # MUST be evaluated before the precondition early-return below, otherwise
         # the precondition reason returns first and the re-enable is unreachable.
-        wedged_end_agent_reenable = pt == PlayType.END_AGENT and (
-            bool(state.recovery_exhausted_agent_ids) or self._has_terminal_error_agent(state)
-        )
+        wedged_end_agent_reenable = pt == PlayType.END_AGENT and agent_needs_reaping(state)
 
         # 1. Registry preconditions (runs each play's declared gates).
         precondition_reason = self._precondition_reason(pt, state)
@@ -525,8 +562,25 @@ class EligibilityAuthority:
                 classification=MaskClassification.TRANSIENT,
                 source=MaskSource.ELIGIBILITY,
             )
+        # Rate-limit filter — must mirror ``compute_agent_eligibility_mask`` so the
+        # reported cause matches why the mask actually fired. All instances of a
+        # type share the same API quota, so a rate_limit hold on one benches the
+        # type. Omitting this previously misreported a quota-blocked type as a
+        # generic "no eligible agent."
+        rate_limited_types = {
+            a.agent_type.value
+            for a in state.agents
+            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
+        }
+        rate_ok = [a for a in excl_ok if a.agent_type.value not in rate_limited_types]
+        if not rate_ok:
+            return MaskReason(
+                text=f"No IDLE agent of a non-rate-limited type for {pt.value!r}",
+                classification=MaskClassification.TRANSIENT,
+                source=MaskSource.ELIGIBILITY,
+            )
         cap_ok = [
-            a for a in excl_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
+            a for a in rate_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
         ]
         if not cap_ok:
             return MaskReason(
@@ -598,17 +652,13 @@ class EligibilityAuthority:
 
     @staticmethod
     def _has_terminal_error_agent(state: OrchestratorState) -> bool:
-        """True if any agent is in a non-recoverable ERROR state (#20).
+        """Backward-compatible alias for :func:`has_terminal_error_agent`.
 
-        Such an agent has no TAKE_BREAK recovery path, so it never reaches
-        ``recovery_exhausted`` and END_AGENT would otherwise stay masked,
-        leaking it (and any subprocess it holds) until end_session. Unmasking
-        END_AGENT hands the retire decision to the PPO — it does not force one.
+        Retained so existing call sites that reach the authority's private
+        staticmethod keep resolving; the module-level function is the canonical
+        implementation.
         """
-        return any(
-            a.status == AgentStatus.ERROR and a.last_error_class not in RECOVERABLE_ERROR_CLASSES
-            for a in state.agents
-        )
+        return has_terminal_error_agent(state)
 
     async def confirm(
         self,
@@ -960,7 +1010,13 @@ def compute_config_mask(
         configured_model: str | None = None
         try:
             configured_model = effective_model_tier_config(agent_type_enum, agent_cfg, tier).model
-        except Exception:
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            _logger.warning(
+                "compute_config_mask.model_resolution_failed",
+                agent_type=agent_type,
+                tier=tier,
+                error=str(exc),
+            )
             configured_model = None
         if _auth_config_blocked(
             blocked_auth_configs,
@@ -989,6 +1045,8 @@ __all__ = [
     "EligibilityAuthority",
     "EligibilityReport",
     "PlayVerdict",
+    "agent_needs_reaping",
     "compute_agent_eligibility_mask",
     "compute_config_mask",
+    "has_terminal_error_agent",
 ]

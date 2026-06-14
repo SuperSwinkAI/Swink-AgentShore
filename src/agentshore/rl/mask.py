@@ -24,6 +24,9 @@ from agentshore.plays.candidates import (
 from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
 from agentshore.rl.eligibility import (
+    agent_needs_reaping as _agent_needs_reaping,
+)
+from agentshore.rl.eligibility import (
     compute_agent_eligibility_mask as compute_agent_eligibility_mask,
 )
 from agentshore.rl.eligibility import (
@@ -40,7 +43,6 @@ from agentshore.rl.mask_reason import (
     MaskSource,
 )
 from agentshore.state import (
-    CONSECUTIVE_TIMEOUT_BENCH_LIMIT,
     AgentStatus,
     AgentType,
     PlayType,
@@ -231,23 +233,6 @@ def compute_terminal_no_work_decision(
             )
 
     return None
-
-
-def _agent_needs_reaping(state: OrchestratorState) -> bool:
-    """True when some agent genuinely needs retiring (wedged / terminal error).
-
-    Mirrors the wedged-END_AGENT re-enable condition in the EligibilityAuthority
-    (recovery-exhausted or non-recoverable ERROR). Used to carve END_AGENT out of
-    the lifecycle-churn breaker so a stuck agent can still be retired (#163).
-    """
-    if state.recovery_exhausted_agent_ids:
-        return True
-    # A consecutive-timeout-benched agent (#161) sits IDLE but is excluded from
-    # selection, so it never recovers on its own — keep END_AGENT available so
-    # the PPO can reap it and instantiate a fresh one instead of wedging.
-    if any(a.consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT for a in state.agents):
-        return True
-    return EligibilityAuthority._has_terminal_error_agent(state)
 
 
 def _lifecycle_churn_active(state: OrchestratorState) -> bool:

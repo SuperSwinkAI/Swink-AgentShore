@@ -27,6 +27,8 @@ class _FakeHandle:
         self.agent_type = agent_type
         self.status = AgentStatus.IDLE
         self.task_history: list[object] = []
+        self.timeout_count = 0
+        self.consecutive_timeouts = 0
         self.model_tier = model_tier
         self.github_identity = github_identity
 

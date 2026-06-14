@@ -251,14 +251,6 @@ def _norm(val: float, sat: float) -> float:
     return _clamp(val / sat if sat > 0.0 else 0.0)
 
 
-def _agent_status_float(status_value: str) -> float:
-    if status_value == "idle":
-        return 0.0
-    if status_value == "busy":
-        return 0.5
-    return 1.0  # error or terminated
-
-
 def encode_observation(
     state: OrchestratorState,
     ctx: ObservationContext,
@@ -534,7 +526,10 @@ def encode_observation(
     # ---- RESERVED (245) — version marker ----
     # A stable per-version constant in [0, 1]. Self-normalizing (always 1.0) so
     # an OBSERVATION_VERSION bump can never feed the policy an out-of-range
-    # marker it never saw in training.
+    # marker it never saw in training. Intentionally retained as a constant
+    # padding slot: dropping it would shrink OBSERVATION_DIM, invalidate every
+    # trained checkpoint, and ripple to the policy input dim and version-pinned
+    # tests for zero policy signal — so the slot stays put by design.
     obs[_S_OBS_VERSION] = OBSERVATION_VERSION / float(OBSERVATION_VERSION)
 
     return obs
