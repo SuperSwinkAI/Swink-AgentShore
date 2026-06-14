@@ -35,11 +35,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
-    from agentshore.config import RuntimeConfig
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.mixins.state import StateBuilder
     from agentshore.core.override_queue import OverrideQueue
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
@@ -49,7 +49,6 @@ if TYPE_CHECKING:
     from agentshore.state import (
         OrchestratorState,
         PlayOutcome,
-        StateProvider,
     )
 
 
@@ -81,39 +80,13 @@ def _is_git_work_tree(path: Path) -> bool:
 
 
 class _DispatcherHost(Protocol):
-    """Orchestrator runtime/control state read OR written live by :class:`Dispatcher`.
+    """Orchestrator *behaviour* the :class:`Dispatcher` invokes.
 
-    These members are accessed fresh via ``self._host.<attr>`` on every call so
-    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight maps,
-    dispatch-context map, selection digest, idle streak, end-session latch,
-    bootstrap-assigned registry/selector) are always current — never captured at
-    construction. Fields the dispatcher *writes* (``_end_session_dispatch_started``,
-    ``_last_selection_digest``) are declared as plain annotated attributes (not
-    read-only ``@property``) so the assignments type-check. ``_in_flight`` /
-    ``_dispatch_ctx`` are mutated in place. ``_OrchestratorBase`` structurally
-    satisfies this Protocol; the cross-component methods (``_safe_call``,
-    ``_selector_config_index``) are resolved live on the composition root.
+    All shared session *state* now lives on :class:`SessionRuntime` (reached via
+    ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
+    the cross-component methods resolve on the composition root without a circular
+    import. ``_OrchestratorBase`` structurally satisfies it.
     """
-
-    # --- written by the dispatcher -----------------------------------------
-    _end_session_dispatch_started: bool
-    _last_selection_digest: bytes | None
-    # --- read by the dispatcher (and the two maps mutated in place) ---------
-    _cfg: RuntimeConfig
-    _selector: PlaySelector | None
-    _state_provider: StateProvider
-    _stop_requested: bool
-    _draining: bool
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _dispatch_ctx: dict[str, _DispatchContext]
-    _registry: object | None
-    _idle_streak: int
-    # Per-resource worktree-allocation failure backstop (Piece A, issue #60).
-    # The dispatcher tallies failures here and parks keys that cross the
-    # threshold; the state builder snapshots ``_parked_resource_keys`` onto
-    # OrchestratorState each tick so the candidate analyzer excludes them.
-    _resource_failure_counts: dict[str, int]
-    _parked_resource_keys: set[str]
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
@@ -125,16 +98,17 @@ class Dispatcher:
 
     Stable services / collaborators (store, manager, executor, the 1a
     collaborators ``main_repo``/``overrides``, and the sibling components
-    ``state_builder``/``completion``) are captured via the constructor; all
-    orchestrator runtime/control state (read or written) flows through the
-    :class:`_DispatcherHost` Protocol so SIGHUP and per-tick mutation never goes
-    stale.
+    ``state_builder``/``completion``) are captured via the constructor; all shared
+    session state (read or written) lives on the injected :class:`SessionRuntime`,
+    and the cross-component behaviour methods resolve via the narrow
+    :class:`_DispatcherHost` behaviour seam.
     """
 
     def __init__(
         self,
         *,
         host: _DispatcherHost,
+        runtime: SessionRuntime,
         store: DataStore,
         manager: AgentManager,
         executor: PlayExecutor,
@@ -146,6 +120,7 @@ class Dispatcher:
         completion: CompletionProcessor,
     ) -> None:
         self._host = host
+        self._runtime = runtime
         self._store = store
         self._manager = manager
         self._executor = executor
@@ -169,11 +144,11 @@ class Dispatcher:
 
         from agentshore.plays.candidates import build_candidate_plan
 
-        if self._host._end_session_dispatch_started or any(
+        if self._runtime.end_session_dispatch_started or any(
             ctx.play_type == PlayType.END_SESSION
-            for dispatch_id, ctx in self._host._dispatch_ctx.items()
-            if dispatch_id in self._host._in_flight
-            and not self._host._in_flight[dispatch_id].done()
+            for dispatch_id, ctx in self._runtime.dispatch_ctx.items()
+            if dispatch_id in self._runtime.in_flight
+            and not self._runtime.in_flight[dispatch_id].done()
         ):
             _logger.warning(
                 "end_session_revalidation_blocked",
@@ -191,7 +166,7 @@ class Dispatcher:
             return True
 
         availability = candidate_plan.work_availability
-        self._host._last_selection_digest = None
+        self._runtime.last_selection_digest = None
         _logger.warning(
             "end_session_revalidation_blocked",
             session_id=self._session_id,
@@ -206,7 +181,7 @@ class Dispatcher:
             beads_blocks_issue_pickup=availability.beads_blocks_issue_pickup,
         )
         await self._host._safe_call(
-            self._host._state_provider.on_state_update(fresh_state),
+            self._runtime.state_provider.on_state_update(fresh_state),
             "on_state_update_end_session_revalidated",
         )
         return False
@@ -214,8 +189,8 @@ class Dispatcher:
     def shutdown_allows_only_end_agent(self, state: OrchestratorState) -> bool:
         """Return True once the session may only wind down live agents."""
         return (
-            self._host._draining
-            or self._host._stop_requested
+            self._runtime.draining
+            or self._runtime.stop_requested
             or state.session_state in (SessionState.DRAINING, SessionState.SHUTTING_DOWN)
         )
 
@@ -281,7 +256,7 @@ class Dispatcher:
                     classification=MaskClassification.INDEFINITE_WAIT,
                     source=MaskSource.PRECONDITION,
                 )
-                _override_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
+                _override_log = _logger.debug if self._runtime.idle_streak > 1 else _logger.info
                 _override_log(
                     "override_waiting_for_play_type",
                     play_type=entry.play_type.value,
@@ -299,7 +274,7 @@ class Dispatcher:
         if (
             entry is not None
             and not entry.params.bypass_preconditions
-            and isinstance(self._host._registry, _PlayRegistry)
+            and isinstance(self._runtime.registry, _PlayRegistry)
             and entry.play_type in V1_ACTION_ORDER
         ):
             # Single source of truth: route the override through the same
@@ -308,8 +283,8 @@ class Dispatcher:
             # existing masked-override requeue taxonomy.
             authority = EligibilityAuthority(
                 state,
-                self._host._registry,
-                cfg=self._host._cfg,
+                self._runtime.registry,
+                cfg=self._runtime.cfg,
                 config_index=self._host._selector_config_index(),
                 live_graph_loader=self._override_confirm_live_loader(),
             )
@@ -360,7 +335,7 @@ class Dispatcher:
         PPO selector (test stubs / non-beads sessions), matching the selector's
         own fallback.
         """
-        selector = self._host._selector
+        selector = self._runtime.selector
         if not isinstance(selector, _ppo_selector_cls()):
             return None
         return selector._build_live_graph_loader()
@@ -476,8 +451,8 @@ class Dispatcher:
         reason: MaskReason | str,
         event: str,
     ) -> None:
-        if isinstance(self._host._selector, _ppo_selector_cls()):
-            self._host._selector.consume_pending()
+        if isinstance(self._runtime.selector, _ppo_selector_cls()):
+            self._runtime.selector.consume_pending()
         claim_group_id = params.extras.get("claim_group_id")
         if isinstance(claim_group_id, str) and claim_group_id:
             await self._host._safe_call(
@@ -555,8 +530,8 @@ class Dispatcher:
         """Select the next play: queued override > selector > None (idle)."""
         if override_play is not None:
             return override_play
-        if self._host._selector is not None:
-            return await self._host._selector.select(state)
+        if self._runtime.selector is not None:
+            return await self._runtime.selector.select(state)
         return None
 
     async def dispatch_play(
@@ -594,12 +569,12 @@ class Dispatcher:
             )
             return False
         if play_type == PlayType.END_SESSION and (
-            self._host._end_session_dispatch_started
+            self._runtime.end_session_dispatch_started
             or any(
                 ctx.play_type == PlayType.END_SESSION
-                for dispatch_id, ctx in self._host._dispatch_ctx.items()
-                if dispatch_id in self._host._in_flight
-                and not self._host._in_flight[dispatch_id].done()
+                for dispatch_id, ctx in self._runtime.dispatch_ctx.items()
+                if dispatch_id in self._runtime.in_flight
+                and not self._runtime.in_flight[dispatch_id].done()
             )
         ):
             await self.drop_selected_play_before_dispatch(
@@ -774,7 +749,7 @@ class Dispatcher:
             )
 
         if play_type == PlayType.END_SESSION:
-            self._host._end_session_dispatch_started = True
+            self._runtime.end_session_dispatch_started = True
         # OrchestratorState is intentionally non-frozen to allow in-loop state patching.
         # Populate the typed ActivePlay snapshot so IPC consumers see what's
         # running, who is running it, and when it started without waiting
@@ -791,13 +766,13 @@ class Dispatcher:
             trigger_error_class=_str_extra(params, "trigger_error_class"),
         )
         await self._host._safe_call(
-            self._host._state_provider.on_state_update(state), "on_state_update"
+            self._runtime.state_provider.on_state_update(state), "on_state_update"
         )
         # The real executor emits this after agent selection. Tests and
         # adapters may provide a simpler executor that does not.
         if getattr(self._executor, "emits_play_started", None) is not True:
             await self._host._safe_call(
-                self._host._state_provider.on_play_started(play_type, params),
+                self._runtime.state_provider.on_play_started(play_type, params),
                 "on_play_started",
             )
 
@@ -821,8 +796,8 @@ class Dispatcher:
         self._main_repo.record_pre_play_branch(dispatch_id, pre_play_ref)
 
         pending: object | None = None
-        if isinstance(self._host._selector, _ppo_selector_cls()):
-            pending = self._host._selector.consume_pending()
+        if isinstance(self._runtime.selector, _ppo_selector_cls()):
+            pending = self._runtime.selector.consume_pending()
 
         # Read-and-clear: the very next dispatch consumes whatever
         # _consume_override left behind. Any subsequent dispatch (e.g. PPO-
@@ -844,6 +819,6 @@ class Dispatcher:
             self._executor.execute(play_type, state, override=params)
         )
         task_obj.add_done_callback(_log_task_exception)
-        self._host._in_flight[dispatch_id] = task_obj
-        self._host._dispatch_ctx[dispatch_id] = ctx
+        self._runtime.in_flight[dispatch_id] = task_obj
+        self._runtime.dispatch_ctx[dispatch_id] = ctx
         return True

@@ -24,18 +24,16 @@ from agentshore.state import (
 )
 
 if TYPE_CHECKING:
-    import collections
     from collections.abc import Iterable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
-    from agentshore.config import RuntimeConfig
     from agentshore.config.models import BudgetConfig
-    from agentshore.core.context import _DispatchContext
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.snapshots import SnapshotProjector
     from agentshore.core.override_queue import OverrideQueue
     from agentshore.core.recovery_tracker import RecoveryTracker
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import (
         DataStore,
@@ -131,42 +129,17 @@ def _merge_recent_completions(
 
 
 class _StateBuilderHost(Protocol):
-    """Orchestrator runtime/control state read live by :class:`StateBuilder`.
+    """Orchestrator *behaviour* the :class:`StateBuilder` invokes.
 
-    These members are read fresh via ``self._host.<attr>`` on every call so
-    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight maps, pause
-    event, recent-completion deques, drain latches) are always current — never
-    captured at construction. ``_OrchestratorBase`` structurally satisfies this
-    Protocol.
+    All shared session *state* now lives on :class:`SessionRuntime` (reached via
+    ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
+    the cross-component methods resolve on the composition root without a circular
+    import. ``_OrchestratorBase`` structurally satisfies it.
     """
 
-    _cfg: RuntimeConfig
-    _loop_started_at: float
-
     def effective_budget_caps(self) -> BudgetConfig:
-        """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        """Live-effective budget caps (overrides shadowing ``cfg.budget``)."""
         ...
-
-    _selector: PlaySelector | None
-    _registry: object | None
-    _policy_version: str
-    _stop_requested: bool
-    _draining: bool
-    _drain_reason: str | None
-    # Live main-repo dispatch-pause latch + END_SESSION-in-flight flag, snapshot
-    # each tick into OrchestratorState so the action mask can hide the
-    # corresponding plays from PPO (dispatch.py gates 1-2 remain the backstop).
-    _main_repo: MainRepoGuard
-    _end_session_dispatch_started: bool
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _dispatch_ctx: dict[str, _DispatchContext]
-    _pause_event: asyncio.Event
-    _recent_play_completions: collections.deque[PlayRecord]
-    _recent_applied_labels: collections.deque[tuple[int, str]]
-    # Session-scoped park set for resources whose worktree allocation failed
-    # repeatedly (Piece A). Snapshotted onto OrchestratorState each tick so the
-    # state-only candidate analyzer can exclude them.
-    _parked_resource_keys: set[str]
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
 
@@ -178,22 +151,26 @@ class StateBuilder:
         self,
         *,
         host: _StateBuilderHost,
+        runtime: SessionRuntime,
         store: DataStore,
         manager: AgentManager,
         executor: PlayExecutor,
         session_id: str,
         repo_root: Path,
+        main_repo: MainRepoGuard,
         snapshots: SnapshotProjector,
         velocity: VelocityTracker,
         recovery: RecoveryTracker,
         overrides: OverrideQueue,
     ) -> None:
         self._host = host
+        self._runtime = runtime
         self._store = store
         self._manager = manager
         self._executor = executor
         self._session_id = session_id
         self._repo_root = repo_root
+        self._main_repo = main_repo
         self._snapshots = snapshots
         self._velocity = velocity
         self._recovery = recovery
@@ -279,7 +256,9 @@ class StateBuilder:
         # for tens to hundreds of ms — long enough for same-tick instantiate_agent
         # pairs to slip past the cooldown mask (desktop-65bg). The deque is
         # capped at 64 plays so the merge cost is bounded.
-        play_history = _merge_recent_completions(play_history, self._host._recent_play_completions)
+        play_history = _merge_recent_completions(
+            play_history, self._runtime.recent_play_completions
+        )
 
         # Sibling shadow for per-issue applied labels (desktop-quv9). Without
         # this, a successful systematic_debugging that adds ROOT_CAUSE_FOUND_LABEL
@@ -288,7 +267,7 @@ class StateBuilder:
         # follow-up ``get_open_issues`` read. The merge augments the cached
         # issue records with shadow labels so the candidate filter
         # (``issue_available_for_debug``) excludes the freshly-labelled issue.
-        open_issues = _merge_recent_applied_labels(open_issues, self._host._recent_applied_labels)
+        open_issues = _merge_recent_applied_labels(open_issues, self._runtime.recent_applied_labels)
 
         # Closed issues from the last 24 hours feed the dashboard's Done
         # column. The frontend routes anything with state="closed" to Done,
@@ -354,7 +333,7 @@ class StateBuilder:
         """Release active claims owned by agents that have stayed idle for several ticks."""
         from agentshore.state import AgentStatus
 
-        threshold = self._host._cfg.rl.stale_idle_claim_release_ticks
+        threshold = self._runtime.cfg.rl.stale_idle_claim_release_ticks
         if threshold <= 0:
             self._idle_agent_claim_ticks.clear()
             return
@@ -403,14 +382,14 @@ class StateBuilder:
         """Attach action_mask + mask_reasons; logs and continues on failure."""
         from agentshore.plays.registry import PlayRegistry as _PlayRegistry
 
-        registry = self._host._registry
+        registry = self._runtime.registry
         if not isinstance(registry, _PlayRegistry):
             return
         from agentshore.plays.candidates import build_candidate_plan
         from agentshore.rl.mask import compute_action_mask, compute_mask_reasons
 
         try:
-            cfg = self._host._cfg
+            cfg = self._runtime.cfg
             config_index = self._host._selector_config_index()
             candidate_plan = build_candidate_plan(state)
             mask_arr = compute_action_mask(
@@ -472,7 +451,7 @@ class StateBuilder:
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
-        cfg = self._host._cfg
+        cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
         pull_requests = self._snapshots.project_pull_requests(data.pr_records)
@@ -517,7 +496,7 @@ class StateBuilder:
             seed_freshness,
             consecutive_nonproductive_by_type,
         ) = self._snapshots.compute_play_recency(data.play_history)
-        loop_started_at = self._host._loop_started_at
+        loop_started_at = self._runtime.loop_started_at
         elapsed_minutes = (
             (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
         )
@@ -530,18 +509,18 @@ class StateBuilder:
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)
 
-        if self._host._stop_requested:
+        if self._runtime.stop_requested:
             session_state = SessionState.SHUTTING_DOWN
-        elif self._host._draining:
+        elif self._runtime.draining:
             session_state = SessionState.DRAINING
-        elif not self._host._pause_event.is_set():
+        elif not self._runtime.pause_event.is_set():
             session_state = SessionState.PAUSED
         else:
             session_state = SessionState.RUNNING
-        in_flight = self._host._in_flight
+        in_flight = self._runtime.in_flight
         in_flight_plays = [
             ctx.play_type
-            for dispatch_id, ctx in self._host._dispatch_ctx.items()
+            for dispatch_id, ctx in self._runtime.dispatch_ctx.items()
             if dispatch_id in in_flight and not in_flight[dispatch_id].done()
         ]
 
@@ -550,8 +529,8 @@ class StateBuilder:
         # recheck as a backstop because state can flip between selection and
         # dispatch. end_session_in_flight mirrors dispatch_play gate 2's
         # condition (started latch OR any in-flight END_SESSION dispatch).
-        main_repo_dispatch_paused = self._host._main_repo.dispatch_paused
-        end_session_in_flight = self._host._end_session_dispatch_started or (
+        main_repo_dispatch_paused = self._main_repo.dispatch_paused
+        end_session_in_flight = self._runtime.end_session_dispatch_started or (
             PlayType.END_SESSION in in_flight_plays
         )
 
@@ -582,7 +561,7 @@ class StateBuilder:
                 if cfg.trusted_ids.restrict_issues_to_trusted_authors
                 else frozenset()
             ),
-            parked_resource_keys=frozenset(self._host._parked_resource_keys),
+            parked_resource_keys=frozenset(self._runtime.parked_resource_keys),
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,
@@ -592,12 +571,12 @@ class StateBuilder:
             main_repo_dispatch_paused=main_repo_dispatch_paused,
             end_session_in_flight=end_session_in_flight,
             recovery_exhausted_agent_ids=self._recovery.recovery_exhausted_agent_ids(agents),
-            drain_reason=self._host._drain_reason if self._host._draining else None,
+            drain_reason=self._runtime.drain_reason if self._runtime.draining else None,
             graph=data.graph,
             stats=stats,
             run_mode=cfg.mode,
             action_space_version=ACTION_SPACE_VERSION,
-            policy_version=self._host._policy_version,
+            policy_version=self._runtime.policy_version,
             policy_checkpoint_id=data.policy_checkpoint_id,
             seed_freshness=seed_freshness,
             learnings_count=data.learnings_count,
