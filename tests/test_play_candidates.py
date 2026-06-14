@@ -882,3 +882,58 @@ def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
     assert parked.candidates_for(PlayType.UNBLOCK_PR) == ()
     reasons = parked.blocked_reasons_by_play_type.get(PlayType.UNBLOCK_PR, ())
     assert any("parked" in r and "pr:489" in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# Parity: PlayCandidateService.candidates_for agrees with build_candidate_plan
+# wherever the service adds no store/GitHub-only candidates. Guards the unified
+# single source of candidate logic against future drift.
+# ---------------------------------------------------------------------------
+
+
+def _candidate_keys(candidates: object) -> set[tuple[object, object, object]]:
+    """Identity of a candidate ignoring resolver-only fields (target_agent_id)."""
+    return {
+        (c.play_type, c.params.issue_number, c.params.pr_number)
+        for c in candidates  # type: ignore[attr-defined]
+    }
+
+
+async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
+    """For a representative state, the resolver service and the pure-state plan
+    select the same candidate set per play type, once the store mirrors live
+    state and there is no GitHub fallback (the only service-specific additions).
+    """
+    issues = [_issue(1), _issue(2, labels=["agentshore/needs-refinement"]), _issue(3)]
+    review_pr = _pr(10, review_decision=None)  # needs review
+    merge_pr = _pr(11, mergeable="MERGEABLE", review_decision="APPROVED")
+    unblock_pr = _pr(12, mergeable="CONFLICTING", blocked=True, blocked_reasons=["merge_conflict"])
+    prs = [review_pr, merge_pr, unblock_pr]
+    reviewer = _reviewer("c1", AgentType.CLAUDE_CODE)
+
+    state = _state(open_issues=issues, pull_requests=prs, agents=[reviewer])
+    plan = build_candidate_plan(state)
+
+    store = MagicMock()
+    # Store mirrors live state so the store-backed passes have no extra rows.
+    store.list_pending_reviews = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=prs)
+    store.list_open_pull_requests = AsyncMock(return_value=prs)
+    store.complete_review = AsyncMock()
+    service = PlayCandidateService(store=store, cfg=RuntimeConfig(), github=None)
+
+    for play_type in (
+        PlayType.WRITE_IMPLEMENTATION_PLAN,
+        PlayType.REFINE_TASK_BREAKDOWN,
+        PlayType.SYSTEMATIC_DEBUGGING,
+        PlayType.ISSUE_PICKUP,
+        PlayType.CODE_REVIEW,
+        PlayType.MERGE_PR,
+        PlayType.UNBLOCK_PR,
+    ):
+        service_candidates = await service.candidates_for(
+            play_type, state, idle_reviewers=[reviewer]
+        )
+        assert _candidate_keys(service_candidates) == _candidate_keys(
+            plan.candidates_for(play_type)
+        ), f"candidate set diverged for {play_type}"
