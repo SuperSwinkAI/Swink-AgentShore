@@ -91,6 +91,7 @@ __all__ = [
     "WorktreeConfig",
     "generate_default_config",
     "load_config",
+    "render_config_yaml",
 ]
 
 _DEFAULT_YAML_TEMPLATE = """\
@@ -315,12 +316,21 @@ socket: null
 """
 
 
-def _build_default_yaml() -> str:
-    """Render the built-in default ``agentshore.yaml`` text.
+def render_config_yaml() -> str:
+    """Render the canonical built-in default ``agentshore.yaml`` text.
 
-    Per-agent pricing blocks are injected from the canonical
+    Single named entry point for the on-disk default config used by
+    ``load_config(None)``, :func:`generate_default_config`, and the desktop /
+    init paths. Per-agent pricing blocks are injected from the canonical
     :data:`agentshore.agents.pricing.AGENT_PRICING` source so the defaults
-    cannot drift from the config parser and CLI template generator.
+    cannot drift from the config parser; the CLI's minimal/parameterised
+    generator (:func:`agentshore.cli_helpers._generate_default_config`) shares
+    the same per-agent block renderer.
+
+    NOTE: this canonical template intentionally curates ``claude_code`` and
+    ``codex`` down to ``small``/``medium`` tiers (no ``large``), which is why it
+    is rendered from a curated string rather than blindly from
+    ``default_model_tiers_for`` (that map also defines a ``large`` tier for both).
     """
     from agentshore.agents.pricing import pricing_yaml_lines
 
@@ -331,6 +341,11 @@ def _build_default_yaml() -> str:
         block = "\n".join(pricing_yaml_lines(agent_key))
         text = text.replace(f"$PRICING_{agent_key}", block)
     return text
+
+
+def _build_default_yaml() -> str:
+    """Backward-compatible alias for :func:`render_config_yaml`."""
+    return render_config_yaml()
 
 
 # ---------------------------------------------------------------------------

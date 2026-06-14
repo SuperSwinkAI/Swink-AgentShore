@@ -16,6 +16,43 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from agentshore.config.models import AgentConfig
+
+
+def agent_config_to_yaml_dict(acfg: AgentConfig) -> dict[str, object]:
+    """Serialize an :class:`AgentConfig` to the on-disk ``agents.<key>`` mapping.
+
+    Pure (no I/O) so it can be unit-tested in isolation. Emits only the fields
+    the agent-setup wizard persists: ``enabled`` always, then ``model`` /
+    ``reasoning_effort`` / ``approved_models`` / ``model_tiers`` / ``extra_flags``
+    when populated. ``model_tiers`` entries carry ``enabled``/``model``/``max``
+    plus ``reasoning_effort`` only when set.
+    """
+    out: dict[str, object] = {"enabled": acfg.enabled}
+    if acfg.model:
+        out["model"] = acfg.model
+    if acfg.reasoning_effort:
+        out["reasoning_effort"] = acfg.reasoning_effort
+    if acfg.approved_models:
+        out["approved_models"] = list(acfg.approved_models)
+    if acfg.model_tiers:
+        out["model_tiers"] = {
+            tier: {
+                "enabled": tier_cfg.enabled,
+                "model": tier_cfg.model,
+                "max": tier_cfg.max,
+                **(
+                    {"reasoning_effort": tier_cfg.reasoning_effort}
+                    if tier_cfg.reasoning_effort
+                    else {}
+                ),
+            }
+            for tier, tier_cfg in acfg.model_tiers.items()
+        }
+    if acfg.extra_flags:
+        out["extra_flags"] = list(acfg.extra_flags)
+    return out
+
 
 def ruamel_set_nested(config_path: Path, keys: Sequence[str], value: object) -> None:
     """Set the nested *keys* path to *value* in *config_path*, preserving comments.

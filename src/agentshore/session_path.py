@@ -627,6 +627,50 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
 # -- high-level operations --------------------------------------------------
 
 
+def _connect_ipc(endpoint: IpcEndpoint, sock: socket.socket) -> bool:
+    """Connect *sock* to *endpoint*. Returns False for an unaddressable unix path."""
+    if endpoint.kind == "unix":
+        if endpoint.path is None:
+            return False
+        sock.connect(str(endpoint.path))
+    else:
+        sock.connect((endpoint.host, endpoint.port))
+    return True
+
+
+def _send_ipc_command(
+    project_path: Path,
+    cmd: dict[str, object],
+    *,
+    timeout: float = 5.0,
+    no_endpoint: str,
+) -> str:
+    """Fire-and-forget a single newline-framed JSON command to the orchestrator.
+
+    Shared transport for the fire-and-forget control commands (``drain`` and
+    ``reload_config``): discover the endpoint, connect, send one framed command,
+    and map transport outcomes to a status string. Returns *no_endpoint* when no
+    endpoint is discoverable, ``"sent"`` on success, ``"timeout"`` /
+    ``"error"`` on failure.
+    """
+    endpoint = discover_ipc_endpoint(project_path)
+    if endpoint is None:
+        return no_endpoint
+
+    try:
+        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            if not _connect_ipc(endpoint, sock):
+                return no_endpoint
+            sock.sendall((json.dumps(cmd) + "\n").encode())
+        return "sent"
+    except TimeoutError:
+        return "timeout"
+    except (AttributeError, OSError):
+        return "error"
+
+
 def request_drain(
     project_path: Path,
     *,
@@ -637,33 +681,16 @@ def request_drain(
 
     Returns a status string.
     """
-    endpoint = discover_ipc_endpoint(project_path)
-    if endpoint is None:
-        return "fallback_hard"
-
-    try:
-        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
-        with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
-            if endpoint.kind == "unix":
-                if endpoint.path is None:
-                    return "fallback_hard"
-                sock.connect(str(endpoint.path))
-            else:
-                sock.connect((endpoint.host, endpoint.port))
-            cmd = {
-                "command": "drain",
-                "reason": "cli_request",
-                "end_session_report": end_session_report,
-                "open_report": open_report,
-            }
-            encoded = json.dumps(cmd) + "\n"
-            sock.sendall(encoded.encode())
-        return "sent"
-    except TimeoutError:
-        return "timeout"
-    except (AttributeError, OSError):
-        return "error"
+    return _send_ipc_command(
+        project_path,
+        {
+            "command": "drain",
+            "reason": "cli_request",
+            "end_session_report": end_session_report,
+            "open_report": open_report,
+        },
+        no_endpoint="fallback_hard",
+    )
 
 
 def request_reload_config(project_path: Path) -> str:
@@ -676,28 +703,9 @@ def request_reload_config(project_path: Path) -> str:
     Returns a status string: ``"sent"``, ``"timeout"``, ``"error"``, or
     ``"fallback_hard"`` (no IPC endpoint found).
     """
-    endpoint = discover_ipc_endpoint(project_path)
-    if endpoint is None:
-        return "fallback_hard"
-
-    try:
-        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
-        with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
-            if endpoint.kind == "unix":
-                if endpoint.path is None:
-                    return "fallback_hard"
-                sock.connect(str(endpoint.path))
-            else:
-                sock.connect((endpoint.host, endpoint.port))
-            cmd = {"command": "reload_config"}
-            encoded = json.dumps(cmd) + "\n"
-            sock.sendall(encoded.encode())
-        return "sent"
-    except TimeoutError:
-        return "timeout"
-    except (AttributeError, OSError):
-        return "error"
+    return _send_ipc_command(
+        project_path, {"command": "reload_config"}, no_endpoint="fallback_hard"
+    )
 
 
 def request_add_budget(
@@ -744,12 +752,8 @@ def request_add_budget(
         family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
         with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(12.0)
-            if endpoint.kind == "unix":
-                if endpoint.path is None:
-                    return "no_session"
-                sock.connect(str(endpoint.path))
-            else:
-                sock.connect((endpoint.host, endpoint.port))
+            if not _connect_ipc(endpoint, sock):
+                return "no_session"
 
             sock.sendall((json.dumps(add_cmd) + "\n").encode())
 

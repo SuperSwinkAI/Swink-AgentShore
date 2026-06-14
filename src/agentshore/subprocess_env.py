@@ -50,11 +50,31 @@ __all__ = [
     "git_global_args",
     "timeout_for",
     "kill_tree_sync",
+    "is_interactive",
     "GIT_SSL_BACKEND_ENV",
     "TOOL_TIMEOUT_SCALE_ENV",
     "GIT_EDITOR_ENV",
     "GIT_SEQUENCE_EDITOR_ENV",
+    "NONINTERACTIVE_ENV",
 ]
+
+NONINTERACTIVE_ENV = "AGENTSHORE_NONINTERACTIVE"
+
+
+def is_interactive() -> bool:
+    """Return whether the process may safely run interactive prompts.
+
+    Single source of truth for the "should I prompt?" decision shared by the
+    agent-setup wizard, the identity wizard, and ``agentshore init``. A prompt
+    is allowed only when ``AGENTSHORE_NONINTERACTIVE`` is unset *and* stdin is a
+    real TTY. Honouring the env var matters even on a TTY: scripted/CI runs and
+    the desktop sidecar set it to force every wizard to skip cleanly instead of
+    blocking on input that will never arrive.
+    """
+    if os.environ.get(NONINTERACTIVE_ENV):
+        return False
+    return sys.stdin.isatty()
+
 
 GIT_SSL_BACKEND_ENV = "AGENTSHORE_GIT_SSL_BACKEND"
 TOOL_TIMEOUT_SCALE_ENV = "AGENTSHORE_TOOL_TIMEOUT_SCALE"
