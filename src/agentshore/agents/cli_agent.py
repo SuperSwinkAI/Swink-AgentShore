@@ -926,17 +926,24 @@ async def dispatch_cli(
 
     t_start = time.monotonic()
 
-    # Agent subprocesses run ``git rebase``/``git commit`` inside skills, and
-    # those invocations don't route through ``command.git_sync``'s hardened
-    # env. Inject a non-interactive git editor so a rebase-internal
-    # ``git commit -e`` can't fall back to vim and hang forever, leaking the
-    # worktree (#168). Always set it — even with no identity overlay, where the
-    # agent would otherwise inherit raw ``os.environ`` with no editor pinned.
-    git_editor_env = {
-        subprocess_env.GIT_EDITOR_ENV: "true",
-        subprocess_env.GIT_SEQUENCE_EDITOR_ENV: "true",
-    }
-    env = {**os.environ, **git_editor_env, **(identity_env or {})}
+    # Agent subprocesses run ``git rebase``/``git commit``/``git push`` inside
+    # skills, and those invocations don't route through ``command.git``'s
+    # hardened env. Route the agent's env through the SAME hardened,
+    # non-interactive git policy AgentShore uses for its own git: a no-op editor
+    # (so a rebase-internal ``git commit -e`` can't fall back to vim and hang,
+    # leaking the worktree — #168) AND ``GIT_TERMINAL_PROMPT=0`` / no askpass (so
+    # an agent git op that needs credentials fails *fast* instead of blocking on
+    # a credential prompt with no TTY and hanging the full wall-clock — #177).
+    # When the agent's identity carries a token, inject it as the per-identity
+    # HTTPS credential so the agent authenticates AS ITS OWN identity — each
+    # agent subprocess carries its own token, so multi-identity fleets stay
+    # correctly attributed (codex pushes as its identity, claude_code as its).
+    identity = identity_env or {}
+    token = identity.get("GH_TOKEN") or identity.get("GITHUB_TOKEN")
+    git_overlay = dict(identity)
+    if token:
+        git_overlay.update(subprocess_env.git_auth_config_overlay(token))
+    env = subprocess_env.hardened_env(git_overlay, for_git=True)
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.

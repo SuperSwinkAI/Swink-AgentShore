@@ -488,6 +488,60 @@ def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
         raise SystemExit(1)
 
 
+def preflight_git_auth(cfg: RuntimeConfig, project_path: Path) -> None:
+    """Probe each configured GitHub identity's git-remote auth before the loop.
+
+    Validates that EACH configured identity can authenticate to the repo's git
+    remote non-interactively (HTTPS token header or SSH key), which neither
+    ``preflight_identities`` (GitHub *API* token validity) nor
+    ``preflight_cli_agent_auth`` (model-provider session) covers. Surfaces a
+    broken identity at launch instead of via a mid-run credential-prompt hang.
+
+    Prints a per-identity banner row and exits 1 only if an identity has a
+    definitive git-auth failure. Non-blocking statuses (timeout/error/
+    unprobeable) are surfaced as warnings, not failures. No-op when no
+    identities are configured.
+    """
+    from agentshore.agents.git_auth_probe import probe_all_identities
+
+    results = probe_all_identities(cfg, project_path=project_path)
+    if not results:
+        # No identities configured — nothing to probe. Stay quiet.
+        return
+
+    click.echo("=" * 60)
+    click.echo("  AgentShore — git remote auth")
+    click.echo("=" * 60)
+    for result in results:
+        mark = "✓" if result.ok else "✗"
+        click.echo(f"  {mark} {result.identity_name:<16} {result.status:<12} {result.detail}")
+    click.echo("=" * 60)
+    click.echo()
+
+    # Non-blocking non-ok statuses (timeout/error/unprobeable): surface as
+    # warnings but never gate the launch.
+    for result in results:
+        if not result.ok and not result.blocks_launch:
+            click.echo(
+                f"Warning: could not confirm git auth for identity "
+                f"{result.identity_name!r} ({result.status}): {result.detail}",
+                err=True,
+            )
+
+    blocked = [r for r in results if r.blocks_launch]
+    if blocked:
+        remote = blocked[0].remote or "the git remote"
+        names = ", ".join(r.identity_name for r in blocked)
+        click.echo(
+            f"Error: identity {names} cannot authenticate to {remote}; "
+            "check its token/SSH key. Re-provision the identity (see "
+            "docs/identity.md), or pass --skip-git-auth-preflight for an "
+            "offline/air-gapped run.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+
 def _require_two_distinct_identities(cfg: RuntimeConfig) -> None:
     """Enforce the ≥2 distinct GH identities precondition for code review.
 

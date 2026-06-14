@@ -19,7 +19,7 @@ from agentshore import command
 from agentshore.errors import OrchestratorError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 log = structlog.get_logger(__name__)
 
@@ -102,14 +102,17 @@ async def _run_git(
     cwd: Path,
     check: bool = True,
     timeout: float = 60.0,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a ``git`` subprocess asynchronously and capture stdout/stderr.
 
     Returns ``(returncode, stdout, stderr)``. If ``check`` is true and the
     return code is non-zero, raises ``WorktreeAllocationFailed`` with the
-    failing command embedded in the reason.
+    failing command embedded in the reason. *env_overlay* is passed through to
+    the hardened git layer — used to carry the fetch identity's credential on
+    the one network op (``_fetch``); local ops leave it ``None``.
     """
-    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout)
+    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout, env_overlay=env_overlay)
     if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after {timeout:.0f}s",
@@ -224,16 +227,28 @@ async def _add_worktree_with_collision_retry(
     )
 
 
-async def _fetch(main_repo: Path, *, remote: str = "origin") -> bool:
+async def _fetch(
+    main_repo: Path, *, remote: str = "origin", env_overlay: Mapping[str, str] | None = None
+) -> bool:
     """Best-effort ``git fetch`` against ``remote``.
 
     Returns ``True`` on success, ``False`` on any failure (network, auth,
     etc.). Failures are logged but do not raise — callers proceed with
     whatever local refs they have, marking the result as ``fetched=False``.
+
+    *env_overlay* carries the fetch identity's credential (built by the manager
+    from the default git identity). When ``None`` the fetch is unauthenticated —
+    its historical best-effort behavior, fine for already-public/SSH remotes.
     """
     try:
         rc, _, stderr = await _run_git(
-            "fetch", "--prune", remote, cwd=main_repo, check=False, timeout=120.0
+            "fetch",
+            "--prune",
+            remote,
+            cwd=main_repo,
+            check=False,
+            timeout=120.0,
+            env_overlay=env_overlay,
         )
     except WorktreeAllocationFailed as exc:
         log.warning("worktree_fetch_failed", remote=remote, reason=exc.reason)
@@ -345,6 +360,7 @@ async def ensure_worktree(
     base_ref: str,
     fetch: bool = True,
     remote: str = "origin",
+    fetch_env_overlay: Mapping[str, str] | None = None,
     safe_to_force_remove: Callable[[Path], bool] = _default_safe_to_force_remove,
 ) -> AllocateResult:
     """Idempotently materialise a worktree at ``worktree_path``.
@@ -382,7 +398,9 @@ async def ensure_worktree(
             f"main repo path does not exist: {main_repo}", reason="main_repo_missing"
         )
 
-    fetched = await _fetch(main_repo, remote=remote) if fetch else False
+    fetched = (
+        await _fetch(main_repo, remote=remote, env_overlay=fetch_env_overlay) if fetch else False
+    )
 
     if (
         branch_name is not None

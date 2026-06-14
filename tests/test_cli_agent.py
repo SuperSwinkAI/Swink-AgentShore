@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import tempfile
@@ -632,6 +633,65 @@ async def test_dispatch_cli_pins_noninteractive_git_editor(
     assert env["GIT_SEQUENCE_EDITOR"] == "true"
     if identity_env is not None:
         assert env["GH_TOKEN"] == "tok"
+
+
+async def test_dispatch_cli_injects_per_identity_git_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the agent's identity carries a token, the dispatched env hardens git
+    (``GIT_TERMINAL_PROMPT=0`` — so a credential prompt fails fast instead of
+    hanging the full wall-clock, #177) AND injects the token as an HTTPS
+    Basic-auth header so the agent's own ``git push`` authenticates AS ITS OWN
+    identity, non-interactively. Multi-identity-safe: the header is derived from
+    *this* subprocess's token."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_kwargs.append(kwargs)
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, identity_env={"GH_TOKEN": "tok-xyz"})
+
+    assert result.exit_code == 0
+    env = captured_kwargs[0]["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    count = int(env["GIT_CONFIG_COUNT"])
+    values = [env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)]
+    expected = base64.b64encode(b"x-access-token:tok-xyz").decode("ascii")
+    assert f"Authorization: Basic {expected}" in values
+
+
+async def test_dispatch_cli_hardens_git_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no identity token the env is still hardened (no hang) but injects no
+    auth header — nothing to authenticate with, so no GIT_CONFIG auth trio."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_kwargs.append(kwargs)
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, identity_env=None)
+
+    assert result.exit_code == 0
+    env = captured_kwargs[0]["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_CONFIG_COUNT" not in env
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="prompt-on-stdin is Windows-only")

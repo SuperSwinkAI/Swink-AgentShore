@@ -27,6 +27,11 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from agentshore import subprocess_env
+from agentshore.agents.identity import (
+    resolve_identity_env_by_name,
+    select_default_git_identity,
+)
 from agentshore.agents.worktree.allocator import (
     AllocateResult,
     WorktreeAllocationFailed,
@@ -59,7 +64,7 @@ from agentshore.state import PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from agentshore.config.models import RuntimeConfig
     from agentshore.data.store import DataStore
@@ -67,6 +72,30 @@ if TYPE_CHECKING:
     from agentshore.state import PlayOutcome, SkillResult
 
 log = structlog.get_logger(__name__)
+
+
+def _resolve_fetch_overlay(cfg: RuntimeConfig) -> dict[str, str] | None:
+    """Build the git-auth overlay for the shared worktree fetch, or ``None``.
+
+    Selects the default git identity (gh-OAuth-preferred, see
+    :func:`select_default_git_identity`), resolves its credential env, and pairs
+    the token with the HTTPS auth header via
+    :func:`subprocess_env.git_auth_config_overlay`. Any miss (no identities, no
+    token) yields ``None`` so the fetch falls back to unauthenticated — never
+    breaking allocation.
+    """
+    name = select_default_git_identity(cfg)
+    if not name:
+        return None
+    ident_env = resolve_identity_env_by_name(cfg, name)
+    token = ident_env.get("GH_TOKEN") or ident_env.get("GITHUB_TOKEN")
+    if not token:
+        log.info("worktree_fetch_identity_unauthenticated", identity=name)
+        return None
+    overlay = dict(ident_env)
+    overlay.update(subprocess_env.git_auth_config_overlay(token))
+    log.info("worktree_fetch_identity_selected", identity=name)
+    return overlay
 
 
 # --- Play-to-worktree routing -------------------------------------------------
@@ -188,6 +217,10 @@ class WorktreeManager:
         # held by ``async with`` blocks during allocation.
         self._alloc_locks: dict[str, asyncio.Lock] = {}
         self._alloc_locks_guard = asyncio.Lock()
+        # Memoized git-auth overlay for the shared (agent-agnostic) worktree
+        # fetch; resolved once on first allocation. ``None`` == unauthenticated.
+        self._fetch_overlay: dict[str, str] | None = None
+        self._fetch_overlay_resolved = False
 
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
@@ -232,6 +265,21 @@ class WorktreeManager:
             stale_keys = [k for k in self._alloc_locks if k not in live_keys]
             for k in stale_keys:
                 del self._alloc_locks[k]
+
+    def _fetch_auth_overlay(self) -> Mapping[str, str] | None:
+        """Memoized git-auth env for the shared, agent-agnostic worktree fetch.
+
+        The shared main-repo fetch runs before any agent is bound and is
+        read-only (no authorship/push/PR), so a single read-capable identity is
+        correct and carries no write/attribution semantics — the per-agent write
+        path stays each agent's own identity. Resolves the default git identity
+        (gh-OAuth-preferred) once; returns ``None`` when none resolves, leaving
+        the fetch unauthenticated (its historical best-effort behavior).
+        """
+        if not self._fetch_overlay_resolved:
+            self._fetch_overlay_resolved = True
+            self._fetch_overlay = _resolve_fetch_overlay(self._cfg)
+        return self._fetch_overlay
 
     @property
     def main_repo(self) -> Path:
@@ -546,6 +594,7 @@ class WorktreeManager:
                     branch_name=branch_name,
                     base_ref=base_ref,
                     fetch=True,
+                    fetch_env_overlay=self._fetch_auth_overlay(),
                     safe_to_force_remove=_is_reclaimable_collision,
                 )
             except WorktreeAllocationFailed as exc:
@@ -576,6 +625,7 @@ class WorktreeManager:
             branch_name=branch_name,
             base_ref=base_ref,
             fetch=True,
+            fetch_env_overlay=self._fetch_auth_overlay(),
             safe_to_force_remove=_is_reclaimable_collision,
         )
         await self._verify_worktree_registered(allocate, scope=scope)

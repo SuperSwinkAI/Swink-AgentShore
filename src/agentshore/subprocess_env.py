@@ -32,6 +32,7 @@ This module is intentionally dependency-light (stdlib only) so the low-level
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import os
 import shutil
@@ -48,6 +49,7 @@ __all__ = [
     "reset_caches",
     "hardened_env",
     "git_global_args",
+    "git_auth_config_overlay",
     "timeout_for",
     "kill_tree_sync",
     "is_interactive",
@@ -245,6 +247,54 @@ def git_global_args() -> list[str]:
         if backend:
             args += ["-c", f"http.sslBackend={backend}"]
     return args
+
+
+#: Default GitHub host. Most installs are github.com; GHE installs override via
+#: the ``host`` argument (derived from the repo's origin URL by the caller).
+GITHUB_HOST = "github.com"
+
+#: GitHub's required username when authenticating with a token over HTTPS.
+_GIT_TOKEN_USERNAME = "x-access-token"
+
+
+def git_auth_config_overlay(token: str, *, host: str = GITHUB_HOST) -> dict[str, str]:
+    """Env entries that make non-interactive git authenticate to *host* as *token*.
+
+    Returns ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_n`` / ``GIT_CONFIG_VALUE_n``
+    env vars that inject, for this process and any git it spawns:
+
+    * ``http.https://<host>/.extraheader = Authorization: Basic <b64>`` — the
+      token as HTTP Basic auth (the exact mechanism ``actions/checkout`` uses),
+      scoped to ``host`` only so the token never leaks to another remote; and
+    * ``credential.helper=`` + ``credential.interactive=never`` — so a bad/expired
+      token (401) fails *fast* through the disabled-prompt path instead of
+      falling back to an interactive credential helper and hanging.
+
+    Delivered purely via the environment — no on-disk askpass/helper script — so
+    it works uniformly for AgentShore's own :func:`agentshore.command.git` calls
+    *and* for a CLI agent subprocess running ``git push`` itself. Each process
+    carries its *own* identity's token, so the correct identity authenticates
+    per process; this is the multi-identity-safe credential path.
+
+    *token* is the GitHub identity token (PAT / ``gh`` OAuth / keychain). It is
+    paired with the literal ``x-access-token`` username GitHub expects and lands
+    only in ``GIT_CONFIG_VALUE_0`` — an env *value*, never an argv or a log field
+    (call sites log env keys only, never values).
+
+    Note: assumes the caller has not pre-populated ``GIT_CONFIG_COUNT`` in the
+    base environment (AgentShore never does); these entries replace, not append.
+    """
+    basic = base64.b64encode(f"{_GIT_TOKEN_USERNAME}:{token}".encode()).decode("ascii")
+    entries: tuple[tuple[str, str], ...] = (
+        ("credential.helper", ""),
+        ("credential.interactive", "never"),
+        (f"http.https://{host}/.extraheader", f"Authorization: Basic {basic}"),
+    )
+    overlay: dict[str, str] = {"GIT_CONFIG_COUNT": str(len(entries))}
+    for index, (key, value) in enumerate(entries):
+        overlay[f"GIT_CONFIG_KEY_{index}"] = key
+        overlay[f"GIT_CONFIG_VALUE_{index}"] = value
+    return overlay
 
 
 def hardened_env(

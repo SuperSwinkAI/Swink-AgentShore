@@ -56,6 +56,34 @@ in log events — only the source and, after validation, the resolved login.
   AgentShore-managed keychain service whose name encodes the login. Suited to
   desktop use: paste once through the wizard, repo-scoped storage thereafter.
 
+## Git credential handling (how the token reaches `git`)
+
+The resolved token authenticates an agent's *own* `git` (push/fetch inside its
+worktree) non-interactively. Each agent subprocess runs git under a hardened
+env: `GIT_TERMINAL_PROMPT=0` plus an `http.https://github.com/.extraheader`
+Basic-auth header derived from that agent's token (the same mechanism
+`actions/checkout` uses). Because the header is built per subprocess, each agent
+authenticates **as its own identity** — `claude_code` pushes as its login,
+`codex` as its login — with no shared-token bleed. Without this hardening an
+HTTPS credential prompt has no TTY to answer and the agent hangs to the
+wall-clock timeout instead of failing fast (the cause of the codex 3600s
+`issue_pickup` hang).
+
+The **shared worktree fetch** is the one git op with no owning agent — it runs
+at allocation time, before any agent is bound. It is read-only (no authorship,
+push, or PR), so it uses a single **default git identity** chosen by preference
+order: an identity authed via `gh_token_login` (gh OAuth) first, then
+`gh_token_keychain`, then `gh_token_env` (PAT), then the first configured
+identity. A read-only fetch carries no write/attribution semantics, so a single
+read-capable identity here does not affect the per-agent identity invariant. If
+no token resolves, the fetch stays unauthenticated (best-effort, falling back to
+local refs) — exactly its prior behavior.
+
+A per-identity `git ls-remote` preflight runs at `agentshore start` (after the
+identity and CLI-backend-auth preflights) to surface an identity that can't
+authenticate to the remote *before* the loop boots, rather than via a mid-run
+hang. Bypass with `--skip-git-auth-preflight`.
+
 ## Startup requirement: two distinct identities
 
 Because Code Review needs the reviewer's login to differ from the author's,

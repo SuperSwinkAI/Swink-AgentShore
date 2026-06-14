@@ -30,6 +30,7 @@ from agentshore.session.bootstrap import (
     bootstrap_session,
     echo_bootstrap_summary,
     preflight_cli_agent_auth,
+    preflight_git_auth,
     preflight_identities,
     validate_budget_flag,
 )
@@ -158,6 +159,16 @@ from agentshore.session.bootstrap import (
         "air-gapped runs where the model-provider session can't be reached)."
     ),
 )
+@click.option(
+    "--skip-git-auth-preflight",
+    "skip_git_auth_preflight",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip the per-identity git-remote auth preflight probe (for offline/CI/"
+        "air-gapped runs where the git remote can't be reached)."
+    ),
+)
 @click.option("--session-id", hidden=True, default=None)
 def start(
     seed: str | None,
@@ -178,6 +189,7 @@ def start(
     project: str,
     config_path: str | None,
     skip_auth_preflight: bool,
+    skip_git_auth_preflight: bool,
     session_id: str | None,
 ) -> None:
     """Start an AgentShore session.
@@ -251,6 +263,8 @@ def start(
     preflight_identities(resolved.cfg, resolved.repo_root)
     if not skip_auth_preflight:
         preflight_cli_agent_auth(resolved.cfg)
+    if not skip_git_auth_preflight:
+        preflight_git_auth(resolved.cfg, resolved.project_path)
 
     # -- Dispatch: run the orchestrator -----------------------------------------
     from agentshore.session_path import (
