@@ -739,6 +739,15 @@ select:focus-visible {
   color: var(--warning);
 }
 
+/* Neutral/informational badge — e.g. an agent whose backend auth can't be
+   probed ("unprobeable"): neither success nor failure, so styled muted rather
+   than colored. */
+.badge-info {
+  border-color: var(--fm-border);
+  background: transparent;
+  color: var(--muted);
+}
+
 .id-add-form {
   display: grid;
   gap: 12px;
