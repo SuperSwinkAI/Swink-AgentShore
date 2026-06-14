@@ -31,6 +31,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from agentshore import subprocess_env
 from agentshore.state import CLI_AGENT_TYPES, AgentType
 
 if TYPE_CHECKING:
@@ -141,39 +142,56 @@ def probe_cli_auth(
 
     full_env = {**os.environ, **(env or {})}
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, resolved binary
+        # Popen (not subprocess.run) so a timeout can tree-kill: the probed CLIs
+        # (codex) are node shims that spawn children; subprocess.run's own
+        # timeout kill reaps only the direct child and leaves the node subtree
+        # alive. CREATE_NO_WINDOW + new process group (Windows; 0 elsewhere)
+        # suppresses the console flash / AV window-hooking latency this module
+        # exists to avoid and roots the child in a killable group, matching the
+        # dispatch path in cli_agent and the hardened runner in command.py.
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
             [resolved, *argv_tail],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=full_env,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             # Pin stdin (never inherit the parent's): the desktop sidecar's
             # stdin is the live Tauri JSON-RPC pipe, and the very CLIs we probe
             # (codex) wedge on a contended/empty stdin. Enforced by
             # tests/test_subprocess_stdin_guard.py.
             stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        return AuthProbeResult(
-            agent_type, AUTH_TIMEOUT, f"auth probe timed out after {timeout:g}s"
+            text=True,
+            env=full_env,
+            creationflags=subprocess_env.no_window_creationflags(),
         )
     except OSError as exc:
         return AuthProbeResult(agent_type, AUTH_ERROR, str(exc)[:200])
 
-    combined = f"{proc.stdout}\n{proc.stderr}".lower()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Kill the whole tree (codex → node), not just the direct child, so
+        # nothing lingers past the probe.
+        if proc.pid is not None:
+            subprocess_env.kill_tree_sync(proc.pid)
+        proc.kill()
+        proc.communicate()
+        return AuthProbeResult(agent_type, AUTH_TIMEOUT, f"auth probe timed out after {timeout:g}s")
+
+    stdout = stdout or ""
+    stderr = stderr or ""
+    combined = f"{stdout}\n{stderr}".lower()
     if any(marker in combined for marker in _NOT_AUTHED_MARKERS):
-        detail = _first_meaningful_line(proc.stderr) or _first_meaningful_line(proc.stdout)
+        detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
         return AuthProbeResult(
             agent_type, AUTH_EXPIRED, detail or "backend session not authenticated"
         )
     if proc.returncode != 0:
-        detail = _first_meaningful_line(proc.stderr) or _first_meaningful_line(proc.stdout)
+        detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
         return AuthProbeResult(
             agent_type,
             AUTH_ERROR,
-            f"auth probe exited {proc.returncode}: {detail}" if detail else
-            f"auth probe exited {proc.returncode}",
+            f"auth probe exited {proc.returncode}: {detail}"
+            if detail
+            else f"auth probe exited {proc.returncode}",
         )
     return AuthProbeResult(agent_type, AUTH_OK, "authenticated")
 

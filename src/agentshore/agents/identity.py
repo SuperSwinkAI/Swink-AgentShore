@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import ssl
 import sys
 import urllib.error
@@ -74,6 +75,22 @@ class _TokenResolution:
 
 def _expanded_gh_config_dir(gh_config_dir: str | None) -> str | None:
     return os.path.expanduser(gh_config_dir) if gh_config_dir else None
+
+
+def _git_ssh_command(ssh_key_path: str) -> str:
+    """Build a ``GIT_SSH_COMMAND`` that survives git's own argv tokenizer.
+
+    git parses ``GIT_SSH_COMMAND`` with a POSIX shell-style splitter
+    (``sq_dequote``), not by handing it to the OS verbatim. A bare Windows key
+    path (``C:\\Users\\First Last\\.ssh\\id_ed25519``) is therefore mangled: the
+    backslashes are eaten as escapes and the space splits the path into two
+    arguments, so SSH-remote identities silently fail to authenticate. Normalise
+    to forward slashes (OpenSSH's ``ssh.exe`` accepts them in ``-i`` on Windows)
+    and single-quote the path so spaces and other metacharacters are preserved
+    identically on every platform.
+    """
+    key = Path(os.path.expanduser(ssh_key_path)).as_posix()
+    return f"ssh -i {shlex.quote(key)} -o IdentitiesOnly=yes"
 
 
 def _keychain_services(service: str) -> list[str]:
@@ -571,9 +588,7 @@ class IdentityResolver:
             overlay["GH_CONFIG_DIR"] = str(_isolated_gh_config_dir(name))
 
         if ident.ssh_key_path:
-            overlay["GIT_SSH_COMMAND"] = (
-                f"ssh -i {os.path.expanduser(ident.ssh_key_path)} -o IdentitiesOnly=yes"
-            )
+            overlay["GIT_SSH_COMMAND"] = _git_ssh_command(ident.ssh_key_path)
 
         return overlay
 
