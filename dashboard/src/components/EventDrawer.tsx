@@ -301,6 +301,16 @@ function currentPlayMatchesCard(current: ActivePlay, card: EventCard): boolean {
   );
 }
 
+function endCardFromSnapshot(card: EventCard, result: string): EventCard {
+  return {
+    ...card,
+    status: "failed",
+    result,
+    endedAt: card.endedAt ?? new Date().toISOString(),
+    updatedAt: Date.now(),
+  };
+}
+
 export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
   switch (action.type) {
     case "hydrate":
@@ -327,8 +337,10 @@ export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
       }
 
       // Reconcile cards stuck on "Running" against the orchestrator's
-      // authoritative agent state. ONE flip case only:
+      // authoritative agent state. Two flip cases only:
       //
+      // - Agent disappeared from a later snapshot → the handle was cleared;
+      //   mark the card ended.
       // - Agent has moved to a DIFFERENT play → the prior card is stale;
       //   mark it ended.
       //
@@ -350,15 +362,15 @@ export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
       cards = cards.map((card) => {
         if (card.status !== "started" || !card.agentId) return card;
         const agent = agentsById.get(card.agentId);
-        if (!agent) return card;
+        if (!agent) {
+          const wasKnownAgent = state.agentsById.has(card.agentId);
+          if (!wasKnownAgent && action.agents.length === 0) return card;
+          return endCardFromSnapshot(card, "Ended (agent removed)");
+        }
         const current = agent.current_play;
         if (!current) return card;
         if (!currentPlayMatchesCard(current, card)) {
-          return {
-            ...card,
-            status: "failed",
-            result: "Ended (status reconciled)",
-          };
+          return endCardFromSnapshot(card, "Ended (status reconciled)");
         }
         return card;
       });
