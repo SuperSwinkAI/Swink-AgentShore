@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
-    from agentshore.plays.selector import PlaySelector
     from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.state import (
@@ -495,7 +494,6 @@ class Dispatcher:
         classify the drop as HARD (structurally stuck) vs TRANSIENT (still
         retrying). Resources with no usable key are treated as transient.
         """
-        host = self._host
         raw = params.extras.get("resource_keys", [])
         keys = (
             [k for k in raw if isinstance(k, str) and k] if isinstance(raw, (list, tuple)) else []
@@ -504,12 +502,12 @@ class Dispatcher:
             return False
         newly_parked: list[str] = []
         for key in keys:
-            if key in host._parked_resource_keys:
+            if key in self._runtime.parked_resource_keys:
                 continue
-            count = host._resource_failure_counts.get(key, 0) + 1
-            host._resource_failure_counts[key] = count
+            count = self._runtime.resource_failure_counts.get(key, 0) + 1
+            self._runtime.resource_failure_counts[key] = count
             if count >= _WORKTREE_PARK_THRESHOLD:
-                host._parked_resource_keys.add(key)
+                self._runtime.parked_resource_keys.add(key)
                 newly_parked.append(key)
         if newly_parked:
             _logger.warning(
@@ -519,7 +517,7 @@ class Dispatcher:
                 resource_keys=newly_parked,
                 threshold=_WORKTREE_PARK_THRESHOLD,
             )
-        return any(key in host._parked_resource_keys for key in keys)
+        return any(key in self._runtime.parked_resource_keys for key in keys)
 
     async def select_play(
         self,

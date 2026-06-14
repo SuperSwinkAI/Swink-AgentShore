@@ -42,11 +42,7 @@ if TYPE_CHECKING:
         TrajectorySnapshotRecord,
     )
     from agentshore.plays.executor import PlayExecutor
-    from agentshore.plays.selector import PlaySelector
     from agentshore.rl.config_head import ConfigKey
-    from agentshore.state import (
-        PlayOutcome,
-    )
 
 
 def _merge_recent_applied_labels(
