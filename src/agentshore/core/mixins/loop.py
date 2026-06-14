@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from agentshore.plays.candidates import PlayCandidatePlan
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.selector import PlaySelector
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
         AgentSnapshot,

@@ -10,8 +10,8 @@ import torch
 from agentshore.rl.action_space import (
     ACTION_SPACE_VERSION,
     NUM_ACTIONS,
-    POLICY_VERSION,
 )
+from agentshore.rl.config_head import POLICY_VERSION
 from agentshore.rl.observation import OBSERVATION_DIM, OBSERVATION_VERSION
 from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 

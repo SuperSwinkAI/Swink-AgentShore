@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from agentshore.config.models import RuntimeConfig
     from agentshore.plays.base import PlayParams
     from agentshore.plays.registry import PlayRegistry
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import OrchestratorState
 
     # Returns a freshly-loaded beads graph (or None on a live-read blip). The

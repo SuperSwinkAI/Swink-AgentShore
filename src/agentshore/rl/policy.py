@@ -19,7 +19,8 @@ import structlog
 import torch
 import torch.nn as nn
 
-from agentshore.rl.action_space import ACTION_SPACE_VERSION, NUM_ACTIONS, POLICY_VERSION
+from agentshore.rl.action_space import ACTION_SPACE_VERSION, NUM_ACTIONS
+from agentshore.rl.config_head import POLICY_VERSION
 from agentshore.rl.observation import OBSERVATION_DIM, OBSERVATION_VERSION
 
 _logger = structlog.get_logger(__name__)

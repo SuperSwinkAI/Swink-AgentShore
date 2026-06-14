@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
     from agentshore.power import PowerAssertion
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
         OrchestratorState,

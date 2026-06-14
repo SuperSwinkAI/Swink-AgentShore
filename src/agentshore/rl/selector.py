@@ -20,7 +20,7 @@ from agentshore.config.models import PolicyMode
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
-from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, POLICY_VERSION, V1_ACTION_ORDER
+from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, V1_ACTION_ORDER
 
 # Checkpoint lifecycle helpers live in checkpoint_store; re-exported here so the
 # existing ``agentshore.core.phases`` import sites keep resolving them through
@@ -32,10 +32,12 @@ from agentshore.rl.checkpoint_store import (
     _prune_local_checkpoints as _prune_local_checkpoints,
 )
 from agentshore.rl.checkpoint_store import (
-    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
+    canonical_lock_filename,
+    canonical_weights_filename,
+    write_global_canonical_blocking,
 )
 from agentshore.rl.checkpoint_store import (
-    write_global_canonical_blocking,
+    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
 )
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
 from agentshore.rl.eligibility import EligibilityAuthority
@@ -66,7 +68,7 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.resolver import ParameterResolver
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import OrchestratorState
@@ -824,7 +826,7 @@ class PPOSelector:
         """Load the latest shared policy from disk, with version safety."""
         from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
-        shared = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.pt"
+        shared = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
         if not shared.exists():
             return
         try:
@@ -876,7 +878,8 @@ class PPOSelector:
         """Write a numbered local checkpoint and update the global canonical.
 
         Local numbered checkpoints provide crash recovery; only the last
-        _LOCAL_CHECKPOINT_KEEP are kept. The canonical policy_v{N}.pt is
+        _LOCAL_CHECKPOINT_KEEP are kept. The version-tagged canonical
+        (``canonical_weights_filename()``) is
         written to the global ~/.config/swink/agentshore/weights/ directory so all projects
         contribute to and benefit from a shared policy.
         """
@@ -900,8 +903,8 @@ class PPOSelector:
         # overwrite — equivalent to the old behaviour and still correct since
         # delta == full weights when base == zero.
         _GLOBAL_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-        global_canonical = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.pt"
-        lock_path = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.lock"
+        global_canonical = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
+        lock_path = _GLOBAL_WEIGHTS_DIR / canonical_lock_filename()
         try:
             await asyncio.to_thread(
                 self._write_global_canonical_blocking,

@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
     from agentshore.config.models import RuntimeConfig
     from agentshore.plays.registry import PlayRegistry
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import OrchestratorState
 
 _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
