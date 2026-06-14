@@ -3,7 +3,7 @@ name: agentshore-refine-tasks
 description: "Action slot 12 — Refine Task Breakdown. Scans open GitHub issues, estimates scope, decomposes oversized issues into linked sub-issues, and re-prioritizes based on dependencies. Use when unrefined issues exist in the backlog."
 argument-hint: []
 disable-model-invocation: true
-allowed-tools: Read, Bash(gh:*, git:*)
+allowed-tools: Read, Bash(gh:*, git fetch:*, git remote:*, git grep:*, git log:*, git status:*, git diff:*, git show:*)
 ---
 
 # agentshore-refine-tasks
@@ -66,6 +66,12 @@ gh issue edit <parent> --body "$ORIGINAL
 **Re-prioritize.** Identify dependencies (explicit `depends on #N`/`blocked by #N` in bodies; implicit parent-child) and apply priority labels where missing: `gh issue edit <N> --add-label "priority/<critical|high|medium|low>"`. No-blocker + small = higher priority.
 
 **Validate:** every processed issue no longer carries `agentshore/needs-refinement` and now carries `agentshore/refined`; decomposed parents link to children; every new sub-issue has `agentshore/intake`, references its parent, and lacks `agentshore/needs-refinement`; no duplicate sub-issues.
+
+**Forbidden — this play runs in the main checkout:**
+- AgentShore runs you in the project's **main working tree on the target branch**, not an isolated worktree. You decompose issues and edit GitHub labels only — you must **never** touch the working tree or move git refs.
+- **Never** `git checkout`/`git switch`/`git checkout -b`/`git switch -c`/`git branch`/`git worktree add`/`git reset`/`git clean`/`git stash`/`git commit`/`git merge`/`git rebase`/`git push`. Creating or switching a branch here moves the **main checkout's HEAD** onto a feature branch and wedges the orchestrator — the trunk-dispatch guard cannot restore a branch-switched HEAD left with untracked work. Git is **read-only** in this play: `git fetch`, `git remote`, `git grep`, `git log`, `git status`, `git diff`, `git show` only.
+- Never create/edit/restore/delete `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence.
+- Leave the working tree clean — at most untracked scratch files at the repo root, which the orchestrator reclaims.
 
 **Report — one fenced JSON block:**
 
