@@ -312,10 +312,7 @@ class ParameterResolver:
         providers_in_take_break = {
             s.agent_type.value
             for s in state.agents
-            if (
-                s.status != AgentStatus.TERMINATED
-                and s.current_play_type == PlayType.TAKE_BREAK
-            )
+            if (s.status != AgentStatus.TERMINATED and s.current_play_type == PlayType.TAKE_BREAK)
         }
         if config_index_override is not None:
             override_agent_type, override_model_tier = config_index_override
