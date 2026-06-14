@@ -125,59 +125,16 @@ def parse_duration_delta(text: str) -> int:
 def parse_budget_raw(raw: dict[str, object]) -> BudgetConfig:
     """Parse and validate a raw ``budget:`` YAML mapping into a :class:`BudgetConfig`.
 
-    This is the single validator used by ``config/_parsers.py``, ``sidecar/project.py``,
-    and any other caller that holds an untrusted dict. Raises
-    :class:`agentshore.errors.ConfigError` on invalid values.
+    Thin delegator to :func:`validate_budget_payload` (the canonical validator):
+    the config loader holds a known-dict mapping, so this copies it and validates
+    under the strict semantics, raising :class:`agentshore.errors.ConfigError` on
+    invalid values. The config ``budget:`` block may omit ``enabled`` (and, when
+    disabled, ``total``); both default off here so a bare time-only block such as
+    ``budget: {time_enabled: true, time_total_minutes: 1440}`` stays valid.
     """
-    # Import lazily so this module stays torch-free / import-light.
-    from agentshore.config.models import BudgetConfig
-    from agentshore.errors import ConfigError
-
-    enabled = raw.get("enabled", False)
-    total = raw.get("total", 0.0)
-    warning = raw.get("warning_threshold", 0.20)
-    if not isinstance(enabled, bool):
-        raise ConfigError(f"budget.enabled must be a boolean, got {enabled!r}")
-    if not isinstance(total, int | float):
-        raise ConfigError(f"budget.total must be numeric, got {total!r}")
-    if enabled and total < MIN_ENABLED_BUDGET_USD:
-        msg = (
-            "budget.total must be at least "
-            f"{MIN_ENABLED_BUDGET_USD:.2f} when budget.enabled is true, got {total!r}"
-        )
-        raise ConfigError(msg)
-    if not enabled and total < 0:
-        raise ConfigError(f"budget.total must be non-negative, got {total!r}")
-    if not isinstance(warning, int | float) or not (0.0 <= warning <= 1.0):
-        raise ConfigError(f"budget.warning_threshold must be between 0.0 and 1.0, got {warning!r}")
-    time_enabled = raw.get("time_enabled", False)
-    time_total_minutes = raw.get("time_total_minutes", 0)
-    if not isinstance(time_enabled, bool):
-        raise ConfigError(f"budget.time_enabled must be a boolean, got {time_enabled!r}")
-    # ``bool`` is an ``int`` subclass — reject it so True/False can't pose as minutes.
-    if isinstance(time_total_minutes, bool) or not isinstance(time_total_minutes, int):
-        raise ConfigError(
-            f"budget.time_total_minutes must be an integer, got {time_total_minutes!r}"
-        )
-    if time_enabled and not (
-        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
-    ):
-        raise ConfigError(
-            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
-            f"got {time_total_minutes!r}"
-        )
-    if not time_enabled and time_total_minutes < 0:
-        raise ConfigError(
-            f"budget.time_total_minutes must be non-negative, got {time_total_minutes!r}"
-        )
-    return BudgetConfig(
-        enabled=enabled,
-        total=float(total),
-        warning_threshold=float(warning),
-        time_enabled=time_enabled,
-        time_total_minutes=time_total_minutes,
-    )
+    payload = dict(raw)
+    payload.setdefault("enabled", False)
+    return validate_budget_payload(payload)
 
 
 def validate_budget_payload(
