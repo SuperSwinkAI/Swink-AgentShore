@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 import structlog
 
 from agentshore.ipc.commands import parse_command, validate_command
+from agentshore.ipc.serializer import active_play_from_started
 from agentshore.ipc.state_writer import EVENTS_FILENAME, STATE_FILENAME
 
 _logger = structlog.get_logger()
@@ -481,18 +482,12 @@ class DashboardBridge:
 
         status = fields.get("status")
         if status == "started":
-            self._active_play = {
-                "play_type": fields.get("play_type"),
-                "agent_id": fields.get("agent_id"),
-                "issue_number": fields.get("issue_number"),
-                "pr_number": fields.get("pr_number"),
-                "branch": fields.get("branch"),
-                "play_id": fields.get("play_id"),
-                "started_at": fields.get("started_at") or datetime.now(UTC).isoformat(),
-                "trigger_agent_id": fields.get("trigger_agent_id"),
-                "trigger_agent_type": fields.get("trigger_agent_type"),
-                "trigger_error_class": fields.get("trigger_error_class"),
-            }
+            # Derive the active_play field set via the single shared helper so
+            # the shape stays pinned to the serializer's ActivePlayPayload
+            # rather than being re-selected key-by-key here.
+            self._active_play = dict(
+                active_play_from_started(fields, default_started_at=datetime.now(UTC).isoformat())
+            )
         elif status in {"completed", "failed"}:
             self._active_play = None
 

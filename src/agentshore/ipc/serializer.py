@@ -16,7 +16,7 @@ import itertools
 import math
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agentshore.beads import EpicStatus, GraphTask, ProjectGraph
 from agentshore.ipc.wire import frame as _frame
@@ -36,11 +36,74 @@ from agentshore.state import (
     TrajectorySnapshot,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 # ---------------------------------------------------------------------------
 # Monotonic sequence counter — incremented once per outbound message
 # ---------------------------------------------------------------------------
 
 _seq: itertools.count[int] = itertools.count(1)
+
+
+# ---------------------------------------------------------------------------
+# Wire payload TypedDicts — the single source of truth for the per-message
+# field sets shared between the producers (``serializer`` / ``provider``) and
+# the consumer (``dashboard.bridge``). The dashboard TS mirrors live in
+# ``dashboard/src/types.ts`` (``PlayEventStarted`` / ``PlayEventCompleted`` /
+# ``ActivePlay``); keep all three in sync.
+# ---------------------------------------------------------------------------
+
+
+class PlayStartedPayload(TypedDict):
+    """The ``play_event`` payload emitted with ``status == "started"``."""
+
+    play_type: str
+    status: Literal["started"]
+    agent_id: str | None
+    issue_number: int | None
+    pr_number: int | None
+    branch: str | None
+    play_id: int | None
+    started_at: str | None
+    trigger_agent_id: str | None
+    trigger_agent_type: str | None
+    trigger_error_class: str | None
+
+
+class PlayCompletedPayload(TypedDict):
+    """The ``play_event`` payload emitted with ``status in {"completed", "failed"}``."""
+
+    play_type: str
+    agent_id: str | None
+    success: bool
+    duration_seconds: float
+    dollar_cost: float
+    token_cost: int
+    artifacts: list[str]
+    alignment_delta: float | None
+    error: str | None
+    play_id: int | None
+    skipped: bool
+    skip_category: str | None
+    status: Literal["completed", "failed"]
+
+
+class ActivePlayPayload(TypedDict):
+    """The ``active_play`` field set, shared by ``state_update`` and the bridge
+    ``active_play_replay`` cache so the shape is derived in exactly one place."""
+
+    play_type: str | None
+    agent_id: str | None
+    started_at: str | None
+    play_id: int | None
+    issue_number: int | None
+    pr_number: int | None
+    branch: str | None
+    phase: str | None
+    trigger_agent_id: str | None
+    trigger_agent_type: str | None
+    trigger_error_class: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +257,7 @@ def _serialize_trajectory(trajectory: TrajectorySnapshot) -> dict[str, object]:
     }
 
 
-def _serialize_active_play(active: ActivePlay) -> dict[str, object]:
+def _serialize_active_play(active: ActivePlay) -> ActivePlayPayload:
     """Serialize an ``ActivePlay`` to the IPC-documented shape."""
     return {
         "play_type": active.play_type.value,
@@ -319,6 +382,13 @@ def serialize_play_event(
 ) -> dict[str, object]:
     """Serialize a PlayOutcome plus a lifecycle status string to a plain dict.
 
+    The live started-event path goes through :func:`build_play_started_payload`
+    (the single canonical started producer); this function builds the
+    completion-shaped payload (its field set is pinned by
+    :class:`PlayCompletedPayload`) and is the producer for completed/failed
+    events. ``status="started"`` is still accepted for back-compat with callers
+    that only have a :class:`PlayOutcome` to hand.
+
     Fields included: play_type (string), agent_id, success, duration_seconds,
     dollar_cost, token_cost, artifacts, alignment_delta, error, play_id,
     skipped, skip_category, status.
@@ -338,6 +408,78 @@ def serialize_play_event(
         "skip_category": outcome.skip_category,
         "status": status,
     }
+
+
+def build_play_started_payload(
+    *,
+    play_type: str,
+    agent_id: str | None,
+    issue_number: int | None,
+    pr_number: int | None,
+    branch: str | None,
+    play_id: int | None,
+    started_at: str | None,
+    trigger_agent_id: str | None,
+    trigger_agent_type: str | None,
+    trigger_error_class: str | None,
+) -> PlayStartedPayload:
+    """Build the single canonical ``play_event``/``started`` payload.
+
+    This is the one producer of the started-event shape — both the live
+    provider hook and any future replay/synthetic path go through here so the
+    field set never drifts from :class:`PlayStartedPayload`.
+    """
+    return {
+        "play_type": play_type,
+        "status": "started",
+        "agent_id": agent_id,
+        "issue_number": issue_number,
+        "pr_number": pr_number,
+        "branch": branch,
+        "play_id": play_id,
+        "started_at": started_at,
+        "trigger_agent_id": trigger_agent_id,
+        "trigger_agent_type": trigger_agent_type,
+        "trigger_error_class": trigger_error_class,
+    }
+
+
+def active_play_from_started(
+    fields: dict[str, object],
+    *,
+    default_started_at: str,
+) -> ActivePlayPayload:
+    """Derive the ``active_play`` field set from a started ``play_event``.
+
+    The bridge caches the result so a reconnecting tab can replay the
+    in-progress play. Centralised here so the ``active_play`` shape is selected
+    in one place rather than re-derived inline. ``status`` (present on the
+    started payload) is intentionally dropped, ``phase`` is filled as ``None``
+    (started events do not carry a phase), and ``started_at`` falls back to
+    ``default_started_at`` when the event omitted it.
+    """
+    started_at = fields.get("started_at")
+    return {
+        "play_type": _as_str_or_none(fields.get("play_type")),
+        "agent_id": _as_str_or_none(fields.get("agent_id")),
+        "started_at": started_at if isinstance(started_at, str) else default_started_at,
+        "play_id": _as_int_or_none(fields.get("play_id")),
+        "issue_number": _as_int_or_none(fields.get("issue_number")),
+        "pr_number": _as_int_or_none(fields.get("pr_number")),
+        "branch": _as_str_or_none(fields.get("branch")),
+        "phase": None,
+        "trigger_agent_id": _as_str_or_none(fields.get("trigger_agent_id")),
+        "trigger_agent_type": _as_str_or_none(fields.get("trigger_agent_type")),
+        "trigger_error_class": _as_str_or_none(fields.get("trigger_error_class")),
+    }
+
+
+def _as_str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _as_int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 _FEEDBACK_TRIGGER_MAP: dict[str, str] = {
@@ -366,7 +508,7 @@ def serialize_feedback_requested(reason: str) -> dict[str, object]:
     }
 
 
-def make_message(msg_type: str, payload: dict[str, object]) -> str:
+def make_message(msg_type: str, payload: Mapping[str, object]) -> str:
     """Wrap a payload dict into a single-line NDJSON message string.
 
     Produces the documented envelope format::

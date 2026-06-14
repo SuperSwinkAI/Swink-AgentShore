@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from agentshore.ipc.serializer import (
+    build_play_started_payload,
     make_message,
     serialize_feedback_requested,
     serialize_play_event,
@@ -26,7 +27,19 @@ from agentshore.ipc.serializer import (
 from agentshore.state import AgentStatus, AgentType, OrchestratorState, PlayOutcome, PlayType
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from agentshore.plays.base import PlayParams
+
+
+def _opt_str(value: object) -> str | None:
+    """Narrow an ``extras`` value (typed ``object``) to ``str | None``."""
+    return value if isinstance(value, str) else None
+
+
+def _opt_int(value: object) -> int | None:
+    """Narrow an ``extras`` value (typed ``object``) to ``int | None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 class _WriterProtocol(Protocol):
@@ -60,7 +73,7 @@ class IpcStateProvider:
         self._server = server
         self._session_id = session_id
 
-    def _emit(self, msg_type: str, payload: dict[str, object]) -> str:
+    def _emit(self, msg_type: str, payload: Mapping[str, object]) -> str:
         """Build a wire message, stamping ``session_id`` when known.
 
         Stamping every outbound frame (not just ``state_update``) lets the
@@ -82,20 +95,20 @@ class IpcStateProvider:
             self._server.set_cached_state(msg)
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:
-        """Append a play-started event with a partial payload."""
-        payload: dict[str, object] = {
-            "play_type": play_type.value,
-            "status": "started",
-            "agent_id": params.agent_id,
-            "issue_number": params.issue_number,
-            "pr_number": params.pr_number,
-            "branch": params.branch,
-            "play_id": params.extras.get("play_id"),
-            "started_at": params.extras.get("started_at"),
-            "trigger_agent_id": params.extras.get("trigger_agent_id"),
-            "trigger_agent_type": params.extras.get("trigger_agent_type"),
-            "trigger_error_class": params.extras.get("trigger_error_class"),
-        }
+        """Append a play-started event built from the single canonical builder."""
+        extras = params.extras
+        payload = build_play_started_payload(
+            play_type=play_type.value,
+            agent_id=params.agent_id,
+            issue_number=params.issue_number,
+            pr_number=params.pr_number,
+            branch=params.branch,
+            play_id=_opt_int(extras.get("play_id")),
+            started_at=_opt_str(extras.get("started_at")),
+            trigger_agent_id=_opt_str(extras.get("trigger_agent_id")),
+            trigger_agent_type=_opt_str(extras.get("trigger_agent_type")),
+            trigger_error_class=_opt_str(extras.get("trigger_error_class")),
+        )
         await self._writer.append_event(self._emit("play_event", payload))
 
     async def on_play_completed(self, play: PlayOutcome) -> None:

@@ -4,8 +4,10 @@ import type {
   AgentShoreMessage,
   StateUpdate,
   PlayEvent,
+  PlayType,
   AgentSnapshot,
 } from "./types";
+import { makeActivePlay } from "./types";
 import { displayAgentName, formatPlayWithTarget } from "./format";
 import {
   CURRENT_LOCATION_PLAY_TYPES,
@@ -57,6 +59,46 @@ const NPCS: NpcDefinition[] = [
 function displayStatusForAgent(agent: AgentSnapshot): AgentStatus {
   if (agent.current_play && agent.status === "idle") return "busy";
   return agent.status;
+}
+
+/** Minimal play-identity used by the same-play predicates below. */
+interface PlayIdentity {
+  play_id: number | null;
+  agent_id?: string | null;
+  play_type: PlayType;
+}
+
+/**
+ * Null-tolerant "is this the same play instance?" predicate, used when
+ * reconciling a per-agent play against the canonical ``active_play``.
+ * Matches when the agent and play_type agree and the play_ids are either
+ * equal or one side is unknown (null). Centralised so the three
+ * reconciliation sites can't drift to subtly different rules.
+ */
+function samePlay(a: PlayIdentity, b: PlayIdentity): boolean {
+  return (
+    a.agent_id === b.agent_id &&
+    a.play_type === b.play_type &&
+    (a.play_id === null || b.play_id === null || a.play_id === b.play_id)
+  );
+}
+
+/**
+ * Permissive "does this completion event clear the active play?" predicate.
+ * A completed/failed event clears the global ``active_play`` when it matches by
+ * play_id, by agent_id, or — for agent-less plays — by play_type. Kept distinct
+ * from {@link samePlay}: completion clearing is intentionally lenient so a
+ * lost/renumbered started event never wedges a stale running card.
+ */
+function isCompletionForActivePlay(
+  active: ActivePlay,
+  msg: { play_id: number | null; agent_id: string | null; play_type: PlayType },
+): boolean {
+  return (
+    active.play_id === msg.play_id ||
+    active.agent_id === msg.agent_id ||
+    (msg.agent_id === null && active.play_type === msg.play_type)
+  );
 }
 
 export class AgentShoreStateManager {
@@ -417,32 +459,30 @@ export class AgentShoreStateManager {
   private patchStartedPlay(msg: PlayEvent): void {
     if (msg.status !== "started" || !this.latestState) return;
 
-    const currentPlay: ActivePlay = {
+    // PlayEventStarted fields are all required-nullable on the wire, so no
+    // ?? null defensiveness is needed; makeActivePlay fills the rest.
+    const currentPlay = makeActivePlay({
       play_type: msg.play_type,
-      play_id: msg.play_id ?? null,
-      started_at: msg.started_at ?? null,
-      issue_number: msg.issue_number ?? null,
-      pr_number: msg.pr_number ?? null,
-      branch: msg.branch ?? null,
-      trigger_agent_id: msg.trigger_agent_id ?? null,
-      trigger_agent_type: msg.trigger_agent_type ?? null,
-      trigger_error_class: msg.trigger_error_class ?? null,
-    };
+      agent_id: msg.agent_id,
+      play_id: msg.play_id,
+      started_at: msg.started_at,
+      issue_number: msg.issue_number,
+      pr_number: msg.pr_number,
+      branch: msg.branch,
+      trigger_agent_id: msg.trigger_agent_id,
+      trigger_agent_type: msg.trigger_agent_type,
+      trigger_error_class: msg.trigger_error_class,
+    });
 
     this.latestState = {
       ...this.latestState,
-      active_play: {
-        play_type: msg.play_type,
-        agent_id: msg.agent_id,
+      active_play: makeActivePlay({
+        ...currentPlay,
+        // active_play synthesises a started_at so the play-bar timer can run
+        // even when the event omitted one; the per-agent current_play keeps
+        // the raw (possibly null) value.
         started_at: msg.started_at ?? new Date().toISOString(),
-        play_id: msg.play_id ?? null,
-        issue_number: msg.issue_number ?? null,
-        pr_number: msg.pr_number ?? null,
-        branch: msg.branch ?? null,
-        trigger_agent_id: msg.trigger_agent_id ?? null,
-        trigger_agent_type: msg.trigger_agent_type ?? null,
-        trigger_error_class: msg.trigger_error_class ?? null,
-      },
+      }),
       agents: this.latestState.agents.map((agent) =>
         msg.agent_id !== null && agent.agent_id === msg.agent_id
           ? {
@@ -462,15 +502,11 @@ export class AgentShoreStateManager {
     )
       return;
 
+    const active = this.latestState.active_play;
     this.latestState = {
       ...this.latestState,
       active_play:
-        this.latestState.active_play?.play_id === msg.play_id ||
-        this.latestState.active_play?.agent_id === msg.agent_id ||
-        (msg.agent_id === null &&
-          this.latestState.active_play?.play_type === msg.play_type)
-          ? null
-          : this.latestState.active_play,
+        active && isCompletionForActivePlay(active, msg) ? null : active,
       agents: this.latestState.agents.map((agent) => {
         if (agent.agent_id !== msg.agent_id) return agent;
         const countPatch =
@@ -572,18 +608,17 @@ export class AgentShoreStateManager {
     const active = this.latestState?.active_play;
     if (
       active &&
-      active.agent_id === agent.agent_id &&
-      active.play_type === agent.current_play.play_type &&
-      (active.play_id === null ||
-        agent.current_play.play_id === null ||
-        active.play_id === agent.current_play.play_id)
+      samePlay(active, { ...agent.current_play, agent_id: agent.agent_id })
     ) {
+      // active_play carries the canonical trigger metadata; fold it onto the
+      // per-agent current_play. All fields are required-nullable now, so no
+      // ?? null defensiveness is needed.
       return {
         ...agent.current_play,
         agent_id: active.agent_id,
-        trigger_agent_id: active.trigger_agent_id ?? null,
-        trigger_agent_type: active.trigger_agent_type ?? null,
-        trigger_error_class: active.trigger_error_class ?? null,
+        trigger_agent_id: active.trigger_agent_id,
+        trigger_agent_type: active.trigger_agent_type,
+        trigger_error_class: active.trigger_error_class,
       };
     }
     return agent.current_play;
