@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,8 @@ class _PullRequestsMixin:
             self,
             session_id: str,
             resource_keys: list[str] | tuple[str, ...],
+            *,
+            commit: bool = True,
         ) -> None: ...
 
     async def record_pull_request(self, pr: PullRequestRecord) -> None:
@@ -137,21 +140,32 @@ class _PullRequestsMixin:
         Existing non-null ``merged_at`` is preserved (a refresh from GitHub
         may have already populated the precise timestamp).
         """
-        await self._conn.execute(
-            """
-            UPDATE pull_requests
-            SET state = 'MERGED',
-                merged_at = COALESCE(merged_at, ?)
-            WHERE pr_number = ? AND session_id = ?
-            """,
-            (merged_at or now_iso(), pr_number, session_id),
-        )
-        await self._conn.commit()
+        # Resolve linked-issue resource keys from current PR metadata before
+        # opening the write transaction; ``issue_numbers_for_pr`` reads the PR
+        # body/links, not the state column this method is about to flip.
         keys = [f"pr:{pr_number}"]
         pr = await self.get_pull_request(session_id, pr_number)
         if pr is not None:
             keys.extend(f"issue:{issue_number}" for issue_number in issue_numbers_for_pr(pr))
-        await self.supersede_work_claims(session_id, keys)
+        # The PR state UPDATE and the work-claim supersession run in one
+        # ``BEGIN IMMEDIATE`` transaction so a crash can't leave a merged PR
+        # with a live (locked) work-claim — both flip together or neither does.
+        try:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            await self._conn.execute(
+                """
+                UPDATE pull_requests
+                SET state = 'MERGED',
+                    merged_at = COALESCE(merged_at, ?)
+                WHERE pr_number = ? AND session_id = ?
+                """,
+                (merged_at or now_iso(), pr_number, session_id),
+            )
+            await self.supersede_work_claims(session_id, keys, commit=False)
+            await self._conn.commit()
+        except (sqlite3.DatabaseError, OSError):
+            await self._conn.rollback()
+            raise
 
     async def get_pr_author(self, pr_number: int, session_id: str) -> str | None:
         """Return the agent_id that authored *pr_number*, or None if unknown."""

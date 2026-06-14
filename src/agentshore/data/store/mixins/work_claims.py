@@ -428,8 +428,16 @@ class _WorkClaimsMixin:
         self,
         session_id: str,
         resource_keys: list[str] | tuple[str, ...],
+        *,
+        commit: bool = True,
     ) -> None:
-        """Mark active claims for these resources superseded."""
+        """Mark active claims for these resources superseded.
+
+        When ``commit`` is False the UPDATE runs but is left uncommitted so a
+        caller that has already opened a transaction can fold this write into
+        the same atomic unit (e.g. an issue-close that must supersede its
+        live work-claim in one commit/rollback boundary).
+        """
         keys = _dedupe_resource_keys(resource_keys)
         if not keys:
             return
@@ -445,7 +453,8 @@ class _WorkClaimsMixin:
             """,
             (now_iso(), session_id, *keys, *status_params),
         )
-        await self._conn.commit()
+        if commit:
+            await self._conn.commit()
 
     async def abandon_active_work_claims(self, session_id: str) -> None:
         """Mark leftover active claims abandoned during startup recovery."""

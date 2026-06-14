@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable
 
 import pytest
@@ -1723,5 +1724,87 @@ async def test_update_issues_state_batch_empty_input_is_noop(tmp_path) -> None:
         assert fetched is not None
         assert fetched.state == "open"
         assert fetched.closed_at is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_issue_state_close_supersedes_work_claim_atomically(tmp_path) -> None:
+    """Closing an issue flips the issue row AND supersedes its live work-claim
+    in one transaction (no closed-issue-with-live-claim window)."""
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        await store.cache_github_issues(
+            "s1",
+            [
+                GitHubIssueRecord(
+                    issue_number=77,
+                    session_id="s1",
+                    title="closing",
+                    state="open",
+                    created_at="2026-05-06T00:00:00+00:00",
+                ),
+            ],
+        )
+        group = await store.acquire_work_claims("s1", "issue_pickup", ["issue:77"])
+        assert isinstance(group, str)
+        assert await store.find_active_work_claims("s1", ["issue:77"]) != []
+
+        await store.update_issue_state(77, "s1", "closed")
+
+        issue = await store.get_github_issue(77, "s1")
+        assert issue is not None
+        assert issue.state == "closed"
+        assert issue.closed_at is not None
+        # The live claim must be gone (superseded) in the same commit.
+        assert await store.find_active_work_claims("s1", ["issue:77"]) == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_issue_state_close_rolls_back_both_on_supersede_failure(tmp_path) -> None:
+    """An injected failure mid-operation rolls BOTH the issue UPDATE and the
+    claim supersession back — never a closed issue with no live claim."""
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        await store.cache_github_issues(
+            "s1",
+            [
+                GitHubIssueRecord(
+                    issue_number=78,
+                    session_id="s1",
+                    title="stays open",
+                    state="open",
+                    created_at="2026-05-06T00:00:00+00:00",
+                ),
+            ],
+        )
+        group = await store.acquire_work_claims("s1", "issue_pickup", ["issue:78"])
+        assert isinstance(group, str)
+
+        async def _boom(*_args: object, **_kwargs: object) -> None:
+            raise sqlite3.OperationalError("injected failure mid-supersede")
+
+        # Patch supersession so it raises after the issue UPDATE has executed
+        # inside the open transaction.
+        original = store.supersede_work_claims
+        store.supersede_work_claims = _boom  # type: ignore[method-assign]
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                await store.update_issue_state(78, "s1", "closed")
+        finally:
+            store.supersede_work_claims = original  # type: ignore[method-assign]
+
+        # Both sides rolled back: issue still open, claim still live.
+        issue = await store.get_github_issue(78, "s1")
+        assert issue is not None
+        assert issue.state == "open"
+        assert issue.closed_at is None
+        assert await store.find_active_work_claims("s1", ["issue:78"]) != []
     finally:
         await store.close()

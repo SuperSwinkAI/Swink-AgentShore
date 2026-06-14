@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,8 @@ class _IssuesMixin:
             self,
             session_id: str,
             resource_keys: list[str] | tuple[str, ...],
+            *,
+            commit: bool = True,
         ) -> None: ...
 
     async def get_last_issue_sync_at(self, session_id: str) -> str | None:
@@ -184,43 +187,67 @@ class _IssuesMixin:
         return [_row_to_github_issue(row) for row in rows]
 
     async def update_issue_state(self, issue_number: int, session_id: str, state: str) -> None:
-        """Update the state (and ``closed_at`` if closing) of a cached issue."""
+        """Update the state (and ``closed_at`` if closing) of a cached issue.
+
+        When closing, the issue UPDATE and the work-claim supersession run in a
+        single ``BEGIN IMMEDIATE`` transaction so a crash can never leave a
+        closed issue with a live (locked) work-claim — both flip together or
+        neither does.
+        """
         now = now_iso()
-        await self._conn.execute(
-            """
-            UPDATE github_issues
-            SET state = ?,
-                closed_at = CASE WHEN ? = 'closed' THEN ? ELSE closed_at END
-            WHERE issue_number = ? AND session_id = ?
-            """,
-            (state, state, now, issue_number, session_id),
-        )
-        await self._conn.commit()
-        if state == "closed":
-            await self.supersede_work_claims(session_id, [f"issue:{issue_number}"])
+        try:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            await self._conn.execute(
+                """
+                UPDATE github_issues
+                SET state = ?,
+                    closed_at = CASE WHEN ? = 'closed' THEN ? ELSE closed_at END
+                WHERE issue_number = ? AND session_id = ?
+                """,
+                (state, state, now, issue_number, session_id),
+            )
+            if state == "closed":
+                await self.supersede_work_claims(
+                    session_id, [f"issue:{issue_number}"], commit=False
+                )
+            await self._conn.commit()
+        except (sqlite3.DatabaseError, OSError):
+            await self._conn.rollback()
+            raise
 
     async def update_issues_state_batch(
         self, issue_numbers: list[int], session_id: str, state: str
     ) -> None:
-        """Update many cached issue rows in one transaction."""
+        """Update many cached issue rows in one transaction.
+
+        When closing, the batch UPDATE and the work-claim supersession share a
+        single ``BEGIN IMMEDIATE`` transaction so the closed-issue rows and
+        their superseded claims commit (or roll back) atomically.
+        """
         if not issue_numbers:
             return
         now = now_iso()
-        await self._conn.executemany(
-            """
-            UPDATE github_issues
-            SET state = ?,
-                closed_at = CASE WHEN ? = 'closed' THEN ? ELSE closed_at END
-            WHERE issue_number = ? AND session_id = ?
-            """,
-            [(state, state, now, issue_number, session_id) for issue_number in issue_numbers],
-        )
-        await self._conn.commit()
-        if state == "closed":
-            await self.supersede_work_claims(
-                session_id,
-                [f"issue:{issue_number}" for issue_number in issue_numbers],
+        try:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            await self._conn.executemany(
+                """
+                UPDATE github_issues
+                SET state = ?,
+                    closed_at = CASE WHEN ? = 'closed' THEN ? ELSE closed_at END
+                WHERE issue_number = ? AND session_id = ?
+                """,
+                [(state, state, now, issue_number, session_id) for issue_number in issue_numbers],
             )
+            if state == "closed":
+                await self.supersede_work_claims(
+                    session_id,
+                    [f"issue:{issue_number}" for issue_number in issue_numbers],
+                    commit=False,
+                )
+            await self._conn.commit()
+        except (sqlite3.DatabaseError, OSError):
+            await self._conn.rollback()
+            raise
 
     async def add_issue_labels(
         self,
