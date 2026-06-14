@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
+from agentshore.play_rules import pr_is_approved
 from agentshore.rl.action_space import (
     MAX_CONFIG_INDEX_SIZE,
     NUM_ACTIONS,
@@ -453,19 +454,13 @@ def encode_observation(
         if pr.state != "open":
             continue
         author = pr.author_agent_type
-        approved = pr.review_decision == "APPROVED" or (
-            pr.last_review_status == "PASS"
-            and pr.last_reviewed_sha is not None
-            and pr.head_sha is not None
-            and pr.last_reviewed_sha == pr.head_sha
-        )
         if author == "claude_code":
             claude_open += 1
-            if not approved:
+            if not pr_is_approved(pr):
                 claude_awaiting += 1
         elif author == "codex":
             codex_open += 1
-            if not approved:
+            if not pr_is_approved(pr):
                 codex_awaiting += 1
     obs[_S_PR_AUTHOR_CLAUDE_OPEN] = _norm(claude_open, SAT_OPEN_PRS_COUNT)
     obs[_S_PR_AUTHOR_CODEX_OPEN] = _norm(codex_open, SAT_OPEN_PRS_COUNT)

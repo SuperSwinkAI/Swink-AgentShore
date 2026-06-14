@@ -461,13 +461,13 @@ class WorktreeConfig:
 
 
 # ---------------------------------------------------------------------------
-# Master availability record (~/.config/swink/agentshore/availability.yaml)
+# Master availability record (platformdirs user_config_dir/agentshore/availability.yaml)
 # ---------------------------------------------------------------------------
 # Persisted inventory of "what's installable / authenticatable on this
 # machine." Both the agent-tier picker and the identity wizard refresh +
 # read this on every run, so the user-facing candidate lists come from a
-# single source instead of being re-detected per prompt. Lives next to
-# ~/.config/swink/agentshore/sessions/ and ~/.config/swink/agentshore/weights/.
+# single source instead of being re-detected per prompt. Lives beside the
+# platform-specific sessions/ and weights/ directories.
 
 
 @dataclass(frozen=True)

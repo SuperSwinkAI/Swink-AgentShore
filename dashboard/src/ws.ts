@@ -113,7 +113,7 @@ export class WebSocketClient implements DashboardTransport {
       // forwarding so downstream send()'s already carry the token, and the
       // UI's read-only chrome reflects the right mode.
       if (flat.type === "auth_token") {
-        const token = (flat as { token?: unknown }).token;
+        const token = flat.token;
         if (typeof token === "string") {
           this.token = token;
         }

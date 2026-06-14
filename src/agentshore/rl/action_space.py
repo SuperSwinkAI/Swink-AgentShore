@@ -28,6 +28,9 @@ if len(V1_ACTION_ORDER) != NUM_ACTIONS:
 
 PLAY_TO_INDEX: Final[Mapping[PlayType, int]] = {pt: i for i, pt in enumerate(V1_ACTION_ORDER)}
 INDEX_TO_PLAY: Final[Mapping[int, PlayType]] = {i: pt for i, pt in enumerate(V1_ACTION_ORDER)}
+RESERVED_PLAYS: Final[frozenset[PlayType]] = frozenset(
+    {PlayType.FUTURE_4, PlayType.FUTURE_7, PlayType.FUTURE_8}
+)
 
 
 # ---------------------------------------------------------------------------

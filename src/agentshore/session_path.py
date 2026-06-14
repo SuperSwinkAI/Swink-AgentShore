@@ -271,12 +271,10 @@ def _has_live_unix_socket_listener(path: Path, *, connect_timeout: float = 0.3) 
     if sys.platform.startswith("win"):
         return False
 
-    import socket as _socket
-
     if not is_unix_socket_path(path):
         return False
     try:
-        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as sock:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(connect_timeout)
             sock.connect(str(path))
             return True
@@ -639,16 +637,13 @@ def request_drain(
 
     Returns a status string.
     """
-    import json as _json
-    import socket as _socket
-
     endpoint = discover_ipc_endpoint(project_path)
     if endpoint is None:
         return "fallback_hard"
 
     try:
-        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
-        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(5.0)
             if endpoint.kind == "unix":
                 if endpoint.path is None:
@@ -662,7 +657,7 @@ def request_drain(
                 "end_session_report": end_session_report,
                 "open_report": open_report,
             }
-            encoded = _json.dumps(cmd) + "\n"
+            encoded = json.dumps(cmd) + "\n"
             sock.sendall(encoded.encode())
         return "sent"
     except TimeoutError:
@@ -681,16 +676,13 @@ def request_reload_config(project_path: Path) -> str:
     Returns a status string: ``"sent"``, ``"timeout"``, ``"error"``, or
     ``"fallback_hard"`` (no IPC endpoint found).
     """
-    import json as _json
-    import socket as _socket
-
     endpoint = discover_ipc_endpoint(project_path)
     if endpoint is None:
         return "fallback_hard"
 
     try:
-        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
-        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(5.0)
             if endpoint.kind == "unix":
                 if endpoint.path is None:
@@ -699,7 +691,7 @@ def request_reload_config(project_path: Path) -> str:
             else:
                 sock.connect((endpoint.host, endpoint.port))
             cmd = {"command": "reload_config"}
-            encoded = _json.dumps(cmd) + "\n"
+            encoded = json.dumps(cmd) + "\n"
             sock.sendall(encoded.encode())
         return "sent"
     except TimeoutError:
@@ -726,9 +718,6 @@ def request_add_budget(
     ``"rejected:<msg>"`` when the orchestrator rejects the request, or
     the applied-caps dict on success.
     """
-    import json as _json
-    import socket as _socket
-
     endpoint = discover_ipc_endpoint(project_path)
     if endpoint is None:
         return "no_session"
@@ -739,7 +728,7 @@ def request_add_budget(
     if delta_minutes is not None:
         add_cmd["delta_minutes"] = delta_minutes
 
-    def _read_line(sock: _socket.socket, buf: bytes) -> tuple[bytes | None, bytes]:
+    def _read_line(sock: socket.socket, buf: bytes) -> tuple[bytes | None, bytes]:
         while b"\n" not in buf:
             try:
                 chunk = sock.recv(65536)
@@ -752,8 +741,8 @@ def request_add_budget(
         return line, rest
 
     try:
-        family = _socket.AF_UNIX if endpoint.kind == "unix" else _socket.AF_INET
-        with _socket.socket(family, _socket.SOCK_STREAM) as sock:
+        family = socket.AF_UNIX if endpoint.kind == "unix" else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(12.0)
             if endpoint.kind == "unix":
                 if endpoint.path is None:
@@ -762,7 +751,7 @@ def request_add_budget(
             else:
                 sock.connect((endpoint.host, endpoint.port))
 
-            sock.sendall((_json.dumps(add_cmd) + "\n").encode())
+            sock.sendall((json.dumps(add_cmd) + "\n").encode())
 
             buf = b""
             line, _buf = _read_line(sock, buf)
@@ -774,8 +763,8 @@ def request_add_budget(
     if line is None or not line.strip():
         return "error"
     try:
-        msg = _json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, _json.JSONDecodeError):
+        msg = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return "error"
     if not isinstance(msg, dict):
         return "error"

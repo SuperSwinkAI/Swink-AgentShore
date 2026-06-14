@@ -21,7 +21,7 @@ from agentshore.plays.candidates import (
     qa_ran_within_terminal_window,
     terminal_audits_are_fresh,
 )
-from agentshore.rl.action_space import NUM_ACTIONS, V1_ACTION_ORDER
+from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
 from agentshore.rl.eligibility import (
     compute_agent_eligibility_mask as compute_agent_eligibility_mask,
@@ -61,16 +61,16 @@ _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 # corner even though open work and idle capacity exist, expose a broad fallback
 # menu. These actions stay hard-masked because they are not progress actions or
 # are reserved tensor slots.
-_REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = frozenset(
-    {
-        PlayType.SEED_PROJECT,
-        PlayType.END_AGENT,
-        PlayType.END_SESSION,
-        PlayType.TAKE_BREAK,
-        PlayType.FUTURE_4,
-        PlayType.FUTURE_7,
-        PlayType.FUTURE_8,
-    }
+_REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
+    frozenset(
+        {
+            PlayType.SEED_PROJECT,
+            PlayType.END_AGENT,
+            PlayType.END_SESSION,
+            PlayType.TAKE_BREAK,
+        }
+    )
+    | RESERVED_PLAYS
 )
 _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {PlayType.END_AGENT, PlayType.END_SESSION}

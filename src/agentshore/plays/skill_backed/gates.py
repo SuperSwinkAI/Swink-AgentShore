@@ -7,12 +7,11 @@ previously lived in 17 bespoke ``preconditions()`` bodies — new plays declare
 gates instead of re-deriving them, mask reason text stays consistent across
 plays that share semantics, and gate behavior is unit-tested in one place.
 
-The three legacy helpers on ``SkillBackedPlay`` (``_capability_check``,
-``_in_flight_check``, ``_cooldown_check``) are kept as thin wrappers around
-their gate equivalents so heavy plays that still override ``preconditions()``
-continue to work without change. Heavy plays can ALSO opt into ``gates`` and
-``super().preconditions(state)`` for the standard set, then append bespoke
-checks afterward.
+``SkillBackedPlay._capability_check`` remains as a compatibility helper for
+heavy plays that still override ``preconditions()``. In-flight and cooldown
+checks have moved fully into their gate equivalents. Heavy plays can also opt
+into ``gates`` and ``super().preconditions(state)`` for the standard set, then
+append bespoke checks afterward.
 """
 
 from __future__ import annotations
@@ -37,8 +36,8 @@ class Gate(Protocol):
 class CapabilityGate:
     """Mask unless an IDLE non-rate-limited agent has the named capability.
 
-    Lifted verbatim from ``SkillBackedPlay._capability_check`` so behavior and
-    mask reason text stay byte-identical across the migration.
+    Shared with ``SkillBackedPlay._capability_check`` so behavior and mask
+    reason text stay consistent across the migration.
     """
 
     __slots__ = ("capability",)
@@ -80,7 +79,7 @@ class CapabilityGate:
 class InFlightGate:
     """Mask while the named play type is already executing somewhere.
 
-    Lifted from ``SkillBackedPlay._in_flight_check``.
+    Replaces the legacy ``SkillBackedPlay._in_flight_check`` helper.
     """
 
     __slots__ = ("play_type",)
@@ -101,7 +100,7 @@ class InFlightGate:
 class CooldownGate:
     """Mask for ``plays`` plays after the named play type last completed.
 
-    Lifted from ``SkillBackedPlay._cooldown_check``.
+    Replaces the legacy ``SkillBackedPlay._cooldown_check`` helper.
 
     Counts only *completed* occurrences: ``plays_since_last_play_type`` is built
     from ended plays, and a just-completed play is bridged into it via

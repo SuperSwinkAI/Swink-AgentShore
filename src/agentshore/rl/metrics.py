@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore.play_rules import pr_is_awaiting_review
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.rl.observation import ObservationContext
 from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayType
@@ -329,18 +330,7 @@ def _build_context(
     prs_open_count = len(prs_open)
     # Awaiting review: open/review PRs without GitHub approval or AgentShore's
     # current-head PASS verdict.
-    prs_awaiting = sum(
-        1
-        for pr in prs_open
-        if pr.state in ("open", "review")
-        and getattr(pr, "review_decision", None) != "APPROVED"
-        and not (
-            getattr(pr, "last_review_status", None) == "PASS"
-            and getattr(pr, "last_reviewed_sha", None) is not None
-            and getattr(pr, "head_sha", None) is not None
-            and getattr(pr, "last_reviewed_sha", None) == getattr(pr, "head_sha", None)
-        )
-    )
+    prs_awaiting = sum(1 for pr in prs_open if pr_is_awaiting_review(pr))
     prs_approved_count = len(prs_approved)
 
     # Handoff rolling stats over the latest handoff rows in this session.

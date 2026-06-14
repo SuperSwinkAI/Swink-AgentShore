@@ -200,7 +200,7 @@ export class AgentShoreStateManager {
         if (msg.active_play?.agent_id) {
           const char = this.characters.get(msg.active_play.agent_id);
           if (char) {
-            this.routeCurrentPlay(char, msg.active_play);
+            this.routePlay(char, msg.active_play);
           }
         }
         return this.latestState !== null;
@@ -220,7 +220,7 @@ export class AgentShoreStateManager {
                 ? this.currentPlayForAgent(agent)
                 : null;
               if (currentPlay) {
-                this.routeCurrentPlay(char, currentPlay);
+                this.routePlay(char, currentPlay);
               }
             } else if (msg.status === "idle") {
               this.clearActivePlay(char);
@@ -238,7 +238,7 @@ export class AgentShoreStateManager {
                 ? this.currentPlayForAgent(agent)
                 : null;
               if (currentPlay) {
-                this.routeCurrentPlay(char, currentPlay);
+                this.routePlay(char, currentPlay);
               } else {
                 this.clearActivePlay(char);
                 sendToRecovery(char);
@@ -305,13 +305,13 @@ export class AgentShoreStateManager {
 
       if (displayStatus === "error") {
         if (currentPlay) {
-          this.routeCurrentPlay(char, currentPlay);
+          this.routePlay(char, currentPlay);
         } else {
           this.clearActivePlay(char);
           sendToRecovery(char);
         }
       } else if (currentPlay && agent.status !== "terminated") {
-        this.routeCurrentPlay(char, currentPlay);
+        this.routePlay(char, currentPlay);
       } else if (displayStatus === "idle" || displayStatus === "terminated") {
         this.clearActivePlay(char);
       }
@@ -369,7 +369,7 @@ export class AgentShoreStateManager {
         );
         const currentPlay = agent ? this.currentPlayForAgent(agent) : null;
         if (char && currentPlay) {
-          this.routeCurrentPlay(char, currentPlay);
+          this.routePlay(char, currentPlay);
         }
       }
     }
@@ -521,10 +521,6 @@ export class AgentShoreStateManager {
           : agent,
       ),
     };
-  }
-
-  private routeCurrentPlay(char: Character, currentPlay: ActivePlay): void {
-    this.routePlay(char, currentPlay);
   }
 
   private routePlay(char: Character, currentPlay: ActivePlay): void {

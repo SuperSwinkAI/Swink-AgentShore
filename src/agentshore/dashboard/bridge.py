@@ -335,11 +335,10 @@ class DashboardBridge:
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
-            # Unattributable (malformed) snapshot: keep prior behaviour and let
-            # the watcher broadcast it, but don't treat it as proof we've seen
-            # the current session — it must not gate the replay or be cached.
-            self._latest_state = candidate
-            return True
+            # The state writer uses atomic tmp+rename; a malformed read is
+            # transient or stale. Keep the previous good snapshot and let the
+            # next poll read a whole file.
+            return False
         payload = parsed.get("payload") if isinstance(parsed, dict) else None
         snapshot_sid = payload.get("session_id") if isinstance(payload, dict) else None
 

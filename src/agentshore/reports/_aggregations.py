@@ -60,6 +60,8 @@ if TYPE_CHECKING:
 # Module-level constants and small helpers shared across aggregators
 # ---------------------------------------------------------------------------
 
+_INTERNAL_PLAY_VALUES = frozenset(pt.value for pt in INTERNAL_PLAY_TYPES)
+
 _PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = (
     ("instantiate_agent", "INSTANTIATE_AGENT", 0, 1, False),
     ("seed_project", "SEED_PROJECT", 17, 1, False),
@@ -242,10 +244,9 @@ def compute_play_timeline(plays: list[PlayRecord]) -> list[PlayTimelineEntry]:
 
 def compute_play_stats(plays: list[PlayRecord]) -> list[PlayStatsEntry]:
     """Aggregate user-facing play stats, excluding ``INTERNAL_PLAY_TYPES``."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     by_type: dict[str, _PlayStatsAccumulator] = defaultdict(_PlayStatsAccumulator)
     for play in plays:
-        if play.play_type in internal_play_values:
+        if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
         acc = by_type[play.play_type]
         acc.total += 1
@@ -312,11 +313,10 @@ def compute_control_rejections(
 
 def compute_play_log_columns() -> list[PlayLogColumnEntry]:
     """Return lifecycle-ordered ESR play-log columns."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     result: list[PlayLogColumnEntry] = []
     previous_phase: int | None = None
     for play_type, label, action_index, phase, future in _PLAY_LOG_ORDER:
-        if play_type in internal_play_values:
+        if play_type in _INTERNAL_PLAY_VALUES:
             continue
         result.append(
             PlayLogColumnEntry(
@@ -337,7 +337,6 @@ def compute_play_log_rows(
     agents: Sequence[AgentRecord] | None = None,
 ) -> list[PlayLogRowEntry]:
     """Convert play records into ESR rows with best-known agent display names."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     agent_lookup: dict[str, AgentRecord] = {}
     if agents is not None:
         agent_lookup = {a.agent_id: a for a in agents}
@@ -345,7 +344,7 @@ def compute_play_log_rows(
     rows: list[PlayLogRowEntry] = []
     row_number = 0
     for play in plays:
-        if play.play_type in internal_play_values:
+        if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
         # A gated/skipped play was PPO-selected then masked before dispatch —
         # it never reached an agent (0ms, $0, agent_id=None). It is not an
@@ -384,9 +383,8 @@ def compute_play_log_plays_in_use(plays: list[PlayRecord]) -> int:
     """Count distinct active play types used, excluding reserved future
     slots and internal plays (``INTERNAL_PLAY_TYPES``).
     """
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     future = {play_type for play_type, _, _, _, is_future in _PLAY_LOG_ORDER if is_future}
-    excluded = future | internal_play_values
+    excluded = future | _INTERNAL_PLAY_VALUES
     return len({play.play_type for play in plays if play.play_type not in excluded})
 
 
@@ -398,8 +396,7 @@ def compute_play_log_total_slots() -> int:
     was wrong both pre- and post-INTERNAL filter). Now computed from
     the registry so it stays correct if the action space grows again.
     """
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
-    return sum(1 for pt, *_ in _PLAY_LOG_ORDER if pt not in internal_play_values)
+    return sum(1 for pt, *_ in _PLAY_LOG_ORDER if pt not in _INTERNAL_PLAY_VALUES)
 
 
 def compute_closed_issues(
@@ -597,6 +594,9 @@ def compute_issue_inflation(
             if _is_issue_source_label(label):
                 by_source[label] += 1
     ratio = total_opened / max(total_closed, 1)
+    issue_boundaries = [
+        (_parse_iso(issue.created_at), _parse_iso(issue.closed_at)) for issue in issues
+    ]
     sorted_plays = sorted(plays, key=lambda p: (p.play_id or 0, p.started_at))
 
     per_play: list[tuple[int, int, int, int]] = []
@@ -609,13 +609,11 @@ def compute_issue_inflation(
         opened_count = 0
         closed_count = 0
         if boundary is not None:
-            for issue in issues:
-                created_at = _parse_iso(issue.created_at)
+            for created_at, closed_at in issue_boundaries:
                 if created_at is not None and _is_within_boundary(
                     created_at, prev_boundary, boundary
                 ):
                     opened_count += 1
-                closed_at = _parse_iso(issue.closed_at)
                 if closed_at is not None and _is_within_boundary(
                     closed_at, prev_boundary, boundary
                 ):

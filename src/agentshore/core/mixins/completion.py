@@ -6,6 +6,7 @@ import asyncio
 import enum
 import json
 import re
+import time
 from typing import TYPE_CHECKING, Protocol
 
 import aiosqlite
@@ -174,10 +175,8 @@ def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
 
 def _outcome_signals_already_closed(outcome: PlayOutcome) -> bool:
     """Return True when an issue_pickup outcome describes an already-closed issue."""
-    import json as _json
-
     try:
-        serialised = _json.dumps(outcome.artifacts, default=str)
+        serialised = json.dumps(outcome.artifacts, default=str)
     except (TypeError, ValueError):
         return False
     return any(sig in serialised for sig in _ALREADY_CLOSED_SIGNATURES)
@@ -1394,8 +1393,6 @@ class CompletionProcessor:
         Re-fetching those by number via ``state="all"`` lets the cache pick
         up the new state.
         """
-        import time as _time
-
         from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
         try:
@@ -1512,7 +1509,7 @@ class CompletionProcessor:
         except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
             _logger.warning("github_refresh_failed", error=str(exc))
         finally:
-            self._host._last_refresh_time = _time.monotonic()
+            self._host._last_refresh_time = time.monotonic()
             await self._ensure_ssh_key_fresh()
 
     async def _ensure_ssh_key_fresh(self) -> None:

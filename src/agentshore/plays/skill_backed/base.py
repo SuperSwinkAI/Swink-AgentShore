@@ -99,10 +99,9 @@ class SkillBackedPlay(Play, ABC):
     can call ``super().preconditions(state)`` to run the declared gates first
     and then append additional checks.
 
-    The legacy helpers ``_capability_check`` / ``_in_flight_check`` /
-    ``_cooldown_check`` remain for backward compatibility with plays that have
-    not yet migrated to declarative gates. Their bodies are equivalent to the
-    corresponding ``Gate`` classes.
+    ``_capability_check`` remains for custom precondition overrides that have
+    not yet migrated to declarative gates. Standard in-flight and cooldown
+    checks live in ``InFlightGate`` and ``CooldownGate``.
 
     The ``execute()`` implementation:
       1. Writes a play-specific context file via the dispatch helpers.
@@ -168,11 +167,7 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
-
-        .. deprecated::
-            Use ``CapabilityGate`` in the ``gates`` tuple instead.
-        """
+        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability."""
         cap_key = self.capability
         if cap_key is None:
             return []
@@ -194,39 +189,6 @@ class SkillBackedPlay(Play, ABC):
                     text=f"no IDLE agent with {cap_key} capability",
                     classification=MaskClassification.TRANSIENT,
                     source=MaskSource.ELIGIBILITY,
-                )
-            ]
-        return []
-
-    def _in_flight_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if this play type is already in flight.
-
-        .. deprecated::
-            Use ``InFlightGate`` in the ``gates`` tuple instead.
-        """
-        if self.play_type in state.in_flight_plays:
-            return [
-                MaskReason(
-                    text=f"{self.play_type.value} already in flight",
-                    classification=MaskClassification.TRANSIENT,
-                    source=MaskSource.PRECONDITION,
-                )
-            ]
-        return []
-
-    def _cooldown_check(self, state: OrchestratorState, limit: int) -> list[MaskReason]:
-        """Return a non-empty list if within the post-execution cooldown window.
-
-        .. deprecated::
-            Use ``CooldownGate`` in the ``gates`` tuple instead.
-        """
-        cooldown = state.plays_since_last_play_type.get(self.play_type)
-        if cooldown is not None and cooldown < limit:
-            return [
-                MaskReason(
-                    text=f"{self.play_type.value} cooldown ({cooldown}/{limit} plays since last)",
-                    classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.PRECONDITION,
                 )
             ]
         return []
