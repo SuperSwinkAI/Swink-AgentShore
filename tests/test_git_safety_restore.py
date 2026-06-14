@@ -77,3 +77,66 @@ def test_restore_default_branch_clean_repo_is_noop_true(tmp_path: Path) -> None:
     _git(["add", "x"], repo)
     _git(["commit", "-m", "x"], repo)
     assert restore_default_branch(repo, "main") is True
+
+
+@pytest.fixture
+def untracked_blocked_repo(tmp_path: Path) -> Path:
+    """HEAD on a feature branch + untracked files the default branch would overwrite.
+
+    This is the #175 wedge: a trunk-scoped play ran in the main checkout, left
+    untracked files, and moved HEAD onto a feature branch. ``git checkout main``
+    is refused ("untracked working tree files would be overwritten"), and neither
+    ``merge --abort`` nor ``reset --hard`` clears untracked state — so the old
+    restore returned False and latched a permanent trunk-dispatch pause.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-b", "main", str(repo)], tmp_path)
+    _git(["config", "user.email", "t@e.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    _git(["config", "commit.gpgsign", "false"], repo)
+    # AgentShore repos always gitignore .agentshore/ — so the quarantine dir the
+    # restore creates does not itself re-dirty the tree.
+    (repo / ".gitignore").write_text(".agentshore/\n")
+    (repo / "data.txt").write_text("main data\n")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "nested.txt").write_text("main nested\n")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "base"], repo)
+    # A feature branch that does not carry those tracked files.
+    _git(["checkout", "-b", "feature"], repo)
+    _git(["rm", "data.txt", "sub/nested.txt"], repo)
+    _git(["commit", "-m", "drop tracked files"], repo)
+    # The agent left HEAD on feature with *untracked* copies main would overwrite.
+    (repo / "data.txt").write_text("contaminating untracked\n")
+    (repo / "sub").mkdir(exist_ok=True)
+    (repo / "sub" / "nested.txt").write_text("contaminating nested\n")
+    refused = subprocess.run(
+        ["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True
+    )
+    assert refused.returncode != 0, "expected a bare checkout to be refused"
+    assert "overwritten" in (refused.stdout + refused.stderr)
+    return repo
+
+
+def test_restore_quarantines_untracked_blockers_and_lands_on_default(
+    untracked_blocked_repo: Path,
+) -> None:
+    repo = untracked_blocked_repo
+    assert restore_default_branch(repo, "main") is True
+    # Back on the default branch with a clean tree.
+    head = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=str(repo), capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "refs/heads/main"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True
+    ).stdout
+    assert status.strip() == ""
+    # The contaminating content was preserved (moved, not deleted), nested paths intact.
+    reclaimed = repo / ".agentshore" / "reclaimed" / "restore"
+    assert (reclaimed / "data.txt").read_text() == "contaminating untracked\n"
+    assert (reclaimed / "sub" / "nested.txt").read_text() == "contaminating nested\n"
+    # The tracked default-branch versions are restored in the working tree.
+    assert (repo / "data.txt").read_text() == "main data\n"
+    assert (repo / "sub" / "nested.txt").read_text() == "main nested\n"

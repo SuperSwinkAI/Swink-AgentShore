@@ -13,6 +13,7 @@ boundaries and the session-start sweeper.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -95,6 +96,66 @@ def current_head_ref(repo_root: Path) -> str | None:
     return ref or None
 
 
+#: Subdir under ``.agentshore/`` where :func:`restore_default_branch`
+#: quarantines untracked files that block the default-branch checkout. Mirrors
+#: ``trunk_artifacts.QUARANTINE_DIRNAME`` so recovered content lands in one
+#: well-known, gitignored place (``.agentshore/`` never re-flags as dirty trunk).
+_RESTORE_RECLAIM_DIRNAME = "reclaimed"
+
+
+def _unique_restore_reclaim_dir(repo_root: Path) -> Path:
+    """Pick a non-colliding ``.agentshore/reclaimed/restore[-N]/`` directory.
+
+    Deterministic suffix-bump (no wall-clock / randomness) so a second restore
+    in the same session never clobbers an earlier quarantine.
+    """
+    base = repo_root / ".agentshore" / _RESTORE_RECLAIM_DIRNAME
+    n = 0
+    while True:
+        candidate = base / ("restore" if n == 0 else f"restore-{n}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _quarantine_untracked_blockers(repo_root: Path) -> list[str]:
+    """Move untracked, non-ignored files aside so the default-branch checkout lands.
+
+    ``git checkout <default>`` is refused when untracked working-tree files
+    would be overwritten by the target branch, and neither ``merge --abort`` nor
+    ``reset --hard`` clears untracked state — so a play that ran in the main
+    checkout and left untracked files latches a permanent trunk-dispatch pause
+    (the #175 wedge). AgentShore owns this main checkout and the contaminating
+    work is recoverable, so we **move** (never delete) the untracked-non-ignored
+    set into ``.agentshore/reclaimed/restore[-N]/`` (preserving relative paths)
+    and let the checkout proceed. ``--exclude-standard`` keeps gitignored runtime
+    state (``.agentshore/``, build output) in place. Best-effort; returns the
+    relative paths actually moved and never raises.
+    """
+    listing = _run_git(
+        ["ls-files", "--others", "--exclude-standard", "-z"], repo_root, timeout=30.0
+    )
+    if listing.returncode != 0 or not listing.stdout:
+        return []
+    rels = [p for p in listing.stdout.split("\0") if p]
+    if not rels:
+        return []
+    dest_root = _unique_restore_reclaim_dir(repo_root)
+    moved: list[str] = []
+    for rel in rels:
+        src = repo_root / rel
+        try:
+            if not src.is_file():
+                continue
+            dst = dest_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(src, dst)
+            moved.append(rel)
+        except OSError as exc:
+            _logger.warning("main_repo_restore_quarantine_failed", path=rel, error=str(exc))
+    return moved
+
+
 def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     """Best-effort restore of *repo_root* to a clean ``default_branch`` checkout.
 
@@ -103,13 +164,20 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     caller emits ``main_repo_auto_restore_failed`` and pauses dispatch on a
     False return.
 
-    Recovery path (desktop-kqo5 wedge fix): a bare ``git checkout`` cannot
-    proceed when an errant/killed ``merge_pr`` left the main checkout with an
-    in-progress merge (``.git/MERGE_HEAD`` present, ``UU`` conflicts in the
-    index). AgentShore owns this main checkout and the conflicting work lives
-    on the PR branch, so we abort the in-progress merge and hard-reset before
-    retrying the checkout. Without this the orchestrator latches a permanent
-    trunk-dispatch pause on a fully recoverable state.
+    Recovery ladder (desktop-kqo5 + #175 wedge fixes). A bare ``git checkout``
+    cannot proceed when the main checkout is dirty; AgentShore owns this checkout
+    and the contaminating work lives on a feature/PR branch, so each tier clears
+    one class of blocker and retries:
+
+    1. **In-progress merge** (``.git/MERGE_HEAD`` present, ``UU`` conflicts) — an
+       errant/killed ``merge_pr``: ``git merge --abort``.
+    2. **Tracked dirt** (modified/added tracked files): ``git reset --hard``.
+    3. **Untracked dirt** (the #175 case): untracked files a trunk-scoped play
+       left in the main checkout block ``checkout`` ("would be overwritten"), and
+       tiers 1–2 don't touch untracked state. :func:`_quarantine_untracked_blockers`
+       *moves* them (recoverably) into ``.agentshore/reclaimed/`` so the checkout
+       can land. Without this the orchestrator latches a permanent trunk-dispatch
+       pause on a fully recoverable state.
 
     Uses a slightly longer timeout than the symbolic-ref reads because
     checkout/reset may have to walk the index.
@@ -123,14 +191,28 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
         return True
 
     # Checkout was refused — recover from an in-progress merge / dirty index.
-    # ``--quit`` clears MERGE_HEAD without touching the worktree; ``--abort``
-    # is the merge-specific unwind. Both are best-effort. ``reset --hard``
-    # then drops the conflicted worktree/index so the checkout can land.
+    # ``--abort`` is the merge-specific unwind; ``reset --hard`` then drops the
+    # conflicted/dirty *tracked* worktree+index so the checkout can land.
     merge_in_progress = (repo_root / ".git" / "MERGE_HEAD").exists()
     for recovery in (["merge", "--abort"], ["reset", "--hard"]):
         if recovery == ["merge", "--abort"] and not merge_in_progress:
             continue
         _run_git(recovery, repo_root, timeout=30.0)
+        if _checkout():
+            return True
+
+    # Still refused after merge-abort + reset --hard: the blocker is untracked
+    # working-tree files the default branch would overwrite (#175). Quarantine
+    # them (recoverable) and retry, so a branch-switched HEAD left with untracked
+    # work no longer wedges dispatch.
+    quarantined = _quarantine_untracked_blockers(repo_root)
+    if quarantined:
+        _logger.warning(
+            "main_repo_restore_quarantined_untracked",
+            repo_root=str(repo_root),
+            count=len(quarantined),
+            paths=quarantined[:20],
+        )
         if _checkout():
             return True
     return _checkout()
