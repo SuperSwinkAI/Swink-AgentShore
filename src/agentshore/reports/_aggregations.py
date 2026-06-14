@@ -39,7 +39,8 @@ from agentshore.reports.types import (
     TrajectoryAnalysisData,
     TrajectorySnapshotEntry,
 )
-from agentshore.state import INTERNAL_PLAY_TYPES
+from agentshore.rl.action_space import PLAY_TO_INDEX, RESERVED_PLAYS
+from agentshore.state import INTERNAL_PLAY_TYPES, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,29 +63,54 @@ if TYPE_CHECKING:
 
 _INTERNAL_PLAY_VALUES = frozenset(pt.value for pt in INTERNAL_PLAY_TYPES)
 
-_PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = (
-    ("instantiate_agent", "INSTANTIATE_AGENT", 0, 1, False),
-    ("seed_project", "SEED_PROJECT", 17, 1, False),
-    ("design_audit", "DESIGN_AUDIT", 9, 1, False),
-    ("refine_task_breakdown", "REFINE_TASK_BREAKDOWN", 12, 1, False),
-    ("groom_backlog", "GROOM_BACKLOG", 16, 1, False),
-    ("calibrate_alignment", "CALIBRATE_ALIGNMENT", 18, 1, False),
-    ("write_implementation_plan", "WRITE_IMPLEMENTATION_PLAN", 2, 2, False),
-    ("issue_pickup", "ISSUE_PICKUP", 4, 2, False),
-    ("unblock_pr", "UNBLOCK_PR", 1, 2, False),
-    ("systematic_debugging", "SYSTEMATIC_DEBUGGING", 8, 2, False),
-    ("code_review", "CODE_REVIEW", 5, 3, False),
-    ("run_qa", "RUN_QA", 7, 3, False),
-    ("merge_pr", "MERGE_PR", 6, 4, False),
-    ("cleanup", "CLEANUP", 13, 4, False),
-    ("take_break", "TAKE_BREAK", 15, 5, False),
-    ("reconcile_state", "RECONCILE_STATE", 11, 5, False),
-    ("prune", "PRUNE", 19, 6, False),
-    ("future_4", "FUTURE_4", 14, 6, True),
-    ("future_7", "FUTURE_7", 20, 6, True),
-    ("future_8", "FUTURE_8", 21, 6, True),
-    ("end_agent", "END_AGENT", 3, 7, False),
-    ("end_session", "END_SESSION", 10, 7, False),
+# Presentation metadata for the ESR play-log table — the ONLY hand-maintained
+# part. Each entry is ``PlayType -> (display label, lifecycle phase)`` in the
+# exact render order the play log uses (grouped by phase, not by action index).
+# The action index (``PLAY_TO_INDEX``), play set (``PlayType``), and future flag
+# (``RESERVED_PLAYS``) are all derived from ``rl/action_space`` below, so an
+# action-space rev no longer silently drifts this table.
+_PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
+    (PlayType.INSTANTIATE_AGENT, "INSTANTIATE_AGENT", 1),
+    (PlayType.SEED_PROJECT, "SEED_PROJECT", 1),
+    (PlayType.DESIGN_AUDIT, "DESIGN_AUDIT", 1),
+    (PlayType.REFINE_TASK_BREAKDOWN, "REFINE_TASK_BREAKDOWN", 1),
+    (PlayType.GROOM_BACKLOG, "GROOM_BACKLOG", 1),
+    (PlayType.CALIBRATE_ALIGNMENT, "CALIBRATE_ALIGNMENT", 1),
+    (PlayType.WRITE_IMPLEMENTATION_PLAN, "WRITE_IMPLEMENTATION_PLAN", 2),
+    (PlayType.ISSUE_PICKUP, "ISSUE_PICKUP", 2),
+    (PlayType.UNBLOCK_PR, "UNBLOCK_PR", 2),
+    (PlayType.SYSTEMATIC_DEBUGGING, "SYSTEMATIC_DEBUGGING", 2),
+    (PlayType.CODE_REVIEW, "CODE_REVIEW", 3),
+    (PlayType.RUN_QA, "RUN_QA", 3),
+    (PlayType.MERGE_PR, "MERGE_PR", 4),
+    (PlayType.CLEANUP, "CLEANUP", 4),
+    (PlayType.TAKE_BREAK, "TAKE_BREAK", 5),
+    (PlayType.RECONCILE_STATE, "RECONCILE_STATE", 5),
+    (PlayType.PRUNE, "PRUNE", 6),
+    (PlayType.FUTURE_4, "FUTURE_4", 6),
+    (PlayType.FUTURE_7, "FUTURE_7", 6),
+    (PlayType.FUTURE_8, "FUTURE_8", 6),
+    (PlayType.END_AGENT, "END_AGENT", 7),
+    (PlayType.END_SESSION, "END_SESSION", 7),
+)
+
+# Loud guard: the presentation table must cover exactly the user-facing action
+# space. A future action-space rev that adds/removes/renames a play (without
+# updating this table) fails at import time rather than silently dropping a row.
+_EXPECTED_PLAY_LOG_KEYS = set(PlayType) - INTERNAL_PLAY_TYPES
+if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
+    msg = (
+        "_PLAY_LOG_PRESENTATION keys must equal set(PlayType) - INTERNAL_PLAY_TYPES; "
+        "an action-space rev changed the play set — update the presentation table."
+    )
+    raise ValueError(msg)
+
+# Derived play-log order: ``(play_type_str, label, action_index, phase, is_future)``.
+# Index from ``PLAY_TO_INDEX``, future flag from ``RESERVED_PLAYS`` — both single-
+# sourced from ``rl/action_space``. Consumers below read this exactly as before.
+_PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = tuple(
+    (play_type.value, label, PLAY_TO_INDEX[play_type], phase, play_type in RESERVED_PLAYS)
+    for play_type, label, phase in _PLAY_LOG_PRESENTATION
 )
 
 _AGENTSHORE_SOURCE_LABEL_PREFIX = "agentshore/source:"
