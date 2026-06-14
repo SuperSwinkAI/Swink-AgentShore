@@ -61,6 +61,10 @@ class IssuePickupPlay(SkillBackedPlay):
       is no longer treated as on cooldown (see ``_rearm_ready_issues``).
     """
 
+    # Only issue_pickup legitimately authors PRs; the executor stamps PR
+    # authorship from its ``pr`` / ``pull_request`` artifacts.
+    authors_prs = True
+
     def __init__(self) -> None:
         super().__init__()
         # issue_number → consecutive policy-skip count since last successful dispatch

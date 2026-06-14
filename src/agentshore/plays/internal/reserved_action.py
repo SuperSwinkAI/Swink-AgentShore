@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.plays.internal.base import InternalPlay
 from agentshore.rl.mask_reason import RESERVED_SLOT, MaskReason
 from agentshore.state import PlayOutcome, PlayType
 
@@ -14,18 +15,11 @@ if TYPE_CHECKING:
 _RESERVED_ERROR = "reserved action slot"
 
 
-class _ReservedActionPlay:
+class _ReservedActionPlay(InternalPlay):
     """No-op placeholder for action-space slots reserved for future plays."""
-
-    play_type: PlayType
-    skill_name = None
-    capability = None
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         return [RESERVED_SLOT]
-
-    def estimated_cost(self, state: OrchestratorState) -> float:
-        return 0.0
 
     async def execute(
         self,

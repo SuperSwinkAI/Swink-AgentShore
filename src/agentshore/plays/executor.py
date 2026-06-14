@@ -60,25 +60,12 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 
-# Read-only observation plays soft-mask when agent selection rejects all candidates
-# (staffing gap, not a play failure) rather than feeding a failure penalty to PPO.
-# Requeueable plays also avoid the penalty on AntiConfirmationViolation, up to a cap.
-_OBSERVATION_PLAYS: frozenset[PlayType] = frozenset()
-
-_REQUEUEABLE_ON_VIOLATION: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
+# Executor branching on play behavior is now declarative: each ``Play`` exposes
+# ``is_observation`` / ``requeue_on_anti_confirmation`` / ``is_handoff`` /
+# ``retarget_pr_base`` / ``authors_prs`` (defaulted inert on the base classes,
+# overridden by the opt-in plays). See the ``Play`` protocol docstring.
 _MAX_REQUEUE_ATTEMPTS = 3
 
-_HANDOFF_PLAYS = frozenset({PlayType.END_AGENT})
-# PR-scoped plays for which we self-heal the PR base before dispatch (#8). A PR
-# opened against the repo default instead of the configured target branch
-# strands as wrong_base_branch in merge_pr and gives code_review the wrong diff
-# base; retargeting here makes the fix independent of agent compliance.
-_PR_BASE_RECONCILE_PLAYS: frozenset[PlayType] = frozenset(
-    {PlayType.MERGE_PR, PlayType.CODE_REVIEW, PlayType.UNBLOCK_PR}
-)
-# Only these play types legitimately *create* a PR; all others that reference a
-# PR number via a {"type":"pr",...} artifact must not stamp authorship.
-_PR_AUTHORING_PLAYS: frozenset[PlayType] = frozenset({PlayType.ISSUE_PICKUP})
 _POLICY_DISALLOWED_ERROR_MARKERS = (
     "forbidden by skill policy",
     "ci-change requested",
@@ -235,7 +222,7 @@ class PlayExecutor:
             # instead of the configured target branch. Retarget before running
             # any PR-scoped play so merge_pr can merge and code_review diffs the
             # right base. Idempotent; a no-op when the base already matches.
-            if params.pr_number is not None and play_type in _PR_BASE_RECONCILE_PLAYS:
+            if params.pr_number is not None and play.retarget_pr_base:
                 await self._maybe_retarget_pr_base(play_type, params, state)
 
             params = await self._select_skill_agent(play, play_type, params, started_at)
@@ -337,7 +324,7 @@ class PlayExecutor:
             )
         except AntiConfirmationViolation as exc:
             raise _SkipDispatchError(
-                await self._handle_selection_violation(play_type, params, started_at, exc)
+                await self._handle_selection_violation(play, play_type, params, started_at, exc)
             ) from exc
 
         # Anti-confirmation DB re-check (defense in depth)
@@ -363,6 +350,7 @@ class PlayExecutor:
 
     async def _handle_selection_violation(
         self,
+        play: Play,
         play_type: PlayType,
         params: PlayParams,
         started_at: str,
@@ -370,7 +358,7 @@ class PlayExecutor:
     ) -> PlayOutcome:
         # Read-only observation plays soft-mask when no agent qualifies rather
         # than failing — the play didn't fail, the staffing did.
-        if play_type in _OBSERVATION_PLAYS:
+        if play.is_observation:
             await self._finish_claim_group(params, status="released")
             await self._record_pre_dispatch_skip(
                 play_type,
@@ -390,7 +378,7 @@ class PlayExecutor:
         _raw_attempts = params.extras.get("requeue_attempts") or 0
         attempt = _raw_attempts if isinstance(_raw_attempts, int) else int(str(_raw_attempts))
         if (
-            play_type in _REQUEUEABLE_ON_VIOLATION
+            play.requeue_on_anti_confirmation
             and attempt < _MAX_REQUEUE_ATTEMPTS
             and self._requeue_callback is not None
         ):
@@ -512,7 +500,7 @@ class PlayExecutor:
             started_at=started_at,
             alignment_before=alignment_before,
             current_play_handle=current_play_handle,
-            source_context_size=self._snapshot_context_size(play_type, params),
+            source_context_size=self._snapshot_context_size(play, params),
         )
 
     async def _notify_dispatch_started(
@@ -618,6 +606,7 @@ class PlayExecutor:
 
         if outcome.success or outcome.partial:
             await self._wire_deferrals(
+                play,
                 play_type,
                 params,
                 outcome,
@@ -808,9 +797,9 @@ class PlayExecutor:
             )
         return None
 
-    def _snapshot_context_size(self, play_type: PlayType, params: PlayParams) -> int:
+    def _snapshot_context_size(self, play: Play, params: PlayParams) -> int:
         """Return source agent's context_size before handoff plays reset it."""
-        if play_type not in _HANDOFF_PLAYS:
+        if not play.is_handoff:
             return 0
         agent_id = params.source_agent_id or params.agent_id
         if agent_id is None:
@@ -820,7 +809,7 @@ class PlayExecutor:
         except (PreconditionFailed, KeyError) as exc:
             _logger.warning(
                 "context_size_snapshot_failed",
-                play_type=play_type.value,
+                play_type=play.play_type.value,
                 agent_id=agent_id,
                 error=str(exc),
             )
@@ -936,6 +925,7 @@ class PlayExecutor:
 
     async def _wire_deferrals(
         self,
+        play: Play,
         play_type: PlayType,
         params: PlayParams,
         outcome: PlayOutcome,
@@ -944,8 +934,8 @@ class PlayExecutor:
         elapsed_s: float,
     ) -> None:
         """Write Phase-1 deferred DB rows (handoffs, PR records, branch activity)."""
-        # Handoff for END_AGENT (agent termination)
-        if play_type == PlayType.END_AGENT and params.agent_id:
+        # Handoff for terminating plays (agent termination)
+        if play.is_handoff and params.agent_id:
             await self._store.record_handoff(
                 HandoffRecord(
                     session_id=self._session_id,
@@ -968,7 +958,7 @@ class PlayExecutor:
                 # Non-authoring plays (unblock_pr, code_review, …) may emit a
                 # PR reference artifact for traceability but must not stamp
                 # authorship — skip the entire authorship-recording block.
-                if play_type not in _PR_AUTHORING_PLAYS:
+                if not play.authors_prs:
                     continue
                 await self._record_pr_artifact(play_type, params, outcome, artifact, now)
             elif artifact_type == "commit":

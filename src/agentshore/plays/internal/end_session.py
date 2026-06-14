@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.plays.internal.base import InternalPlay
 from agentshore.state import PlayOutcome, PlayType
 
 if TYPE_CHECKING:
@@ -12,18 +13,13 @@ if TYPE_CHECKING:
     from agentshore.state import OrchestratorState
 
 
-class EndSessionPlay:
+class EndSessionPlay(InternalPlay):
     """Request graceful drain via _process_completion in the Orchestrator."""
 
     play_type = PlayType.END_SESSION
-    skill_name = None
-    capability = None
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         return []
-
-    def estimated_cost(self, state: OrchestratorState) -> float:
-        return 0.0
 
     async def execute(
         self,

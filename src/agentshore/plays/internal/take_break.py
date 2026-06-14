@@ -12,6 +12,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from agentshore.plays.internal.base import InternalPlay
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, PlayOutcome, PlayType
 
@@ -27,12 +28,10 @@ _PLAY_COST = 0.005
 _DRAIN_POLL_SECONDS = 5.0
 
 
-class TakeBreakPlay:
+class TakeBreakPlay(InternalPlay):
     """Sleep for cfg.session.break_duration_minutes for one target agent."""
 
     play_type = PlayType.TAKE_BREAK
-    skill_name = None
-    capability = None
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         cooldown_targets = [

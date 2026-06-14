@@ -4,6 +4,34 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+# Canonical substrings that mark a GitHub authentication / access failure in a
+# free-form skill or command error string. Single home for the auth-marker table
+# that ``plays/skill_backed/base.py`` matches against when deciding whether a
+# skill failure is an auth failure (``FailureKind.AUTH``) and should mark the
+# agent in error. The narrower publish-scoped subset in
+# ``plays/_publish_reconciler.py`` is intentionally distinct (it scopes
+# issue-pickup publish-failure recovery, not general auth detection).
+GITHUB_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "bad credentials",
+    "http 401",
+    "401 unauthorized",
+    "http 403",
+    "403 forbidden",
+    "irrecoverable github access failure",
+    "github connector returned 404",
+    "connector repo 404",
+    "repository not found",
+    "could not resolve to a repository with the name",
+    "could not resolve to a repository",
+    "repository/pr is not accessible",
+    "not found/could not resolve repository",
+    "repository is not resolvable to this token",
+    "not resolvable to this token/session",
+    "lacks access to repository",
+    "cannot access repository metadata",
+    "active gh_token account lacks",
+)
+
 
 class FailureCategory(StrEnum):
     code_error = "code_error"

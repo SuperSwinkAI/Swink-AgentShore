@@ -99,7 +99,30 @@ class Play(Protocol):
 
     ``execute`` runs the play and returns a PlayOutcome.  It must never raise
     (catch all exceptions and embed them in the outcome).
+
+    Declarative behavior flags let the executor branch on capability rather than
+    on a hard-coded set of play types (issue #TNQA-2). Each defaults to the
+    inert value on the concrete base classes (``SkillBackedPlay`` /
+    ``InternalPlay``); only the plays that opt in override them:
+
+    - ``authors_prs``: this play legitimately *creates* PRs, so a ``pr`` /
+      ``pull_request`` artifact stamps authorship (only ``issue_pickup``).
+    - ``retarget_pr_base``: pre-dispatch self-heal of the PR's base branch
+      applies (``merge_pr`` / ``code_review`` / ``unblock_pr``).
+    - ``is_handoff``: terminating play that transfers agent context
+      (``end_agent``); the executor snapshots context size before it runs.
+    - ``is_observation``: read-only play that soft-masks (rather than failing)
+      when agent selection finds no candidate. Currently none.
+    - ``requeue_on_anti_confirmation``: defer to a later tick (up to a cap)
+      rather than taking a failure penalty on an anti-confirmation violation
+      (only ``code_review``).
     """
+
+    authors_prs: bool
+    retarget_pr_base: bool
+    is_handoff: bool
+    is_observation: bool
+    requeue_on_anti_confirmation: bool
 
     @property
     def play_type(self) -> PlayType: ...

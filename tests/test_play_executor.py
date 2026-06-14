@@ -91,6 +91,18 @@ def _make_play(
     play.capability = "can_implement"
     play.preconditions = MagicMock(return_value=preconditions_result or [])
     play.estimated_cost = MagicMock(return_value=0.05)
+    # Declarative behavior flags the executor reads off the Play (replacing the
+    # old play-type frozensets). A bare MagicMock returns truthy mocks for these,
+    # so set real bools mirroring the concrete plays' overrides.
+    play.authors_prs = play_type == PlayType.ISSUE_PICKUP
+    play.retarget_pr_base = play_type in {
+        PlayType.MERGE_PR,
+        PlayType.CODE_REVIEW,
+        PlayType.UNBLOCK_PR,
+    }
+    play.is_handoff = play_type == PlayType.END_AGENT
+    play.is_observation = False
+    play.requeue_on_anti_confirmation = play_type == PlayType.CODE_REVIEW
 
     if raise_on_execute is not None:
         play.execute = AsyncMock(side_effect=raise_on_execute)
@@ -147,6 +159,11 @@ def _make_manager(
     handle.context_size = 50_000
     handle.model_tier = "medium"
     handle.github_identity = github_identity
+    # Circuit-breaker scoring reads these directly off the handle (no longer
+    # getattr-guarded); set real values so the agent sorts as healthy.
+    handle.task_history = []
+    handle.timeout_count = 0
+    handle.consecutive_timeouts = 0
     manager.handles = {agent_id: handle}
     manager.branch_exposure = {}
     manager.get_handle = MagicMock(return_value=handle)

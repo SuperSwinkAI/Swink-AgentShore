@@ -39,6 +39,11 @@ def _make_minimal_play() -> object:
         play_type = PlayType.ISSUE_PICKUP
         skill_name = "agentshore-issue-pickup"
         capability = "can_implement"
+        authors_prs = True
+        retarget_pr_base = False
+        is_handoff = False
+        is_observation = False
+        requeue_on_anti_confirmation = False
 
         def preconditions(self, state: OrchestratorState) -> list[str]:
             return []

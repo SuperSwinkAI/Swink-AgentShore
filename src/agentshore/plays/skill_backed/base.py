@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
-from agentshore.errors import ErrorClass, FailureKind
+from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
     params_to_json_safe_dict,
@@ -54,27 +54,6 @@ def _worktree_cwd_override(params: PlayParams) -> Path | None:
     return None
 
 
-_SKILL_AUTH_FAILURE_MARKERS = (
-    "bad credentials",
-    "http 401",
-    "401 unauthorized",
-    "http 403",
-    "403 forbidden",
-    "irrecoverable github access failure",
-    "github connector returned 404",
-    "connector repo 404",
-    "repository not found",
-    "could not resolve to a repository with the name",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "not found/could not resolve repository",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-    "lacks access to repository",
-    "cannot access repository metadata",
-    "active gh_token account lacks",
-)
-
 _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.ISSUE_PICKUP,
@@ -115,6 +94,14 @@ class SkillBackedPlay(Play, ABC):
     # mask this play. Empty tuple == no preconditions (eligible whenever the
     # cross-cutting masks in ``rl/mask.py`` permit).
     gates: Sequence[Gate] = ()
+
+    # Declarative executor-behavior flags (see ``Play`` for semantics). Inert by
+    # default; the handful of plays that opt in override the relevant flag.
+    authors_prs: bool = False
+    retarget_pr_base: bool = False
+    is_handoff: bool = False
+    is_observation: bool = False
+    requeue_on_anti_confirmation: bool = False
 
     @property
     @abstractmethod
@@ -587,4 +574,4 @@ def _merge_invocation_costs(
 
 def _looks_like_auth_failure(error: str | None) -> bool:
     text = (error or "").lower()
-    return any(marker in text for marker in _SKILL_AUTH_FAILURE_MARKERS)
+    return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)
