@@ -1,5 +1,5 @@
 """Tests for GitHubAdapter mutating methods (create_issue, label_issue,
-close_issue, create_pr, merge_pr) and probe() error branches.
+close_issue, create_pr) and probe() error branches.
 
 Companion to ``tests/test_github_adapter.py`` which focuses on read paths.
 All `gh` invocations are mocked — no subprocess is ever spawned.
@@ -329,26 +329,6 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
         )
 
     assert result is None
-    run_gh.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# merge_pr — DISABLED dead code (merges run only via merge_pr / unblock_pr plays)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_merge_pr_is_disabled(tmp_path: Path) -> None:
-    """GitHubAdapter.merge_pr is hard-disabled: merges must run only through the
-    merge_pr / unblock_pr plays, never an orchestrator-side adapter call."""
-    adapter, _ = _make_adapter(tmp_path)
-
-    with (
-        patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh,
-        pytest.raises(NotImplementedError),
-    ):
-        await adapter.merge_pr(pr_number=42, idempotency_key="mp-1")
-
     run_gh.assert_not_called()
 
 
