@@ -113,6 +113,25 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
     expect(card.type).toBe("Large Codex");
   });
 
+  it("moves a running card out of Running when its agent leaves the snapshot", () => {
+    let state = INITIAL_STATE;
+
+    state = reducer(state, {
+      type: "state_update",
+      agents: [agent({ current_play: activePlay() })],
+    });
+    expect(onlyCard(state).status).toBe("started");
+
+    state = reducer(state, { type: "state_update", agents: [] });
+
+    const card = onlyCard(state);
+    expect(card.status).toBe("failed");
+    expect(card.result).toBe("Ended (agent removed)");
+    expect(card.endedAt).not.toBeNull();
+    expect(card.name).toBe("Cobalt Atlas");
+    expect(card.type).toBe("Large Codex");
+  });
+
   it("still upgrades name/type from the live snapshot while the agent exists", () => {
     let state = INITIAL_STATE;
 
