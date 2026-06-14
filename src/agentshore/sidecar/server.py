@@ -74,6 +74,7 @@ from agentshore.sidecar.session_lifecycle import (
 if TYPE_CHECKING:
     from agentshore.data.store import DataStore
     from agentshore.sidecar.embedded_bridge import EmbeddedBridge
+    from agentshore.sidecar.session_lifecycle import OrchestratorHandle
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -123,9 +124,11 @@ class ServerState:
     # ``orchestrator`` is the engine instance; ``orchestrator_task`` is the
     # supervised ``run_until_idle`` task. session.stop drives drain/hard
     # shutdown through these handles before tearing down the bridge.
-    # Typed as ``object`` so the import stays lazy and the cold-start
-    # torch-free invariant (test_cold_start_torch_free.py) is preserved.
-    orchestrator: object | None = None
+    # Typed as ``OrchestratorHandle`` (a TYPE_CHECKING-only Protocol) so the
+    # concrete engine import stays lazy and the cold-start torch-free invariant
+    # (test_cold_start_torch_free.py) is preserved, while the sidecar's calls
+    # type-check without per-site ``# type: ignore[attr-defined]``.
+    orchestrator: OrchestratorHandle | None = None
     orchestrator_task: asyncio.Task[None] | None = None
     esr_ready_report_path: str | None = None
     esr_ready_log_path: str | None = None
@@ -542,7 +545,7 @@ async def _build_session_stop_response(
                     await orch_task
         else:
             with contextlib.suppress(Exception):
-                orch.request_drain("session_stop_drain")  # type: ignore[attr-defined]
+                orch.request_drain("session_stop_drain")
             if orch_task is not None and not orch_task.done():
                 # No deadline by default: let in-flight plays finish on their
                 # own. Callers that need a bounded wait pass an explicit
@@ -577,7 +580,7 @@ async def _build_session_stop_response(
 
     if orch is not None:
         with contextlib.suppress(Exception):
-            await orch.stop()  # type: ignore[attr-defined]
+            await orch.stop()
         state.orchestrator = None
         state.orchestrator_task = None
         payload["report_path"] = context.report_path
@@ -609,7 +612,7 @@ async def _build_session_stop_response(
     return _result(req_id, payload)
 
 
-def _dispatch_archive(
+async def _dispatch_archive(
     method: str,
     raw_params: object,
     *,
@@ -617,15 +620,6 @@ def _dispatch_archive(
     is_notification: bool,
     notify: Callable[[JsonRpcNotification], None] | None,
     state: ServerState,
-) -> DispatchResult:
-    return _archive_response(method, raw_params, state, req_id)
-
-
-async def _archive_response(
-    method: str,
-    raw_params: object,
-    state: ServerState,
-    req_id: int | str | None,
 ) -> JsonRpcResponse:
     store = state.data_store
     if store is None and state.session_context is not None:
@@ -884,8 +878,9 @@ def _dispatch_session_budget(
     if raw_params is not None and not isinstance(raw_params, dict):
         return _error(req_id, INVALID_REQUEST, "params must be an object")
 
-    # ``state.orchestrator`` is typed ``object`` to keep the import lazy (the
-    # cold-start torch-free invariant), so the live methods are duck-typed here.
+    # ``state.orchestrator`` is typed via the TYPE_CHECKING-only
+    # ``OrchestratorHandle`` Protocol — the concrete engine import stays lazy
+    # (cold-start torch-free invariant) while these live methods type-check.
     orch = state.orchestrator
     if orch is None:
         return _error(req_id, ERR_SESSION_ACTIVE, "no active session")
@@ -893,7 +888,7 @@ def _dispatch_session_budget(
     if method == "session.get_budget":
 
         async def _run_get() -> JsonRpcResponse:
-            current = orch.current_budget  # type: ignore[attr-defined]
+            current = orch.current_budget
             return _result(req_id, {"budget": await current()})
 
         return _run_get()
@@ -915,7 +910,7 @@ def _dispatch_session_budget(
             return _error(req_id, INVALID_PARAMS, str(exc))
 
         async def _run_set() -> JsonRpcResponse:
-            set_budget = orch.set_budget  # type: ignore[attr-defined]
+            set_budget = orch.set_budget
             try:
                 applied = await set_budget(
                     dollars_enabled=validated.enabled,

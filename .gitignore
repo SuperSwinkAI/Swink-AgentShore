@@ -201,6 +201,8 @@ monitor-*.jpeg
 
 # ── Graphify output ───────────────────────────────────────────────────────────
 graphify-out/
+# Belt-and-suspenders: keep the tool cache out of the package source tree.
+src/**/graphify-out/
 
 # ── AgentShore runtime artifacts ──────────────────────────────────────────────
 .agentshore/

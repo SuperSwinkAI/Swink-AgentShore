@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
+from agentshore.agents import cli_grok
+from agentshore.agents._jsonl import (
+    _first_int,
+    _iter_json_events,
+    _max_usage,
+    _usage_totals_from_dict,
+    _UsageTotals,
+)
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
@@ -24,7 +32,7 @@ from agentshore.logging import get_logger
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from agentshore.agents.handle import AgentHandle
@@ -347,16 +355,6 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True, slots=True)
-class _UsageTotals:
-    tokens_in: int = 0
-    tokens_out: int = 0
-    cached_tokens_in: int = 0
-    cache_write_tokens_in: int = 0
-    turn_count: int = 0
-    max_turn_input_tokens: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class _ReadOutput:
     raw: str
     usage: _UsageTotals
@@ -488,10 +486,6 @@ def build_argv(
         return args
 
     if agent_type == AgentType.GROK:
-        # Imported lazily: cli_grok imports private helpers from this module at
-        # import time, so a top-level import here would form a circular import.
-        from agentshore.agents import cli_grok
-
         return cli_grok.build_argv(
             prompt=prompt,
             binary=binary,
@@ -1156,25 +1150,6 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _iter_json_events(raw: str) -> Iterator[dict[str, object]]:
-    """Yield each non-blank, JSON-decodable line of *raw* as a dict event.
-
-    The three CLI agents all emit JSONL on stdout; this is the single scan
-    loop they share (skip blank lines, ``json.loads``, drop ``JSONDecodeError``
-    and non-dict payloads) so the per-format parsers below only express their
-    own event semantics.
-    """
-    for line in map(str.strip, raw.splitlines()):
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            yield event
-
-
 def _extract_session_id_from_jsonl(raw: str) -> str | None:
     for event in _iter_json_events(raw):
         for key in ("session_id", "thread_id"):
@@ -1203,56 +1178,6 @@ def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
         return current
     parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
     return _max_usage(current, parsed)
-
-
-def _usage_totals_from_dict(
-    usage: dict[str, object], *, input_includes_cache: bool
-) -> _UsageTotals:
-    total_usage = usage.get("total_token_usage")
-    last_usage = usage.get("last_token_usage")
-    turn_usage: dict[str, object] | None = None
-    if isinstance(total_usage, dict):
-        if isinstance(last_usage, dict):
-            turn_usage = last_usage
-        usage = total_usage
-        input_includes_cache = True
-    elif isinstance(last_usage, dict):
-        usage = last_usage
-        turn_usage = last_usage
-        input_includes_cache = True
-
-    input_tokens = _first_int(usage, "input_tokens")
-    cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
-        usage.get("cache_read_input_tokens")
-    )
-    cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(usage, "output_tokens")
-    reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
-
-    tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
-    if not input_includes_cache:
-        tokens_in += cache_write_tokens
-
-    tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
-    max_turn_input_tokens = _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
-    return _UsageTotals(
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cache_read_tokens,
-        cache_write_tokens_in=cache_write_tokens,
-        max_turn_input_tokens=max_turn_input_tokens,
-    )
-
-
-def _max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-    return _UsageTotals(
-        tokens_in=max(left.tokens_in, right.tokens_in),
-        tokens_out=max(left.tokens_out, right.tokens_out),
-        cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
-        cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
-        turn_count=max(left.turn_count, right.turn_count),
-        max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
-    )
 
 
 def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
@@ -1341,9 +1266,7 @@ def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | 
 
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
-    from agentshore.agents.cli_grok import parse_grok_jsonl
-
-    return parse_grok_jsonl(raw)
+    return cli_grok.parse_grok_jsonl(raw)
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
@@ -1413,20 +1336,6 @@ def _extract_text_value(value: object) -> str | None:
     return None
 
 
-def _extract_usage_dict(event: dict[str, object]) -> dict[str, object] | None:
-    for key in ("usage", "usage_metadata", "usageMetadata", "token_usage", "tokenUsage"):
-        value = event.get(key)
-        if isinstance(value, dict):
-            return value
-    stats = event.get("stats")
-    if isinstance(stats, dict):
-        usage = stats.get("usageMetadata")
-        if isinstance(usage, dict):
-            return usage
-        return stats
-    return None
-
-
 def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
     usage = stats.get("usageMetadata")
     if isinstance(usage, dict):
@@ -1489,25 +1398,6 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
 }
-
-
-def _first_int(values: dict[str, object], *keys: str) -> int:
-    for key in keys:
-        parsed = _safe_int(values.get(key))
-        if parsed:
-            return parsed
-    return 0
-
-
-def _safe_int(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int | float | str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
 
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:

@@ -546,6 +546,7 @@ class WorktreeManager:
                     branch_name=branch_name,
                     base_ref=base_ref,
                     fetch=True,
+                    safe_to_force_remove=_is_reclaimable_collision,
                 )
             except WorktreeAllocationFailed as exc:
                 # Existing-row reuse failed (disk gone, target dirty, etc).
@@ -575,6 +576,7 @@ class WorktreeManager:
             branch_name=branch_name,
             base_ref=base_ref,
             fetch=True,
+            safe_to_force_remove=_is_reclaimable_collision,
         )
         await self._verify_worktree_registered(allocate, scope=scope)
         try:
@@ -619,6 +621,21 @@ class WorktreeManager:
             play_type=play_type,
             scope=scope,
         )
+
+
+#: Directory-name prefix the manager keys a branch-creating ISSUE_PICKUP
+#: allocation with (see :func:`_make_prebranch_key`). A *colliding* worktree
+#: with this prefix is a crashed-session branch-creating orphan that never
+#: rekeyed, so it is safe to force-remove and retry the add. The convention
+#: lives here, in the manager, because the manager is the only layer that
+#: assigns these keys — the allocator delegates the decision via the
+#: ``safe_to_force_remove`` predicate it is handed.
+_RECLAIMABLE_COLLISION_PREFIX = "pickup-"
+
+
+def _is_reclaimable_collision(path: Path) -> bool:
+    """Return True when a colliding worktree path is a reclaimable pickup orphan."""
+    return path.name.startswith(_RECLAIMABLE_COLLISION_PREFIX)
 
 
 def _make_prebranch_key(play_type: PlayType, params: PlayParams) -> str:

@@ -45,11 +45,68 @@ from agentshore.session_path import (
 from agentshore.sidecar.embedded_bridge import EmbeddedBridge
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+    from typing import Protocol
 
     from agentshore.config import RuntimeConfig
+    from agentshore.data.store import DataStore
     from agentshore.sidecar.server import JsonRpcNotification, ServerState
     from agentshore.state import AgentType
+
+    class OrchestratorHandle(Protocol):
+        """Structural view of the orchestrator surface the sidecar drives.
+
+        Declared under ``TYPE_CHECKING`` only so importing
+        ``agentshore.sidecar.*`` never transitively loads
+        :mod:`agentshore.core` (and therefore torch) at sidecar cold start —
+        the invariant pinned by ``tests/sidecar/test_cold_start_torch_free.py``.
+        The concrete :class:`agentshore.core.Orchestrator` satisfies this
+        protocol structurally; typing ``ServerState.orchestrator`` as
+        ``OrchestratorHandle | None`` lets the sidecar drop the
+        ``# type: ignore[attr-defined]`` duck-typing comments while keeping the
+        engine import lazy.
+
+        The underscored members (``_store``, ``_log_path``,
+        ``_natural_exit_reason``) mirror the orchestrator's own internal
+        accessors; they are declared here so the sidecar's reach-ins are typed
+        rather than silently ``object``-typed.
+        """
+
+        def request_drain(self, reason: str = ...) -> None: ...
+
+        def register_esr_ready_callback(
+            self, callback: Callable[[str, str, str | None], None] | None
+        ) -> None: ...
+
+        def on_natural_exit(self, callback: Callable[[str], Awaitable[None]]) -> None: ...
+
+        async def set_budget(
+            self,
+            *,
+            dollars_enabled: bool,
+            dollars: float | None,
+            time_enabled: bool,
+            time_minutes: int | None,
+            persist: bool = ...,
+        ) -> dict[str, object]: ...
+
+        async def current_budget(self) -> dict[str, object]: ...
+
+        async def stop(self, grace_period_s: float = ...) -> None: ...
+
+        async def publish_initial_state(self) -> object: ...
+
+        async def run_until_idle(self) -> None: ...
+
+        @property
+        def _store(self) -> DataStore: ...
+
+        @property
+        def _log_path(self) -> Path | None: ...
+
+        @property
+        def _natural_exit_reason(self) -> str | None: ...
+
 
 _logger = structlog.get_logger(__name__)
 
@@ -569,7 +626,7 @@ async def _start_orchestrator(
     # callback; until then report_path stays empty rather than inventing a
     # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
-    log_path = getattr(orch, "_log_path", None)
+    log_path = orch._log_path
     state.session_context = SessionContext(
         session_id=session_id,
         store=orch._store,

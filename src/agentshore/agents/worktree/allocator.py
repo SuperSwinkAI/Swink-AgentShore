@@ -11,11 +11,15 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
 from agentshore import command
 from agentshore.errors import OrchestratorError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = structlog.get_logger(__name__)
 
@@ -125,24 +129,41 @@ _PICKUP_COLLISION_RE = re.compile(
 )
 
 
+def _default_safe_to_force_remove(path: Path) -> bool:
+    """Fallback collision-reclaim predicate for direct ``ensure_worktree`` callers.
+
+    The production path is ``WorktreeManager``, which passes its own predicate
+    derived from the key conventions it owns (``manager._is_reclaimable_collision``).
+    This default exists only so standalone allocator callers/tests keep the
+    historical "a colliding ``pickup-*`` orphan is a crashed branch-creating
+    allocation, safe to force-remove" behavior without re-stating it. The
+    manager's predicate is the authoritative one; this never overrides it.
+    """
+    return path.name.startswith("pickup-")
+
+
 async def _add_worktree_with_collision_retry(
     args: list[str],
     *,
     main_repo: Path,
     branch_name: str | None,
+    safe_to_force_remove: Callable[[Path], bool] | None = None,
 ) -> None:
-    """Run ``git worktree add ...`` with one-shot retry on pickup-* collisions.
+    """Run ``git worktree add ...`` with one-shot retry on reclaimable collisions.
 
-    The original failure mode: a prior
-    ``pickup-NNN`` worktree from a crashed session holds the target branch,
-    so ``git worktree add -B <branch> <new_path>`` errors with::
+    The original failure mode: a prior branch-creating worktree (keyed
+    ``pickup-NNN`` by the manager) from a crashed session holds the target
+    branch, so ``git worktree add -B <branch> <new_path>`` errors with::
 
         fatal: 'agentshore/535-...' is already used by worktree at 'pickup-535'
 
-    When that pattern is detected AND the colliding path is a ``pickup-*``
-    directory (i.e. an orphaned branch-creating allocation that never
-    rekeyed), force-remove it and retry the original add exactly once.
-    Anything else bubbles through the existing failure path.
+    When that pattern is detected AND ``safe_to_force_remove`` returns True for
+    the colliding path (the manager owns this decision — it's the only layer
+    that knows which key conventions name a reclaimable orphan), force-remove
+    the colliding worktree and retry the original add exactly once. Anything
+    else bubbles through the existing failure path. With no predicate the
+    allocator never force-removes a colliding worktree — the key-naming
+    convention lives in the manager, not here.
     """
     result = await command.git(*args, cwd=main_repo, timeout_seconds=180.0)
     if result.timed_out:
@@ -156,9 +177,13 @@ async def _add_worktree_with_collision_retry(
     stderr = result.stderr
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
-    is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")
-    if not is_pickup or branch_name is None:
-        # Not a pickup-* collision (or detached-HEAD path) — bubble the
+    reclaimable = (
+        collision is not None
+        and safe_to_force_remove is not None
+        and safe_to_force_remove(Path(collision.group(1)))
+    )
+    if not reclaimable or branch_name is None:
+        # Not a reclaimable collision (or detached-HEAD path) — bubble the
         # original error via the standard reason classifier.
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
@@ -320,6 +345,7 @@ async def ensure_worktree(
     base_ref: str,
     fetch: bool = True,
     remote: str = "origin",
+    safe_to_force_remove: Callable[[Path], bool] = _default_safe_to_force_remove,
 ) -> AllocateResult:
     """Idempotently materialise a worktree at ``worktree_path``.
 
@@ -336,6 +362,14 @@ async def ensure_worktree(
 
     ``base_ref`` is the resolved git ref to base off of (typically
     ``"origin/main"`` or ``"origin/<pr-branch>"``).
+
+    ``safe_to_force_remove`` is the predicate the manager passes down to decide
+    whether a *colliding* worktree (one already holding the target branch) may
+    be force-removed and the add retried. The allocator does not know which key
+    conventions name a reclaimable orphan — that's a manager-layer concern — so
+    it delegates the decision. Defaults to :func:`_default_safe_to_force_remove`
+    (the historical ``pickup-*`` heuristic) for standalone callers; the manager
+    overrides it with its own convention-aware predicate.
 
     Raises:
         WorktreeAllocationFailed: ``git worktree add`` or another git
@@ -442,10 +476,13 @@ async def ensure_worktree(
         args.extend(["--detach", str(worktree_path), base_ref])
 
     try:
-        # In detached mode there is no branch to collide on pickup-*, so pass
+        # In detached mode there is no branch to collide on, so pass
         # branch_name=None to keep the collision-retry path's branch logic off.
         await _add_worktree_with_collision_retry(
-            args, main_repo=main_repo, branch_name=None if detached else branch_name
+            args,
+            main_repo=main_repo,
+            branch_name=None if detached else branch_name,
+            safe_to_force_remove=safe_to_force_remove,
         )
     except WorktreeAllocationFailed:
         if worktree_path.exists():
