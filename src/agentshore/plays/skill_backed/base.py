@@ -250,6 +250,13 @@ class SkillBackedPlay(Play, ABC):
         except OSError:
             return False
 
+    def _cwd_is_main_checkout(self, dispatch_cwd: Path, project_path: Path) -> bool:
+        """True when *dispatch_cwd* resolves to the main repo checkout."""
+        try:
+            return dispatch_cwd.resolve() == project_path.resolve()
+        except OSError:
+            return False
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
@@ -382,10 +389,65 @@ class SkillBackedPlay(Play, ABC):
                 prompt=prompt,
                 branch=params.branch,
             )
+        dispatch_cwd = _worktree_cwd_override(params)
+
+        # Worktree-isolation guard for PR-scoped / branch-creating plays. Their
+        # agent creates/switches branches, which MUST happen inside an allocated
+        # worktree — never the main checkout, where ``git switch -c`` moves the
+        # main repo's HEAD onto a feature branch and wedges the trunk-dispatch
+        # guard (the contamination behind the #175 wedge).
+        from agentshore.agents.worktree.manager import requires_isolated_worktree
+
+        if requires_isolated_worktree(self.play_type):
+            if dispatch_cwd is not None and self._cwd_is_main_checkout(
+                dispatch_cwd, ctx.project_path
+            ):
+                # Unambiguous misroute: a main/trunk allocation was handed to an
+                # isolation-requiring play. The allocator never does this today,
+                # so refuse loudly rather than contaminate trunk if it regresses.
+                _logger.error(
+                    "play_misrouted_to_main_checkout",
+                    play_type=self.play_type.value,
+                    play_id=ctx.play_id,
+                    agent_id=agent_id,
+                    project_path=str(ctx.project_path),
+                )
+                return PlayOutcome(
+                    play_type=self.play_type,
+                    agent_id=agent_id,
+                    success=False,
+                    partial=False,
+                    duration_seconds=0.0,
+                    token_cost=0,
+                    dollar_cost=0.0,
+                    artifacts=[],
+                    alignment_delta=0.0,
+                    error=(
+                        f"{self.play_type.value} requires an isolated worktree but its "
+                        "allocation resolved to the main checkout; refused to dispatch to "
+                        "avoid moving the main repo HEAD off the default branch"
+                    ),
+                    failure_kind=None,
+                )
+            if dispatch_cwd is None:
+                # No allocation reached us — the dispatcher's ``_runtime_allocation``
+                # stamp was lost (a replay/retry rebuilt ``PlayParams``, or a legacy
+                # caller). ``dispatch_cli`` will fall back to ``handle.working_dir``
+                # (the main checkout), so surface the hypothesized contamination
+                # vector for telemetry. We do not hard-fail here — ``None`` is the
+                # documented legacy fallback of ``_worktree_cwd_override`` — and
+                # ``restore_default_branch`` (#175) now recovers any HEAD move this
+                # causes instead of latching a permanent dispatch pause.
+                _logger.warning(
+                    "play_dispatch_no_worktree_allocation",
+                    play_type=self.play_type.value,
+                    play_id=ctx.play_id,
+                    agent_id=agent_id,
+                )
+
         # Snapshot untracked root files before a trunk-scoped dispatch so we can
         # reclaim any the agent leaves behind (#162/#164). Only meaningful when
         # the play runs in the main checkout, not an isolated worktree.
-        dispatch_cwd = _worktree_cwd_override(params)
         trunk_artifact_pre: set[str] | None = None
         if self._is_trunk_scoped_dispatch(dispatch_cwd, ctx.project_path):
             from agentshore.core.trunk_artifacts import snapshot_untracked_root_artifacts

@@ -672,3 +672,18 @@ __all__ = [
 # reaching into the private constants.
 TRUNK_SCOPED_PLAYS: frozenset[PlayType] = _TRUNK_SCOPED_PLAYS
 TRUNK_MUTATING_PLAYS: frozenset[PlayType] = _TRUNK_MUTATING_PLAYS
+
+
+def requires_isolated_worktree(play_type: PlayType) -> bool:
+    """True when *play_type* MUST run in an isolated worktree, never the main checkout.
+
+    PR-scoped (``CODE_REVIEW``, ``UNBLOCK_PR``) and branch-creating
+    (``ISSUE_PICKUP``) plays have their agent create/switch branches. If such a
+    play is dispatched into the main checkout — because its
+    ``_runtime_allocation`` was lost before dispatch (e.g. a replay/retry path
+    rebuilt ``PlayParams`` without the dispatcher's allocator stamp) — the
+    agent's ``git switch -c`` moves the **main checkout's** HEAD onto a feature
+    branch and wedges the trunk-dispatch guard. The skill-backed dispatcher
+    asserts isolation against this predicate before launching the agent.
+    """
+    return play_type in _PR_SCOPED_PLAYS or play_type in _BRANCH_CREATING_PLAYS
