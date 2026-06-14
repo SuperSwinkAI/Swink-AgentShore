@@ -45,17 +45,17 @@ import numpy as np
 
 from agentshore.play_rules import pr_is_approved
 from agentshore.rl.action_space import (
-    MAX_CONFIG_INDEX_SIZE,
     NUM_ACTIONS,
     PLAY_TO_INDEX,
 )
+from agentshore.rl.config_head import MAX_CONFIG_INDEX_SIZE
 from agentshore.rl.constants import SAT_OPEN_PRS_COUNT
 from agentshore.state import AgentStatus, PlayType, loop_level_for_streak
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import AgentPlaySpecializationSnapshot, AgentSnapshot, OrchestratorState
 
 # Per-config block: 32 configs × 3 metrics (idle, busy, success-rate) = 96 floats.

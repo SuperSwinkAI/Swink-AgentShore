@@ -12,11 +12,13 @@ from agentshore.config.models import (
 from agentshore.rl.action_space import (
     ACTION_SPACE_VERSION,
     INDEX_TO_PLAY,
-    MAX_CONFIG_INDEX_SIZE,
     NUM_ACTIONS,
     PLAY_TO_INDEX,
-    POLICY_VERSION,
     V1_ACTION_ORDER,
+)
+from agentshore.rl.config_head import (
+    MAX_CONFIG_INDEX_SIZE,
+    POLICY_VERSION,
     build_config_index,
 )
 from agentshore.state import PlayType
@@ -116,7 +118,7 @@ def test_prune_is_index_19():
 # ---------------------------------------------------------------------------
 
 
-def test_policy_version_default_is_4():
+def test_policy_version_default_is_5():
     assert POLICY_VERSION == 5
 
 
@@ -173,7 +175,7 @@ def test_build_config_index_empty_when_no_agents():
 
 def test_build_config_index_raises_when_over_cap(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        "agentshore.rl.action_space.MAX_CONFIG_INDEX_SIZE",
+        "agentshore.rl.config_head.MAX_CONFIG_INDEX_SIZE",
         1,
     )
     cfg = RuntimeConfig(

@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.state import (
         OrchestratorState,

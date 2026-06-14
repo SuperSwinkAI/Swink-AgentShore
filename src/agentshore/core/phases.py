@@ -199,14 +199,14 @@ def _resolve_policy_path(cfg: RuntimeConfig, policy_path: Path | None) -> Path |
     Resolution order:
       1. explicit ``policy_path`` argument
       2. ``cfg.rl.policy_path``
-      3. ``~/.config/swink/agentshore/weights/policy_v<POLICY_VERSION>.pt`` (global user)
+      3. ``~/.config/swink/agentshore/weights/<canonical_weights_filename()>`` (global user)
       4. bundled ``agentshore.data/bootstrap_policy.pt``
     """
     pp = policy_path or (Path(cfg.rl.policy_path) if cfg.rl.policy_path else None)
     if pp is None or not pp.exists():
-        from agentshore.rl.action_space import POLICY_VERSION as _POLICY_VERSION
+        from agentshore.rl.checkpoint_store import canonical_weights_filename
 
-        global_policy = _GLOBAL_WEIGHTS_DIR / f"policy_v{_POLICY_VERSION}.pt"
+        global_policy = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
         if global_policy.exists():
             pp = global_policy
     if pp is None or not pp.exists():
@@ -261,7 +261,7 @@ async def _phase_init_ppo_selector(
 ) -> None:
     """Load the PPO selector from disk or fall back to a cold-start instance."""
     async with _step("init_ppo_selector"):
-        from agentshore.rl.action_space import build_config_index
+        from agentshore.rl.config_head import build_config_index
 
         if orch._metrics is None:
             msg = "Metrics engine must be initialized before PPO selector bootstrap"
