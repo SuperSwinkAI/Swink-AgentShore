@@ -28,7 +28,7 @@ import aiosqlite
 import structlog
 
 from agentshore.beads import BeadStatus, bd
-from agentshore.core.branch_sync import fast_forward_local_branch
+from agentshore.core.branch_sync import fast_forward_local_branch, resolve_ff_fetch_overlay
 from agentshore.plays.skill_backed.merge_pr import (
     _fetch_pr_body,
     _fetch_pr_links,
@@ -54,7 +54,7 @@ async def reconcile_merged_pr(
     bd_fn: Callable[..., Awaitable[str]] | None = None,
     fetch_pr_body: Callable[[int, Path], Awaitable[str | None]] | None = None,
     fetch_pr_links: Callable[[int, Path], Awaitable[tuple[int, ...]]] | None = None,
-    fast_forward: Callable[[Path, str], Awaitable[object]] | None = None,
+    fast_forward: Callable[..., Awaitable[object]] | None = None,
 ) -> list[int]:
     """Propagate a just-merged PR into the local cache and beads graph.
 
@@ -85,7 +85,11 @@ async def reconcile_merged_pr(
 
     target_branch = ctx.cfg.project.target_branch
     if target_branch:
-        await _ff(ctx.project_path, target_branch)
+        await _ff(
+            ctx.project_path,
+            target_branch,
+            fetch_env_overlay=resolve_ff_fetch_overlay(ctx.cfg),
+        )
 
     pr_link_numbers = await _fetch_links(pr_number, ctx.project_path)
     if pr_link_numbers:

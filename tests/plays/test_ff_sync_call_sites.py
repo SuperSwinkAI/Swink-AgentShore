@@ -2,7 +2,8 @@
 
 The fast-forward logic itself is covered in ``tests/test_branch_sync.py``;
 these assert only that each call site fires the helper with the configured
-target branch when one is set, and skips it when ``target_branch`` is unset.
+target branch when one is set (threading the resolved git-auth fetch overlay,
+#178), and skips it when ``target_branch`` is unset.
 """
 
 from __future__ import annotations
@@ -52,6 +53,9 @@ def _outcome(play_type: PlayType) -> PlayOutcome:
     )
 
 
+_OVERLAY = {"GIT_CONFIG_COUNT": "3"}
+
+
 @pytest.mark.asyncio
 async def test_merge_pr_ff_syncs_when_target_set() -> None:
     play = MergePRPlay()
@@ -65,6 +69,10 @@ async def test_merge_pr_ff_syncs_when_target_set() -> None:
     with (
         patch("agentshore.plays.skill_backed.base.SkillBackedPlay.execute", new=_super),
         patch("agentshore.plays.skill_backed.merge_pr.fast_forward_local_branch", spy),
+        patch(
+            "agentshore.plays.skill_backed._merge_reconcile.resolve_ff_fetch_overlay",
+            return_value=_OVERLAY,
+        ),
         patch("agentshore.plays.skill_backed.merge_pr._fetch_pr_links", AsyncMock(return_value=[])),
         patch(
             "agentshore.plays.skill_backed.merge_pr._fetch_pr_body", AsyncMock(return_value=None)
@@ -72,7 +80,7 @@ async def test_merge_pr_ff_syncs_when_target_set() -> None:
     ):
         await play.execute(_state(), PlayParams(agent_id="agent-1", pr_number=42), ctx=ctx)
 
-    spy.assert_awaited_once_with(ctx.project_path, "integration")
+    spy.assert_awaited_once_with(ctx.project_path, "integration", fetch_env_overlay=_OVERLAY)
 
 
 @pytest.mark.asyncio
@@ -110,10 +118,14 @@ async def test_reconcile_ff_syncs_when_target_set() -> None:
     with (
         patch("agentshore.plays.skill_backed.base.SkillBackedPlay.execute", new=_super),
         patch("agentshore.plays.skill_backed.reconcile_state.fast_forward_local_branch", spy),
+        patch(
+            "agentshore.plays.skill_backed.reconcile_state.resolve_ff_fetch_overlay",
+            return_value=_OVERLAY,
+        ),
     ):
         await play.execute(_state(), PlayParams(agent_id="agent-1"), ctx=ctx)
 
-    spy.assert_awaited_once_with(ctx.project_path, "integration")
+    spy.assert_awaited_once_with(ctx.project_path, "integration", fetch_env_overlay=_OVERLAY)
 
 
 @pytest.mark.asyncio

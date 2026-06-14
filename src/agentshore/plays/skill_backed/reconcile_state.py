@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.core.branch_sync import fast_forward_local_branch
+from agentshore.core.branch_sync import fast_forward_local_branch, resolve_ff_fetch_overlay
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import (
     ArmedByFailureGate,
@@ -61,7 +61,11 @@ class ReconcileStatePlay(SkillBackedPlay):
         outcome = await super().execute(state, params, ctx=ctx)
         target_branch = ctx.cfg.project.target_branch
         if target_branch:
-            await fast_forward_local_branch(ctx.project_path, target_branch)
+            await fast_forward_local_branch(
+                ctx.project_path,
+                target_branch,
+                fetch_env_overlay=resolve_ff_fetch_overlay(ctx.cfg),
+            )
         return outcome
 
     @property

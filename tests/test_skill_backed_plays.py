@@ -398,6 +398,10 @@ async def test_reconcile_merged_pr_marks_completes_and_closes() -> None:
             "agentshore.plays.skill_backed._merge_reconcile.fast_forward_local_branch",
             AsyncMock(),
         ),
+        patch(
+            "agentshore.plays.skill_backed._merge_reconcile.resolve_ff_fetch_overlay",
+            return_value=None,
+        ),
     ):
         result = await _merge_reconcile.reconcile_merged_pr(99, ctx=ctx, state=state)
 
@@ -1686,6 +1690,10 @@ async def test_merge_pr_execute_dispatches_when_no_pending(tmp_path: object) -> 
         patch(
             "agentshore.plays.skill_backed.base.render_skill_prompt",
             return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed._merge_reconcile.resolve_ff_fetch_overlay",
+            return_value=None,
         ),
     ):
         outcome = await MergePRPlay().execute(
