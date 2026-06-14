@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agentshore import command
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
+from agentshore.agents.pricing import pricing_yaml_lines
 from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.errors import OrchestratorError
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
@@ -22,32 +23,6 @@ _DEFAULT_BUDGET: float = 200.0
 # parallel to the $200 dollar safety default above.
 _DEFAULT_TIME_MINUTES: int = 1440
 _PROJECT_DIR = ".agentshore"
-_AGENT_PRICING_LINES: dict[str, tuple[str, ...]] = {
-    "claude_code": (
-        "    max_context: 200000",
-        "    cost_per_1k_input: 0.003",
-        "    cost_per_1k_cached_input: 0.0003",
-        "    cost_per_1k_cache_write_input: 0.00375",
-        "    cost_per_1k_output: 0.015",
-    ),
-    "codex": (
-        "    max_context: 400000",
-        "    cost_per_1k_input: 0.00175",
-        "    cost_per_1k_cached_input: 0.000175",
-        "    cost_per_1k_output: 0.014",
-    ),
-    "gemini": (
-        "    max_context: 1000000",
-        "    cost_per_1k_input: 0.0005",
-        "    cost_per_1k_output: 0.003",
-    ),
-    "grok": (
-        "    max_context: 256000",
-        "    cost_per_1k_input: 0.001",
-        "    cost_per_1k_cached_input: 0.0002",
-        "    cost_per_1k_output: 0.002",
-    ),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +198,7 @@ def _generate_default_config(
                         model_lines += f"        model: {tier_cfg.model}\n"
                     if tier_cfg.reasoning_effort:
                         model_lines += f"        reasoning_effort: {tier_cfg.reasoning_effort}\n"
-        pricing_lines = "\n".join(_AGENT_PRICING_LINES.get(agent, ()))
+        pricing_lines = "\n".join(pricing_yaml_lines(agent))
         if pricing_lines:
             model_lines += f"{pricing_lines}\n"
         agent_blocks.append(f"  {agent}:\n    enabled: true\n    binary: {binary}\n{model_lines}")

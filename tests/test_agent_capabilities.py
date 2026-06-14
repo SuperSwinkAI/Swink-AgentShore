@@ -63,8 +63,6 @@ class TestAgentCapabilities:
             "can_merge",
             "can_run_skill",
             "max_context",
-            "cost_per_1k_input",
-            "cost_per_1k_output",
         }
         for agent_type, caps in AGENT_CAPABILITIES.items():
             missing = required_keys - set(caps.keys())

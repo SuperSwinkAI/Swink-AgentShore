@@ -334,38 +334,6 @@ class _RawConfig(TypedDict, total=False):
     socket: str | None
 
 
-_AGENT_DEFAULTS: dict[str, dict[str, float | int | None]] = {
-    "claude_code": {
-        "max_context": 200_000,
-        "cost_per_1k_input": 0.003,
-        "cost_per_1k_cached_input": 0.0003,
-        "cost_per_1k_cache_write_input": 0.00375,
-        "cost_per_1k_output": 0.015,
-    },
-    "codex": {
-        "max_context": 400_000,
-        "cost_per_1k_input": 0.00175,
-        "cost_per_1k_cached_input": 0.000175,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.014,
-    },
-    "gemini": {
-        "max_context": 1_000_000,
-        "cost_per_1k_input": 0.0005,
-        "cost_per_1k_cached_input": None,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.003,
-    },
-    "grok": {
-        "max_context": 256_000,
-        "cost_per_1k_input": 0.001,
-        "cost_per_1k_cached_input": 0.0002,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.002,
-    },
-}
-
-
 @overload
 def _agent_default(name: str, key: str, fallback: float | int) -> float | int: ...
 
@@ -375,7 +343,13 @@ def _agent_default(name: str, key: str, fallback: None) -> float | int | None: .
 
 
 def _agent_default(name: str, key: str, fallback: float | int | None) -> float | int | None:
-    return _AGENT_DEFAULTS.get(name, {}).get(key, fallback)
+    from agentshore.agents.pricing import AGENT_PRICING
+
+    pricing = AGENT_PRICING.get(name)
+    if pricing is None:
+        return fallback
+    value = getattr(pricing, key, fallback)
+    return fallback if value is None else value
 
 
 def _optional_float(value: float | int | str | None) -> float | None:
