@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 import yaml
 
+from agentshore.agents.auth_probe import AUTH_EXPIRED, AUTH_OK, AuthProbeResult
 from agentshore.sidecar.agents import (
     agents_catalog,
     configure_agent,
     detect_available_agents,
     list_agents,
 )
-from agentshore.sidecar.server import INVALID_PARAMS, handle_request
+from agentshore.sidecar.server import INVALID_PARAMS, ServerState, handle_request
+from agentshore.state import AgentType
 
 
 def _write_config(path: Path, payload: dict[str, object]) -> None:
@@ -317,3 +323,134 @@ def test_validate_tier_models_rejects_bool_max(tmp_path: Path) -> None:
             "codex",
             {"tier_models": {"medium": {"max": True}}},
         )
+
+
+# ---------------------------------------------------------------------------
+# agents.check_auth RPC (backend CLI-agent auth probe)
+# ---------------------------------------------------------------------------
+
+
+def _resolve(result: object) -> dict[str, object]:
+    if inspect.isawaitable(result):
+        return cast("dict[str, object]", asyncio.run(result))
+    return cast("dict[str, object]", result)
+
+
+def test_rpc_agents_check_auth_returns_rows(tmp_path: Path) -> None:
+    """``agents.check_auth`` (no params) returns one row per configured CLI
+    agent in the frontend shape, sourced from the shared probe."""
+    _write_config(
+        tmp_path / "agentshore.yaml", {"project": {}, "agents": {"codex": {"enabled": True}}}
+    )
+    state = ServerState(active_project_path=str(tmp_path))
+
+    rows = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=rows,
+    ):
+        response = _resolve(
+            handle_request(
+                {"jsonrpc": "2.0", "id": 1, "method": "agents.check_auth"},
+                state=state,
+            )
+        )
+
+    assert "error" not in response
+    result = cast("dict[str, object]", response["result"])
+    agents = cast("list[dict[str, object]]", result["agents"])
+    assert agents == [{"agent_type": "codex", "status": "ok", "detail": "authenticated"}]
+
+
+def test_rpc_agents_check_auth_expired_row(tmp_path: Path) -> None:
+    """An expired backend session surfaces as an ``expired`` row (the RPC never
+    raises — it represents the failure as data the setup screen renders)."""
+    _write_config(
+        tmp_path / "agentshore.yaml", {"project": {}, "agents": {"codex": {"enabled": True}}}
+    )
+    state = ServerState(active_project_path=str(tmp_path))
+
+    rows = [AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "run `codex login`")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=rows,
+    ):
+        response = _resolve(
+            handle_request(
+                {"jsonrpc": "2.0", "id": 2, "method": "agents.check_auth"},
+                state=state,
+            )
+        )
+
+    result = cast("dict[str, object]", response["result"])
+    agents = cast("list[dict[str, object]]", result["agents"])
+    assert agents == [{"agent_type": "codex", "status": "expired", "detail": "run `codex login`"}]
+
+
+def test_rpc_agents_check_auth_probe_one(tmp_path: Path) -> None:
+    """With ``{"agent_type": "codex"}`` the RPC probes only that type."""
+    _write_config(
+        tmp_path / "agentshore.yaml", {"project": {}, "agents": {"codex": {"enabled": True}}}
+    )
+    state = ServerState(active_project_path=str(tmp_path))
+
+    one = AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")
+    with patch(
+        "agentshore.agents.auth_probe.probe_cli_auth",
+        return_value=one,
+    ):
+        response = _resolve(
+            handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "agents.check_auth",
+                    "params": {"agent_type": "codex"},
+                },
+                state=state,
+            )
+        )
+
+    result = cast("dict[str, object]", response["result"])
+    agents = cast("list[dict[str, object]]", result["agents"])
+    assert len(agents) == 1
+    assert agents[0]["agent_type"] == "codex"
+    assert agents[0]["status"] == "ok"
+
+
+def test_rpc_agents_check_auth_unknown_agent_type(tmp_path: Path) -> None:
+    """An unknown ``agent_type`` yields an error-status row, not an exception."""
+    _write_config(tmp_path / "agentshore.yaml", {"project": {}, "agents": {}})
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "agents.check_auth",
+                "params": {"agent_type": "not_an_agent"},
+            },
+            state=state,
+        )
+    )
+    result = cast("dict[str, object]", response["result"])
+    agents = cast("list[dict[str, object]]", result["agents"])
+    assert agents[0]["agent_type"] == "not_an_agent"
+    assert agents[0]["status"] == "error"
+
+
+def test_rpc_agents_check_auth_bad_config_returns_error_row(tmp_path: Path) -> None:
+    """A config that cannot load surfaces as an error row, not a raised RPC."""
+    (tmp_path / "agentshore.yaml").write_text("project: [not, a, mapping\n", encoding="utf-8")
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = _resolve(
+        handle_request(
+            {"jsonrpc": "2.0", "id": 5, "method": "agents.check_auth"},
+            state=state,
+        )
+    )
+    result = cast("dict[str, object]", response["result"])
+    agents = cast("list[dict[str, object]]", result["agents"])
+    assert agents[0]["status"] == "error"

@@ -20,6 +20,8 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
+    _StderrSniffer,
+    _watch_stderr_auth,
     build_argv,
     dispatch_cli,
 )
@@ -1544,6 +1546,31 @@ def test_classify_error_github_repo_access_as_auth() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR failed to renew cache TTL",
+        "warn: failed to refresh available models, retrying",
+    ],
+)
+def test_classify_error_codex_backend_ttl_expiry_on_stderr_is_auth(stderr: str) -> None:
+    """Codex backend session-token expiry markers on stderr classify as AUTH."""
+    assert _classify_error(1, stderr, "") is ErrorClass.AUTH
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "failed to renew cache ttl",
+        "failed to refresh available models",
+    ],
+)
+def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: str) -> None:
+    """The TTL markers are stderr-only: the same strings in an agent's stdout
+    work product must NOT trigger AUTH (they are not in _AUTH_STDOUT)."""
+    assert _classify_error(1, "", stdout) is not ErrorClass.AUTH
+
+
 def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
 
@@ -1642,6 +1669,101 @@ def test_classify_error_unknown() -> None:
 
 def test_classify_error_empty_both() -> None:
     assert _classify_error(1, "", "") == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# stderr auth-sniffer (#zeke auth-hang): a backend session-token expiry that
+# hangs the process on stdin must be killed as AUTH in well under the idle
+# timeout, not after the full stream_idle_timeout as TIMEOUT_STREAM_IDLE.
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_sniffer_feed_flags_auth_tail() -> None:
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("starting up\n") is False
+    # First auth marker flips the flag and returns True exactly once.
+    assert sniffer.feed("ERROR failed to renew cache TTL\n") is True
+    assert sniffer.auth_hit is True
+    # Subsequent feeds (even more markers) do not re-fire.
+    assert sniffer.feed("failed to refresh available models\n") is False
+
+
+def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("INFO booting model\nINFO ready\n") is False
+    assert sniffer.auth_hit is False
+    assert "booting model" in sniffer.captured
+
+
+def test_stderr_sniffer_tail_is_bounded() -> None:
+    # The tail never grows unbounded regardless of how much stderr is fed, and
+    # a marker landing within the live window is still caught.
+    sniffer = _StderrSniffer(tail_window=64)
+    assert sniffer.feed("x" * 4096) is False  # no marker, far exceeds the window
+    assert len(sniffer.tail) <= 64
+    # Marker landing now (fits the 64-byte window) is still caught.
+    assert sniffer.feed("failed to renew cache ttl") is True
+
+
+class _FakeStderr:
+    """Minimal async-iterable stand-in for ``proc.stderr`` (a StreamReader)."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __aiter__(self) -> _FakeStderr:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._lines:
+            raise StopAsyncIteration
+        await asyncio.sleep(0)
+        return self._lines.pop(0)
+
+
+class _FakeProc:
+    def __init__(self, stderr_lines: list[bytes]) -> None:
+        self.stderr = _FakeStderr(stderr_lines)
+
+
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_aborts_fast_with_auth_class() -> None:
+    """The watcher raises PlayTimeoutError(AUTH) as soon as a marker lands —
+    in well under a second, never the multi-minute idle window."""
+    proc = _FakeProc([b"booting\n", b"failed to renew cache TTL\n", b"more\n"])
+    sniffer = _StderrSniffer()
+    with pytest.raises(PlayTimeoutError) as excinfo:
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=2.0,
+        )
+    assert excinfo.value.error_class is ErrorClass.AUTH
+    assert sniffer.auth_hit is True
+
+
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_sleeps_on_clean_eof() -> None:
+    """With no auth marker the watcher drains stderr then yields indefinitely
+    (it loses the read/idle race rather than completing)."""
+    proc = _FakeProc([b"INFO ok\n", b"INFO done\n"])
+    sniffer = _StderrSniffer()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=0.2,
+        )
+    assert sniffer.auth_hit is False
+    assert "done" in sniffer.captured
 
 
 def test_classify_error_sigkill_is_crash_not_unknown() -> None:

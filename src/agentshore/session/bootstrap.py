@@ -441,6 +441,53 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     _require_two_distinct_identities(cfg)
 
 
+def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
+    """Probe each configured CLI agent's backend auth before the loop starts.
+
+    Validates the model-provider session each CLI agent uses (e.g. Codex's
+    cached chatgpt.com token), which `preflight_identities` does NOT cover.
+    Prints a per-agent banner row and exits 1 if any configured CLI agent has
+    a definitively expired/dead backend session. Non-blocking statuses
+    (timeout/error/unprobeable) are surfaced as warnings, not failures.
+    """
+    from agentshore.agents.auth_probe import probe_configured_cli_auth
+
+    results = probe_configured_cli_auth(cfg)
+    if not results:
+        # No CLI agents configured — nothing to probe. Stay quiet.
+        return
+
+    click.echo("=" * 60)
+    click.echo("  AgentShore — CLI agent backend auth")
+    click.echo("=" * 60)
+    for result in results:
+        mark = "✓" if result.ok else "✗"
+        click.echo(f"  {mark} {result.agent_type.value:<12} {result.status:<12} {result.detail}")
+    click.echo("=" * 60)
+    click.echo()
+
+    # Non-blocking non-ok statuses (timeout/error/unprobeable that aren't "ok"):
+    # surface as warnings but never gate the launch.
+    for result in results:
+        if not result.ok and not result.blocks_launch:
+            click.echo(
+                f"Warning: could not confirm {result.agent_type.value} backend auth "
+                f"({result.status}): {result.detail}",
+                err=True,
+            )
+
+    blocked = [r for r in results if r.blocks_launch]
+    if blocked:
+        names = ", ".join(r.agent_type.value for r in blocked)
+        click.echo(
+            f"Error: CLI agent backend session expired/dead: {names}. "
+            f"Re-authenticate before starting (e.g. run 'codex login'), or pass "
+            "--skip-auth-preflight for an offline/air-gapped run.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+
 def _require_two_distinct_identities(cfg: RuntimeConfig) -> None:
     """Enforce the ≥2 distinct GH identities precondition for code review.
 

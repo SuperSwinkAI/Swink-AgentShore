@@ -115,10 +115,22 @@ both sides report the `dev` sentinel and match by construction; the frozen-bundl
 ## 5. API surface (v1)
 
 Lifecycle (`app.handshake`), recents, project (select / inspect / branches /
-set-target-branch / deselect), identities, agents, config, session (start /
-status / stop), and archive (list / fetch report / fetch logs). Sidecar-to-shell
-notifications cover progress, session completion, sidecar health, and agent
-subprocess spawn/exit; shell-to-sidecar covers cancellation.
+set-target-branch / deselect), identities, agents (list / configure /
+`agents.check_auth`), config, session (start / status / stop), and archive (list
+/ fetch report / fetch logs). Sidecar-to-shell notifications cover progress,
+session completion, sidecar health, and agent subprocess spawn/exit;
+shell-to-sidecar covers cancellation.
+
+`agents.check_auth` probes each configured CLI agent's **backend** auth — the
+model-provider session the agent harness uses (e.g. the Codex CLI's cached
+`chatgpt.com` token), which carries a TTL and is independent of the GitHub
+identity token `identities.check_access` validates. With no `agent_type` it
+probes every enabled CLI agent; with `{"agent_type": "codex"}` it probes one.
+It never raises — config-load and per-probe failures come back as
+error-status rows so the setup screen always renders. The agents/identities
+setup screen calls it to draw a per-agent backend-auth badge backed by the same
+probe the `check_agent_auth` launch phase runs, so a green badge provably means
+the launch gate will pass.
 
 In-session commands (pause, resume, drain, feedback, abort/override play, budget
 adjust, verification response, report generation) stay on the existing WebSocket
@@ -232,9 +244,20 @@ See `docs/release/signing.md` for the maintainer procedure.
 - **Re-entry.** Returning users step through all setup screens every session;
   choices pre-populate from `agentshore.yaml` for confirmation. Post-ESR returns
   to the first screen.
-- **Lazy preparation.** Config merge, skill install/update, GitHub login
-  binding, and beads init run only when the user clicks Start. Setup screens are
-  declarative.
+- **Lazy preparation.** All bringup work runs only when the user clicks Start;
+  setup screens are declarative. `session.start` runs seven canonical phases,
+  each emitting `running`/`ok`/`failed` `$/progress` events that the Screen 8
+  checklist mirrors: `config_merge` → `check_agent_auth` → `install_skills` →
+  `init_beads` → `bind_ipc` → `start_bridge` → `first_snapshot`. The first
+  failing phase short-circuits the runner.
+- **Backend-auth launch gate.** `check_agent_auth` runs right after
+  `config_merge` (so the merged config is in hand) and probes each configured
+  CLI agent's backend session via the shared `auth_probe` core. A definitively
+  expired session (e.g. the Codex CLI's cached `chatgpt.com` token) fails the
+  phase with a `codex login` remediation message, short-circuiting bringup
+  before anything expensive boots; transient probe failures are logged and
+  tolerated. This is the same check the setup screen surfaces via
+  `agents.check_auth`, and it is independent of the GitHub-identity preflight.
 - **Rail navigation.** The left rail is freely navigable; the Start button is
   the single completeness gate. The rail hides during the dashboard and ESR.
 - **Start gate.** Enabled when a target branch is selected, at least two agent

@@ -669,6 +669,12 @@ class OrchestratorState:
     # re-selected every tick (the unblock_pr hot-loop, issue #60). Snapshotted
     # each tick from the orchestrator's in-memory park set; empty by default.
     parked_resource_keys: frozenset[str] = field(default_factory=frozenset)
+    # Agent-type values (e.g. ``"codex"``) whose backend auth failed this session.
+    # The candidate analyzer masks every play resolving to a suppressed type —
+    # including instantiate_agent for that type — so one Codex token-expiry can't
+    # have PPO keep re-selecting codex into a dead backend (#zeke auth-hang).
+    # Snapshotted each tick from the orchestrator's in-memory set; empty by default.
+    auth_suppressed_agent_types: frozenset[str] = field(default_factory=frozenset)
     # Consecutive plays of the same type regardless of success/failure. Catches
     # PPO collapses onto a cheap repeated play (where every play succeeds and
     # `same_type_failure_streak` stays at 0). Used for masking + reward penalty

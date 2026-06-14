@@ -937,3 +937,92 @@ async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
         assert _candidate_keys(service_candidates) == _candidate_keys(
             plan.candidates_for(play_type)
         ), f"candidate set diverged for {play_type}"
+
+
+# ---------------------------------------------------------------------------
+# #zeke auth-hang: session-level agent-type auth suppression masking.
+# A single backend-auth failure for an agent type suppresses ALL dispatch of
+# that type for the session — including an instantiate_agent that would spawn a
+# fresh agent of the dead type — while leaving other types selectable.
+# ---------------------------------------------------------------------------
+
+from agentshore.plays.base import PlayParams  # noqa: E402
+from agentshore.plays.candidates import (  # noqa: E402
+    PlayCandidate,
+    _candidate_auth_suppressed_type,
+    _candidate_resolved_agent_type,
+)
+
+
+def _candidate(play_type: PlayType, params: PlayParams) -> PlayCandidate:
+    return PlayCandidate(
+        play_type=play_type,
+        params=params,
+        resource_keys=(),
+        source="test",
+        sort_key=(0,),
+    )
+
+
+def test_candidate_resolved_agent_type_prefers_target_agent_type() -> None:
+    c = _candidate(PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex"))
+    assert _candidate_resolved_agent_type(c, {}) == "codex"
+
+
+def test_candidate_resolved_agent_type_maps_target_agent_id() -> None:
+    c = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="agent-7"))
+    assert _candidate_resolved_agent_type(c, {"agent-7": "codex"}) == "codex"
+
+
+def test_candidate_resolved_agent_type_none_when_unresolvable() -> None:
+    c = _candidate(PlayType.ISSUE_PICKUP, PlayParams(issue_number=1))
+    assert _candidate_resolved_agent_type(c, {}) is None
+
+
+def test_auth_suppressed_masks_codex_dispatch_and_instantiate_not_claude() -> None:
+    suppressed = frozenset({"codex"})
+    agent_id_to_type = {"codex-1": "codex", "claude-1": "claude"}
+
+    # A codex instantiate_agent candidate (would spawn a fresh dead-type agent).
+    codex_instantiate = _candidate(
+        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex")
+    )
+    assert (
+        _candidate_auth_suppressed_type(codex_instantiate, suppressed, agent_id_to_type) == "codex"
+    )
+
+    # A code_review candidate pinned to a concrete codex agent.
+    codex_review = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="codex-1"))
+    assert _candidate_auth_suppressed_type(codex_review, suppressed, agent_id_to_type) == "codex"
+
+    # A claude instantiate_agent is NOT suppressed (different, healthy type).
+    claude_instantiate = _candidate(
+        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="claude")
+    )
+    assert _candidate_auth_suppressed_type(claude_instantiate, suppressed, agent_id_to_type) is None
+
+    # A claude-pinned review is NOT suppressed.
+    claude_review = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="claude-1"))
+    assert _candidate_auth_suppressed_type(claude_review, suppressed, agent_id_to_type) is None
+
+
+def test_auth_suppressed_empty_set_masks_nothing() -> None:
+    codex_instantiate = _candidate(
+        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex")
+    )
+    assert _candidate_auth_suppressed_type(codex_instantiate, frozenset(), {}) is None
+
+
+def test_build_does_not_mask_resource_only_candidates_under_suppression() -> None:
+    """Issue/PR candidates whose runner the resolver picks later carry no agent
+    type and must remain selectable even with a suppression set active — only
+    agent-typed candidates are masked."""
+    plan_unsuppressed = build_candidate_plan(_state(open_issues=[_issue(1)]))
+    plan_suppressed = build_candidate_plan(
+        _state(open_issues=[_issue(1)], auth_suppressed_agent_types=frozenset({"codex"}))
+    )
+    # The issue-pickup candidate for issue 1 survives suppression (no resolved type).
+    assert plan_suppressed.candidates_for(
+        PlayType.ISSUE_PICKUP
+    ) == plan_unsuppressed.candidates_for(PlayType.ISSUE_PICKUP)
+    assert plan_suppressed.candidates_for(PlayType.ISSUE_PICKUP)

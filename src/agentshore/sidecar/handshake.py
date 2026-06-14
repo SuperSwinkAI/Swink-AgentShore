@@ -51,6 +51,7 @@ def capabilities() -> list[str]:
         "identities.remove",
         "agents.list",
         "agents.configure",
+        "agents.check_auth",
         "$/cancelRequest",
         "project.select",
         "project.inspect",

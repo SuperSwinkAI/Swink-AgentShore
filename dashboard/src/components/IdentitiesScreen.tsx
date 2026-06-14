@@ -18,6 +18,21 @@ export interface KeychainStatus {
   has_token: boolean;
 }
 
+/**
+ * One row from the agents.check_auth RPC: a single CLI agent's backend
+ * (model-provider) auth state.
+ *
+ * `status` is one of: ok | unprobeable | expired | timeout | error.
+ * `ok`/`unprobeable` are healthy; `expired` is the blocking failure;
+ * `timeout`/`error` are surfaced but non-blocking. `detail` carries a
+ * human-readable hint (e.g. a remediation command like `run 'codex login'`).
+ */
+export interface AgentAuthRow {
+  agent_type: string;
+  status: string;
+  detail: string;
+}
+
 /** Subset of the sidecar identities.* RPC surface needed by this screen. */
 export interface IdentitiesSidecar {
   list(): Promise<IdentityRow[]>;
@@ -34,6 +49,8 @@ export interface IdentitiesSidecar {
    * login. Optional so older/mock sidecars degrade to always requiring a PAT.
    */
   checkKeychain?(login: string): Promise<KeychainStatus>;
+  /** Probe each configured CLI agent's backend (model-provider) auth. */
+  checkAgentAuth?(): Promise<AgentAuthRow[]>;
 }
 
 // ---- state machine --------------------------------------------------------
@@ -53,6 +70,10 @@ interface ScreenState {
   addKeychainHasToken: boolean | null;
   addKeychainChecking: boolean;
   busy: Record<string, boolean>;
+  /** null = not yet probed (or sidecar lacks the RPC); [] = probed, none. */
+  agentAuth: AgentAuthRow[] | null;
+  agentAuthLoading: boolean;
+  agentAuthError: string | null;
 }
 
 type ScreenAction =
@@ -79,7 +100,10 @@ type ScreenAction =
   | { type: "edit_error"; message: string }
   | { type: "submit_remove"; login: string }
   | { type: "remove_done"; login: string; rows: IdentityRow[] }
-  | { type: "remove_error"; login: string; message: string };
+  | { type: "remove_error"; login: string; message: string }
+  | { type: "agent_auth_started" }
+  | { type: "agent_auth_loaded"; rows: AgentAuthRow[] }
+  | { type: "agent_auth_error"; message: string };
 
 const INITIAL: ScreenState = {
   rows: [],
@@ -95,6 +119,9 @@ const INITIAL: ScreenState = {
   addKeychainHasToken: null,
   addKeychainChecking: false,
   busy: {},
+  agentAuth: null,
+  agentAuthLoading: false,
+  agentAuthError: null,
 };
 
 function reducer(state: ScreenState, action: ScreenAction): ScreenState {
@@ -241,6 +268,21 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
       delete next[action.login];
       return { ...state, busy: next, error: action.message };
     }
+    case "agent_auth_started":
+      return { ...state, agentAuthLoading: true, agentAuthError: null };
+    case "agent_auth_loaded":
+      return {
+        ...state,
+        agentAuthLoading: false,
+        agentAuthError: null,
+        agentAuth: action.rows,
+      };
+    case "agent_auth_error":
+      return {
+        ...state,
+        agentAuthLoading: false,
+        agentAuthError: action.message,
+      };
   }
 }
 
@@ -354,6 +396,40 @@ function RepoBadge({
       className={`id-badge ${cls}`}
       data-testid={`repo-access-${access}`}
       title={detail}
+    >
+      {label}
+    </span>
+  );
+}
+
+// ---- agent backend auth badges --------------------------------------------
+
+const AGENT_AUTH_LABELS: Record<string, string> = {
+  ok: "Backend auth OK",
+  unprobeable: "Not probeable",
+  expired: "Backend auth expired",
+  timeout: "Auth check timed out",
+  error: "Auth check error",
+};
+
+const AGENT_AUTH_CLASSES: Record<string, string> = {
+  ok: "badge-ok",
+  unprobeable: "badge-info",
+  expired: "badge-error",
+  timeout: "badge-warn",
+  error: "badge-error",
+};
+
+/** Statuses that warrant surfacing the detail string as a remediation hint. */
+const AGENT_AUTH_DETAIL_STATUSES = new Set(["expired", "timeout", "error"]);
+
+function AgentAuthBadge({ status }: { status: string }): React.ReactElement {
+  const label = AGENT_AUTH_LABELS[status] ?? status;
+  const cls = AGENT_AUTH_CLASSES[status] ?? "badge-warn";
+  return (
+    <span
+      className={`id-badge ${cls}`}
+      data-testid={`agent-auth-status-${status}`}
     >
       {label}
     </span>
@@ -557,6 +633,24 @@ export function IdentitiesScreen({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Probe each configured CLI agent's backend auth. Optional RPC: when the
+  // sidecar predates `agents.check_auth`, the section quietly stays hidden.
+  const checkAgentAuth = useCallback(async () => {
+    const probe = sidecar.checkAgentAuth;
+    if (!probe) return;
+    dispatch({ type: "agent_auth_started" });
+    try {
+      const rows = await probe();
+      dispatch({ type: "agent_auth_loaded", rows });
+    } catch (err) {
+      dispatch({ type: "agent_auth_error", message: String(err) });
+    }
+  }, [sidecar]);
+
+  useEffect(() => {
+    void checkAgentAuth();
+  }, [checkAgentAuth]);
 
   // Probe the Keychain for an already-stored PAT so we can offer to reuse it
   // instead of forcing a re-paste (mirrors the CLI wizard's pre-flight check).
@@ -812,6 +906,85 @@ export function IdentitiesScreen({
         >
           + Add identity
         </button>
+      )}
+
+      {sidecar.checkAgentAuth && (
+        <section
+          className="id-agent-auth"
+          aria-labelledby="agent-auth-heading"
+          data-testid="agent-auth-section"
+        >
+          <div className="id-agent-auth-header">
+            <h3 className="id-agent-auth-title" id="agent-auth-heading">
+              Agent backend auth
+            </h3>
+            <button
+              type="button"
+              className="id-btn"
+              onClick={() => void checkAgentAuth()}
+              disabled={state.agentAuthLoading}
+              data-testid="agent-auth-verify-btn"
+            >
+              {state.agentAuthLoading ? "Checking…" : "Verify"}
+            </button>
+          </div>
+          <p className="id-description">
+            Each CLI agent authenticates to its own model provider (e.g. Codex
+            uses a chatgpt.com session). These tokens can expire mid-run — verify
+            them here before starting a session.
+          </p>
+
+          {state.agentAuthError && (
+            <div
+              className="id-error"
+              role="alert"
+              data-testid="agent-auth-error"
+            >
+              {state.agentAuthError}
+            </div>
+          )}
+
+          {state.agentAuthLoading && state.agentAuth === null ? (
+            <p
+              className="id-loading"
+              data-testid="agent-auth-loading"
+              role="status"
+            >
+              Checking agent backend auth…
+            </p>
+          ) : state.agentAuth && state.agentAuth.length > 0 ? (
+            <ul className="id-list" data-testid="agent-auth-list">
+              {state.agentAuth.map((row) => (
+                <li
+                  key={row.agent_type}
+                  className="id-row"
+                  data-agent-type={row.agent_type}
+                  data-testid={`agent-auth-row-${row.agent_type}`}
+                >
+                  <div className="id-row-main">
+                    <span className="id-login">{row.agent_type}</span>
+                    <AgentAuthBadge status={row.status} />
+                    {row.detail && AGENT_AUTH_DETAIL_STATUSES.has(row.status) && (
+                      <span
+                        className="id-access-detail"
+                        data-testid={`agent-auth-detail-${row.agent_type}`}
+                      >
+                        {row.detail}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            state.agentAuth !== null &&
+            !state.agentAuthError && (
+              <p className="id-empty" data-testid="agent-auth-empty">
+                No CLI agents configured.
+              </p>
+            )
+          )}
+        </section>
       )}
     </div>
   );

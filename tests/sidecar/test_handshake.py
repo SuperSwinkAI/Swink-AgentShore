@@ -46,6 +46,7 @@ def test_capabilities_advertises_agents_methods() -> None:
     caps = capabilities()
     assert "agents.list" in caps
     assert "agents.configure" in caps
+    assert "agents.check_auth" in caps
 
 
 def test_capabilities_advertises_session_lifecycle() -> None:
@@ -254,10 +255,11 @@ def _resolve(result: object) -> dict[str, object]:
 def test_session_start_emits_per_phase_progress_notifications() -> None:
     """``session.start`` emits running+ok per DESIGN §10.2 phase (gh-335).
 
-    Six phases × two notifications each = 12 ``$/progress`` events, in this
-    exact order: config_merge → install_skills → init_beads → bind_ipc →
-    start_bridge → first_snapshot. The final phase reaches percent=100 so the
-    desktop Screen 8 checklist can auto-advance to /session/dashboard.
+    Seven phases × two notifications each = 14 ``$/progress`` events, in this
+    exact order: config_merge → check_agent_auth → install_skills → init_beads
+    → bind_ipc → start_bridge → first_snapshot. The final phase reaches
+    percent=100 so the desktop Screen 8 checklist can auto-advance to
+    /session/dashboard.
     """
     notifications: list[dict[str, object]] = []
     response = _resolve(
@@ -276,6 +278,7 @@ def test_session_start_emits_per_phase_progress_notifications() -> None:
 
     expected_steps = [
         "config_merge",
+        "check_agent_auth",
         "install_skills",
         "init_beads",
         "bind_ipc",
@@ -371,11 +374,15 @@ def test_session_start_fails_when_beads_init_fails(tmp_path: object) -> None:
     assert error["code"] == -32602
     assert ".beads" in cast("str", error["message"])
 
-    # config_merge + install_skills emit ok; init_beads emits running then failed.
+    # config_merge + check_agent_auth + install_skills emit ok; init_beads
+    # emits running then failed. (No CLI agents configured, so check_agent_auth
+    # is a no-op that still emits its running/ok pair.)
     steps_seen = [cast("dict[str, object]", n["params"])["step"] for n in notifications]
     assert steps_seen == [
         "config_merge",
         "config_merge",
+        "check_agent_auth",
+        "check_agent_auth",
         "install_skills",
         "install_skills",
         "init_beads",

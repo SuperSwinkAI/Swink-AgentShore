@@ -170,6 +170,13 @@ _AUTH_PATTERNS = (
     "not resolvable to this token/session",
     "lacks access to repository",
     "cannot access repository metadata",
+    # Codex backend-session TTL-expiry signatures (#zeke auth-hang): when the
+    # ChatGPT-backed session token expires mid-run the Codex CLI prints these to
+    # stderr then hangs reading stdin instead of exiting non-zero. stderr-only —
+    # deliberately NOT mirrored into _AUTH_STDOUT so they never match an agent's
+    # own work product.
+    "failed to renew cache ttl",
+    "failed to refresh available models",
 )
 # Drops the short generic tokens ("401"/"403"/"unauthorized"/"forbidden"/
 # "authentication") that appear in code; keeps the distinctive gh/git access
@@ -379,6 +386,81 @@ class _StdoutActivity:
         self.last_stdout_at = time.monotonic()
 
 
+@dataclass(slots=True)
+class _StderrSniffer:
+    """Accumulates a live dispatch's stderr and flags auth-expiry signatures.
+
+    Two jobs in one drain of ``proc.stderr``:
+
+    1. Capture the stderr text so ``_finalize_nonzero_exit`` can still classify a
+       normal non-zero exit (the prior code re-read ``proc.stderr`` at the end;
+       once we drain it live for sniffing, that read would come back empty).
+    2. Watch a bounded tail for the ``_AUTH_PATTERNS`` markers so a backend
+       session-token expiry (Codex prints "failed to renew cache ttl" then hangs
+       on stdin, never exiting) is killed in well under a second and classified
+       AUTH instead of waiting out the full ``stream_idle_timeout`` and being
+       mislabelled TIMEOUT_STREAM_IDLE.
+    """
+
+    # Bounded tail inspected for auth markers (case-insensitive). 8 KiB easily
+    # covers the multi-line Codex auth banner without scanning unbounded output.
+    tail_window: int = 8192
+    # Cap on the stderr text retained for _finalize_nonzero_exit classification.
+    capture_cap: int = 65536
+    tail: str = ""
+    captured: str = ""
+    auth_hit: bool = False
+
+    def feed(self, text: str) -> bool:
+        """Append decoded stderr; return ``True`` on the first auth match."""
+        if len(self.captured) < self.capture_cap:
+            self.captured = (self.captured + text)[: self.capture_cap]
+        self.tail = (self.tail + text)[-self.tail_window :]
+        if not self.auth_hit:
+            lowered = self.tail.lower()
+            if any(p in lowered for p in _AUTH_PATTERNS):
+                self.auth_hit = True
+                return True
+        return False
+
+
+async def _watch_stderr_auth(
+    proc: asyncio.subprocess.Process,
+    sniffer: _StderrSniffer,
+    *,
+    agent_id: str,
+    agent_type: str,
+) -> NoReturn:
+    """Drain stderr live; raise ``PlayTimeoutError(AUTH)`` on an auth signature.
+
+    On EOF with no auth hit this sleeps forever (it loses the read/idle race and
+    is cancelled by the caller). It never returns a value — either it raises on
+    an auth marker or it is cancelled once stdout/idle resolves the dispatch.
+    """
+    if proc.stderr is not None:
+        try:
+            async for raw_line in proc.stderr:
+                text = raw_line.decode("utf-8", errors="replace")
+                if sniffer.feed(text):
+                    _logger.warning(
+                        "cli_agent_stderr_auth_abort",
+                        agent_id=agent_id,
+                        agent_type=agent_type,
+                        stderr_tail=sniffer.tail[-500:],
+                    )
+                    raise PlayTimeoutError(
+                        f"agent {agent_id!r} ({agent_type}) emitted a backend-auth "
+                        f"signature on stderr; aborting dispatch",
+                        error_class=ErrorClass.AUTH,
+                    )
+        except (OSError, EOFError):
+            pass
+    # stderr drained without an auth hit (or no stderr pipe): yield to the
+    # read/idle race, which will cancel this task once the dispatch resolves.
+    while True:
+        await asyncio.sleep(3600.0)
+
+
 @dataclass(frozen=True, slots=True)
 class _ReadOutputFailed:
     exc: BaseException
@@ -579,13 +661,17 @@ async def _await_output_or_timeout(
     stream_idle_timeout: float,
     timeout: float,
     prompt_bytes: int,
+    sniffer: _StderrSniffer,
 ) -> tuple[_ReadOutput, bool]:
-    """Drive the read/idle race and return ``(result, post_response_killed)``.
+    """Drive the read/idle/stderr-auth race and return ``(result, post_response_killed)``.
 
     Called inside ``dispatch_cli``'s outer ``try:`` block so that the caller's
     ``except``/``finally`` clauses remain responsible for process cleanup on
     error.  Raises ``PlayTimeoutError`` directly on wall-clock or idle expiry;
-    re-raises ``_ReadOutputFailed.exc`` on output-parse errors.
+    re-raises ``_ReadOutputFailed.exc`` on output-parse errors. The
+    ``stderr``-auth watcher raises ``PlayTimeoutError(error_class=AUTH)`` as soon
+    as a backend session-token expiry signature lands on stderr, so a stdin-hang
+    is killed in well under a second rather than after the full idle window.
     """
     post_response_killed = False
     stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
@@ -609,15 +695,25 @@ async def _await_output_or_timeout(
             prompt_bytes=prompt_bytes,
         )
     )
+    auth_task = asyncio.create_task(
+        _watch_stderr_auth(
+            proc,
+            sniffer,
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+        )
+    )
+
     done, _pending = await asyncio.wait(
-        {read_task, idle_task},
+        {read_task, idle_task, auth_task},
         timeout=float(timeout),
         return_when=asyncio.FIRST_COMPLETED,
     )
     if not done:
         read_task.cancel()
         idle_task.cancel()
-        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        auth_task.cancel()
+        await asyncio.gather(read_task, idle_task, auth_task, return_exceptions=True)
         # desktop-awc: enrich the wall-clock timeout error with the
         # agent shape so operators can spot whether timeouts correlate
         # with model tier or huge prompts without having to rejoin the
@@ -630,14 +726,32 @@ async def _await_output_or_timeout(
             ),
             error_class=ErrorClass.TIMEOUT_WALLCLOCK,
         ) from None
+    # The stderr-auth watcher fired before stdout/idle resolved: kill the hung
+    # process and surface the AUTH classification immediately. The watcher only
+    # ever completes by raising ``PlayTimeoutError(AUTH)`` (post-EOF it sleeps
+    # indefinitely), so a done auth_task that beat the read always carries an
+    # exception to re-raise.
+    if auth_task in done and read_task not in done:
+        auth_exc = auth_task.exception()
+        read_task.cancel()
+        idle_task.cancel()
+        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        raise (
+            auth_exc
+            if auth_exc is not None
+            else AssertionError("stderr-auth watcher completed without raising")
+        )
     if read_task in done:
         idle_task.cancel()
-        await asyncio.gather(idle_task, return_exceptions=True)
+        auth_task.cancel()
+        await asyncio.gather(idle_task, auth_task, return_exceptions=True)
         read_result = await read_task
         if isinstance(read_result, _ReadOutputFailed):
             raise read_result.exc
         return read_result, post_response_killed
     else:
+        auth_task.cancel()
+        await asyncio.gather(auth_task, return_exceptions=True)
         idle_exc = idle_task.exception()
         if idle_exc is None:
             read_result = await read_task
@@ -680,14 +794,20 @@ async def _finalize_nonzero_exit(
     cfg: AgentConfig,
     rc: int,
     raw_output: str,
+    sniffer: _StderrSniffer | None = None,
 ) -> NoReturn:
     """Read stderr, classify the error, log, and raise ``AgentProcessError``.
 
     Always raises — the ``-> NoReturn`` annotation lets mypy verify callers
     need not handle a return value.
+
+    The live stderr sniffer has already drained ``proc.stderr`` for this
+    dispatch, so prefer its captured text; only fall back to re-reading the pipe
+    when no sniffer ran (defensive — keeps the classifier working if the live
+    drain was ever skipped).
     """
-    stderr_text = ""
-    if proc.stderr:
+    stderr_text = sniffer.captured if sniffer is not None else ""
+    if not stderr_text and proc.stderr:
         try:
             raw_err = await proc.stderr.read()
             stderr_text = raw_err.decode("utf-8", errors="replace")
@@ -841,6 +961,10 @@ async def dispatch_cli(
         env=env,
     )
     handle.process = proc
+    # Drains stderr live so a backend-auth signature aborts the dispatch as AUTH
+    # (instead of waiting out the idle timeout). It also retains the stderr text
+    # for _finalize_nonzero_exit, which can no longer re-read a now-drained pipe.
+    stderr_sniffer = _StderrSniffer()
     stdin_feeder: asyncio.Task[None] | None = None
     if prompt_on_stdin and proc.stdin is not None:
         stdin_feeder = asyncio.create_task(_feed_prompt_stdin(proc, prompt))
@@ -856,6 +980,7 @@ async def dispatch_cli(
             stream_idle_timeout=stream_idle_timeout,
             timeout=float(timeout),
             prompt_bytes=prompt_bytes,
+            sniffer=stderr_sniffer,
         )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
@@ -902,7 +1027,9 @@ async def dispatch_cli(
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
-        await _finalize_nonzero_exit(proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output)
+        await _finalize_nonzero_exit(
+            proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
+        )
 
     dollar_cost = estimate_cost(
         usage.tokens_in,

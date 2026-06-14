@@ -447,6 +447,24 @@ class StateBuilder:
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
+        # Drain any backend-auth failures the manager stamped since the last
+        # snapshot into the session suppression set. The manager owns no
+        # reference back to ``SessionRuntime``; this is the single point where
+        # both ``self._manager`` and ``self._runtime`` are in hand, so it's where
+        # the per-agent AUTH classification becomes a session-wide agent-type
+        # suppression that the candidate analyzer (via ``OrchestratorState``)
+        # then masks on (#zeke auth-hang). Pure set ops, no I/O. ``getattr`` so a
+        # stub/test-double manager without the attribute is tolerated.
+        manager_auth_failed: set[str] = getattr(self._manager, "last_auth_failed_types", set())
+        newly_auth_suppressed = manager_auth_failed - self._runtime.auth_suppressed_agent_types
+        if newly_auth_suppressed:
+            self._runtime.auth_suppressed_agent_types |= newly_auth_suppressed
+            _logger.warning(
+                "agent_type_auth_suppressed",
+                session_id=self._session_id,
+                agent_types=sorted(newly_auth_suppressed),
+                reason="backend_auth_failed",
+            )
         cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
@@ -558,6 +576,7 @@ class StateBuilder:
                 else frozenset()
             ),
             parked_resource_keys=frozenset(self._runtime.parked_resource_keys),
+            auth_suppressed_agent_types=frozenset(self._runtime.auth_suppressed_agent_types),
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,

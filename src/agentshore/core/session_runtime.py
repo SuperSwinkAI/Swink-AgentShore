@@ -161,3 +161,9 @@ class SessionRuntime:
     )
     resource_failure_counts: dict[str, int] = field(default_factory=dict)
     parked_resource_keys: set[str] = field(default_factory=set)
+    # Agent-type values (e.g. "codex") whose backend auth has failed this
+    # session. One AUTH failure suppresses ALL dispatch of that type so PPO can't
+    # keep re-selecting it and instantiate_agent can't spawn fresh agents into a
+    # dead backend (the resource-key parking above is keyed on issues/branches,
+    # not agent types, so it doesn't cover this).
+    auth_suppressed_agent_types: set[str] = field(default_factory=set)

@@ -62,6 +62,15 @@ agentshore start
 
 The terminal UI shows the active plays, available agents, budget status, and current project state. AgentShore observes the repository, chooses plays with its PPO policy, dispatches supported agents, and records outcomes in the project database.
 
+Before the loop boots, `agentshore start` also checks each CLI agent's **backend session** — the auth its harness uses to reach its model provider, separate from the GitHub identity above. (For Codex this is its cached `chatgpt.com` login; it carries a TTL and can expire between runs.) The check prints a per-agent banner row; if an agent's backend session has expired it stops with an error and a fix hint:
+
+```text
+Error: CLI agent backend session expired/dead: codex. Re-authenticate before
+starting (e.g. run 'codex login'), ...
+```
+
+Re-authenticate the named agent (for example `codex login`) and start again. Only a definitively expired session blocks startup — a probe that can't confirm one way or the other is reported as a warning and does not stop the run. Pass `--skip-auth-preflight` to bypass the check entirely for an offline or air-gapped run.
+
 For a browser dashboard, run the core loop in one terminal and the dashboard bridge in another:
 
 ```bash

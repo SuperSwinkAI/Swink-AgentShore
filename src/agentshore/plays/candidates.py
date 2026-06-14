@@ -249,6 +249,41 @@ def resource_conflict_reason(
     return f"resource already in flight: {', '.join(conflicts)}"
 
 
+def _candidate_resolved_agent_type(
+    candidate: PlayCandidate,
+    agent_id_to_type: dict[str, str],
+) -> str | None:
+    """Resolve the agent-type value a candidate would run on, or ``None``.
+
+    A candidate names its agent type either directly via
+    ``params.target_agent_type`` (an instantiate_agent's created type, or a
+    type-pinned dispatch) or indirectly via the concrete agent it targets
+    (``params.target_agent_id``, mapped through *agent_id_to_type*). Candidates
+    with neither (issue/PR plays whose runner the resolver picks later) return
+    ``None`` and are never auth-suppressed at this layer.
+    """
+    params = candidate.params
+    if params.target_agent_type:
+        return params.target_agent_type
+    if params.target_agent_id is not None:
+        return agent_id_to_type.get(params.target_agent_id)
+    return None
+
+
+def _candidate_auth_suppressed_type(
+    candidate: PlayCandidate,
+    auth_suppressed: frozenset[str],
+    agent_id_to_type: dict[str, str],
+) -> str | None:
+    """Return the suppressed agent-type value if this candidate is masked, else None."""
+    if not auth_suppressed:
+        return None
+    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
+    if resolved is not None and resolved in auth_suppressed:
+        return resolved
+    return None
+
+
 def issue_pickup_sort_key(issue: IssueSnapshot) -> tuple[int, int, int, int]:
     """Sort tuple: bug first, then priority, size, and issue number."""
 
@@ -600,6 +635,10 @@ class PlayCandidateAnalyzer:
         blocked: dict[PlayType, list[str]] = {}
         active_keys = active_resource_keys(state)
         parked_keys = state.parked_resource_keys
+        auth_suppressed = state.auth_suppressed_agent_types
+        # agent_id -> agent_type.value, so a candidate that names an existing
+        # agent (target_agent_id) can be checked against the suppression set.
+        agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
 
         def add(candidate: PlayCandidate) -> None:
             # Piece A: a resource parked after repeated worktree-allocation
@@ -609,6 +648,19 @@ class PlayCandidateAnalyzer:
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
                 msg = f"resource parked (worktree allocation failed): {', '.join(parked_hit)}"
+                if msg not in reasons:
+                    reasons.append(msg)
+                return
+            # #zeke auth-hang: one backend-auth failure suppresses ALL dispatch
+            # of that agent type for the session — including an instantiate_agent
+            # candidate that would spawn a fresh agent of the dead type. HARD
+            # mask (structurally unrecoverable without a new session/token).
+            suppressed_type = _candidate_auth_suppressed_type(
+                candidate, auth_suppressed, agent_id_to_type
+            )
+            if suppressed_type is not None:
+                reasons = blocked.setdefault(candidate.play_type, [])
+                msg = f"agent type auth-suppressed for session: {suppressed_type}"
                 if msg not in reasons:
                     reasons.append(msg)
                 return

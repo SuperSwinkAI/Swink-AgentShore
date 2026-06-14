@@ -153,6 +153,31 @@ async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(
 
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+    # #zeke auth-hang: a preflight AUTH also records the agent TYPE for session
+    # suppression so the state-builder mixin can mask all codex dispatch.
+    assert mgr.last_auth_failed_types == {"codex"}
+
+
+async def test_mark_agent_error_auth_records_type_for_session_suppression(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """An AUTH mark_agent_error records the agent type; a non-AUTH mark doesn't."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    await mgr.mark_agent_error(handle.agent_id, ErrorClass.AUTH, reason="backend token expired")
+    assert handle.last_error_class == ErrorClass.AUTH
+    assert mgr.last_auth_failed_types == {"codex"}
+
+
+async def test_mark_agent_error_non_auth_does_not_suppress_type(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    await mgr.mark_agent_error(handle.agent_id, ErrorClass.TIMEOUT, reason="slow")
+    assert mgr.last_auth_failed_types == set()
 
 
 # ---------------------------------------------------------------------------

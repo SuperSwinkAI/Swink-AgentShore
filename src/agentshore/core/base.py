@@ -691,6 +691,14 @@ class _OrchestratorBase:
     def _parked_resource_keys(self, value: set[str]) -> None:
         self._runtime.parked_resource_keys = value
 
+    @property
+    def _auth_suppressed_agent_types(self) -> set[str]:
+        return self._runtime.auth_suppressed_agent_types
+
+    @_auth_suppressed_agent_types.setter
+    def _auth_suppressed_agent_types(self, value: set[str]) -> None:
+        self._runtime.auth_suppressed_agent_types = value
+
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
     # ------------------------------------------------------------------

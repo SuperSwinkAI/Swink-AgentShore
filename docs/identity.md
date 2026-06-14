@@ -82,6 +82,57 @@ source (gh login, keychain paste, or env var), merges the resulting bindings
 back into the config, and leaves the SQLite database untouched. This is the
 path to add or fix an identity without re-initializing the project.
 
+## CLI agent backend auth (distinct from GitHub identity)
+
+A GitHub identity is one of two independent credentials each CLI agent needs.
+The `identities:` block, token sources, and `agentshore identity` above all
+govern the **GitHub identity** — the credential the agent commits, opens PRs,
+and merges with. Separately, each CLI agent maintains its own **backend
+session** with its model provider: the auth the harness uses to reach the model
+itself (for example the Codex CLI's cached `chatgpt.com` session token). That
+session carries its own TTL and can expire independently of any GitHub token.
+The identity preflight does not see it, so a session with green identity checks
+can still have a dead model-provider backend.
+
+A dead backend is uniquely costly: when the Codex CLI's cached token expires it
+prints `failed to renew cache TTL` / `failed to refresh available models` to
+stderr and then hangs reading from stdin, so every dispatch runs to the full
+stream-idle timeout before being killed. AgentShore guards against this on both
+sides of a run.
+
+### Pre-launch probe
+
+`agentshore start` probes each configured CLI agent's backend auth right after
+the identity preflight, before the loop boots. The probe runs a short,
+non-mutating auth-status command per agent type under that agent's resolved
+identity env overlay and prints a per-agent banner row. Only an agent type with
+a reliable, non-interactive status command is probed today — Codex
+(`codex login status`); every other CLI agent reports `unprobeable` and never
+blocks. The probe is deliberately conservative: only a *definitively expired*
+backend session gates the launch (exit 1, with a `codex login` remediation
+hint). Transient outcomes — a probe timeout, a missing binary, or `unprobeable`
+— are surfaced as warnings and never strand an otherwise-fine session.
+
+Pass `--skip-auth-preflight` to `agentshore start` to bypass the probe entirely
+(for an offline or air-gapped run where the status command can't reach the
+provider).
+
+The desktop app runs the same probe as the `check_agent_auth` startup phase and
+exposes it live on the agents/identities setup screen as a per-agent backend-auth
+badge, so a green badge there provably means the launch gate will pass.
+
+### Runtime suppression backstop
+
+A backend session can also expire *mid-run*, after a clean preflight. When a
+CLI agent's dispatch emits a backend-auth signature on stderr, the error
+classifier recognises it immediately, aborts that dispatch with `ErrorClass.AUTH`
+rather than waiting out the full stream-idle timeout, and adds the agent type to
+a session-level suppression set. The play-candidate analyzer then masks all
+further dispatch to that agent type — including spawning a fresh agent of it —
+for the remainder of the session, since a new backend token would require a new
+session to pick up. This prevents a single expired token from burning every
+subsequent play to the timeout.
+
 ## Windows SSH agent setup
 
 AgentShore uses SSH-signed commits for merge-play provenance. On Windows,

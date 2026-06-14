@@ -365,13 +365,16 @@ def _progress_notification(
     )
 
 
-# DESIGN §10.2 — the six startup phases reported by ``session.start`` so the
+# DESIGN §10.2 — the seven startup phases reported by ``session.start`` so the
 # desktop Screen 8 checklist can advance step-by-step. Each phase emits a
 # ``running`` (percent=0) notification followed by an ``ok`` (percent=100)
 # notification on the same ``step`` id. Step ids must match
-# ``STARTUP_STEP_IDS`` in ``desktop/src/startupSteps.ts``.
+# ``STARTUP_STEP_IDS`` in ``desktop/src/startupSteps.ts``. The canonical
+# ordering lives in ``session_lifecycle.SESSION_START_STEP_IDS``; this table
+# mirrors it for the legacy stub emitter.
 SESSION_START_PHASES: tuple[tuple[str, str], ...] = (
     ("config_merge", "Config merged"),
+    ("check_agent_auth", "Agent auth checked"),
     ("install_skills", "Skills installed"),
     ("init_beads", "Beads ready"),
     ("bind_ipc", "IPC endpoint bound"),
@@ -1145,6 +1148,21 @@ def _dispatch_agents_rpc(
         return _result(req_id, detect_available_agents())
     if method == "agents.catalog":
         return _result(req_id, agents_catalog())
+
+    if method == "agents.check_auth":
+        # Backend-auth probe for the configured CLI agents (shells out per
+        # agent), mirroring identities.check_access: run off the serve loop so
+        # concurrent setup-screen RPCs don't serialize behind it. The handler
+        # never raises on a probe failure — it returns error-status rows.
+        obj_params = raw_params if isinstance(raw_params, dict) else {}
+        project_path = _active_project_path(state)
+
+        async def _run_check_auth() -> JsonRpcResponse:
+            from agentshore.sidecar.agent_auth import check_auth
+
+            return _result(req_id, await check_auth(project_path, obj_params))
+
+        return _run_check_auth()
 
     if method == "agents.configure":
         if not isinstance(raw_params, dict):

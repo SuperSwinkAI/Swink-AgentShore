@@ -90,6 +90,15 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        # Agent-type values (e.g. "codex") whose backend auth failed this
+        # session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
+        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error). The
+        # manager holds no reference to ``SessionRuntime``; the state-builder
+        # mixin drains this into ``_runtime.auth_suppressed_agent_types`` each
+        # snapshot so the candidate analyzer can mask the whole type. Grow-only
+        # for the session — one auth failure suppresses every dispatch of that
+        # type (a fresh token would require a new session). #zeke auth-hang.
+        self.last_auth_failed_types: set[str] = set()
         # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
         # read by _selection.py to bias away from branch-exposed agents.
         self.branch_exposure: dict[str, str] = {}  # branch → agent_id
@@ -202,6 +211,7 @@ class AgentManager:
                 )
             except (IdentityResolutionError, AgentAuthError) as exc:
                 handle.last_error_class = ErrorClass.AUTH
+                self.last_auth_failed_types.add(agent_type.value)
                 handle.transition_to(AgentStatus.ERROR)
                 _logger.warning(
                     "agent_repo_access_validation_failed",
@@ -355,6 +365,13 @@ class AgentManager:
                     if raw_error_class in ErrorClass._value2member_map_
                     else ErrorClass.UNKNOWN
                 )
+                # The stderr auth-sniffer surfaces a backend session-token expiry
+                # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
+                # lands here rather than in the generic-error branch below. Treat
+                # it as a session-wide agent-type auth failure so PPO can't keep
+                # re-selecting a dead backend.
+                if handle.last_error_class == ErrorClass.AUTH:
+                    self.last_auth_failed_types.add(handle.agent_type.value)
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)
@@ -384,6 +401,11 @@ class AgentManager:
                 raise
             if isinstance(exc, AgentOutputInvalid):
                 handle.last_error_class = ErrorClass.OUTPUT_INVALID
+            # A non-zero-exit AUTH (AgentProcessError) is classified inside
+            # cli_agent and stamped on the handle before re-raising here. Mirror
+            # it into the session suppression set, same as the timeout-AUTH path.
+            if handle.last_error_class == ErrorClass.AUTH:
+                self.last_auth_failed_types.add(handle.agent_type.value)
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
@@ -549,6 +571,8 @@ class AgentManager:
         )
         error_class = coerced
         handle.last_error_class = coerced
+        if coerced == ErrorClass.AUTH:
+            self.last_auth_failed_types.add(handle.agent_type.value)
         handle.transition_to(AgentStatus.ERROR)
         if increment_failed:
             await self._store.increment_agent_tasks(agent_id, failed=1)

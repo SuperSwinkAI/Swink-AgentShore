@@ -52,6 +52,12 @@ Skill templates source from `src/agentshore/skills/templates/` and install to `.
 
 CLI agents can be bound to distinct GitHub identities (`identity.py`). A token resolves from, in priority order, `gh_token_env`, `gh_token_login` (`gh auth token -u <login>`), or `gh_token_keychain`; if all are unset the agent inherits ambient `gh` auth. The resolved env overlay (git authorship + `GH_TOKEN`) is built and repo-access-verified **once at `instantiate()`** and cached on the handle. On preflight failure the handle is marked `ERROR` (error class `auth`) and never registered live. Dispatch reuses the cached overlay rather than re-shelling `gh` on the hot path, adding only the per-dispatch `AGENTSHORE_PROJECT_PATH` (canonical main-repo root) so skills can anchor `MAIN_REPO` independent of the subprocess cwd. Identity drives the anti-confirmation selection rule below. See `docs/identity.md` for the provisioning reference.
 
+## Backend Auth Probe
+
+GitHub identity is only one of the two credentials a CLI agent needs; the other is its **backend session** with its model provider (e.g. the Codex CLI's cached `chatgpt.com` token), which carries its own TTL and expires independently of any `GH_TOKEN`. The identity preflight never sees it. `auth_probe.py` is the single source of truth for "is agent *type*'s backend auth currently valid?", shared by three call sites so a green badge on the desktop setup screen provably means the launch gate will pass: the CLI launch gate (`preflight_cli_agent_auth`), the desktop `session.start` `check_agent_auth` phase, and the desktop `agents.check_auth` RPC.
+
+`probe_cli_auth(agent_type, env, *, binary, timeout)` runs a short, non-mutating auth-status subprocess under the agent's resolved identity env overlay and returns an `AuthProbeResult(agent_type, status, detail)` with `status` in `{ok, expired, timeout, error, unprobeable}`. Only `expired` blocks a launch — a transient probe hiccup (`timeout`/`error`) or an unsupported type (`unprobeable`) is surfaced but never strands an otherwise-fine session. The probe is intentionally conservative: only a type with a reliable, non-interactive status verb is probed, so it can never introduce a false-negative startup failure. Codex (`codex login status`) is the only real probe today; every other CLI type returns `unprobeable`. `probe_configured_cli_auth(cfg)` probes each enabled CLI type once (a backend token is shared across instances of a type).
+
 ## Selection Rules
 
 `select_agent_for()` (`_selection.py`) draws from IDLE handles and applies hard filters first, then soft tiebreakers:
@@ -88,6 +94,10 @@ Worktrees default to `<repo>/.agentshore/worktrees/` (gitignored, same filesyste
 Each agent has a `CircuitBreaker` (CLOSED -> OPEN -> HALF_OPEN). Default: `3` failures in `300`s opens it; after a `60`s cooldown it goes HALF_OPEN, where a single further failure re-opens and a success closes it. Recovery backoff grows exponentially (capped) per attempt. Dispatch is refused while OPEN.
 
 `attempt_recovery()` transitions an `ERROR` agent back to IDLE when the breaker allows - but skips config-class errors (`auth`, `invalid_model`) that re-attempting can't fix. `TAKE_BREAK` is the play that drives recovery of agents whose error class is `rate_limit` or `unknown` after the break interval. Timeouts carry a precise sub-class (wallclock / stream-idle / post-response) for sliced telemetry.
+
+### Backend-auth suppression
+
+A backend session can also expire *mid-run*, after a clean preflight. A live dispatch's stderr is sniffed for the backend-auth signatures (the same markers the probe uses, e.g. Codex's `failed to renew cache TTL`); on a hit the dispatch is aborted immediately with `ErrorClass.AUTH` instead of hanging to the full stream-idle timeout. The manager records that agent type on a grow-only `last_auth_failed_types` set; the state-builder mixin drains it each snapshot into the session's `auth_suppressed_agent_types`. The play-candidate analyzer then hard-masks every play that would dispatch to that type — including the `INSTANTIATE_AGENT` candidate that would spawn a fresh one — for the rest of the session, since a new backend token requires a new session to pick up. This stops one expired token from burning every subsequent dispatch to the timeout.
 
 ## Concurrency And Handoffs
 
