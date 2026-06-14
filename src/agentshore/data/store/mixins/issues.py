@@ -7,24 +7,22 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.helpers import _GITHUB_ISSUE_SELECT
 from agentshore.data.store.rows import _row_to_github_issue
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import GitHubIssueRecord
 
 
-class _IssuesMixin:
+class _IssuesMixin(_DataStoreBase):
     """Methods that operate on the ``github_issues`` table."""
 
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
     if TYPE_CHECKING:
-        # Forward-declared cross-mixin method (impl in _WorkClaimsMixin).
-        # Only visible to mypy; Python resolves the real method via MRO.
+        # Cross-mixin sibling method (impl in _WorkClaimsMixin, not the base).
+        # Only visible to mypy; Python resolves the real method via the
+        # DataStore MRO at runtime.
         async def supersede_work_claims(
             self,
             session_id: str,
@@ -109,10 +107,8 @@ class _IssuesMixin:
     async def get_open_issues(self, session_id: str) -> list[GitHubIssueRecord]:
         """Return all open issues for a session, ordered by priority ASC (nulls last)."""
         cursor = await self._conn.execute(
-            """
-            SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at, github_author
-            FROM github_issues
+            f"""
+            {_GITHUB_ISSUE_SELECT}
             WHERE session_id = ? AND LOWER(state) = 'open'
             ORDER BY
                 CASE WHEN priority IS NULL THEN 1 ELSE 0 END,
@@ -128,10 +124,8 @@ class _IssuesMixin:
     ) -> GitHubIssueRecord | None:
         """Return one cached GitHub issue by number for this session."""
         async with self._conn.execute(
-            """
-            SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at, github_author
-            FROM github_issues
+            f"""
+            {_GITHUB_ISSUE_SELECT}
             WHERE issue_number = ? AND session_id = ?
             """,
             (issue_number, session_id),
@@ -142,10 +136,8 @@ class _IssuesMixin:
     async def list_all_issues(self, session_id: str) -> list[GitHubIssueRecord]:
         """Return all issues for a session (open and closed), ordered by issue number."""
         cursor = await self._conn.execute(
-            """
-            SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at, github_author
-            FROM github_issues
+            f"""
+            {_GITHUB_ISSUE_SELECT}
             WHERE session_id = ?
             ORDER BY issue_number ASC
             """,
@@ -171,10 +163,8 @@ class _IssuesMixin:
         """
         cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         cursor = await self._conn.execute(
-            """
-            SELECT issue_number, session_id, title, state, priority,
-                   labels, source, url, created_at, closed_at, github_author
-            FROM github_issues
+            f"""
+            {_GITHUB_ISSUE_SELECT}
             WHERE session_id = ?
               AND LOWER(state) = 'closed'
               AND closed_at IS NOT NULL

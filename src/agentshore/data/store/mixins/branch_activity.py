@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.utils import now_iso
 
-if TYPE_CHECKING:
-    import aiosqlite
 
-
-class _BranchActivityMixin:
+class _BranchActivityMixin(_DataStoreBase):
     """Methods that operate on the ``branch_activity`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def rebuild_branch_activity(self, session_id: str, branch_pr_map: dict[str, int]) -> None:
         """Reconstitute skeleton branch_activity rows from open PRs after a session reset.

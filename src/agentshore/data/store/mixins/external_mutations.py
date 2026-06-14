@@ -4,19 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_external_mutation
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import ExternalMutationRecord
 
 
-class _ExternalMutationsMixin:
+class _ExternalMutationsMixin(_DataStoreBase):
     """Methods that operate on the ``external_mutations`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def record_external_mutation(self, mutation: ExternalMutationRecord) -> None:
         """Insert a GitHub-mutation audit record (idempotency_key must be unique)."""

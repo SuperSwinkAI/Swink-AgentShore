@@ -11,18 +11,15 @@ up the existing row.
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING
 
 from agentshore.data.models import (
     _VALID_WORKTREE_STATUSES,
     WorktreeRow,
     WorktreeStatus,
 )
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.errors import OrchestratorError
 from agentshore.utils import now_iso
-
-if TYPE_CHECKING:
-    import aiosqlite
 
 
 class WorktreeAllocationConflict(OrchestratorError):
@@ -59,11 +56,8 @@ def _row_to_worktree(row: sqlite3.Row | dict[str, object]) -> WorktreeRow:
     )
 
 
-class _WorktreesMixin:
+class _WorktreesMixin(_DataStoreBase):
     """Methods that operate on the ``worktrees`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def insert_worktree(
         self,

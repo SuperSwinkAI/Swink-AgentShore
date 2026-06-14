@@ -47,6 +47,74 @@ _PULL_REQUEST_COLUMNS: tuple[str, ...] = (
 # SELECT prefix shared by every PR read method — appended with WHERE/ORDER BY.
 _PR_SELECT = f"SELECT {', '.join(_PULL_REQUEST_COLUMNS)} FROM pull_requests"
 
+# Canonical ordered column list for the ``github_issues`` table. The cache upsert
+# in ``_IssuesMixin`` and the row mapper ``_row_to_github_issue`` derive their
+# column set from this tuple, so every issue SELECT projects the same columns in
+# the same order — a reader/writer disagreement is structurally impossible.
+_GITHUB_ISSUE_COLUMNS: tuple[str, ...] = (
+    "issue_number",
+    "session_id",
+    "title",
+    "state",
+    "priority",
+    "labels",
+    "source",
+    "url",
+    "created_at",
+    "closed_at",
+    "github_author",
+)
+
+# SELECT prefix shared by every issue read method — appended with WHERE/ORDER BY.
+_GITHUB_ISSUE_SELECT = f"SELECT {', '.join(_GITHUB_ISSUE_COLUMNS)} FROM github_issues"
+
+# Canonical ordered column list for the ``work_claims`` table. Every work-claim
+# read projects this set (via ``_WORK_CLAIM_SELECT``) and ``_row_to_work_claim``
+# maps it, so the SELECTs cannot drift apart.
+_WORK_CLAIM_COLUMNS: tuple[str, ...] = (
+    "claim_id",
+    "claim_group_id",
+    "session_id",
+    "play_type",
+    "resource_key",
+    "status",
+    "agent_id",
+    "play_id",
+    "request_mutation_key",
+    "review_queue_id",
+    "created_at",
+    "claimed_at",
+    "started_at",
+    "finished_at",
+)
+
+# SELECT prefix shared by every work-claim read method — appended with WHERE/…
+_WORK_CLAIM_SELECT = f"SELECT {', '.join(_WORK_CLAIM_COLUMNS)} FROM work_claims"
+
+# Canonical ordered column list for the ``rl_experience`` table. Both replay
+# SELECTs project this set; ``_row_to_experience`` maps it.
+_RL_EXPERIENCE_COLUMNS: tuple[str, ...] = (
+    "experience_id",
+    "session_id",
+    "play_id",
+    "state_vector",
+    "action",
+    "reward",
+    "next_state",
+    "done",
+    "old_log_prob",
+    "value_estimate",
+    "action_mask",
+    "mask_reason",
+    "policy_version",
+    "action_space_version",
+    "config_hash",
+    "step_index",
+)
+
+# SELECT prefix shared by the experience replay reads — appended with WHERE/…
+_RL_EXPERIENCE_SELECT = f"SELECT {', '.join(_RL_EXPERIENCE_COLUMNS)} FROM rl_experience"
+
 _PULL_REQUEST_UPSERT_SQL = f"""
     INSERT INTO pull_requests
         ({", ".join(_PULL_REQUEST_COLUMNS)})

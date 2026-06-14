@@ -4,25 +4,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.helpers import _RL_EXPERIENCE_SELECT
 from agentshore.data.store.rows import _row_to_checkpoint, _row_to_experience
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    import aiosqlite
-
     from agentshore.data.models import CheckpointRecord, ExperienceRecord
 
 
-class _RLMixin:
+class _RLMixin(_DataStoreBase):
     """Methods that operate on ``rl_experience`` and ``policy_checkpoints``."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
-    if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
 
     async def record_experience(self, record: ExperienceRecord) -> int:
         """Insert a PPO experience row and return the auto-assigned experience_id."""
@@ -100,39 +93,23 @@ class _RLMixin:
         Rows whose state_vector blob length doesn't match are still yielded
         (the caller is responsible for schema validation).
         """
+        params: tuple[object, ...] = (session_id, action_space_version)
+        config_hash_clause = ""
         if config_hash is not None:
-            async with self._conn.execute(
-                """
-                SELECT experience_id, session_id, play_id, state_vector, action,
-                       reward, next_state, done, old_log_prob, value_estimate,
-                       action_mask, mask_reason, policy_version, action_space_version,
-                       config_hash, step_index
-                FROM rl_experience
-                WHERE session_id = ?
-                  AND action_space_version = ?
-                  AND config_hash = ?
-                ORDER BY step_index ASC
-                """,
-                (session_id, action_space_version, config_hash),
-            ) as cursor:
-                async for row in cursor:
-                    yield _row_to_experience(row)
-        else:
-            async with self._conn.execute(
-                """
-                SELECT experience_id, session_id, play_id, state_vector, action,
-                       reward, next_state, done, old_log_prob, value_estimate,
-                       action_mask, mask_reason, policy_version, action_space_version,
-                       config_hash, step_index
-                FROM rl_experience
-                WHERE session_id = ?
-                  AND action_space_version = ?
-                ORDER BY step_index ASC
-                """,
-                (session_id, action_space_version),
-            ) as cursor:
-                async for row in cursor:
-                    yield _row_to_experience(row)
+            config_hash_clause = "AND config_hash = ?"
+            params = (*params, config_hash)
+        async with self._conn.execute(
+            f"""
+            {_RL_EXPERIENCE_SELECT}
+            WHERE session_id = ?
+              AND action_space_version = ?
+              {config_hash_clause}
+            ORDER BY step_index ASC
+            """,
+            params,
+        ) as cursor:
+            async for row in cursor:
+                yield _row_to_experience(row)
 
     async def distinct_experience_session_ids(self, action_space_version: int) -> list[str]:
         """Return session IDs with at least one experience row at this version.

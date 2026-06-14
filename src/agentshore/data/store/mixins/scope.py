@@ -4,23 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_scope_drift
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import ScopeDriftRecord
 
 
-class _ScopeMixin:
+class _ScopeMixin(_DataStoreBase):
     """Methods that operate on the ``scope_drift_log`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
-    if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
 
     async def log_scope_drift(self, record: ScopeDriftRecord) -> None:
         """Insert a scope-drift log entry."""

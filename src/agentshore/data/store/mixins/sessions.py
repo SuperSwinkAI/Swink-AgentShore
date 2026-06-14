@@ -4,30 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_session_record
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import SessionRecord
 
 
-class _SessionsMixin:
+class _SessionsMixin(_DataStoreBase):
     """Methods that operate on the ``sessions`` table."""
 
-    _db: aiosqlite.Connection | None
-    # ``_conn`` is a property on ``_DataStoreBase`` that returns a non-None
-    # connection or raises. Mixins access it through ``self._conn`` and Python
-    # resolves the call through the MRO at runtime; the annotation tells mypy
-    # what it returns.
-    _conn: aiosqlite.Connection
-
     if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
-
-        # Provided by _PlaysMixin; resolved via the MRO at runtime.
+        # Provided by _PlaysMixin (a sibling mixin, not the base); resolved via
+        # the DataStore MRO at runtime.
         async def session_play_totals(self, session_id: str) -> tuple[int, float]: ...
 
     async def create_session(self, session: SessionRecord) -> None:

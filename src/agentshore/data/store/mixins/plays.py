@@ -5,28 +5,23 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _ACTIVE_WORK_CLAIM_STATUSES, _status_in_clause
+from agentshore.data.store.base import (
+    _ACTIVE_WORK_CLAIM_STATUSES,
+    _DataStoreBase,
+    _status_in_clause,
+)
 from agentshore.data.store.rows import _row_to_play_record
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import aiosqlite
-
     from agentshore.data.models import PlayRecord
     from agentshore.state import JsonArtifact
 
 
-class _PlaysMixin:
+class _PlaysMixin(_DataStoreBase):
     """Methods that operate on the ``plays`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
-    if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
 
     async def record_play(self, play: PlayRecord) -> int:
         """Insert a play record and return the auto-assigned ``play_id``."""

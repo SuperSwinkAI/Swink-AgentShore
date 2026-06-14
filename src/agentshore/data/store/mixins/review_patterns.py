@@ -4,19 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_review_feedback_pattern
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import ReviewFeedbackPatternRecord
 
 
-class _ReviewPatternsMixin:
+class _ReviewPatternsMixin(_DataStoreBase):
     """Methods that operate on the ``review_feedback_patterns`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def record_review_pattern(self, record: ReviewFeedbackPatternRecord) -> None:
         """Insert or accumulate a single review-feedback pattern row.

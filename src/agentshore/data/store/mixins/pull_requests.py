@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.helpers import (
     _PR_SELECT,
     _PULL_REQUEST_UPSERT_SQL,
@@ -17,19 +18,15 @@ from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import PullRequestRecord
 
 
-class _PullRequestsMixin:
+class _PullRequestsMixin(_DataStoreBase):
     """Methods that operate on the ``pull_requests`` and ``branch_activity`` tables."""
 
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
     if TYPE_CHECKING:
-        # Cross-mixin call: actual impl is in _WorkClaimsMixin.
+        # Cross-mixin sibling call: actual impl is in _WorkClaimsMixin, not the
+        # base; resolved via the DataStore MRO at runtime.
         async def supersede_work_claims(
             self,
             session_id: str,
