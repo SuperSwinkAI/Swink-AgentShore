@@ -474,6 +474,24 @@ class SkillBackedPlay(Play, ABC):
             and invocation.session_id is not None
             and len(invocation.raw_output) > 0
         ):
+            # Worktree may be reclaimed between initial dispatch return and here
+            # (same TOCTOU window the pre-dispatch guard at line 437 covers).
+            if dispatch_cwd is not None and not dispatch_cwd.exists():
+                _logger.warning(
+                    "play_dispatch_cwd_reclaimed",
+                    play_type=self.play_type.value,
+                    play_id=ctx.play_id,
+                    agent_id=agent_id,
+                    dispatch_cwd=str(dispatch_cwd),
+                    during="json_retry",
+                )
+                return PlayOutcome.failed(
+                    self.play_type,
+                    error=f"worktree reclaimed before json retry: {dispatch_cwd} no longer exists",
+                    agent_id=agent_id,
+                    retry_requested=True,
+                    failure_kind=FailureKind.AGENT_ERROR,
+                )
             _logger.info(
                 "agent_json_retry",
                 agent_id=agent_id,
