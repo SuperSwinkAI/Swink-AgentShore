@@ -11,28 +11,23 @@
 
 ## Install
 
-Install the CLI from a checkout with `uv tool install --editable .`.
+```bash
+pip install agentshore
+```
 
-For development, `uv sync --group dev` sets up the full toolchain in `.venv/` and you can run the CLI with `uv run agentshore`.
+Requires Python 3.12+. The wheel is self-contained — schema, dashboard assets, and skill templates are all bundled, so a plain `pip install` yields a fully working CLI with no extras required.
+
+For development from a checkout, `uv sync --group dev` sets up the full toolchain in `.venv/` and you can run the CLI with `uv run agentshore`.
 
 ### Windows 11
 
-The `agentshore` CLI runs on Windows 11. Install it either way:
+The `agentshore` CLI runs on Windows 11. In addition to `pip install agentshore`, a bootstrap script is available in the repo that locates or installs `uv` and then runs `uv tool install`:
 
 ```powershell
-# Recommended: the bootstrap script (locates/installs uv, then `uv tool install`)
 powershell -ExecutionPolicy Bypass -File scripts\install-agentshore.ps1
-# or, against the GitHub source / an explicit wheel:
-.\scripts\install-agentshore.ps1 -Wheel dist\agentshore-0.3.0-py3-none-any.whl
 ```
 
-```powershell
-# Or a plain pip install of the wheel into any Python 3.12+ venv:
-py -m venv .venv; .venv\Scripts\Activate.ps1
-pip install dist\agentshore-0.3.0-py3-none-any.whl
-```
-
-The wheel is self-contained (schema, dashboard assets, and skill templates are bundled), so a plain `pip install` yields a fully working CLI — no extras required. Timelapse capture is an optional, separately-provisioned npm/ffmpeg toolchain and is **not** part of the CLI install. If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.
+If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.
 
 The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `uv run python -m scripts.buildkit macos`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `uv run python -m scripts.buildkit windows`, which produces a machine-wide Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices. Both run from the repo root through the cross-platform build spine in `scripts/buildkit/`.
 
@@ -40,8 +35,8 @@ The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is bui
 
 Choose the path that matches how you want to run AgentShore:
 
-- CLI from a checkout or Python install: [`docs/getting-started-cli.md`](docs/getting-started-cli.md)
-- macOS desktop app or `.pkg` installer: [`docs/getting-started-desktop.md`](docs/getting-started-desktop.md)
+- CLI from a checkout or Python install: [`docs/getting-started-cli.md`](https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/docs/getting-started-cli.md)
+- macOS desktop app or `.pkg` installer: [`docs/getting-started-desktop.md`](https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/docs/getting-started-desktop.md)
 
 Both paths end in selecting a project, configuring agents and identities, and starting a supervised session.
 
@@ -71,9 +66,9 @@ The core loop: observe state → RL policy selects a play → execute play via a
 - **Plays**: each play implements `preconditions()`, `execute()`, `estimated_cost()`; a mask prevents invalid plays from being selected
 - **Agents**: CLI agents (Claude Code, Codex, Gemini) run as async subprocesses; API agents use httpx
 - **Three-layer graph**: BEADS is the canonical project graph (epics → stories → tasks), GitHub is the human conversation surface, and AgentShore's SQLite database holds session-scoped RL state
-- **Data**: single SQLite database per project (schema namespace `agentshore_dev_v1`), WAL mode, aiosqlite
+- **Data**: single SQLite database per project (schema version 4, 22 tables), WAL mode, aiosqlite
 
-Design documentation: [`docs/design/HLD.md`](docs/design/HLD.md)
+Design documentation: [`docs/design/HLD.md`](https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/docs/design/HLD.md)
 
 ## Dashboard
 
@@ -81,7 +76,7 @@ Run `agentshore start --headless`, then `agentshore dashboard` for a live sessio
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/CONTRIBUTING.md).
 
 ## License
 

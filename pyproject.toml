@@ -15,8 +15,10 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries",
 ]
 
@@ -59,6 +61,7 @@ dev = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/SuperSwinkAI/Swink-AgentShore"
 Repository = "https://github.com/SuperSwinkAI/Swink-AgentShore"
 Documentation = "https://github.com/SuperSwinkAI/Swink-AgentShore/blob/main/docs/design/HLD.md"
 
