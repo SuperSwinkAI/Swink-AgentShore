@@ -242,6 +242,81 @@
   margin-bottom: 16px;
 }
 
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.fleetTotal {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  max-width: 720px;
+  padding: 9px 12px;
+  border: 1px solid var(--fm-selected-border, rgba(15, 138, 108, 0.38));
+  border-radius: 6px;
+  background: var(--success-bg, rgba(15, 138, 108, 0.12));
+  color: var(--fm-text-strong, #1f2940);
+  box-shadow: var(--fm-shadow, none);
+}
+
+.fleetLabel {
+  color: var(--fm-text-label, rgba(31, 41, 64, 0.82));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fleetFormula {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fleetChip {
+  min-width: 48px;
+  padding: 4px 8px;
+  border: 1px solid var(--success-border, rgba(15, 138, 108, 0.34));
+  border-radius: 999px;
+  background: var(--bg-elevated, #ffffff);
+  color: var(--fm-text-strong, #1f2940);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.fleetEquals {
+  color: var(--muted, #6b7280);
+  font-weight: 700;
+}
+
+.fleetGrand {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--accent, #0f8a6c);
+  color: var(--color-fm-bg, #f3f6ff);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.footerAction {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 @media (max-width: 760px) {
   .screen {
     padding: 14px 0;
@@ -268,6 +343,20 @@
 
   .identity select,
   .configureButton {
+    width: 100%;
+  }
+
+  .footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .fleetTotal {
+    max-width: none;
+  }
+
+  .footerAction,
+  .footerAction > * {
     width: 100%;
   }
 }

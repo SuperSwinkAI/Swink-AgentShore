@@ -780,9 +780,9 @@ function SetupLayout({
             </>
           )}
           {current === "agents" && (
-            <>
-              <AgentsScreen onAgentRowsChange={onAgentRowsChange} />
-              <div className="setup-screen-actions">
+            <AgentsScreen
+              onAgentRowsChange={onAgentRowsChange}
+              footerAction={
                 <button
                   type="button"
                   className="setup-screen-actions__continue"
@@ -790,8 +790,8 @@ function SetupLayout({
                 >
                   Continue to Budget
                 </button>
-              </div>
-            </>
+              }
+            />
           )}
           {current === "budget" && (
             <BudgetScreen
