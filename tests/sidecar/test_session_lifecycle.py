@@ -98,10 +98,13 @@ async def test_check_agent_auth_blocks_on_expired_backend(tmp_path: Path) -> Non
     state = ServerState(active_project_path=str(project))
 
     expired = [AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "run `codex login`")]
-    with patch(
-        "agentshore.agents.auth_probe.probe_configured_cli_auth",
-        return_value=expired,
-    ), pytest.raises(SessionStartError) as excinfo:
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=expired,
+        ),
+        pytest.raises(SessionStartError) as excinfo,
+    ):
         await run_session_start(state, start_bridge=False, start_orchestrator=False)
 
     assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
@@ -119,10 +122,13 @@ async def test_check_agent_auth_emits_failed_progress_for_expired(tmp_path: Path
     notifications: list[dict[str, object]] = []
 
     expired = [AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "session expired")]
-    with patch(
-        "agentshore.agents.auth_probe.probe_configured_cli_auth",
-        return_value=expired,
-    ), pytest.raises(SessionStartError):
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=expired,
+        ),
+        pytest.raises(SessionStartError),
+    ):
         await run_session_start(
             state,
             progress_token="tok-auth",
