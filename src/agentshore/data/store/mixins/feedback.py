@@ -4,23 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_human_feedback
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import HumanFeedbackRecord
 
 
-class _FeedbackMixin:
+class _FeedbackMixin(_DataStoreBase):
     """Methods that operate on the ``human_feedback`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
-    if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
 
     async def record_human_feedback(self, record: HumanFeedbackRecord) -> int:
         """Insert a human-feedback checkpoint row and return its ``feedback_id``."""

@@ -249,3 +249,46 @@ def test_timelapse_absent_block_uses_defaults(tmp_path: Path) -> None:
     cfg = load_config(yaml_path)
     assert cfg.timelapse.enabled is False
     assert cfg.timelapse.installed is False
+
+
+def test_worktrees_disk_knobs_default_to_disabled() -> None:
+    cfg = RuntimeConfig()
+    assert cfg.worktrees.min_free_disk_mb == 0
+    assert cfg.worktrees.disk_high_water_mb == 0
+    assert cfg.worktrees.reap_failed_pr_after_n == 0
+    assert cfg.worktrees.max_active_worktrees is None
+
+
+def test_worktrees_disk_knobs_yaml_round_trip(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text(
+        "\n".join(
+            [
+                "worktrees:",
+                "  min_free_disk_mb: 2048",
+                "  disk_high_water_mb: 4096",
+                "  reap_failed_pr_after_n: 2",
+                "  max_active_worktrees: 8",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(yaml_path)
+    assert cfg.worktrees.min_free_disk_mb == 2048
+    assert cfg.worktrees.disk_high_water_mb == 4096
+    assert cfg.worktrees.reap_failed_pr_after_n == 2
+    assert cfg.worktrees.max_active_worktrees == 8
+
+
+def test_worktrees_rejects_negative_disk_floor(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("worktrees:\n  min_free_disk_mb: -1\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="min_free_disk_mb"):
+        load_config(yaml_path)
+
+
+def test_worktrees_rejects_nonpositive_max_active(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("worktrees:\n  max_active_worktrees: 0\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="max_active_worktrees"):
+        load_config(yaml_path)

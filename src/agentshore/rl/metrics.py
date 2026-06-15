@@ -6,11 +6,13 @@ Full recomputation per snapshot call. Designed to complete in <50ms.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore.play_rules import pr_is_awaiting_review
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.rl.observation import ObservationContext
 from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayType
@@ -329,18 +331,7 @@ def _build_context(
     prs_open_count = len(prs_open)
     # Awaiting review: open/review PRs without GitHub approval or AgentShore's
     # current-head PASS verdict.
-    prs_awaiting = sum(
-        1
-        for pr in prs_open
-        if pr.state in ("open", "review")
-        and getattr(pr, "review_decision", None) != "APPROVED"
-        and not (
-            getattr(pr, "last_review_status", None) == "PASS"
-            and getattr(pr, "last_reviewed_sha", None) is not None
-            and getattr(pr, "head_sha", None) is not None
-            and getattr(pr, "last_reviewed_sha", None) == getattr(pr, "head_sha", None)
-        )
-    )
+    prs_awaiting = sum(1 for pr in prs_open if pr_is_awaiting_review(pr))
     prs_approved_count = len(prs_approved)
 
     # Handoff rolling stats over the latest handoff rows in this session.
@@ -432,6 +423,57 @@ def _minutes_since(
     return 480.0  # never ran → report max staleness
 
 
+@dataclass(frozen=True, slots=True)
+class _IssueClosureEvidence:
+    """Typed verdict parsed from a play's artifacts for issue-closure counting.
+
+    ``closed`` is True when an artifact directly evidences a closure. ``merge_pr_artifact_present``
+    records whether any ``pr_merged_issue_numbers`` artifact was seen — when one
+    is present it is authoritative (an empty list means a doc-only / hotfix merge
+    that closed nothing), so the legacy "every successful merge counts" fallback
+    must NOT apply.
+    """
+
+    closed: bool
+    merge_pr_artifact_present: bool
+
+
+# Artifact ``type`` strings that carry issue-closure evidence. Kept as named
+# constants so the dispatch reads intent rather than scattering magic strings.
+_ARTIFACT_ISSUE_CLOSED = "issue_closed"
+_ARTIFACT_ISSUES_CLOSED = "issues_closed"
+_ARTIFACT_PR_MERGED_ISSUE_NUMBERS = "pr_merged_issue_numbers"
+
+
+def _parse_issue_closure_evidence(play: PlayRecord) -> _IssueClosureEvidence:
+    """Scan a play's artifacts once and return a typed issue-closure verdict."""
+    merge_pr_artifact_present = False
+    for artifact in play.artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_type = artifact.get("type")
+        if artifact_type == _ARTIFACT_ISSUE_CLOSED:
+            return _IssueClosureEvidence(
+                closed=True, merge_pr_artifact_present=merge_pr_artifact_present
+            )
+        if artifact_type == _ARTIFACT_ISSUES_CLOSED:
+            if _has_issue_numbers(artifact):
+                return _IssueClosureEvidence(
+                    closed=True, merge_pr_artifact_present=merge_pr_artifact_present
+                )
+        elif artifact_type == _ARTIFACT_PR_MERGED_ISSUE_NUMBERS:
+            merge_pr_artifact_present = True
+            if _has_issue_numbers(artifact):
+                return _IssueClosureEvidence(closed=True, merge_pr_artifact_present=True)
+    return _IssueClosureEvidence(closed=False, merge_pr_artifact_present=merge_pr_artifact_present)
+
+
+def _has_issue_numbers(artifact: dict[str, object]) -> bool:
+    """Return True when ``artifact['issue_numbers']`` is a non-empty list."""
+    issue_numbers = artifact.get("issue_numbers")
+    return isinstance(issue_numbers, list) and len(issue_numbers) > 0
+
+
 def _play_closed_issue(play: PlayRecord) -> bool:
     """Return True when a successful play should count as an issue closure.
 
@@ -446,21 +488,7 @@ def _play_closed_issue(play: PlayRecord) -> bool:
     if not play.success:
         return False
 
-    merge_pr_artifact_present = False
-    for artifact in play.artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        artifact_type = artifact.get("type")
-        if artifact_type == "issue_closed":
-            return True
-        if artifact_type == "issues_closed":
-            issue_numbers = artifact.get("issue_numbers")
-            if isinstance(issue_numbers, list) and len(issue_numbers) > 0:
-                return True
-        if artifact_type == "pr_merged_issue_numbers":
-            merge_pr_artifact_present = True
-            issue_numbers = artifact.get("issue_numbers")
-            if isinstance(issue_numbers, list) and len(issue_numbers) > 0:
-                return True
-
-    return play.play_type == "merge_pr" and not merge_pr_artifact_present
+    evidence = _parse_issue_closure_evidence(play)
+    if evidence.closed:
+        return True
+    return play.play_type == "merge_pr" and not evidence.merge_pr_artifact_present

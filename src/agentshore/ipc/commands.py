@@ -37,8 +37,6 @@ _BOOL_PARAMS: dict[str, frozenset[str]] = {
     "drain": frozenset({"end_session_report", "open_report"}),
 }
 
-_NUMERIC_POSITIVE_PARAMS: dict[str, frozenset[str]] = {}
-
 # Commands that require at least one of a set of optional positive-number params.
 # Each named field, when present, must be a finite positive number; ``delta_minutes``
 # must additionally be a whole number of minutes (an int, or a float with no
@@ -90,18 +88,6 @@ def validate_command(cmd: dict[str, object]) -> None:
     missing = required - cmd.keys()
     if missing:
         raise ValueError(f"Command {command!r} missing required parameter(s): {sorted(missing)}")
-
-    for field in _NUMERIC_POSITIVE_PARAMS.get(str(command), frozenset()):
-        val = cmd.get(field)
-        if (
-            not isinstance(val, (int, float))
-            or isinstance(val, bool)
-            or not math.isfinite(val)
-            or val <= 0
-        ):
-            raise ValueError(
-                f"Command '{command}': '{field}' must be a finite positive number, got {val!r}"
-            )
 
     at_least_one = _AT_LEAST_ONE_POSITIVE_PARAMS.get(str(command), frozenset())
     if at_least_one:

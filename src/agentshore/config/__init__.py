@@ -91,9 +91,10 @@ __all__ = [
     "WorktreeConfig",
     "generate_default_config",
     "load_config",
+    "render_config_yaml",
 ]
 
-_DEFAULT_YAML = """\
+_DEFAULT_YAML_TEMPLATE = """\
 project:
   path: .
   goals: null
@@ -141,11 +142,7 @@ agents:
       medium:
         enabled: true
         model: sonnet
-    max_context: 200000
-    cost_per_1k_input: 0.003
-    cost_per_1k_cached_input: 0.0003
-    cost_per_1k_cache_write_input: 0.00375
-    cost_per_1k_output: 0.015
+$PRICING_claude_code
   codex:
     enabled: true
     binary: codex
@@ -160,10 +157,7 @@ agents:
         enabled: true
         model: gpt-5.4
         reasoning_effort: medium
-    max_context: 400000
-    cost_per_1k_input: 0.00175
-    cost_per_1k_cached_input: 0.000175
-    cost_per_1k_output: 0.014
+$PRICING_codex
   gemini:
     enabled: true
     binary: gemini
@@ -178,9 +172,7 @@ agents:
       large:
         enabled: true
         model: pro
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
+$PRICING_gemini
   grok:
     enabled: true
     binary: grok
@@ -199,10 +191,7 @@ agents:
         enabled: true
         model: grok-build
         reasoning_effort: high
-    max_context: 256000
-    cost_per_1k_input: 0.001
-    cost_per_1k_cached_input: 0.0002
-    cost_per_1k_output: 0.002
+$PRICING_grok
   fresh_start:
     max_plays_before_reset: 20
     context_threshold: 0.80
@@ -324,7 +313,39 @@ socket: null
 # play_timeouts:
 #   issue_pickup: 3600
 #   unblock_pr: 5400
-""".replace("$STANDARD_PLAY_COOLDOWN_PLAYS", str(STANDARD_PLAY_COOLDOWN_PLAYS))
+"""
+
+
+def render_config_yaml() -> str:
+    """Render the canonical built-in default ``agentshore.yaml`` text.
+
+    Single named entry point for the on-disk default config used by
+    ``load_config(None)``, :func:`generate_default_config`, and the desktop /
+    init paths. Per-agent pricing blocks are injected from the canonical
+    :data:`agentshore.agents.pricing.AGENT_PRICING` source so the defaults
+    cannot drift from the config parser; the CLI's minimal/parameterised
+    generator (:func:`agentshore.cli_helpers._generate_default_config`) shares
+    the same per-agent block renderer.
+
+    NOTE: this canonical template intentionally curates ``claude_code`` and
+    ``codex`` down to ``small``/``medium`` tiers (no ``large``), which is why it
+    is rendered from a curated string rather than blindly from
+    ``default_model_tiers_for`` (that map also defines a ``large`` tier for both).
+    """
+    from agentshore.agents.pricing import pricing_yaml_lines
+
+    text = _DEFAULT_YAML_TEMPLATE.replace(
+        "$STANDARD_PLAY_COOLDOWN_PLAYS", str(STANDARD_PLAY_COOLDOWN_PLAYS)
+    )
+    for agent_key in ("claude_code", "codex", "gemini", "grok"):
+        block = "\n".join(pricing_yaml_lines(agent_key))
+        text = text.replace(f"$PRICING_{agent_key}", block)
+    return text
+
+
+def _build_default_yaml() -> str:
+    """Backward-compatible alias for :func:`render_config_yaml`."""
+    return render_config_yaml()
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +361,7 @@ def load_config(path: Path | None = None) -> RuntimeConfig:
     project config files.
     """
     if path is None or not path.exists():
-        return _build_config(cast("_RawConfig", yaml.safe_load(_DEFAULT_YAML)))
+        return _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -362,5 +383,5 @@ def generate_default_config(project_path: Path) -> Path:
     """Write a default ``agentshore.yaml`` into *project_path* and return its path."""
     project_path.mkdir(parents=True, exist_ok=True)
     config_path = project_path / "agentshore.yaml"
-    config_path.write_text(_DEFAULT_YAML, encoding="utf-8")
+    config_path.write_text(_build_default_yaml(), encoding="utf-8")
     return config_path

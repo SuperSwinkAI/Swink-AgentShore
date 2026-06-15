@@ -9,12 +9,12 @@ same issue every tick, spamming comments and burning budget with no progress.
 
 from __future__ import annotations
 
-import collections
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agentshore.core.mixins.completion import CompletionProcessor
+from agentshore.core.session_runtime import SessionRuntime
 from agentshore.github.labels import NEEDS_HUMAN_LABEL
 from agentshore.plays.base import PlayParams
 from agentshore.state import PlayOutcome, PlayType
@@ -28,7 +28,7 @@ class _Harness(CompletionProcessor):
         self._store = AsyncMock()
         self._executor = MagicMock()
         self._executor._github = AsyncMock()
-        self._recent_applied_labels: collections.deque = collections.deque()
+        self._runtime = SessionRuntime()
         self._host = self
 
     async def _safe_call(self, coro: object, label: str) -> None:
@@ -67,7 +67,7 @@ async def test_unplannable_failure_parks_issue() -> None:
 
     h._store.add_issue_labels.assert_awaited_once_with(458, "s1", [NEEDS_HUMAN_LABEL])
     h._executor._github.label_issue.assert_awaited_once()
-    assert (458, NEEDS_HUMAN_LABEL) in h._recent_applied_labels
+    assert (458, NEEDS_HUMAN_LABEL) in h._runtime.recent_applied_labels
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,7 @@ async def test_successful_plan_does_not_park() -> None:
         PlayType.WRITE_IMPLEMENTATION_PLAN,
     )
     h._store.add_issue_labels.assert_not_awaited()
-    assert not h._recent_applied_labels
+    assert not h._runtime.recent_applied_labels
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_transient_failure_does_not_park() -> None:
         PlayType.WRITE_IMPLEMENTATION_PLAN,
     )
     h._store.add_issue_labels.assert_not_awaited()
-    assert not h._recent_applied_labels
+    assert not h._runtime.recent_applied_labels
 
 
 @pytest.mark.asyncio
@@ -115,4 +115,4 @@ async def test_other_play_type_does_not_park() -> None:
         PlayType.ISSUE_PICKUP,
     )
     h._store.add_issue_labels.assert_not_awaited()
-    assert not h._recent_applied_labels
+    assert not h._runtime.recent_applied_labels

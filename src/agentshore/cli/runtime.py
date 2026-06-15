@@ -16,14 +16,18 @@ from agentshore.cli.helpers import (
     _track_background_task,
 )
 from agentshore.config.models import PolicyMode, RunMode
+from agentshore.errors import OrchestratorError
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
     from agentshore.config.models import BudgetConfig
     from agentshore.core import Orchestrator
     from agentshore.ipc import IpcServer
+
+    CommandHandler = Callable[[dict[str, object], Orchestrator, IpcServer | None], Awaitable[None]]
 
 _logger = structlog.get_logger("agentshore.cli")
 
@@ -88,6 +92,184 @@ def _wait_for_ipc_endpoint_ready(endpoint: object, proc: Any, log_file: Path) ->
     return False
 
 
+async def _handle_pause(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.pause("ipc_request")
+
+
+async def _handle_resume(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.resume()
+
+
+async def _handle_shutdown(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.stop()
+
+
+async def _handle_drain(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    reason = str(cmd.get("reason", "user_request"))
+    if cmd.get("end_session_report") is True:
+        orch.request_end_session_report(open_browser=cmd.get("open_report") is not False)
+    await orch.begin_drain(reason)
+
+
+async def _handle_hard_stop(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.hard_stop()
+
+
+def _coerce_budget_delta(raw: object, *, kind: str) -> float | None:
+    """Coerce an add_budget delta to a number, logging and dropping bad values."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    if raw is not None:
+        _logger.warning(f"ipc.add_budget_invalid_{kind}", **{f"delta_{kind}": raw})
+    return None
+
+
+async def _handle_add_budget(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    reply_id = cmd.get("_reply_id")
+    delta_usd = _coerce_budget_delta(cmd.get("delta_usd"), kind="usd")
+    delta_minutes_f = _coerce_budget_delta(cmd.get("delta_minutes"), kind="minutes")
+    delta_minutes = int(delta_minutes_f) if delta_minutes_f is not None else None
+    if delta_usd is None and delta_minutes is None:
+        _logger.warning("ipc.add_budget_no_delta")
+        if isinstance(reply_id, str) and server is not None:
+            server.post_reply(reply_id, OrchestratorError("add_budget requires a positive delta"))
+        return
+    try:
+        applied = await orch.add_budget(delta_usd=delta_usd, delta_minutes=delta_minutes)
+    except OrchestratorError as exc:
+        _logger.warning("ipc.add_budget_rejected", error=str(exc))
+        if isinstance(reply_id, str) and server is not None:
+            server.post_reply(reply_id, exc)
+        return
+    if isinstance(reply_id, str) and server is not None:
+        server.post_reply(reply_id, applied)
+
+
+async def _handle_rescan_issues(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.refresh_issues()
+
+
+async def _handle_feedback_response(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    action = cmd.get("action")
+    if action == "continue":
+        # Dashboard feedback modal Continue button: clear the loop_detected /
+        # verification pause and let PPO pick the next play. Was previously a
+        # no-op (logged "obsolete") so users would click Continue and see no
+        # effect.
+        await orch.resume()
+    elif action == "pause":
+        # Pause is the modal's default state once feedback fires; an explicit
+        # Pause click is informational only.
+        _logger.info("ipc.feedback_response_pause_acknowledged")
+    elif action in {"stop", "end_session", "drain"}:
+        await orch.begin_drain("user_request")
+    elif action == "rescan_issues":
+        await orch.refresh_issues()
+        await orch.resume()
+
+
+async def _handle_abort_play(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    # Cancel all in-flight play tasks. The orchestrator loop will pick up new
+    # work on the next iteration.
+    _logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
+    await orch.abort_in_flight()
+
+
+async def _handle_verification_response(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    # A human has responded to a verification_checkpoint. If the checkpoint
+    # passed, resume the paused orchestrator; otherwise keep it paused and log
+    # the failure so the operator can decide what to do next.
+    passed = cmd.get("passed")
+    checkpoint_id = cmd.get("checkpoint_id")
+    notes = cmd.get("notes")
+    if passed:
+        _logger.info("ipc.verification_response_passed", checkpoint_id=checkpoint_id, notes=notes)
+        await orch.resume()
+    else:
+        _logger.warning(
+            "ipc.verification_response_failed",
+            checkpoint_id=checkpoint_id,
+            notes=notes,
+            message="Verification checkpoint failed; orchestrator remains paused",
+        )
+
+
+async def _handle_generate_report(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    report_type = str(cmd.get("report_type", "summary"))
+    await orch.generate_report(report_type)
+
+
+async def _handle_archive_session(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.archive_session()
+
+
+async def _handle_list_archives(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    archives = await orch.list_archives()
+    _logger.info("ipc.archives_listed", count=len(archives))
+
+
+async def _handle_reload_config(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    await orch.reload_config()
+
+
+async def _handle_start_noop(
+    cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
+) -> None:
+    # "start" is accepted by the validator (so connecting clients can send it)
+    # but is a no-op at dispatch time — the orchestrator is already running by
+    # the time IPC commands are processed.
+    _logger.info("ipc.start_received_noop", message="Orchestrator already running")
+
+
+# Command name → handler. Every validated command must have an entry; unknown
+# commands fall through to a no-op (the validator gates the wire, not this table).
+_COMMAND_HANDLERS: dict[str, CommandHandler] = {
+    "pause": _handle_pause,
+    "resume": _handle_resume,
+    "shutdown": _handle_shutdown,
+    "drain": _handle_drain,
+    "hard_stop": _handle_hard_stop,
+    "add_budget": _handle_add_budget,
+    "rescan_issues": _handle_rescan_issues,
+    "feedback_response": _handle_feedback_response,
+    "abort_play": _handle_abort_play,
+    "verification_response": _handle_verification_response,
+    "generate_report": _handle_generate_report,
+    "archive_session": _handle_archive_session,
+    "list_archives": _handle_list_archives,
+    "reload_config": _handle_reload_config,
+    "start": _handle_start_noop,
+}
+
+
 async def _dispatch_command(
     cmd: dict[str, object],
     orch: Orchestrator,
@@ -95,122 +277,18 @@ async def _dispatch_command(
 ) -> None:
     """Dispatch a single IPC command dict to the orchestrator.
 
-    Every validated command must have a handler here.  Commands without a full
-    backend implementation return an explicit ``not_implemented`` log entry rather
-    than silently doing nothing.
+    Every validated command must have a handler in :data:`_COMMAND_HANDLERS`.
+    Commands without a full backend implementation return an explicit
+    ``not_implemented`` log entry rather than silently doing nothing.
 
     *server* is the :class:`~agentshore.ipc.IpcServer` instance, required for
     ``add_budget`` replies.  When ``None`` (e.g. in tests that don't use a real
     server) the reply is silently dropped.
     """
     command = cmd.get("command")
-    if command == "pause":
-        await orch.pause("ipc_request")
-    elif command == "resume":
-        await orch.resume()
-    elif command == "shutdown":
-        await orch.stop()
-    elif command == "drain":
-        reason = str(cmd.get("reason", "user_request"))
-        if cmd.get("end_session_report") is True:
-            orch.request_end_session_report(open_browser=cmd.get("open_report") is not False)
-        await orch.begin_drain(reason)
-    elif command == "hard_stop":
-        await orch.hard_stop()
-    elif command == "add_budget":
-        reply_id = cmd.get("_reply_id")
-        delta_usd_raw = cmd.get("delta_usd")
-        delta_minutes_raw = cmd.get("delta_minutes")
-        delta_usd: float | None = None
-        delta_minutes: int | None = None
-        if isinstance(delta_usd_raw, (int, float)) and not isinstance(delta_usd_raw, bool):
-            delta_usd = float(delta_usd_raw)
-        elif delta_usd_raw is not None:
-            _logger.warning("ipc.add_budget_invalid_usd", delta_usd=delta_usd_raw)
-        if isinstance(delta_minutes_raw, (int, float)) and not isinstance(delta_minutes_raw, bool):
-            delta_minutes = int(delta_minutes_raw)
-        elif delta_minutes_raw is not None:
-            _logger.warning("ipc.add_budget_invalid_minutes", delta_minutes=delta_minutes_raw)
-        if delta_usd is None and delta_minutes is None:
-            _logger.warning("ipc.add_budget_no_delta")
-            if isinstance(reply_id, str) and server is not None:
-                from agentshore.errors import OrchestratorError
-
-                server.post_reply(
-                    reply_id, OrchestratorError("add_budget requires a positive delta")
-                )
-            return
-        from agentshore.errors import OrchestratorError
-
-        try:
-            applied = await orch.add_budget(delta_usd=delta_usd, delta_minutes=delta_minutes)
-        except OrchestratorError as exc:
-            _logger.warning("ipc.add_budget_rejected", error=str(exc))
-            if isinstance(reply_id, str) and server is not None:
-                server.post_reply(reply_id, exc)
-            return
-        if isinstance(reply_id, str) and server is not None:
-            server.post_reply(reply_id, applied)
-    elif command == "rescan_issues":
-        await orch.refresh_issues()
-    elif command == "feedback_response":
-        action = cmd.get("action")
-        if action == "continue":
-            # Dashboard feedback modal Continue button: clear the
-            # loop_detected / verification pause and let PPO pick the next
-            # play. Was previously a no-op (logged "obsolete") so users would
-            # click Continue and see no effect.
-            await orch.resume()
-        elif action == "pause":
-            # Pause is the modal's default state once feedback fires; an
-            # explicit Pause click is informational only.
-            _logger.info("ipc.feedback_response_pause_acknowledged")
-        elif action in {"stop", "end_session", "drain"}:
-            await orch.begin_drain("user_request")
-        elif action == "rescan_issues":
-            await orch.refresh_issues()
-            await orch.resume()
-    elif command == "abort_play":
-        # Cancel all in-flight play tasks.  The orchestrator loop will pick up
-        # new work on the next iteration.
-        _logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
-        await orch.abort_in_flight()
-    elif command == "verification_response":
-        # A human has responded to a verification_checkpoint.  If the checkpoint
-        # passed, resume the paused orchestrator; otherwise keep it paused and log
-        # the failure so the operator can decide what to do next.
-        passed = cmd.get("passed")
-        checkpoint_id = cmd.get("checkpoint_id")
-        notes = cmd.get("notes")
-        if passed:
-            _logger.info(
-                "ipc.verification_response_passed",
-                checkpoint_id=checkpoint_id,
-                notes=notes,
-            )
-            await orch.resume()
-        else:
-            _logger.warning(
-                "ipc.verification_response_failed",
-                checkpoint_id=checkpoint_id,
-                notes=notes,
-                message="Verification checkpoint failed; orchestrator remains paused",
-            )
-    elif command == "generate_report":
-        report_type = str(cmd.get("report_type", "summary"))
-        await orch.generate_report(report_type)
-    elif command == "archive_session":
-        await orch.archive_session()
-    elif command == "list_archives":
-        archives = await orch.list_archives()
-        _logger.info("ipc.archives_listed", count=len(archives))
-    # "start" is accepted by the validator (so connecting clients can send it)
-    # but is a no-op at dispatch time — the orchestrator is already running by
-    # the time IPC commands are processed.
-    elif command == "reload_config":
-        await orch.reload_config()
-    elif command == "start":
-        _logger.info("ipc.start_received_noop", message="Orchestrator already running")
+    handler = _COMMAND_HANDLERS.get(command) if isinstance(command, str) else None
+    if handler is not None:
+        await handler(cmd, orch, server)
 
 
 def _launch_dashboard_background(

@@ -9,25 +9,15 @@ sequencing gate holds until the awaited play has completed.
 
 from __future__ import annotations
 
-import asyncio
-import collections
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentshore.config import RuntimeConfig
-from agentshore.core.main_repo_guard import MainRepoGuard
-from agentshore.core.mixins.dispatch import Dispatcher
-from agentshore.core.override_queue import OverrideQueue
-from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import MaskClassification
 from agentshore.state import (
-    NullStateProvider,
     OrchestratorState,
     PlayType,
     SessionState,
@@ -36,61 +26,10 @@ from agentshore.state import (
 
 def _make_orch(tmp_path: Path) -> Any:
     """Mirror of the canonical orchestrator stub used elsewhere in the suite."""
-    from agentshore.core import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
-    mock_store = AsyncMock()
-    mock_store.update_session_state = AsyncMock()
-    mock_selector = MagicMock()
-    mock_selector.__class__.__name__ = "MockSelector"
-
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = RuntimeConfig()
-    orch._repo_root = tmp_path
-    orch._session_id = "test-session"
-    orch._store = mock_store
-    orch._manager = MagicMock()
-    orch._manager.worktrees = SimpleNamespace(main_repo=tmp_path)
-    orch._executor = MagicMock()
-    orch._selector = mock_selector
-    orch._state_provider = NullStateProvider()
-    orch._stop_requested = False
-    orch._draining = False
-    orch._exit_stack = MagicMock()
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
-    orch.context_pressure_hints = {}
-    orch._seed_path = None
-    orch._step_index = 0
-    orch._policy_version = "test"
-    orch._config_hash = "abc"
-    orch._metrics = None
-    orch._overrides = OverrideQueue()
-    orch._loop_started_at = 0.0
+    orch = make_test_orchestrator(tmp_path)
     orch._registry = None
-    orch._pause_event = asyncio.Event()
-    orch._pause_event.set()
-    orch._feedback_cadence_plays_since_ack = 0
-    orch._feedback_cadence_last_ack_monotonic = 0.0
-    orch._velocity = VelocityTracker(velocity_window_size=50)
-    orch._recent_play_outcomes = collections.deque(maxlen=50)
-    orch._recent_play_completions = collections.deque(maxlen=64)
-    orch._recent_applied_labels = collections.deque(maxlen=64)
-    orch._main_repo = MainRepoGuard()
-    orch._dispatcher = Dispatcher(
-        host=orch,
-        store=mock_store,
-        manager=orch._manager,
-        executor=orch._executor,
-        session_id=orch._session_id,
-        repo_root=tmp_path,
-        main_repo=orch._main_repo,
-        overrides=orch._overrides,
-        state_builder=MagicMock(),
-        completion=MagicMock(),
-    )
     return orch
 
 

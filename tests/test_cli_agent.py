@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import tempfile
@@ -20,6 +21,8 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
+    _StderrSniffer,
+    _watch_stderr_auth,
     build_argv,
     dispatch_cli,
 )
@@ -630,6 +633,65 @@ async def test_dispatch_cli_pins_noninteractive_git_editor(
     assert env["GIT_SEQUENCE_EDITOR"] == "true"
     if identity_env is not None:
         assert env["GH_TOKEN"] == "tok"
+
+
+async def test_dispatch_cli_injects_per_identity_git_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the agent's identity carries a token, the dispatched env hardens git
+    (``GIT_TERMINAL_PROMPT=0`` — so a credential prompt fails fast instead of
+    hanging the full wall-clock, #177) AND injects the token as an HTTPS
+    Basic-auth header so the agent's own ``git push`` authenticates AS ITS OWN
+    identity, non-interactively. Multi-identity-safe: the header is derived from
+    *this* subprocess's token."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_kwargs.append(kwargs)
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, identity_env={"GH_TOKEN": "tok-xyz"})
+
+    assert result.exit_code == 0
+    env = captured_kwargs[0]["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    count = int(env["GIT_CONFIG_COUNT"])
+    values = [env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)]
+    expected = base64.b64encode(b"x-access-token:tok-xyz").decode("ascii")
+    assert f"Authorization: Basic {expected}" in values
+
+
+async def test_dispatch_cli_hardens_git_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no identity token the env is still hardened (no hang) but injects no
+    auth header — nothing to authenticate with, so no GIT_CONFIG auth trio."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured_kwargs.append(kwargs)
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, identity_env=None)
+
+    assert result.exit_code == 0
+    env = captured_kwargs[0]["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_CONFIG_COUNT" not in env
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="prompt-on-stdin is Windows-only")
@@ -1544,6 +1606,31 @@ def test_classify_error_github_repo_access_as_auth() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR failed to renew cache TTL",
+        "warn: failed to refresh available models, retrying",
+    ],
+)
+def test_classify_error_codex_backend_ttl_expiry_on_stderr_is_auth(stderr: str) -> None:
+    """Codex backend session-token expiry markers on stderr classify as AUTH."""
+    assert _classify_error(1, stderr, "") is ErrorClass.AUTH
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "failed to renew cache ttl",
+        "failed to refresh available models",
+    ],
+)
+def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: str) -> None:
+    """The TTL markers are stderr-only: the same strings in an agent's stdout
+    work product must NOT trigger AUTH (they are not in _AUTH_STDOUT)."""
+    assert _classify_error(1, "", stdout) is not ErrorClass.AUTH
+
+
 def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
 
@@ -1644,6 +1731,101 @@ def test_classify_error_empty_both() -> None:
     assert _classify_error(1, "", "") == "unknown"
 
 
+# ---------------------------------------------------------------------------
+# stderr auth-sniffer (#zeke auth-hang): a backend session-token expiry that
+# hangs the process on stdin must be killed as AUTH in well under the idle
+# timeout, not after the full stream_idle_timeout as TIMEOUT_STREAM_IDLE.
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_sniffer_feed_flags_auth_tail() -> None:
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("starting up\n") is False
+    # First auth marker flips the flag and returns True exactly once.
+    assert sniffer.feed("ERROR failed to renew cache TTL\n") is True
+    assert sniffer.auth_hit is True
+    # Subsequent feeds (even more markers) do not re-fire.
+    assert sniffer.feed("failed to refresh available models\n") is False
+
+
+def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("INFO booting model\nINFO ready\n") is False
+    assert sniffer.auth_hit is False
+    assert "booting model" in sniffer.captured
+
+
+def test_stderr_sniffer_tail_is_bounded() -> None:
+    # The tail never grows unbounded regardless of how much stderr is fed, and
+    # a marker landing within the live window is still caught.
+    sniffer = _StderrSniffer(tail_window=64)
+    assert sniffer.feed("x" * 4096) is False  # no marker, far exceeds the window
+    assert len(sniffer.tail) <= 64
+    # Marker landing now (fits the 64-byte window) is still caught.
+    assert sniffer.feed("failed to renew cache ttl") is True
+
+
+class _FakeStderr:
+    """Minimal async-iterable stand-in for ``proc.stderr`` (a StreamReader)."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __aiter__(self) -> _FakeStderr:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._lines:
+            raise StopAsyncIteration
+        await asyncio.sleep(0)
+        return self._lines.pop(0)
+
+
+class _FakeProc:
+    def __init__(self, stderr_lines: list[bytes]) -> None:
+        self.stderr = _FakeStderr(stderr_lines)
+
+
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_aborts_fast_with_auth_class() -> None:
+    """The watcher raises PlayTimeoutError(AUTH) as soon as a marker lands —
+    in well under a second, never the multi-minute idle window."""
+    proc = _FakeProc([b"booting\n", b"failed to renew cache TTL\n", b"more\n"])
+    sniffer = _StderrSniffer()
+    with pytest.raises(PlayTimeoutError) as excinfo:
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=2.0,
+        )
+    assert excinfo.value.error_class is ErrorClass.AUTH
+    assert sniffer.auth_hit is True
+
+
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_sleeps_on_clean_eof() -> None:
+    """With no auth marker the watcher drains stderr then yields indefinitely
+    (it loses the read/idle race rather than completing)."""
+    proc = _FakeProc([b"INFO ok\n", b"INFO done\n"])
+    sniffer = _StderrSniffer()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=0.2,
+        )
+    assert sniffer.auth_hit is False
+    assert "done" in sniffer.captured
+
+
 def test_classify_error_sigkill_is_crash_not_unknown() -> None:
     """SIGKILL (-9, e.g. OS OOM kill) must be a crash, not the rate-limit-eligible
     'unknown' bucket (#7 â€” the mass -9 burst was misclassified as rate_limit)."""
@@ -1654,6 +1836,13 @@ def test_classify_error_sigkill_is_crash_not_unknown() -> None:
 def test_classify_error_oom_signature() -> None:
     assert _classify_error(-9, "", "fatal: Out of memory") == "crash_oom"
     assert _classify_error(1, "Cannot allocate memory", "") == "crash_oom"
+
+
+def test_classify_error_enospc_signature() -> None:
+    """Host disk-full surfaced by the agent is an environment condition (#180)."""
+    assert _classify_error(1, "fatal: write error: No space left on device", "") == "crash_enospc"
+    assert _classify_error(1, "", "error: ENOSPC: no space left") == "crash_enospc"
+    assert _classify_error(1, "OSError: [Errno 28] No space left on device", "") == "crash_enospc"
 
 
 def test_classify_error_graceful_signals_stay_unknown() -> None:
@@ -1995,3 +2184,195 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     msg = str(excinfo.value)
     assert "never produced any stdout" in msg
     assert "agent-silent" in msg
+
+
+# ---------------------------------------------------------------------------
+# #176 — missing dispatch cwd (reclaimed worktree) maps to a recoverable error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_missing_cwd_raises_recoverable_not_filenotfound(
+    tmp_path: Path,
+) -> None:
+    """A dispatch whose cwd was reclaimed (TOCTOU) raises AgentProcessCrashed.
+
+    Regression for #176: a missing worktree cwd previously surfaced as a raw
+    ``FileNotFoundError`` (an OSError) from ``create_subprocess_exec``, which the
+    play executor's recoverable catch tuple does not match — so it logged
+    ``unexpected_play_error`` (category ``code_error``). It must instead map to
+    the typed, recoverable ``AgentProcessCrashed`` so the play fails cleanly.
+    """
+    from agentshore.errors import AgentProcessCrashed
+
+    missing = tmp_path / "worktrees" / "pickup-159"  # never created
+    assert not missing.exists()
+
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    with pytest.raises(AgentProcessCrashed) as exc_info:
+        await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=missing)
+
+    # Must NOT be a bare FileNotFoundError leaking through.
+    assert not isinstance(exc_info.value, FileNotFoundError)
+    assert "no longer exists" in str(exc_info.value)
+    assert str(missing) in str(exc_info.value)
+    assert handle.process is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_cwd_is_file_raises_recoverable(tmp_path: Path) -> None:
+    """A cwd that exists but is a file (not a dir) is also recoverable, not raw."""
+    from agentshore.errors import AgentProcessCrashed
+
+    not_a_dir = tmp_path / "cwd_is_a_file"
+    not_a_dir.write_text("x", encoding="utf-8")
+
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    with pytest.raises(AgentProcessCrashed):
+        await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=not_a_dir)
+
+
+# ---------------------------------------------------------------------------
+# #177 — launch-to-first-byte watchdog + stream_idle clamp
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watch_first_byte_kills_silent_launch() -> None:
+    """A child that never produces a first byte is killed at the short deadline."""
+    import time
+
+    from agentshore.agents.cli_agent import _StdoutActivity, _watch_first_byte
+    from agentshore.errors import ErrorClass, PlayTimeoutError
+
+    activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    assert activity.received_any is False
+
+    with pytest.raises(PlayTimeoutError) as excinfo:
+        await _watch_first_byte(
+            activity,
+            deadline=0.05,  # tiny — fires fast
+            agent_id="agent-wedged",
+            agent_type="codex",
+            model_tier="medium",
+            prompt_bytes=1234,
+        )
+    msg = str(excinfo.value)
+    assert "never produced first byte" in msg
+    assert "launch wedge" in msg
+    assert "agent-wedged" in msg
+    assert "codex/medium" in msg
+    assert excinfo.value.error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+
+
+@pytest.mark.asyncio
+async def test_watch_first_byte_hands_off_after_first_byte() -> None:
+    """Once a byte arrives, the first-byte watchdog must NOT fire (idle owns it)."""
+    import time
+
+    from agentshore.agents.cli_agent import _StdoutActivity, _watch_first_byte
+
+    activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    activity.mark()  # first byte arrived
+    assert activity.received_any is True
+
+    # With a byte already received it parks indefinitely; a short wait must time
+    # out (i.e. the watchdog did NOT raise its launch-wedge error).
+    task = asyncio.create_task(_watch_first_byte(activity, deadline=0.02, agent_id="agent-live"))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_first_byte_watchdog_caps_silent_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a silent child is killed at ~first-byte bound, not wall-clock.
+
+    Regression for #177: the wall-clock timeout is large (5s) but the child never
+    emits a byte, so the first-byte watchdog (patched tiny) must fire well before
+    the wall-clock deadline.
+    """
+    import time
+
+    import agentshore.agents.cli_agent as ca
+    from agentshore.errors import ErrorClass, PlayTimeoutError
+
+    # Child sleeps long without ever writing to stdout.
+    script = tmp_path / "silent_launch.py"
+    script.write_text("import time\ntime.sleep(10)\n", encoding="utf-8")
+
+    # Tiny first-byte deadline; generous wall-clock + stream-idle so neither of
+    # those fires first.
+    monkeypatch.setattr(ca, "_FIRST_BYTE_DEADLINE_S", 0.1)
+    cfg = AgentConfig(
+        enabled=True,
+        binary=str(script),
+        timeout=5,
+        stream_idle_timeout=5,
+    )
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    t0 = time.monotonic()
+    with pytest.raises(PlayTimeoutError) as exc_info:
+        await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
+    elapsed = time.monotonic() - t0
+
+    assert "never produced first byte" in str(exc_info.value)
+    assert exc_info.value.error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+    # Fired at the first-byte bound, nowhere near the 5s wall-clock.
+    assert elapsed < 2.0
+    assert handle.process is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stream_idle_timeout larger than the wall-clock timeout is clamped down.
+
+    Guards against a misconfig disabling early silence detection: with the clamp,
+    a silent child still gets killed via the idle watcher at the (clamped) bound
+    rather than only at the wall-clock force-kill.
+    """
+    import agentshore.agents.cli_agent as ca
+
+    # Disable the first-byte watchdog so this test exercises the idle clamp alone.
+    monkeypatch.setattr(ca, "_FIRST_BYTE_DEADLINE_S", 10_000.0)
+
+    captured: dict[str, float] = {}
+    real_await = ca._await_output_or_timeout
+
+    async def spy_await(*args: Any, **kwargs: Any) -> Any:
+        captured["stream_idle_timeout"] = kwargs["stream_idle_timeout"]
+        return await real_await(*args, **kwargs)
+
+    monkeypatch.setattr(ca, "_await_output_or_timeout", spy_await)
+
+    script = tmp_path / "quick.py"
+    script.write_text(
+        "import json,sys\n"
+        "sys.stdout.write(json.dumps({'type':'turn.completed',"
+        "'usage':{'input_tokens':1,'output_tokens':1}})+'\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    # stream_idle_timeout (100) deliberately exceeds the wall-clock timeout (2).
+    cfg = AgentConfig(
+        enabled=True,
+        binary=str(script),
+        timeout=2,
+        stream_idle_timeout=100,
+    )
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
+
+    # Clamped to the wall-clock timeout (2.0), not the configured 100.
+    assert captured["stream_idle_timeout"] == 2.0

@@ -27,41 +27,40 @@ def _make_orchestrator() -> Orchestrator:
     """Construct an Orchestrator skeleton with only the attrs _refresh_issues
     touches. Full bootstrap requires DB + manager + executor scaffolding;
     we don't need any of that for this isolated test."""
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._session_id = "s1"
-    orch._cfg = RuntimeConfig(trusted_ids=TrustedIdsConfig(github_logins=("trusted",)))
-    orch._store = MagicMock()
-    orch._store.cache_github_issues = AsyncMock()
-    orch._store.cache_pull_requests = AsyncMock()
-    orch._store.list_open_pull_requests = AsyncMock(return_value=[])
-    orch._store.get_open_issues = AsyncMock(return_value=[])
-    orch._store.update_issue_state = AsyncMock()
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    cfg = RuntimeConfig(trusted_ids=TrustedIdsConfig(github_logins=("trusted",)))
+    store = MagicMock()
+    store.cache_github_issues = AsyncMock()
+    store.cache_pull_requests = AsyncMock()
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.get_open_issues = AsyncMock(return_value=[])
+    store.update_issue_state = AsyncMock()
     # desktop-rla8: incremental-sync cursor; None triggers a full sweep so
     # existing tests exercise the same code path that ran pre-pagination.
-    orch._store.get_last_issue_sync_at = AsyncMock(return_value=None)
-    orch._store.set_last_issue_sync_at = AsyncMock()
-    orch._repo_root = Path(".")
-    orch._worktrees = None
-    orch._last_refresh_time = 0.0
-    # refresh_issues lives on the CompletionProcessor component now; build one
-    # that reads _cfg/_worktrees/_last_refresh_time off this orch (the host) and
-    # holds store/session_id/repo_root as its constructor deps. The remaining
-    # constructor deps are unused by refresh_issues, so MagicMocks suffice.
+    store.get_last_issue_sync_at = AsyncMock(return_value=None)
+    store.set_last_issue_sync_at = AsyncMock()
+
+    orch = make_test_orchestrator(Path("."), cfg, store=store)
+    # This file targets the real refresh_issues; rebuild _completion with
+    # session_id "s1" (assertions match on it) and the un-stubbed method.
+    orch._session_id = "s1"
     orch._completion = CompletionProcessor(
         host=orch,
-        store=orch._store,
-        manager=MagicMock(),
-        executor=MagicMock(),
+        runtime=orch._runtime,
+        store=store,
+        manager=orch._manager,
+        executor=orch._executor,
         session_id=orch._session_id,
         repo_root=orch._repo_root,
-        main_repo=MagicMock(),
-        velocity=MagicMock(),
-        recovery=MagicMock(),
-        overrides=MagicMock(),
-        snapshots=MagicMock(),
-        state_builder=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
+        main_repo=orch._main_repo,
+        velocity=orch._velocity,
+        recovery=orch._recovery,
+        overrides=orch._overrides,
+        snapshots=orch._snapshots,
+        state_builder=orch._state_builder,
+        lifecycle=orch._lifecycle,
+        drain=orch._drain,
     )
     return orch
 

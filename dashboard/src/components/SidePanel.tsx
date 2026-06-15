@@ -5,6 +5,7 @@ import type {
   PlayEvent,
   StateUpdate,
 } from "../types";
+import { makeActivePlay } from "../types";
 import {
   formatAgentClass,
   formatPlayType,
@@ -59,14 +60,21 @@ function reducer(
       if (!action.event.agent_id) return state;
       const nextMap = new Map(state.eventCurrentPlay);
       if (action.event.status === "started") {
-        nextMap.set(action.event.agent_id, {
-          play_type: action.event.play_type,
-          play_id: action.event.play_id ?? null,
-          started_at: action.event.started_at ?? null,
-          issue_number: action.event.issue_number ?? null,
-          pr_number: action.event.pr_number ?? null,
-          branch: action.event.branch ?? null,
-        });
+        nextMap.set(
+          action.event.agent_id,
+          makeActivePlay({
+            play_type: action.event.play_type,
+            agent_id: action.event.agent_id,
+            play_id: action.event.play_id,
+            started_at: action.event.started_at,
+            issue_number: action.event.issue_number,
+            pr_number: action.event.pr_number,
+            branch: action.event.branch,
+            trigger_agent_id: action.event.trigger_agent_id,
+            trigger_agent_type: action.event.trigger_agent_type,
+            trigger_error_class: action.event.trigger_error_class,
+          }),
+        );
       } else {
         nextMap.delete(action.event.agent_id);
       }
@@ -144,14 +152,15 @@ function currentPlayForAgent(
   const eventPlay = state.eventCurrentPlay.get(agent.agent_id);
   if (eventPlay) return eventPlay;
   if (state.activePlay?.agent_id === agent.agent_id) {
-    return {
+    return makeActivePlay({
       play_type: state.activePlay.play_type,
-      play_id: state.activePlay.play_id ?? null,
-      started_at: state.activePlay.started_at ?? null,
-      issue_number: state.activePlay.issue_number ?? null,
-      pr_number: state.activePlay.pr_number ?? null,
-      branch: state.activePlay.branch ?? null,
-    };
+      agent_id: state.activePlay.agent_id,
+      play_id: state.activePlay.play_id,
+      started_at: state.activePlay.started_at,
+      issue_number: state.activePlay.issue_number,
+      pr_number: state.activePlay.pr_number,
+      branch: state.activePlay.branch,
+    });
   }
   return null;
 }

@@ -219,10 +219,7 @@ def select_agent_for(
         # wins. Soft, not a hard filter — if every IDLE candidate is broken we
         # still pick one rather than wedge (the play-availability gate already
         # masks the play when no healthy capable agent exists).
-        # getattr-guarded so minimal handle stubs in tests (which omit
-        # task_history/timeout_count) still sort — mirrors the defensive reads
-        # elsewhere in the selection/snapshot path.
-        task_history = getattr(h, "task_history", None) or []
+        task_history = h.task_history
         successes = sum(1 for t in task_history if t.success)
         failures = len(task_history) - successes
         circuit_broken_score = (
@@ -230,8 +227,8 @@ def select_agent_for(
             if is_agent_circuit_broken(
                 tasks_completed=successes,
                 tasks_failed=failures,
-                timeout_count=int(getattr(h, "timeout_count", 0) or 0),
-                consecutive_timeouts=int(getattr(h, "consecutive_timeouts", 0) or 0),
+                timeout_count=h.timeout_count,
+                consecutive_timeouts=h.consecutive_timeouts,
             )
             else 0
         )

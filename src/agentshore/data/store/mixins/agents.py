@@ -4,23 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_agent_record, _row_to_handoff_record
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import AgentRecord, HandoffRecord
 
 
-class _AgentsMixin:
+class _AgentsMixin(_DataStoreBase):
     """Methods that operate on the ``agents`` and ``agent_handoffs`` tables."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
-
-    if TYPE_CHECKING:
-        # Provided by _DataStoreBase; visible to mypy via the MRO at runtime.
-        async def _insert(self, table: str, **cols: object) -> int: ...
 
     async def register_agent(self, agent: AgentRecord) -> None:
         """Insert a new agent row."""

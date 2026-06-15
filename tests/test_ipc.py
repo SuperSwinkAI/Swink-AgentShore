@@ -85,7 +85,12 @@ async def test_play_completion_emits_agent_idle(tmp_path: Path) -> None:
     orch._state_provider = state_provider
 
     # Pretend "agent-1" is currently registered with the agent manager.
-    orch._manager.handles["agent-1"] = MagicMock()
+    # Pin the circuit-breaker counters to real ints — build_state copies these
+    # onto the AgentSnapshot, and the eligibility reaper compares them with >=.
+    handle = MagicMock()
+    handle.timeout_count = 0
+    handle.consecutive_timeouts = 0
+    orch._manager.handles["agent-1"] = handle
 
     async with orch:
         await _drive_completion(orch, _outcome(agent_id="agent-1"))

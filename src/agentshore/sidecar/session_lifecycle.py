@@ -1,14 +1,15 @@
 """Real ``session.start`` preparation sequence.
 
-DESIGN §10.2 specifies six canonical bringup phases that the desktop
+DESIGN §10.2 specifies seven canonical bringup phases that the desktop
 Screen 8 checklist mirrors:
 
 1. ``config_merge`` — load ``agentshore.yaml`` for the active project.
-2. ``install_skills`` — ensure project-level skill templates are current.
-3. ``init_beads`` — ensure the beads graph is initialised.
-4. ``bind_ipc`` — reserve a TCP loopback endpoint for the orchestrator.
-5. ``start_bridge`` — boot the WebSocket dashboard bridge.
-6. ``first_snapshot`` — wait until state can flow to the dashboard.
+2. ``check_agent_auth`` — probe each configured CLI agent's backend auth.
+3. ``install_skills`` — ensure project-level skill templates are current.
+4. ``init_beads`` — ensure the beads graph is initialised.
+5. ``bind_ipc`` — reserve a TCP loopback endpoint for the orchestrator.
+6. ``start_bridge`` — boot the WebSocket dashboard bridge.
+7. ``first_snapshot`` — wait until state can flow to the dashboard.
 
 Each phase emits a ``running`` ``$/progress`` notification, runs its work,
 then emits an ``ok`` notification on success or a ``failed`` notification
@@ -45,11 +46,68 @@ from agentshore.session_path import (
 from agentshore.sidecar.embedded_bridge import EmbeddedBridge
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+    from typing import Protocol
 
     from agentshore.config import RuntimeConfig
+    from agentshore.data.store import DataStore
     from agentshore.sidecar.server import JsonRpcNotification, ServerState
     from agentshore.state import AgentType
+
+    class OrchestratorHandle(Protocol):
+        """Structural view of the orchestrator surface the sidecar drives.
+
+        Declared under ``TYPE_CHECKING`` only so importing
+        ``agentshore.sidecar.*`` never transitively loads
+        :mod:`agentshore.core` (and therefore torch) at sidecar cold start —
+        the invariant pinned by ``tests/sidecar/test_cold_start_torch_free.py``.
+        The concrete :class:`agentshore.core.Orchestrator` satisfies this
+        protocol structurally; typing ``ServerState.orchestrator`` as
+        ``OrchestratorHandle | None`` lets the sidecar drop the
+        ``# type: ignore[attr-defined]`` duck-typing comments while keeping the
+        engine import lazy.
+
+        The underscored members (``_store``, ``_log_path``,
+        ``_natural_exit_reason``) mirror the orchestrator's own internal
+        accessors; they are declared here so the sidecar's reach-ins are typed
+        rather than silently ``object``-typed.
+        """
+
+        def request_drain(self, reason: str = ...) -> None: ...
+
+        def register_esr_ready_callback(
+            self, callback: Callable[[str, str, str | None], None] | None
+        ) -> None: ...
+
+        def on_natural_exit(self, callback: Callable[[str], Awaitable[None]]) -> None: ...
+
+        async def set_budget(
+            self,
+            *,
+            dollars_enabled: bool,
+            dollars: float | None,
+            time_enabled: bool,
+            time_minutes: int | None,
+            persist: bool = ...,
+        ) -> dict[str, object]: ...
+
+        async def current_budget(self) -> dict[str, object]: ...
+
+        async def stop(self, grace_period_s: float = ...) -> None: ...
+
+        async def publish_initial_state(self) -> object: ...
+
+        async def run_until_idle(self) -> None: ...
+
+        @property
+        def _store(self) -> DataStore: ...
+
+        @property
+        def _log_path(self) -> Path | None: ...
+
+        @property
+        def _natural_exit_reason(self) -> str | None: ...
+
 
 _logger = structlog.get_logger(__name__)
 
@@ -64,6 +122,7 @@ DEFAULT_FIRST_SNAPSHOT_TIMEOUT_SECONDS: float = 30.0
 # Canonical step IDs must stay in lockstep with
 # ``desktop/src/startupSteps.ts:STARTUP_STEP_IDS``.
 STEP_CONFIG_MERGE = "config_merge"
+STEP_CHECK_AGENT_AUTH = "check_agent_auth"
 STEP_INSTALL_SKILLS = "install_skills"
 STEP_INIT_BEADS = "init_beads"
 STEP_BIND_IPC = "bind_ipc"
@@ -72,6 +131,7 @@ STEP_FIRST_SNAPSHOT = "first_snapshot"
 
 SESSION_START_STEP_IDS: tuple[str, ...] = (
     STEP_CONFIG_MERGE,
+    STEP_CHECK_AGENT_AUTH,
     STEP_INSTALL_SKILLS,
     STEP_INIT_BEADS,
     STEP_BIND_IPC,
@@ -84,6 +144,7 @@ SESSION_START_STEP_IDS: tuple[str, ...] = (
 # an ellipsis suffix; the ``ok`` notification reuses the label verbatim.
 _STEP_LABELS: dict[str, str] = {
     STEP_CONFIG_MERGE: "Config merged",
+    STEP_CHECK_AGENT_AUTH: "Agent auth checked",
     STEP_INSTALL_SKILLS: "Skills installed",
     STEP_INIT_BEADS: "Beads ready",
     STEP_BIND_IPC: "IPC endpoint bound",
@@ -190,6 +251,41 @@ def _check_config_merge(project_path: Path) -> RuntimeConfig:
         raise SessionStartError(STEP_CONFIG_MERGE, -32602, str(exc)) from exc
 
 
+def _check_agent_auth(cfg: RuntimeConfig) -> None:
+    """Probe each configured CLI agent's backend auth; block on a dead session.
+
+    Blocking in nature (``probe_configured_cli_auth`` shells out via
+    ``subprocess.run``); call from the async runner through
+    ``asyncio.to_thread``. A definitively-expired backend session (e.g. the
+    Codex CLI's cached ``chatgpt.com`` token) raises a structured
+    :class:`SessionStartError` so the desktop blocks the launch and points at
+    the failing agent type(s) — otherwise that agent would hang every dispatch
+    to the idle timeout mid-run. Non-blocking non-ok statuses (timeout / probe
+    error / unprobeable) are logged and tolerated so a transient probe hiccup
+    never strands an otherwise-fine session.
+    """
+    from agentshore.agents.auth_probe import probe_configured_cli_auth
+
+    results = probe_configured_cli_auth(cfg)
+    blocking = [r for r in results if r.blocks_launch]
+    if blocking:
+        names = ", ".join(sorted(r.agent_type.value for r in blocking))
+        details = "; ".join(f"{r.agent_type.value}: {r.detail}" for r in blocking)
+        msg = (
+            f"backend auth expired for: {names}. Re-authenticate the agent CLI "
+            f"(e.g. run `codex login`) and retry. Details: {details}"
+        )
+        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+    for result in results:
+        if not result.ok:
+            _logger.warning(
+                "agent_auth_probe_non_blocking",
+                agent_type=result.agent_type.value,
+                status=result.status,
+                detail=result.detail,
+            )
+
+
 def _run_install_skills(project_path: Path) -> None:
     """Install bundled AgentShore skill templates into ``.agents/skills/``.
 
@@ -276,7 +372,7 @@ async def run_session_start(
     seed_path: str | None = None,
     timelapse_enabled: bool | None = None,
 ) -> SessionStartOutcome:
-    """Execute the six-phase ``session.start`` bringup (async).
+    """Execute the seven-phase ``session.start`` bringup (async).
 
     Real preparation work runs only when ``state.active_project_path`` is
     set. Without an active project the runner emits each phase as ok and
@@ -321,7 +417,22 @@ async def run_session_start(
             raise
     _emit(notify, progress_token, STEP_CONFIG_MERGE, "ok")
 
-    # Phase 2: install_skills — copy bundled skill templates into
+    # Phase 2: check_agent_auth — probe each configured CLI agent's backend
+    # auth (e.g. the Codex CLI's cached chatgpt.com session) now that cfg is
+    # resolved but before anything expensive boots. A definitively-expired
+    # session blocks the launch with a remediation message; transient probe
+    # failures are logged and tolerated. Skipped in legacy stub mode (no
+    # active project / cfg).
+    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "running")
+    if project_path is not None and cfg is not None:
+        try:
+            await asyncio.to_thread(_check_agent_auth, cfg)
+        except SessionStartError as exc:
+            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
+            raise
+    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "ok")
+
+    # Phase 3: install_skills — copy bundled skill templates into
     # ``.agents/skills/``. Idempotent: only stale templates are
     # overwritten. Skipped when there's no active project so the
     # legacy stub-mode call path stays a no-op.
@@ -334,7 +445,7 @@ async def run_session_start(
             raise
     _emit(notify, progress_token, STEP_INSTALL_SKILLS, "ok")
 
-    # Phase 3: init_beads
+    # Phase 4: init_beads
     _emit(notify, progress_token, STEP_INIT_BEADS, "running")
     if project_path is not None:
         try:
@@ -344,14 +455,14 @@ async def run_session_start(
             raise
     _emit(notify, progress_token, STEP_INIT_BEADS, "ok")
 
-    # Phase 4: bind_ipc — always allocates a fresh endpoint, even without
+    # Phase 5: bind_ipc — always allocates a fresh endpoint, even without
     # an active project.
     _emit(notify, progress_token, STEP_BIND_IPC, "running")
     if state.ipc_endpoint is None:
         state.ipc_endpoint = _allocate_ipc_endpoint()
     _emit(notify, progress_token, STEP_BIND_IPC, "ok")
 
-    # Phase 5: start_bridge — boot the EmbeddedBridge as a supervised
+    # Phase 6: start_bridge — boot the EmbeddedBridge as a supervised
     # asyncio task. The bridge serves empty state until the orchestrator
     # publishes to the IPC endpoint allocated above. Failure here (e.g.
     # port collision, missing static bundle) surfaces as a structured
@@ -390,7 +501,7 @@ async def run_session_start(
         if effective:
             await _maybe_start_timelapse(state, project_path)
 
-    # Phase 6: first_snapshot — when the orchestrator is enabled, this
+    # Phase 7: first_snapshot — when the orchestrator is enabled, this
     # phase boots it and waits for the first state publish to reach the
     # bridge's state_dir. When disabled, the bridge-ready signal from
     # phase 5 is already sufficient evidence that the dashboard can
@@ -569,7 +680,7 @@ async def _start_orchestrator(
     # callback; until then report_path stays empty rather than inventing a
     # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
-    log_path = getattr(orch, "_log_path", None)
+    log_path = orch._log_path
     state.session_context = SessionContext(
         session_id=session_id,
         store=orch._store,

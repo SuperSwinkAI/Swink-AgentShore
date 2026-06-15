@@ -55,10 +55,10 @@ describe("StartingProgress", () => {
     steps = buildInitialSteps();
   });
 
-  it("renders all 6 startup steps", () => {
+  it("renders all 7 startup steps", () => {
     renderScreen(steps);
     const list = screen.getByRole("list");
-    expect(within(list).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(7);
   });
 
   it("shows project name when provided", () => {
@@ -70,7 +70,7 @@ describe("StartingProgress", () => {
   it("shows progress count header", () => {
     renderScreen(steps);
     const counter = screen.getByTestId("progress-count");
-    expect(counter.textContent).toBe("0/6");
+    expect(counter.textContent).toBe("0/7");
   });
 
   it("updates progress count as steps complete", () => {
@@ -80,7 +80,7 @@ describe("StartingProgress", () => {
       "ok",
     );
     renderScreen(updated);
-    expect(screen.getByTestId("progress-count").textContent).toBe("2/6");
+    expect(screen.getByTestId("progress-count").textContent).toBe("2/7");
   });
 
   it("renders cancel startup button", () => {
@@ -244,9 +244,9 @@ describe("StartingProgress", () => {
 });
 
 describe("buildInitialSteps", () => {
-  it("produces 6 steps all in pending state", () => {
+  it("produces 7 steps all in pending state", () => {
     const steps = buildInitialSteps();
-    expect(steps).toHaveLength(6);
+    expect(steps).toHaveLength(7);
     expect(steps.every((s) => s.status === "pending")).toBe(true);
     expect(steps.every((s) => s.error === null)).toBe(true);
   });
@@ -256,6 +256,7 @@ describe("buildInitialSteps", () => {
     const labels = steps.map((s) => s.label);
     expect(labels).toEqual([
       "Config merged",
+      "Agent auth checked",
       "Skills installed",
       "Beads ready",
       "IPC endpoint bound",
@@ -269,9 +270,11 @@ describe("applyProgressEvent", () => {
   it("transitions the target step to running without touching others", () => {
     const initial = buildInitialSteps();
     const updated = applyProgressEvent(initial, "install_skills", "running");
-    expect(updated[1].status).toBe("running");
-    expect(updated[0].status).toBe("pending");
-    expect(updated[2].status).toBe("pending");
+    expect(updated.find((s) => s.id === "install_skills")!.status).toBe("running");
+    // Every other step stays pending.
+    for (const s of updated) {
+      if (s.id !== "install_skills") expect(s.status).toBe("pending");
+    }
   });
 
   it("clears error when step transitions to ok after a failure", () => {

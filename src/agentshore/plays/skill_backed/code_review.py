@@ -75,6 +75,12 @@ class CodeReviewPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_review"),)
 
+    # PR-scoped: self-heal the PR base before review so the diff bases correctly.
+    retarget_pr_base = True
+    # Anti-confirmation violations are a transient timing race (reviewer reassigned
+    # between resolve and dispatch); requeue to a later tick instead of penalizing.
+    requeue_on_anti_confirmation = True
+
     @property
     def play_type(self) -> PlayType:
         return PlayType.CODE_REVIEW

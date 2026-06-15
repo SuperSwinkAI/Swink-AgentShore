@@ -27,6 +27,11 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from agentshore import subprocess_env
+from agentshore.agents.identity import (
+    resolve_identity_env_by_name,
+    select_default_git_identity,
+)
 from agentshore.agents.worktree.allocator import (
     AllocateResult,
     WorktreeAllocationFailed,
@@ -39,7 +44,9 @@ from agentshore.agents.worktree.allocator import (
 )
 from agentshore.agents.worktree.reaper import (
     ReapReport,
+    free_disk_mb,
     reap_for_closed_prs,
+    reap_for_disk_pressure,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -59,7 +66,7 @@ from agentshore.state import PlayType
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from agentshore.config.models import RuntimeConfig
     from agentshore.data.store import DataStore
@@ -67,6 +74,30 @@ if TYPE_CHECKING:
     from agentshore.state import PlayOutcome, SkillResult
 
 log = structlog.get_logger(__name__)
+
+
+def _resolve_fetch_overlay(cfg: RuntimeConfig) -> dict[str, str] | None:
+    """Build the git-auth overlay for the shared worktree fetch, or ``None``.
+
+    Selects the default git identity (gh-OAuth-preferred, see
+    :func:`select_default_git_identity`), resolves its credential env, and pairs
+    the token with the HTTPS auth header via
+    :func:`subprocess_env.git_auth_config_overlay`. Any miss (no identities, no
+    token) yields ``None`` so the fetch falls back to unauthenticated — never
+    breaking allocation.
+    """
+    name = select_default_git_identity(cfg)
+    if not name:
+        return None
+    ident_env = resolve_identity_env_by_name(cfg, name)
+    token = ident_env.get("GH_TOKEN") or ident_env.get("GITHUB_TOKEN")
+    if not token:
+        log.info("worktree_fetch_identity_unauthenticated", identity=name)
+        return None
+    overlay = dict(ident_env)
+    overlay.update(subprocess_env.git_auth_config_overlay(token))
+    log.info("worktree_fetch_identity_selected", identity=name)
+    return overlay
 
 
 # --- Play-to-worktree routing -------------------------------------------------
@@ -188,6 +219,15 @@ class WorktreeManager:
         # held by ``async with`` blocks during allocation.
         self._alloc_locks: dict[str, asyncio.Lock] = {}
         self._alloc_locks_guard = asyncio.Lock()
+        # Memoized git-auth overlay for the shared (agent-agnostic) worktree
+        # fetch; resolved once on first allocation. ``None`` == unauthenticated.
+        self._fetch_overlay: dict[str, str] | None = None
+        self._fetch_overlay_resolved = False
+        # Consecutive PR-play failures per worktree_id, for the retention cap
+        # (``worktrees.reap_failed_pr_after_n``). A successful finalize clears
+        # the entry; once the count crosses the cap the row is dropped to
+        # ``stale`` instead of kept warm (#180).
+        self._pr_failure_counts: dict[int, int] = {}
 
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
@@ -232,6 +272,21 @@ class WorktreeManager:
             stale_keys = [k for k in self._alloc_locks if k not in live_keys]
             for k in stale_keys:
                 del self._alloc_locks[k]
+
+    def _fetch_auth_overlay(self) -> Mapping[str, str] | None:
+        """Memoized git-auth env for the shared, agent-agnostic worktree fetch.
+
+        The shared main-repo fetch runs before any agent is bound and is
+        read-only (no authorship/push/PR), so a single read-capable identity is
+        correct and carries no write/attribution semantics — the per-agent write
+        path stays each agent's own identity. Resolves the default git identity
+        (gh-OAuth-preferred) once; returns ``None`` when none resolves, leaving
+        the fetch unauthenticated (its historical best-effort behavior).
+        """
+        if not self._fetch_overlay_resolved:
+            self._fetch_overlay_resolved = True
+            self._fetch_overlay = _resolve_fetch_overlay(self._cfg)
+        return self._fetch_overlay
 
     @property
     def main_repo(self) -> Path:
@@ -310,12 +365,40 @@ class WorktreeManager:
         accumulates disk across short sessions (#33).
         """
         if allocation.scope == "pr":
-            await touch(self._store, worktree_id=allocation.worktree_id)
-            if not play_outcome.success:
+            wt_id = allocation.worktree_id
+            if play_outcome.success:
+                self._pr_failure_counts.pop(wt_id, None)
+                await touch(self._store, worktree_id=wt_id)
+                return None
+            # Failure path. Keep the worktree warm for a cheap retry on the
+            # first failures; after the configured cap, a worktree that keeps
+            # failing is not a useful cache — drop it to ``stale`` so the TTL
+            # reaper reclaims its disk instead of holding it until PR close
+            # (the worktree-sprawl contributor in #180).
+            fails = self._pr_failure_counts.get(wt_id, 0) + 1
+            self._pr_failure_counts[wt_id] = fails
+            cap = self._cfg.worktrees.reap_failed_pr_after_n
+            if cap > 0 and fails >= cap:
+                self._pr_failure_counts.pop(wt_id, None)
+                await mark_status(
+                    self._store,
+                    worktree_id=wt_id,
+                    status="stale",
+                    failure_reason=f"pr_play_failed_x{fails}",
+                )
+                log.info(
+                    "worktree_pr_play_failed_retired",
+                    worktree_id=wt_id,
+                    play_type=allocation.play_type.value,
+                    consecutive_failures=fails,
+                )
+            else:
+                await touch(self._store, worktree_id=wt_id)
                 log.info(
                     "worktree_pr_play_failed_kept_active",
-                    worktree_id=allocation.worktree_id,
+                    worktree_id=wt_id,
                     play_type=allocation.play_type.value,
+                    consecutive_failures=fails,
                 )
             return None
 
@@ -432,6 +515,30 @@ class WorktreeManager:
         await self._prune_locks()
         return report
 
+    def free_disk_mb(self) -> int:
+        """Free space (MiB) on the filesystem backing the worktree root."""
+        return free_disk_mb(self._worktree_root)
+
+    async def reap_for_disk_pressure(
+        self, *, target_free_mb: int, protected_ids: set[int] | None = None
+    ) -> ReapReport:
+        """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
+
+        The build-agnostic disk governor (#180). Worktrees with a live dispatch
+        (``protected_ids``) are never reaped.
+        """
+        report = await reap_for_disk_pressure(
+            self._store,
+            session_id=self._session_id,
+            main_repo=self._main_repo,
+            worktree_root=self._worktree_root,
+            target_free_mb=target_free_mb,
+            protected_ids=protected_ids,
+        )
+        if report.total:
+            await self._prune_locks()
+        return report
+
     # -- internals -----------------------------------------------------------
 
     async def _verify_worktree_registered(self, allocate: AllocateResult, *, scope: str) -> None:
@@ -546,6 +653,8 @@ class WorktreeManager:
                     branch_name=branch_name,
                     base_ref=base_ref,
                     fetch=True,
+                    fetch_env_overlay=self._fetch_auth_overlay(),
+                    safe_to_force_remove=_is_reclaimable_collision,
                 )
             except WorktreeAllocationFailed as exc:
                 # Existing-row reuse failed (disk gone, target dirty, etc).
@@ -575,6 +684,8 @@ class WorktreeManager:
             branch_name=branch_name,
             base_ref=base_ref,
             fetch=True,
+            fetch_env_overlay=self._fetch_auth_overlay(),
+            safe_to_force_remove=_is_reclaimable_collision,
         )
         await self._verify_worktree_registered(allocate, scope=scope)
         try:
@@ -619,6 +730,21 @@ class WorktreeManager:
             play_type=play_type,
             scope=scope,
         )
+
+
+#: Directory-name prefix the manager keys a branch-creating ISSUE_PICKUP
+#: allocation with (see :func:`_make_prebranch_key`). A *colliding* worktree
+#: with this prefix is a crashed-session branch-creating orphan that never
+#: rekeyed, so it is safe to force-remove and retry the add. The convention
+#: lives here, in the manager, because the manager is the only layer that
+#: assigns these keys — the allocator delegates the decision via the
+#: ``safe_to_force_remove`` predicate it is handed.
+_RECLAIMABLE_COLLISION_PREFIX = "pickup-"
+
+
+def _is_reclaimable_collision(path: Path) -> bool:
+    """Return True when a colliding worktree path is a reclaimable pickup orphan."""
+    return path.name.startswith(_RECLAIMABLE_COLLISION_PREFIX)
 
 
 def _make_prebranch_key(play_type: PlayType, params: PlayParams) -> str:

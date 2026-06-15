@@ -21,8 +21,11 @@ from agentshore.plays.candidates import (
     qa_ran_within_terminal_window,
     terminal_audits_are_fresh,
 )
-from agentshore.rl.action_space import NUM_ACTIONS, V1_ACTION_ORDER
+from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
+from agentshore.rl.eligibility import (
+    agent_needs_reaping as _agent_needs_reaping,
+)
 from agentshore.rl.eligibility import (
     compute_agent_eligibility_mask as compute_agent_eligibility_mask,
 )
@@ -40,7 +43,6 @@ from agentshore.rl.mask_reason import (
     MaskSource,
 )
 from agentshore.state import (
-    CONSECUTIVE_TIMEOUT_BENCH_LIMIT,
     AgentStatus,
     AgentType,
     PlayType,
@@ -52,7 +54,7 @@ if TYPE_CHECKING:
 
     from agentshore.config.models import RuntimeConfig
     from agentshore.plays.registry import PlayRegistry
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import OrchestratorState
 
 _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
@@ -61,16 +63,16 @@ _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 # corner even though open work and idle capacity exist, expose a broad fallback
 # menu. These actions stay hard-masked because they are not progress actions or
 # are reserved tensor slots.
-_REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = frozenset(
-    {
-        PlayType.SEED_PROJECT,
-        PlayType.END_AGENT,
-        PlayType.END_SESSION,
-        PlayType.TAKE_BREAK,
-        PlayType.FUTURE_4,
-        PlayType.FUTURE_7,
-        PlayType.FUTURE_8,
-    }
+_REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
+    frozenset(
+        {
+            PlayType.SEED_PROJECT,
+            PlayType.END_AGENT,
+            PlayType.END_SESSION,
+            PlayType.TAKE_BREAK,
+        }
+    )
+    | RESERVED_PLAYS
 )
 _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {PlayType.END_AGENT, PlayType.END_SESSION}
@@ -231,23 +233,6 @@ def compute_terminal_no_work_decision(
             )
 
     return None
-
-
-def _agent_needs_reaping(state: OrchestratorState) -> bool:
-    """True when some agent genuinely needs retiring (wedged / terminal error).
-
-    Mirrors the wedged-END_AGENT re-enable condition in the EligibilityAuthority
-    (recovery-exhausted or non-recoverable ERROR). Used to carve END_AGENT out of
-    the lifecycle-churn breaker so a stuck agent can still be retired (#163).
-    """
-    if state.recovery_exhausted_agent_ids:
-        return True
-    # A consecutive-timeout-benched agent (#161) sits IDLE but is excluded from
-    # selection, so it never recovers on its own — keep END_AGENT available so
-    # the PPO can reap it and instantiate a fresh one instead of wedging.
-    if any(a.consecutive_timeouts >= CONSECUTIVE_TIMEOUT_BENCH_LIMIT for a in state.agents):
-        return True
-    return EligibilityAuthority._has_terminal_error_agent(state)
 
 
 def _lifecycle_churn_active(state: OrchestratorState) -> bool:

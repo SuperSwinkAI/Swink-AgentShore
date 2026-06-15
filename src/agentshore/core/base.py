@@ -14,9 +14,6 @@ their own.
 
 from __future__ import annotations
 
-import asyncio
-import collections
-import time
 from typing import TYPE_CHECKING
 
 from agentshore.config.models import BudgetConfig
@@ -31,11 +28,14 @@ from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
+from agentshore.core.session_runtime import SessionRuntime
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.paths import project_weights_dir
 from agentshore.state import NullStateProvider
 
 if TYPE_CHECKING:
+    import asyncio
+    import collections
     from collections.abc import Awaitable, Callable
     from pathlib import Path
 
@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from agentshore.plays.executor import PlayExecutor
     from agentshore.plays.selector import PlaySelector
     from agentshore.power import PowerAssertion
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import (
         OrchestratorState,
@@ -72,164 +72,46 @@ class _OrchestratorBase:
     resolve attribute access; runtime attribute lookup is unaffected.
     """
 
-    # Class-level defaults so tests that bypass __init__ via Orchestrator.__new__
-    # still get sensible values. Real instances overwrite these in __init__.
-    _last_selection_digest: bytes | None = None
-    _idle_streak: int = 0
-    _draining: bool = False
-    _drain_reason: str | None = None
-    _drain_initialized: bool = False
-    _end_session_dispatch_started: bool = False
-    _natural_exit_reason: str | None = None
-    _natural_exit_callback: NaturalExitCallback | None = None
-    # Monotonic timestamp of the most recent _refresh_issues call.  Class-level
-    # default is float('inf') so tests that bypass __init__ via Orchestrator.__new__
-    # never trigger a periodic refresh.  __init__ resets it to 0.0 and bootstrap
-    # stamps it to time.monotonic() right after the session-start fetch, ensuring
-    # the first loop tick doesn't re-fetch immediately in production.
-    _last_refresh_time: float = float("inf")
-    # desktop-kqo5: main-repo branch guard (default branch + pre-play handshake
-    # + dispatch-pause latch). Constructed in __init__; __new__-bypass tests
-    # construct their own.
-    _main_repo: MainRepoGuard
-    # desktop-12g9: AgentShore-managed worktree lifecycle owner. Assigned by
-    # ``_phase_init_worktree_manager`` during bootstrap. Stays None for
-    # tests that bypass bootstrap (Orchestrator.__new__); reaper hooks
-    # short-circuit on None so those callers remain no-ops.
-    _worktrees: WorktreeManager | None = None
-    # Guarded RL experience-recording collaborator (crash hardening). Class-level
-    # default None so tests that bypass __init__ (Orchestrator.__new__) and the
-    # non-PPO/headless paths are safe; constructed in phases.py once the PPO
-    # selector + metrics + policy/config versions are wired. The completion path
-    # no-ops the RL tail when this is None.
-    _experience_recorder: ExperienceRecorder | None = None
-    # Pure progress assessor (no-op-spin detection + WS3 reprieve gating).
-    # Class-level default None; constructed in phases.py. Callers guard on None.
-    _progress_monitor: ForwardProgressMonitor | None = None
-
-    # Type annotations for instance attributes set in __init__ — mixins access
-    # these via self.* and rely on these annotations for mypy resolution.
-    _cfg: RuntimeConfig
+    # ------------------------------------------------------------------
+    # Owned collaborators / identity — stable for the orchestrator's life and
+    # captured by each component's constructor. These are NOT shared mutable
+    # session state; that all lives on :class:`SessionRuntime` (``self._runtime``).
+    # ------------------------------------------------------------------
+    #: The single owner of all shared mutable session state (TNQA P1). Replaces
+    #: the ~40 ``self._host.<latch>`` reads/writes that previously threaded
+    #: through six ``_*Host`` Protocols. Constructed once in ``__init__``; every
+    #: component receives it as ``runtime=`` and reaches state via
+    #: ``self._runtime.<field>``.
+    _runtime: SessionRuntime
     _repo_root: Path
     _session_id: str
     _store: DataStore
     _manager: AgentManager
     _executor: PlayExecutor
-    _selector: PlaySelector | None
-    _state_provider: StateProvider
-    _stop_requested: bool
-    _stopped: bool
-    _end_session_report_requested: bool
-    _end_session_report_open_browser: bool
-    # When True the orchestrator is hosted inside the desktop sidecar / an
-    # embedded process where the shell renders the ESR in-app. drain.py skips
-    # ``webbrowser.open`` in this mode and instead fires ``_esr_ready_callback``
-    # so the desktop can navigate to ``/session/esr`` (issue #561).
-    _embedded_mode: bool
-    _esr_ready_callback: Callable[[str, str, str | None], None] | None
-    _log_path: Path | None
-    _stop_reason: str
-    _health: HealthMonitor | None
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _dispatch_ctx: dict[str, _DispatchContext]
-    _completion_processing_count: int
-    _completion_processing_idle: asyncio.Event
-    context_pressure_hints: dict[str, float]
-    _seed_path: Path | None
-    _step_index: int
-    _policy_version: str
-    _config_hash: str
-    _metrics: MetricsEngine | None
+    # desktop-kqo5: main-repo branch guard (default branch + pre-play handshake
+    # + dispatch-pause latch). Constructed in __init__.
+    _main_repo: MainRepoGuard
     # Override FIFO + first-play / pending-kind / dispatched-id latches.
     _overrides: OverrideQueue
-    _loop_started_at: float
-    _registry: object | None
-    _pause_event: asyncio.Event
-    _pause_reason: str | None
-    # Monotonic deadline after which an unanswered feedback pause auto-stops the
-    # session (#9). Set in pause() for feedback-eligible reasons when
-    # feedback.unanswered_timeout_seconds is configured; cleared on resume().
-    _pause_deadline: float | None
-    _last_play_id: int | None
     # Rolling-velocity / executor-skip-divergence / recent-agent-type windows.
     _velocity: VelocityTracker
-    # All-category no-op window for spin detection: (was_skip, play_type_value)
-    # per completed play. Unlike _executor_skip_window (masked-only), this counts
-    # every skip category (masked + no_target + staffing) so the LoopProgressMonitor
-    # can see an alternating no_target/masked spin the masked-only rate misses.
-    _recent_play_outcomes: collections.deque[tuple[bool, str]]
-    # Live budget-cap overrides applied mid-session. Each is ``None`` until a
-    # live control RPC/command sets it, in which case it shadows the
-    # corresponding ``_cfg.budget`` field without mutating the frozen config.
-    # ``effective_budget_caps`` resolves overrides → cfg as the single source of
-    # truth read by the snapshot builder and the time hard-stop.
-    # Class-level ``None`` defaults so __new__-bypass test stubs (which skip
-    # __init__) still resolve overrides as "fall through to _cfg.budget".
-    _budget_override_enabled: bool | None = None
-    _budget_override_total: float | None = None
-    _time_override_enabled: bool | None = None
-    _time_override_minutes: int | None = None
-    _stop_done: asyncio.Event
-    _config_path: Path | None
-    # In-memory snapshot of recently-completed plays, used to bridge the SQLite
-    # WAL-flush lag window. After ``_process_completion`` records a play, the
-    # row is in the DB but may not be visible to a subsequent ``get_play_history``
-    # read for tens of milliseconds. That lag let same-tick instantiate_agent
-    # pairs slip past the cooldown mask in session ba744eef (desktop-65bg).
-    # ``_fetch_state_data`` merges this deque with the DB result so recency
-    # math sees the freshest view. Capped to keep the merge cost bounded.
-    _recent_play_completions: collections.deque[PlayRecord]
-    # Sibling shadow for per-issue labels applied by a successful play whose
-    # next-tick mask depends on that label being visible immediately. Same
-    # WAL-flush lag class as ``_recent_play_completions`` — the gh CLI label
-    # add + ``add_issue_labels`` write may not be visible to a fast follow-up
-    # ``get_open_issues`` read, so ``_fetch_state_data`` overlays this deque
-    # onto the cached issue records before snapshot projection. Scoped strictly
-    # to ROOT_CAUSE_FOUND_LABEL on systematic_debugging success (desktop-quv9
-    # — session 2b8729bf re-selected the same issue at the very next tick
-    # before the label landed). Other label flows do not need this hop.
-    _recent_applied_labels: collections.deque[tuple[int, str]]
     # take_break-failure + rate-limit-recovery latches.
     _recovery: RecoveryTracker
-    # Record/history → snapshot projection + trajectory math (composed component).
+    # Orchestrator-local bookkeeping (never read by any component via the host).
+    _seed_path: Path | None
+    _step_index: int
+    _config_hash: str
+    _last_warned_failure_streak: int | None
+    _last_warned_any_streak: int | None
+    _fleet_idle_persistent_active: bool
+    # Composed components (the conductor + its siblings).
     _snapshots: SnapshotProjector
-    # DB reads + live handles → OrchestratorState (composed component). Reads
-    # orchestrator runtime/control state live via the _StateBuilderHost Protocol.
     _state_builder: StateBuilder
-    # Pause/resume, SIGHUP config reload, feedback cadence, budget-drain
-    # initiation (composed component). Reads+writes orchestrator runtime/control
-    # state (incl. the _cfg SIGHUP swap) live via the _LifecycleHost Protocol.
     _lifecycle: LifecycleController
-    # Graceful drain, stop/hard_stop, budget adjust, end-session report (composed
-    # component). Reads+writes orchestrator runtime/control state (stop/drain
-    # latches, budget override, ESR request flags, in-flight maps) live via the
-    # _DrainHost Protocol; teardown order in stop/stop_inner is preserved exactly.
     _drain: DrainController
-    # Play-completion harvesting, RL experience persistence, learnings, GitHub
-    # refresh, health callbacks (composed component). Reads+writes orchestrator
-    # runtime/control state (in-flight maps, completion-processing latches,
-    # recent-completion shadows, pause/stop latches) live via the _CompletionHost
-    # Protocol; the _process_completion pipeline order is preserved exactly.
     _completion: CompletionProcessor
-    # Override resolution, selector calls, dispatch, and mask handling (composed
-    # component). Reads+writes orchestrator runtime/control state (in-flight maps,
-    # dispatch-context map, selection digest, idle streak, end-session latch) live
-    # via the _DispatcherHost Protocol; the _dispatch_play gate order and the
-    # OverrideQueue single-consume protocol are preserved exactly (no gate-move —
-    # that is Phase 2).
     _dispatcher: Dispatcher
-    # The main orchestration loop, loop-detection ladder, stagnation escalation,
-    # and idle backoff (composed component, the conductor). Holds references to
-    # every sibling component + the 1a collaborators via its constructor;
-    # orchestrator runtime/control state (read or written) flows through the
-    # _LoopHost Protocol so SIGHUP/per-tick mutation never goes stale. The
-    # _run_loop_body tick order and the loop-liveness heartbeat are preserved
-    # exactly. Loop-only counters (tick-failure streak, wedge counter, watchdog
-    # handle, heartbeat, fleet-idle latch, warning memos, stagnation stage) are
-    # owned by the LoopRunner, not the host.
     _loop: LoopRunner
-    _feedback_cadence_plays_since_ack: int
-    _feedback_cadence_last_ack_monotonic: float
 
     def __init__(
         self,
@@ -243,187 +125,94 @@ class _OrchestratorBase:
         selector: PlaySelector | None = None,
         state_provider: StateProvider | None = None,
     ) -> None:
-        self._cfg = cfg
+        # The single owner of all shared mutable session state (TNQA P1). Every
+        # latch the components previously reached through ``self._host.<latch>``
+        # (and its ``getattr``-guarded ``__new__``-bypass defaults) lives here;
+        # ``SessionRuntime``'s field defaults reproduce the prior latch wall, so a
+        # fresh runtime is always fully initialised. Velocity-window size is the
+        # one cfg-derived constructor arg; everything else takes its default.
+        self._runtime = SessionRuntime(
+            cfg=cfg,
+            selector=selector,
+            state_provider=state_provider or NullStateProvider(),
+        )
         self._repo_root = repo_root
         self._session_id = session_id
         self._store = store
         self._manager = manager
-        # desktop-12g9: assigned in ``_phase_init_worktree_manager`` during
-        # bootstrap. Tests bypassing bootstrap leave this None — the reaper
-        # hooks short-circuit on None to keep them no-ops.
-        self._worktrees = None
         self._executor = executor
-        self._selector = selector
-        self._state_provider = state_provider or NullStateProvider()
-        self._stop_requested = False
-        self._stopped = False
-        self._draining = False
-        self._drain_reason = None
-        self._drain_initialized = False
-        self._end_session_dispatch_started = False
-        # Set when run_until_idle exits because _should_terminate signalled
-        # should_stop with a reason other than "stop_requested" (i.e. drain
-        # complete, max_plays, timeout). The sidecar boot wrapper reads this
-        # to decide whether to fire session.completed (DESIGN §5.2).
-        self._natural_exit_reason = None
-        self._natural_exit_callback = None
-        self._end_session_report_requested = False
-        self._end_session_report_open_browser = False
-        self._embedded_mode = False
-        self._esr_ready_callback = None
-        self._log_path = None
-        self._stop_reason = "unknown"
-        self._health = None
-        self._integrity: IntegrityMonitor | None = None
-        self._power_assertion: PowerAssertion | None = None
-        self._in_flight = {}
-        self._dispatch_ctx = {}
-        self._completion_processing_count = 0
-        self._completion_processing_idle = asyncio.Event()
-        self._completion_processing_idle.set()
-        self.context_pressure_hints = {}
         self._seed_path = None
         self._step_index = 0
-        self._policy_version = "ppo-v1"
         self._config_hash = ""
-        self._metrics = None
-        # Override FIFO + single-consume latches (first-play override, pending
-        # override kind, dispatched play-ids). The completion/dispatch paths
-        # write; loop/state read.
-        self._overrides = OverrideQueue()
         # Loop-detection warning memo: highest streak value already logged for each
         # kind. Reset to None when the streak drops below the warn threshold so a
         # fresh streak gets a fresh warning. Prevents per-tick log storms while the
         # streak holds at the same value across orchestrator iterations.
         self._last_warned_failure_streak = None
         self._last_warned_any_streak = None
-        self._loop_started_at = 0.0
-        self._registry = None  # PlayRegistry, set in bootstrap
-        # Pause/resume: cleared by pause(), set by resume(); loop awaits this each iteration
-        self._pause_event = asyncio.Event()
-        self._pause_event.set()  # initially running
-        self._pause_reason = None
-        self._pause_deadline = None
-        self._last_play_id = None
+        # desktop-85ex: track persistent-idle window transitions for the
+        # ``fleet_idle_persistent`` event. Re-set on every Orchestrator
+        # instantiation so a re-used object starts cleanly.
+        self._fleet_idle_persistent_active = False
+        # Override FIFO + single-consume latches (first-play override, pending
+        # override kind, dispatched play-ids). The completion/dispatch paths
+        # write; loop/state read.
+        self._overrides = OverrideQueue()
         # Rolling-velocity / executor-skip-divergence / recent-agent-type
         # collaborator. Owns the windows the completion path writes and the
         # observation/state path reads (slot 177 divergence rate,
         # ``state.recent_executor_skip``, reward velocity + type diversity).
         self._velocity = VelocityTracker(velocity_window_size=cfg.rl.velocity_window_size)
-        # All-category no-op window for the LoopProgressMonitor (see annotation).
-        self._recent_play_outcomes = collections.deque(maxlen=50)
-        # Live mid-session cap overrides (None ⇒ fall through to _cfg.budget).
-        self._budget_override_enabled = None
-        self._budget_override_total = None
-        self._time_override_enabled = None
-        self._time_override_minutes = None
-        # Concurrent stop() callers wait on this event; first caller does the cleanup
-        self._stop_done = asyncio.Event()
-        self._config_path = None
-        # Bounded recent-completions cache (see annotation above for rationale).
-        # 64 is large enough to span a few seconds of WAL lag at peak dispatch
-        # rate; older entries either appear in the DB read or are no longer
-        # within any cooldown window we care about.
-        self._recent_play_completions = collections.deque(maxlen=64)
-        # Sibling label shadow (desktop-quv9). Same bound rationale as the
-        # play-completion shadow: a few seconds of WAL lag at peak dispatch
-        # rate is plenty for the next refresh_issues cycle to land. Entries
-        # are ``(issue_number, label)`` tuples; the merge helper is keyed
-        # on issue_number.
-        self._recent_applied_labels = collections.deque(maxlen=64)
-        # Per-resource worktree-allocation failure backstop (Piece A, issue #60).
-        # ``_resource_failure_counts`` tallies consecutive allocation failures
-        # keyed on resource key (``pr:<n>``); once a key crosses
-        # ``WORKTREE_PARK_THRESHOLD`` it is added to ``_parked_resource_keys`` and
-        # excluded from candidate selection for the rest of the session. This
-        # bounds transient blips (a couple of retries) while stopping a
-        # structurally-unallocatable PR from being re-selected every tick. Both
-        # are session-scoped in-memory; snapshotted onto state each tick.
-        self._resource_failure_counts: dict[str, int] = {}
-        self._parked_resource_keys: set[str] = set()
         # take_break-failure + rate-limit-recovery latches (desktop-s1u7). The
         # completion path mutates them; state.py reads recovery_exhausted_agent_ids.
         self._recovery = RecoveryTracker()
+        # desktop-kqo5: main-repo branch guard — default branch (resolved by the
+        # session-start sweeper / SIGHUP), the per-dispatch pre-play ref
+        # handshake, and the auto-restore-failed dispatch-pause latch.
+        self._main_repo = MainRepoGuard()
         # Record/history → snapshot projection + trajectory math. Holds stable
         # refs (manager/store/session_id); reload-mutable cfg is passed per-call
         # to build_budget_snapshot and safe_call is passed per-call to
         # record_trajectory_snapshot (Lesson L2a).
         self._snapshots = SnapshotProjector(manager=manager, store=store, session_id=session_id)
-        # DB reads + live handles → OrchestratorState. Stable services/
-        # collaborators captured via the constructor; orchestrator runtime/
-        # control state (cfg, in-flight maps, pause/drain latches, recent-
-        # completion shadows) is read live via the _StateBuilderHost Protocol so
-        # SIGHUP/per-tick mutation never goes stale. Owns its stale-idle counter.
+        # Composed components. Each receives ``host=self`` for the narrow
+        # *behaviour* seam (``_safe_call``, ``effective_budget_caps``, the loop's
+        # autonomous-stop/stagnation forwards, sibling-component references) and
+        # ``runtime=self._runtime`` for all shared *state*.
         self._state_builder = StateBuilder(
             host=self,
+            runtime=self._runtime,
             store=store,
             manager=manager,
             executor=executor,
             session_id=session_id,
             repo_root=repo_root,
+            main_repo=self._main_repo,
             snapshots=self._snapshots,
             velocity=self._velocity,
             recovery=self._recovery,
             overrides=self._overrides,
         )
-        # Selection-state digest gate: skip the selector + storm-prone log line
-        # when nothing the selector cares about changed since the last attempt.
-        # Pairs with ``_IDLE_BACKOFF_SECONDS`` to stretch the loop's idle wait
-        # progressively the longer the digest stays put.
-        self._last_selection_digest = None
-        self._idle_streak = 0
-        # desktop-85ex: track persistent-idle window transitions for the
-        # ``fleet_idle_persistent`` event. Re-set on every Orchestrator
-        # instantiation so a re-used object starts cleanly.
-        self._fleet_idle_persistent_active = False
-        # Monotonic wall-clock time of last _refresh_issues call; 0.0 means
-        # "never refreshed" so the first eligible tick always fires.
-        self._last_refresh_time = 0.0
-        # Feedback cadence: plays completed since last user-acknowledged checkpoint
-        # and monotonic time of that acknowledgement. Both reset in resume().
-        self._feedback_cadence_plays_since_ack = 0
-        self._feedback_cadence_last_ack_monotonic = time.monotonic()
-        # desktop-kqo5: main-repo branch guard — default branch (resolved by the
-        # session-start sweeper / SIGHUP), the per-dispatch pre-play ref
-        # handshake, and the auto-restore-failed dispatch-pause latch.
-        self._main_repo = MainRepoGuard()
-        # Pause/resume, SIGHUP config reload, feedback cadence, budget-drain
-        # initiation. Stable services/collaborators (store, session_id,
-        # repo_root, main_repo) captured via the constructor; orchestrator
-        # runtime/control state is read+written live via the _LifecycleHost
-        # Protocol so SIGHUP config swaps and per-tick mutation never go stale.
         self._lifecycle = LifecycleController(
             host=self,
+            runtime=self._runtime,
             store=store,
             session_id=session_id,
             repo_root=repo_root,
             main_repo=self._main_repo,
         )
-        # Graceful drain, stop/hard_stop, budget adjust, end-session report
-        # generation. Stable services/collaborators (store, manager, session_id,
-        # repo_root, state_builder) captured via the constructor; orchestrator
-        # runtime/control state (stop/drain latches, budget override, ESR request
-        # flags, in-flight maps) is read+written live via the _DrainHost Protocol
-        # so per-tick mutation never goes stale. Teardown order in stop/stop_inner
-        # is preserved exactly.
         self._drain = DrainController(
             host=self,
+            runtime=self._runtime,
             store=store,
             manager=manager,
             session_id=session_id,
             repo_root=repo_root,
             state_builder=self._state_builder,
         )
-        # Play-completion harvesting, RL experience persistence, learnings update,
-        # GitHub issue refresh, and the agent health callbacks. Stable services/
-        # collaborators (store, manager, executor, session_id, repo_root, the 1a
-        # collaborators, and the sibling components) captured via the constructor;
-        # orchestrator runtime/control state (in-flight maps, completion-processing
-        # latches, recent-completion shadows, pause/stop latches) is read+written
-        # live via the _CompletionHost Protocol so per-tick mutation never goes
-        # stale. The _process_completion pipeline order is preserved exactly.
         self._completion = CompletionProcessor(
             host=self,
+            runtime=self._runtime,
             store=store,
             manager=manager,
             executor=executor,
@@ -438,17 +227,9 @@ class _OrchestratorBase:
             lifecycle=self._lifecycle,
             drain=self._drain,
         )
-        # Override resolution, selector calls, dispatch, and mask handling. Stable
-        # services/collaborators (store, manager, executor, session_id, repo_root,
-        # the main_repo + overrides collaborators, and the state_builder/completion
-        # sibling components) captured via the constructor; orchestrator runtime/
-        # control state (in-flight maps, dispatch-context map, selection digest,
-        # idle streak, end-session latch) is read+written live via the
-        # _DispatcherHost Protocol so per-tick mutation never goes stale. The
-        # _dispatch_play gate order and the OverrideQueue single-consume protocol
-        # are preserved exactly (no gate-move — that is Phase 2).
         self._dispatcher = Dispatcher(
             host=self,
+            runtime=self._runtime,
             store=store,
             manager=manager,
             executor=executor,
@@ -459,19 +240,14 @@ class _OrchestratorBase:
             state_builder=self._state_builder,
             completion=self._completion,
         )
-        # The main orchestration loop, loop-detection ladder, stagnation
-        # escalation, and idle backoff — the conductor. Constructed LAST because
-        # it references every sibling component (state_builder, dispatcher,
-        # completion, lifecycle, drain) plus the 1a collaborators (main_repo,
-        # overrides, velocity). Orchestrator runtime/control state (in-flight
-        # map, idle streak, selection digest, pause/drain latches, natural-exit
-        # hooks) is read+written live via the _LoopHost Protocol so SIGHUP/
-        # per-tick mutation never goes stale. The _run_loop_body tick order and
-        # the loop-liveness heartbeat are preserved exactly. The LoopRunner owns
-        # its own loop-only counters (tick-failure streak, wedge counter, watchdog
-        # task, heartbeat, fleet-idle latch, warning memos, stagnation stage).
+        # The conductor — constructed LAST because it references every sibling
+        # component. ``_run_loop_body`` tick order + the loop-liveness heartbeat
+        # are preserved exactly. The LoopRunner owns its own loop-only counters
+        # (tick-failure streak, wedge counter, watchdog task, heartbeat,
+        # fleet-idle latch, warning memos, stagnation stage).
         self._loop = LoopRunner(
             host=self,
+            runtime=self._runtime,
             session_id=session_id,
             main_repo=self._main_repo,
             overrides=self._overrides,
@@ -486,10 +262,442 @@ class _OrchestratorBase:
         # instance so the watchdog treats "loop never started" as not-yet-armed;
         # run_until_idle stamps the first iteration before the loop body runs.
         self._loop._last_loop_iteration_at = 0.0
-        # Crash-hardening collaborators (constructed in phases.py once the PPO
-        # selector / metrics / versions are wired). None on the non-PPO path.
-        self._experience_recorder = None
-        self._progress_monitor = None
+
+    # ------------------------------------------------------------------
+    # Backward-compatible ``orch._<latch>`` facade over the SessionRuntime.
+    #
+    # External (non-core) callers read a handful of these (``orch._cfg``,
+    # ``orch._registry``, ``orch._state_provider``, ``orch._metrics``,
+    # ``orch._worktrees``, ``orch._policy_version``, ``orch._drain_reason``) and
+    # the existing test suite reads/writes the full set directly. Rather than
+    # rewrite every caller, the orchestrator exposes each latch as a pure
+    # pass-through property — there is no parallel state, the single owner is
+    # still ``self._runtime``. New core code reaches state via ``self._runtime``.
+    # ------------------------------------------------------------------
+
+    @property
+    def _cfg(self) -> RuntimeConfig:
+        return self._runtime.cfg
+
+    @_cfg.setter
+    def _cfg(self, value: RuntimeConfig) -> None:
+        self._runtime.cfg = value
+
+    @property
+    def _selector(self) -> PlaySelector | None:
+        return self._runtime.selector
+
+    @_selector.setter
+    def _selector(self, value: PlaySelector | None) -> None:
+        self._runtime.selector = value
+
+    @property
+    def _state_provider(self) -> StateProvider:
+        return self._runtime.state_provider
+
+    @_state_provider.setter
+    def _state_provider(self, value: StateProvider) -> None:
+        self._runtime.state_provider = value
+
+    @property
+    def _registry(self) -> object | None:
+        return self._runtime.registry
+
+    @_registry.setter
+    def _registry(self, value: object | None) -> None:
+        self._runtime.registry = value
+
+    @property
+    def _metrics(self) -> MetricsEngine | None:
+        return self._runtime.metrics
+
+    @_metrics.setter
+    def _metrics(self, value: MetricsEngine | None) -> None:
+        self._runtime.metrics = value
+
+    @property
+    def _worktrees(self) -> WorktreeManager | None:
+        return self._runtime.worktrees
+
+    @_worktrees.setter
+    def _worktrees(self, value: WorktreeManager | None) -> None:
+        self._runtime.worktrees = value
+
+    @property
+    def _experience_recorder(self) -> ExperienceRecorder | None:
+        return self._runtime.experience_recorder
+
+    @_experience_recorder.setter
+    def _experience_recorder(self, value: ExperienceRecorder | None) -> None:
+        self._runtime.experience_recorder = value
+
+    @property
+    def _progress_monitor(self) -> ForwardProgressMonitor | None:
+        return self._runtime.progress_monitor
+
+    @_progress_monitor.setter
+    def _progress_monitor(self, value: ForwardProgressMonitor | None) -> None:
+        self._runtime.progress_monitor = value
+
+    @property
+    def _health(self) -> HealthMonitor | None:
+        return self._runtime.health
+
+    @_health.setter
+    def _health(self, value: HealthMonitor | None) -> None:
+        self._runtime.health = value
+
+    @property
+    def _integrity(self) -> IntegrityMonitor | None:
+        return self._runtime.integrity
+
+    @_integrity.setter
+    def _integrity(self, value: IntegrityMonitor | None) -> None:
+        self._runtime.integrity = value
+
+    @property
+    def _power_assertion(self) -> PowerAssertion | None:
+        return self._runtime.power_assertion
+
+    @_power_assertion.setter
+    def _power_assertion(self, value: PowerAssertion | None) -> None:
+        self._runtime.power_assertion = value
+
+    @property
+    def _policy_version(self) -> str:
+        return self._runtime.policy_version
+
+    @_policy_version.setter
+    def _policy_version(self, value: str) -> None:
+        self._runtime.policy_version = value
+
+    @property
+    def _config_path(self) -> Path | None:
+        return self._runtime.config_path
+
+    @_config_path.setter
+    def _config_path(self, value: Path | None) -> None:
+        self._runtime.config_path = value
+
+    @property
+    def _log_path(self) -> Path | None:
+        return self._runtime.log_path
+
+    @_log_path.setter
+    def _log_path(self, value: Path | None) -> None:
+        self._runtime.log_path = value
+
+    @property
+    def _embedded_mode(self) -> bool:
+        return self._runtime.embedded_mode
+
+    @_embedded_mode.setter
+    def _embedded_mode(self, value: bool) -> None:
+        self._runtime.embedded_mode = value
+
+    @property
+    def _esr_ready_callback(self) -> Callable[[str, str, str | None], None] | None:
+        return self._runtime.esr_ready_callback
+
+    @_esr_ready_callback.setter
+    def _esr_ready_callback(self, value: Callable[[str, str, str | None], None] | None) -> None:
+        self._runtime.esr_ready_callback = value
+
+    @property
+    def _natural_exit_callback(self) -> NaturalExitCallback | None:
+        return self._runtime.natural_exit_callback
+
+    @_natural_exit_callback.setter
+    def _natural_exit_callback(self, value: NaturalExitCallback | None) -> None:
+        self._runtime.natural_exit_callback = value
+
+    @property
+    def _stop_requested(self) -> bool:
+        return self._runtime.stop_requested
+
+    @_stop_requested.setter
+    def _stop_requested(self, value: bool) -> None:
+        self._runtime.stop_requested = value
+
+    @property
+    def _stopped(self) -> bool:
+        return self._runtime.stopped
+
+    @_stopped.setter
+    def _stopped(self, value: bool) -> None:
+        self._runtime.stopped = value
+
+    @property
+    def _stop_reason(self) -> str:
+        return self._runtime.stop_reason
+
+    @_stop_reason.setter
+    def _stop_reason(self, value: str) -> None:
+        self._runtime.stop_reason = value
+
+    @property
+    def _stop_done(self) -> asyncio.Event:
+        return self._runtime.stop_done
+
+    @_stop_done.setter
+    def _stop_done(self, value: asyncio.Event) -> None:
+        self._runtime.stop_done = value
+
+    @property
+    def _draining(self) -> bool:
+        return self._runtime.draining
+
+    @_draining.setter
+    def _draining(self, value: bool) -> None:
+        self._runtime.draining = value
+
+    @property
+    def _drain_reason(self) -> str | None:
+        return self._runtime.drain_reason
+
+    @_drain_reason.setter
+    def _drain_reason(self, value: str | None) -> None:
+        self._runtime.drain_reason = value
+
+    @property
+    def _drain_initialized(self) -> bool:
+        return self._runtime.drain_initialized
+
+    @_drain_initialized.setter
+    def _drain_initialized(self, value: bool) -> None:
+        self._runtime.drain_initialized = value
+
+    @property
+    def _pause_event(self) -> asyncio.Event:
+        return self._runtime.pause_event
+
+    @_pause_event.setter
+    def _pause_event(self, value: asyncio.Event) -> None:
+        self._runtime.pause_event = value
+
+    @property
+    def _pause_reason(self) -> str | None:
+        return self._runtime.pause_reason
+
+    @_pause_reason.setter
+    def _pause_reason(self, value: str | None) -> None:
+        self._runtime.pause_reason = value
+
+    @property
+    def _pause_deadline(self) -> float | None:
+        return self._runtime.pause_deadline
+
+    @_pause_deadline.setter
+    def _pause_deadline(self, value: float | None) -> None:
+        self._runtime.pause_deadline = value
+
+    @property
+    def _natural_exit_reason(self) -> str | None:
+        return self._runtime.natural_exit_reason
+
+    @_natural_exit_reason.setter
+    def _natural_exit_reason(self, value: str | None) -> None:
+        self._runtime.natural_exit_reason = value
+
+    @property
+    def _end_session_dispatch_started(self) -> bool:
+        return self._runtime.end_session_dispatch_started
+
+    @_end_session_dispatch_started.setter
+    def _end_session_dispatch_started(self, value: bool) -> None:
+        self._runtime.end_session_dispatch_started = value
+
+    @property
+    def _end_session_report_requested(self) -> bool:
+        return self._runtime.end_session_report_requested
+
+    @_end_session_report_requested.setter
+    def _end_session_report_requested(self, value: bool) -> None:
+        self._runtime.end_session_report_requested = value
+
+    @property
+    def _end_session_report_open_browser(self) -> bool:
+        return self._runtime.end_session_report_open_browser
+
+    @_end_session_report_open_browser.setter
+    def _end_session_report_open_browser(self, value: bool) -> None:
+        self._runtime.end_session_report_open_browser = value
+
+    @property
+    def _budget_override_enabled(self) -> bool | None:
+        return self._runtime.budget_override_enabled
+
+    @_budget_override_enabled.setter
+    def _budget_override_enabled(self, value: bool | None) -> None:
+        self._runtime.budget_override_enabled = value
+
+    @property
+    def _budget_override_total(self) -> float | None:
+        return self._runtime.budget_override_total
+
+    @_budget_override_total.setter
+    def _budget_override_total(self, value: float | None) -> None:
+        self._runtime.budget_override_total = value
+
+    @property
+    def _time_override_enabled(self) -> bool | None:
+        return self._runtime.time_override_enabled
+
+    @_time_override_enabled.setter
+    def _time_override_enabled(self, value: bool | None) -> None:
+        self._runtime.time_override_enabled = value
+
+    @property
+    def _time_override_minutes(self) -> int | None:
+        return self._runtime.time_override_minutes
+
+    @_time_override_minutes.setter
+    def _time_override_minutes(self, value: int | None) -> None:
+        self._runtime.time_override_minutes = value
+
+    @property
+    def _idle_streak(self) -> int:
+        return self._runtime.idle_streak
+
+    @_idle_streak.setter
+    def _idle_streak(self, value: int) -> None:
+        self._runtime.idle_streak = value
+
+    @property
+    def _last_selection_digest(self) -> bytes | None:
+        return self._runtime.last_selection_digest
+
+    @_last_selection_digest.setter
+    def _last_selection_digest(self, value: bytes | None) -> None:
+        self._runtime.last_selection_digest = value
+
+    @property
+    def _last_refresh_time(self) -> float:
+        return self._runtime.last_refresh_time
+
+    @_last_refresh_time.setter
+    def _last_refresh_time(self, value: float) -> None:
+        self._runtime.last_refresh_time = value
+
+    @property
+    def _last_play_id(self) -> int | None:
+        return self._runtime.last_play_id
+
+    @_last_play_id.setter
+    def _last_play_id(self, value: int | None) -> None:
+        self._runtime.last_play_id = value
+
+    @property
+    def _loop_started_at(self) -> float:
+        return self._runtime.loop_started_at
+
+    @_loop_started_at.setter
+    def _loop_started_at(self, value: float) -> None:
+        self._runtime.loop_started_at = value
+
+    @property
+    def _in_flight(self) -> dict[str, asyncio.Task[PlayOutcome]]:
+        return self._runtime.in_flight
+
+    @_in_flight.setter
+    def _in_flight(self, value: dict[str, asyncio.Task[PlayOutcome]]) -> None:
+        self._runtime.in_flight = value
+
+    @property
+    def _dispatch_ctx(self) -> dict[str, _DispatchContext]:
+        return self._runtime.dispatch_ctx
+
+    @_dispatch_ctx.setter
+    def _dispatch_ctx(self, value: dict[str, _DispatchContext]) -> None:
+        self._runtime.dispatch_ctx = value
+
+    @property
+    def _completion_processing_count(self) -> int:
+        return self._runtime.completion_processing_count
+
+    @_completion_processing_count.setter
+    def _completion_processing_count(self, value: int) -> None:
+        self._runtime.completion_processing_count = value
+
+    @property
+    def _completion_processing_idle(self) -> asyncio.Event:
+        return self._runtime.completion_processing_idle
+
+    @_completion_processing_idle.setter
+    def _completion_processing_idle(self, value: asyncio.Event) -> None:
+        self._runtime.completion_processing_idle = value
+
+    @property
+    def _feedback_cadence_plays_since_ack(self) -> int:
+        return self._runtime.feedback_cadence_plays_since_ack
+
+    @_feedback_cadence_plays_since_ack.setter
+    def _feedback_cadence_plays_since_ack(self, value: int) -> None:
+        self._runtime.feedback_cadence_plays_since_ack = value
+
+    @property
+    def _feedback_cadence_last_ack_monotonic(self) -> float:
+        return self._runtime.feedback_cadence_last_ack_monotonic
+
+    @_feedback_cadence_last_ack_monotonic.setter
+    def _feedback_cadence_last_ack_monotonic(self, value: float) -> None:
+        self._runtime.feedback_cadence_last_ack_monotonic = value
+
+    @property
+    def context_pressure_hints(self) -> dict[str, float]:
+        return self._runtime.context_pressure_hints
+
+    @context_pressure_hints.setter
+    def context_pressure_hints(self, value: dict[str, float]) -> None:
+        self._runtime.context_pressure_hints = value
+
+    @property
+    def _recent_play_outcomes(self) -> collections.deque[tuple[bool, str]]:
+        return self._runtime.recent_play_outcomes
+
+    @_recent_play_outcomes.setter
+    def _recent_play_outcomes(self, value: collections.deque[tuple[bool, str]]) -> None:
+        self._runtime.recent_play_outcomes = value
+
+    @property
+    def _recent_play_completions(self) -> collections.deque[PlayRecord]:
+        return self._runtime.recent_play_completions
+
+    @_recent_play_completions.setter
+    def _recent_play_completions(self, value: collections.deque[PlayRecord]) -> None:
+        self._runtime.recent_play_completions = value
+
+    @property
+    def _recent_applied_labels(self) -> collections.deque[tuple[int, str]]:
+        return self._runtime.recent_applied_labels
+
+    @_recent_applied_labels.setter
+    def _recent_applied_labels(self, value: collections.deque[tuple[int, str]]) -> None:
+        self._runtime.recent_applied_labels = value
+
+    @property
+    def _resource_failure_counts(self) -> dict[str, int]:
+        return self._runtime.resource_failure_counts
+
+    @_resource_failure_counts.setter
+    def _resource_failure_counts(self, value: dict[str, int]) -> None:
+        self._runtime.resource_failure_counts = value
+
+    @property
+    def _parked_resource_keys(self) -> set[str]:
+        return self._runtime.parked_resource_keys
+
+    @_parked_resource_keys.setter
+    def _parked_resource_keys(self, value: set[str]) -> None:
+        self._runtime.parked_resource_keys = value
+
+    @property
+    def _auth_suppressed_agent_types(self) -> set[str]:
+        return self._runtime.auth_suppressed_agent_types
+
+    @_auth_suppressed_agent_types.setter
+    def _auth_suppressed_agent_types(self, value: set[str]) -> None:
+        self._runtime.auth_suppressed_agent_types = value
 
     # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
@@ -504,25 +712,20 @@ class _OrchestratorBase:
         config-immutability invariant is preserved (no in-place mutation of
         ``_cfg``).
         """
-        b = self._cfg.budget
+        rt = self._runtime
+        b = rt.cfg.budget
         return BudgetConfig(
             enabled=(
-                self._budget_override_enabled
-                if self._budget_override_enabled is not None
-                else b.enabled
+                rt.budget_override_enabled if rt.budget_override_enabled is not None else b.enabled
             ),
-            total=(
-                self._budget_override_total if self._budget_override_total is not None else b.total
-            ),
+            total=(rt.budget_override_total if rt.budget_override_total is not None else b.total),
             warning_threshold=b.warning_threshold,
             time_enabled=(
-                self._time_override_enabled
-                if self._time_override_enabled is not None
-                else b.time_enabled
+                rt.time_override_enabled if rt.time_override_enabled is not None else b.time_enabled
             ),
             time_total_minutes=(
-                self._time_override_minutes
-                if self._time_override_minutes is not None
+                rt.time_override_minutes
+                if rt.time_override_minutes is not None
                 else b.time_total_minutes
             ),
         )
@@ -532,7 +735,7 @@ class _OrchestratorBase:
         return project_weights_dir(self._repo_root)
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None:
-        raw = getattr(self._selector, "_config_index", None)
+        raw = getattr(self._runtime.selector, "_config_index", None)
         return raw if isinstance(raw, tuple) and raw else None
 
     # ------------------------------------------------------------------

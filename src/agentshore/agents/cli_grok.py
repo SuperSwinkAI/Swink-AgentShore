@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import shutil
 
-from agentshore.agents.cli_agent import (
+from agentshore.agents._jsonl import (
     _first_int,
     _iter_json_events,
     _max_usage,

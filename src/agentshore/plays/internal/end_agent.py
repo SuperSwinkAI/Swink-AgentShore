@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from agentshore.errors import PreconditionFailed
+from agentshore.plays.internal.base import InternalPlay
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentStatus, PlayOutcome, PlayType, SessionState
 
@@ -31,12 +32,13 @@ if TYPE_CHECKING:
 _MIN_PLAYS_PER_AGENT = 10
 
 
-class EndAgentPlay:
+class EndAgentPlay(InternalPlay):
     """Terminate an agent that has run enough plays to be worth evaluating."""
 
     play_type = PlayType.END_AGENT
-    skill_name = None
-    capability = None
+    # Terminating handoff: the executor snapshots the agent's context size before
+    # this play resets it, and records a handoff row on success.
+    is_handoff = True
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         active = [a for a in state.agents if a.status in (AgentStatus.IDLE, AgentStatus.BUSY)]
@@ -79,9 +81,6 @@ class EndAgentPlay:
                 )
             ]
         return []
-
-    def estimated_cost(self, state: OrchestratorState) -> float:
-        return 0.0
 
     async def execute(
         self,

@@ -61,3 +61,20 @@ def needs_review(pr: object) -> bool:
     if head_sha is None:
         return False
     return bool(head_sha != last_reviewed_sha)
+
+
+def pr_is_approved(pr: object) -> bool:
+    """True when GitHub or AgentShore has approved the current PR head."""
+    if getattr(pr, "review_decision", None) == "APPROVED":
+        return True
+    return (
+        getattr(pr, "last_review_status", None) == "PASS"
+        and getattr(pr, "last_reviewed_sha", None) is not None
+        and getattr(pr, "head_sha", None) is not None
+        and getattr(pr, "last_reviewed_sha", None) == getattr(pr, "head_sha", None)
+    )
+
+
+def pr_is_awaiting_review(pr: object) -> bool:
+    """True for open/review PRs without current-head approval."""
+    return getattr(pr, "state", None) in ("open", "review") and not pr_is_approved(pr)

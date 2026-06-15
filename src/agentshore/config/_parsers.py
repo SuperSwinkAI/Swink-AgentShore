@@ -302,6 +302,10 @@ class _RawSkills(TypedDict, total=False):
 class _RawWorktrees(TypedDict, total=False):
     reap_ttl_seconds: int
     root: str | None
+    min_free_disk_mb: int
+    disk_high_water_mb: int
+    reap_failed_pr_after_n: int
+    max_active_worktrees: int | None
 
 
 class _RawConfig(TypedDict, total=False):
@@ -334,38 +338,6 @@ class _RawConfig(TypedDict, total=False):
     socket: str | None
 
 
-_AGENT_DEFAULTS: dict[str, dict[str, float | int | None]] = {
-    "claude_code": {
-        "max_context": 200_000,
-        "cost_per_1k_input": 0.003,
-        "cost_per_1k_cached_input": 0.0003,
-        "cost_per_1k_cache_write_input": 0.00375,
-        "cost_per_1k_output": 0.015,
-    },
-    "codex": {
-        "max_context": 400_000,
-        "cost_per_1k_input": 0.00175,
-        "cost_per_1k_cached_input": 0.000175,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.014,
-    },
-    "gemini": {
-        "max_context": 1_000_000,
-        "cost_per_1k_input": 0.0005,
-        "cost_per_1k_cached_input": None,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.003,
-    },
-    "grok": {
-        "max_context": 256_000,
-        "cost_per_1k_input": 0.001,
-        "cost_per_1k_cached_input": 0.0002,
-        "cost_per_1k_cache_write_input": None,
-        "cost_per_1k_output": 0.002,
-    },
-}
-
-
 @overload
 def _agent_default(name: str, key: str, fallback: float | int) -> float | int: ...
 
@@ -375,7 +347,13 @@ def _agent_default(name: str, key: str, fallback: None) -> float | int | None: .
 
 
 def _agent_default(name: str, key: str, fallback: float | int | None) -> float | int | None:
-    return _AGENT_DEFAULTS.get(name, {}).get(key, fallback)
+    from agentshore.agents.pricing import AGENT_PRICING
+
+    pricing = AGENT_PRICING.get(name)
+    if pricing is None:
+        return fallback
+    value = getattr(pricing, key, fallback)
+    return fallback if value is None else value
 
 
 def _optional_float(value: float | int | str | None) -> float | None:
@@ -1019,9 +997,31 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
     root = raw.get("root")
     if root is not None and not (isinstance(root, str) and root.strip()):
         raise ConfigError(f"worktrees.root must be a non-empty string or omitted, got {root!r}")
+
+    def _nonneg_int(key: str, default: int) -> int:
+        val = raw.get(key, default)
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            raise ConfigError(f"worktrees.{key} must be a non-negative integer, got {val!r}")
+        return val
+
+    min_free_disk_mb = _nonneg_int("min_free_disk_mb", 0)
+    disk_high_water_mb = _nonneg_int("disk_high_water_mb", 0)
+    reap_failed_pr_after_n = _nonneg_int("reap_failed_pr_after_n", 0)
+    max_active = raw.get("max_active_worktrees")
+    if max_active is not None and (
+        not isinstance(max_active, int) or isinstance(max_active, bool) or max_active < 1
+    ):
+        raise ConfigError(
+            "worktrees.max_active_worktrees must be a positive integer or omitted, "
+            f"got {max_active!r}"
+        )
     return WorktreeConfig(
         reap_ttl_seconds=ttl,
         root=root.strip() if isinstance(root, str) else None,
+        min_free_disk_mb=min_free_disk_mb,
+        disk_high_water_mb=disk_high_water_mb,
+        reap_failed_pr_after_n=reap_failed_pr_after_n,
+        max_active_worktrees=max_active,
     )
 
 

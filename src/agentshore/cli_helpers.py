@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agentshore import command
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
+from agentshore.agents.pricing import pricing_yaml_lines
 from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.errors import OrchestratorError
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
@@ -22,32 +23,6 @@ _DEFAULT_BUDGET: float = 200.0
 # parallel to the $200 dollar safety default above.
 _DEFAULT_TIME_MINUTES: int = 1440
 _PROJECT_DIR = ".agentshore"
-_AGENT_PRICING_LINES: dict[str, tuple[str, ...]] = {
-    "claude_code": (
-        "    max_context: 200000",
-        "    cost_per_1k_input: 0.003",
-        "    cost_per_1k_cached_input: 0.0003",
-        "    cost_per_1k_cache_write_input: 0.00375",
-        "    cost_per_1k_output: 0.015",
-    ),
-    "codex": (
-        "    max_context: 400000",
-        "    cost_per_1k_input: 0.00175",
-        "    cost_per_1k_cached_input: 0.000175",
-        "    cost_per_1k_output: 0.014",
-    ),
-    "gemini": (
-        "    max_context: 1000000",
-        "    cost_per_1k_input: 0.0005",
-        "    cost_per_1k_output: 0.003",
-    ),
-    "grok": (
-        "    max_context: 256000",
-        "    cost_per_1k_input: 0.001",
-        "    cost_per_1k_cached_input: 0.0002",
-        "    cost_per_1k_output: 0.002",
-    ),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +158,44 @@ def _ensure_gitignore_entry(project_path: Path, entry: str = ".agentshore/") -> 
     return True
 
 
+def _render_agent_block(agent_key: str, binary: str) -> str:
+    """Render one ``agents.<key>:`` YAML block from the canonical defaults.
+
+    Single source for the per-agent skeleton emitted by the on-disk config
+    template generators: model tiers come from
+    :func:`agentshore.agents.model_tiers.default_model_tiers_for` and pricing
+    from :data:`agentshore.agents.pricing.AGENT_PRICING`, so the agent/model/
+    pricing structure cannot drift between call sites. ``agent_key`` is the
+    canonical config key (e.g. ``claude_code``); ``binary`` is the executable
+    name written to the ``binary:`` field.
+    """
+    model_lines = ""
+    try:
+        agent_type: AgentType | None = AgentType(agent_key)
+    except ValueError:
+        agent_type = None
+    if agent_type is not None:
+        tiers = default_model_tiers_for(agent_type)
+        default_tier = tiers.get(DEFAULT_MODEL_TIER)
+        if default_tier is not None and default_tier.model:
+            model_lines += f"    model: {default_tier.model}\n"
+            if default_tier.reasoning_effort:
+                model_lines += f"    reasoning_effort: {default_tier.reasoning_effort}\n"
+        if tiers:
+            model_lines += "    model_tiers:\n"
+            for tier_name, tier_cfg in tiers.items():
+                model_lines += f"      {tier_name}:\n"
+                model_lines += f"        enabled: {'true' if tier_cfg.enabled else 'false'}\n"
+                if tier_cfg.model:
+                    model_lines += f"        model: {tier_cfg.model}\n"
+                if tier_cfg.reasoning_effort:
+                    model_lines += f"        reasoning_effort: {tier_cfg.reasoning_effort}\n"
+    pricing_lines = "\n".join(pricing_yaml_lines(agent_key))
+    if pricing_lines:
+        model_lines += f"{pricing_lines}\n"
+    return f"  {agent_key}:\n    enabled: true\n    binary: {binary}\n{model_lines}"
+
+
 def _generate_default_config(
     name_with_owner: str,
     agents: list[str],
@@ -199,34 +212,9 @@ def _generate_default_config(
     budget_total = budget if budget is not None else 0.0
     time_enabled = time_minutes is not None and time_minutes > 0
     time_total_minutes = time_minutes if time_minutes is not None else 0
-    agent_blocks = []
-    for binary in agents:
-        agent = BINARY_TO_AGENT_KEY.get(binary, binary)
-        model_lines = ""
-        try:
-            agent_type = AgentType(agent)
-        except ValueError:
-            agent_type = None
-        if agent_type is not None:
-            tiers = default_model_tiers_for(agent_type)
-            default_tier = tiers.get(DEFAULT_MODEL_TIER)
-            if default_tier is not None and default_tier.model:
-                model_lines += f"    model: {default_tier.model}\n"
-                if default_tier.reasoning_effort:
-                    model_lines += f"    reasoning_effort: {default_tier.reasoning_effort}\n"
-            if tiers:
-                model_lines += "    model_tiers:\n"
-                for tier_name, tier_cfg in tiers.items():
-                    model_lines += f"      {tier_name}:\n"
-                    model_lines += f"        enabled: {'true' if tier_cfg.enabled else 'false'}\n"
-                    if tier_cfg.model:
-                        model_lines += f"        model: {tier_cfg.model}\n"
-                    if tier_cfg.reasoning_effort:
-                        model_lines += f"        reasoning_effort: {tier_cfg.reasoning_effort}\n"
-        pricing_lines = "\n".join(_AGENT_PRICING_LINES.get(agent, ()))
-        if pricing_lines:
-            model_lines += f"{pricing_lines}\n"
-        agent_blocks.append(f"  {agent}:\n    enabled: true\n    binary: {binary}\n{model_lines}")
+    agent_blocks = [
+        _render_agent_block(BINARY_TO_AGENT_KEY.get(binary, binary), binary) for binary in agents
+    ]
     agent_text = "".join(agent_blocks)
     agents_section = f"agents:\n{agent_text}" if agent_text else "agents: {}\n"
     return (

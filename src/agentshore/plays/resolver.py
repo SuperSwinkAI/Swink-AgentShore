@@ -312,10 +312,7 @@ class ParameterResolver:
         providers_in_take_break = {
             s.agent_type.value
             for s in state.agents
-            if (
-                s.status != AgentStatus.TERMINATED
-                and s.current_play_type == PlayType.TAKE_BREAK
-            )
+            if (s.status != AgentStatus.TERMINATED and s.current_play_type == PlayType.TAKE_BREAK)
         }
         if config_index_override is not None:
             override_agent_type, override_model_tier = config_index_override
@@ -499,25 +496,21 @@ class ParameterResolver:
         if pr is None:
             return None
 
-        if play_type == PlayType.MERGE_PR:
+        # CODE_REVIEW pins a cross-identity reviewer into the claim key; MERGE_PR
+        # and UNBLOCK_PR claim the PR directly with no reviewer selection.
+        if play_type != PlayType.CODE_REVIEW:
             return await self._claim_params(play_type, state, params)
 
-        if play_type == PlayType.UNBLOCK_PR:
-            return await self._claim_params(play_type, state, params)
-
-        if play_type == PlayType.CODE_REVIEW:
-            # Reviewer selection is target enumeration for the claim key, not an
-            # eligibility decision; the executor's _select_skill_agent remains
-            # the anti-confirmation backstop. Returning None on no idle reviewer
-            # is a clean re-pick, not an eligibility rejection.
-            idle_reviewers = idle_can_review_agents(state)
-            reviewer = pick_reviewer_for_pr(pr.github_author, idle_reviewers)
-            if reviewer is None:
-                return None
-            params = dataclasses.replace(params, target_agent_id=reviewer.agent_id)
-            return await self._claim_code_review_params(state, params, reviewer.agent_id)
-
-        return None
+        # Reviewer selection is target enumeration for the claim key, not an
+        # eligibility decision; the executor's _select_skill_agent remains
+        # the anti-confirmation backstop. Returning None on no idle reviewer
+        # is a clean re-pick, not an eligibility rejection.
+        idle_reviewers = idle_can_review_agents(state)
+        reviewer = pick_reviewer_for_pr(pr.github_author, idle_reviewers)
+        if reviewer is None:
+            return None
+        params = dataclasses.replace(params, target_agent_id=reviewer.agent_id)
+        return await self._claim_code_review_params(state, params, reviewer.agent_id)
 
     async def _claim_code_review_params(
         self, state: OrchestratorState, params: PlayParams, reviewer_agent_id: str

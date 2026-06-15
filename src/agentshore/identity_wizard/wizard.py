@@ -8,9 +8,7 @@ them at ``agentshore.identity_wizard.wizard.<name>``.
 
 from __future__ import annotations
 
-import os
 import re
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -81,9 +79,9 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def _stdin_is_tty() -> bool:
     """Whether stdin looks interactive (TTY and not gated by env)."""
-    if os.environ.get("AGENTSHORE_NONINTERACTIVE"):
-        return False
-    return sys.stdin.isatty()
+    from agentshore.subprocess_env import is_interactive
+
+    return is_interactive()
 
 
 def _default_email_for(login: str) -> str:

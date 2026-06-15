@@ -59,6 +59,3 @@ class OverrideQueue:
 
     def empty(self) -> bool:
         return self._queue.empty()
-
-    def mark_dispatched(self, play_id: int) -> None:
-        self.dispatched_play_ids.add(play_id)

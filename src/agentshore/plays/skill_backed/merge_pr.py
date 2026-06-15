@@ -5,13 +5,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-import sqlite3
 from typing import TYPE_CHECKING
 
-import aiosqlite
 import structlog
 
-from agentshore.beads import BeadStatus, bd
+from agentshore.beads import bd
 from agentshore.command import CommandTimeoutError, run_command
 from agentshore.core.branch_sync import fast_forward_local_branch
 from agentshore.github.pr_links import infer_pr_issue_links
@@ -176,6 +174,9 @@ class MergePRPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_merge"),)
 
+    # PR-scoped: self-heal the PR base before merging so it lands on the target.
+    retarget_pr_base = True
+
     @property
     def play_type(self) -> PlayType:
         return PlayType.MERGE_PR
@@ -208,53 +209,30 @@ class MergePRPlay(SkillBackedPlay):
         """
         outcome = await super().execute(state, params, ctx=ctx)
         if outcome.success and params.pr_number is not None:
-            await ctx.store.mark_pr_merged(params.pr_number, ctx.session_id)
-            await ctx.store.complete_reviews_for_pr(ctx.session_id, params.pr_number)
-            # Fast-forward the local target branch to the just-merged remote
-            # tip. The merge landed on origin/<target>; nothing else advances
-            # the local ref, so without this it drifts behind the remote. The
-            # primary checkout is often on a *different* branch than the target
-            # (e.g. main vs integration), so the helper advances the ref
-            # directly rather than merging — see core/branch_sync.py. Best-effort
-            # housekeeping: never raises, never blocks the merge outcome.
-            target_branch = ctx.cfg.project.target_branch
-            if target_branch:
-                await fast_forward_local_branch(ctx.project_path, target_branch)
-            # Mark referenced issues closed in the local cache. Without this
-            # they sit at state='open' forever — _refresh_issues only fetches
-            # state="open" from GitHub, so closed issues are never seen by
-            # the periodic refresh and the dashboard's DONE column (driven
-            # by list_recently_closed_issues, which filters on state='closed')
-            # stays empty.
+            # Mark the PR merged, complete its reviews, fast-forward the local
+            # target branch, resolve linked issues, and close them + their beads
+            # tasks. The shared reconciler owns this propagation (also used by
+            # unblock_pr for stacked siblings). We pass this module's own helper
+            # names so the tests that patch ``merge_pr.bd`` /
+            # ``merge_pr._fetch_pr_body`` / ``merge_pr._fetch_pr_links`` /
+            # ``merge_pr.fast_forward_local_branch`` by module path still reach
+            # the call sites. Imported lazily to avoid an import cycle
+            # (``_merge_reconcile`` imports this module's helpers).
+            from agentshore.plays.skill_backed._merge_reconcile import reconcile_merged_pr
+
             raw_issues_closed = (
                 self._last_skill_result.issues_closed if self._last_skill_result is not None else []
             )
-
-            # Resolve linked issues via comprehensive infer_pr_issue_links first
-            # (captures branch-name refs and GitHub API closing references that
-            # _validated_issue_set would miss for non-default-branch merges or
-            # PRs without explicit closing keywords).
-            pr_link_numbers = await _fetch_pr_links(params.pr_number, ctx.project_path)
-
-            if pr_link_numbers:
-                # Merge skill-reported and link-inferred sets; prefer the union
-                # so that issues detected either way are included.
-                issues_closed = sorted(set(raw_issues_closed) | set(pr_link_numbers))
-                _logger.debug(
-                    "merge_pr_links_resolved",
-                    pr_number=params.pr_number,
-                    skill_issues=sorted(raw_issues_closed),
-                    link_inferred=sorted(pr_link_numbers),
-                    merged=issues_closed,
-                )
-            else:
-                # _fetch_pr_links failed; fall back to H4 body-keyword validation.
-                pr_body = await _fetch_pr_body(params.pr_number, ctx.project_path)
-                issues_closed = _validated_issue_set(
-                    skill_issues=raw_issues_closed,
-                    pr_body=pr_body,
-                    pr_number=params.pr_number,
-                )
+            issues_closed = await reconcile_merged_pr(
+                params.pr_number,
+                ctx=ctx,
+                state=state,
+                skill_issues=raw_issues_closed,
+                bd_fn=bd,
+                fetch_pr_body=_fetch_pr_body,
+                fetch_pr_links=_fetch_pr_links,
+                fast_forward=fast_forward_local_branch,
+            )
 
             # Record the validated issue list as an artifact so MetricsEngine
             # can distinguish linked merges from doc-only/hotfix merges when
@@ -275,51 +253,4 @@ class MergePRPlay(SkillBackedPlay):
                     },
                 ],
             )
-
-            # SQLite write-through.
-            if issues_closed:
-                try:
-                    await ctx.store.update_issues_state_batch(
-                        issues_closed, ctx.session_id, "closed"
-                    )
-                except (aiosqlite.Error, sqlite3.Error, RuntimeError) as exc:
-                    _logger.warning(
-                        "merge_pr_close_issues_failed",
-                        session_id=ctx.session_id,
-                        pr_number=params.pr_number,
-                        issue_numbers=sorted(issues_closed),
-                        error=str(exc),
-                    )
-
-            for issue_number in issues_closed:
-                # C2: Close the linked beads task.
-                if state.graph is not None:
-                    for task in state.graph.tasks:
-                        if task.issue_number == issue_number and task.status != BeadStatus.CLOSED:
-                            try:
-                                await bd(
-                                    "update",
-                                    task.bead_id,
-                                    "--status",
-                                    "closed",
-                                    "--dolt-auto-commit=on",
-                                    cwd=ctx.project_path,
-                                )
-                                _logger.info(
-                                    "merge_pr_bead_closed",
-                                    bead_id=task.bead_id,
-                                    issue_number=issue_number,
-                                    pr_number=params.pr_number,
-                                    session_id=ctx.session_id,
-                                )
-                            except Exception as exc:
-                                _logger.warning(
-                                    "merge_pr_bead_close_failed",
-                                    bead_id=task.bead_id,
-                                    issue_number=issue_number,
-                                    pr_number=params.pr_number,
-                                    error=str(exc),
-                                    session_id=ctx.session_id,
-                                )
-                            break
         return outcome

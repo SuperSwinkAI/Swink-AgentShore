@@ -18,6 +18,7 @@ export interface StartupStepState {
 
 /** Canonical step IDs emitted by session.start $/progress notifications. */
 export const STEP_CONFIG_MERGE = "config_merge";
+export const STEP_CHECK_AGENT_AUTH = "check_agent_auth";
 export const STEP_INSTALL_SKILLS = "install_skills";
 export const STEP_INIT_BEADS = "init_beads";
 export const STEP_BIND_IPC = "bind_ipc";
@@ -27,6 +28,7 @@ export const STEP_FIRST_SNAPSHOT = "first_snapshot";
 /** Ordered step IDs as they appear in the startup checklist. */
 export const STARTUP_STEP_IDS = [
   STEP_CONFIG_MERGE,
+  STEP_CHECK_AGENT_AUTH,
   STEP_INSTALL_SKILLS,
   STEP_INIT_BEADS,
   STEP_BIND_IPC,
@@ -46,6 +48,11 @@ export const STEP_METADATA: Record<string, StepMeta> = {
   [STEP_CONFIG_MERGE]: {
     label: "Config merged",
     description: "agentshore.yaml updated from target branch, GitHub login, and agent choices.",
+    repairScreen: "/setup/agents",
+  },
+  [STEP_CHECK_AGENT_AUTH]: {
+    label: "Agent auth checked",
+    description: "Each CLI agent's backend session (e.g. Codex login) is valid.",
     repairScreen: "/setup/agents",
   },
   [STEP_INSTALL_SKILLS]: {

@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING
 
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.base import SkillBackedPlay
-from agentshore.plays.skill_backed.gates import BeadsInitializedGate, CooldownGate, InFlightGate
+from agentshore.plays.skill_backed.gates import (
+    BeadsInitializedGate,
+    CooldownGate,
+    FirstRunWarmupGate,
+    InFlightGate,
+)
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
@@ -67,6 +72,10 @@ class GroomBacklogPlay(SkillBackedPlay):
         reasons = super().preconditions(state)
         if reasons:
             return reasons
+
+        # Capability is checked once and threaded through every path below.
+        cap_issues = self._capability_check(state)
+
         # Evaluate bypass conditions BEFORE the capability gate so that urgent
         # deadlock-recovery scenarios are not silently masked when the only idle
         # agent happens to lack can_run_skill.
@@ -80,46 +89,28 @@ class GroomBacklogPlay(SkillBackedPlay):
         #
         # If a bypass fires but no capable agent is available, we return a
         # descriptive error rather than [] so the RL selector sees a clear
-        # reason in the log instead of silently blocking.
+        # reason in the log instead of silently blocking. A firing bypass also
+        # skips the first-run warmup floor (urgent recovery may run early).
         if _has_unlinked_ready_tasks(state) and not state.open_issues:
-            cap_issues = self._capability_check(state)
-            if cap_issues:
-                return [
-                    MaskReason(
-                        text=(
-                            "urgent groom needed (unlinked ready tasks, no open issues)"
-                            f" but {cap_issues[0].text}"
-                        ),
-                        classification=MaskClassification.TRANSIENT,
-                        source=MaskSource.ELIGIBILITY,
-                    )
-                ]
-            return []
+            return self._urgent_or_pass(cap_issues, "unlinked ready tasks, no open issues")
         if _has_untracked_gh_issues(state):
-            cap_issues = self._capability_check(state)
-            if cap_issues:
-                return [
-                    MaskReason(
-                        text=f"urgent groom needed (untracked GH issues) but {cap_issues[0].text}",
-                        classification=MaskClassification.TRANSIENT,
-                        source=MaskSource.ELIGIBILITY,
-                    )
-                ]
-            return []
+            return self._urgent_or_pass(cap_issues, "untracked GH issues")
+
         # Normal path: capability check applies before the first-run floor.
-        cap_issues = self._capability_check(state)
         if cap_issues:
             return cap_issues
-        first_run = self.play_type not in state.plays_since_last_play_type
-        if first_run and state.total_plays < _GROOM_BACKLOG_MIN_PLAYS:
+        warmup = FirstRunWarmupGate(self.play_type, _GROOM_BACKLOG_MIN_PLAYS)(state)
+        return [warmup] if warmup is not None else []
+
+    @staticmethod
+    def _urgent_or_pass(cap_issues: list[MaskReason], reason: str) -> list[MaskReason]:
+        """Return an urgency-prefixed capability mask, or [] when a capable agent exists."""
+        if cap_issues:
             return [
                 MaskReason(
-                    text=(
-                        f"too early for first groom "
-                        f"({state.total_plays}/{_GROOM_BACKLOG_MIN_PLAYS} plays)"
-                    ),
-                    classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.PRECONDITION,
+                    text=f"urgent groom needed ({reason}) but {cap_issues[0].text}",
+                    classification=MaskClassification.TRANSIENT,
+                    source=MaskSource.ELIGIBILITY,
                 )
             ]
         return []

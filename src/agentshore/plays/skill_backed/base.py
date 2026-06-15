@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
-from agentshore.errors import ErrorClass, FailureKind
+from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
     params_to_json_safe_dict,
@@ -54,27 +54,6 @@ def _worktree_cwd_override(params: PlayParams) -> Path | None:
     return None
 
 
-_SKILL_AUTH_FAILURE_MARKERS = (
-    "bad credentials",
-    "http 401",
-    "401 unauthorized",
-    "http 403",
-    "403 forbidden",
-    "irrecoverable github access failure",
-    "github connector returned 404",
-    "connector repo 404",
-    "repository not found",
-    "could not resolve to a repository with the name",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "not found/could not resolve repository",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-    "lacks access to repository",
-    "cannot access repository metadata",
-    "active gh_token account lacks",
-)
-
 _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.ISSUE_PICKUP,
@@ -99,10 +78,9 @@ class SkillBackedPlay(Play, ABC):
     can call ``super().preconditions(state)`` to run the declared gates first
     and then append additional checks.
 
-    The legacy helpers ``_capability_check`` / ``_in_flight_check`` /
-    ``_cooldown_check`` remain for backward compatibility with plays that have
-    not yet migrated to declarative gates. Their bodies are equivalent to the
-    corresponding ``Gate`` classes.
+    ``_capability_check`` remains for custom precondition overrides that have
+    not yet migrated to declarative gates. Standard in-flight and cooldown
+    checks live in ``InFlightGate`` and ``CooldownGate``.
 
     The ``execute()`` implementation:
       1. Writes a play-specific context file via the dispatch helpers.
@@ -116,6 +94,14 @@ class SkillBackedPlay(Play, ABC):
     # mask this play. Empty tuple == no preconditions (eligible whenever the
     # cross-cutting masks in ``rl/mask.py`` permit).
     gates: Sequence[Gate] = ()
+
+    # Declarative executor-behavior flags (see ``Play`` for semantics). Inert by
+    # default; the handful of plays that opt in override the relevant flag.
+    authors_prs: bool = False
+    retarget_pr_base: bool = False
+    is_handoff: bool = False
+    is_observation: bool = False
+    requeue_on_anti_confirmation: bool = False
 
     @property
     @abstractmethod
@@ -168,11 +154,7 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
-
-        .. deprecated::
-            Use ``CapabilityGate`` in the ``gates`` tuple instead.
-        """
+        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability."""
         cap_key = self.capability
         if cap_key is None:
             return []
@@ -194,39 +176,6 @@ class SkillBackedPlay(Play, ABC):
                     text=f"no IDLE agent with {cap_key} capability",
                     classification=MaskClassification.TRANSIENT,
                     source=MaskSource.ELIGIBILITY,
-                )
-            ]
-        return []
-
-    def _in_flight_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if this play type is already in flight.
-
-        .. deprecated::
-            Use ``InFlightGate`` in the ``gates`` tuple instead.
-        """
-        if self.play_type in state.in_flight_plays:
-            return [
-                MaskReason(
-                    text=f"{self.play_type.value} already in flight",
-                    classification=MaskClassification.TRANSIENT,
-                    source=MaskSource.PRECONDITION,
-                )
-            ]
-        return []
-
-    def _cooldown_check(self, state: OrchestratorState, limit: int) -> list[MaskReason]:
-        """Return a non-empty list if within the post-execution cooldown window.
-
-        .. deprecated::
-            Use ``CooldownGate`` in the ``gates`` tuple instead.
-        """
-        cooldown = state.plays_since_last_play_type.get(self.play_type)
-        if cooldown is not None and cooldown < limit:
-            return [
-                MaskReason(
-                    text=f"{self.play_type.value} cooldown ({cooldown}/{limit} plays since last)",
-                    classification=MaskClassification.INDEFINITE_WAIT,
-                    source=MaskSource.PRECONDITION,
                 )
             ]
         return []
@@ -459,6 +408,28 @@ class SkillBackedPlay(Play, ABC):
                     "trunk_artifact_presnapshot_failed", error=str(exc), play_id=ctx.play_id
                 )
 
+        # Graceful guard for the worktree-reclaim TOCTOU race (#176): the
+        # allocated worktree can be removed by reconcile / collision-reclaim
+        # churn between allocation and this dispatch. If the resolved cwd is gone,
+        # short-circuit to a recoverable failure rather than letting the spawn
+        # raise (which ``cli_agent`` now maps to AgentProcessCrashed anyway — this
+        # is the cheaper, no-spawn path). PPO re-picks cleanly on the next tick.
+        if dispatch_cwd is not None and not dispatch_cwd.exists():
+            _logger.warning(
+                "play_dispatch_cwd_reclaimed",
+                play_type=self.play_type.value,
+                play_id=ctx.play_id,
+                agent_id=agent_id,
+                dispatch_cwd=str(dispatch_cwd),
+            )
+            return PlayOutcome.failed(
+                self.play_type,
+                error=(f"worktree reclaimed before dispatch: {dispatch_cwd} no longer exists"),
+                agent_id=agent_id,
+                retry_requested=True,
+                failure_kind=FailureKind.AGENT_ERROR,
+            )
+
         invocation = await ctx.manager.dispatch(
             agent_id,
             prompt,
@@ -625,4 +596,4 @@ def _merge_invocation_costs(
 
 def _looks_like_auth_failure(error: str | None) -> bool:
     text = (error or "").lower()
-    return any(marker in text for marker in _SKILL_AUTH_FAILURE_MARKERS)
+    return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)

@@ -25,19 +25,13 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
 
-    from agentshore.agents.health import HealthMonitor
     from agentshore.agents.manager import AgentManager
-    from agentshore.core.context import _DispatchContext
     from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.mixins.state import StateBuilder
-    from agentshore.data.integrity import IntegrityMonitor
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
-    from agentshore.plays.selector import PlaySelector
-    from agentshore.power import PowerAssertion
     from agentshore.state import (
         OrchestratorState,
-        PlayOutcome,
-        StateProvider,
     )
 
 
@@ -45,57 +39,19 @@ SHUTDOWN_GRACE_PERIOD_SECONDS = 5.0
 
 
 class _DrainHost(Protocol):
-    """Orchestrator runtime/control state read OR written live by :class:`DrainController`.
+    """Orchestrator *behaviour* the :class:`DrainController` invokes.
 
-    These members are accessed fresh via ``self._host.<attr>`` on every call so
-    per-tick mutation (stop/drain latches, ESR request flags, in-flight maps) is
-    always current — never captured at construction. Fields the controller
-    *writes* (the stop/drain latches, ``_stop_reason``, the live-cap override
-    fields, the ESR request flags, the ESR-ready callback) are declared as plain
-    annotated attributes (not read-only ``@property``) so the assignments
-    type-check. ``_OrchestratorBase`` structurally satisfies this Protocol; the
-    cross-component methods (``_safe_call``, ``_weights_dir``,
-    ``stop_loop_liveness_watchdog``) and the ``_completion`` component (for the
-    shutdown-time GitHub refresh) are resolved live on the composition root.
+    All shared session *state* now lives on :class:`SessionRuntime` (reached via
+    ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
+    the cross-component methods and the ``_completion`` sibling reference resolve
+    on the composition root without a circular import. ``_OrchestratorBase``
+    structurally satisfies it.
     """
-
-    # --- written by the controller -----------------------------------------
-    _stopped: bool
-    _stop_requested: bool
-    _stop_reason: str
-    _pause_reason: str | None
-    _draining: bool
-    _drain_reason: str | None
-    _drain_initialized: bool
-    # Live mid-session cap overrides (Feature B, #41/#42).
-    _budget_override_enabled: bool | None
-    _budget_override_total: float | None
-    _time_override_enabled: bool | None
-    _time_override_minutes: int | None
-    _end_session_report_requested: bool
-    _end_session_report_open_browser: bool
-    _esr_ready_callback: Callable[[str, str, str | None], None] | None
-    # --- read by the controller --------------------------------------------
-    _loop_started_at: float
-    _config_path: Path | None
-    _pause_event: asyncio.Event
-    _stop_done: asyncio.Event
-    _completion_processing_idle: asyncio.Event
-    _completion_processing_count: int
-    _health: HealthMonitor | None
-    _integrity: IntegrityMonitor | None
-    _power_assertion: PowerAssertion | None
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _dispatch_ctx: dict[str, _DispatchContext]
-    _selector: PlaySelector | None
-    _state_provider: StateProvider
-    _embedded_mode: bool
-    _log_path: Path | None
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
     def effective_budget_caps(self) -> BudgetConfig:
-        """Live-effective budget caps (overrides shadowing ``_cfg.budget``)."""
+        """Live-effective budget caps (overrides shadowing ``cfg.budget``)."""
         ...
 
     async def resume(self) -> None:
@@ -112,15 +68,17 @@ class _DrainHost(Protocol):
 class DrainController:
     """Drain, stop, hard_stop, budget adjust, end-session report generation.
 
-    Stable services / collaborators are captured via the constructor; all
-    orchestrator runtime/control state (read or written) flows through the
-    :class:`_DrainHost` Protocol so per-tick mutation never goes stale.
+    Stable services / collaborators are captured via the constructor; all shared
+    session state (read or written) lives on the injected :class:`SessionRuntime`,
+    and the cross-component behaviour methods resolve via the narrow
+    :class:`_DrainHost` behaviour seam.
     """
 
     def __init__(
         self,
         *,
         host: _DrainHost,
+        runtime: SessionRuntime,
         store: DataStore,
         manager: AgentManager,
         session_id: str,
@@ -128,6 +86,7 @@ class DrainController:
         state_builder: StateBuilder,
     ) -> None:
         self._host = host
+        self._runtime = runtime
         self._store = store
         self._manager = manager
         self._session_id = session_id
@@ -169,10 +128,10 @@ class DrainController:
         actual cleanup runs when ``stop()`` is awaited (typically by
         ``__aexit__``).
         """
-        self._host._stop_reason = reason
-        self._host._stop_requested = True
-        self._host._pause_reason = None
-        self._host._pause_event.set()  # wake loop if paused
+        self._runtime.stop_reason = reason
+        self._runtime.stop_requested = True
+        self._runtime.pause_reason = None
+        self._runtime.pause_event.set()  # wake loop if paused
 
     def request_drain(self, reason: str = "signal_sigterm") -> None:
         """Schedule a graceful drain from a sync context (e.g. signal handler).
@@ -180,18 +139,18 @@ class DrainController:
         Non-blocking. Sets the drain flag and wakes the loop; ``begin_drain``
         is called on the next iteration inside ``run_until_idle``.
         """
-        if self._host._drain_initialized:
+        if self._runtime.drain_initialized:
             return
-        self._host._draining = True
-        self._host._drain_reason = reason
-        self._host._pause_reason = None
-        self._host._pause_event.set()
+        self._runtime.draining = True
+        self._runtime.drain_reason = reason
+        self._runtime.pause_reason = None
+        self._runtime.pause_event.set()
 
     def request_end_session_report(self, *, open_browser: bool = True) -> None:
         """Request a shutdown-time end-of-session report for this session."""
-        self._host._end_session_report_requested = True
-        self._host._end_session_report_open_browser = (
-            self._host._end_session_report_open_browser or open_browser
+        self._runtime.end_session_report_requested = True
+        self._runtime.end_session_report_open_browser = (
+            self._runtime.end_session_report_open_browser or open_browser
         )
 
     def register_esr_ready_callback(
@@ -205,7 +164,7 @@ class DrainController:
         ``webbrowser.open``. The callback runs synchronously inside the
         shutdown loop; exceptions are caught and logged but never raised.
         """
-        self._host._esr_ready_callback = callback
+        self._runtime.esr_ready_callback = callback
 
     async def begin_drain(self, reason: str) -> None:
         """Start graceful drain: PPO will only dispatch end_agent until all agents stop.
@@ -213,24 +172,24 @@ class DrainController:
         Idempotent — safe to call multiple times (e.g., from signal handler and
         dashboard simultaneously). Does not cancel in-flight plays.
         """
-        if self._host._drain_initialized or self._host._stop_requested:
+        if self._runtime.drain_initialized or self._runtime.stop_requested:
             return
         self.request_end_session_report(open_browser=True)
-        self._host._draining = True
-        self._host._drain_reason = reason
-        self._host._stop_reason = reason
-        self._host._pause_reason = None
+        self._runtime.draining = True
+        self._runtime.drain_reason = reason
+        self._runtime.stop_reason = reason
+        self._runtime.pause_reason = None
         # IMPORTANT: no await may precede this assignment without re-introducing a
         # concurrent-entry race.
-        self._host._drain_initialized = True
+        self._runtime.drain_initialized = True
         await self._host._safe_call(
             self._store.update_session_state(self._session_id, "draining"),
             "update_session_state",
         )
         await self._host._safe_call(
-            self._host._state_provider.on_session_draining(reason), "on_session_draining"
+            self._runtime.state_provider.on_session_draining(reason), "on_session_draining"
         )
-        self._host._pause_event.set()
+        self._runtime.pause_event.set()
         _logger.info("session_draining", reason=reason, session_id=self._session_id)
 
     async def hard_stop(self) -> None:
@@ -259,12 +218,12 @@ class DrainController:
         """
         self._validate_dollar(dollars_enabled, dollars)
         self._validate_time(time_enabled, time_minutes)
-        self._host._budget_override_enabled = dollars_enabled
-        self._host._budget_override_total = (
+        self._runtime.budget_override_enabled = dollars_enabled
+        self._runtime.budget_override_total = (
             float(dollars) if dollars_enabled and dollars is not None else 0.0
         )
-        self._host._time_override_enabled = time_enabled
-        self._host._time_override_minutes = (
+        self._runtime.time_override_enabled = time_enabled
+        self._runtime.time_override_minutes = (
             int(time_minutes) if time_enabled and time_minutes is not None else 0
         )
         resumed = await self._rearm_after_budget_change()
@@ -273,9 +232,9 @@ class DrainController:
         _logger.info(
             "budget_set",
             dollars_enabled=dollars_enabled,
-            dollars=self._host._budget_override_total,
+            dollars=self._runtime.budget_override_total,
             time_enabled=time_enabled,
-            time_minutes=self._host._time_override_minutes,
+            time_minutes=self._runtime.time_override_minutes,
             session_id=self._session_id,
         )
         return await self._apply_and_publish(resumed=resumed)
@@ -301,8 +260,8 @@ class DrainController:
                     f"resulting dollar cap ${new_total:.2f} is below the "
                     f"${MIN_ENABLED_BUDGET_USD:.2f} minimum"
                 )
-            self._host._budget_override_enabled = True
-            self._host._budget_override_total = new_total
+            self._runtime.budget_override_enabled = True
+            self._runtime.budget_override_total = new_total
         if has_time:
             base_min = caps.time_total_minutes if caps.time_enabled else 0
             new_minutes = int(base_min) + int(delta_minutes)  # type: ignore[arg-type]
@@ -311,8 +270,8 @@ class DrainController:
                     f"resulting time cap {new_minutes} min is outside "
                     f"{MIN_TIME_BUDGET_MINUTES}-{MAX_TIME_BUDGET_MINUTES} (1h-72h)"
                 )
-            self._host._time_override_enabled = True
-            self._host._time_override_minutes = new_minutes
+            self._runtime.time_override_enabled = True
+            self._runtime.time_override_minutes = new_minutes
         resumed = await self._rearm_after_budget_change()
         if persist:
             self._persist_budget()
@@ -352,7 +311,7 @@ class DrainController:
             )
 
     def _persist_budget(self) -> None:
-        config_path = self._host._config_path
+        config_path = self._runtime.config_path
         if config_path is None:
             return
         caps = self._host.effective_budget_caps()
@@ -377,7 +336,7 @@ class DrainController:
         """
         state = await self._state_builder.build_state()
         await self._host._safe_call(
-            self._host._state_provider.on_state_update(state), "on_state_update_budget"
+            self._runtime.state_provider.on_state_update(state), "on_state_update_budget"
         )
         return self._applied_from_state(state, resumed=resumed)
 
@@ -413,19 +372,19 @@ class DrainController:
         """
         # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
         paused_on_budget = (
-            not self._host._draining
-            and not self._host._stop_requested
-            and not self._host._pause_event.is_set()
-            and self._host._pause_reason in {"budget_exhausted", "budget_predictive"}
+            not self._runtime.draining
+            and not self._runtime.stop_requested
+            and not self._runtime.pause_event.is_set()
+            and self._runtime.pause_reason in {"budget_exhausted", "budget_predictive"}
         )
         if paused_on_budget and not await self._reserve_still_reached():
             await self._host.resume()
             return True
         # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
         if (
-            self._host._draining
-            and not self._host._stop_requested
-            and self._host._drain_reason
+            self._runtime.draining
+            and not self._runtime.stop_requested
+            and self._runtime.drain_reason
             in {"budget_reserve_reached", "time_budget_reserve_reached"}
             and not await self._reserve_still_reached()
         ):
@@ -452,15 +411,15 @@ class DrainController:
 
     async def _exit_drain(self) -> None:
         """Reverse a budget/time reserve drain, returning the session to running."""
-        self._host._draining = False
-        self._host._drain_initialized = False
-        self._host._drain_reason = None
-        self._host._stop_reason = ""
-        self._host._pause_reason = None
+        self._runtime.draining = False
+        self._runtime.drain_initialized = False
+        self._runtime.drain_reason = None
+        self._runtime.stop_reason = ""
+        self._runtime.pause_reason = None
         # Cancel the end-session report queued by begin_drain so a resumed
         # session does not surface a premature report.
-        self._host._end_session_report_requested = False
-        self._host._pause_event.set()
+        self._runtime.end_session_report_requested = False
+        self._runtime.pause_event.set()
         await self._host._safe_call(
             self._store.update_session_state(self._session_id, "running"),
             "update_session_state",
@@ -475,27 +434,24 @@ class DrainController:
         through the cleanup body. The whole body is shielded so a cancellation
         of the awaiting caller does not interrupt the WAL checkpoint mid-flight.
         """
-        if self._host._stopped:
-            await self._host._stop_done.wait()
+        if self._runtime.stopped:
+            await self._runtime.stop_done.wait()
             return
-        self._host._stopped = True
-        self._host._stop_requested = True
-        self._host._pause_reason = None
-        if not self._host._drain_initialized:
-            self._host._stop_reason = "stop_requested"
-        self._host._pause_event.set()  # Wake loop if paused so it can check _stop_requested
-        completion_idle = getattr(self._host, "_completion_processing_idle", None)
-        if (
-            completion_idle is not None
-            and getattr(self._host, "_completion_processing_count", 0) > 0
-        ):
+        self._runtime.stopped = True
+        self._runtime.stop_requested = True
+        self._runtime.pause_reason = None
+        if not self._runtime.drain_initialized:
+            self._runtime.stop_reason = "stop_requested"
+        self._runtime.pause_event.set()  # Wake loop if paused so it can check _stop_requested
+        completion_idle = self._runtime.completion_processing_idle
+        if self._runtime.completion_processing_count > 0:
             try:
                 await asyncio.wait_for(completion_idle.wait(), timeout=grace_period_s)
             except TimeoutError:
                 _logger.warning(
                     "completion_processing_shutdown_timeout",
                     session_id=self._session_id,
-                    pending=getattr(self._host, "_completion_processing_count", 0),
+                    pending=self._runtime.completion_processing_count,
                 )
 
         await asyncio.shield(self.do_stop(grace_period_s))
@@ -505,7 +461,7 @@ class DrainController:
         try:
             await self.stop_inner(grace_period_s)
         finally:
-            self._host._stop_done.set()
+            self._runtime.stop_done.set()
 
     async def generate_end_session_report(self) -> Path:
         """Generate the static ESR while the DataStore is still open."""
@@ -527,14 +483,14 @@ class DrainController:
         end_session_report_path: Path | None = None
         _logger.info(
             "shutdown_begin",
-            n_in_flight=len(self._host._in_flight),
+            n_in_flight=len(self._runtime.in_flight),
             n_agents=len(self._manager.handles),
             grace_period_s=grace_period_s,
         )
 
         t = time.perf_counter()
-        if self._host._health is not None:
-            self._host._health.stop()
+        if self._runtime.health is not None:
+            self._runtime.health.stop()
         _logger.info("shutdown_step", step="health_stop", elapsed_ms=_ms(t))
 
         # Loop-liveness watchdog (#9): cancel before the rest of teardown so it
@@ -545,20 +501,20 @@ class DrainController:
         self._host.stop_loop_liveness_watchdog()
 
         t = time.perf_counter()
-        if self._host._integrity is not None:
-            self._host._integrity.stop()
+        if self._runtime.integrity is not None:
+            self._runtime.integrity.stop()
         _logger.info("shutdown_step", step="integrity_stop", elapsed_ms=_ms(t))
 
         t = time.perf_counter()
-        if self._host._power_assertion is not None:
-            self._host._power_assertion.release()
+        if self._runtime.power_assertion is not None:
+            self._runtime.power_assertion.release()
         _logger.info("shutdown_step", step="power_assertion_release", elapsed_ms=_ms(t))
 
         # Drain any in-flight plays
         t = time.perf_counter()
         n_pending_after = 0
-        if self._host._in_flight:
-            tasks = list(self._host._in_flight.values())
+        if self._runtime.in_flight:
+            tasks = list(self._runtime.in_flight.values())
             try:
                 done, pending = await asyncio.wait(tasks, timeout=grace_period_s)
                 n_pending_after = len(pending)
@@ -569,8 +525,8 @@ class DrainController:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
-            self._host._in_flight.clear()
-            self._host._dispatch_ctx.clear()
+            self._runtime.in_flight.clear()
+            self._runtime.dispatch_ctx.clear()
         _logger.info(
             "shutdown_step",
             step="drain_in_flight",
@@ -650,7 +606,7 @@ class DrainController:
             _logger.warning("complete_session_failed", error=str(exc))
         _logger.info("shutdown_step", step="complete_session", elapsed_ms=_ms(t))
 
-        if getattr(self._host, "_end_session_report_requested", False):
+        if self._runtime.end_session_report_requested:
             t = time.perf_counter()
             try:
                 await self._host._completion.refresh_issues()
@@ -675,7 +631,7 @@ class DrainController:
         # safety net for user-initiated stops and natural exits.
         t = time.perf_counter()
         try:
-            selector = self._host._selector
+            selector = self._runtime.selector
             if isinstance(selector, _ppo_selector_cls()):
                 if len(selector.buffer) > 0:
                     await selector.update_policy(next_state_value=0.0)
@@ -702,21 +658,19 @@ class DrainController:
         _logger.info("shutdown_step", step="store_close", elapsed_ms=_ms(t))
 
         await self._host._safe_call(
-            self._host._state_provider.on_session_ended(self._host._stop_reason),
+            self._runtime.state_provider.on_session_ended(self._runtime.stop_reason),
             "on_session_ended",
         )
 
-        if end_session_report_path is not None and getattr(
-            self._host, "_end_session_report_open_browser", False
-        ):
+        if end_session_report_path is not None and self._runtime.end_session_report_open_browser:
             # Embedded mode (issue #561): the desktop shell renders the ESR
             # in-app at ``/session/esr``. Skip ``webbrowser.open`` — opening
             # Safari/Chrome here yanks the user out of the app at the exact
             # moment they're about to start the next session. Instead fire
             # the registered esr_ready callback so the sidecar can emit a
             # ``$/esr_ready`` JSON-RPC notification to the Tauri shell.
-            esr_callback = getattr(self._host, "_esr_ready_callback", None)
-            if getattr(self._host, "_embedded_mode", False):
+            esr_callback = self._runtime.esr_ready_callback
+            if self._runtime.embedded_mode:
                 if esr_callback is not None:
                     try:
                         esr_callback(
@@ -724,7 +678,7 @@ class DrainController:
                             str(end_session_report_path.resolve()),
                             (
                                 str(log_path.resolve())
-                                if (log_path := getattr(self._host, "_log_path", None)) is not None
+                                if (log_path := self._runtime.log_path) is not None
                                 else None
                             ),
                         )

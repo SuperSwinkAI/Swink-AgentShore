@@ -5,6 +5,7 @@ import type {
   PlayEvent,
   StateUpdate,
 } from "../types";
+import { makeActivePlay } from "../types";
 import { formatPlayType } from "../format";
 
 type DisplayMode =
@@ -73,15 +74,17 @@ export function notifyPlayBarUpdate(state: StateUpdate): void {
   if (running.length === 1) {
     const { agent, current } = running[0];
     broadcast(
-      modeForActivePlay({
-        play_type: current.play_type,
-        agent_id: agent.agent_id,
-        play_id: current.play_id,
-        issue_number: current.issue_number,
-        pr_number: current.pr_number,
-        branch: current.branch,
-        started_at: current.started_at ?? new Date().toISOString(),
-      }),
+      modeForActivePlay(
+        makeActivePlay({
+          play_type: current.play_type,
+          agent_id: agent.agent_id,
+          play_id: current.play_id,
+          issue_number: current.issue_number,
+          pr_number: current.pr_number,
+          branch: current.branch,
+          started_at: current.started_at ?? new Date().toISOString(),
+        }),
+      ),
     );
     return;
   }
@@ -104,18 +107,20 @@ export function notifyPlayBarUpdate(state: StateUpdate): void {
 export function notifyPlayBarEvent(event: PlayEvent): void {
   if (event.status === "started") {
     broadcast(
-      modeForActivePlay({
-        play_type: event.play_type,
-        agent_id: event.agent_id,
-        play_id: event.play_id ?? null,
-        issue_number: event.issue_number ?? null,
-        pr_number: event.pr_number ?? null,
-        branch: event.branch ?? null,
-        started_at: event.started_at ?? new Date().toISOString(),
-        trigger_agent_id: event.trigger_agent_id ?? null,
-        trigger_agent_type: event.trigger_agent_type ?? null,
-        trigger_error_class: event.trigger_error_class ?? null,
-      }),
+      modeForActivePlay(
+        makeActivePlay({
+          play_type: event.play_type,
+          agent_id: event.agent_id,
+          play_id: event.play_id,
+          issue_number: event.issue_number,
+          pr_number: event.pr_number,
+          branch: event.branch,
+          started_at: event.started_at ?? new Date().toISOString(),
+          trigger_agent_id: event.trigger_agent_id,
+          trigger_agent_type: event.trigger_agent_type,
+          trigger_error_class: event.trigger_error_class,
+        }),
+      ),
     );
   } else {
     broadcast({ kind: "inactive" });

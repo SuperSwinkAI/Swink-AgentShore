@@ -44,15 +44,41 @@ export interface ActivePlay {
   issue_number: number | null;
   pr_number: number | null;
   branch: string | null;
-  // Optional on the client-side type because internal constructors (test
-  // fixtures, demoTransport mocks, hud playBar local builders) don't always
-  // populate every field. The wire-level PlayEventStarted / PlayEventCompleted
-  // contracts below DO require these — that's where the strict shape lives.
-  agent_id?: string | null;
-  phase?: string | null;
-  trigger_agent_id?: string | null;
-  trigger_agent_type?: AgentType | string | null;
-  trigger_error_class?: string | null;
+  // Required to match the wire contract (serializer ActivePlayPayload /
+  // PlayEventStarted). Every field is always present on the wire — nullable,
+  // never absent. Construction sites that don't have a full set (fixtures,
+  // demoTransport mocks, hud playBar local builders) should go through
+  // {@link makeActivePlay} so the contract isn't weakened for tests.
+  agent_id: string | null;
+  phase: string | null;
+  trigger_agent_id: string | null;
+  trigger_agent_type: AgentType | string | null;
+  trigger_error_class: string | null;
+}
+
+/**
+ * Build an {@link ActivePlay} from a partial, filling every wire field with its
+ * null default. Lets fixtures, the demo transport, and local HUD builders
+ * construct an ActivePlay without restating the full nullable field set — so the
+ * interface can stay strict (matching the wire) without the boilerplate leaking
+ * into every call site.
+ */
+export function makeActivePlay(
+  partial: Pick<ActivePlay, "play_type"> & Partial<ActivePlay>,
+): ActivePlay {
+  return {
+    play_id: null,
+    started_at: null,
+    issue_number: null,
+    pr_number: null,
+    branch: null,
+    agent_id: null,
+    phase: null,
+    trigger_agent_id: null,
+    trigger_agent_type: null,
+    trigger_error_class: null,
+    ...partial,
+  };
 }
 
 export interface AgentSnapshot {

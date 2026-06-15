@@ -39,7 +39,8 @@ from agentshore.reports.types import (
     TrajectoryAnalysisData,
     TrajectorySnapshotEntry,
 )
-from agentshore.state import INTERNAL_PLAY_TYPES
+from agentshore.rl.action_space import PLAY_TO_INDEX, RESERVED_PLAYS
+from agentshore.state import INTERNAL_PLAY_TYPES, PlayType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -60,29 +61,56 @@ if TYPE_CHECKING:
 # Module-level constants and small helpers shared across aggregators
 # ---------------------------------------------------------------------------
 
-_PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = (
-    ("instantiate_agent", "INSTANTIATE_AGENT", 0, 1, False),
-    ("seed_project", "SEED_PROJECT", 17, 1, False),
-    ("design_audit", "DESIGN_AUDIT", 9, 1, False),
-    ("refine_task_breakdown", "REFINE_TASK_BREAKDOWN", 12, 1, False),
-    ("groom_backlog", "GROOM_BACKLOG", 16, 1, False),
-    ("calibrate_alignment", "CALIBRATE_ALIGNMENT", 18, 1, False),
-    ("write_implementation_plan", "WRITE_IMPLEMENTATION_PLAN", 2, 2, False),
-    ("issue_pickup", "ISSUE_PICKUP", 4, 2, False),
-    ("unblock_pr", "UNBLOCK_PR", 1, 2, False),
-    ("systematic_debugging", "SYSTEMATIC_DEBUGGING", 8, 2, False),
-    ("code_review", "CODE_REVIEW", 5, 3, False),
-    ("run_qa", "RUN_QA", 7, 3, False),
-    ("merge_pr", "MERGE_PR", 6, 4, False),
-    ("cleanup", "CLEANUP", 13, 4, False),
-    ("take_break", "TAKE_BREAK", 15, 5, False),
-    ("reconcile_state", "RECONCILE_STATE", 11, 5, False),
-    ("prune", "PRUNE", 19, 6, False),
-    ("future_4", "FUTURE_4", 14, 6, True),
-    ("future_7", "FUTURE_7", 20, 6, True),
-    ("future_8", "FUTURE_8", 21, 6, True),
-    ("end_agent", "END_AGENT", 3, 7, False),
-    ("end_session", "END_SESSION", 10, 7, False),
+_INTERNAL_PLAY_VALUES = frozenset(pt.value for pt in INTERNAL_PLAY_TYPES)
+
+# Presentation metadata for the ESR play-log table — the ONLY hand-maintained
+# part. Each entry is ``PlayType -> (display label, lifecycle phase)`` in the
+# exact render order the play log uses (grouped by phase, not by action index).
+# The action index (``PLAY_TO_INDEX``), play set (``PlayType``), and future flag
+# (``RESERVED_PLAYS``) are all derived from ``rl/action_space`` below, so an
+# action-space rev no longer silently drifts this table.
+_PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
+    (PlayType.INSTANTIATE_AGENT, "INSTANTIATE_AGENT", 1),
+    (PlayType.SEED_PROJECT, "SEED_PROJECT", 1),
+    (PlayType.DESIGN_AUDIT, "DESIGN_AUDIT", 1),
+    (PlayType.REFINE_TASK_BREAKDOWN, "REFINE_TASK_BREAKDOWN", 1),
+    (PlayType.GROOM_BACKLOG, "GROOM_BACKLOG", 1),
+    (PlayType.CALIBRATE_ALIGNMENT, "CALIBRATE_ALIGNMENT", 1),
+    (PlayType.WRITE_IMPLEMENTATION_PLAN, "WRITE_IMPLEMENTATION_PLAN", 2),
+    (PlayType.ISSUE_PICKUP, "ISSUE_PICKUP", 2),
+    (PlayType.UNBLOCK_PR, "UNBLOCK_PR", 2),
+    (PlayType.SYSTEMATIC_DEBUGGING, "SYSTEMATIC_DEBUGGING", 2),
+    (PlayType.CODE_REVIEW, "CODE_REVIEW", 3),
+    (PlayType.RUN_QA, "RUN_QA", 3),
+    (PlayType.MERGE_PR, "MERGE_PR", 4),
+    (PlayType.CLEANUP, "CLEANUP", 4),
+    (PlayType.TAKE_BREAK, "TAKE_BREAK", 5),
+    (PlayType.RECONCILE_STATE, "RECONCILE_STATE", 5),
+    (PlayType.PRUNE, "PRUNE", 6),
+    (PlayType.FUTURE_4, "FUTURE_4", 6),
+    (PlayType.FUTURE_7, "FUTURE_7", 6),
+    (PlayType.FUTURE_8, "FUTURE_8", 6),
+    (PlayType.END_AGENT, "END_AGENT", 7),
+    (PlayType.END_SESSION, "END_SESSION", 7),
+)
+
+# Loud guard: the presentation table must cover exactly the user-facing action
+# space. A future action-space rev that adds/removes/renames a play (without
+# updating this table) fails at import time rather than silently dropping a row.
+_EXPECTED_PLAY_LOG_KEYS = set(PlayType) - INTERNAL_PLAY_TYPES
+if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
+    msg = (
+        "_PLAY_LOG_PRESENTATION keys must equal set(PlayType) - INTERNAL_PLAY_TYPES; "
+        "an action-space rev changed the play set — update the presentation table."
+    )
+    raise ValueError(msg)
+
+# Derived play-log order: ``(play_type_str, label, action_index, phase, is_future)``.
+# Index from ``PLAY_TO_INDEX``, future flag from ``RESERVED_PLAYS`` — both single-
+# sourced from ``rl/action_space``. Consumers below read this exactly as before.
+_PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = tuple(
+    (play_type.value, label, PLAY_TO_INDEX[play_type], phase, play_type in RESERVED_PLAYS)
+    for play_type, label, phase in _PLAY_LOG_PRESENTATION
 )
 
 _AGENTSHORE_SOURCE_LABEL_PREFIX = "agentshore/source:"
@@ -242,10 +270,9 @@ def compute_play_timeline(plays: list[PlayRecord]) -> list[PlayTimelineEntry]:
 
 def compute_play_stats(plays: list[PlayRecord]) -> list[PlayStatsEntry]:
     """Aggregate user-facing play stats, excluding ``INTERNAL_PLAY_TYPES``."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     by_type: dict[str, _PlayStatsAccumulator] = defaultdict(_PlayStatsAccumulator)
     for play in plays:
-        if play.play_type in internal_play_values:
+        if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
         acc = by_type[play.play_type]
         acc.total += 1
@@ -312,11 +339,10 @@ def compute_control_rejections(
 
 def compute_play_log_columns() -> list[PlayLogColumnEntry]:
     """Return lifecycle-ordered ESR play-log columns."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     result: list[PlayLogColumnEntry] = []
     previous_phase: int | None = None
     for play_type, label, action_index, phase, future in _PLAY_LOG_ORDER:
-        if play_type in internal_play_values:
+        if play_type in _INTERNAL_PLAY_VALUES:
             continue
         result.append(
             PlayLogColumnEntry(
@@ -337,7 +363,6 @@ def compute_play_log_rows(
     agents: Sequence[AgentRecord] | None = None,
 ) -> list[PlayLogRowEntry]:
     """Convert play records into ESR rows with best-known agent display names."""
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     agent_lookup: dict[str, AgentRecord] = {}
     if agents is not None:
         agent_lookup = {a.agent_id: a for a in agents}
@@ -345,7 +370,7 @@ def compute_play_log_rows(
     rows: list[PlayLogRowEntry] = []
     row_number = 0
     for play in plays:
-        if play.play_type in internal_play_values:
+        if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
         # A gated/skipped play was PPO-selected then masked before dispatch —
         # it never reached an agent (0ms, $0, agent_id=None). It is not an
@@ -384,9 +409,8 @@ def compute_play_log_plays_in_use(plays: list[PlayRecord]) -> int:
     """Count distinct active play types used, excluding reserved future
     slots and internal plays (``INTERNAL_PLAY_TYPES``).
     """
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
     future = {play_type for play_type, _, _, _, is_future in _PLAY_LOG_ORDER if is_future}
-    excluded = future | internal_play_values
+    excluded = future | _INTERNAL_PLAY_VALUES
     return len({play.play_type for play in plays if play.play_type not in excluded})
 
 
@@ -398,8 +422,7 @@ def compute_play_log_total_slots() -> int:
     was wrong both pre- and post-INTERNAL filter). Now computed from
     the registry so it stays correct if the action space grows again.
     """
-    internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
-    return sum(1 for pt, *_ in _PLAY_LOG_ORDER if pt not in internal_play_values)
+    return sum(1 for pt, *_ in _PLAY_LOG_ORDER if pt not in _INTERNAL_PLAY_VALUES)
 
 
 def compute_closed_issues(
@@ -597,6 +620,9 @@ def compute_issue_inflation(
             if _is_issue_source_label(label):
                 by_source[label] += 1
     ratio = total_opened / max(total_closed, 1)
+    issue_boundaries = [
+        (_parse_iso(issue.created_at), _parse_iso(issue.closed_at)) for issue in issues
+    ]
     sorted_plays = sorted(plays, key=lambda p: (p.play_id or 0, p.started_at))
 
     per_play: list[tuple[int, int, int, int]] = []
@@ -609,13 +635,11 @@ def compute_issue_inflation(
         opened_count = 0
         closed_count = 0
         if boundary is not None:
-            for issue in issues:
-                created_at = _parse_iso(issue.created_at)
+            for created_at, closed_at in issue_boundaries:
                 if created_at is not None and _is_within_boundary(
                     created_at, prev_boundary, boundary
                 ):
                     opened_count += 1
-                closed_at = _parse_iso(issue.closed_at)
                 if closed_at is not None and _is_within_boundary(
                     closed_at, prev_boundary, boundary
                 ):

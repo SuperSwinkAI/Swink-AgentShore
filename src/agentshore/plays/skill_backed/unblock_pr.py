@@ -38,6 +38,10 @@ class UnblockPrPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_implement"),)
 
+    # PR-scoped: self-heal the PR base before unblocking so code_review/merge_pr
+    # downstream see the right base.
+    retarget_pr_base = True
+
     @property
     def play_type(self) -> PlayType:
         return PlayType.UNBLOCK_PR

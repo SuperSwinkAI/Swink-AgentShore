@@ -732,7 +732,7 @@ function IssueDetailModal({
           <div>
             <div className="issue-detail-eyebrow">
               {issue ? (
-                <DetailChip tone={issue.state === "closed" ? "good" : "good"}>
+                <DetailChip tone="good">
                   {titleCase(issue.state)}
                 </DetailChip>
               ) : null}

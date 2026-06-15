@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
-import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -20,13 +19,8 @@ from typing import TypedDict
 
 from agentshore import subprocess_env
 from agentshore.beads import resolve_bd_binary
-from agentshore.budget import (
-    MAX_TIME_BUDGET_MINUTES,
-    MIN_ENABLED_BUDGET_USD,
-    MIN_TIME_BUDGET_MINUTES,
-)
 from agentshore.command import CommandResult, git_sync
-from agentshore.config.models import BudgetConfig, TimelapseConfig
+from agentshore.config.models import TimelapseConfig
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
 # ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
@@ -649,96 +643,6 @@ def set_seed_paths(payload: object) -> dict[str, object]:
     return {"seed_paths": seed_paths, "yaml_path": str(yaml_path)}
 
 
-# Accepted keys on the ``budget:`` mapping written to agentshore.yaml. Mirrors
-# the ``BudgetConfig`` dataclass in ``src/agentshore/config/models.py``.
-_BUDGET_KEYS: frozenset[str] = frozenset(
-    {"enabled", "total", "warning_threshold", "time_enabled", "time_total_minutes"}
-)
-
-
-def _validate_budget_payload(payload: object) -> BudgetConfig:
-    """Validate the ``set_budget`` payload and return a :class:`BudgetConfig`.
-
-    Rules:
-    * ``enabled`` (bool, required).
-    * ``total`` (number, required, finite, ``>= 0``). NaN/Inf rejected.
-      When ``enabled`` is ``True``, ``total`` must be ``>= MIN_ENABLED_BUDGET_USD``
-      so the persisted YAML round-trips through ``load_config`` (which enforces
-      the same floor).
-    * ``warning_threshold`` (number, optional, finite, ``0 <= x <= 1``;
-      defaults to ``0.20``).
-    * No unknown keys.
-    """
-    if not isinstance(payload, dict):
-        raise ProjectError("budget payload must be an object")
-    unknown = set(payload.keys()) - _BUDGET_KEYS
-    if unknown:
-        raise ProjectError(f"unknown budget fields: {sorted(unknown)}")
-    if "enabled" not in payload:
-        raise ProjectError("budget.enabled is required")
-    enabled = payload["enabled"]
-    if not isinstance(enabled, bool):
-        raise ProjectError("budget.enabled must be a boolean")
-    if "total" not in payload:
-        raise ProjectError("budget.total is required")
-    total_raw = payload["total"]
-    # ``bool`` is a subclass of ``int`` — reject it explicitly so ``True``/
-    # ``False`` cannot pose as a dollar amount.
-    if isinstance(total_raw, bool) or not isinstance(total_raw, (int, float)):
-        raise ProjectError("budget.total must be a number")
-    total = float(total_raw)
-    if not math.isfinite(total):
-        raise ProjectError("budget.total must be finite")
-    if total < 0:
-        raise ProjectError("budget.total must be >= 0")
-    # Mirror ``agentshore.config._parse_budget``: an enabled budget below
-    # ``MIN_ENABLED_BUDGET_USD`` is rejected by ``load_config`` on the next
-    # round-trip, so we must reject it here too to keep the RPC and the
-    # config-loader contract in sync.
-    if enabled and total < MIN_ENABLED_BUDGET_USD:
-        raise ProjectError(
-            "budget.total must be at least "
-            f"{MIN_ENABLED_BUDGET_USD:.2f} when budget.enabled is true, got {total!r}"
-        )
-    threshold = 0.20
-    if "warning_threshold" in payload:
-        threshold_raw = payload["warning_threshold"]
-        if isinstance(threshold_raw, bool) or not isinstance(threshold_raw, (int, float)):
-            raise ProjectError("budget.warning_threshold must be a number")
-        threshold = float(threshold_raw)
-        if not math.isfinite(threshold):
-            raise ProjectError("budget.warning_threshold must be finite")
-        if threshold < 0 or threshold > 1:
-            raise ProjectError("budget.warning_threshold must be between 0 and 1")
-    # Time soft cap (independent dimension). Both fields optional; default off.
-    time_enabled = payload.get("time_enabled", False)
-    if not isinstance(time_enabled, bool):
-        raise ProjectError("budget.time_enabled must be a boolean")
-    time_total_minutes_raw = payload.get("time_total_minutes", 0)
-    if isinstance(time_total_minutes_raw, bool) or not isinstance(time_total_minutes_raw, int):
-        raise ProjectError("budget.time_total_minutes must be an integer")
-    time_total_minutes = int(time_total_minutes_raw)
-    # Mirror ``_parse_budget``: an enabled time cap outside 1h–72h is rejected by
-    # ``load_config`` on the next round-trip, so reject it here to stay in sync.
-    if time_enabled and not (
-        MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES
-    ):
-        raise ProjectError(
-            f"budget.time_total_minutes must be between {MIN_TIME_BUDGET_MINUTES} and "
-            f"{MAX_TIME_BUDGET_MINUTES} (1h–72h) when budget.time_enabled is true, "
-            f"got {time_total_minutes!r}"
-        )
-    if not time_enabled and time_total_minutes < 0:
-        raise ProjectError("budget.time_total_minutes must be non-negative")
-    return BudgetConfig(
-        enabled=enabled,
-        total=total,
-        warning_threshold=threshold,
-        time_enabled=time_enabled,
-        time_total_minutes=time_total_minutes,
-    )
-
-
 def set_budget(payload: object) -> dict[str, object]:
     """Persist the ``budget`` block in agentshore.yaml (issue #571 follow-up).
 
@@ -754,10 +658,11 @@ def set_budget(payload: object) -> dict[str, object]:
     Returns the persisted values (echoing what was written) plus the
     resolved ``yaml_path``.
     """
+    from agentshore.budget import validate_budget_payload
     from agentshore.sidecar.yaml_edits import write_budget as _write
 
     path = _require_active()
-    budget = _validate_budget_payload(payload)
+    budget = validate_budget_payload(payload, exc_class=ProjectError)
     yaml_path = path / "agentshore.yaml"
     try:
         existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""

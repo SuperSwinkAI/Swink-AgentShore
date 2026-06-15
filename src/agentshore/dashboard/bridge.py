@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 import structlog
 
 from agentshore.ipc.commands import parse_command, validate_command
+from agentshore.ipc.serializer import active_play_from_started
 from agentshore.ipc.state_writer import EVENTS_FILENAME, STATE_FILENAME
 
 _logger = structlog.get_logger()
@@ -335,11 +336,10 @@ class DashboardBridge:
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
-            # Unattributable (malformed) snapshot: keep prior behaviour and let
-            # the watcher broadcast it, but don't treat it as proof we've seen
-            # the current session — it must not gate the replay or be cached.
-            self._latest_state = candidate
-            return True
+            # The state writer uses atomic tmp+rename; a malformed read is
+            # transient or stale. Keep the previous good snapshot and let the
+            # next poll read a whole file.
+            return False
         payload = parsed.get("payload") if isinstance(parsed, dict) else None
         snapshot_sid = payload.get("session_id") if isinstance(payload, dict) else None
 
@@ -482,18 +482,12 @@ class DashboardBridge:
 
         status = fields.get("status")
         if status == "started":
-            self._active_play = {
-                "play_type": fields.get("play_type"),
-                "agent_id": fields.get("agent_id"),
-                "issue_number": fields.get("issue_number"),
-                "pr_number": fields.get("pr_number"),
-                "branch": fields.get("branch"),
-                "play_id": fields.get("play_id"),
-                "started_at": fields.get("started_at") or datetime.now(UTC).isoformat(),
-                "trigger_agent_id": fields.get("trigger_agent_id"),
-                "trigger_agent_type": fields.get("trigger_agent_type"),
-                "trigger_error_class": fields.get("trigger_error_class"),
-            }
+            # Derive the active_play field set via the single shared helper so
+            # the shape stays pinned to the serializer's ActivePlayPayload
+            # rather than being re-selected key-by-key here.
+            self._active_play = dict(
+                active_play_from_started(fields, default_started_at=datetime.now(UTC).isoformat())
+            )
         elif status in {"completed", "failed"}:
             self._active_play = None
 

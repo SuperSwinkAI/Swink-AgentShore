@@ -76,7 +76,7 @@ class HealthMonitor:
     def start(self) -> None:
         """Launch the background poll task."""
         if self._task is None or self._task.done():
-            self._task = asyncio.get_event_loop().create_task(
+            self._task = asyncio.get_running_loop().create_task(
                 self._run(), name="agentshore.health_monitor"
             )
 

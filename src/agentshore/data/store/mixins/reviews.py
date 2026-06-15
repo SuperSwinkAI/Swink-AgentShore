@@ -5,20 +5,16 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING
 
+from agentshore.data.store.base import _DataStoreBase
 from agentshore.data.store.rows import _row_to_review_queue
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import ReviewQueueRecord
 
 
-class _ReviewsMixin:
+class _ReviewsMixin(_DataStoreBase):
     """Methods that operate on the ``review_queue`` table."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def enqueue_review(self, record: ReviewQueueRecord) -> int:
         """Insert a pending review into the queue (idempotent per PR+session).

@@ -249,6 +249,41 @@ def resource_conflict_reason(
     return f"resource already in flight: {', '.join(conflicts)}"
 
 
+def _candidate_resolved_agent_type(
+    candidate: PlayCandidate,
+    agent_id_to_type: dict[str, str],
+) -> str | None:
+    """Resolve the agent-type value a candidate would run on, or ``None``.
+
+    A candidate names its agent type either directly via
+    ``params.target_agent_type`` (an instantiate_agent's created type, or a
+    type-pinned dispatch) or indirectly via the concrete agent it targets
+    (``params.target_agent_id``, mapped through *agent_id_to_type*). Candidates
+    with neither (issue/PR plays whose runner the resolver picks later) return
+    ``None`` and are never auth-suppressed at this layer.
+    """
+    params = candidate.params
+    if params.target_agent_type:
+        return params.target_agent_type
+    if params.target_agent_id is not None:
+        return agent_id_to_type.get(params.target_agent_id)
+    return None
+
+
+def _candidate_auth_suppressed_type(
+    candidate: PlayCandidate,
+    auth_suppressed: frozenset[str],
+    agent_id_to_type: dict[str, str],
+) -> str | None:
+    """Return the suppressed agent-type value if this candidate is masked, else None."""
+    if not auth_suppressed:
+        return None
+    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
+    if resolved is not None and resolved in auth_suppressed:
+        return resolved
+    return None
+
+
 def issue_pickup_sort_key(issue: IssueSnapshot) -> tuple[int, int, int, int]:
     """Sort tuple: bug first, then priority, size, and issue number."""
 
@@ -292,10 +327,11 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     signal is present (GitHub APPROVED or an AgentShore code-review PASS at the
     current head_sha), and no blocking reason (changes_requested, blocked
     label, ci_failed, manual_required, merge_conflicts) is in effect. The
-    blocking check mirrors :func:`pr_unblockable` so the two predicates can
-    never simultaneously be true for the same PR — without this, a stale
-    AgentShore PASS verdict can keep a PR in the merge_ready set even after a
-    human reviewer adds CHANGES_REQUESTED or a ``blocked`` label.
+    blocking check shares :func:`_pr_blocked_reasons` with
+    :func:`pr_unblockable` so the two predicates can never simultaneously be
+    true for the same PR — without this, a stale AgentShore PASS verdict can
+    keep a PR in the merge_ready set even after a human reviewer adds
+    CHANGES_REQUESTED or a ``blocked`` label.
 
     When ``target_branch`` is provided, a PR whose ``base_ref`` is known and
     does NOT match it is refused — a deterministic backstop so ``merge_pr`` can
@@ -349,12 +385,13 @@ def pr_reviewable(pr: object) -> bool:
     """code_review is actionable only when the PR needs review AND is not parked
     for human intervention.
 
-    Mirrors :func:`pr_unblockable` and :func:`pr_merge_ready`, which already
-    exclude ``MANUAL_REQUIRED_LABEL`` (via ``_pr_blocked_reasons``), so all three
-    actionable-PR predicates agree: a manual-required PR is never agent-actionable.
-    Without this, an unreviewed manual-required PR leaks into the reviewable set,
-    keeping ``has_actionable_work`` (and thus ``terminal_no_work``) wrong and
-    pinning END_SESSION masked forever.
+    Like :func:`pr_unblockable` and :func:`pr_merge_ready` (which exclude
+    ``MANUAL_REQUIRED_LABEL`` via ``_pr_blocked_reasons``), this excludes a
+    manual-required PR, so all three actionable-PR predicates agree: a
+    manual-required PR is never agent-actionable. Without this, an unreviewed
+    manual-required PR leaks into the reviewable set, keeping
+    ``has_actionable_work`` (and thus ``terminal_no_work``) wrong and pinning
+    END_SESSION masked forever.
     """
     if MANUAL_REQUIRED_LABEL in _labels(pr):
         return False
@@ -598,6 +635,10 @@ class PlayCandidateAnalyzer:
         blocked: dict[PlayType, list[str]] = {}
         active_keys = active_resource_keys(state)
         parked_keys = state.parked_resource_keys
+        auth_suppressed = state.auth_suppressed_agent_types
+        # agent_id -> agent_type.value, so a candidate that names an existing
+        # agent (target_agent_id) can be checked against the suppression set.
+        agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
 
         def add(candidate: PlayCandidate) -> None:
             # Piece A: a resource parked after repeated worktree-allocation
@@ -607,6 +648,19 @@ class PlayCandidateAnalyzer:
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
                 msg = f"resource parked (worktree allocation failed): {', '.join(parked_hit)}"
+                if msg not in reasons:
+                    reasons.append(msg)
+                return
+            # #zeke auth-hang: one backend-auth failure suppresses ALL dispatch
+            # of that agent type for the session — including an instantiate_agent
+            # candidate that would spawn a fresh agent of the dead type. HARD
+            # mask (structurally unrecoverable without a new session/token).
+            suppressed_type = _candidate_auth_suppressed_type(
+                candidate, auth_suppressed, agent_id_to_type
+            )
+            if suppressed_type is not None:
+                reasons = blocked.setdefault(candidate.play_type, [])
+                msg = f"agent type auth-suppressed for session: {suppressed_type}"
                 if msg not in reasons:
                     reasons.append(msg)
                 return
@@ -687,48 +741,48 @@ class PlayCandidateAnalyzer:
                 )
             )
         if not state.pending_review_queue:
-            for index, pr in enumerate(self.open_prs):
-                if pr.pr_number in in_flight_review_prs or not pr_reviewable(pr):
-                    continue
-                add(
-                    PlayCandidate(
-                        play_type=PlayType.CODE_REVIEW,
-                        params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                        resource_keys=pr_resource_keys_for_pr(pr),
-                        source="state",
-                        sort_key=(1, 0 if pr.last_review_status else 1, index, pr.pr_number),
-                    )
-                )
-
-        in_flight_merge_prs = _in_flight_prs(state, PlayType.MERGE_PR)
-        for index, pr in enumerate(self.open_prs):
-            if pr.pr_number in in_flight_merge_prs or not pr_merge_ready(
-                pr, target_branch=state.target_branch
+            for candidate in _eligible_pr_candidates(
+                self.open_prs,
+                excluded=in_flight_review_prs,
+                predicate=pr_reviewable,
+                make_candidate=lambda index, pr, keys: PlayCandidate(
+                    play_type=PlayType.CODE_REVIEW,
+                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                    resource_keys=keys,
+                    source="state",
+                    sort_key=(1, 0 if pr.last_review_status else 1, index, pr.pr_number),
+                ),
             ):
-                continue
-            add(
-                PlayCandidate(
-                    play_type=PlayType.MERGE_PR,
-                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                    resource_keys=(*pr_resource_keys_for_pr(pr), _TRUNK_RESOURCE_KEY),
-                    source="state",
-                    sort_key=(index, pr.pr_number),
-                )
-            )
+                add(candidate)
 
-        in_flight_unblock_prs = _in_flight_prs(state, PlayType.UNBLOCK_PR)
-        for index, pr in enumerate(self.open_prs):
-            if pr.pr_number in in_flight_unblock_prs or not pr_unblockable(pr):
-                continue
-            add(
-                PlayCandidate(
-                    play_type=PlayType.UNBLOCK_PR,
-                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                    resource_keys=pr_resource_keys_for_pr(pr),
-                    source="state",
-                    sort_key=(index, pr.pr_number),
-                )
-            )
+        for candidate in _eligible_pr_candidates(
+            self.open_prs,
+            excluded=_in_flight_prs(state, PlayType.MERGE_PR),
+            predicate=lambda pr: pr_merge_ready(pr, target_branch=state.target_branch),
+            make_candidate=lambda index, pr, keys: PlayCandidate(
+                play_type=PlayType.MERGE_PR,
+                params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                resource_keys=keys,
+                source="state",
+                sort_key=(index, pr.pr_number),
+            ),
+            trunk_scoped=True,
+        ):
+            add(candidate)
+
+        for candidate in _eligible_pr_candidates(
+            self.open_prs,
+            excluded=_in_flight_prs(state, PlayType.UNBLOCK_PR),
+            predicate=pr_unblockable,
+            make_candidate=lambda index, pr, keys: PlayCandidate(
+                play_type=PlayType.UNBLOCK_PR,
+                params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                resource_keys=keys,
+                source="state",
+                sort_key=(index, pr.pr_number),
+            ),
+        ):
+            add(candidate)
 
         groom_needed = self.beads_groom_needed()
         if groom_needed:
@@ -1105,44 +1159,40 @@ class PlayCandidateService:
 
     async def _merge_pr_candidates(self, state: OrchestratorState) -> list[PlayCandidate]:
         in_flight_merge_prs = _in_flight_prs(state, PlayType.MERGE_PR)
-        active_keys = active_resource_keys(state)
-        candidates: list[PlayCandidate] = []
         target_branch = self._cfg.project.target_branch
-        prs = await self._store.list_approved_pull_requests(state.session_id)
-        for index, pr in enumerate(prs):
-            if pr.pr_number in in_flight_merge_prs or not pr_merge_ready(
-                pr, target_branch=target_branch
-            ):
-                continue
-            resource_keys = (*pr_resource_keys_for_pr(pr), _TRUNK_RESOURCE_KEY)
-            if resource_conflict_reason(resource_keys, active_keys) is not None:
-                continue
-            candidates.append(
-                PlayCandidate(
-                    play_type=PlayType.MERGE_PR,
-                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                    resource_keys=resource_keys,
-                    source="store",
-                    sort_key=(index, pr.pr_number),
-                )
-            )
+
+        def is_mergeable(pr: object) -> bool:
+            return pr_merge_ready(pr, target_branch=target_branch)
+
+        # Store-backed pass: same eligibility/conflict pipeline as build(), only
+        # the PR source (approved PRs in the store) is resolver-specific.
+        candidates = _pr_play_candidates(
+            await self._store.list_approved_pull_requests(state.session_id),
+            excluded=in_flight_merge_prs,
+            predicate=is_mergeable,
+            make_candidate=lambda index, pr, keys: PlayCandidate(
+                play_type=PlayType.MERGE_PR,
+                params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                resource_keys=keys,
+                source="store",
+                sort_key=(index, pr.pr_number),
+            ),
+            active_keys=active_resource_keys(state),
+            trunk_scoped=True,
+        )
         if candidates:
             return candidates
 
         return await self._github_pr_candidates(
             state,
             PlayType.MERGE_PR,
-            lambda pr: (
-                pr.pr_number not in in_flight_merge_prs
-                and pr_merge_ready(pr, target_branch=target_branch)
-            ),
+            lambda pr: pr.pr_number not in in_flight_merge_prs and is_mergeable(pr),
             limit=5,
             log_key="github_pr_resolve_failed",
         )
 
     async def _unblock_pr_candidates(self, state: OrchestratorState) -> list[PlayCandidate]:
         in_flight_unblock_prs = _in_flight_prs(state, PlayType.UNBLOCK_PR)
-        active_keys = active_resource_keys(state)
         exhausted = {
             pr_num
             for pr_num, count in self._unblock_failures.items()
@@ -1151,22 +1201,21 @@ class PlayCandidateService:
         excluded = in_flight_unblock_prs | exhausted
         prs = list(await self._store.list_open_pull_requests(state.session_id))
         random.shuffle(prs)
-        candidates: list[PlayCandidate] = []
-        for index, pr in enumerate(prs):
-            if pr.pr_number in excluded or not pr_unblockable(pr):
-                continue
-            resource_keys = pr_resource_keys_for_pr(pr)
-            if resource_conflict_reason(resource_keys, active_keys) is not None:
-                continue
-            candidates.append(
-                PlayCandidate(
-                    play_type=PlayType.UNBLOCK_PR,
-                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                    resource_keys=resource_keys,
-                    source="store",
-                    sort_key=(index, pr.pr_number),
-                )
-            )
+        # Store-backed pass: same eligibility/conflict pipeline as build(), only
+        # the PR source (open PRs in the store, shuffled) is resolver-specific.
+        candidates = _pr_play_candidates(
+            prs,
+            excluded=excluded,
+            predicate=pr_unblockable,
+            make_candidate=lambda index, pr, keys: PlayCandidate(
+                play_type=PlayType.UNBLOCK_PR,
+                params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                resource_keys=keys,
+                source="store",
+                sort_key=(index, pr.pr_number),
+            ),
+            active_keys=active_resource_keys(state),
+        )
         if candidates:
             return candidates
 
@@ -1239,24 +1288,19 @@ class PlayCandidateService:
         try:
             prs = await self._github.list_pull_requests(state="open", limit=limit)
             prs = filter_trusted_pull_requests(prs, self._cfg, context=log_key)
-            candidates: list[PlayCandidate] = []
-            active_keys = active_resource_keys(state)
-            for index, pr in enumerate(prs):
-                if not predicate(pr):
-                    continue
-                resource_keys = pr_resource_keys_for_pr(pr)
-                if resource_conflict_reason(resource_keys, active_keys) is not None:
-                    continue
-                candidates.append(
-                    PlayCandidate(
-                        play_type=play_type,
-                        params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                        resource_keys=resource_keys,
-                        source="github_fallback",
-                        sort_key=(index, pr.pr_number),
-                    )
-                )
-            return candidates
+            return _pr_play_candidates(
+                prs,
+                excluded=set(),
+                predicate=predicate,
+                make_candidate=lambda index, pr, keys: PlayCandidate(
+                    play_type=play_type,
+                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                    resource_keys=keys,
+                    source="github_fallback",
+                    sort_key=(index, pr.pr_number),
+                ),
+                active_keys=active_resource_keys(state),
+            )
         except (OSError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as exc:
             _logger.warning(log_key, error=str(exc))
             return []
@@ -1356,6 +1400,66 @@ def _in_flight_prs(state: OrchestratorState, play_type: PlayType) -> set[int]:
         for agent in state.agents
         if agent.current_play_type == play_type and agent.current_play_pr_number is not None
     }
+
+
+def _eligible_pr_candidates[PRT](
+    prs: Iterable[PRT],
+    *,
+    excluded: set[int],
+    predicate: Callable[[PRT], bool],
+    make_candidate: Callable[[int, PRT, tuple[str, ...]], PlayCandidate],
+    trunk_scoped: bool = False,
+) -> list[PlayCandidate]:
+    """Single PR-candidate loop shared by ``build()`` and the resolver service.
+
+    Applies the same exclusion → eligibility-predicate → resource-key pipeline
+    regardless of whether ``prs`` comes from live state, the store, or a GitHub
+    fallback, so the eligibility rules (``pr_merge_ready`` / ``pr_reviewable`` /
+    ``pr_unblockable``) are evaluated in exactly one place. ``make_candidate``
+    builds the play-specific ``PlayCandidate`` from ``(index, pr, resource_keys)``.
+
+    In-flight/parked conflict handling is left to the caller: ``build()`` routes
+    each result through its ``add`` sink (which records blocked reasons), while
+    the resolver service skips conflicts silently via ``_pr_play_candidates``.
+    """
+    candidates: list[PlayCandidate] = []
+    for index, pr in enumerate(prs):
+        pr_number = getattr(pr, "pr_number", None)
+        if pr_number in excluded or not predicate(pr):
+            continue
+        resource_keys = pr_resource_keys_for_pr(pr)
+        if trunk_scoped:
+            resource_keys = (*resource_keys, _TRUNK_RESOURCE_KEY)
+        candidates.append(make_candidate(index, pr, resource_keys))
+    return candidates
+
+
+def _pr_play_candidates[PRT](
+    prs: Iterable[PRT],
+    *,
+    excluded: set[int],
+    predicate: Callable[[PRT], bool],
+    make_candidate: Callable[[int, PRT, tuple[str, ...]], PlayCandidate],
+    active_keys: frozenset[str],
+    trunk_scoped: bool = False,
+) -> list[PlayCandidate]:
+    """Resolver-side wrapper: eligible candidates minus in-flight conflicts.
+
+    Adds the silent in-flight-conflict skip the resolver wants on top of the
+    shared eligibility loop, so the store/GitHub passes never re-implement the
+    predicate iteration that ``build()`` already owns.
+    """
+    return [
+        candidate
+        for candidate in _eligible_pr_candidates(
+            prs,
+            excluded=excluded,
+            predicate=predicate,
+            make_candidate=make_candidate,
+            trunk_scoped=trunk_scoped,
+        )
+        if resource_conflict_reason(candidate.resource_keys, active_keys) is None
+    ]
 
 
 def _already_reviewed_prs(state: OrchestratorState) -> set[int]:

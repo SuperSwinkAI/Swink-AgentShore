@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import {
   IdentitiesScreen,
+  type AgentAuthRow,
   type IdentitiesSidecar,
   type IdentityRow,
 } from "../src/components/IdentitiesScreen";
@@ -617,5 +618,85 @@ describe("IdentitiesScreen", () => {
     await render(sidecar);
 
     expect(getTestId(container, "identities-error")).not.toBeNull();
+  });
+});
+
+describe("IdentitiesScreen — agent backend auth", () => {
+  it("does not render the section (and does not crash) when the sidecar lacks checkAgentAuth", async () => {
+    // makeSidecar omits checkAgentAuth, mirroring an older/mock sidecar.
+    const sidecar = makeSidecar([]);
+    await render(sidecar);
+
+    expect(getTestId(container, "agent-auth-section")).toBeNull();
+    // The rest of the screen still renders fine.
+    expect(getTestId(container, "identities-screen")).not.toBeNull();
+    expect(getTestId(container, "identities-empty")).not.toBeNull();
+  });
+
+  it("renders an error badge and remediation hint for an expired agent backend token", async () => {
+    const rows: AgentAuthRow[] = [
+      {
+        agent_type: "codex",
+        status: "expired",
+        detail: "Session token expired — run 'codex login' to refresh.",
+      },
+    ];
+    const sidecar = makeSidecar([]);
+    const checkAgentAuth = vi.fn(async () => rows);
+    (sidecar as IdentitiesSidecar).checkAgentAuth = checkAgentAuth;
+
+    await render(sidecar);
+
+    // The probe runs on mount.
+    expect(checkAgentAuth).toHaveBeenCalledTimes(1);
+
+    const section = requireTestId(container, "agent-auth-section");
+    expect(section).not.toBeNull();
+
+    const codexRow = requireTestId(container, "agent-auth-row-codex");
+    const badge = codexRow.querySelector(
+      "[data-testid='agent-auth-status-expired']",
+    );
+    expect(badge).not.toBeNull();
+    expect(badge?.className).toContain("badge-error");
+    expect(badge?.textContent).toBe("Backend auth expired");
+
+    const detail = getTestId(container, "agent-auth-detail-codex");
+    expect(detail).not.toBeNull();
+    expect(detail?.textContent).toContain("codex login");
+  });
+
+  it("re-probes when the Verify button is clicked", async () => {
+    const sidecar = makeSidecar([]);
+    const checkAgentAuth = vi.fn(async (): Promise<AgentAuthRow[]> => [
+      { agent_type: "codex", status: "ok", detail: "" },
+    ]);
+    (sidecar as IdentitiesSidecar).checkAgentAuth = checkAgentAuth;
+
+    await render(sidecar);
+    expect(checkAgentAuth).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      requireTestId(container, "agent-auth-verify-btn").click();
+    });
+
+    expect(checkAgentAuth).toHaveBeenCalledTimes(2);
+    const badge = requireTestId(container, "agent-auth-row-codex").querySelector(
+      "[data-testid='agent-auth-status-ok']",
+    );
+    expect(badge?.className).toContain("badge-ok");
+  });
+
+  it("surfaces an error banner when the agent auth probe fails", async () => {
+    const sidecar = makeSidecar([]);
+    (sidecar as IdentitiesSidecar).checkAgentAuth = vi.fn(async () => {
+      throw new Error("sidecar agents.check_auth timed out");
+    });
+
+    await render(sidecar);
+
+    const banner = getTestId(container, "agent-auth-error");
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("agents.check_auth");
   });
 });

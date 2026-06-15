@@ -18,34 +18,15 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from agentshore.core import Orchestrator
-from agentshore.core.mixins.loop import LoopRunner
-from agentshore.core.override_queue import OverrideQueue
 from agentshore.state import SessionState
-
-
-@dataclass
-class _CfgLoopDetection:
-    fleet_idle_threshold: int = 5
-    warn_after: int = 3
-    force_switch_after: int = 5
-    escalate_after: int = 7
-
-
-@dataclass
-class _CfgRL:
-    loop_detection: _CfgLoopDetection = field(default_factory=_CfgLoopDetection)
-
-
-@dataclass
-class _Cfg:
-    rl: _CfgRL = field(default_factory=_CfgRL)
 
 
 @dataclass
@@ -56,26 +37,11 @@ class _StateStub:
     in_flight_plays: tuple[Any, ...] = ()
 
 
-def _orch() -> Orchestrator:
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._in_flight = {}
-    orch._overrides = OverrideQueue()
-    orch._idle_streak = 0
-    orch._last_selection_digest = None
+def _orch(tmp_path: Path) -> Orchestrator:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test-85ex"
-    orch._cfg = _Cfg()  # type: ignore[assignment]
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id=orch._session_id,
-        main_repo=MagicMock(),
-        overrides=orch._overrides,
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
-    )
     return orch
 
 
@@ -108,9 +74,11 @@ async def _run_check(orch: Orchestrator, state: _StateStub, *, reason: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_threshold_crossing_emits_one_entered_event(info_calls: MagicMock) -> None:
+async def test_threshold_crossing_emits_one_entered_event(
+    info_calls: MagicMock, tmp_path: Path
+) -> None:
     """Idle streak crossing the threshold from below ⇒ exactly one event."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub()
 
     # Below threshold — no event.
@@ -131,9 +99,9 @@ async def test_threshold_crossing_emits_one_entered_event(info_calls: MagicMock)
 
 
 @pytest.mark.asyncio
-async def test_no_per_tick_storm_inside_window(info_calls: MagicMock) -> None:
+async def test_no_per_tick_storm_inside_window(info_calls: MagicMock, tmp_path: Path) -> None:
     """Once active, no further emissions until the state transitions."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub()
     orch._idle_streak = orch._cfg.rl.loop_detection.fleet_idle_threshold
 
@@ -147,10 +115,10 @@ async def test_no_per_tick_storm_inside_window(info_calls: MagicMock) -> None:
 
 @pytest.mark.asyncio
 async def test_exit_transition_emits_one_event_when_in_flight_appears(
-    info_calls: MagicMock,
+    info_calls: MagicMock, tmp_path: Path
 ) -> None:
     """Work appearing in-flight closes the window with exactly one event."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub()
     orch._idle_streak = orch._cfg.rl.loop_detection.fleet_idle_threshold
 
@@ -172,10 +140,10 @@ async def test_exit_transition_emits_one_event_when_in_flight_appears(
 
 @pytest.mark.asyncio
 async def test_exit_transition_emits_one_event_when_streak_collapses(
-    info_calls: MagicMock,
+    info_calls: MagicMock, tmp_path: Path
 ) -> None:
     """Streak dropping below threshold also closes the window."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub()
     orch._idle_streak = orch._cfg.rl.loop_detection.fleet_idle_threshold
 
@@ -192,9 +160,9 @@ async def test_exit_transition_emits_one_event_when_streak_collapses(
 
 
 @pytest.mark.asyncio
-async def test_window_can_rearm_after_exit(info_calls: MagicMock) -> None:
+async def test_window_can_rearm_after_exit(info_calls: MagicMock, tmp_path: Path) -> None:
     """After exiting, a fresh threshold cross emits a new entered event."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     state = _StateStub()
 
     # Enter

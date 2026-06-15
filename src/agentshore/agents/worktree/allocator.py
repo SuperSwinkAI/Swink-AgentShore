@@ -11,11 +11,15 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
 from agentshore import command
 from agentshore.errors import OrchestratorError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 log = structlog.get_logger(__name__)
 
@@ -98,14 +102,17 @@ async def _run_git(
     cwd: Path,
     check: bool = True,
     timeout: float = 60.0,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a ``git`` subprocess asynchronously and capture stdout/stderr.
 
     Returns ``(returncode, stdout, stderr)``. If ``check`` is true and the
     return code is non-zero, raises ``WorktreeAllocationFailed`` with the
-    failing command embedded in the reason.
+    failing command embedded in the reason. *env_overlay* is passed through to
+    the hardened git layer — used to carry the fetch identity's credential on
+    the one network op (``_fetch``); local ops leave it ``None``.
     """
-    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout)
+    result = await command.git(*args, cwd=cwd, timeout_seconds=timeout, env_overlay=env_overlay)
     if result.timed_out:
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} timed out after {timeout:.0f}s",
@@ -125,24 +132,41 @@ _PICKUP_COLLISION_RE = re.compile(
 )
 
 
+def _default_safe_to_force_remove(path: Path) -> bool:
+    """Fallback collision-reclaim predicate for direct ``ensure_worktree`` callers.
+
+    The production path is ``WorktreeManager``, which passes its own predicate
+    derived from the key conventions it owns (``manager._is_reclaimable_collision``).
+    This default exists only so standalone allocator callers/tests keep the
+    historical "a colliding ``pickup-*`` orphan is a crashed branch-creating
+    allocation, safe to force-remove" behavior without re-stating it. The
+    manager's predicate is the authoritative one; this never overrides it.
+    """
+    return path.name.startswith("pickup-")
+
+
 async def _add_worktree_with_collision_retry(
     args: list[str],
     *,
     main_repo: Path,
     branch_name: str | None,
+    safe_to_force_remove: Callable[[Path], bool] | None = None,
 ) -> None:
-    """Run ``git worktree add ...`` with one-shot retry on pickup-* collisions.
+    """Run ``git worktree add ...`` with one-shot retry on reclaimable collisions.
 
-    The original failure mode: a prior
-    ``pickup-NNN`` worktree from a crashed session holds the target branch,
-    so ``git worktree add -B <branch> <new_path>`` errors with::
+    The original failure mode: a prior branch-creating worktree (keyed
+    ``pickup-NNN`` by the manager) from a crashed session holds the target
+    branch, so ``git worktree add -B <branch> <new_path>`` errors with::
 
         fatal: 'agentshore/535-...' is already used by worktree at 'pickup-535'
 
-    When that pattern is detected AND the colliding path is a ``pickup-*``
-    directory (i.e. an orphaned branch-creating allocation that never
-    rekeyed), force-remove it and retry the original add exactly once.
-    Anything else bubbles through the existing failure path.
+    When that pattern is detected AND ``safe_to_force_remove`` returns True for
+    the colliding path (the manager owns this decision — it's the only layer
+    that knows which key conventions name a reclaimable orphan), force-remove
+    the colliding worktree and retry the original add exactly once. Anything
+    else bubbles through the existing failure path. With no predicate the
+    allocator never force-removes a colliding worktree — the key-naming
+    convention lives in the manager, not here.
     """
     result = await command.git(*args, cwd=main_repo, timeout_seconds=180.0)
     if result.timed_out:
@@ -156,9 +180,13 @@ async def _add_worktree_with_collision_retry(
     stderr = result.stderr
 
     collision = _PICKUP_COLLISION_RE.search(stderr)
-    is_pickup = collision is not None and Path(collision.group(1)).name.startswith("pickup-")
-    if not is_pickup or branch_name is None:
-        # Not a pickup-* collision (or detached-HEAD path) — bubble the
+    reclaimable = (
+        collision is not None
+        and safe_to_force_remove is not None
+        and safe_to_force_remove(Path(collision.group(1)))
+    )
+    if not reclaimable or branch_name is None:
+        # Not a reclaimable collision (or detached-HEAD path) — bubble the
         # original error via the standard reason classifier.
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
@@ -199,16 +227,28 @@ async def _add_worktree_with_collision_retry(
     )
 
 
-async def _fetch(main_repo: Path, *, remote: str = "origin") -> bool:
+async def _fetch(
+    main_repo: Path, *, remote: str = "origin", env_overlay: Mapping[str, str] | None = None
+) -> bool:
     """Best-effort ``git fetch`` against ``remote``.
 
     Returns ``True`` on success, ``False`` on any failure (network, auth,
     etc.). Failures are logged but do not raise — callers proceed with
     whatever local refs they have, marking the result as ``fetched=False``.
+
+    *env_overlay* carries the fetch identity's credential (built by the manager
+    from the default git identity). When ``None`` the fetch is unauthenticated —
+    its historical best-effort behavior, fine for already-public/SSH remotes.
     """
     try:
         rc, _, stderr = await _run_git(
-            "fetch", "--prune", remote, cwd=main_repo, check=False, timeout=120.0
+            "fetch",
+            "--prune",
+            remote,
+            cwd=main_repo,
+            check=False,
+            timeout=120.0,
+            env_overlay=env_overlay,
         )
     except WorktreeAllocationFailed as exc:
         log.warning("worktree_fetch_failed", remote=remote, reason=exc.reason)
@@ -219,8 +259,22 @@ async def _fetch(main_repo: Path, *, remote: str = "origin") -> bool:
     return True
 
 
-async def _remote_branch_exists(main_repo: Path, branch: str, *, remote: str = "origin") -> bool:
-    """Return True when ``remote/branch`` resolves via ``git ls-remote``."""
+async def _remote_branch_exists(
+    main_repo: Path,
+    branch: str,
+    *,
+    remote: str = "origin",
+    env_overlay: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True when ``remote/branch`` resolves via ``git ls-remote``.
+
+    ``env_overlay`` carries the fetch identity's credential (same overlay
+    ``_fetch`` uses). It is required for private HTTPS remotes: the hardened git
+    layer disables the ambient credential helper, so without the token header
+    this network probe authenticates as nobody, returns empty, and the caller
+    misreads a live branch as deleted (#179) — wedging every PR-scoped
+    allocation.
+    """
     try:
         rc, stdout, _ = await _run_git(
             "ls-remote",
@@ -230,6 +284,7 @@ async def _remote_branch_exists(main_repo: Path, branch: str, *, remote: str = "
             cwd=main_repo,
             check=False,
             timeout=30.0,
+            env_overlay=env_overlay,
         )
     except WorktreeAllocationFailed:
         return False
@@ -320,6 +375,8 @@ async def ensure_worktree(
     base_ref: str,
     fetch: bool = True,
     remote: str = "origin",
+    fetch_env_overlay: Mapping[str, str] | None = None,
+    safe_to_force_remove: Callable[[Path], bool] = _default_safe_to_force_remove,
 ) -> AllocateResult:
     """Idempotently materialise a worktree at ``worktree_path``.
 
@@ -337,6 +394,14 @@ async def ensure_worktree(
     ``base_ref`` is the resolved git ref to base off of (typically
     ``"origin/main"`` or ``"origin/<pr-branch>"``).
 
+    ``safe_to_force_remove`` is the predicate the manager passes down to decide
+    whether a *colliding* worktree (one already holding the target branch) may
+    be force-removed and the add retried. The allocator does not know which key
+    conventions name a reclaimable orphan — that's a manager-layer concern — so
+    it delegates the decision. Defaults to :func:`_default_safe_to_force_remove`
+    (the historical ``pickup-*`` heuristic) for standalone callers; the manager
+    overrides it with its own convention-aware predicate.
+
     Raises:
         WorktreeAllocationFailed: ``git worktree add`` or another git
             command returned non-zero.
@@ -348,12 +413,16 @@ async def ensure_worktree(
             f"main repo path does not exist: {main_repo}", reason="main_repo_missing"
         )
 
-    fetched = await _fetch(main_repo, remote=remote) if fetch else False
+    fetched = (
+        await _fetch(main_repo, remote=remote, env_overlay=fetch_env_overlay) if fetch else False
+    )
 
     if (
         branch_name is not None
         and fetched
-        and not await _remote_branch_exists(main_repo, branch_name, remote=remote)
+        and not await _remote_branch_exists(
+            main_repo, branch_name, remote=remote, env_overlay=fetch_env_overlay
+        )
     ):
         raise WorktreeBranchGone(
             f"remote branch {remote}/{branch_name} is gone",
@@ -372,6 +441,7 @@ async def ensure_worktree(
                 cwd=worktree_path,
                 check=False,
                 timeout=120.0,
+                env_overlay=fetch_env_overlay,
             )
             await _run_git(
                 "merge",
@@ -442,10 +512,13 @@ async def ensure_worktree(
         args.extend(["--detach", str(worktree_path), base_ref])
 
     try:
-        # In detached mode there is no branch to collide on pickup-*, so pass
+        # In detached mode there is no branch to collide on, so pass
         # branch_name=None to keep the collision-retry path's branch logic off.
         await _add_worktree_with_collision_retry(
-            args, main_repo=main_repo, branch_name=None if detached else branch_name
+            args,
+            main_repo=main_repo,
+            branch_name=None if detached else branch_name,
+            safe_to_force_remove=safe_to_force_remove,
         )
     except WorktreeAllocationFailed:
         if worktree_path.exists():
@@ -482,7 +555,17 @@ async def remove_worktree(
     Returns ``True`` when the worktree no longer exists at the end of the
     call. Best-effort: filesystem cleanup runs even if ``git`` complains
     about an unknown worktree (post-crash reaping path).
+
+    **ENOSPC-robust ordering:** the on-disk ``shutil.rmtree`` runs *first* —
+    it needs no free space and frees the bulk of the worktree's bytes
+    (build artifacts, checkout). ``git worktree remove`` is only attempted
+    after, and ``git worktree prune`` reconciles the now-missing directory
+    without ``git`` ever needing to write metadata while the disk is full.
+    Doing it the other way round (the old order) meant a full disk could
+    wedge the reaper on the very op meant to free space.
     """
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
     git_args: list[str] = ["worktree", "remove"]
     if force:
         git_args.append("--force")
@@ -496,9 +579,6 @@ async def remove_worktree(
                 path=str(worktree_path),
                 reason=exc.reason,
             )
-    if worktree_path.exists():
-        shutil.rmtree(worktree_path, ignore_errors=True)
-    if main_repo.exists():
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
     return not worktree_path.exists()
 

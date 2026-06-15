@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import click
@@ -106,8 +105,11 @@ def _maybe_prompt_target_branch(
         click.echo(f"Set project.target_branch = {branch}")
         return
 
-    if not sys.stdin.isatty():
-        # Non-interactive, no explicit flag — leave the file alone.
+    from agentshore.subprocess_env import is_interactive
+
+    if not is_interactive():
+        # Non-interactive (no TTY, or AGENTSHORE_NONINTERACTIVE set) and no
+        # explicit flag — leave the file alone so scripted runs are deterministic.
         return
 
     default = _detect_default_target_branch(project_path) or "main"

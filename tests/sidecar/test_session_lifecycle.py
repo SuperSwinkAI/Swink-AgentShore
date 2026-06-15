@@ -26,13 +26,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentshore.agents.auth_probe import (
+    AUTH_EXPIRED,
+    AUTH_OK,
+    AUTH_TIMEOUT,
+    AuthProbeResult,
+)
 from agentshore.sidecar.server import ServerState, SessionContext, handle_request
 from agentshore.sidecar.session_lifecycle import (
+    STEP_CHECK_AGENT_AUTH,
     STEP_CONFIG_MERGE,
     SessionStartError,
     _make_bridge,
     run_session_start,
 )
+from agentshore.state import AgentType
 
 
 def _write_valid_project(root: Path, *, agentshore_yaml: str | None = None) -> Path:
@@ -75,6 +83,112 @@ async def test_install_skills_drops_templates_into_project(tmp_path: Path) -> No
     # uses ``agentshore-issue-pickup``); presence checks the install ran.
     installed = sorted(d.name for d in skills_dir.iterdir() if d.is_dir())
     assert installed, f"no skill templates installed under {skills_dir}"
+
+
+# ---------------------------------------------------------------------------
+# Phase: check_agent_auth (backend CLI-agent auth gate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_blocks_on_expired_backend(tmp_path: Path) -> None:
+    """An expired CLI-agent backend session short-circuits session.start at the
+    check_agent_auth phase with a structured error naming the failing agent."""
+    project = _write_valid_project(tmp_path / "expired-auth")
+    state = ServerState(active_project_path=str(project))
+
+    expired = [AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "run `codex login`")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=expired,
+    ), pytest.raises(SessionStartError) as excinfo:
+        await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert excinfo.value.code == -32603
+    # The message names the failing agent type + remediation.
+    assert "codex" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_emits_failed_progress_for_expired(tmp_path: Path) -> None:
+    """The blocking probe fires running then failed for check_agent_auth and
+    halts before install_skills runs."""
+    project = _write_valid_project(tmp_path / "expired-progress")
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    expired = [AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "session expired")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=expired,
+    ), pytest.raises(SessionStartError):
+        await run_session_start(
+            state,
+            progress_token="tok-auth",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    statuses = [n["params"].get("message") for n in notifications]  # type: ignore[union-attr]
+    # config_merge ok, then check_agent_auth running + failed; nothing after.
+    assert steps == [
+        STEP_CONFIG_MERGE,
+        STEP_CONFIG_MERGE,
+        STEP_CHECK_AGENT_AUTH,
+        STEP_CHECK_AGENT_AUTH,
+    ]
+    assert "install_skills" not in steps
+    last = notifications[-1]["params"]  # type: ignore[index]
+    assert "error" in last  # type: ignore[operator]
+    assert statuses  # silence unused
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_passes_on_clean_probe(tmp_path: Path) -> None:
+    """A clean probe (all ok) clears the phase and session.start continues."""
+    project = _write_valid_project(tmp_path / "clean-auth")
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    clean = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=clean,
+    ):
+        outcome = await run_session_start(
+            state,
+            progress_token="tok-clean",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    assert outcome.session_id == state.session_id
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    # check_agent_auth ran (running+ok) and later phases proceeded.
+    assert STEP_CHECK_AGENT_AUTH in steps
+    assert "install_skills" in steps
+    assert "first_snapshot" in steps
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_tolerates_non_blocking_status(tmp_path: Path) -> None:
+    """A non-blocking non-ok status (timeout) is logged but does not block the
+    launch — session.start completes."""
+    project = _write_valid_project(tmp_path / "timeout-auth")
+    state = ServerState(active_project_path=str(project))
+
+    timed_out = [AuthProbeResult(AgentType.CODEX, AUTH_TIMEOUT, "probe timed out")]
+    with patch(
+        "agentshore.agents.auth_probe.probe_configured_cli_auth",
+        return_value=timed_out,
+    ):
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert outcome.session_id == state.session_id
 
 
 # ---------------------------------------------------------------------------

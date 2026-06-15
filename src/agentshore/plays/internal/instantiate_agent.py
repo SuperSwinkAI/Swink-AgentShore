@@ -14,6 +14,7 @@ from agentshore.agents.model_tiers import (
     enabled_model_tiers,
 )
 from agentshore.config import AgentConfig
+from agentshore.plays.internal.base import InternalPlay
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentStatus, AgentType, PlayOutcome, PlayType
 
@@ -62,7 +63,7 @@ def _first_enabled_config_for_tier(
     return fallback
 
 
-class InstantiateAgentPlay:
+class InstantiateAgentPlay(InternalPlay):
     """Spawn a new agent of the requested type.
 
     Per-tier spawn caps come from the ``max`` field on each ``ModelTierConfig``
@@ -70,8 +71,6 @@ class InstantiateAgentPlay:
     """
 
     play_type = PlayType.INSTANTIATE_AGENT
-    skill_name = None
-    capability = None
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         issues: list[MaskReason] = []

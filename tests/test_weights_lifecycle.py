@@ -2,7 +2,7 @@
 
 Covers:
 - _prune_local_checkpoints: keeps only the last N numbered checkpoint files
-- _archive_old_canonicals: renames policy_v{N}.pt for N != POLICY_VERSION
+- _archive_old_canonicals: quarantines canonicals not matching the version triple
 - delta accumulation: _write_global_canonical merges concurrent updates
 """
 
@@ -11,10 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 import torch
 
-from agentshore.rl.action_space import POLICY_VERSION
+from agentshore.rl.checkpoint_store import canonical_lock_filename, canonical_weights_filename
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.selector import _archive_old_canonicals, _prune_local_checkpoints
 
@@ -77,7 +76,7 @@ def test_prune_does_not_touch_non_numbered_files(tmp_path: Path) -> None:
         (weights_dir / f"policy_{i:06d}.pt").write_bytes(b"fake")
 
     # These should never be pruned by _prune_local_checkpoints.
-    canonical = weights_dir / f"policy_v{POLICY_VERSION}.pt"
+    canonical = weights_dir / canonical_weights_filename()
     canonical.write_bytes(b"canonical")
     legacy = weights_dir / "policy_legacy_v1.pt"
     legacy.write_bytes(b"legacy")
@@ -93,31 +92,41 @@ def test_prune_does_not_touch_non_numbered_files(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_archive_renames_old_version(tmp_path: Path) -> None:
-    """policy_v{OLD}.pt is renamed to policy_legacy_v{OLD}.pt."""
+def test_archive_renames_old_single_version_scheme(tmp_path: Path) -> None:
+    """The legacy single-version policy_v{N}.pt is quarantined to policy_legacy_*.pt."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    old_version = POLICY_VERSION - 1
-    if old_version < 0:
-        pytest.skip("POLICY_VERSION is 0, cannot create an older version")
-
-    old_file = weights_dir / f"policy_v{old_version}.pt"
+    old_file = weights_dir / "policy_v5.pt"
     old_file.write_bytes(b"old weights")
 
     _archive_old_canonicals(weights_dir)
 
-    assert not old_file.exists(), "old canonical was not renamed"
-    expected_dest = weights_dir / f"policy_legacy_v{old_version}.pt"
+    assert not old_file.exists(), "old single-version canonical was not renamed"
+    expected_dest = weights_dir / "policy_legacy_v5.pt"
     assert expected_dest.exists(), "legacy-named file not found after archive"
 
 
-def test_archive_leaves_current_version_untouched(tmp_path: Path) -> None:
-    """policy_v{POLICY_VERSION}.pt is never renamed."""
+def test_archive_renames_stale_triple(tmp_path: Path) -> None:
+    """A version-tagged canonical from a different triple is quarantined."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    current_file = weights_dir / f"policy_v{POLICY_VERSION}.pt"
+    stale = weights_dir / "policy_a1_o1_p1.pt"
+    stale.write_bytes(b"stale triple")
+
+    _archive_old_canonicals(weights_dir)
+
+    assert not stale.exists(), "stale triple canonical was not renamed"
+    assert (weights_dir / "policy_legacy_a1_o1_p1.pt").exists()
+
+
+def test_archive_leaves_current_version_untouched(tmp_path: Path) -> None:
+    """The current version-tagged canonical is never renamed."""
+    weights_dir = tmp_path / "weights"
+    weights_dir.mkdir()
+
+    current_file = weights_dir / canonical_weights_filename()
     current_file.write_bytes(b"current weights")
 
     _archive_old_canonicals(weights_dir)
@@ -126,38 +135,29 @@ def test_archive_leaves_current_version_untouched(tmp_path: Path) -> None:
     assert not list(weights_dir.glob("policy_legacy_*.pt")), "unexpected legacy file created"
 
 
-def test_archive_handles_multiple_old_versions(tmp_path: Path) -> None:
-    """Multiple stale canonicals are all archived in one call."""
+def test_archive_handles_multiple_stale_canonicals(tmp_path: Path) -> None:
+    """Multiple stale canonicals are all archived in one call; current left alone."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    stale_versions = [v for v in range(max(0, POLICY_VERSION - 3), POLICY_VERSION)]
-    if not stale_versions:
-        pytest.skip("POLICY_VERSION too small to test multiple stale versions")
+    stale_names = ["policy_v3.pt", "policy_v4.pt", "policy_a1_o1_p1.pt"]
+    for name in stale_names:
+        (weights_dir / name).write_bytes(b"stale")
 
-    for v in stale_versions:
-        (weights_dir / f"policy_v{v}.pt").write_bytes(b"stale")
-
-    # Also create the current version so it is definitely left alone.
-    current_file = weights_dir / f"policy_v{POLICY_VERSION}.pt"
+    current_file = weights_dir / canonical_weights_filename()
     current_file.write_bytes(b"current")
 
     _archive_old_canonicals(weights_dir)
 
-    # All stale versions should be gone.
-    for v in stale_versions:
-        assert not (weights_dir / f"policy_v{v}.pt").exists(), (
-            f"stale policy_v{v}.pt was not archived"
-        )
-    # Current version untouched.
+    for name in stale_names:
+        assert not (weights_dir / name).exists(), f"stale {name} was not archived"
     assert current_file.exists()
-    # Legacy files exist for each stale version.
     legacy_files = list(weights_dir.glob("policy_legacy_*.pt"))
-    assert len(legacy_files) == len(stale_versions)
+    assert len(legacy_files) == len(stale_names)
 
 
 def test_archive_skips_already_legacy_named(tmp_path: Path) -> None:
-    """Files already named policy_legacy_v*.pt are not re-processed."""
+    """Files already named policy_legacy_*.pt are not re-processed."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
@@ -168,6 +168,20 @@ def test_archive_skips_already_legacy_named(tmp_path: Path) -> None:
 
     # File should still exist and not be double-archived.
     assert legacy_existing.exists()
+
+
+def test_archive_skips_numbered_local_checkpoints(tmp_path: Path) -> None:
+    """Numbered local checkpoints (policy_NNNNNN.pt) are not quarantined."""
+    weights_dir = tmp_path / "weights"
+    weights_dir.mkdir()
+
+    numbered = weights_dir / "policy_000007.pt"
+    numbered.write_bytes(b"local checkpoint")
+
+    _archive_old_canonicals(weights_dir)
+
+    assert numbered.exists(), "numbered local checkpoint was incorrectly quarantined"
+    assert not list(weights_dir.glob("policy_legacy_*.pt"))
 
 
 def test_archive_empty_dir_is_noop(tmp_path: Path) -> None:
@@ -212,8 +226,8 @@ def test_delta_full_write_when_no_base(tmp_path: Path) -> None:
     """Without a reload base, _write_global_canonical does a full write."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
-    canonical = weights_dir / f"policy_v{POLICY_VERSION}.pt"
-    lock = weights_dir / f"policy_v{POLICY_VERSION}.lock"
+    canonical = weights_dir / canonical_weights_filename()
+    lock = weights_dir / canonical_lock_filename()
 
     stub = _make_selector_stub(weights_dir)
     stub._reload_base = None
@@ -231,8 +245,8 @@ def test_delta_accumulates_onto_existing_global(tmp_path: Path) -> None:
     """Delta from one session is added to an existing global canonical."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
-    canonical = weights_dir / f"policy_v{POLICY_VERSION}.pt"
-    lock = weights_dir / f"policy_v{POLICY_VERSION}.lock"
+    canonical = weights_dir / canonical_weights_filename()
+    lock = weights_dir / canonical_lock_filename()
 
     # The global canonical represents prior learning.
     global_sd = {k: v.clone() for k, v in ActorCritic().state_dict().items()}
@@ -258,8 +272,8 @@ def test_delta_concurrent_sessions_both_preserved(tmp_path: Path) -> None:
     """Two sessions writing deltas sequentially both have their updates preserved."""
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
-    canonical = weights_dir / f"policy_v{POLICY_VERSION}.pt"
-    lock = weights_dir / f"policy_v{POLICY_VERSION}.lock"
+    canonical = weights_dir / canonical_weights_filename()
+    lock = weights_dir / canonical_lock_filename()
 
     # Shared starting point.
     base_sd = {k: v.clone() for k, v in ActorCritic().state_dict().items()}

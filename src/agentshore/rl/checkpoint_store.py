@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING, Protocol, cast
 import structlog
 import torch
 
-from agentshore.rl.action_space import POLICY_VERSION
+from agentshore.rl.action_space import ACTION_SPACE_VERSION
+from agentshore.rl.config_head import POLICY_VERSION
+from agentshore.rl.observation import OBSERVATION_VERSION
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -30,6 +32,23 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 _LOCAL_CHECKPOINT_KEEP = 2
+
+
+def canonical_weights_filename() -> str:
+    """Filename for the global canonical weights, tagged with all three versions.
+
+    The three version ints that govern checkpoint compatibility are independent:
+    ``ACTION_SPACE_VERSION`` (play head shape), ``OBSERVATION_VERSION`` (state
+    vector layout), and ``POLICY_VERSION`` (config head). Encoding all three in
+    the filename makes it unambiguous which checkpoint matches the running code —
+    no single version int silently "owns" the file.
+    """
+    return f"policy_a{ACTION_SPACE_VERSION}_o{OBSERVATION_VERSION}_p{POLICY_VERSION}.pt"
+
+
+def canonical_lock_filename() -> str:
+    """Lock-file name paired with :func:`canonical_weights_filename`."""
+    return f"policy_a{ACTION_SPACE_VERSION}_o{OBSERVATION_VERSION}_p{POLICY_VERSION}.lock"
 
 
 class _WindowsLockingModule(Protocol):
@@ -53,20 +72,30 @@ def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KE
 
 
 def _archive_old_canonicals(weights_dir: Path) -> None:
-    """Rename policy_v{N}.pt files where N != current POLICY_VERSION to policy_legacy_v{N}.pt.
+    """Quarantine canonical weights that don't match the current version triple.
 
-    Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed policy.pt).
-    Never deletes — renames so the user can inspect.
+    The current canonical is ``canonical_weights_filename()`` (tagged with the
+    live action/observation/policy versions). Any other canonical — including the
+    old single-version ``policy_v{N}.pt`` scheme and any stale triple from a prior
+    code revision — is renamed to a ``policy_legacy_<stem>.pt`` form so the user
+    can inspect it. A fresh project with no matching file simply cold-starts.
+
+    Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed
+    policy.pt). Never deletes — renames so the user can inspect.
     """
-    current = weights_dir / f"policy_v{POLICY_VERSION}.pt"
-    for f in sorted(weights_dir.glob("policy_v*.pt")):
-        if f == current or f.name.startswith("policy_legacy_v"):
+    current = weights_dir / canonical_weights_filename()
+    for f in sorted(weights_dir.glob("policy_*.pt")):
+        if f == current or f.name.startswith("policy_legacy_"):
             continue
-        stem = f.stem  # e.g. "policy_v2"
-        if stem.startswith("policy_v") and stem[len("policy_v") :].isdigit():
-            dest = weights_dir / f"policy_legacy_{stem[len('policy_') :]}.pt"
-            with contextlib.suppress(OSError):
-                f.rename(dest)
+        stem = f.stem  # e.g. "policy_v2" or "policy_a13_o12_p5"
+        # Skip numbered local checkpoints (policy_NNNNNN.pt) — those are managed
+        # by _prune_local_checkpoints, not the canonical quarantine.
+        suffix = stem[len("policy_") :]
+        if suffix.isdigit():
+            continue
+        dest = weights_dir / f"policy_legacy_{suffix}.pt"
+        with contextlib.suppress(OSError):
+            f.rename(dest)
 
 
 def cleanup_stale_canonical_weights(weights_dir: Path) -> None:

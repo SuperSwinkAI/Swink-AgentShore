@@ -9,11 +9,10 @@ stretches the watchdog wait progressively the longer the digest stays put.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from pathlib import Path
 
 from agentshore.core import Orchestrator
-from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS, LoopRunner
-from agentshore.core.override_queue import OverrideQueue
+from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS
 from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
@@ -58,24 +57,9 @@ def _agent(agent_id: str, status: AgentStatus = AgentStatus.IDLE) -> AgentSnapsh
 
 def _orch() -> Orchestrator:
     """Bare Orchestrator with just the fields the digest + backoff logic needs."""
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._in_flight = {}
-    orch._overrides = OverrideQueue()
-    orch._idle_streak = 0
-    orch._last_selection_digest = None
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id="s",
-        main_repo=MagicMock(),
-        overrides=orch._overrides,
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
-    )
-    return orch
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    return make_test_orchestrator(Path("."))
 
 
 # ---------------------------------------------------------------------------

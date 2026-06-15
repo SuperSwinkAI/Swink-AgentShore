@@ -1,14 +1,15 @@
 """Shared Orchestrator stub factory for tests.
 
-Provides ``make_test_orchestrator`` which mirrors every attribute set by
-``_OrchestratorBase.__init__`` so tests exercising dispatch, completion,
-drain, or loop-detection mixins never hang on a missing field.
+Provides ``make_test_orchestrator`` which builds an Orchestrator via ``__new__``
+(skipping bootstrap) but with a fully-initialised :class:`SessionRuntime` so
+tests exercising dispatch, completion, drain, or loop-detection components never
+hang on a missing latch. Every shared mutable latch lives on ``orch._runtime``;
+the orchestrator's backward-compat ``orch._<latch>`` properties delegate there,
+so tests may read/write either form.
 """
 
 from __future__ import annotations
 
-import asyncio
-import collections
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +26,7 @@ from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
 from agentshore.core.recovery_tracker import RecoveryTracker
+from agentshore.core.session_runtime import SessionRuntime
 from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.state import NullStateProvider
 
@@ -60,87 +62,54 @@ def make_test_orchestrator(
         selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = cfg
+
+    # The single owner of all shared mutable session state. Constructed first so
+    # the orchestrator's ``orch._<latch>`` compat properties (which delegate to
+    # ``orch._runtime``) resolve for the rest of this factory and for tests.
+    runtime = SessionRuntime(cfg=cfg, selector=selector, state_provider=NullStateProvider())
+    orch._runtime = runtime
+    runtime.policy_version = "test"
+    # __new__-bypass parity with bootstrap: never auto-refresh on the first tick.
+    runtime.last_refresh_time = float("inf")
+    runtime.feedback_cadence_last_ack_monotonic = 0.0
+
+    # Stable identity / collaborators owned directly by the orchestrator.
     orch._repo_root = tmp_path
     orch._session_id = "test-session"
     orch._store = store
     orch._manager = MagicMock()
     orch._manager.worktrees = SimpleNamespace(main_repo=tmp_path)
-    orch._worktrees = None
     orch._executor = MagicMock()
-    orch._selector = selector
-    orch._state_provider = NullStateProvider()
-    orch._stop_requested = False
-    orch._stopped = False
-    orch._draining = False
-    orch._drain_reason = None
-    orch._drain_initialized = False
-    orch._end_session_dispatch_started = False
-    orch._natural_exit_reason = None
-    orch._natural_exit_callback = None
-    orch._end_session_report_requested = False
-    orch._end_session_report_open_browser = False
-    orch._embedded_mode = False
-    orch._esr_ready_callback = None
-    orch._stop_reason = "unknown"
-    orch._exit_stack = MagicMock()
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
-    orch._completion_processing_count = 0
-    orch._completion_processing_idle = asyncio.Event()
-    orch._completion_processing_idle.set()
-    orch.context_pressure_hints = {}
     orch._seed_path = None
     orch._step_index = 0
-    orch._policy_version = "test"
     orch._config_hash = "abc"
-    orch._metrics = None
+    orch._last_warned_failure_streak = None
+    orch._last_warned_any_streak = None
+    orch._fleet_idle_persistent_active = False
     orch._overrides = OverrideQueue()
-    orch._loop_started_at = 0.0
-    orch._registry = None
-    orch._pause_event = asyncio.Event()
-    orch._pause_event.set()
-    orch._pause_reason = None
-    orch._last_play_id = None
     orch._velocity = VelocityTracker(velocity_window_size=50)
-    orch._recent_play_outcomes = collections.deque(maxlen=50)
-    orch._budget_override_enabled = None
-    orch._budget_override_total = None
-    orch._time_override_enabled = None
-    orch._time_override_minutes = None
-    orch._stop_done = asyncio.Event()
-    orch._config_path = None
-    orch._recent_play_completions = collections.deque(maxlen=64)
-    orch._recent_applied_labels = collections.deque(maxlen=64)
-    orch._resource_failure_counts = {}
-    orch._parked_resource_keys = set()
     orch._recovery = RecoveryTracker()
+    orch._main_repo = MainRepoGuard()
     orch._snapshots = SnapshotProjector(
         manager=orch._manager, store=store, session_id=orch._session_id
     )
     orch._state_builder = StateBuilder(
         host=orch,
+        runtime=runtime,
         store=store,
         manager=orch._manager,
         executor=orch._executor,
         session_id=orch._session_id,
         repo_root=orch._repo_root,
+        main_repo=orch._main_repo,
         snapshots=orch._snapshots,
         velocity=orch._velocity,
         recovery=orch._recovery,
         overrides=orch._overrides,
     )
-    orch._last_selection_digest = None
-    orch._idle_streak = 0
-    orch._last_refresh_time = float("inf")
-    orch._main_repo = MainRepoGuard()
-    orch._feedback_cadence_plays_since_ack = 0
-    orch._feedback_cadence_last_ack_monotonic = 0.0
     orch._lifecycle = LifecycleController(
         host=orch,
+        runtime=runtime,
         store=store,
         session_id=orch._session_id,
         repo_root=orch._repo_root,
@@ -148,6 +117,7 @@ def make_test_orchestrator(
     )
     orch._drain = DrainController(
         host=orch,
+        runtime=runtime,
         store=store,
         manager=orch._manager,
         session_id=orch._session_id,
@@ -156,6 +126,7 @@ def make_test_orchestrator(
     )
     orch._completion = CompletionProcessor(
         host=orch,
+        runtime=runtime,
         store=store,
         manager=orch._manager,
         executor=orch._executor,
@@ -173,6 +144,7 @@ def make_test_orchestrator(
     orch._completion.refresh_issues = AsyncMock()
     orch._dispatcher = Dispatcher(
         host=orch,
+        runtime=runtime,
         store=store,
         manager=orch._manager,
         executor=orch._executor,
@@ -190,6 +162,7 @@ def make_test_orchestrator(
     # float('inf') default (loop never started → not stale to the watchdog).
     orch._loop = LoopRunner(
         host=orch,
+        runtime=runtime,
         session_id=orch._session_id,
         main_repo=orch._main_repo,
         overrides=orch._overrides,

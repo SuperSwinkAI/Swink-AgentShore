@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import ssl
 import sys
 import urllib.error
@@ -74,6 +75,22 @@ class _TokenResolution:
 
 def _expanded_gh_config_dir(gh_config_dir: str | None) -> str | None:
     return os.path.expanduser(gh_config_dir) if gh_config_dir else None
+
+
+def _git_ssh_command(ssh_key_path: str) -> str:
+    """Build a ``GIT_SSH_COMMAND`` that survives git's own argv tokenizer.
+
+    git parses ``GIT_SSH_COMMAND`` with a POSIX shell-style splitter
+    (``sq_dequote``), not by handing it to the OS verbatim. A bare Windows key
+    path (``C:\\Users\\First Last\\.ssh\\id_ed25519``) is therefore mangled: the
+    backslashes are eaten as escapes and the space splits the path into two
+    arguments, so SSH-remote identities silently fail to authenticate. Normalise
+    to forward slashes (OpenSSH's ``ssh.exe`` accepts them in ``-i`` on Windows)
+    and single-quote the path so spaces and other metacharacters are preserved
+    identically on every platform.
+    """
+    key = Path(os.path.expanduser(ssh_key_path)).as_posix()
+    return f"ssh -i {shlex.quote(key)} -o IdentitiesOnly=yes"
 
 
 def _keychain_services(service: str) -> list[str]:
@@ -520,6 +537,21 @@ class IdentityResolver:
         name = agent_cfg.identity
         if not name:
             return {}
+        return self.resolve_env_by_name(cfg, name, strict=strict)
+
+    def resolve_env_by_name(
+        self,
+        cfg: RuntimeConfig,
+        name: str,
+        *,
+        strict: bool = False,
+    ) -> dict[str, str]:
+        """Return the env overlay for the identity *name* (keyed directly, not by agent).
+
+        Same overlay ``resolve_env`` produces, but addressed by identity name so
+        agent-agnostic call sites (e.g. the shared worktree fetch, which runs
+        before any agent is bound) can resolve a chosen identity's credentials.
+        """
         ident = cfg.identities.get(name)
         if ident is None:
             _logger.warning("identity_missing_at_dispatch", identity=name)
@@ -556,9 +588,7 @@ class IdentityResolver:
             overlay["GH_CONFIG_DIR"] = str(_isolated_gh_config_dir(name))
 
         if ident.ssh_key_path:
-            overlay["GIT_SSH_COMMAND"] = (
-                f"ssh -i {os.path.expanduser(ident.ssh_key_path)} -o IdentitiesOnly=yes"
-            )
+            overlay["GIT_SSH_COMMAND"] = _git_ssh_command(ident.ssh_key_path)
 
         return overlay
 
@@ -595,6 +625,53 @@ def resolve_identity_env(
 ) -> dict[str, str]:
     """Return env overlay for *agent_cfg*'s identity. Empty dict if no identity."""
     return _default_resolver.resolve_env(cfg, agent_cfg, strict=strict)
+
+
+def resolve_identity_env_by_name(
+    cfg: RuntimeConfig,
+    name: str,
+    *,
+    strict: bool = False,
+) -> dict[str, str]:
+    """Return the env overlay for the identity *name* (agent-agnostic)."""
+    return _default_resolver.resolve_env_by_name(cfg, name, strict=strict)
+
+
+def select_default_git_identity(cfg: RuntimeConfig) -> str | None:
+    """Pick the identity for shared, agent-agnostic git ops (the worktree fetch).
+
+    The shared main-repo fetch runs *before* any agent is bound, so it has no
+    owning agent identity. It is read-only (no authorship, push, or PR), so a
+    single read-capable identity is correct and carries no write/attribution
+    semantics — the per-agent write path stays each agent's own identity.
+
+    Preference order (gh OAuth preferred over a PAT, with fallback):
+
+    1. an identity authed via ``gh_token_login`` (gh OAuth) — the default,
+    2. ``gh_token_keychain``,
+    3. ``gh_token_env`` (PAT),
+    4. otherwise the first configured identity (deterministic by name).
+
+    Returns ``None`` when no identities are configured (fetch stays tokenless,
+    its historical best-effort behavior).
+    """
+    identities = cfg.identities
+    if not identities:
+        return None
+
+    def rank(item: tuple[str, object]) -> tuple[int, str]:
+        name, ident = item
+        if getattr(ident, "gh_token_login", None):
+            source = 0
+        elif getattr(ident, "gh_token_keychain", None):
+            source = 1
+        elif getattr(ident, "gh_token_env", None):
+            source = 2
+        else:
+            source = 3
+        return (source, name)
+
+    return min(identities.items(), key=rank)[0]
 
 
 def verify_identity_repo_access(project_path: Path, identity_env: dict[str, str]) -> None:

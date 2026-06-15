@@ -65,14 +65,13 @@ class ReplayLoader:
             if rec.next_state is None or len(rec.next_state) != expected_bytes:
                 n_skipped += 1
                 continue
+            if rec.action_mask is None or len(rec.action_mask) != mask_bytes:
+                n_skipped += 1
+                continue
 
             state = np.frombuffer(rec.state_vector, dtype=np.float32).copy()
             next_state = np.frombuffer(rec.next_state, dtype=np.float32).copy()
-
-            if rec.action_mask is not None and len(rec.action_mask) == mask_bytes:
-                mask = np.frombuffer(rec.action_mask, dtype=np.uint8).astype(bool).copy()
-            else:
-                mask = np.ones(NUM_ACTIONS, dtype=bool)
+            mask = np.frombuffer(rec.action_mask, dtype=np.uint8).astype(bool).copy()
 
             buf.add(
                 Step(

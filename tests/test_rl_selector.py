@@ -793,27 +793,25 @@ def test_consume_pending_without_select_returns_none():
 
 
 def test_reload_shared_weights_picks_versioned_path(tmp_path: Path) -> None:
-    """_reload_shared_weights loads policy_v{POLICY_VERSION}.pt, ignores policy.pt."""
+    """_reload_shared_weights loads the version-tagged canonical, ignores policy.pt."""
     import unittest.mock as mock
 
-    from agentshore.rl.action_space import POLICY_VERSION
+    from agentshore.rl.checkpoint_store import canonical_weights_filename
 
     sel = _build_selector()
 
-    # Build the expected directory structure under a fake home.
-    new_home = tmp_path / "home"
-    weights_dir = new_home / ".agentshore" / "weights"
+    weights_dir = tmp_path / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save a real compatible checkpoint at the versioned path.
-    versioned_path = weights_dir / f"policy_v{POLICY_VERSION}.pt"
+    # Save a real compatible checkpoint at the versioned canonical path.
+    versioned_path = weights_dir / canonical_weights_filename()
     sel._policy.save(versioned_path)
 
     # Ensure the legacy policy.pt does NOT exist (we want to confirm it is ignored).
     legacy_path = weights_dir / "policy.pt"
     assert not legacy_path.exists()
 
-    with mock.patch("pathlib.Path.home", return_value=new_home):
+    with mock.patch("agentshore.rl.selector._GLOBAL_WEIGHTS_DIR", weights_dir):
         sel._reload_shared_weights()  # should succeed silently, no exception
 
 
@@ -823,7 +821,9 @@ def test_reload_shared_weights_skips_incompatible(tmp_path: Path) -> None:
 
     import torch
 
-    from agentshore.rl.action_space import ACTION_SPACE_VERSION, POLICY_VERSION
+    from agentshore.rl.action_space import ACTION_SPACE_VERSION
+    from agentshore.rl.checkpoint_store import canonical_weights_filename
+    from agentshore.rl.config_head import POLICY_VERSION
 
     sel = _build_selector()
     original_state = {k: v.clone() for k, v in sel._policy.state_dict().items()}
@@ -831,7 +831,7 @@ def test_reload_shared_weights_skips_incompatible(tmp_path: Path) -> None:
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    stale_path = weights_dir / f"policy_v{POLICY_VERSION}.pt"
+    stale_path = weights_dir / canonical_weights_filename()
     # Write a payload with a wrong policy_version — ActorCritic.load raises
     # IncompatibleCheckpointError on action_space_version mismatch first, so
     # use a wrong action_space_version to guarantee the error path.

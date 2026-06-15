@@ -12,10 +12,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
+from agentshore.agents import cli_grok
+from agentshore.agents._jsonl import (
+    _first_int,
+    _iter_json_events,
+    _max_usage,
+    _usage_totals_from_dict,
+    _UsageTotals,
+)
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
     AgentOutputInvalid,
+    AgentProcessCrashed,
     AgentProcessError,
     ErrorClass,
     PlayTimeoutError,
@@ -24,7 +33,7 @@ from agentshore.logging import get_logger
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from agentshore.agents.handle import AgentHandle
@@ -162,6 +171,13 @@ _AUTH_PATTERNS = (
     "not resolvable to this token/session",
     "lacks access to repository",
     "cannot access repository metadata",
+    # Codex backend-session TTL-expiry signatures (#zeke auth-hang): when the
+    # ChatGPT-backed session token expires mid-run the Codex CLI prints these to
+    # stderr then hangs reading stdin instead of exiting non-zero. stderr-only —
+    # deliberately NOT mirrored into _AUTH_STDOUT so they never match an agent's
+    # own work product.
+    "failed to renew cache ttl",
+    "failed to refresh available models",
 )
 # Drops the short generic tokens ("401"/"403"/"unauthorized"/"forbidden"/
 # "authentication") that appear in code; keeps the distinctive gh/git access
@@ -220,6 +236,17 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
+# Host disk exhaustion surfaced by the agent subprocess (a build writing into a
+# full worktree, git, npm, cargo, etc.). An environment condition, not the
+# agent's fault — pulling it out of "unknown" lets operators see the real cause
+# instead of blaming a code/test failure (#180). Distinctive enough to match in
+# either stream.
+_ENOSPC_PATTERNS = (
+    "no space left on device",
+    "enospc",
+    "errno 28",
+    "disk quota exceeded",
+)
 # Transient network/socket failures. claude_code has been observed to exit with
 # "API Error: The socket connection was closed unexpectedly" falling into the
 # generic "unknown" bucket (#23). These are distinctive enough to match
@@ -275,6 +302,8 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
         return ErrorClass.CODEX_ROLLOUT
     if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
         return ErrorClass.TRANSIENT_NETWORK
+    if any(p in combined for p in _ENOSPC_PATTERNS):
+        return ErrorClass.CRASH_ENOSPC
     if any(p in combined for p in _OOM_PATTERNS):
         return ErrorClass.CRASH_OOM
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS
@@ -347,16 +376,6 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True, slots=True)
-class _UsageTotals:
-    tokens_in: int = 0
-    tokens_out: int = 0
-    cached_tokens_in: int = 0
-    cache_write_tokens_in: int = 0
-    turn_count: int = 0
-    max_turn_input_tokens: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class _ReadOutput:
     raw: str
     usage: _UsageTotals
@@ -364,6 +383,17 @@ class _ReadOutput:
 
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
+
+# Launch-to-first-byte deadline (#177). A healthy CLI agent emits its first JSON
+# stream event within seconds of launch; a wedged child (the intermittent codex
+# rollout-thread / keychain race) produces *nothing* and otherwise rides the full
+# wall-clock ``timeout`` (default 3600s) before any watchdog fires — the existing
+# ``stream_idle_timeout`` (default 1800s) only catches first-byte silence at its
+# own, much larger, bound. This dedicated short deadline caps the blast radius of
+# a launch wedge to ~2 min so the orchestrator retries promptly. It only governs
+# the *first* byte; once any stdout arrives, ``_watch_stream_idle`` owns silence
+# detection. Recoverable like the other timeouts — the orchestrator re-picks.
+_FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
 
 
 @dataclass(slots=True)
@@ -379,6 +409,81 @@ class _StdoutActivity:
     def mark_response_complete(self) -> None:
         self.response_complete = True
         self.last_stdout_at = time.monotonic()
+
+
+@dataclass(slots=True)
+class _StderrSniffer:
+    """Accumulates a live dispatch's stderr and flags auth-expiry signatures.
+
+    Two jobs in one drain of ``proc.stderr``:
+
+    1. Capture the stderr text so ``_finalize_nonzero_exit`` can still classify a
+       normal non-zero exit (the prior code re-read ``proc.stderr`` at the end;
+       once we drain it live for sniffing, that read would come back empty).
+    2. Watch a bounded tail for the ``_AUTH_PATTERNS`` markers so a backend
+       session-token expiry (Codex prints "failed to renew cache ttl" then hangs
+       on stdin, never exiting) is killed in well under a second and classified
+       AUTH instead of waiting out the full ``stream_idle_timeout`` and being
+       mislabelled TIMEOUT_STREAM_IDLE.
+    """
+
+    # Bounded tail inspected for auth markers (case-insensitive). 8 KiB easily
+    # covers the multi-line Codex auth banner without scanning unbounded output.
+    tail_window: int = 8192
+    # Cap on the stderr text retained for _finalize_nonzero_exit classification.
+    capture_cap: int = 65536
+    tail: str = ""
+    captured: str = ""
+    auth_hit: bool = False
+
+    def feed(self, text: str) -> bool:
+        """Append decoded stderr; return ``True`` on the first auth match."""
+        if len(self.captured) < self.capture_cap:
+            self.captured = (self.captured + text)[: self.capture_cap]
+        self.tail = (self.tail + text)[-self.tail_window :]
+        if not self.auth_hit:
+            lowered = self.tail.lower()
+            if any(p in lowered for p in _AUTH_PATTERNS):
+                self.auth_hit = True
+                return True
+        return False
+
+
+async def _watch_stderr_auth(
+    proc: asyncio.subprocess.Process,
+    sniffer: _StderrSniffer,
+    *,
+    agent_id: str,
+    agent_type: str,
+) -> NoReturn:
+    """Drain stderr live; raise ``PlayTimeoutError(AUTH)`` on an auth signature.
+
+    On EOF with no auth hit this sleeps forever (it loses the read/idle race and
+    is cancelled by the caller). It never returns a value — either it raises on
+    an auth marker or it is cancelled once stdout/idle resolves the dispatch.
+    """
+    if proc.stderr is not None:
+        try:
+            async for raw_line in proc.stderr:
+                text = raw_line.decode("utf-8", errors="replace")
+                if sniffer.feed(text):
+                    _logger.warning(
+                        "cli_agent_stderr_auth_abort",
+                        agent_id=agent_id,
+                        agent_type=agent_type,
+                        stderr_tail=sniffer.tail[-500:],
+                    )
+                    raise PlayTimeoutError(
+                        f"agent {agent_id!r} ({agent_type}) emitted a backend-auth "
+                        f"signature on stderr; aborting dispatch",
+                        error_class=ErrorClass.AUTH,
+                    )
+        except (OSError, EOFError):
+            pass
+    # stderr drained without an auth hit (or no stderr pipe): yield to the
+    # read/idle race, which will cancel this task once the dispatch resolves.
+    while True:
+        await asyncio.sleep(3600.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,10 +593,6 @@ def build_argv(
         return args
 
     if agent_type == AgentType.GROK:
-        # Imported lazily: cli_grok imports private helpers from this module at
-        # import time, so a top-level import here would form a circular import.
-        from agentshore.agents import cli_grok
-
         return cli_grok.build_argv(
             prompt=prompt,
             binary=binary,
@@ -585,13 +686,17 @@ async def _await_output_or_timeout(
     stream_idle_timeout: float,
     timeout: float,
     prompt_bytes: int,
+    sniffer: _StderrSniffer,
 ) -> tuple[_ReadOutput, bool]:
-    """Drive the read/idle race and return ``(result, post_response_killed)``.
+    """Drive the read/idle/stderr-auth race and return ``(result, post_response_killed)``.
 
     Called inside ``dispatch_cli``'s outer ``try:`` block so that the caller's
     ``except``/``finally`` clauses remain responsible for process cleanup on
     error.  Raises ``PlayTimeoutError`` directly on wall-clock or idle expiry;
-    re-raises ``_ReadOutputFailed.exc`` on output-parse errors.
+    re-raises ``_ReadOutputFailed.exc`` on output-parse errors. The
+    ``stderr``-auth watcher raises ``PlayTimeoutError(error_class=AUTH)`` as soon
+    as a backend session-token expiry signature lands on stderr, so a stdin-hang
+    is killed in well under a second rather than after the full idle window.
     """
     post_response_killed = False
     stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
@@ -615,15 +720,40 @@ async def _await_output_or_timeout(
             prompt_bytes=prompt_bytes,
         )
     )
+    auth_task = asyncio.create_task(
+        _watch_stderr_auth(
+            proc,
+            sniffer,
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+        )
+    )
+    # Launch-to-first-byte watchdog (#177). Caps a silent-launch wedge at
+    # ``_FIRST_BYTE_DEADLINE_S`` (~2 min) instead of the full wall-clock
+    # ``timeout``. Clamped to ``timeout`` so it never outlives the dispatch.
+    first_byte_task = asyncio.create_task(
+        _watch_first_byte(
+            stdout_activity,
+            deadline=min(_FIRST_BYTE_DEADLINE_S, timeout),
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+            model_tier=handle.model_tier,
+            prompt_bytes=prompt_bytes,
+        )
+    )
+    # All non-read watchers, for uniform cancellation on every exit path.
+    watcher_tasks = (idle_task, auth_task, first_byte_task)
+
     done, _pending = await asyncio.wait(
-        {read_task, idle_task},
+        {read_task, *watcher_tasks},
         timeout=float(timeout),
         return_when=asyncio.FIRST_COMPLETED,
     )
     if not done:
         read_task.cancel()
-        idle_task.cancel()
-        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        for watcher in watcher_tasks:
+            watcher.cancel()
+        await asyncio.gather(read_task, *watcher_tasks, return_exceptions=True)
         # desktop-awc: enrich the wall-clock timeout error with the
         # agent shape so operators can spot whether timeouts correlate
         # with model tier or huge prompts without having to rejoin the
@@ -636,15 +766,50 @@ async def _await_output_or_timeout(
             ),
             error_class=ErrorClass.TIMEOUT_WALLCLOCK,
         ) from None
+    # The stderr-auth watcher fired before stdout/idle resolved: kill the hung
+    # process and surface the AUTH classification immediately. The watcher only
+    # ever completes by raising ``PlayTimeoutError(AUTH)`` (post-EOF it sleeps
+    # indefinitely), so a done auth_task that beat the read always carries an
+    # exception to re-raise.
+    if auth_task in done and read_task not in done:
+        auth_exc = auth_task.exception()
+        read_task.cancel()
+        for watcher in watcher_tasks:
+            if watcher is not auth_task:
+                watcher.cancel()
+        await asyncio.gather(
+            read_task,
+            *(w for w in watcher_tasks if w is not auth_task),
+            return_exceptions=True,
+        )
+        raise (
+            auth_exc
+            if auth_exc is not None
+            else AssertionError("stderr-auth watcher completed without raising")
+        )
     if read_task in done:
-        idle_task.cancel()
-        await asyncio.gather(idle_task, return_exceptions=True)
+        for watcher in watcher_tasks:
+            watcher.cancel()
+        await asyncio.gather(*watcher_tasks, return_exceptions=True)
         read_result = await read_task
         if isinstance(read_result, _ReadOutputFailed):
             raise read_result.exc
         return read_result, post_response_killed
     else:
-        idle_exc = idle_task.exception()
+        # A watchdog fired before the read completed. The first-byte watchdog and
+        # the idle watcher both raise PlayTimeoutError; the stderr-auth watcher is
+        # handled above. Pick whichever of idle/first-byte finished and cancel the
+        # rest. The first-byte deadline only fires when no stdout ever arrived, so
+        # it shares the stream-idle handling below.
+        fired_watcher = first_byte_task if first_byte_task in done else idle_task
+        for watcher in watcher_tasks:
+            if watcher is not fired_watcher:
+                watcher.cancel()
+        await asyncio.gather(
+            *(w for w in watcher_tasks if w is not fired_watcher),
+            return_exceptions=True,
+        )
+        idle_exc = fired_watcher.exception()
         if idle_exc is None:
             read_result = await read_task
         elif (
@@ -686,14 +851,20 @@ async def _finalize_nonzero_exit(
     cfg: AgentConfig,
     rc: int,
     raw_output: str,
+    sniffer: _StderrSniffer | None = None,
 ) -> NoReturn:
     """Read stderr, classify the error, log, and raise ``AgentProcessError``.
 
     Always raises — the ``-> NoReturn`` annotation lets mypy verify callers
     need not handle a return value.
+
+    The live stderr sniffer has already drained ``proc.stderr`` for this
+    dispatch, so prefer its captured text; only fall back to re-reading the pipe
+    when no sniffer ran (defensive — keeps the classifier working if the live
+    drain was ever skipped).
     """
-    stderr_text = ""
-    if proc.stderr:
+    stderr_text = sniffer.captured if sniffer is not None else ""
+    if not stderr_text and proc.stderr:
         try:
             raw_err = await proc.stderr.read()
             stderr_text = raw_err.decode("utf-8", errors="replace")
@@ -774,6 +945,11 @@ async def dispatch_cli(
     """
     timeout = cfg.timeout if cfg.timeout is not None else default_timeout
     stream_idle_timeout = float(cfg.stream_idle_timeout)
+    # Safety clamp (#177): a misconfigured ``stream_idle_timeout`` larger than the
+    # wall-clock ``timeout`` would let the silence watchdog never fire before the
+    # dispatch is force-killed — effectively disabling early silence detection. Cap
+    # it at the dispatch timeout so the idle watcher always gets a chance to run.
+    stream_idle_timeout = min(stream_idle_timeout, float(timeout))
     max_bytes = cfg.max_output_size
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
@@ -812,17 +988,24 @@ async def dispatch_cli(
 
     t_start = time.monotonic()
 
-    # Agent subprocesses run ``git rebase``/``git commit`` inside skills, and
-    # those invocations don't route through ``command.git_sync``'s hardened
-    # env. Inject a non-interactive git editor so a rebase-internal
-    # ``git commit -e`` can't fall back to vim and hang forever, leaking the
-    # worktree (#168). Always set it — even with no identity overlay, where the
-    # agent would otherwise inherit raw ``os.environ`` with no editor pinned.
-    git_editor_env = {
-        subprocess_env.GIT_EDITOR_ENV: "true",
-        subprocess_env.GIT_SEQUENCE_EDITOR_ENV: "true",
-    }
-    env = {**os.environ, **git_editor_env, **(identity_env or {})}
+    # Agent subprocesses run ``git rebase``/``git commit``/``git push`` inside
+    # skills, and those invocations don't route through ``command.git``'s
+    # hardened env. Route the agent's env through the SAME hardened,
+    # non-interactive git policy AgentShore uses for its own git: a no-op editor
+    # (so a rebase-internal ``git commit -e`` can't fall back to vim and hang,
+    # leaking the worktree — #168) AND ``GIT_TERMINAL_PROMPT=0`` / no askpass (so
+    # an agent git op that needs credentials fails *fast* instead of blocking on
+    # a credential prompt with no TTY and hanging the full wall-clock — #177).
+    # When the agent's identity carries a token, inject it as the per-identity
+    # HTTPS credential so the agent authenticates AS ITS OWN identity — each
+    # agent subprocess carries its own token, so multi-identity fleets stay
+    # correctly attributed (codex pushes as its identity, claude_code as its).
+    identity = identity_env or {}
+    token = identity.get("GH_TOKEN") or identity.get("GITHUB_TOKEN")
+    git_overlay = dict(identity)
+    if token:
+        git_overlay.update(subprocess_env.git_auth_config_overlay(token))
+    env = subprocess_env.hardened_env(git_overlay, for_git=True)
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.
@@ -835,18 +1018,49 @@ async def dispatch_cli(
     # never drains could block on a full pipe buffer.
     prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
 
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(effective_cwd),
-        limit=cfg.line_limit_bytes,
-        start_new_session=True,
-        creationflags=subprocess_env.no_window_creationflags(),
-        env=env,
-    )
+    # Backstop for the worktree-reclaim TOCTOU race (#176): the dispatch cwd is
+    # an AgentShore-managed worktree that reconcile / collision-reclaim churn can
+    # remove between allocation and spawn. POSIX surfaces a missing cwd as a raw
+    # ``FileNotFoundError`` (an ``OSError``) from ``create_subprocess_exec``,
+    # which ``manager.dispatch`` re-raises uncaught — the play executor then has
+    # no recoverable match and logs ``unexpected_play_error``. Detect it here and
+    # raise a *typed* recoverable error instead so the play fails cleanly and PPO
+    # re-picks. Done before spawn so the diagnosis is unambiguous (a spawn-time
+    # ``FileNotFoundError`` could otherwise mean a missing executable).
+    if not os.path.isdir(effective_cwd):
+        raise AgentProcessCrashed(f"dispatch cwd (worktree) no longer exists: {effective_cwd}")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(effective_cwd),
+            limit=cfg.line_limit_bytes,
+            start_new_session=True,
+            creationflags=subprocess_env.no_window_creationflags(),
+            env=env,
+        )
+    except NotADirectoryError as exc:
+        # cwd path exists but is a file, not a directory — same recoverable class
+        # as the missing-cwd race above.
+        raise AgentProcessCrashed(
+            f"dispatch cwd (worktree) is not a directory: {effective_cwd}"
+        ) from exc
+    except FileNotFoundError as exc:
+        # The pre-spawn ``isdir`` check ruled out a missing cwd, so a
+        # ``FileNotFoundError`` here is the agent executable being absent. Still
+        # recoverable (re-instantiate the agent), so map to the same typed class
+        # rather than letting a raw ``OSError`` reach ``unexpected_play_error``.
+        raise AgentProcessCrashed(
+            f"agent {handle.agent_id!r} executable not found: {argv[0]!r}"
+        ) from exc
     handle.process = proc
+    # Drains stderr live so a backend-auth signature aborts the dispatch as AUTH
+    # (instead of waiting out the idle timeout). It also retains the stderr text
+    # for _finalize_nonzero_exit, which can no longer re-read a now-drained pipe.
+    stderr_sniffer = _StderrSniffer()
     stdin_feeder: asyncio.Task[None] | None = None
     if prompt_on_stdin and proc.stdin is not None:
         stdin_feeder = asyncio.create_task(_feed_prompt_stdin(proc, prompt))
@@ -862,6 +1076,7 @@ async def dispatch_cli(
             stream_idle_timeout=stream_idle_timeout,
             timeout=float(timeout),
             prompt_bytes=prompt_bytes,
+            sniffer=stderr_sniffer,
         )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
@@ -908,7 +1123,9 @@ async def dispatch_cli(
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
-        await _finalize_nonzero_exit(proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output)
+        await _finalize_nonzero_exit(
+            proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
+        )
 
     dollar_cost = estimate_cost(
         usage.tokens_in,
@@ -1106,6 +1323,52 @@ async def _watch_stream_idle(
             )
 
 
+async def _watch_first_byte(
+    stdout_activity: _StdoutActivity,
+    *,
+    deadline: float,
+    agent_id: str,
+    agent_type: str = "?",
+    model_tier: str | None = None,
+    prompt_bytes: int | None = None,
+) -> NoReturn:
+    """Kill the dispatch if no stdout byte arrives within ``deadline`` seconds (#177).
+
+    A healthy CLI agent streams its first JSON event within seconds of launch;
+    a launch-wedged child (codex rollout-thread / keychain race) emits nothing
+    and would otherwise ride the full wall-clock ``timeout``. This watchdog fires
+    *only* on first-byte silence — once ``received_any`` flips True it exits and
+    leaves silence detection to ``_watch_stream_idle``. Recoverable via the same
+    ``ErrorClass.TIMEOUT_STREAM_IDLE`` class the idle watcher uses, so the
+    orchestrator retries rather than escalating.
+    """
+    start = time.monotonic()
+    sleep_s = min(2.0, max(deadline / 20.0, 0.01))
+    while True:
+        await asyncio.sleep(sleep_s)
+        if stdout_activity.received_any:
+            # First byte arrived — hand off to the idle watcher and stop here by
+            # sleeping forever (the caller cancels this task on read completion).
+            await asyncio.sleep(_NEVER_S)
+        if time.monotonic() - start >= deadline:
+            tier_label = model_tier or "?"
+            extra = f" ({agent_type}/{tier_label}"
+            if prompt_bytes is not None:
+                extra += f", prompt_bytes={prompt_bytes}"
+            extra += ")"
+            raise PlayTimeoutError(
+                f"agent {agent_id!r}{extra} never produced first byte within "
+                f"{deadline:g}s (launch wedge)",
+                error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+            )
+
+
+# Effectively-infinite sleep used to park the first-byte watchdog once it has
+# handed off to the idle watcher; the caller always cancels the task on read
+# completion, so this never actually elapses.
+_NEVER_S: Final[float] = 365 * 24 * 3600.0
+
+
 # ---------------------------------------------------------------------------
 # Stream event detection
 # ---------------------------------------------------------------------------
@@ -1156,25 +1419,6 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _iter_json_events(raw: str) -> Iterator[dict[str, object]]:
-    """Yield each non-blank, JSON-decodable line of *raw* as a dict event.
-
-    The three CLI agents all emit JSONL on stdout; this is the single scan
-    loop they share (skip blank lines, ``json.loads``, drop ``JSONDecodeError``
-    and non-dict payloads) so the per-format parsers below only express their
-    own event semantics.
-    """
-    for line in map(str.strip, raw.splitlines()):
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            yield event
-
-
 def _extract_session_id_from_jsonl(raw: str) -> str | None:
     for event in _iter_json_events(raw):
         for key in ("session_id", "thread_id"):
@@ -1203,56 +1447,6 @@ def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
         return current
     parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
     return _max_usage(current, parsed)
-
-
-def _usage_totals_from_dict(
-    usage: dict[str, object], *, input_includes_cache: bool
-) -> _UsageTotals:
-    total_usage = usage.get("total_token_usage")
-    last_usage = usage.get("last_token_usage")
-    turn_usage: dict[str, object] | None = None
-    if isinstance(total_usage, dict):
-        if isinstance(last_usage, dict):
-            turn_usage = last_usage
-        usage = total_usage
-        input_includes_cache = True
-    elif isinstance(last_usage, dict):
-        usage = last_usage
-        turn_usage = last_usage
-        input_includes_cache = True
-
-    input_tokens = _first_int(usage, "input_tokens")
-    cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
-        usage.get("cache_read_input_tokens")
-    )
-    cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(usage, "output_tokens")
-    reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
-
-    tokens_in = input_tokens if input_includes_cache else input_tokens + cache_read_tokens
-    if not input_includes_cache:
-        tokens_in += cache_write_tokens
-
-    tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
-    max_turn_input_tokens = _safe_int(turn_usage.get("input_tokens")) if turn_usage else tokens_in
-    return _UsageTotals(
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cache_read_tokens,
-        cache_write_tokens_in=cache_write_tokens,
-        max_turn_input_tokens=max_turn_input_tokens,
-    )
-
-
-def _max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
-    return _UsageTotals(
-        tokens_in=max(left.tokens_in, right.tokens_in),
-        tokens_out=max(left.tokens_out, right.tokens_out),
-        cached_tokens_in=max(left.cached_tokens_in, right.cached_tokens_in),
-        cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
-        turn_count=max(left.turn_count, right.turn_count),
-        max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
-    )
 
 
 def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
@@ -1341,9 +1535,7 @@ def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | 
 
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
-    from agentshore.agents.cli_grok import parse_grok_jsonl
-
-    return parse_grok_jsonl(raw)
+    return cli_grok.parse_grok_jsonl(raw)
 
 
 def _extract_text_from_stream_json(raw: str) -> str:
@@ -1413,20 +1605,6 @@ def _extract_text_value(value: object) -> str | None:
     return None
 
 
-def _extract_usage_dict(event: dict[str, object]) -> dict[str, object] | None:
-    for key in ("usage", "usage_metadata", "usageMetadata", "token_usage", "tokenUsage"):
-        value = event.get(key)
-        if isinstance(value, dict):
-            return value
-    stats = event.get("stats")
-    if isinstance(stats, dict):
-        usage = stats.get("usageMetadata")
-        if isinstance(usage, dict):
-            return usage
-        return stats
-    return None
-
-
 def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
     usage = stats.get("usageMetadata")
     if isinstance(usage, dict):
@@ -1489,25 +1667,6 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
 }
-
-
-def _first_int(values: dict[str, object], *keys: str) -> int:
-    for key in keys:
-        parsed = _safe_int(values.get(key))
-        if parsed:
-            return parsed
-    return 0
-
-
-def _safe_int(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int | float | str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
 
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:

@@ -1,11 +1,11 @@
 import type {
-  ActivePlay,
   AgentSnapshot,
   AgentShoreMessage,
   GraphTask,
   PullRequestSnapshot,
   StateUpdate,
 } from "./types";
+import { makeActivePlay } from "./types";
 import type { ConnectionState, DashboardTransport } from "./ws";
 
 const BASE_TIME = "2026-01-01T00:00:00.000Z";
@@ -79,15 +79,13 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "active" || this.scenario === "feedback") {
-      const activePlay: ActivePlay = {
+      const activePlay = makeActivePlay({
         play_type: "issue_pickup",
         agent_id: "agent-claude",
         play_id: 47,
         issue_number: 47,
-        pr_number: null,
-        branch: null,
         started_at: BASE_TIME,
-      };
+      });
       this.onMessage?.({
         ...state,
         active_play: activePlay,
@@ -96,14 +94,13 @@ export class DemoTransport implements DashboardTransport {
             ? {
                 ...agent,
                 status: "busy",
-                current_play: {
+                current_play: makeActivePlay({
                   play_type: "issue_pickup",
+                  agent_id: "agent-claude",
                   play_id: 47,
                   started_at: BASE_TIME,
                   issue_number: 47,
-                  pr_number: null,
-                  branch: null,
-                },
+                }),
               }
             : agent,
         ),
@@ -283,14 +280,13 @@ export class DemoTransport implements DashboardTransport {
       total_tokens: 20000 + i * 5000,
       tasks_completed: i,
       tasks_failed: 0,
-      current_play: {
+      current_play: makeActivePlay({
         play_type: "issue_pickup",
+        agent_id: `agent-stress-${i}`,
         play_id: 101 + i,
         started_at: BASE_TIME,
         issue_number: 101 + i,
-        pr_number: null,
-        branch: null,
-      },
+      }),
     }));
 
     // PRs for 7 reviewing issues (issues 111–117)

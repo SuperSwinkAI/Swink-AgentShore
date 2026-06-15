@@ -241,7 +241,7 @@ export function Dashboard({
         case "session_draining":
           setDrainState({
             visible: true,
-            reason: (msg as { reason?: string }).reason ?? null,
+            reason: msg.reason ?? null,
             connectionLost: false,
           });
           break;
@@ -250,7 +250,7 @@ export function Dashboard({
           // can see the orchestrator is paused (vs. ended/drained).
           setDrainState({
             visible: true,
-            reason: `paused: ${(msg as { reason?: string }).reason ?? "unknown"}`,
+            reason: `paused: ${msg.reason ?? "unknown"}`,
             connectionLost: false,
           });
           break;

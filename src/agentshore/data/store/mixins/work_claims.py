@@ -9,23 +9,19 @@ from typing import TYPE_CHECKING
 from agentshore.data.store.base import (
     _ACTIVE_WORK_CLAIM_STATUSES,
     _TERMINAL_WORK_CLAIM_STATUSES,
+    _DataStoreBase,
     _status_in_clause,
 )
-from agentshore.data.store.helpers import _dedupe_resource_keys
+from agentshore.data.store.helpers import _WORK_CLAIM_SELECT, _dedupe_resource_keys
 from agentshore.data.store.rows import _row_to_dispatch_replay, _row_to_work_claim
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    import aiosqlite
-
     from agentshore.data.models import DispatchReplayRecord, WorkClaimRecord
 
 
-class _WorkClaimsMixin:
+class _WorkClaimsMixin(_DataStoreBase):
     """Methods that operate on ``work_claims`` and ``dispatch_replay``."""
-
-    _db: aiosqlite.Connection | None
-    _conn: aiosqlite.Connection
 
     async def acquire_work_claims(
         self,
@@ -166,11 +162,8 @@ class _WorkClaimsMixin:
     ) -> list[WorkClaimRecord]:
         """Return all rows in a claim group."""
         cursor = await self._conn.execute(
-            """
-            SELECT claim_id, claim_group_id, session_id, play_type, resource_key,
-                   status, agent_id, play_id, request_mutation_key, review_queue_id,
-                   created_at, claimed_at, started_at, finished_at
-            FROM work_claims
+            f"""
+            {_WORK_CLAIM_SELECT}
             WHERE session_id = ? AND claim_group_id = ?
             ORDER BY claim_id ASC
             """,
@@ -205,10 +198,7 @@ class _WorkClaimsMixin:
         status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
             f"""
-            SELECT claim_id, claim_group_id, session_id, play_type, resource_key,
-                   status, agent_id, play_id, request_mutation_key, review_queue_id,
-                   created_at, claimed_at, started_at, finished_at
-            FROM work_claims
+            {_WORK_CLAIM_SELECT}
             WHERE session_id = ?
               AND resource_key IN ({key_placeholders})
               AND {status_clause}
@@ -232,10 +222,7 @@ class _WorkClaimsMixin:
         status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
             f"""
-            SELECT claim_id, claim_group_id, session_id, play_type, resource_key,
-                   status, agent_id, play_id, request_mutation_key, review_queue_id,
-                   created_at, claimed_at, started_at, finished_at
-            FROM work_claims
+            {_WORK_CLAIM_SELECT}
             WHERE session_id = ?
               AND agent_id IN ({agent_placeholders})
               AND {status_clause}
@@ -428,8 +415,16 @@ class _WorkClaimsMixin:
         self,
         session_id: str,
         resource_keys: list[str] | tuple[str, ...],
+        *,
+        commit: bool = True,
     ) -> None:
-        """Mark active claims for these resources superseded."""
+        """Mark active claims for these resources superseded.
+
+        When ``commit`` is False the UPDATE runs but is left uncommitted so a
+        caller that has already opened a transaction can fold this write into
+        the same atomic unit (e.g. an issue-close that must supersede its
+        live work-claim in one commit/rollback boundary).
+        """
         keys = _dedupe_resource_keys(resource_keys)
         if not keys:
             return
@@ -445,7 +440,8 @@ class _WorkClaimsMixin:
             """,
             (now_iso(), session_id, *keys, *status_params),
         )
-        await self._conn.commit()
+        if commit:
+            await self._conn.commit()
 
     async def abandon_active_work_claims(self, session_id: str) -> None:
         """Mark leftover active claims abandoned during startup recovery."""

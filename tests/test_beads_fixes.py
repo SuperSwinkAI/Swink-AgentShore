@@ -47,6 +47,10 @@ def _make_ctx(*, project_path: Path | None = None) -> Any:
     ctx.store.complete_reviews_for_pr = AsyncMock()
     ctx.store.update_issue_state = AsyncMock()
     ctx.cfg = MagicMock()
+    # Real empty identities so the post-merge ff-sync's fetch-overlay resolver
+    # (resolve_ff_fetch_overlay → select_default_git_identity) returns None
+    # cleanly instead of choking on a MagicMock's empty-iterable .items() (#178).
+    ctx.cfg.identities = {}
     ctx.manager = MagicMock()
     return ctx
 

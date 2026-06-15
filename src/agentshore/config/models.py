@@ -459,15 +459,44 @@ class WorktreeConfig:
     # centralize worktrees elsewhere; per-repo subdirs disambiguate by name.
     root: str | None = None
 
+    # --- disk-pressure governance (build-agnostic; #180) -----------------
+    # AgentShore can't dictate what agents build inside a worktree (Rust
+    # ``target/`` can dwarf the checkout 100×), but it owns how much disk its
+    # own worktree fleet is allowed to consume and how it degrades when the
+    # host fills. All three default to ``0``/``None`` = disabled (current
+    # behavior) so this is opt-in until tuned per deployment.
+
+    # Pre-dispatch free-disk floor (MiB). When free disk under the worktree
+    # root is below this before a dispatch, AgentShore first reaps idle
+    # worktrees and, if still below, pauses dispatch instead of allocating
+    # into a nearly-full disk. ``0`` disables the guard.
+    min_free_disk_mb: int = 0
+
+    # High-water free-disk target (MiB) for the periodic disk-pressure reaper.
+    # When free disk drops below this, idle worktrees are reaped LRU (stale
+    # first, then oldest ``active``) until back above it. ``0`` disables.
+    disk_high_water_mb: int = 0
+
+    # Consecutive-failure cap for a PR-scoped worktree before it is dropped to
+    # ``stale`` (and reclaimed by the TTL reaper) instead of kept warm. The
+    # first failure keeps the worktree active for a cheap retry; a worktree
+    # that keeps failing is not a useful warm cache. ``0`` keeps the old
+    # always-retain behavior.
+    reap_failed_pr_after_n: int = 0
+
+    # Optional absolute cap on concurrently-``active`` worktrees, a coarse
+    # safety net beneath the disk-based governor. ``None`` (default) = no cap.
+    max_active_worktrees: int | None = None
+
 
 # ---------------------------------------------------------------------------
-# Master availability record (~/.config/swink/agentshore/availability.yaml)
+# Master availability record (platformdirs user_config_dir/agentshore/availability.yaml)
 # ---------------------------------------------------------------------------
 # Persisted inventory of "what's installable / authenticatable on this
 # machine." Both the agent-tier picker and the identity wizard refresh +
 # read this on every run, so the user-facing candidate lists come from a
-# single source instead of being re-detected per prompt. Lives next to
-# ~/.config/swink/agentshore/sessions/ and ~/.config/swink/agentshore/weights/.
+# single source instead of being re-detected per prompt. Lives beside the
+# platform-specific sessions/ and weights/ directories.
 
 
 @dataclass(frozen=True)

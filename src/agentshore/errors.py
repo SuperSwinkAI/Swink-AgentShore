@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
+import errno
 from enum import StrEnum
+
+# Canonical substrings that mark a GitHub authentication / access failure in a
+# free-form skill or command error string. Single home for the auth-marker table
+# that ``plays/skill_backed/base.py`` matches against when deciding whether a
+# skill failure is an auth failure (``FailureKind.AUTH``) and should mark the
+# agent in error. The narrower publish-scoped subset in
+# ``plays/_publish_reconciler.py`` is intentionally distinct (it scopes
+# issue-pickup publish-failure recovery, not general auth detection).
+GITHUB_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "bad credentials",
+    "http 401",
+    "401 unauthorized",
+    "http 403",
+    "403 forbidden",
+    "irrecoverable github access failure",
+    "github connector returned 404",
+    "connector repo 404",
+    "repository not found",
+    "could not resolve to a repository with the name",
+    "could not resolve to a repository",
+    "repository/pr is not accessible",
+    "not found/could not resolve repository",
+    "repository is not resolvable to this token",
+    "not resolvable to this token/session",
+    "lacks access to repository",
+    "cannot access repository metadata",
+    "active gh_token account lacks",
+)
 
 
 class FailureCategory(StrEnum):
@@ -62,6 +91,11 @@ class ErrorClass(StrEnum):
     CODEX_ROLLOUT = "codex_rollout"
     TRANSIENT_NETWORK = "transient_network"
     CRASH_OOM = "crash_oom"
+    # Host disk exhaustion (ENOSPC / "no space left on device"). An *environment*
+    # condition, not the agent's fault: retrying into a full disk just burns
+    # spend, so callers treat it as fatal-environment rather than a recoverable
+    # per-play failure (#180).
+    CRASH_ENOSPC = "crash_enospc"
     CRASH_SIGNAL = "crash_signal"
     TIMEOUT_TRANSIENT = "timeout_transient"
     # Timeout sub-classes carried on PlayTimeoutError.error_class and threaded
@@ -73,6 +107,25 @@ class ErrorClass(StrEnum):
     TIMEOUT_STREAM_IDLE = "timeout_stream_idle"
     OUTPUT_INVALID = "output_invalid"
     UNKNOWN = "unknown"
+
+
+def is_disk_full(exc: BaseException) -> bool:
+    """True if *exc* (or its cause/context chain) is an ENOSPC ``OSError``.
+
+    Build-agnostic detection of host disk exhaustion. Worktree allocation and
+    other I/O wrap the underlying ``OSError`` (errno 28) at varying depths, so
+    walk the ``__cause__`` / ``__context__`` chain rather than matching message
+    strings. Used to route disk-full into the fatal-environment path instead of
+    a recoverable per-play retry (#180).
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, OSError) and cur.errno == errno.ENOSPC:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 class OrchestratorError(Exception):

@@ -20,7 +20,7 @@ from agentshore.config.models import PolicyMode
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
-from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, POLICY_VERSION, V1_ACTION_ORDER
+from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, V1_ACTION_ORDER
 
 # Checkpoint lifecycle helpers live in checkpoint_store; re-exported here so the
 # existing ``agentshore.core.phases`` import sites keep resolving them through
@@ -32,10 +32,12 @@ from agentshore.rl.checkpoint_store import (
     _prune_local_checkpoints as _prune_local_checkpoints,
 )
 from agentshore.rl.checkpoint_store import (
-    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
+    canonical_lock_filename,
+    canonical_weights_filename,
+    write_global_canonical_blocking,
 )
 from agentshore.rl.checkpoint_store import (
-    write_global_canonical_blocking,
+    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
 )
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
 from agentshore.rl.eligibility import EligibilityAuthority
@@ -66,7 +68,7 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
     from agentshore.plays.registry import PlayRegistry
     from agentshore.plays.resolver import ParameterResolver
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.rl.eligibility import LiveGraphLoader
     from agentshore.rl.metrics import MetricsEngine
     from agentshore.state import OrchestratorState
@@ -181,6 +183,14 @@ class PPOSelector:
         # Snapshot of global weights at last reload — used to compute the
         # gradient delta for concurrent-safe global canonical updates.
         self._reload_base: dict[str, torch.Tensor] | None = None
+        # True when the most recent reload attempt found a global canonical that
+        # this session is incompatible with (load failure or config-index
+        # mismatch). In that case ``save_checkpoint`` must NOT write back to the
+        # global canonical — we would be training on stale local weights while
+        # overwriting an incompatible checkpoint on disk. A missing canonical is
+        # NOT a rejection (it is the legitimate first-write / full-overwrite
+        # case); only an explicit incompatibility sets this.
+        self._reload_rejected: bool = False
 
     # ------------------------------------------------------------------
     # PlaySelector protocol
@@ -437,7 +447,7 @@ class PPOSelector:
         back to the snapshot — still correct, just without fresh-beads drift
         detection.
         """
-        project_path = getattr(self._resolver, "project_path", None)
+        project_path = self._resolver.project_path
         if project_path is None:
             return None
 
@@ -491,8 +501,8 @@ class PPOSelector:
         short-lived all-masked windows where some agent is doing real work.
         """
 
-        threshold = getattr(self._cfg, "reverse_failsafe_after_idle_ticks", 0)
-        if not isinstance(threshold, int) or threshold <= 0:
+        threshold = self._cfg.reverse_failsafe_after_idle_ticks
+        if threshold <= 0:
             self._no_available_play_ticks = 0
             return False
         active_agents = [
@@ -821,10 +831,19 @@ class PPOSelector:
         return stats
 
     def _reload_shared_weights(self) -> None:
-        """Load the latest shared policy from disk, with version safety."""
+        """Load the latest shared policy from disk, with version safety.
+
+        Contract: a rejected reload (the on-disk canonical exists but is
+        incompatible with this session — load failure or config-index mismatch)
+        latches ``self._reload_rejected`` so ``save_checkpoint`` skips the global
+        canonical write. A missing canonical is NOT a rejection (it clears the
+        flag — the first-write / full-overwrite path stays valid). A successful
+        reload also clears the flag and refreshes the delta base.
+        """
         from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
-        shared = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.pt"
+        self._reload_rejected = False
+        shared = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
         if not shared.exists():
             return
         try:
@@ -833,9 +852,11 @@ class PPOSelector:
             _logger.warning(
                 "ppo_selector.checkpoint_incompatible", path=str(shared), error=str(exc)
             )
+            self._reload_rejected = True
             return
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             _logger.warning("ppo_selector.reload_failed", path=str(shared), error=str(exc))
+            self._reload_rejected = True
             return
         if new_policy.num_configs != self._policy.num_configs:
             _logger.warning(
@@ -843,6 +864,7 @@ class PPOSelector:
                 saved=new_policy.num_configs,
                 current=self._policy.num_configs,
             )
+            self._reload_rejected = True
             return
         new_sd = new_policy.state_dict()
         self._reload_base = {k: v.clone() for k, v in new_sd.items()}
@@ -876,7 +898,8 @@ class PPOSelector:
         """Write a numbered local checkpoint and update the global canonical.
 
         Local numbered checkpoints provide crash recovery; only the last
-        _LOCAL_CHECKPOINT_KEEP are kept. The canonical policy_v{N}.pt is
+        _LOCAL_CHECKPOINT_KEEP are kept. The version-tagged canonical
+        (``canonical_weights_filename()``) is
         written to the global ~/.config/swink/agentshore/weights/ directory so all projects
         contribute to and benefit from a shared policy.
         """
@@ -899,21 +922,35 @@ class PPOSelector:
         # update of this session, or reload was skipped), fall back to a full
         # overwrite — equivalent to the old behaviour and still correct since
         # delta == full weights when base == zero.
+        #
+        # Contract (see ``_reload_shared_weights``): when the latest reload was
+        # REJECTED (the on-disk canonical exists but is incompatible with this
+        # session), skip the global write entirely. This session is training on
+        # stale local weights relative to that canonical, so contributing a delta
+        # against a mismatched base would corrupt the shared checkpoint. The local
+        # numbered checkpoint (above) still persists for crash recovery.
         _GLOBAL_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-        global_canonical = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.pt"
-        lock_path = _GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.lock"
-        try:
-            await asyncio.to_thread(
-                self._write_global_canonical_blocking,
-                global_canonical,
-                lock_path,
-            )
-        except OSError as exc:
+        global_canonical = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
+        lock_path = _GLOBAL_WEIGHTS_DIR / canonical_lock_filename()
+        if self._reload_rejected:
             _logger.warning(
-                "ppo_selector.global_canonical_update_failed",
+                "ppo_selector.global_canonical_write_skipped",
                 path=str(global_canonical),
-                error=str(exc),
+                reason="reload_rejected_incompatible_canonical",
             )
+        else:
+            try:
+                await asyncio.to_thread(
+                    self._write_global_canonical_blocking,
+                    global_canonical,
+                    lock_path,
+                )
+            except OSError as exc:
+                _logger.warning(
+                    "ppo_selector.global_canonical_update_failed",
+                    path=str(global_canonical),
+                    error=str(exc),
+                )
 
         # Keep local dir lean — crash recovery only needs the last few.
         _prune_local_checkpoints(weights_dir)
@@ -931,6 +968,7 @@ class PPOSelector:
             global_canonical=str(global_canonical),
             total_plays=total_plays,
             delta_merge=self._reload_base is not None,
+            global_write_skipped=self._reload_rejected,
         )
 
     # ------------------------------------------------------------------

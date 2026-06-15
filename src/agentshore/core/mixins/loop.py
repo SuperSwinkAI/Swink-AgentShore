@@ -28,7 +28,6 @@ from agentshore.state import AgentStatus, PlaySkipReason, PlayType, SessionState
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from agentshore.config import RuntimeConfig
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.mixins.dispatch import Dispatcher
@@ -36,16 +35,14 @@ if TYPE_CHECKING:
     from agentshore.core.mixins.lifecycle import LifecycleController
     from agentshore.core.mixins.state import StateBuilder
     from agentshore.core.override_queue import OverrideQueue
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.plays.candidates import PlayCandidatePlan
     from agentshore.plays.registry import PlayRegistry
-    from agentshore.plays.selector import PlaySelector
-    from agentshore.rl.action_space import ConfigKey
-    from agentshore.rl.metrics import MetricsEngine
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import (
         AgentSnapshot,
         OrchestratorState,
-        PlayOutcome,
     )
 
     NaturalExitCallback = Callable[[str], Awaitable[None]]
@@ -119,44 +116,13 @@ _MAX_CONSECUTIVE_TICK_FAILURES = 10
 
 
 class _LoopHost(Protocol):
-    """Orchestrator runtime/control state read OR written live by :class:`LoopRunner`.
+    """Orchestrator *behaviour* the :class:`LoopRunner` invokes.
 
-    These members are accessed fresh via ``self._host.<attr>`` on every call so
-    SIGHUP config swaps (``_cfg``) and per-tick mutation (in-flight map, idle
-    streak, selection digest, pause/drain latches, natural-exit hooks,
-    bootstrap-assigned selector/registry/metrics) are always current — never
-    captured at construction. Fields the loop *writes* (``_idle_streak``,
-    ``_last_selection_digest``, ``_natural_exit_reason``, ``_draining``,
-    ``_drain_reason``, ``_pause_deadline``, ``_loop_started_at``) are declared as
-    plain annotated attributes (not read-only ``@property``) so the assignments
-    type-check. ``_in_flight`` is mutated in place by other components.
-    ``_OrchestratorBase`` structurally satisfies this Protocol; the
-    cross-component methods (``_safe_call``, ``_selector_config_index``) are
-    resolved live on the composition root.
+    All shared session *state* now lives on :class:`SessionRuntime` (reached via
+    ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
+    the cross-component methods resolve on the composition root without a circular
+    import. ``_OrchestratorBase`` structurally satisfies it.
     """
-
-    # --- written by the loop ------------------------------------------------
-    _idle_streak: int
-    _last_selection_digest: bytes | None
-    _natural_exit_reason: str | None
-    _draining: bool
-    _drain_reason: str | None
-    _pause_deadline: float | None
-    _loop_started_at: float
-    # --- read by the loop (and the in-flight map mutated in place) ----------
-    _cfg: RuntimeConfig
-    _session_id: str
-    _selector: PlaySelector | None
-    _stop_requested: bool
-    _stopped: bool
-    _drain_initialized: bool
-    _in_flight: dict[str, asyncio.Task[PlayOutcome]]
-    _registry: object | None
-    _metrics: MetricsEngine | None
-    _pause_event: asyncio.Event
-    _pause_reason: str | None
-    _last_refresh_time: float
-    _natural_exit_callback: NaturalExitCallback | None
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
@@ -182,6 +148,7 @@ class LoopRunner:
         self,
         *,
         host: _LoopHost,
+        runtime: SessionRuntime,
         session_id: str,
         main_repo: MainRepoGuard,
         overrides: OverrideQueue,
@@ -193,6 +160,7 @@ class LoopRunner:
         drain: DrainController,
     ) -> None:
         self._host = host
+        self._runtime = runtime
         self._session_id = session_id
         self._main_repo = main_repo
         self._overrides = overrides
@@ -240,19 +208,19 @@ class LoopRunner:
     async def check_stagnation_escalation(self, state: OrchestratorState) -> bool:
         """Stagnation ladder (warn+entropy at 5, surface at 10, pause at 15)."""
         if (
-            getattr(self._host, "_draining", False)
-            or getattr(self._host, "_stop_requested", False)
+            self._runtime.draining
+            or self._runtime.stop_requested
             or state.session_state in {SessionState.DRAINING, SessionState.SHUTTING_DOWN}
         ):
             return False
 
-        warn_after = self._host._cfg.rl.stagnation.warn_after
-        alert_after = self._host._cfg.rl.stagnation.alert_after
-        pause_after = self._host._cfg.rl.stagnation.pause_after
+        warn_after = self._runtime.cfg.rl.stagnation.warn_after
+        alert_after = self._runtime.cfg.rl.stagnation.alert_after
+        pause_after = self._runtime.cfg.rl.stagnation.pause_after
 
         stagnation = 0
-        if self._host._metrics is not None:
-            ctx = await self._host._metrics.snapshot(state)
+        if self._runtime.metrics is not None:
+            ctx = await self._runtime.metrics.snapshot(state)
             stagnation = int(ctx.stagnation_counter)
 
         if stagnation >= pause_after:
@@ -266,8 +234,8 @@ class LoopRunner:
 
         if stage == 0:
             self._last_stagnation_stage = 0
-            if isinstance(self._host._selector, _ppo_selector_cls()):
-                self._host._selector.set_entropy_coef(self._host._cfg.rl.entropy_coef)
+            if isinstance(self._runtime.selector, _ppo_selector_cls()):
+                self._runtime.selector.set_entropy_coef(self._runtime.cfg.rl.entropy_coef)
             return False
 
         if stage > self._last_stagnation_stage:
@@ -279,9 +247,9 @@ class LoopRunner:
                     "session_id": self._session_id,
                 }
                 if next_stage == 1:
-                    if isinstance(self._host._selector, _ppo_selector_cls()):
-                        boosted = self._host._cfg.rl.entropy_coef * STAGNATION_ENTROPY_MULTIPLIER
-                        self._host._selector.set_entropy_coef(boosted)
+                    if isinstance(self._runtime.selector, _ppo_selector_cls()):
+                        boosted = self._runtime.cfg.rl.entropy_coef * STAGNATION_ENTROPY_MULTIPLIER
+                        self._runtime.selector.set_entropy_coef(boosted)
                         payload["entropy_coef"] = boosted
                         payload["entropy_boost_multiplier"] = STAGNATION_ENTROPY_MULTIPLIER
                     payload["action"] = "boost_exploration"
@@ -304,7 +272,7 @@ class LoopRunner:
             if wait_class in {"waiting_for_capacity", "waiting_for_in_flight_resource"}
             else _IDLE_BACKOFF_SECONDS
         )
-        idx = min(self._host._idle_streak, len(backoff) - 1)
+        idx = min(self._runtime.idle_streak, len(backoff) - 1)
         return backoff[idx]
 
     def classify_selector_idle(
@@ -316,7 +284,7 @@ class LoopRunner:
 
         from agentshore.rl.selector import _only_capacity_waiting
 
-        if not self._host._in_flight and not state.in_flight_plays:
+        if not self._runtime.in_flight and not state.in_flight_plays:
             if _only_capacity_waiting(reason_counts):
                 return "waiting_for_capacity"
             return "resolver_exhausted"
@@ -425,12 +393,12 @@ class LoopRunner:
             "reason": reason,
             "event_source": "loop_idle",
             "session_id": self._session_id,
-            "idle_streak": self._host._idle_streak,
+            "idle_streak": self._runtime.idle_streak,
             "has_remaining_work": candidate_plan_has_work,
         }
         if reason in {"all_masked", "cooldown_active"} and mask_reasons:
             payload["mask_reasons"] = mask_reasons
-        _skip_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
+        _skip_log = _logger.debug if self._runtime.idle_streak > 1 else _logger.info
         _skip_log("play_skipped", **payload)
 
     def compute_skip_diagnosis(self, state: OrchestratorState) -> SkipDiagnosis:
@@ -447,14 +415,14 @@ class LoopRunner:
 
         candidate_plan = build_candidate_plan(state)
         reason_counts: list[dict[str, object]] = []
-        if self._host._registry is not None:
+        if self._runtime.registry is not None:
             counts = collections.Counter(
                 compute_mask_reasons(
                     state,
-                    cast("PlayRegistry", self._host._registry),
-                    cfg=self._host._cfg,
+                    cast("PlayRegistry", self._runtime.registry),
+                    cfg=self._runtime.cfg,
                     config_index=self._host._selector_config_index(),
-                    apply_reverse_failsafe=self._host._cfg.rl.reverse_failsafe_enabled,
+                    apply_reverse_failsafe=self._runtime.cfg.rl.reverse_failsafe_enabled,
                     candidate_plan=candidate_plan,
                 ).values()
             )
@@ -514,14 +482,14 @@ class LoopRunner:
         Both transitions emit exactly one ``fleet_idle_persistent`` info
         event. Steady-state ticks inside the window emit nothing.
         """
-        threshold = self._host._cfg.rl.loop_detection.fleet_idle_threshold
-        in_flight_empty = not self._host._in_flight and not state.in_flight_plays
-        should_be_active = self._host._idle_streak >= threshold and in_flight_empty
+        threshold = self._runtime.cfg.rl.loop_detection.fleet_idle_threshold
+        in_flight_empty = not self._runtime.in_flight and not state.in_flight_plays
+        should_be_active = self._runtime.idle_streak >= threshold and in_flight_empty
 
         if should_be_active and not self._fleet_idle_persistent_active:
             payload: dict[str, object] = {
                 "session_id": self._session_id,
-                "idle_streak": self._host._idle_streak,
+                "idle_streak": self._runtime.idle_streak,
                 "threshold": threshold,
                 "dominant_reason": reason,
                 "transition": "entered",
@@ -534,7 +502,7 @@ class LoopRunner:
             _logger.info(
                 "fleet_idle_persistent",
                 session_id=self._session_id,
-                idle_streak=self._host._idle_streak,
+                idle_streak=self._runtime.idle_streak,
                 threshold=threshold,
                 transition="exited",
             )
@@ -553,7 +521,7 @@ class LoopRunner:
         identical state. Inputs:
 
         - Set of idle agent ids (selector only dispatches to idle agents).
-        - ``len(self._host._in_flight)`` (a play completion changes this and is
+        - ``len(self._runtime.in_flight)`` (a play completion changes this and is
           worth re-selecting on).
         - ``state.total_plays`` ensures every completed play bumps the digest,
           even when in_flight cycles back to the same count between iterations.
@@ -568,7 +536,7 @@ class LoopRunner:
             h.update(agent_id.encode())
             h.update(b"|")
         h.update(b";")
-        h.update(len(self._host._in_flight).to_bytes(4, "little"))
+        h.update(len(self._runtime.in_flight).to_bytes(4, "little"))
         h.update(b";")
         h.update(state.total_plays.to_bytes(4, "little"))
         h.update(b";")
@@ -612,7 +580,7 @@ class LoopRunner:
         # flight, pause persists across the grace window), escalate to a clean
         # drain-based stop rather than idling forever. Gated strictly on the
         # latched pause + no in-flight, so healthy capacity-idle never trips it.
-        if self._main_repo.dispatch_paused and not self._host._in_flight:
+        if self._main_repo.dispatch_paused and not self._runtime.in_flight:
             self._wedged_idle_ticks += 1
             if self._wedged_idle_ticks >= _WEDGED_IDLE_STOP_TICKS:
                 _logger.error(
@@ -636,7 +604,7 @@ class LoopRunner:
         # stamps _natural_exit_reason so run_until_idle fires session.completed
         # and the normal teardown (end_agent per agent, checkpoint, beads clear),
         # unlike a bare loop-break which would strand the process at 0 CPU.
-        fleet_fully_idle = not self._host._in_flight and not any(
+        fleet_fully_idle = not self._runtime.in_flight and not any(
             a.status is AgentStatus.BUSY for a in state.agents
         )
         if fleet_fully_idle:
@@ -691,7 +659,7 @@ class LoopRunner:
                     "selector_idle_mask_has_plays",
                     reason=reason,
                     session_id=self._session_id,
-                    idle_streak=self._host._idle_streak,
+                    idle_streak=self._runtime.idle_streak,
                     mask_true_count=sum(1 for slot in state.action_mask if slot),
                     top_mask_reasons=reason_counts,
                 )
@@ -715,12 +683,12 @@ class LoopRunner:
             #   selection with an exhausted plan is definitively terminal: nothing
             #   more will ever come, there is no fleet-idle backstop semantics, and
             #   the harness owns teardown. Break the loop.
-            if isinstance(self._host._selector, _ppo_selector_cls()):
+            if isinstance(self._runtime.selector, _ppo_selector_cls()):
                 _logger.debug(
                     "selector_idle_all_masked_keep_polling",
                     reason=reason,
                     session_id=self._session_id,
-                    idle_streak=self._host._idle_streak,
+                    idle_streak=self._runtime.idle_streak,
                     top_mask_reasons=reason_counts,
                 )
                 await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
@@ -738,7 +706,7 @@ class LoopRunner:
             reason=reason,
             wait_class=wait_class,
             session_id=self._session_id,
-            idle_streak=self._host._idle_streak,
+            idle_streak=self._runtime.idle_streak,
             tracked_issues=availability.tracked_issue_count,
             github_open_issues=availability.github_open_issue_count,
             workable_issues=availability.workable_issue_count,
@@ -812,15 +780,15 @@ class LoopRunner:
         callback fires on loop exit. ``clear_pause_deadline`` resets the
         unanswered-pause deadline.
         """
-        self._host._drain_reason = reason
+        self._runtime.drain_reason = reason
         if fire_natural_exit:
-            self._host._natural_exit_reason = reason
+            self._runtime.natural_exit_reason = reason
         if clear_pause_deadline:
-            self._host._pause_deadline = None
+            self._runtime.pause_deadline = None
         if arm_gate_only:
-            self._host._draining = True
+            self._runtime.draining = True
             # Unblock the gate so the loop proceeds to begin_drain next iteration.
-            self._host._pause_event.set()
+            self._runtime.pause_event.set()
             return
         await self._drain.begin_drain(reason)
 
@@ -843,8 +811,8 @@ class LoopRunner:
         _logger.warning(
             "loop_detection_prompt_timeout",
             session_id=self._session_id,
-            pause_reason=self._host._pause_reason,
-            timeout_seconds=self._host._cfg.feedback.unanswered_timeout_seconds,
+            pause_reason=self._runtime.pause_reason,
+            timeout_seconds=self._runtime.cfg.feedback.unanswered_timeout_seconds,
             note="no human response within feedback.unanswered_timeout_seconds; auto-stopping",
         )
         await self.initiate_autonomous_stop(
@@ -855,7 +823,7 @@ class LoopRunner:
 
     def loop_liveness_timeout_seconds(self) -> float | None:
         """Resolve the configured loop-liveness watchdog timeout (None disables)."""
-        return self._host._cfg.feedback.loop_liveness_timeout_seconds
+        return self._runtime.cfg.feedback.loop_liveness_timeout_seconds
 
     def start_loop_liveness_watchdog(self) -> None:
         """Launch the independent loop-liveness watchdog task (#9).
@@ -896,12 +864,12 @@ class LoopRunner:
         the shutdown body (``stop`` is re-entrancy safe regardless).
         """
         interval = _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS
-        while not self._host._stop_requested and not self._host._stopped:
+        while not self._runtime.stop_requested and not self._runtime.stopped:
             await asyncio.sleep(interval)
             timeout = self.loop_liveness_timeout_seconds()
             if timeout is None:
                 continue
-            if self._host._stop_requested or self._host._stopped:
+            if self._runtime.stop_requested or self._runtime.stopped:
                 return
             last = self._last_loop_iteration_at
             # 0.0 = loop has not begun iterating yet (not armed); inf = a
@@ -916,7 +884,7 @@ class LoopRunner:
                 session_id=self._session_id,
                 stalled_for_seconds=round(stalled_for, 1),
                 timeout_seconds=timeout,
-                in_flight=len(self._host._in_flight),
+                in_flight=len(self._runtime.in_flight),
                 note=(
                     "core loop heartbeat did not advance within "
                     "feedback.loop_liveness_timeout_seconds; loop presumed "
@@ -944,12 +912,12 @@ class LoopRunner:
         loop (the ``sidecar_orchestrator_run_failed`` silent-hang class). A
         permanently-throwing tick trips the circuit breaker and drains cleanly.
         """
-        self._host._loop_started_at = time.monotonic()
+        self._runtime.loop_started_at = time.monotonic()
         # Arm the loop-liveness heartbeat before the first iteration so the
         # watchdog (#9) has a fresh baseline and never sees a stale 0.0.
         self._last_loop_iteration_at = time.monotonic()
 
-        while not self._host._stop_requested:
+        while not self._runtime.stop_requested:
             # Loop-liveness heartbeat (#9): stamp every iteration so the
             # independent watchdog can detect a hard-frozen loop. Stays OUTSIDE
             # the per-tick guard so it advances even on a throwing tick — a
@@ -978,11 +946,11 @@ class LoopRunner:
         # not from an external request_stop()/stop() call. The sidecar boot
         # wrapper uses this to fire session.completed (DESIGN §5.2).
         if (
-            self._host._natural_exit_reason is not None
-            and self._host._natural_exit_callback is not None
+            self._runtime.natural_exit_reason is not None
+            and self._runtime.natural_exit_callback is not None
         ):
             await self._host._safe_call(
-                self._host._natural_exit_callback(self._host._natural_exit_reason),
+                self._runtime.natural_exit_callback(self._runtime.natural_exit_reason),
                 "on_natural_exit_callback",
             )
 
@@ -1000,8 +968,8 @@ class LoopRunner:
             session_id=self._session_id,
             error=str(exc),
             consecutive_failures=self._tick_failure_streak,
-            in_flight=len(self._host._in_flight),
-            idle_streak=self._host._idle_streak,
+            in_flight=len(self._runtime.in_flight),
+            idle_streak=self._runtime.idle_streak,
             exc_info=True,
         )
         if self._tick_failure_streak >= _MAX_CONSECUTIVE_TICK_FAILURES:
@@ -1051,18 +1019,18 @@ class LoopRunner:
         # Pause blocks new selection/dispatch, but completed in-flight plays
         # still need to be harvested so agent completions, costs, and rewards
         # do not get stranded behind the pause gate.
-        if not self._host._pause_event.is_set():
+        if not self._runtime.pause_event.is_set():
             # Bound the wait by the unanswered-pause deadline (#9) so a
             # feedback pause nobody answers auto-stops instead of wedging the
             # loop indefinitely. ``remaining`` is None when no deadline is
             # armed (manual pause), making this a plain block-until-resume.
             remaining: float | None = None
-            if self._host._pause_deadline is not None:
-                remaining = max(0.0, self._host._pause_deadline - time.monotonic())
-            pause_wait = asyncio.create_task(self._host._pause_event.wait())
+            if self._runtime.pause_deadline is not None:
+                remaining = max(0.0, self._runtime.pause_deadline - time.monotonic())
+            pause_wait = asyncio.create_task(self._runtime.pause_event.wait())
             try:
                 await asyncio.wait(
-                    [pause_wait, *self._host._in_flight.values()],
+                    [pause_wait, *self._runtime.in_flight.values()],
                     timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
@@ -1071,27 +1039,27 @@ class LoopRunner:
                     pause_wait.cancel()
                     with suppress(asyncio.CancelledError):
                         await pause_wait
-            if self._host._stop_requested:
+            if self._runtime.stop_requested:
                 return Break()
-            if self._host._in_flight:
+            if self._runtime.in_flight:
                 # Harvest completions so they aren't stranded behind the gate.
                 await self._completion.harvest_completed()
             if (
-                not self._host._pause_event.is_set()
-                and self._host._pause_deadline is not None
-                and time.monotonic() >= self._host._pause_deadline
+                not self._runtime.pause_event.is_set()
+                and self._runtime.pause_deadline is not None
+                and time.monotonic() >= self._runtime.pause_deadline
             ):
                 # Unanswered feedback pause past its deadline → clean drain.
                 await self.auto_stop_unanswered_pause()
-            elif not self._host._pause_event.is_set():
+            elif not self._runtime.pause_event.is_set():
                 return Continue()
 
-        if self._host._stop_requested:
+        if self._runtime.stop_requested:
             return Break()
 
         # Drain requested from sync context (e.g. signal handler) — initialize fully.
-        if self._host._draining and not self._host._drain_initialized:
-            await self._drain.begin_drain(self._host._drain_reason or "signal_sigterm")
+        if self._runtime.draining and not self._runtime.drain_initialized:
+            await self._drain.begin_drain(self._runtime.drain_reason or "signal_sigterm")
 
         await self._completion.harvest_completed()
 
@@ -1101,11 +1069,11 @@ class LoopRunner:
         # so the next tick re-runs the selector; does NOT reset the idle
         # streak — a fleet sitting idle through a refresh has not become
         # less idle (desktop-mib1).
-        if time.monotonic() - self._host._last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
+        if time.monotonic() - self._runtime.last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
             await self._host._safe_call(
                 self._completion.refresh_issues(), "refresh_issues_periodic"
             )
-            self._host._last_selection_digest = None
+            self._runtime.last_selection_digest = None
 
         state = await self._state_builder.build_state()
 
@@ -1126,7 +1094,7 @@ class LoopRunner:
                 session_id=self._session_id,
             )
             if reason is not None and reason != "stop_requested":
-                self._host._natural_exit_reason = reason
+                self._runtime.natural_exit_reason = reason
             return Break()
         if reason is not None:
             # reason set but should_stop False → pause; loop blocks at wait() next iteration
@@ -1145,8 +1113,8 @@ class LoopRunner:
         # the ceiling tick still re-evaluates regardless, so a missed
         # signal recovers within ~21s. See ``selection_state_digest``.
         digest = self.selection_state_digest(state, idle_agents)
-        ceiling_tick = self._host._idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
-        if digest == self._host._last_selection_digest and not ceiling_tick:
+        ceiling_tick = self._runtime.idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
+        if digest == self._runtime.last_selection_digest and not ceiling_tick:
             # Nothing changed since the last attempt — idle without re-running
             # the selector (and without its log line, hence log_selector_idle
             # False and no structured play_skipped emit).
@@ -1157,7 +1125,7 @@ class LoopRunner:
                 emit_skipped=False,
             )
 
-        self._host._last_selection_digest = digest
+        self._runtime.last_selection_digest = digest
 
         override_play = await self._dispatcher.consume_override(state)
 
@@ -1166,7 +1134,7 @@ class LoopRunner:
         # divergence window (observation slot executor_skip_rate_recent_50). Drain
         # once per selection cycle whether or not a play was produced — an
         # all-repick cycle that yields None is exactly the divergence signal.
-        self._velocity.record_selection_repicks(self._host._selector)
+        self._velocity.record_selection_repicks(self._runtime.selector)
         if selection is None:
             # Selector idled with a fresh digest: log ``selector_idle`` (once
             # per distinct digest, thanks to the gate above) and, when work is
@@ -1188,12 +1156,12 @@ class LoopRunner:
             _logger.info(
                 "fleet_idle_persistent",
                 session_id=self._session_id,
-                idle_streak=self._host._idle_streak,
-                threshold=self._host._cfg.rl.loop_detection.fleet_idle_threshold,
+                idle_streak=self._runtime.idle_streak,
+                threshold=self._runtime.cfg.rl.loop_detection.fleet_idle_threshold,
                 transition="exited",
             )
             self._fleet_idle_persistent_active = False
-        self._host._idle_streak = 0
+        self._runtime.idle_streak = 0
         self._wedged_idle_ticks = 0
         self._fleet_idle_since = None
 
@@ -1211,7 +1179,7 @@ class LoopRunner:
             if idle_agents:
                 play_type, params = PlayType.END_AGENT, PlayParams()
             else:
-                if self._host._in_flight:
+                if self._runtime.in_flight:
                     return WaitInFlight("waiting_for_in_flight_resource")
                 return Break()
         end_session_blocked = (
@@ -1219,8 +1187,8 @@ class LoopRunner:
             and not await self._dispatcher.revalidate_end_session_before_dispatch()
         )
         if end_session_blocked:
-            if isinstance(self._host._selector, _ppo_selector_cls()):
-                self._host._selector.consume_pending()
+            if isinstance(self._runtime.selector, _ppo_selector_cls()):
+                self._runtime.selector.consume_pending()
             return Continue()
         return Dispatch(play_type, params, state)
 
@@ -1242,15 +1210,15 @@ class LoopRunner:
         ``log_selector_idle`` / ``emit_skipped`` flags and the ``reason`` string
         so each path keeps its exact log line and idle reason.
         """
-        self._host._idle_streak += 1
+        self._runtime.idle_streak += 1
         if log_selector_idle:
-            _idle_log = _logger.debug if self._host._idle_streak > 1 else _logger.info
+            _idle_log = _logger.debug if self._runtime.idle_streak > 1 else _logger.info
             _idle_log(
                 "selector_idle",
                 session_id=self._session_id,
-                idle_streak=self._host._idle_streak,
+                idle_streak=self._runtime.idle_streak,
             )
-        if self._host._in_flight:
+        if self._runtime.in_flight:
             return WaitInFlight(
                 "waiting_for_in_flight_resource",
                 emit_skipped_state=state if emit_skipped else None,
@@ -1286,7 +1254,7 @@ class LoopRunner:
                 # NO await on dispatch itself — wait only on resulting in-flight
                 # work. Tests patch the module-local
                 # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS``.
-                if self._host._in_flight:
+                if self._runtime.in_flight:
                     await self._completion.wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
                     return False
                 return True  # truly idle

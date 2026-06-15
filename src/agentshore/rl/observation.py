@@ -43,18 +43,19 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
+from agentshore.play_rules import pr_is_approved
 from agentshore.rl.action_space import (
-    MAX_CONFIG_INDEX_SIZE,
     NUM_ACTIONS,
     PLAY_TO_INDEX,
 )
+from agentshore.rl.config_head import MAX_CONFIG_INDEX_SIZE
 from agentshore.rl.constants import SAT_OPEN_PRS_COUNT
 from agentshore.state import AgentStatus, PlayType, loop_level_for_streak
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-    from agentshore.rl.action_space import ConfigKey
+    from agentshore.rl.config_head import ConfigKey
     from agentshore.state import AgentPlaySpecializationSnapshot, AgentSnapshot, OrchestratorState
 
 # Per-config block: 32 configs × 3 metrics (idle, busy, success-rate) = 96 floats.
@@ -248,14 +249,6 @@ def _clamp(val: float, lo: float = 0.0, hi: float = 1.0) -> float:
 
 def _norm(val: float, sat: float) -> float:
     return _clamp(val / sat if sat > 0.0 else 0.0)
-
-
-def _agent_status_float(status_value: str) -> float:
-    if status_value == "idle":
-        return 0.0
-    if status_value == "busy":
-        return 0.5
-    return 1.0  # error or terminated
 
 
 def encode_observation(
@@ -453,19 +446,13 @@ def encode_observation(
         if pr.state != "open":
             continue
         author = pr.author_agent_type
-        approved = pr.review_decision == "APPROVED" or (
-            pr.last_review_status == "PASS"
-            and pr.last_reviewed_sha is not None
-            and pr.head_sha is not None
-            and pr.last_reviewed_sha == pr.head_sha
-        )
         if author == "claude_code":
             claude_open += 1
-            if not approved:
+            if not pr_is_approved(pr):
                 claude_awaiting += 1
         elif author == "codex":
             codex_open += 1
-            if not approved:
+            if not pr_is_approved(pr):
                 codex_awaiting += 1
     obs[_S_PR_AUTHOR_CLAUDE_OPEN] = _norm(claude_open, SAT_OPEN_PRS_COUNT)
     obs[_S_PR_AUTHOR_CODEX_OPEN] = _norm(codex_open, SAT_OPEN_PRS_COUNT)
@@ -539,7 +526,10 @@ def encode_observation(
     # ---- RESERVED (245) — version marker ----
     # A stable per-version constant in [0, 1]. Self-normalizing (always 1.0) so
     # an OBSERVATION_VERSION bump can never feed the policy an out-of-range
-    # marker it never saw in training.
+    # marker it never saw in training. Intentionally retained as a constant
+    # padding slot: dropping it would shrink OBSERVATION_DIM, invalidate every
+    # trained checkpoint, and ripple to the policy input dim and version-pinned
+    # tests for zero policy signal — so the slot stays put by design.
     obs[_S_OBS_VERSION] = OBSERVATION_VERSION / float(OBSERVATION_VERSION)
 
     return obs

@@ -18,7 +18,6 @@ import pytest
 import structlog
 
 from agentshore.core.git_safety import check_main_repo_branch_mutated, current_head_ref
-from agentshore.core.main_repo_guard import MainRepoGuard
 
 
 def _events_from_caplog(records: list[logging.LogRecord]) -> list[dict[str, object]]:
@@ -108,7 +107,9 @@ def test_merge_pr_no_ff_advances_sha_but_symbolic_ref_unchanged(
     )
     assert mutated is False
     assert observed_post == pre_ref
-    assert restored is False
+    # No mutation → no auto-restore attempted; the guard returns the trivially-ok
+    # RestoreResult sentinel (mutated=False above is what proves no restore ran).
+    assert restored.ok is True
 
 
 @pytest.mark.asyncio
@@ -117,19 +118,12 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
 ) -> None:
     """End-to-end through ``_check_main_repo_invariant``: no warning, no restore."""
     from agentshore.core.mixins.completion import CompletionProcessor
-    from agentshore.core.orchestrator import Orchestrator
     from agentshore.state import PlayType
+    from tests.orchestrator_factory import make_test_orchestrator
 
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._repo_root = merge_repo
+    orch = make_test_orchestrator(merge_repo)
     orch._session_id = "test-session-merge"
-    orch._main_repo = MainRepoGuard()
     orch._main_repo.record_pre_play_branch("d-merge", "refs/heads/main")
-
-    class _StubManager:
-        handles: dict[str, object] = {}
-
-    orch._manager = _StubManager()  # type: ignore[assignment]
 
     # Simulate the merge mid-play.
     _git(["merge", "--no-ff", "origin/feature/widget", "-m", "Merge feature/widget"], merge_repo)

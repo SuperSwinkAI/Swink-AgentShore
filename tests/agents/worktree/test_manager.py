@@ -585,3 +585,148 @@ async def test_pr_scoped_insert_failure_cleans_up_ondisk(
     # The on-disk worktree the manager created before the insert must be gone.
     expected_path = worktree_root / "feature-x"
     assert not expected_path.exists()
+
+
+# --- failed-PR worktree retention cap (Fix 1, #180) ---------------------------
+
+
+async def _make_pr_worktree(
+    store: DataStore, main_repo: Path, worktree_root: Path, *, dir_name: str, branch: str
+) -> tuple[int, Path]:
+    import subprocess
+
+    from agentshore.agents.worktree.registry import insert_worktree
+
+    src = worktree_root / dir_name
+    subprocess.check_call(
+        ["git", "worktree", "add", "-b", branch, str(src), "HEAD"], cwd=str(main_repo)
+    )
+    row = await insert_worktree(
+        store,
+        session_id="sess-1",
+        branch_name=branch,
+        pre_branch_key=None,
+        worktree_path=str(src),
+        original_play_type="code_review",
+        base_ref="origin/HEAD",
+        head_sha=None,
+    )
+    return row.worktree_id, src
+
+
+def _pr_outcome(success: bool) -> Any:
+    from agentshore.state import PlayOutcome
+
+    return PlayOutcome(
+        play_type=PlayType.CODE_REVIEW,
+        agent_id=None,
+        success=success,
+        partial=False,
+        duration_seconds=0.0,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+    )
+
+
+def _manager_with_cap(
+    store: DataStore, main_repo: Path, worktree_root: Path, *, cap: int
+) -> WorktreeManager:
+    from agentshore.config import WorktreeConfig
+
+    return WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(worktrees=WorktreeConfig(reap_failed_pr_after_n=cap)),
+    )
+
+
+async def test_finalize_pr_failure_kept_active_then_retired_at_cap(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """First PR-play failure keeps the worktree warm; the Nth retires it stale."""
+    from agentshore.agents.worktree import WorktreeAllocation
+    from agentshore.agents.worktree.registry import lookup_by_id
+
+    wt_id, src = await _make_pr_worktree(
+        store, main_repo, worktree_root, dir_name="pr-wt", branch="feature/pr"
+    )
+    wm = _manager_with_cap(store, main_repo, worktree_root, cap=2)
+    alloc = WorktreeAllocation(
+        worktree_id=wt_id,
+        path=src,
+        branch_name="feature/pr",
+        pre_branch_key=None,
+        play_type=PlayType.CODE_REVIEW,
+        scope="pr",
+    )
+
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
+    r1 = await lookup_by_id(store, worktree_id=wt_id)
+    assert r1 is not None
+    assert r1.status == "active"  # first failure: kept warm for a cheap retry
+
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
+    r2 = await lookup_by_id(store, worktree_id=wt_id)
+    assert r2 is not None
+    assert r2.status == "stale"  # cap reached: dropped for the TTL reaper
+
+
+async def test_finalize_pr_success_resets_failure_count(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A successful finalize clears the streak so the cap counts *consecutive*."""
+    from agentshore.agents.worktree import WorktreeAllocation
+    from agentshore.agents.worktree.registry import lookup_by_id
+
+    wt_id, src = await _make_pr_worktree(
+        store, main_repo, worktree_root, dir_name="pr-wt2", branch="feature/pr2"
+    )
+    wm = _manager_with_cap(store, main_repo, worktree_root, cap=2)
+    alloc = WorktreeAllocation(
+        worktree_id=wt_id,
+        path=src,
+        branch_name="feature/pr2",
+        pre_branch_key=None,
+        play_type=PlayType.CODE_REVIEW,
+        scope="pr",
+    )
+
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(True))
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
+
+    # 1 fail, reset, 1 fail → streak is 1 (< cap), so still active.
+    row = await lookup_by_id(store, worktree_id=wt_id)
+    assert row is not None
+    assert row.status == "active"
+
+
+async def test_finalize_pr_failure_cap_disabled_keeps_active(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """``reap_failed_pr_after_n == 0`` preserves the old always-retain behavior."""
+    from agentshore.agents.worktree import WorktreeAllocation
+    from agentshore.agents.worktree.registry import lookup_by_id
+
+    wt_id, src = await _make_pr_worktree(
+        store, main_repo, worktree_root, dir_name="pr-wt3", branch="feature/pr3"
+    )
+    wm = _manager_with_cap(store, main_repo, worktree_root, cap=0)
+    alloc = WorktreeAllocation(
+        worktree_id=wt_id,
+        path=src,
+        branch_name="feature/pr3",
+        pre_branch_key=None,
+        play_type=PlayType.CODE_REVIEW,
+        scope="pr",
+    )
+
+    for _ in range(5):
+        await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
+    row = await lookup_by_id(store, worktree_id=wt_id)
+    assert row is not None
+    assert row.status == "active"

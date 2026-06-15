@@ -52,6 +52,8 @@ On first launch, choose the project repository you want AgentShore to manage. Th
 - Agent identity and trusted-author configuration.
 - Target branch, budget, and session settings.
 
+The agents/identities setup screen also shows a per-agent **backend auth** badge. This is separate from the GitHub identity check: it reflects the session each CLI agent uses to reach its model provider (for Codex, its cached `chatgpt.com` login, which carries a TTL and can expire between runs). The same check runs as a startup phase when you click Start — if an agent's backend session has expired, startup stops and points you at the failing agent with a fix hint (for example, run `codex login` in a terminal, then start again).
+
 The app writes the project configuration to `agentshore.yaml` in the selected repository. You can later adjust the same project from either the desktop app or the CLI.
 
 ## Gatekeeper, Signing, And Notarization

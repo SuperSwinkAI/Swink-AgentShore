@@ -283,6 +283,10 @@ class _DrainHarness(CompletionProcessor):
     """CompletionProcessor stand-in for _retire_or_recover_errored_agent."""
 
     def __init__(self, *, draining: bool) -> None:
+        from agentshore.config import RuntimeConfig
+        from agentshore.core.session_runtime import SessionRuntime
+        from agentshore.state import NullStateProvider
+
         self._session_id = "s1"
         self._overrides = OverrideQueue()
         self._recovery = RecoveryTracker()
@@ -291,9 +295,14 @@ class _DrainHarness(CompletionProcessor):
         handle = MagicMock()
         handle.last_error_class = ErrorClass.UNKNOWN  # recoverable class
         self._manager.handles = {"err1": handle}
+        # Shared session state lives on the runtime; the method reads
+        # self._runtime.draining / .stop_requested.
+        self._runtime = SessionRuntime(
+            cfg=RuntimeConfig(), selector=MagicMock(), state_provider=NullStateProvider()
+        )
+        self._runtime.draining = draining
+        self._runtime.stop_requested = False
         self._host = MagicMock()
-        self._host._draining = draining
-        self._host._stop_requested = False
 
         async def _safe_call(coro: object, _name: str) -> None:
             await coro  # actually run manager.clear() so the assertion is real

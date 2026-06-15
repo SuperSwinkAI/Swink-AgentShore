@@ -10,13 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agentshore.config import FeedbackConfig, RuntimeConfig
-from agentshore.core.override_queue import OverrideQueue
 from agentshore.plays.base import PlayParams
 from agentshore.state import AgentStatus, NullStateProvider, PlayOutcome, PlayType, SessionState
 
 
 def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
-    from agentshore.core import Orchestrator
+    from tests.orchestrator_factory import make_test_orchestrator
 
     mock_store = AsyncMock()
     mock_store.update_session_state = AsyncMock()
@@ -35,149 +34,12 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     # doesn't choke on a MagicMock in the ``repicks > 0`` comparison.
     mock_selector.consume_repick_count = MagicMock(return_value=0)
 
-    from types import SimpleNamespace
-
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._cfg = cfg or RuntimeConfig()
-    orch._repo_root = tmp_path
-    orch._session_id = "test-session"
-    orch._store = mock_store
-    orch._manager = MagicMock()
-    # desktop-mr1i: dispatch consults _manager.worktrees.main_repo. A bare
-    # tmp_path isn't a git work tree, so _is_git_work_tree short-circuits to
-    # TrunkAllocation and skips the async allocate_for_dispatch call.
-    orch._manager.worktrees = SimpleNamespace(main_repo=tmp_path)
-    orch._executor = MagicMock()
-    orch._selector = mock_selector
-    orch._state_provider = NullStateProvider()
-    orch._stop_requested = False
-    orch._exit_stack = MagicMock()
-    orch._health = None
-    orch._integrity = None
-    orch._power_assertion = None
-    orch._in_flight = {}
-    orch._dispatch_ctx = {}
-    orch._completion_processing_count = 0
-    orch._completion_processing_idle = asyncio.Event()
-    orch._completion_processing_idle.set()
-    orch.context_pressure_hints = {}
-    orch._seed_path = None
-    orch._step_index = 0
-    orch._policy_version = "test"
-    orch._config_hash = "abc"
-    orch._metrics = None
-    orch._overrides = OverrideQueue()
-    orch._loop_started_at = 0.0
-    orch._registry = None
-    orch._pause_event = asyncio.Event()
-    orch._pause_event.set()
-    orch._pause_reason = None
-    orch._last_play_id = None
-    orch._draining = False
-    orch._drain_reason = None
+    orch = make_test_orchestrator(
+        tmp_path, cfg or RuntimeConfig(), store=mock_store, selector=mock_selector
+    )
     orch._executor.inflight_issues = set()
     orch._executor.planned_issues = frozenset()
-    orch._feedback_cadence_plays_since_ack = 0
-    orch._feedback_cadence_last_ack_monotonic = 0.0
-    # v0.15 Phase 5: state-divergence signals consumed by assemble_state.
-    import collections as _collections
-
-    from agentshore.core.velocity_tracker import VelocityTracker
-
-    orch._velocity = VelocityTracker(velocity_window_size=50)
-    orch._recent_play_outcomes = _collections.deque(maxlen=50)
-    # desktop-65bg: in-memory shadow of just-completed plays.
-    orch._recent_play_completions = _collections.deque(maxlen=64)
-    # desktop-quv9: in-memory shadow of just-applied issue labels so the next
-    # selector tick sees them across the gh-CLI / SQLite WAL-flush lag window.
-    orch._recent_applied_labels = _collections.deque(maxlen=64)
-    orch._resource_failure_counts = {}
-    orch._parked_resource_keys = set()
-    # desktop-yrr: loop-detector filter — override-dispatched plays excluded.
-    # desktop-rni0: loop-side rate-limit recovery + take_break failure escalation.
-    from agentshore.core.main_repo_guard import MainRepoGuard
-    from agentshore.core.mixins.completion import CompletionProcessor
-    from agentshore.core.mixins.dispatch import Dispatcher
-    from agentshore.core.mixins.drain import DrainController
-    from agentshore.core.mixins.lifecycle import LifecycleController
-    from agentshore.core.mixins.snapshots import SnapshotProjector
-    from agentshore.core.mixins.state import StateBuilder
-    from agentshore.core.recovery_tracker import RecoveryTracker
-
-    orch._recovery = RecoveryTracker()
-    orch._main_repo = MainRepoGuard()
-    orch._snapshots = SnapshotProjector(
-        manager=orch._manager, store=mock_store, session_id=orch._session_id
-    )
-    orch._state_builder = StateBuilder(
-        host=orch,
-        store=mock_store,
-        manager=orch._manager,
-        executor=orch._executor,
-        session_id=orch._session_id,
-        repo_root=orch._repo_root,
-        snapshots=orch._snapshots,
-        velocity=orch._velocity,
-        recovery=orch._recovery,
-        overrides=orch._overrides,
-    )
-    orch._lifecycle = LifecycleController(
-        host=orch,
-        store=mock_store,
-        session_id=orch._session_id,
-        repo_root=orch._repo_root,
-        main_repo=orch._main_repo,
-    )
-    orch._drain = DrainController(
-        host=orch,
-        store=mock_store,
-        manager=orch._manager,
-        session_id=orch._session_id,
-        repo_root=orch._repo_root,
-        state_builder=orch._state_builder,
-    )
-    orch._completion = CompletionProcessor(
-        host=orch,
-        store=mock_store,
-        manager=orch._manager,
-        executor=orch._executor,
-        session_id=orch._session_id,
-        repo_root=orch._repo_root,
-        main_repo=orch._main_repo,
-        velocity=orch._velocity,
-        recovery=orch._recovery,
-        overrides=orch._overrides,
-        snapshots=orch._snapshots,
-        state_builder=orch._state_builder,
-        lifecycle=orch._lifecycle,
-        drain=orch._drain,
-    )
-    orch._dispatcher = Dispatcher(
-        host=orch,
-        store=mock_store,
-        manager=orch._manager,
-        executor=orch._executor,
-        session_id=orch._session_id,
-        repo_root=orch._repo_root,
-        main_repo=orch._main_repo,
-        overrides=orch._overrides,
-        state_builder=orch._state_builder,
-        completion=orch._completion,
-    )
-    from agentshore.core.mixins.loop import LoopRunner
-
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id=orch._session_id,
-        main_repo=orch._main_repo,
-        overrides=orch._overrides,
-        velocity=orch._velocity,
-        state_builder=orch._state_builder,
-        dispatcher=orch._dispatcher,
-        completion=orch._completion,
-        lifecycle=orch._lifecycle,
-        drain=orch._drain,
-    )
+    orch._registry = None
     orch._loop._last_loop_iteration_at = 0.0
     return orch
 

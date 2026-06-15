@@ -215,8 +215,24 @@ class DataStore(
         # VACUUM INTO does not accept parameters via the prepared-stmt
         # interface; the destination is part of the SQL text. The path
         # comes from agentshore code (snapshot ring), never from user
-        # input, so string interpolation is safe here.
-        await self._db.execute(f"VACUUM INTO '{dest}'")
+        # input, but a single quote in the path (e.g. a user home like
+        # ``/Users/o'brien``) would otherwise break the string literal, so
+        # escape it the SQLite way — double every embedded single quote.
+        escaped_dest = str(dest).replace("'", "''")
+        await self._db.execute(f"VACUUM INTO '{escaped_dest}'")
+
+    # Meta tables (schema bookkeeping) — never touched by a session reset.
+    _RESET_META_TABLES = frozenset({"schema_info", "schema_version"})
+    # Tables carrying cross-session value, preserved across a new session.
+    _RESET_PRESERVED_TABLES = frozenset(
+        {
+            "sessions",
+            "plays",
+            "rl_experience",
+            "session_archives",
+            "review_feedback_patterns",
+        }
+    )
 
     async def reset_session_scoped_tables(self) -> None:
         """Truncate all session/repo-state tables at the start of a new session.
@@ -226,32 +242,44 @@ class DataStore(
         code-review anti-confirmation dead-locks. The GH cache refresh during
         bootstrap repopulates these tables from live GitHub data.
 
-        Preserved tables (cross-session value):
-            schema_info, schema_version, sessions, plays, rl_experience,
-            session_archives, review_feedback_patterns
+        The delete set is *derived* — every base table in the schema that is
+        neither a meta table (``_RESET_META_TABLES``) nor cross-session value
+        (``_RESET_PRESERVED_TABLES``) is truncated. Deriving it (instead of
+        hand-listing the DELETEs) means a newly added session-scoped table is
+        wiped automatically rather than silently retaining stale rows across
+        sessions — the exact drift that previously left ``dispatch_replay`` and
+        ``worktrees`` un-reset.
+
+        Preserved tables (cross-session value): sessions, plays, rl_experience,
+        session_archives, review_feedback_patterns. Meta tables (untouched):
+        schema_info, schema_version.
         """
-        # Single executescript drives 14 DELETEs in one round-trip instead
-        # of 14 individual await self._conn.execute() calls (GH #507 /
-        # desktop-bbl). The DELETEs run inside the implicit transaction
-        # executescript opens, and aiosqlite still flushes via commit
-        # below. PRAGMA foreign_keys=OFF/ON wraps the truncation so we
-        # don't fight FK constraints between, e.g., agents and
-        # agent_handoffs.
-        reset_script = """
-            DELETE FROM agents;
-            DELETE FROM github_issues;
-            DELETE FROM pull_requests;
-            DELETE FROM branch_activity;
-            DELETE FROM work_claims;
-            DELETE FROM review_queue;
-            DELETE FROM external_mutations;
-            DELETE FROM scope_drift_log;
-            DELETE FROM policy_checkpoints;
-            DELETE FROM agent_handoffs;
-            DELETE FROM trajectory_snapshots;
-            DELETE FROM human_feedback;
-            DELETE FROM session_learnings;
-        """
+        # Enumerate the live base tables (sqlite_master mirrors schema.sql).
+        async with self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ) as cursor:
+            all_tables = {row["name"] for row in await cursor.fetchall()}
+        # Partition assertion: every table is exactly one of meta / preserved /
+        # delete. A new table missing from both sets lands in to_delete, so it
+        # can never be silently forgotten.
+        to_delete = all_tables - self._RESET_PRESERVED_TABLES - self._RESET_META_TABLES
+        unknown_preserved = self._RESET_PRESERVED_TABLES - all_tables
+        unknown_meta = self._RESET_META_TABLES - all_tables
+        if unknown_preserved or unknown_meta:
+            msg = (
+                "reset_session_scoped_tables partition references tables absent "
+                f"from the schema: preserved={sorted(unknown_preserved)}, "
+                f"meta={sorted(unknown_meta)}"
+            )
+            raise DatabaseError(msg)
+        # Deterministic order keeps the executescript stable run-to-run.
+        reset_script = "".join(f"DELETE FROM {name};\n" for name in sorted(to_delete))
+        # A single executescript drives every DELETE in one round-trip instead
+        # of one await self._conn.execute() per table (GH #507 / desktop-bbl).
+        # The DELETEs run inside the implicit transaction executescript opens,
+        # and aiosqlite still flushes via commit below. PRAGMA
+        # foreign_keys=OFF/ON wraps the truncation so we don't fight FK
+        # constraints between, e.g., agents and agent_handoffs.
         await self._conn.execute("PRAGMA foreign_keys=OFF")
         try:
             await self._conn.executescript(reset_script)

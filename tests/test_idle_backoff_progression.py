@@ -11,37 +11,21 @@ idle through a refresh hasn't become less idle.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from pathlib import Path
 
 from agentshore.core import Orchestrator
-from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS, LoopRunner
-from agentshore.core.override_queue import OverrideQueue
+from agentshore.core.mixins.loop import _IDLE_BACKOFF_SECONDS
 
 
-def _orch() -> Orchestrator:
-    orch = Orchestrator.__new__(Orchestrator)
-    orch._in_flight = {}
-    orch._overrides = OverrideQueue()
-    orch._idle_streak = 0
-    orch._last_selection_digest = None
-    orch._loop = LoopRunner(
-        host=orch,
-        session_id="t",
-        main_repo=MagicMock(),
-        overrides=orch._overrides,
-        velocity=MagicMock(),
-        state_builder=MagicMock(),
-        dispatcher=MagicMock(),
-        completion=MagicMock(),
-        lifecycle=MagicMock(),
-        drain=MagicMock(),
-    )
-    return orch
+def _orch(tmp_path: Path) -> Orchestrator:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    return make_test_orchestrator(tmp_path)
 
 
-def test_idle_streak_advances_through_backoff_table() -> None:
+def test_idle_streak_advances_through_backoff_table(tmp_path: Path) -> None:
     """N consecutive selector-None ticks must walk the streak through the table."""
-    orch = _orch()
+    orch = _orch(tmp_path)
 
     observed_waits: list[float] = []
     for _ in range(len(_IDLE_BACKOFF_SECONDS) + 5):
@@ -60,18 +44,18 @@ def test_idle_streak_advances_through_backoff_table() -> None:
         assert wait == ceiling
 
 
-def test_idle_streak_reaches_index_3_and_matches_table() -> None:
+def test_idle_streak_reaches_index_3_and_matches_table(tmp_path: Path) -> None:
     """desktop-mib1 acceptance pin: after >=3 idle ticks the wait matches
     ``_IDLE_BACKOFF_SECONDS[3]``."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     for _ in range(3):
         orch._idle_streak += 1
     assert orch._idle_streak >= 3
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[3]
 
 
-def test_idle_backoff_clamps_at_ceiling_for_long_idles() -> None:
+def test_idle_backoff_clamps_at_ceiling_for_long_idles(tmp_path: Path) -> None:
     """The streak can run arbitrarily long without the wait crossing the ceiling."""
-    orch = _orch()
+    orch = _orch(tmp_path)
     orch._idle_streak = 10_000
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
