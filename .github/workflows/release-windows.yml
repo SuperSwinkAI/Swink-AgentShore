@@ -49,10 +49,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # The Inno build emits a versioned name (AgentShoreSetup-<version>-x64.exe).
+          versioned="$(ls desktop/dist/AgentShoreSetup-*-x64.exe | head -1)"
+          if [ -z "$versioned" ]; then
+            echo "No versioned AgentShoreSetup installer found in desktop/dist/" >&2
+            exit 1
+          fi
+          # Publish a stable, version-less alias so the website can use the same
+          # evergreen .../releases/latest/download/AgentShoreSetup-x64.exe URL as
+          # macOS's AgentShore.pkg. The versioned asset is kept too as a
+          # per-release archive. The version-less glob 'AgentShoreSetup-*-x64.exe'
+          # only matches the versioned file, never this alias.
+          cp "$versioned" desktop/dist/AgentShoreSetup-x64.exe
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
             --target main \
             || true
           gh release upload "${{ github.ref_name }}" \
-            desktop/dist/AgentShoreSetup-*.exe --clobber
+            "$versioned" \
+            desktop/dist/AgentShoreSetup-x64.exe \
+            --clobber
