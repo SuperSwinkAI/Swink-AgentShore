@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agentshore import command
@@ -27,6 +28,30 @@ if TYPE_CHECKING:
     from agentshore.command import CommandResult
 
 _logger = get_logger(__name__)
+
+#: Max length of the failing-git stderr surfaced on a restore failure. Keeps the
+#: ``main_repo_auto_restore_failed`` event (and any reconcile diagnostics) bounded
+#: while preserving the operator-actionable tail of git's error message.
+_RESTORE_STDERR_MAX = 500
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreResult:
+    """Outcome of :func:`restore_default_branch`.
+
+    ``ok`` is True once the working tree is back on the default branch with no
+    in-progress merge. ``stderr`` carries the last failing git's stderr (truncated
+    to :data:`_RESTORE_STDERR_MAX`) when ``ok`` is False, so the caller can thread a
+    concrete reason into ``main_repo_auto_restore_failed`` instead of dropping it on
+    the floor (#175). It is ``None`` on success or when git produced no stderr.
+    """
+
+    ok: bool
+    stderr: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
 
 # Substring that flags a path which leaked through bash quoting and ended up
 # with a literal backslash-space. The canonical example is a project dir whose
@@ -156,13 +181,16 @@ def _quarantine_untracked_blockers(repo_root: Path) -> list[str]:
     return moved
 
 
-def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
+def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResult:
     """Best-effort restore of *repo_root* to a clean ``default_branch`` checkout.
 
-    Returns True once the working tree is back on ``default_branch`` with no
-    in-progress merge, False only when git still refuses after recovery. The
-    caller emits ``main_repo_auto_restore_failed`` and pauses dispatch on a
-    False return.
+    Returns a :class:`RestoreResult`. ``ok`` is True once the working tree is back
+    on ``default_branch`` with no in-progress merge, False only when git still
+    refuses after recovery — in which case ``stderr`` carries the last failing
+    checkout's stderr (truncated) so the caller can thread a concrete reason into
+    ``main_repo_auto_restore_failed`` instead of pausing dispatch on an opaque
+    failure (#175). ``RestoreResult`` is truthy on success, so the legacy
+    ``if restore_default_branch(...):`` callers keep working.
 
     Recovery ladder (desktop-kqo5 + #175 wedge fixes). A bare ``git checkout``
     cannot proceed when the main checkout is dirty; AgentShore owns this checkout
@@ -171,7 +199,11 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
 
     1. **In-progress merge** (``.git/MERGE_HEAD`` present, ``UU`` conflicts) — an
        errant/killed ``merge_pr``: ``git merge --abort``.
-    2. **Tracked dirt** (modified/added tracked files): ``git reset --hard``.
+    2. **Tracked dirt** (modified/added tracked files, including un-attributable
+       trunk modifications): ``git reset --hard``. A hard reset of AgentShore's own
+       main checkout is safe — real work lives on feature/PR branches in worktrees —
+       so this deterministic backstop clears the tracked-dirt latch the reconcile
+       skill's stricter attribution policy refuses to (#175 follow-up).
     3. **Untracked dirt** (the #175 case): untracked files a trunk-scoped play
        left in the main checkout block ``checkout`` ("would be overwritten"), and
        tiers 1–2 don't touch untracked state. :func:`_quarantine_untracked_blockers`
@@ -182,13 +214,19 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
     Uses a slightly longer timeout than the symbolic-ref reads because
     checkout/reset may have to walk the index.
     """
+    last_stderr: str | None = None
 
     def _checkout() -> bool:
+        nonlocal last_stderr
         result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
+        stderr = result.stderr.strip()
+        last_stderr = stderr[:_RESTORE_STDERR_MAX] if stderr else None
+        return False
 
     if _checkout():
-        return True
+        return RestoreResult(ok=True)
 
     # Checkout was refused — recover from an in-progress merge / dirty index.
     # ``--abort`` is the merge-specific unwind; ``reset --hard`` then drops the
@@ -199,7 +237,7 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
             continue
         _run_git(recovery, repo_root, timeout=30.0)
         if _checkout():
-            return True
+            return RestoreResult(ok=True)
 
     # Still refused after merge-abort + reset --hard: the blocker is untracked
     # working-tree files the default branch would overwrite (#175). Quarantine
@@ -214,8 +252,10 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> bool:
             paths=quarantined[:20],
         )
         if _checkout():
-            return True
-    return _checkout()
+            return RestoreResult(ok=True)
+    if _checkout():
+        return RestoreResult(ok=True)
+    return RestoreResult(ok=False, stderr=last_stderr)
 
 
 def path_contains_backslash_space(path: str | Path) -> bool:
@@ -337,13 +377,15 @@ def check_main_repo_branch_mutated(
     *,
     pre_ref: str | None,
     default_branch: str,
-) -> tuple[bool, str | None, bool]:
+) -> tuple[bool, str | None, RestoreResult]:
     """Compare ``pre_ref`` to the live HEAD; return mutation flag and detail.
 
-    Returns ``(mutated, post_ref, restored)``. ``mutated`` is True when the
+    Returns ``(mutated, post_ref, restore)``. ``mutated`` is True when the
     ref changed (or HEAD is now detached when pre was a ref). ``post_ref``
-    is the current symbolic ref or ``None`` for detached. ``restored`` is
-    True if an auto-restore checkout succeeded after detecting a mutation.
+    is the current symbolic ref or ``None`` for detached. ``restore`` is the
+    :class:`RestoreResult` of the auto-restore checkout attempted after a
+    mutation (its ``.ok``/``.stderr`` let the caller log a concrete failure
+    reason); on no mutation it is a trivially-``ok`` result.
 
     The caller logs structured events around this — this function stays
     pure so it can be unit-tested without an orchestrator.
@@ -351,9 +393,9 @@ def check_main_repo_branch_mutated(
     post_ref = current_head_ref(repo_root)
     mutated = pre_ref != post_ref
     if not mutated:
-        return False, post_ref, False
-    restored = restore_default_branch(repo_root, default_branch)
-    return True, post_ref, restored
+        return False, post_ref, RestoreResult(ok=True)
+    restore = restore_default_branch(repo_root, default_branch)
+    return True, post_ref, restore
 
 
 def _resolve_signing_key() -> str:
@@ -506,6 +548,7 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
 __all__ = [
     "DEFAULT_BRANCH_FALLBACK",
     "PATH_ESCAPE_MARKER",
+    "RestoreResult",
     "check_main_repo_branch_mutated",
     "current_head_ref",
     "commit_gitignore_if_dirty",
