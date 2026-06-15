@@ -1838,6 +1838,13 @@ def test_classify_error_oom_signature() -> None:
     assert _classify_error(1, "Cannot allocate memory", "") == "crash_oom"
 
 
+def test_classify_error_enospc_signature() -> None:
+    """Host disk-full surfaced by the agent is an environment condition (#180)."""
+    assert _classify_error(1, "fatal: write error: No space left on device", "") == "crash_enospc"
+    assert _classify_error(1, "", "error: ENOSPC: no space left") == "crash_enospc"
+    assert _classify_error(1, "OSError: [Errno 28] No space left on device", "") == "crash_enospc"
+
+
 def test_classify_error_graceful_signals_stay_unknown() -> None:
     """SIGTERM/SIGINT are AgentShore/OS-initiated graceful stops, not crashes."""
     assert _classify_error(-15, "", "") == "unknown"

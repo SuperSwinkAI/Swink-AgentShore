@@ -16,6 +16,7 @@ import pytest
 
 from agentshore.agents.worktree.reaper import (
     reap_for_closed_prs,
+    reap_for_disk_pressure,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -131,12 +132,12 @@ async def test_reap_exception_marks_row_failed_freeing_unique_index(
 ) -> None:
     """A reap that raises must drive the row to terminal ``failed`` (#32).
 
-    ``_reap_one`` first flips the row to ``reaping`` and then removes the
-    worktree. If removal raises, the row used to be left in ``reaping`` —
-    inside the partial unique index ``(session_id, branch_name) WHERE status IN
-    ('active','reaping')`` — so every subsequent reap/allocate for the same pair
-    hit ``UNIQUE constraint failed: worktrees.session_id, branch_name`` forever.
-    The handler now transitions the row to ``failed`` (outside the index).
+    ``_reap_one`` removes the worktree first, then journals the transition. If
+    removal raises, the row must not be left in ``active``/``reaping`` — inside
+    the partial unique index ``(session_id, branch_name) WHERE status IN
+    ('active','reaping')`` — or every subsequent reap/allocate for the same pair
+    hits ``UNIQUE constraint failed: worktrees.session_id, branch_name`` forever.
+    The handler transitions the row to ``failed`` (outside the index).
     """
     from agentshore.agents.worktree import reaper as reaper_mod
     from agentshore.agents.worktree.reaper import ReapReport, _reap_one
@@ -566,3 +567,204 @@ async def test_sweep_session_start_returns_both_reap_sources(
     assert not db_orphan_path.exists()
     assert not git_orphan_path.exists()
     assert report.total == 2
+
+
+# --- ENOSPC-robust ordering (Fix 3) -------------------------------------------
+
+
+async def test_reap_one_frees_disk_even_when_db_write_fails(
+    store: DataStore,
+    main_repo: Path,
+    worktree_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disk is freed before the DB journal write (#180).
+
+    On a full disk every SQLite write raises. The old order wrote
+    ``status='reaping'`` *first*, so the reaper bailed with the bytes still on
+    disk and could never dig out of ENOSPC. The new order removes the worktree
+    first, so the directory is gone even when every ``mark_status`` raises.
+    """
+    from agentshore.agents.worktree import reaper as reaper_mod
+    from agentshore.agents.worktree.reaper import ReapReport, _reap_one
+
+    wt_id, path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-other",
+        branch_name="enospc-branch",
+        pre_branch_key=None,
+        dir_name="enospc-wt",
+    )
+    row = await lookup_by_id(store, worktree_id=wt_id)
+    assert row is not None
+    assert path.exists()
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("disk I/O error (simulated ENOSPC)")
+
+    monkeypatch.setattr(reaper_mod, "mark_status", _boom)
+
+    report = ReapReport()
+    await _reap_one(store, row=row, main_repo=main_repo, reason="disk_pressure", report=report)
+
+    # Bytes freed despite every DB write failing — the whole point of Fix 3.
+    assert not path.exists()
+
+
+# --- disk-pressure governor (Fix 2) -------------------------------------------
+
+
+async def _seed_three(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> tuple[Path, Path, Path]:
+    """A stale + two active worktrees, oldest→newest by ``last_used_at``."""
+    _stale_id, stale_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="b-stale",
+        pre_branch_key=None,
+        dir_name="wt-stale",
+        status="stale",
+        last_used_at="2020-01-01T00:00:00+00:00",
+    )
+    _old_id, old_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="b-old",
+        pre_branch_key=None,
+        dir_name="wt-old",
+        status="active",
+        last_used_at="2021-01-01T00:00:00+00:00",
+    )
+    _new_id, new_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="b-new",
+        pre_branch_key=None,
+        dir_name="wt-new",
+        status="active",
+        last_used_at="2022-01-01T00:00:00+00:00",
+    )
+    return stale_path, old_path, new_path
+
+
+async def test_reap_for_disk_pressure_reaps_lru_until_target(
+    store: DataStore,
+    main_repo: Path,
+    worktree_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reaps stale-first then oldest active, stopping once above target."""
+    from agentshore.agents.worktree import reaper as reaper_mod
+
+    stale_path, old_path, new_path = await _seed_three(store, main_repo, worktree_root)
+    seeded = [stale_path, old_path, new_path]
+
+    # Free disk rises by 60 MiB per worktree removed: 100 → 160 → 220.
+    def fake_free(_p: Path) -> int:
+        gone = sum(1 for p in seeded if not p.exists())
+        return 100 + gone * 60
+
+    monkeypatch.setattr(reaper_mod, "free_disk_mb", fake_free)
+
+    report = await reap_for_disk_pressure(
+        store,
+        session_id="sess-1",
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        target_free_mb=200,
+    )
+
+    # Two reaps cross 200: stale (LRU) then oldest active; newest preserved.
+    assert not stale_path.exists()
+    assert not old_path.exists()
+    assert new_path.exists()
+    assert len(report.removed) == 2
+
+
+async def test_reap_for_disk_pressure_skips_in_flight(
+    store: DataStore,
+    main_repo: Path,
+    worktree_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A protected (in-flight) worktree is never reaped, even under pressure."""
+    from agentshore.agents.worktree import reaper as reaper_mod
+
+    stale_path, old_path, new_path = await _seed_three(store, main_repo, worktree_root)
+    old_row = await lookup_by_id(store, worktree_id=(await _id_for_path(store, old_path)))
+    assert old_row is not None
+    seeded = [stale_path, old_path, new_path]
+
+    def fake_free(_p: Path) -> int:
+        gone = sum(1 for p in seeded if not p.exists())
+        return 100 + gone * 60
+
+    monkeypatch.setattr(reaper_mod, "free_disk_mb", fake_free)
+
+    report = await reap_for_disk_pressure(
+        store,
+        session_id="sess-1",
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        target_free_mb=200,
+        protected_ids={old_row.worktree_id},
+    )
+
+    # Protected 'old' survives; reaper takes stale then 'new' to reach target.
+    assert not stale_path.exists()
+    assert old_path.exists()
+    assert not new_path.exists()
+    assert len(report.removed) == 2
+
+
+async def test_reap_for_disk_pressure_noop_when_above_target(
+    store: DataStore,
+    main_repo: Path,
+    worktree_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No reaping when free disk already meets the target, or when disabled."""
+    from agentshore.agents.worktree import reaper as reaper_mod
+
+    stale_path, old_path, new_path = await _seed_three(store, main_repo, worktree_root)
+    monkeypatch.setattr(reaper_mod, "free_disk_mb", lambda _p: 999)
+
+    report = await reap_for_disk_pressure(
+        store,
+        session_id="sess-1",
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        target_free_mb=200,
+    )
+    assert report.total == 0
+    assert all(p.exists() for p in (stale_path, old_path, new_path))
+
+    # target 0 disables the governor entirely even when disk is low.
+    monkeypatch.setattr(reaper_mod, "free_disk_mb", lambda _p: 1)
+    report2 = await reap_for_disk_pressure(
+        store,
+        session_id="sess-1",
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        target_free_mb=0,
+    )
+    assert report2.total == 0
+    assert all(p.exists() for p in (stale_path, old_path, new_path))
+
+
+async def _id_for_path(store: DataStore, path: Path) -> int:
+    async with store._conn.execute(
+        "SELECT worktree_id FROM worktrees WHERE worktree_path = ?", (str(path),)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])

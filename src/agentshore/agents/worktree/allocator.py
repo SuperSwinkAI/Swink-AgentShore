@@ -555,7 +555,17 @@ async def remove_worktree(
     Returns ``True`` when the worktree no longer exists at the end of the
     call. Best-effort: filesystem cleanup runs even if ``git`` complains
     about an unknown worktree (post-crash reaping path).
+
+    **ENOSPC-robust ordering:** the on-disk ``shutil.rmtree`` runs *first* —
+    it needs no free space and frees the bulk of the worktree's bytes
+    (build artifacts, checkout). ``git worktree remove`` is only attempted
+    after, and ``git worktree prune`` reconciles the now-missing directory
+    without ``git`` ever needing to write metadata while the disk is full.
+    Doing it the other way round (the old order) meant a full disk could
+    wedge the reaper on the very op meant to free space.
     """
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
     git_args: list[str] = ["worktree", "remove"]
     if force:
         git_args.append("--force")
@@ -569,9 +579,6 @@ async def remove_worktree(
                 path=str(worktree_path),
                 reason=exc.reason,
             )
-    if worktree_path.exists():
-        shutil.rmtree(worktree_path, ignore_errors=True)
-    if main_repo.exists():
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
     return not worktree_path.exists()
 

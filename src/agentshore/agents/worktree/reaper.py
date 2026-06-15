@@ -13,11 +13,20 @@ Three reap modes:
   ``last_used_at`` is older than the TTL. Used by the GitHub poller hook
   when a PR is merged/closed to clean up the worktree after a grace
   period.
+- **Disk pressure** (``reap_for_disk_pressure``): when free disk drops below
+  a high-water mark, reap idle worktrees LRU (``stale`` first, then oldest
+  ``active``), skipping any with a live dispatch. The build-agnostic governor
+  that caps the worktree fleet's footprint when the host fills (#180).
+
+All paths funnel through ``_reap_one``, which frees the on-disk bytes *before*
+journaling the transition so a full disk can't wedge the reaper on the very op
+meant to free space.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,6 +41,7 @@ from agentshore.agents.worktree.allocator import (
 )
 from agentshore.agents.worktree.registry import (
     WorktreeRow,
+    list_active,
     list_orphans,
     list_stale,
     live_worktree_paths,
@@ -76,17 +86,21 @@ async def _reap_one(
     reason: str,
     report: ReapReport,
 ) -> None:
-    """Remove a worktree on disk + transition the row to ``reaped``."""
+    """Remove a worktree on disk + transition the row to ``reaped``.
+
+    **ENOSPC-robust ordering:** free the on-disk bytes *first*, then journal
+    the transition. The old order wrote ``status='reaping'`` to SQLite before
+    removing anything; on a full disk that first DB write raised → the reaper
+    bailed having freed nothing, so it could never dig the host out of an
+    ENOSPC hole (``worktree_reap_failed`` ×N with no space reclaimed).
+    ``remove_worktree`` needs no free space (it ``rmtree``s first), so doing it
+    up front gives SQLite room to record the ``reaped`` transition afterward.
+    """
     path = Path(row.worktree_path)
     try:
-        await mark_status(
-            store,
-            worktree_id=row.worktree_id,
-            status="reaping",
-            failure_reason=reason,
-        )
         ok = await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
         if ok:
+            log.info("worktree_reap_freed_before_journal", worktree_id=row.worktree_id)
             await mark_status(store, worktree_id=row.worktree_id, status="reaped")
             report.removed.append(
                 OrphanRecord(
@@ -118,7 +132,7 @@ async def _reap_one(
         )
         # Drive the row to a terminal status so it leaves the
         # (session_id, branch_name) partial unique index (which covers only
-        # 'active'/'reaping'). Left in 'reaping' it collides on every later
+        # 'active'/'reaping'). Left 'active' it collides on every later
         # reap or allocate for the same pair — the recurring
         # "UNIQUE constraint failed: worktrees.session_id, branch_name" (#32).
         # 'failed' is outside the index, so this also resolves a duplicate-key
@@ -301,10 +315,103 @@ async def reap_for_closed_prs(
     return report
 
 
+def free_disk_mb(path: Path) -> int:
+    """Free space (MiB) on the filesystem backing ``path``.
+
+    Walks up to the nearest existing ancestor so a not-yet-created worktree
+    root still reports its eventual filesystem's free space. Build-agnostic —
+    measures bytes, not what produced them.
+    """
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free // (1024 * 1024)
+
+
+async def reap_for_disk_pressure(
+    store: DataStore,
+    *,
+    session_id: str,
+    main_repo: Path,
+    worktree_root: Path,
+    target_free_mb: int,
+    protected_ids: set[int] | None = None,
+) -> ReapReport:
+    """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
+
+    The build-agnostic disk governor (#180). AgentShore can't dictate what
+    agents build inside a worktree, but when the host fills it caps its own
+    fleet's footprint by reclaiming the least-recently-used idle worktrees —
+    ``stale`` rows first, then the oldest ``active`` ones — until free disk is
+    back above target or nothing reclaimable remains. Worktrees with a live
+    dispatch (``protected_ids``) are never touched. Reuses the ENOSPC-safe
+    ``_reap_one``. No-op when ``target_free_mb <= 0`` or disk is already above
+    target.
+
+    When nothing reclaimable remains and disk is still below target, that is
+    the pre-dispatch guard's signal to pause (Fix 4) — surfaced via the
+    ``disk_pressure_reap_exhausted`` marker.
+    """
+    report = ReapReport()
+    if target_free_mb <= 0:
+        return report
+    if free_disk_mb(worktree_root) >= target_free_mb:
+        return report
+
+    protected = protected_ids or set()
+    now_iso = datetime.now(UTC).isoformat()
+    # ``stale`` (including crashed-mid-reap ``reaping``) ranks ahead of warm
+    # ``active`` worktrees; within each group, oldest ``last_used_at`` first.
+    stale = await list_stale(store, session_id=session_id, before_iso=now_iso)
+    active = await list_active(store, session_id=session_id)
+    ordered = sorted(stale, key=lambda r: r.last_used_at) + sorted(
+        active, key=lambda r: r.last_used_at
+    )
+
+    log.info(
+        "disk_pressure_reap_triggered",
+        free_mb=free_disk_mb(worktree_root),
+        target_mb=target_free_mb,
+        candidates=len(ordered),
+    )
+    for row in ordered:
+        if free_disk_mb(worktree_root) >= target_free_mb:
+            break
+        if row.worktree_id in protected:
+            continue
+        await _reap_one(
+            store,
+            row=row,
+            main_repo=main_repo,
+            reason="disk_pressure",
+            report=report,
+        )
+
+    free_after = free_disk_mb(worktree_root)
+    if free_after < target_free_mb:
+        log.warning(
+            "disk_pressure_reap_exhausted",
+            free_mb=free_after,
+            target_mb=target_free_mb,
+            reaped=len(report.removed),
+        )
+    else:
+        log.info(
+            "disk_pressure_reap_freed",
+            reaped=len(report.removed),
+            failed=len(report.failed),
+            free_mb_after=free_after,
+            target_mb=target_free_mb,
+        )
+    return report
+
+
 __all__ = [
     "OrphanRecord",
     "ReapReport",
+    "free_disk_mb",
     "reap_for_closed_prs",
+    "reap_for_disk_pressure",
     "reap_git_orphans",
     "sweep_session_start",
 ]

@@ -44,7 +44,9 @@ from agentshore.agents.worktree.allocator import (
 )
 from agentshore.agents.worktree.reaper import (
     ReapReport,
+    free_disk_mb,
     reap_for_closed_prs,
+    reap_for_disk_pressure,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -221,6 +223,11 @@ class WorktreeManager:
         # fetch; resolved once on first allocation. ``None`` == unauthenticated.
         self._fetch_overlay: dict[str, str] | None = None
         self._fetch_overlay_resolved = False
+        # Consecutive PR-play failures per worktree_id, for the retention cap
+        # (``worktrees.reap_failed_pr_after_n``). A successful finalize clears
+        # the entry; once the count crosses the cap the row is dropped to
+        # ``stale`` instead of kept warm (#180).
+        self._pr_failure_counts: dict[int, int] = {}
 
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
@@ -358,12 +365,40 @@ class WorktreeManager:
         accumulates disk across short sessions (#33).
         """
         if allocation.scope == "pr":
-            await touch(self._store, worktree_id=allocation.worktree_id)
-            if not play_outcome.success:
+            wt_id = allocation.worktree_id
+            if play_outcome.success:
+                self._pr_failure_counts.pop(wt_id, None)
+                await touch(self._store, worktree_id=wt_id)
+                return None
+            # Failure path. Keep the worktree warm for a cheap retry on the
+            # first failures; after the configured cap, a worktree that keeps
+            # failing is not a useful cache — drop it to ``stale`` so the TTL
+            # reaper reclaims its disk instead of holding it until PR close
+            # (the worktree-sprawl contributor in #180).
+            fails = self._pr_failure_counts.get(wt_id, 0) + 1
+            self._pr_failure_counts[wt_id] = fails
+            cap = self._cfg.worktrees.reap_failed_pr_after_n
+            if cap > 0 and fails >= cap:
+                self._pr_failure_counts.pop(wt_id, None)
+                await mark_status(
+                    self._store,
+                    worktree_id=wt_id,
+                    status="stale",
+                    failure_reason=f"pr_play_failed_x{fails}",
+                )
+                log.info(
+                    "worktree_pr_play_failed_retired",
+                    worktree_id=wt_id,
+                    play_type=allocation.play_type.value,
+                    consecutive_failures=fails,
+                )
+            else:
+                await touch(self._store, worktree_id=wt_id)
                 log.info(
                     "worktree_pr_play_failed_kept_active",
-                    worktree_id=allocation.worktree_id,
+                    worktree_id=wt_id,
                     play_type=allocation.play_type.value,
+                    consecutive_failures=fails,
                 )
             return None
 
@@ -478,6 +513,30 @@ class WorktreeManager:
             ttl_seconds=ttl_seconds,
         )
         await self._prune_locks()
+        return report
+
+    def free_disk_mb(self) -> int:
+        """Free space (MiB) on the filesystem backing the worktree root."""
+        return free_disk_mb(self._worktree_root)
+
+    async def reap_for_disk_pressure(
+        self, *, target_free_mb: int, protected_ids: set[int] | None = None
+    ) -> ReapReport:
+        """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
+
+        The build-agnostic disk governor (#180). Worktrees with a live dispatch
+        (``protected_ids``) are never reaped.
+        """
+        report = await reap_for_disk_pressure(
+            self._store,
+            session_id=self._session_id,
+            main_repo=self._main_repo,
+            worktree_root=self._worktree_root,
+            target_free_mb=target_free_mb,
+            protected_ids=protected_ids,
+        )
+        if report.total:
+            await self._prune_locks()
         return report
 
     # -- internals -----------------------------------------------------------

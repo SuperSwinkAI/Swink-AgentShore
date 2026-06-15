@@ -236,6 +236,17 @@ _OOM_PATTERNS = (
     "cannot allocate memory",
     "memory exhausted",
 )
+# Host disk exhaustion surfaced by the agent subprocess (a build writing into a
+# full worktree, git, npm, cargo, etc.). An environment condition, not the
+# agent's fault — pulling it out of "unknown" lets operators see the real cause
+# instead of blaming a code/test failure (#180). Distinctive enough to match in
+# either stream.
+_ENOSPC_PATTERNS = (
+    "no space left on device",
+    "enospc",
+    "errno 28",
+    "disk quota exceeded",
+)
 # Transient network/socket failures. claude_code has been observed to exit with
 # "API Error: The socket connection was closed unexpectedly" falling into the
 # generic "unknown" bucket (#23). These are distinctive enough to match
@@ -291,6 +302,8 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
         return ErrorClass.CODEX_ROLLOUT
     if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
         return ErrorClass.TRANSIENT_NETWORK
+    if any(p in combined for p in _ENOSPC_PATTERNS):
+        return ErrorClass.CRASH_ENOSPC
     if any(p in combined for p in _OOM_PATTERNS):
         return ErrorClass.CRASH_OOM
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS

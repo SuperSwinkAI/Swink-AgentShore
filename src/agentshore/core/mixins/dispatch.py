@@ -16,6 +16,7 @@ from agentshore.core.git_safety import (
 )
 from agentshore.core.helpers import _log_task_exception, _logger, _ppo_selector_cls, _str_extra
 from agentshore.data.store import ExternalMutationRecord
+from agentshore.errors import is_disk_full
 from agentshore.plays.override import OverrideEntry, OverrideKind
 from agentshore.rl.mask_reason import (
     ACTION_MASKED,
@@ -483,6 +484,21 @@ class Dispatcher:
             revalidation_window_seconds=revalidation_window_seconds,
         )
 
+    def _in_flight_worktree_ids(self) -> set[int]:
+        """Worktree IDs backing currently-dispatched plays — never reap these.
+
+        Derived from each in-flight dispatch's ``params._runtime_allocation``.
+        ``TrunkAllocation`` (no ``worktree_id``) and any non-int id are skipped,
+        so this is safe to call regardless of allocation kind.
+        """
+        ids: set[int] = set()
+        for ctx in self._runtime.dispatch_ctx.values():
+            alloc = getattr(getattr(ctx, "params", None), "_runtime_allocation", None)
+            wt_id = getattr(alloc, "worktree_id", None)
+            if isinstance(wt_id, int):
+                ids.add(wt_id)
+        return ids
+
     def register_worktree_allocation_failure(self, params: PlayParams) -> bool:
         """Tally a worktree-allocation failure per resource key; park on threshold.
 
@@ -663,11 +679,75 @@ class Dispatcher:
                 path=str(worktree_mgr.main_repo),
             )
         else:
+            # Pre-dispatch disk guard (#180): don't allocate a new worktree
+            # into a nearly-full disk. Reap idle worktrees first (LRU, skipping
+            # in-flight ones); if still below the floor, skip this dispatch
+            # rather than risk an ENOSPC cascade mid-play (the spend-while-
+            # dropping failure mode). Build-agnostic — measures free bytes, not
+            # what produced them. ``min_free_disk_mb == 0`` disables the guard.
+            floor_mb = self._runtime.cfg.worktrees.min_free_disk_mb
+            if floor_mb > 0:
+                free_mb = worktree_mgr.free_disk_mb()
+                if free_mb < floor_mb:
+                    await worktree_mgr.reap_for_disk_pressure(
+                        target_free_mb=floor_mb,
+                        protected_ids=self._in_flight_worktree_ids(),
+                    )
+                    free_mb = worktree_mgr.free_disk_mb()
+                if free_mb < floor_mb:
+                    _logger.warning(
+                        "pre_dispatch_disk_guard_paused",
+                        session_id=self._session_id,
+                        play_type=play_type.value,
+                        free_mb=free_mb,
+                        floor_mb=floor_mb,
+                    )
+                    await self.drop_selected_play_before_dispatch(
+                        play_type,
+                        params,
+                        reason=MaskReason(
+                            text=f"disk below floor ({free_mb}MiB < {floor_mb}MiB)",
+                            classification=MaskClassification.TRANSIENT,
+                            source=MaskSource.SPAWN,
+                        ),
+                        event="dispatch_blocked_disk_pressure",
+                    )
+                    return False
             try:
                 allocation = await worktree_mgr.allocate_for_dispatch(
                     play_type=play_type, params=params
                 )
-            except (WorktreeAllocationFailed, WorktreeBranchGone) as exc:
+            except (WorktreeAllocationFailed, WorktreeBranchGone, OSError) as exc:
+                # Disk-full allocation failure is an *environment* condition, not
+                # a structurally-stuck resource: parking the resource key would
+                # wrongly suppress it for the session. Reap idle worktrees and
+                # drop TRANSIENT so it retries once the host has room (#180).
+                if is_disk_full(exc):
+                    _logger.warning(
+                        "worktree_allocate_disk_full",
+                        session_id=self._session_id,
+                        play_type=play_type.value,
+                        error=str(exc),
+                    )
+                    await worktree_mgr.reap_for_disk_pressure(
+                        target_free_mb=max(self._runtime.cfg.worktrees.min_free_disk_mb, 1),
+                        protected_ids=self._in_flight_worktree_ids(),
+                    )
+                    await self.drop_selected_play_before_dispatch(
+                        play_type,
+                        params,
+                        reason=MaskReason(
+                            text="worktree allocation failed (disk full)",
+                            classification=MaskClassification.TRANSIENT,
+                            source=MaskSource.SPAWN,
+                        ),
+                        event="dispatch_worktree_disk_full",
+                    )
+                    return False
+                if isinstance(exc, OSError):
+                    # A non-ENOSPC OSError isn't a recognized allocation failure;
+                    # re-raise rather than swallow it as a worktree-create miss.
+                    raise
                 alloc_reason = getattr(exc, "reason", None) or getattr(exc, "branch", None)
                 _logger.warning(
                     "worktree_allocate_failed",

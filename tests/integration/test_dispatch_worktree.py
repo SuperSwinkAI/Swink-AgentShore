@@ -379,6 +379,80 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
 
 
 @pytest.mark.asyncio
+async def test_pre_dispatch_disk_guard_pauses_when_below_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below the free-disk floor, dispatch reaps then skips — never allocates (#180).
+
+    Guards the spend-while-dropping cascade: if reaping can't get the host back
+    above ``min_free_disk_mb``, the play is dropped TRANSIENT and the allocator
+    is never called, so nothing is written into a nearly-full disk.
+    """
+    from agentshore.config import WorktreeConfig
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    branch = "feature-disk"
+    main_repo = _init_repo_with_remote(tmp_path, branch)
+    store = await _init_store(tmp_path, session_id="s-disk", project_path=main_repo)
+    try:
+        cfg = RuntimeConfig(worktrees=WorktreeConfig(min_free_disk_mb=4096))
+        manager = AgentManager(
+            session_id="s-disk",
+            store=store,
+            cfg=cfg,
+            working_dir=main_repo,
+        )
+        # Disk stays below the floor even after reaping; reap frees nothing.
+        monkeypatch.setattr(manager.worktrees, "free_disk_mb", lambda: 10)
+        reap_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(manager.worktrees, "reap_for_disk_pressure", reap_mock)
+        allocate_spy = AsyncMock()
+        monkeypatch.setattr(manager.worktrees, "allocate_for_dispatch", allocate_spy)
+
+        orch = make_test_orchestrator(main_repo, cfg, store=store)
+        orch._session_id = "s-disk"
+        orch._registry = None
+        orch._manager = manager
+        orch._state_provider = MagicMock()
+        orch._dispatcher = Dispatcher(
+            host=orch,
+            runtime=orch._runtime,
+            store=store,
+            manager=manager,
+            executor=MagicMock(),
+            session_id=orch._session_id,
+            repo_root=main_repo,
+            main_repo=orch._main_repo,
+            overrides=orch._overrides,
+            state_builder=orch._state_builder,
+            completion=orch._completion,
+        )
+        drop_mock = AsyncMock()
+        orch._dispatcher.drop_selected_play_before_dispatch = drop_mock  # type: ignore[method-assign]
+
+        state_mock = MagicMock()
+        state_mock.session_state = MagicMock()
+        state_mock.agents = []
+
+        params = PlayParams(branch=branch, pr_number=7)
+        result = await orch._dispatcher.dispatch_play(PlayType.CODE_REVIEW, params, state_mock)
+
+        assert result is False
+        reap_mock.assert_awaited_once()  # tried to free space first
+        allocate_spy.assert_not_awaited()  # never allocated into a full disk
+        drop_mock.assert_awaited_once()
+        call = drop_mock.await_args
+        assert call.kwargs["event"] == "dispatch_blocked_disk_pressure"
+        reason = call.kwargs["reason"]
+        assert isinstance(reason, MaskReason)
+        assert reason.classification == MaskClassification.TRANSIENT
+        assert not orch._in_flight
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_handle_working_dir_stays_pinned_to_main_repo(tmp_path: Path) -> None:
     """``AgentHandle.working_dir`` must not be mutated by cwd_override."""
     branch = "feature-pin"

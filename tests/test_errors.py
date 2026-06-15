@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import errno
+
 import pytest
 
-from agentshore.errors import FailureCategory, OrchestratorError, PlayTimeoutError
+from agentshore.errors import (
+    ErrorClass,
+    FailureCategory,
+    OrchestratorError,
+    PlayTimeoutError,
+    is_disk_full,
+)
 
 
 def test_failure_category_matches_persisted_play_categories() -> None:
@@ -42,3 +50,28 @@ def test_play_timeout_error_preserves_error_class() -> None:
     exc = PlayTimeoutError("timed out", error_class="stalled")
     assert exc.error_type == "agent_timeout"
     assert exc.error_class == "stalled"
+
+
+def test_crash_enospc_is_a_member() -> None:
+    assert ErrorClass.CRASH_ENOSPC == "crash_enospc"
+
+
+def test_is_disk_full_direct_enospc() -> None:
+    exc = OSError(errno.ENOSPC, "No space left on device")
+    assert is_disk_full(exc) is True
+
+
+def test_is_disk_full_walks_cause_chain() -> None:
+    inner = OSError(errno.ENOSPC, "No space left on device")
+    try:
+        try:
+            raise inner
+        except OSError as e:
+            raise RuntimeError("worktree allocation failed") from e
+    except RuntimeError as wrapped:
+        assert is_disk_full(wrapped) is True
+
+
+def test_is_disk_full_false_for_other_oserror() -> None:
+    assert is_disk_full(OSError(errno.EACCES, "permission denied")) is False
+    assert is_disk_full(ValueError("nope")) is False
