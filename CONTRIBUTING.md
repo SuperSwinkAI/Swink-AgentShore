@@ -1,4 +1,4 @@
-# Contributing to AgentShore
+# Contributing to AgentShore™
 
 This guide exists to save both sides time.
 

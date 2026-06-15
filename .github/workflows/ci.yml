@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, integration]
 
+permissions:
+  contents: read  # default read-only; jobs that need write declare it explicitly
+
 jobs:
   python:
     name: Python (ruff · mypy · pytest)
