@@ -107,7 +107,9 @@ def test_merge_pr_no_ff_advances_sha_but_symbolic_ref_unchanged(
     )
     assert mutated is False
     assert observed_post == pre_ref
-    assert restored is False
+    # No mutation → no auto-restore attempted; the guard returns the trivially-ok
+    # RestoreResult sentinel (mutated=False above is what proves no restore ran).
+    assert restored.ok is True
 
 
 @pytest.mark.asyncio
