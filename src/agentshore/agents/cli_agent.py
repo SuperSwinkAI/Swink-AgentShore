@@ -197,6 +197,33 @@ _AUTH_STDOUT = (
     "lacks access to repository",
     "cannot access repository metadata",
 )
+# #190: cache-renewal markers within _AUTH_PATTERNS that the Codex CLI also
+# prints during a *transient* model-cache TTL blip (not a real auth rejection).
+# When one of these coincides with an EOF-parse marker (below) on the same
+# stderr tail it is the transient EOF-renewal shape, NOT a session-token expiry,
+# and must NOT abort an in-flight dispatch (observed 415s of work killed). A
+# bare cache-renewal line with no parse-EOF suffix is still a genuine token
+# expiry and keeps tripping via _AUTH_PATTERNS.
+_CACHE_RENEWAL_MARKERS = ("failed to renew cache ttl", "failed to refresh available models")
+_PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+
+
+def _is_transient_cache_blip(lowered: str) -> bool:
+    """#190: True iff the stderr tail is the transient cache-renewal EOF-parse blip.
+
+    Suppresses an auth abort only for the cache-renewal-EOF shape (e.g.
+    ``failed to renew cache TTL: EOF while parsing a value at line 1 column 0``).
+    A real backend-auth rejection (401/403/unauthorized/invalid api key/etc.)
+    is unaffected: those markers carry no cache-renewal marker, so this returns
+    False and the auth hit trips normally — even if a 401 happens to coexist
+    with a cache-renewal line, the presence of the genuine auth marker is what
+    keeps ``feed`` matching while this guard only inspects the renewal+EOF pair.
+    """
+    return any(m in lowered for m in _CACHE_RENEWAL_MARKERS) and any(
+        m in lowered for m in _PARSE_EOF_MARKERS
+    )
+
+
 _TIMEOUT_PATTERNS = ("timeout", "timed out", "deadline exceeded", "context deadline")
 # All timeout tokens are common in source code/test names — none are safe to
 # match against the work product.
@@ -443,7 +470,14 @@ class _StderrSniffer:
         self.tail = (self.tail + text)[-self.tail_window :]
         if not self.auth_hit:
             lowered = self.tail.lower()
-            if any(p in lowered for p in _AUTH_PATTERNS):
+            # #190: a genuine auth marker that is NOT one of the cache-renewal
+            # markers (e.g. 401/403/unauthorized/invalid api key) always trips,
+            # even if a transient cache-renewal+EOF line coexists in the tail.
+            hard_auth = any(p in lowered for p in _AUTH_PATTERNS if p not in _CACHE_RENEWAL_MARKERS)
+            cache_auth = any(p in lowered for p in _CACHE_RENEWAL_MARKERS)
+            # Cache-renewal-only signal is suppressed when it is the transient
+            # EOF-parse variant; a bare cache-renewal line still trips.
+            if hard_auth or (cache_auth and not _is_transient_cache_blip(lowered)):
                 self.auth_hit = True
                 return True
         return False
@@ -731,6 +765,19 @@ async def _await_output_or_timeout(
     # Launch-to-first-byte watchdog (#177). Caps a silent-launch wedge at
     # ``_FIRST_BYTE_DEADLINE_S`` (~2 min) instead of the full wall-clock
     # ``timeout``. Clamped to ``timeout`` so it never outlives the dispatch.
+    #
+    # Both watchdogs below are armed unconditionally for EVERY dispatch — there
+    # is no play-type or agent-type branching on this path, so ``cleanup`` (a
+    # SkillBackedPlay, same path as ``issue_pickup``) is covered identically.
+    #
+    # Residual gap (#177): these watchdogs only see *byte arrival* via
+    # ``_StdoutActivity`` (last_stdout_at / received_any). Model-API-call /
+    # turn-count usage is parsed only AFTER the read loop drains (see
+    # ``_read_output`` → ``parser.parse``), so a child that streams stdout NOISE
+    # while making ZERO model calls keeps ``received_any`` True and ``last_stdout_at``
+    # fresh, defeating both byte-watchdogs. No live call counter is exposed at
+    # this layer; closing this residual needs a higher-layer (per-call/cost)
+    # signal — do NOT plumb a new counter here.
     first_byte_task = asyncio.create_task(
         _watch_first_byte(
             stdout_activity,

@@ -259,6 +259,7 @@ class _RawFeedback(TypedDict, total=False):
     on_ambiguous_intake: bool
     unanswered_timeout_seconds: float | None
     loop_liveness_timeout_seconds: float | None
+    graceful_drain_timeout_seconds: float | None
 
 
 class _RawScope(TypedDict, total=False):
@@ -924,6 +925,7 @@ def _parse_feedback(raw: _RawFeedback) -> FeedbackConfig:
         on_ambiguous_intake=raw.get("on_ambiguous_intake", True),
         unanswered_timeout_seconds=raw.get("unanswered_timeout_seconds", 120.0),
         loop_liveness_timeout_seconds=raw.get("loop_liveness_timeout_seconds", 600.0),
+        graceful_drain_timeout_seconds=raw.get("graceful_drain_timeout_seconds", 300.0),
     )
 
 

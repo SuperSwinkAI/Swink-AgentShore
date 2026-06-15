@@ -388,6 +388,18 @@ class FeedbackConfig:
     # has stopped iterating entirely (e.g. a deadlock in the play-mutation
     # promotion path). None disables the watchdog.
     loop_liveness_timeout_seconds: float | None = 600.0
+    # Bounded graceful-drain deadline (#180). A graceful drain only dispatches
+    # ``end_agent`` and waits for in-flight plays to finish; an agent stuck in a
+    # multi-hour play (or a never-finalizing broken-worktree play) made
+    # ``agentshore stop`` hang ~1h until SIGINT because that wait was unbounded.
+    # When the graceful drain has not completed within this many seconds, an
+    # independent watchdog task — NOT on the loop's critical path — escalates to
+    # the bounded hard stop (cancels in-flight plays under the shutdown grace
+    # period) instead of waiting forever. Distinct from the timeouts above: those
+    # cover a loop that is wedged on a human or hard-frozen; this covers a loop
+    # that is healthily ticking through a drain whose in-flight work never
+    # finishes. None disables the deadline (unbounded graceful drain).
+    graceful_drain_timeout_seconds: float | None = 300.0
 
 
 @dataclass(frozen=True)
@@ -463,26 +475,27 @@ class WorktreeConfig:
     # AgentShore can't dictate what agents build inside a worktree (Rust
     # ``target/`` can dwarf the checkout 100×), but it owns how much disk its
     # own worktree fleet is allowed to consume and how it degrades when the
-    # host fills. All three default to ``0``/``None`` = disabled (current
-    # behavior) so this is opt-in until tuned per deployment.
+    # host fills. Conservative defaults are on (a fresh install is protected
+    # out of the box); set any knob to ``0``/``None`` in ``agentshore.yaml``
+    # to disable it.
 
     # Pre-dispatch free-disk floor (MiB). When free disk under the worktree
     # root is below this before a dispatch, AgentShore first reaps idle
     # worktrees and, if still below, pauses dispatch instead of allocating
     # into a nearly-full disk. ``0`` disables the guard.
-    min_free_disk_mb: int = 0
+    min_free_disk_mb: int = 2048
 
     # High-water free-disk target (MiB) for the periodic disk-pressure reaper.
     # When free disk drops below this, idle worktrees are reaped LRU (stale
     # first, then oldest ``active``) until back above it. ``0`` disables.
-    disk_high_water_mb: int = 0
+    disk_high_water_mb: int = 4096
 
     # Consecutive-failure cap for a PR-scoped worktree before it is dropped to
     # ``stale`` (and reclaimed by the TTL reaper) instead of kept warm. The
     # first failure keeps the worktree active for a cheap retry; a worktree
     # that keeps failing is not a useful warm cache. ``0`` keeps the old
     # always-retain behavior.
-    reap_failed_pr_after_n: int = 0
+    reap_failed_pr_after_n: int = 2
 
     # Optional absolute cap on concurrently-``active`` worktrees, a coarse
     # safety net beneath the disk-based governor. ``None`` (default) = no cap.

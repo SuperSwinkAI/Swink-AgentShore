@@ -1535,12 +1535,32 @@ class CompletionProcessor:
                 )
 
     async def _sweep_closed_pr_worktrees(self) -> None:
-        """Run the TTL reaper for ``stale`` worktree rows in the current session."""
+        """Run the TTL reaper for ``stale`` worktree rows in the current session.
+
+        In-flight worktrees are protected: a PR can close (marking its row
+        ``stale``) while the worktree is mid-dispatch, and reaping it out from
+        under the running play is the "worktree reclaimed mid-play" failure
+        (#189). The protected set is derived the same way the disk-pressure
+        sweep derives it — from the live dispatch contexts.
+        """
         if self._runtime.worktrees is None:
             return
+        protected = {
+            wt_id
+            for ctx in self._runtime.dispatch_ctx.values()
+            if isinstance(
+                wt_id := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "worktree_id",
+                    None,
+                ),
+                int,
+            )
+        }
         try:
             report = await self._runtime.worktrees.reap_closed_prs(
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
+                protected_ids=protected,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
