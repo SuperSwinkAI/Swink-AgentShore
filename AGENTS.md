@@ -32,6 +32,15 @@ uv run mypy src/                     # Type check
 
 The venv lives at `.venv/` — created automatically by `uv sync`. The CLI entry point is `agentshore = "agentshore.cli:main"` (Click-based).
 
+## Fresh Worktree Setup
+
+AgentShore dispatches coding agents into fresh `git worktree` checkouts that share the object store but carry **no build artifacts** — a clean worktree has no `node_modules`, no compiled outputs. Before running any JS/Tauri step, install node deps in the worktree, and reach for the right interpreter:
+
+- **`vite` / `vitest` / dashboard build → `command not found` or `exit 127`**: the worktree has no `node_modules`. Run `npm --prefix dashboard ci` first (and `npm --prefix desktop ci` for the Tauri shell) before any vite/vitest/build command.
+- **Bare `python` not found**: there is no `python` shim — use `python3` or `uv run python`.
+- **`git worktree add <path> integration` fails ("already checked out")**: `integration` is checked out elsewhere and must never be re-checked-out in a second worktree. Branch from it in your current worktree (`git switch -c <branch>`) and merge back via PR — follow the issue-pickup / merge flow, not a parallel worktree on `integration`.
+- **SQLite schema**: `src/agentshore/data/schema.sql` is the single source of truth — don't hand-author table DDL elsewhere. The version and table-count are pinned by `tests/test_schema_fresh_db.py`.
+
 ## Running Tests Efficiently
 
 Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` with `-n auto --dist=worksteal`, plus branch coverage and a 180s per-test timeout. This drops the full suite from ~20 min serial to ~75s on an 8-core box.
@@ -62,9 +71,9 @@ The system runs as a single asyncio process. The core loop is: observe state →
 
 **Agents** (`src/agentshore/agents/`): CLI agents (Claude Code, Codex, Gemini) are asyncio subprocesses. API agents (GPT and other OpenAI-compatible backends) use httpx. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
 
-**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema namespace `agentshore_dev_v1`, schema version 3). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
+**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema version 4). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
 
-**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 22 tables (schema version 3) including `schema_info` (namespace check) and `schema_version` plus 20 domain tables covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, learnings, archives, review patterns, and worktrees. The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
+**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 22 tables (schema version 4) covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, learnings, archives, review patterns, and worktrees (plus the `schema_info`/`schema_version` meta tables). The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
 
 **Scope validation**: After each skill-backed play, `validate_scope()` enforces issue-inflation limits. Artifact drift is not blocked until AgentShore has reliable beads-native path boundaries; existing drift tables are evidence logs for other consumers.
 
