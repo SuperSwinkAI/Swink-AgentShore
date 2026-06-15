@@ -102,6 +102,38 @@ async def test_render_prompt_points_to_play_specific_context(tmp_path: Path) -> 
     assert "legacy `.agentshore/context.json` file is only a latest-context/debug copy" in result
 
 
+async def test_render_prompt_injects_worktree_cwd_block(tmp_path: Path) -> None:
+    """When a dispatch cwd is supplied, the preamble names the worktree so the
+    agent stops guessing absolute/stale paths (the P1 cwd-contract fix)."""
+    params = PlayParams(issue_number=42)
+    cwd = "/tmp/agentshore-worktrees/issue-42"
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup",
+        params,
+        project_path=tmp_path,
+        dispatch_cwd=cwd,
+    )
+
+    assert "Your working directory" in result
+    assert cwd in result
+    assert "worktree reclaimed mid-play" in result
+    # The cwd block sits inside the discipline preamble, ahead of the context line.
+    assert result.index("Your working directory") < result.index("immediately before this play")
+
+
+async def test_render_prompt_omits_cwd_block_when_no_allocation(tmp_path: Path) -> None:
+    """Legacy / internal plays with no worktree allocation get no cwd block (and
+    no leftover ``{cwd_block}`` placeholder)."""
+    params = PlayParams(issue_number=42)
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup", params, project_path=tmp_path, dispatch_cwd=None
+    )
+
+    assert "Your working directory" not in result
+    assert "{cwd_block}" not in result
+    assert "## AgentShore Context Discipline" in result
+
+
 # ---------------------------------------------------------------------------
 # render_skill_prompt — auto-reinstall fallback
 # ---------------------------------------------------------------------------

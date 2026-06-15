@@ -316,6 +316,8 @@ class SkillBackedPlay(Play, ABC):
             context_relative_path=context_relative_path,
         )
 
+        dispatch_cwd = _worktree_cwd_override(params)
+
         cached_retry_prompt = params.extras.get("__retry_prompt")
         if isinstance(cached_retry_prompt, str) and cached_retry_prompt:
             prompt = cached_retry_prompt
@@ -325,6 +327,7 @@ class SkillBackedPlay(Play, ABC):
                 params,
                 project_path=ctx.project_path,
                 context_path=context_relative_path,
+                dispatch_cwd=dispatch_cwd,
             )
 
         claim_group_id_raw = params.extras.get("claim_group_id")
@@ -338,7 +341,6 @@ class SkillBackedPlay(Play, ABC):
                 prompt=prompt,
                 branch=params.branch,
             )
-        dispatch_cwd = _worktree_cwd_override(params)
 
         # Worktree-isolation guard for PR-scoped / branch-creating plays. Their
         # agent creates/switches branches, which MUST happen inside an allocated

@@ -85,7 +85,7 @@ _SKILL_ARGS: dict[str, list[str]] = {spec.name: spec.args for spec in _SKILL_SPE
 DEFAULT_CONTEXT_RELATIVE_PATH = ".agentshore/context.json"
 
 _CONTEXT_DISCIPLINE_TEMPLATE = """## AgentShore Context Discipline
-
+{cwd_block}
 AgentShore writes `{context_path}` immediately before this play. Read that file first.
 The legacy `.agentshore/context.json` file is only a latest-context/debug copy and may
 belong to another concurrent play; use it only if `{context_path}` is missing.
@@ -106,6 +106,23 @@ pipe keeps the process tree alive indefinitely, causing the play to time out.  U
 compact output flags instead (`-q --tb=line` for pytest, `--short` for mypy).
 """
 
+# Interpolated into ``_CONTEXT_DISCIPLINE_TEMPLATE`` as ``{cwd_block}`` when the
+# dispatcher allocated an isolated worktree for this play. Tells the agent where
+# it is — the single biggest source of "file does not exist" / "cannot change to
+# worktree" retries was agents guessing absolute/stale paths because the preamble
+# never named their cwd. The reclaimed-mid-play instruction matches the
+# orchestrator's recoverable-crash mapping (a reaped cwd surfaces as a recoverable
+# AgentProcessCrashed, not a hard failure).
+_CWD_DISCIPLINE_TEMPLATE = """
+**Your working directory.** You are running inside an isolated git worktree at
+`{dispatch_cwd}`. That path is your current working directory — every relative path
+resolves from there. Do not `cd` into another checkout, and do not use absolute paths
+from a different worktree or the main repo. If any command reports that the worktree is
+missing or the working directory no longer exists, stop immediately and emit
+`worktree reclaimed mid-play` in your result — do not retry, recreate the directory, or
+run `git worktree add`.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Prompt renderer
@@ -117,6 +134,7 @@ async def render_skill_prompt(
     params: PlayParams,
     project_path: Path | None = None,
     context_path: str = DEFAULT_CONTEXT_RELATIVE_PATH,
+    dispatch_cwd: str | Path | None = None,
 ) -> str:
     """Render the full skill prompt for *skill_name* with *params*.
 
@@ -160,7 +178,12 @@ async def render_skill_prompt(
 
     skill_content = _strip_full_learnings_reads(skill_content)
     header = f"$ARGUMENTS: {arg_str}" if arg_str else "$ARGUMENTS: (none)"
-    discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path)
+    cwd_block = (
+        _CWD_DISCIPLINE_TEMPLATE.format(dispatch_cwd=dispatch_cwd)
+        if dispatch_cwd is not None
+        else ""
+    )
+    discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path, cwd_block=cwd_block)
     return f"{header}\n\n{discipline}\n\n{skill_content}"
 
 
