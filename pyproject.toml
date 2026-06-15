@@ -20,28 +20,27 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 
-# Supply-chain hardening: all dependencies are pinned to exact versions
-# (== / ==) rather than ranges. Combined with the committed uv.lock (which
-# pins transitives + hashes) and `uv sync --locked`, this means no dependency
-# changes without an explicit, reviewed bump. Do not loosen to ranges.
+# Lower-bound ranges: declares the minimum tested version for each dep.
+# Supply-chain protection lives in uv.lock (exact versions + content hashes);
+# use `uv sync --locked` for reproducible, hash-verified installs in CI/prod.
 dependencies = [
-    "torch==2.11.0",
-    "textual==8.2.7",
-    "structlog==26.1.0",
-    "aiosqlite==0.22.1",
-    "httpx==0.28.1",
-    "pyyaml==6.0.3",
-    "jinja2==3.1.6",
-    "click==8.4.1",
-    "numpy==2.4.6",
-    "starlette==1.1.0",
-    "uvicorn==0.49.0",
-    "websockets==16.0",
-    "keyring==25.7.0",
-    "ruamel-yaml==0.19.1",
-    "beaupy==3.12.0",
-    "platformdirs==4.10.0",
-    "packaging==25.0",
+    "torch>=2.11.0",
+    "textual>=8.2.7",
+    "structlog>=26.1.0",
+    "aiosqlite>=0.22.1",
+    "httpx>=0.28.1",
+    "pyyaml>=6.0.3",
+    "jinja2>=3.1.6",
+    "click>=8.4.1",
+    "numpy>=2.4.6",
+    "starlette>=1.1.0",
+    "uvicorn>=0.49.0",
+    "websockets>=16.0",
+    "keyring>=25.7.0",
+    "ruamel-yaml>=0.19.1",
+    "beaupy>=3.12.0",
+    "platformdirs>=4.10.0",
+    "packaging>=25.0",
 ]
 
 [dependency-groups]
