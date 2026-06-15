@@ -32,12 +32,20 @@ class ReportGenerator:
             autoescape=jinja2.select_autoescape(["html"]),
         )
         env.filters["duration"] = self._format_duration
+        env.filters["dt_short"] = self._format_dt_short
         return env
 
     def _load_chartjs(self) -> str:
         """Load the vendored Chart.js source for inline embedding."""
         static = importlib.resources.files("agentshore.reports") / "static"
         return (static / "chart.min.js").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _format_dt_short(value: str | None) -> str:
+        """Truncate an ISO datetime string to minute precision: 2026-06-15T17:52."""
+        if not value:
+            return value or ""
+        return value[:16]
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
