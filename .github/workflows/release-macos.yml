@@ -35,6 +35,7 @@ jobs:
         run: npm ci  # root workspace lockfile covers dashboard + desktop
 
       - name: Import Developer ID certificate
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -62,7 +63,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: uv run python -m scripts.buildkit macos
+        run: |
+          if [ -z "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            uv run python -m scripts.buildkit macos --no-sign
+          else
+            uv run python -m scripts.buildkit macos
+          fi
 
       - name: Attach .pkg to GitHub Release
         env:
