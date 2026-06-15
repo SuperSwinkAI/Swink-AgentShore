@@ -44,6 +44,13 @@ Agent-level failures are sub-typed separately by `ErrorClass` (rate limit, auth,
 
 A CLI agent's **backend** session (the model-provider auth its harness uses, distinct from its GitHub identity token) can expire mid-run. When the Codex CLI's cached token dies it prints `failed to renew cache TTL` / `failed to refresh available models` to stderr and then hangs reading from stdin, so the dispatch would otherwise run to the full stream-idle timeout (~1800–3600s) and be mislabelled `timeout`. A live stderr sniffer matches those signatures on a bounded tail and aborts the dispatch in well under a second, classified `ErrorClass.AUTH` (a config-class error, so `attempt_recovery()` correctly declines to re-probe the agent). The same marker set classifies a pre-launch probe, so an expired backend reads as `AUTH` in both places. Beyond per-agent recovery, an `AUTH` classification is escalated to a **session-wide agent-type suppression**: the type is added to a grow-only suppression set and the play-candidate analyzer masks every further dispatch to it (including spawning a fresh agent of the type) for the rest of the session, since a new backend token requires a new session. This stops one expired token from burning every subsequent dispatch to the timeout.
 
+Grok launch wedges use the same type-suppression path without changing their
+error class to auth. If a Grok subprocess produces no first stdout byte before
+the first-byte watchdog fires, the dispatch remains `timeout_stream_idle`, but
+the Grok type is suppressed for the rest of the session. This keeps ordinary
+post-launch stream-idle timeouts recoverable while preventing repeated
+120-second Grok launch burns across new handles.
+
 ## Recovery Strategy
 
 ### Tiered Escalation

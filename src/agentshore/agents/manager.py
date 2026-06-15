@@ -43,6 +43,20 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
+_GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
+    "never produced first byte",
+    "launch wedge",
+)
+
+
+def _is_grok_launch_wedge_timeout(handle: AgentHandle, exc: BaseException) -> bool:
+    if handle.agent_type != AgentType.GROK:
+        return False
+    if handle.last_error_class != ErrorClass.TIMEOUT_STREAM_IDLE:
+        return False
+    message = str(exc).lower()
+    return all(marker in message for marker in _GROK_LAUNCH_WEDGE_MARKERS)
+
 
 class AgentManager:
     """Lifecycle manager for all coding agents in an AgentShore session.
@@ -90,14 +104,15 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
-        # Agent-type values (e.g. "codex") whose backend auth failed this
-        # session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
-        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error). The
-        # manager holds no reference to ``SessionRuntime``; the state-builder
-        # mixin drains this into ``_runtime.auth_suppressed_agent_types`` each
-        # snapshot so the candidate analyzer can mask the whole type. Grow-only
-        # for the session — one auth failure suppresses every dispatch of that
-        # type (a fresh token would require a new session). #zeke auth-hang.
+        # Agent-type values (e.g. "codex") whose backend should be suppressed for
+        # this session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
+        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error), plus
+        # Grok first-byte launch wedges where repeated dispatch burns 120s without
+        # making progress. The manager holds no reference to ``SessionRuntime``;
+        # the state-builder mixin drains this into
+        # ``_runtime.auth_suppressed_agent_types`` each snapshot so the candidate
+        # analyzer can mask the whole type. Grow-only for the session. #zeke
+        # auth-hang / #196.
         self.last_auth_failed_types: set[str] = set()
         # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
         # read by _selection.py to bias away from branch-exposed agents.
@@ -370,7 +385,9 @@ class AgentManager:
                 # lands here rather than in the generic-error branch below. Treat
                 # it as a session-wide agent-type auth failure so PPO can't keep
                 # re-selecting a dead backend.
-                if handle.last_error_class == ErrorClass.AUTH:
+                if handle.last_error_class == ErrorClass.AUTH or _is_grok_launch_wedge_timeout(
+                    handle, exc
+                ):
                     self.last_auth_failed_types.add(handle.agent_type.value)
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
