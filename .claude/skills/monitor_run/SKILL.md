@@ -181,10 +181,12 @@ For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
    ```bash
    gh issue list --repo SuperSwinkAI/Swink-AgentShore --state open --limit 50
    ```
-   Existing inefficiency issues (e.g. #12 refine_task_breakdown loop, #14
-   plan-blocked dispatch, #17 merge_pr starvation) cover recurring findings —
-   if your finding matches one, add a brief comment with the fresh evidence
-   (session id, counts, cost) instead of opening a new issue.
+   Standing inefficiency issues already cover the recurring findings (refine
+   loops, plan-blocked dispatch, merge_pr starvation, and similar). Match by
+   symptom against the live list — don't rely on memorized issue numbers, they
+   rot as issues close. If your finding matches an open one, add a brief comment
+   with the fresh evidence (session id, counts, cost) instead of opening a new
+   issue.
 2. Also skip anything already in `filed_issues` in `STATE_FILE` (filed earlier
    this run).
 3. Otherwise create it:
@@ -194,8 +196,8 @@ For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
      --body "<what happened, session id, log path $LOG_FILE, relevant counters/costs, suspected cause>"
    ```
 4. Record the issue number/title in `filed_issues` and report it in the
-   check-in (`filed #NN — <title>`). Match the register of #12–#17: concrete
-   symptom, cost/efficiency impact, evidence.
+   check-in (`filed #NN — <title>`). Match the register of the existing
+   inefficiency issues: concrete symptom, cost/efficiency impact, evidence.
 
 ## Step 7 — Persist state and schedule (or summarize)
 
