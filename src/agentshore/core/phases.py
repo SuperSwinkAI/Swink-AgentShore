@@ -633,8 +633,8 @@ async def _phase_git_safety_sweep(
                 post_play_branch=current_ref,
                 default_branch=default_branch,
             )
-            restored = await asyncio.to_thread(restore_default_branch, repo_root, default_branch)
-            if not restored:
+            restore = await asyncio.to_thread(restore_default_branch, repo_root, default_branch)
+            if not restore.ok:
                 _logger.error(
                     "main_repo_auto_restore_failed",
                     session_id=sid,
@@ -642,6 +642,7 @@ async def _phase_git_safety_sweep(
                     phase="session_start",
                     default_branch=default_branch,
                     surfaced_ref=current_ref,
+                    reason=restore.stderr,
                 )
             else:
                 _logger.info(

@@ -101,7 +101,7 @@ def test_current_head_ref_returns_none_when_detached(main_repo: Path) -> None:
 def test_restore_default_branch_recovers_main(main_repo: Path) -> None:
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
     assert current_head_ref(main_repo) != "refs/heads/main"
-    assert restore_default_branch(main_repo, "main") is True
+    assert restore_default_branch(main_repo, "main").ok is True
     assert current_head_ref(main_repo) == "refs/heads/main"
 
 
@@ -109,23 +109,23 @@ def test_check_main_repo_branch_mutated_detects_and_restores(main_repo: Path) ->
     pre = current_head_ref(main_repo)
     assert pre == "refs/heads/main"
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
-    mutated, post, restored = check_main_repo_branch_mutated(
+    mutated, post, restore = check_main_repo_branch_mutated(
         main_repo, pre_ref=pre, default_branch="main"
     )
     assert mutated is True
     assert post == "refs/heads/agentshore/153-implement-alerting-hooks-and-runbook"
-    assert restored is True
+    assert restore.ok is True
     assert current_head_ref(main_repo) == "refs/heads/main"
 
 
 def test_check_main_repo_branch_mutated_no_op_when_unchanged(main_repo: Path) -> None:
     pre = current_head_ref(main_repo)
-    mutated, post, restored = check_main_repo_branch_mutated(
+    mutated, post, restore = check_main_repo_branch_mutated(
         main_repo, pre_ref=pre, default_branch="main"
     )
     assert mutated is False
     assert post == pre
-    assert restored is False
+    assert restore.ok is True
 
 
 def test_path_contains_backslash_space() -> None:
@@ -342,8 +342,12 @@ async def test_auto_restore_failure_pauses_dispatch(
     harness.orch._main_repo.record_pre_play_branch(dispatch_id, "refs/heads/main")
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
 
-    def _broken_check(*_a: object, **_kw: object) -> tuple[bool, str | None, bool]:
-        return (True, "refs/heads/agentshore/X", False)
+    from agentshore.core.git_safety import RestoreResult
+
+    git_stderr = "error: Your local changes would be overwritten by checkout."
+
+    def _broken_check(*_a: object, **_kw: object) -> tuple[bool, str | None, RestoreResult]:
+        return (True, "refs/heads/agentshore/X", RestoreResult(ok=False, stderr=git_stderr))
 
     monkeypatch.setattr(_completion_mod, "check_main_repo_branch_mutated", _broken_check)
 
@@ -362,3 +366,7 @@ async def test_auto_restore_failure_pauses_dispatch(
 
     assert harness.orch._main_repo.dispatch_paused is True
     assert "main_repo_auto_restore_failed" in _event_names(captured)
+    # #175 observability: the failing git's stderr is threaded onto the event so
+    # operators see *why* the restore failed instead of an opaque pause.
+    failure_event = next(e for e in captured if e.get("event") == "main_repo_auto_restore_failed")
+    assert failure_event.get("reason") == git_stderr

@@ -389,7 +389,7 @@ class CompletionProcessor:
             # the post-only state offers no signal — silent return.
             return
         try:
-            mutated, post_ref, restored = await asyncio.to_thread(
+            mutated, post_ref, restore = await asyncio.to_thread(
                 check_main_repo_branch_mutated,
                 self._repo_root,
                 pre_ref=pre_play_ref,
@@ -417,7 +417,7 @@ class CompletionProcessor:
             post_play_branch=post_ref,
             default_branch=self._main_repo.default_branch,
         )
-        if not restored:
+        if not restore.ok:
             _logger.error(
                 "main_repo_auto_restore_failed",
                 session_id=self._session_id,
@@ -426,6 +426,7 @@ class CompletionProcessor:
                 agent_type=agent_type,
                 default_branch=self._main_repo.default_branch,
                 post_play_branch=post_ref,
+                reason=restore.stderr,
             )
             self._main_repo.dispatch_paused = True
             return
@@ -534,17 +535,18 @@ class CompletionProcessor:
             and outcome.success
             and self._main_repo.dispatch_paused
         ):
-            restored = await asyncio.to_thread(
+            restore = await asyncio.to_thread(
                 restore_default_branch, self._repo_root, self._main_repo.default_branch
             )
-            self._main_repo.dispatch_paused = not restored
+            self._main_repo.dispatch_paused = not restore.ok
             _logger.info(
                 "main_repo_dispatch_pause_cleared"
-                if restored
+                if restore.ok
                 else "main_repo_dispatch_pause_persists",
                 session_id=self._session_id,
                 via="reconcile_state",
                 default_branch=self._main_repo.default_branch,
+                reason=None if restore.ok else restore.stderr,
             )
 
     async def _handle_skipped_completion(self, outcome: PlayOutcome) -> _CompletionVerdict:
