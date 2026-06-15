@@ -1464,6 +1464,7 @@ class CompletionProcessor:
                 # than ``reap_ttl_seconds`` get reaped.
                 await self._mark_worktrees_stale_for_closed_prs(refetched)
                 await self._sweep_closed_pr_worktrees()
+                await self._sweep_disk_pressure_worktrees()
         except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
             _logger.warning("github_refresh_failed", error=str(exc))
         finally:
@@ -1550,4 +1551,45 @@ class CompletionProcessor:
                 reaped=len(report.removed),
                 failed=len(report.failed),
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
+            )
+
+    async def _sweep_disk_pressure_worktrees(self) -> None:
+        """Reap idle worktrees LRU when free disk is below the high-water mark.
+
+        The periodic arm of the build-agnostic disk governor (#180): runs on the
+        GitHub-poll cadence alongside the TTL reaper. No-op when
+        ``disk_high_water_mb == 0`` (disabled) or disk is already above target.
+        In-flight worktrees are protected.
+        """
+        if self._runtime.worktrees is None:
+            return
+        target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
+        if target_mb <= 0:
+            return
+        protected = {
+            wt_id
+            for ctx in self._runtime.dispatch_ctx.values()
+            if isinstance(
+                wt_id := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "worktree_id",
+                    None,
+                ),
+                int,
+            )
+        }
+        try:
+            report = await self._runtime.worktrees.reap_for_disk_pressure(
+                target_free_mb=target_mb,
+                protected_ids=protected,
+            )
+        except (OSError, aiosqlite.Error, ValueError) as exc:
+            _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))
+            return
+        if report.total > 0:
+            _logger.info(
+                "worktree_disk_pressure_reap",
+                reaped=len(report.removed),
+                failed=len(report.failed),
+                target_mb=target_mb,
             )
