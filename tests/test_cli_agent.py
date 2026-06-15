@@ -1765,6 +1765,55 @@ def test_stderr_sniffer_tail_is_bounded() -> None:
     assert sniffer.feed("failed to renew cache ttl") is True
 
 
+def test_stderr_sniffer_suppresses_transient_cache_renewal_eof() -> None:
+    """#190: the transient cache-renewal EOF-parse blip must NOT trip auth.
+
+    Codex prints this during a transient model-cache TTL renewal blip; the
+    agent keeps working on the very next dispatch, so it is not an auth
+    rejection and must not abort in-flight work (observed 415s lost)."""
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR codex_models_manager::manager: failed to renew cache TTL: "
+        "EOF while parsing a value at line 1 column 0\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_bare_cache_renewal_still_trips() -> None:
+    """#190: a bare cache-renewal line (no EOF-parse suffix) is a genuine
+    session-token expiry and must still flip auth_hit."""
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("ERROR failed to renew cache TTL\n") is True
+    assert sniffer.auth_hit is True
+
+    sniffer2 = _StderrSniffer()
+    assert sniffer2.feed("warn: failed to refresh available models, retrying\n") is True
+    assert sniffer2.auth_hit is True
+
+
+def test_stderr_sniffer_real_auth_rejection_still_trips() -> None:
+    """#190: a real backend-auth rejection (401/unauthorized) is unaffected by
+    the cache-renewal suppression and still trips."""
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("HTTP 401 Unauthorized: invalid api key\n") is True
+    assert sniffer.auth_hit is True
+
+
+def test_stderr_sniffer_real_401_trips_even_alongside_cache_blip() -> None:
+    """#190: the suppression must apply ONLY to the cache-renewal markers — a
+    real 401 coexisting in the same tail with a transient cache-renewal+EOF
+    line must still trip (do not let the blip mask a genuine rejection)."""
+    sniffer = _StderrSniffer()
+    text = (
+        "ERROR codex_models_manager::manager: failed to renew cache TTL: "
+        "EOF while parsing a value at line 1 column 0\n"
+        "HTTP 401 Unauthorized\n"
+    )
+    assert sniffer.feed(text) is True
+    assert sniffer.auth_hit is True
+
+
 class _FakeStderr:
     """Minimal async-iterable stand-in for ``proc.stderr`` (a StreamReader)."""
 
@@ -2376,3 +2425,47 @@ async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
 
     # Clamped to the wall-clock timeout (2.0), not the configured 100.
     assert captured["stream_idle_timeout"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arms_both_watchdogs_unconditionally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#177: both the first-byte and stream-idle watchdogs are armed for every
+    dispatch, with no play-type or agent-type gating.
+
+    cli_agent.py has no play-type branching, so a generic successful dispatch
+    exercises the exact same code path a ``cleanup`` (SkillBackedPlay) dispatch
+    takes — both watchers must be created/armed regardless of which play
+    requested the work."""
+    import agentshore.agents.cli_agent as ca
+
+    real_first_byte = ca._watch_first_byte
+    real_stream_idle = ca._watch_stream_idle
+    armed: set[str] = set()
+
+    def spy_first_byte(*args: Any, **kwargs: Any) -> Any:
+        armed.add("first_byte")
+        return real_first_byte(*args, **kwargs)
+
+    def spy_stream_idle(*args: Any, **kwargs: Any) -> Any:
+        armed.add("stream_idle")
+        return real_stream_idle(*args, **kwargs)
+
+    monkeypatch.setattr(ca, "_watch_first_byte", spy_first_byte)
+    monkeypatch.setattr(ca, "_watch_stream_idle", spy_stream_idle)
+
+    script = tmp_path / "quick.py"
+    script.write_text(
+        "import json,sys\n"
+        "sys.stdout.write(json.dumps({'type':'turn.completed',"
+        "'usage':{'input_tokens':1,'output_tokens':1}})+'\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    cfg = AgentConfig(enabled=True, binary=str(script), timeout=5, stream_idle_timeout=5)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
+
+    assert armed == {"first_byte", "stream_idle"}

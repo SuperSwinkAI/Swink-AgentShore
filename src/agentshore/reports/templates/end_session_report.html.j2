@@ -524,11 +524,11 @@
     <section class="metrics">
         <div class="metric">
             <div class="label">Started</div>
-            <div class="value">{{ data.overview.started_at }}</div>
+            <div class="value">{{ data.overview.started_at | dt_short }}</div>
         </div>
         <div class="metric">
             <div class="label">Ended</div>
-            <div class="value">{{ data.overview.ended_at or "not recorded" }}</div>
+            <div class="value">{{ (data.overview.ended_at | dt_short) or "not recorded" }}</div>
         </div>
         <div class="metric">
             <div class="label">Duration</div>
@@ -544,7 +544,7 @@
         </div>
         <div class="metric">
             <div class="label">Success Rate</div>
-            <div class="value">{{ data.overview.successful_plays }}/{{ data.overview.total_plays }}</div>
+            <div class="value">{{ "%.1f%%" | format(data.overview.successful_plays / data.overview.total_plays * 100) if data.overview.total_plays else "N/A" }}</div>
         </div>
     </section>
 
@@ -718,7 +718,7 @@
                                 {% if row.play_type == col.play_type %}
                                 <div
                                     class="play-log-chip {{ row.status }}"
-                                    title="play #{{ row.play_id }} | {{ row.play_type }} | {{ row.started_at }} | {{ row.duration_seconds | duration }} | ${{ '%.4f' | format(row.dollar_cost) }}{% if row.error %} | {{ row.error }}{% endif %}"
+                                    title="play #{{ row.play_id }} | {{ row.play_type }} | {{ row.started_at | dt_short }} | {{ row.duration_seconds | duration }} | ${{ '%.4f' | format(row.dollar_cost) }}{% if row.error %} | {{ row.error }}{% endif %}"
                                 >
                                     {% if row.status == 'ok' %}OK{% else %}<span>FAIL</span>{% endif %}
                                 </div>

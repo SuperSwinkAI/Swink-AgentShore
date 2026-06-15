@@ -197,8 +197,7 @@ def collect_active_worktree_paths(
         conn = sqlite3.connect(str(db_path))
         try:
             cursor = conn.execute(
-                "SELECT worktree_path FROM worktrees "
-                "WHERE session_id = ? AND status = 'active'",
+                "SELECT worktree_path FROM worktrees WHERE session_id = ? AND status = 'active'",
                 (session_id,),
             )
             return [str(row[0]) for row in cursor]

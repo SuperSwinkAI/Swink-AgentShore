@@ -1,7 +1,7 @@
 [project]
 name = "agentshore"
-version = "0.3.2"
-description = "Swink AgentShore — RL-based multi-agent orchestrator"
+version = "0.3.3"
+description = "Swink™ AgentShore™ — RL-based multi-agent orchestrator"
 readme = "README.md"
 license = { text = "MIT" }
 license-files = ["LICENSE"]
@@ -92,6 +92,7 @@ exclude = [
     "/desktop",
     "/.agentshore",
     "/dist",
+    "/tmp",
     "/.git",
     "/.venv",
     "/.beads",
@@ -99,6 +100,16 @@ exclude = [
     "**/.pytest_cache",
     "**/.mypy_cache",
     "**/.ruff_cache",
+    # Belt-and-suspenders: exclude credential/config files even though .gitignore
+    # also blocks them — hatchling walks the working tree and .gitignore is not
+    # always consulted in all build environments.
+    "**/.env",
+    "**/.env.*",
+    "**/agentshore.yaml",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
 ]
 
 [tool.ruff]

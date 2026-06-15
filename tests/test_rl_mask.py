@@ -1006,6 +1006,55 @@ def test_candidate_gates_mask_write_plan_when_only_stale_closed_snapshots_are_un
     assert not mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
 
 
+def test_write_plan_masked_when_all_open_issues_planned_label():
+    """#191: every open issue carries a PLANNED_LABELS label → no issue is
+    available to plan, so WRITE_IMPLEMENTATION_PLAN is masked HARD via the live
+    ``issue_available_for_plan`` predicate (not a stale snapshot count)."""
+    state = _state(
+        open_issues=[
+            _issue_snapshot(601, labels=["agentshore/planned"]),
+            _issue_snapshot(602, labels=["agentshore/planned"]),
+        ]
+    )
+
+    mask = compute_action_mask(state, _registry_all_true())
+    reasons = compute_mask_reasons(state, _registry_all_true())
+
+    assert not mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
+    reason = reasons[PlayType.WRITE_IMPLEMENTATION_PLAN]
+    assert reason.source in {MaskSource.CANDIDATE, MaskSource.PRECONDITION}
+
+
+def test_write_plan_masked_when_all_open_issues_covered_by_open_pr():
+    """#191: the only open issue is already covered by an open PR → ineligible to
+    plan. The live predicate masks WRITE_IMPLEMENTATION_PLAN even though the issue
+    carries no labeled-out label, so the mask agrees with the resolver."""
+    state = _state(
+        open_issues=[_issue_snapshot(610)],
+        pull_requests=[_pr_snapshot(700, issue_number=610)],
+    )
+
+    mask = compute_action_mask(state, _registry_all_true())
+
+    assert not mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
+
+
+def test_write_plan_not_masked_when_a_plannable_issue_exists():
+    """#191 control: at least one genuinely plannable open issue (unlabeled, no PR,
+    not in-flight) keeps WRITE_IMPLEMENTATION_PLAN selectable — the new live-pool
+    gate must not over-mask."""
+    state = _state(
+        open_issues=[
+            _issue_snapshot(620, labels=["agentshore/planned"]),
+            _issue_snapshot(621),  # genuinely plannable
+        ]
+    )
+
+    mask = compute_action_mask(state, _registry_all_true())
+
+    assert mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
+
+
 def test_reverse_failsafe_stays_off_without_open_issue():
     from agentshore.state import AgentType
 

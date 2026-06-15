@@ -44,6 +44,7 @@ from agentshore.play_rules import (
 )
 from agentshore.plays.candidates import (
     PlayCandidate,
+    PlayCandidateAnalyzer,
     PlayCandidatePlan,
     build_candidate_plan,
     pr_unblockable,
@@ -154,7 +155,20 @@ def _candidate_reason(plan: PlayCandidatePlan, play_type: PlayType, fallback: st
 
 
 def _write_plan_validity(state: OrchestratorState, plan: PlayCandidatePlan) -> list[MaskReason]:
-    """Validity for WRITE_IMPLEMENTATION_PLAN (moved from write_plan.py)."""
+    """Validity for WRITE_IMPLEMENTATION_PLAN (moved from write_plan.py).
+
+    Masks HARD when no open issue satisfies the LIVE ``issue_available_for_plan``
+    predicate rather than trusting only the snapshot candidate COUNT (#191). The
+    snapshot count could stay non-empty while the resolver — which re-derives
+    candidates from the same predicate at dispatch via ``build_candidate_plan`` —
+    found nothing eligible (an issue flipped PR-covered / in-flight / planned /
+    beads-in-progress between mask and dispatch), failing the play and re-selecting
+    it next tick. Re-deriving from ``state.open_issues`` with the exact
+    ``PlayCandidateAnalyzer.issue_available_for_plan`` the candidate builder owns
+    guarantees the mask matches what the resolver computes; both consume the same
+    ``state`` (the authority builds ``plan`` from this same ``state``), so the two
+    can never drift.
+    """
     issues: list[MaskReason] = []
     if not any(issue.state.upper() == "OPEN" for issue in state.open_issues):
         issues.append(
@@ -164,13 +178,16 @@ def _write_plan_validity(state: OrchestratorState, plan: PlayCandidatePlan) -> l
                 source=MaskSource.PRECONDITION,
             )
         )
-    if not plan.candidates_for(PlayType.WRITE_IMPLEMENTATION_PLAN):
+    # Call the real predicate (not a hand-copied one) so the mask can't drift from
+    # the resolver. The analyzer is the same one ``build_candidate_plan`` uses.
+    analyzer = PlayCandidateAnalyzer(state)
+    if not any(analyzer.issue_available_for_plan(issue) for issue in state.open_issues):
         issues.append(
             _candidate_reason(
                 plan,
                 PlayType.WRITE_IMPLEMENTATION_PLAN,
                 "no eligible issue for write_implementation_plan"
-                " (all covered by open PR, in-flight, or labeled out)",
+                " (all covered by open PR, in-flight, already planned, or labeled out)",
             )
         )
     return issues

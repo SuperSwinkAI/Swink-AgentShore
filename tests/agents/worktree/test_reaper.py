@@ -462,6 +462,104 @@ async def test_manager_reap_closed_prs_does_not_touch_active_rows(
     assert active_path.exists()
 
 
+async def test_manager_reap_closed_prs_skips_in_flight_protected(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A stale-past-TTL worktree whose id is ``protected`` is NOT reaped (#189).
+
+    A PR can close (marking its worktree row ``stale``) while the worktree is
+    still mid-dispatch. The TTL reaper must hold that in-flight row back the
+    same way the disk governor does, while still reaping an unprotected stale
+    row in the same sweep.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    protected_id, protected_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="in-flight-pr",
+        pre_branch_key=None,
+        dir_name="in-flight",
+        status="stale",
+        last_used_at=old_ts,
+    )
+    reapable_id, reapable_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="closed-pr",
+        pre_branch_key=None,
+        dir_name="closed-pr",
+        status="stale",
+        last_used_at=old_ts,
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    report = await wm.reap_closed_prs(ttl_seconds=3600, protected_ids={protected_id})
+
+    # Only the unprotected stale row is reaped.
+    assert report.total == 1
+    assert report.removed[0].worktree_id == reapable_id
+
+    protected_row = await lookup_by_id(store, worktree_id=protected_id)
+    assert protected_row is not None and protected_row.status == "stale"
+    assert protected_path.exists()
+
+    reapable_row = await lookup_by_id(store, worktree_id=reapable_id)
+    assert reapable_row is not None and reapable_row.status == "reaped"
+    assert not reapable_path.exists()
+
+
+async def test_manager_reap_closed_prs_empty_protected_reaps_all(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """An empty ``protected_ids`` set delegates to the unprotected path (#189).
+
+    Guards the fast-path branch: with no in-flight ids the sweep behaves
+    exactly like the original ``reap_for_closed_prs`` and reaps the stale row.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    stale_id, stale_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="closed-pr-empty-protected",
+        pre_branch_key=None,
+        dir_name="closed-empty",
+        status="stale",
+        last_used_at=old_ts,
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    report = await wm.reap_closed_prs(ttl_seconds=3600, protected_ids=set())
+    assert report.total == 1
+    assert report.removed[0].worktree_id == stale_id
+    row = await lookup_by_id(store, worktree_id=stale_id)
+    assert row is not None and row.status == "reaped"
+    assert not stale_path.exists()
+
+
 # ---------------------------------------------------------------------------
 # reap_git_orphans + sweep two-phase reconciliation
 # ---------------------------------------------------------------------------

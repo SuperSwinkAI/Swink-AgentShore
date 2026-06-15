@@ -251,11 +251,13 @@ def test_timelapse_absent_block_uses_defaults(tmp_path: Path) -> None:
     assert cfg.timelapse.installed is False
 
 
-def test_worktrees_disk_knobs_default_to_disabled() -> None:
+def test_worktrees_disk_knobs_have_conservative_defaults() -> None:
+    # Disk-pressure governance ships on by default (#180): a fresh install is
+    # protected out of the box, with the floor/high-water/failure-cap active.
     cfg = RuntimeConfig()
-    assert cfg.worktrees.min_free_disk_mb == 0
-    assert cfg.worktrees.disk_high_water_mb == 0
-    assert cfg.worktrees.reap_failed_pr_after_n == 0
+    assert cfg.worktrees.min_free_disk_mb == 2048
+    assert cfg.worktrees.disk_high_water_mb == 4096
+    assert cfg.worktrees.reap_failed_pr_after_n == 2
     assert cfg.worktrees.max_active_worktrees is None
 
 

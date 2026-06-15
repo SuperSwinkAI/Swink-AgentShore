@@ -143,7 +143,12 @@ export function DashboardCanvas({
     // Match the canvas backing-store to the displayed size so pixel art
     // stays crisp on HiDPI screens. Without this the canvas defaults to
     // 300x150 and the office floor draws into a tiny corner.
-    const dpr = window.devicePixelRatio || 1;
+    //
+    // `dpr` is recomputed inside resize() rather than frozen at mount:
+    // devicePixelRatio changes when the window moves between monitors with
+    // different scale factors (external 1x -> Retina 2x), and a stale value
+    // leaves the backing store mis-sized so the compositor blurs the upscale.
+    let dpr = window.devicePixelRatio || 1;
 
     const camera = new Camera();
     const renderer = new OfficeRenderer(canvas, ctx2d, camera);
@@ -215,6 +220,7 @@ export function DashboardCanvas({
       // physical pixels. Scaling the context by DPR here would double
       // every camera offset on HiDPI screens and paint the office
       // off-center to the bottom-right.
+      dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.round(rect.width * dpr);
       canvas.height = Math.round(rect.height * dpr);
@@ -232,6 +238,23 @@ export function DashboardCanvas({
     ro.observe(canvas);
     const onWindowResize = () => fitToView();
     window.addEventListener("resize", onWindowResize);
+
+    // Moving the window between monitors with different scale factors does
+    // not reliably fire a `resize` event, so watch devicePixelRatio directly.
+    // The media query targets the *current* dppx, so it must be rebuilt and
+    // re-armed after each change; resize() then re-reads dpr and re-sizes the
+    // backing store, keeping the office crisp after a cross-monitor move.
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = () => {
+      resize();
+      armDprListener();
+    };
+    const armDprListener = () => {
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    };
+    armDprListener();
 
     // Mouse drag / wheel zoom (DESIGN §3.2). Matches the imperative
     // bootstrapDashboard.ts wiring so the React canvas behaves the same
@@ -325,6 +348,7 @@ export function DashboardCanvas({
       themeObserver.disconnect();
       cancelAnimationFrame(initialFitRaf);
       window.removeEventListener("resize", onWindowResize);
+      dprQuery?.removeEventListener("change", onDprChange);
       canvas.removeEventListener("click", onClick);
       canvas.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("keydown", onKey);
@@ -335,13 +359,16 @@ export function DashboardCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // imageRendering: pixelated keeps the upscale nearest-neighbor (not blurred)
+  // during the brief window before resize() re-syncs the backing store after a
+  // DPR change — and is a no-op when the backing store already matches 1:1.
   return (
     <canvas
       ref={canvasRef}
       className="agentshore-dashboard-canvas"
       data-agentshore-dashboard-canvas
       data-mounted={mounted ? "true" : "false"}
-      style={{ width: "100%", height: "100%", display: "block" }}
+      style={{ width: "100%", height: "100%", display: "block", imageRendering: "pixelated" }}
     />
   );
 }

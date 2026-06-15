@@ -12,9 +12,9 @@
     <h2>Overview</h2>
     {{ overview_metrics(data.overview) }}
     <p style="margin-top:1rem;color:var(--fg-dim);">
-        Started: {{ data.overview.started_at[:19] }}
+        Started: {{ data.overview.started_at | dt_short }}
         {% if data.overview.ended_at %}
-        &mdash; Ended: {{ data.overview.ended_at[:19] }}
+        &mdash; Ended: {{ data.overview.ended_at | dt_short }}
         {% endif %}
     </p>
 </div>
