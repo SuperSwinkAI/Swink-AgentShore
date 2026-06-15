@@ -25,7 +25,7 @@ classifiers = [
 # pins transitives + hashes) and `uv sync --locked`, this means no dependency
 # changes without an explicit, reviewed bump. Do not loosen to ranges.
 dependencies = [
-    "torch==2.11.0",
+    "torch==2.12.0",
     "textual==8.2.7",
     "structlog==26.1.0",
     "aiosqlite==0.22.1",
