@@ -61,6 +61,7 @@ _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.SYSTEMATIC_DEBUGGING,
     }
 )
+_PRUNE_WORKTREE_MIN_AGE_HOURS = 3
 
 
 class SkillBackedPlay(Play, ABC):
@@ -293,8 +294,12 @@ class SkillBackedPlay(Play, ABC):
             # skip them unconditionally, even when they have no pushed branch
             # yet. Without this, active pickup worktrees look like orphans
             # (no open PR, no commits beyond target) and get deleted mid-play.
-            from agentshore.core.wedge_signals import collect_active_worktree_paths
+            from agentshore.core.wedge_signals import (
+                collect_active_worktree_paths,
+                collect_recent_worktree_paths,
+            )
 
+            extra_context["worktree_min_age_hours"] = _PRUNE_WORKTREE_MIN_AGE_HOURS
             try:
                 extra_context["active_worktree_paths"] = collect_active_worktree_paths(
                     ctx.project_path,
@@ -303,6 +308,18 @@ class SkillBackedPlay(Play, ABC):
             except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
                 _logger.warning(
                     "prune_active_worktrees_inject_failed",
+                    error=str(exc),
+                    play_id=ctx.play_id,
+                )
+            try:
+                extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
+                    ctx.project_path,
+                    session_id=ctx.session_id,
+                    min_age_hours=_PRUNE_WORKTREE_MIN_AGE_HOURS,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+                _logger.warning(
+                    "prune_young_worktrees_inject_failed",
                     error=str(exc),
                     play_id=ctx.play_id,
                 )

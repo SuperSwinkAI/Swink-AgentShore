@@ -15,6 +15,7 @@ from agentshore.plays.skill_backed.design_audit import DesignAuditPlay
 from agentshore.plays.skill_backed.groom_backlog import GroomBacklogPlay
 from agentshore.plays.skill_backed.issue_pickup import IssuePickupPlay
 from agentshore.plays.skill_backed.merge_pr import MergePRPlay
+from agentshore.plays.skill_backed.prune import PrunePlay
 from agentshore.plays.skill_backed.refine_tasks import RefineTaskBreakdownPlay
 from agentshore.plays.skill_backed.run_qa import RunQAPlay
 from agentshore.plays.skill_backed.seed_project import SeedProjectPlay
@@ -1258,6 +1259,57 @@ async def test_issue_pickup_injects_review_patterns_into_context_payload() -> No
         {"pattern": "missing regression test", "category": "testing", "frequency": 3}
     ]
     ctx.store.mark_review_patterns_injected.assert_awaited_once_with("sess", [11])
+
+
+@pytest.mark.asyncio
+async def test_prune_injects_worktree_protection_context_payload() -> None:
+    from unittest.mock import patch
+
+    from agentshore.state import SkillResult
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+    captured_payloads: list[dict[str, object]] = []
+
+    def _capture_payload(*_args: object, **kwargs: object) -> dict[str, object]:
+        captured_payloads.append(kwargs)  # type: ignore[arg-type]
+        return kwargs.get("extra", {})
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=[]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.serialize_state_for_skill",
+            side_effect=_capture_payload,
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=["/tmp/active"],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=["/tmp/young"],
+        ),
+    ):
+        outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    assert outcome.success is True
+    assert captured_payloads
+    extra = captured_payloads[0]["extra"]
+    assert isinstance(extra, dict)
+    assert extra["active_worktree_paths"] == ["/tmp/active"]
+    assert extra["young_worktree_paths"] == ["/tmp/young"]
+    assert extra["worktree_min_age_hours"] == 3
 
 
 # ---------------------------------------------------------------------------
