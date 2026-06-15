@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: "17 4 * * 1"  # weekly, Monday 04:17 UTC
   push:
-    branches: [main]
+    branches: [integration]  # repo default branch; Scorecard only analyzes the default branch on push
 
 permissions: read-all
 
