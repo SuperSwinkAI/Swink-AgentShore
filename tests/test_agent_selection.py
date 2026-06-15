@@ -117,13 +117,13 @@ def test_code_review_excludes_pr_author_by_github_identity() -> None:
 
 
 def test_code_review_identity_filter_is_case_insensitive() -> None:
-    author = _make_handle("author", github_identity="unseriousai")
+    author = _make_handle("author", github_identity="bot-user")
     reviewer = _make_handle("reviewer", github_identity="example-user")
 
     result = select_agent_for(
         PlayType.CODE_REVIEW,
         _handles(author, reviewer),
-        pr_github_author="unseriousAI",
+        pr_github_author="bot-user",
     )
     assert result.agent_id == "reviewer"
 

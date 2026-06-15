@@ -313,12 +313,12 @@ agents:
     enabled: true
     binary: codex
 identities:
-  unseriousAI:
-    git_user_name: unseriousAI
-    git_user_email: unseriousAI@users.noreply.github.com
-  unseriousai:
-    git_user_name: unseriousAI
-    git_user_email: unseriousAI@users.noreply.github.com
+  Bot-User:
+    git_user_name: Bot-User
+    git_user_email: bot-user@users.noreply.github.com
+  bot-user:
+    git_user_name: Bot-User
+    git_user_email: bot-user@users.noreply.github.com
 """,
         encoding="utf-8",
     )

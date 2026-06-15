@@ -1624,7 +1624,7 @@ async def test_execute_marks_irrecoverable_github_access_failure_as_auth_error()
         "https://github.com/example-user/example-repo/pull/116` both failed with "
         "`GraphQL: Could not resolve to a Repository with the name "
         "'example-user/example-repo'. (repository)`. GitHub auth is active as "
-        "`unseriousAI` (matching assigned identity `unseriousai` case-insensitively), "
+        "`bot-user` (matching assigned identity `bot-user` case-insensitively), "
         "but the repository is not resolvable to this token/session."
     )
 

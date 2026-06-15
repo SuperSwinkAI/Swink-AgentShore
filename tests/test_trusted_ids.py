@@ -54,14 +54,14 @@ def test_trusted_ids_config_parses_and_canonicalizes(tmp_path: Path) -> None:
 trusted_ids:
   github_logins:
     - example-user
-    - UnseriousAI
-    - unseriousai
+    - Bot-User
+    - bot-user
     - Dependabot[Bot]
 """,
         )
     )
 
-    assert cfg.trusted_ids.github_logins == ("example-user", "unseriousai", "dependabot[bot]")
+    assert cfg.trusted_ids.github_logins == ("example-user", "bot-user", "dependabot[bot]")
 
 
 def test_trusted_ids_default_to_empty(tmp_path: Path) -> None:

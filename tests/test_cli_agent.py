@@ -1510,11 +1510,11 @@ async def test_dispatch_cli_identity_env_overlays_parent(
         fake_create_subprocess_exec,
     )
     monkeypatch.setenv("PRE_EXISTING", "kept")
-    cfg = AgentConfig(enabled=True, binary="codex", timeout=10, identity="unseriousAI")
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10, identity="bot-user")
     handle = _make_handle(agent_type=AgentType.CODEX)
 
     overlay = {
-        "GIT_AUTHOR_NAME": "unseriousAI",
+        "GIT_AUTHOR_NAME": "bot-user",
         "GIT_AUTHOR_EMAIL": "bot@example.com",
         "GH_TOKEN": "ghp_test",
     }
@@ -1525,7 +1525,7 @@ async def test_dispatch_cli_identity_env_overlays_parent(
     # Parent env preserved.
     assert env["PRE_EXISTING"] == "kept"
     # Overlay applied.
-    assert env["GIT_AUTHOR_NAME"] == "unseriousAI"
+    assert env["GIT_AUTHOR_NAME"] == "bot-user"
     assert env["GIT_AUTHOR_EMAIL"] == "bot@example.com"
     assert env["GH_TOKEN"] == "ghp_test"
 

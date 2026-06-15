@@ -57,7 +57,7 @@ const AGENTS: AgentRow[] = [
   {
     type: "claude_code",
     enabled: true,
-    identity: "unseriousai",
+    identity: "bot-user",
     tier_models: {
       small: { enabled: true, model: "claude-haiku-4-5" },
       medium: { enabled: true, model: "claude-sonnet-4-6" },
@@ -75,7 +75,7 @@ const AGENTS: AgentRow[] = [
 ];
 
 const IDENTITIES: IdentityRow[] = [
-  { login: "unseriousai", source: "gh_token_login", token_status: "configured", repo_access: "ok" },
+  { login: "bot-user", source: "gh_token_login", token_status: "configured", repo_access: "ok" },
   { login: "review-bot", source: "gh_token_env", token_status: "configured", repo_access: "ok" },
 ];
 
@@ -106,7 +106,7 @@ describe("AgentsScreen", () => {
       {
         type: "claude_code",
         enabled: true,
-        identity: "unseriousai",
+        identity: "bot-user",
         tier_models: {
           small: { enabled: true, max: 3 },
           medium: { enabled: true, max: 5 },

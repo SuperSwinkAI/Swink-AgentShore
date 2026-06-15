@@ -94,10 +94,10 @@ def test_configure_agent_binds_and_clears_identity(tmp_path: Path) -> None:
     cfg = tmp_path / "agentshore.yaml"
     _write_config(cfg, {"agents": {"codex": {"enabled": True}}})
 
-    configure_agent(tmp_path, "codex", {"identity": "UnseriousAI"})
+    configure_agent(tmp_path, "codex", {"identity": "Bot-User"})
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     # Canonicalised to case-folded login.
-    assert data["agents"]["codex"]["identity"] == "unseriousai"
+    assert data["agents"]["codex"]["identity"] == "bot-user"
 
     configure_agent(tmp_path, "codex", {"identity": None})
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))

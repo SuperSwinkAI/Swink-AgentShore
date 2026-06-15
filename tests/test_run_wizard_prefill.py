@@ -73,17 +73,17 @@ def test_picker_surfaces_keychain_only_login_from_existing_identities() -> None:
     must appear as a picker candidate, not be flagged as stale.
 
     Regression for the 2026-05-07 wizard bug: keychain-stored identities like
-    `unseriousAI` (PAT in macOS Keychain) disappeared from the picker because
+    `bot-user` (PAT in macOS Keychain) disappeared from the picker because
     `detect_gh_accounts()` only sees logins from `gh auth status`.
     """
     from agentshore.identity_wizard import IdentityBinding
 
     existing = {
-        "unseriousAI": IdentityBinding(
-            name="unseriousAI",
-            git_user_name="UnseriousAI",
+        "bot-user": IdentityBinding(
+            name="bot-user",
+            git_user_name="Bot-User",
             git_user_email="bot@example.com",
-            gh_token_keychain="agentshore/unseriousAI",
+            gh_token_keychain="agentshore/bot-user",
         )
     }
 
@@ -93,16 +93,16 @@ def test_picker_surfaces_keychain_only_login_from_existing_identities() -> None:
         run_wizard(
             ["claude_code"],
             accounts=_accounts(),
-            defaults={"claude_code": "unseriousAI"},
+            defaults={"claude_code": "bot-user"},
             existing_identities=existing,
         )
 
     label, logins, default_idx, *_ = mock_prompt.call_args.args
     # The keychain-only login appears under AgentShore's canonical machine key.
-    assert "unseriousai" in logins
+    assert "bot-user" in logins
     # And it must be the pre-selected default (not "stale").
-    assert logins[default_idx] == "unseriousai"
-    assert "current: unseriousAI" in label
+    assert logins[default_idx] == "bot-user"
+    assert "current: bot-user" in label
     assert "was " not in label
 
 
@@ -114,33 +114,33 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
     from agentshore.identity_wizard import IdentityBinding
 
     existing = {
-        "unseriousAI": IdentityBinding(
-            name="unseriousAI",
-            git_user_name="UnseriousAI",
+        "bot-user": IdentityBinding(
+            name="bot-user",
+            git_user_name="Bot-User",
             git_user_email="bot@example.com",
-            gh_token_keychain="agentshore/unseriousAI",
+            gh_token_keychain="agentshore/bot-user",
         )
     }
 
-    # Step 1 picker → choose unseriousAI (the second-and-only configured-only entry).
+    # Step 1 picker → choose bot-user (the second-and-only configured-only entry).
     # Step 2 → confirm the "keep existing" prompt (default True).
     with (
-        patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="unseriousAI"),
+        patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="bot-user"),
         patch("agentshore.identity_wizard.wizard.click.confirm", return_value=True) as mock_confirm,
     ):
         result = run_wizard(
             ["claude_code"],
             accounts=_accounts(),
-            defaults={"claude_code": "unseriousAI"},
+            defaults={"claude_code": "bot-user"},
             existing_identities=existing,
         )
 
     # Step 2 confirm was invoked at least once (the "Keep existing settings?" prompt).
     assert mock_confirm.called
     # Result preserved the existing keychain binding verbatim.
-    assert result.agent_to_identity == {"claude_code": "unseriousai"}
-    binding = result.identities["unseriousai"]
-    assert binding.gh_token_keychain == "agentshore/unseriousai"
+    assert result.agent_to_identity == {"claude_code": "bot-user"}
+    binding = result.identities["bot-user"]
+    assert binding.gh_token_keychain == "agentshore/bot-user"
     assert binding.gh_token_login is None
     assert binding.gh_token_env is None
     assert binding.git_user_email == "bot@example.com"

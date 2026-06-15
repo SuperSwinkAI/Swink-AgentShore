@@ -88,16 +88,16 @@ def test_authorship_env_always_present() -> None:
 
 
 def test_token_env_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_secret")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_secret")
     fc, ac = _cfg(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        identity_name="unseriousAI",
+        identity_name="bot-user",
     )
     env = resolve_identity_env(fc, ac)
     assert env["GH_TOKEN"] == "ghp_secret"
@@ -107,16 +107,16 @@ def test_token_env_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_token_env_missing_logs_warning_and_omits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    monkeypatch.delenv("BOT_USER_GH_TOKEN", raising=False)
     fc, ac = _cfg(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        identity_name="unseriousAI",
+        identity_name="bot-user",
     )
     env = resolve_identity_env(fc, ac)
     assert "GH_TOKEN" not in env
@@ -125,16 +125,16 @@ def test_token_env_missing_logs_warning_and_omits(
 def test_strict_token_env_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.agents.identity import IdentityResolutionError
 
-    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    monkeypatch.delenv("BOT_USER_GH_TOKEN", raising=False)
     fc, ac = _cfg(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        identity_name="unseriousAI",
+        identity_name="bot-user",
     )
     with pytest.raises(IdentityResolutionError, match="token missing"):
         resolve_identity_env(fc, ac, strict=True)
@@ -143,7 +143,7 @@ def test_strict_token_env_missing_raises(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_strict_token_env_rejects_wrong_login(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.agents.identity import IdentityResolutionError
 
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_wrong_login")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_wrong_login")
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
@@ -151,16 +151,16 @@ def test_strict_token_env_rejects_wrong_login(monkeypatch: pytest.MonkeyPatch) -
     )
     fc, ac = _cfg(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="Unserious AI Bot",
+            "bot-user": GitHubIdentity(
+                git_user_name="Bot User",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        identity_name="unseriousai",
+        identity_name="bot-user",
     )
 
-    with pytest.raises(IdentityResolutionError, match="expected 'unseriousai'"):
+    with pytest.raises(IdentityResolutionError, match="expected 'bot-user'"):
         resolve_identity_env(fc, ac, strict=True)
 
 
@@ -324,19 +324,19 @@ def test_isolated_gh_config_dir_when_unspecified(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ident_mod, "user_data_dir", lambda _name: str(tmp_path), raising=False)
     fc, ac = _cfg(
         identities={
-            "unseriousai": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
             )
         },
-        identity_name="unseriousai",
+        identity_name="bot-user",
     )
     env = resolve_identity_env(fc, ac)
     gh_dir = Path(env["GH_CONFIG_DIR"])
     assert gh_dir.is_dir(), "isolated GH_CONFIG_DIR must exist"
     assert not any(gh_dir.iterdir()), "isolated dir must be empty so gh has no fallback"
     assert gh_dir.name == "gh"
-    assert "unseriousai" in gh_dir.parts
+    assert "bot-user" in gh_dir.parts
 
 
 def test_explicit_gh_config_dir_takes_precedence(tmp_path) -> None:
@@ -380,32 +380,32 @@ def test_report_no_identity_marks_ambient() -> None:
 
 
 def test_report_env_token_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
     rows = _report(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        agents={"codex": AgentConfig(identity="unseriousAI")},
+        agents={"codex": AgentConfig(identity="bot-user")},
     )
     (row,) = rows
     assert row.token_source == "env"
     assert row.token_resolved is True
     assert row.token_valid is True
-    assert row.resolved_login == "unseriousai"
-    assert "UNSERIOUSAI_GH_TOKEN" in row.detail
+    assert row.resolved_login == "bot-user"
+    assert "BOT_USER_GH_TOKEN" in row.detail
 
 
 def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_bad")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_bad")
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
@@ -413,13 +413,13 @@ def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     rows = _report(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        agents={"codex": AgentConfig(identity="unseriousAI")},
+        agents={"codex": AgentConfig(identity="bot-user")},
     )
     (row,) = rows
     assert row.token_resolved is True
@@ -429,21 +429,21 @@ def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_report_env_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    monkeypatch.delenv("BOT_USER_GH_TOKEN", raising=False)
     rows = _report(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             )
         },
-        agents={"codex": AgentConfig(identity="unseriousAI")},
+        agents={"codex": AgentConfig(identity="bot-user")},
     )
     (row,) = rows
     assert row.token_resolved is False
     assert "is unset" in row.detail
-    assert "UNSERIOUSAI_GH_TOKEN" in row.detail
+    assert "BOT_USER_GH_TOKEN" in row.detail
 
 
 def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -452,19 +452,19 @@ def test_keychain_token_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         keyring_child,
         "keyring_get",
-        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousAI" else None,
+        lambda service: "ghp_keychain_token" if service == "agentshore/bot-user" else None,
     )
 
     fc = RuntimeConfig(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousAI",
+                gh_token_keychain="agentshore/bot-user",
             )
         }
     )
-    ac = AgentConfig(identity="unseriousAI")
+    ac = AgentConfig(identity="bot-user")
     env = resolve_identity_env(fc, ac)
     assert env["GH_TOKEN"] == "ghp_keychain_token"
 
@@ -475,7 +475,7 @@ def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         keyring_child,
         "keyring_get",
-        lambda service: "ghp_keychain_token" if service == "agentshore/unseriousai" else None,
+        lambda service: "ghp_keychain_token" if service == "agentshore/bot-user" else None,
     )
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -486,19 +486,19 @@ def test_keychain_lowercase_service_fallback_validates(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousai", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
 
     fc = RuntimeConfig(
         identities={
-            "unseriousAI": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousAI",
+                gh_token_keychain="agentshore/bot-user",
             )
         }
     )
-    ac = AgentConfig(identity="unseriousAI")
+    ac = AgentConfig(identity="bot-user")
     env = resolve_identity_env(fc, ac, strict=True)
     assert env["GH_TOKEN"] == "ghp_keychain_token"
     assert "identity_keychain_token_empty" not in warnings
@@ -512,26 +512,26 @@ def test_repo_scoped_keychain_service_validates_login_from_last_segment(
         "read_keychain_token",
         lambda _self, service, warn_missing=True: (
             "ghp_keychain_token"
-            if service == "agentshore/example-user/example-repo/unseriousai"
+            if service == "agentshore/example-user/example-repo/bot-user"
             else None
         ),
     )
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
 
     fc = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
+            "bot-user": GitHubIdentity(
                 git_user_name="bot",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/example-user/example-repo/unseriousai",
+                gh_token_keychain="agentshore/example-user/example-repo/bot-user",
             )
         }
     )
-    ac = AgentConfig(identity="unseriousai")
+    ac = AgentConfig(identity="bot-user")
 
     env = resolve_identity_env(fc, ac, strict=True)
 
@@ -547,7 +547,7 @@ def test_strict_keychain_token_rejects_wrong_agentshore_service_login(
         identity_mod.IdentityResolver,
         "read_keychain_token",
         lambda _self, service, warn_missing=True: (
-            "ghp_keychain_token" if service == "agentshore/unseriousai" else None
+            "ghp_keychain_token" if service == "agentshore/bot-user" else None
         ),
     )
     monkeypatch.setattr(
@@ -558,16 +558,16 @@ def test_strict_keychain_token_rejects_wrong_agentshore_service_login(
 
     fc = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="Unserious AI Bot",
+            "bot-user": GitHubIdentity(
+                git_user_name="Bot User",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousai",
+                gh_token_keychain="agentshore/bot-user",
             )
         }
     )
 
-    with pytest.raises(IdentityResolutionError, match="expected 'unseriousai'"):
-        resolve_identity_env(fc, AgentConfig(identity="unseriousai"), strict=True)
+    with pytest.raises(IdentityResolutionError, match="expected 'bot-user'"):
+        resolve_identity_env(fc, AgentConfig(identity="bot-user"), strict=True)
 
 
 def test_strict_custom_keychain_token_requires_configured_login(
@@ -585,13 +585,13 @@ def test_strict_custom_keychain_token_requires_configured_login(
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
 
     fc = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="Unserious AI Bot",
+            "bot-user": GitHubIdentity(
+                git_user_name="Bot User",
                 git_user_email="bot@example.com",
                 gh_token_keychain="custom/service",
             )
@@ -599,7 +599,7 @@ def test_strict_custom_keychain_token_requires_configured_login(
     )
 
     with pytest.raises(IdentityResolutionError, match="no configured GitHub login"):
-        resolve_identity_env(fc, AgentConfig(identity="unseriousai"), strict=True)
+        resolve_identity_env(fc, AgentConfig(identity="bot-user"), strict=True)
 
 
 def test_keychain_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -747,7 +747,7 @@ def test_report_identity_repo_access_flags_wrong_repo_pat(
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
 
     def deny_repo_access(_project_path, _identity_env):
@@ -759,20 +759,20 @@ def test_report_identity_repo_access_flags_wrong_repo_pat(
     monkeypatch.setattr(identity_mod, "verify_identity_repo_access", deny_repo_access)
     cfg = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="unseriousAI",
+            "bot-user": GitHubIdentity(
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
                 gh_token_env="BOT_GH_TOKEN",
             ),
         },
-        agents={"codex": AgentConfig(identity="unseriousai")},
+        agents={"codex": AgentConfig(identity="bot-user")},
     )
 
     rows = identity_mod.report_identity_repo_access(cfg, tmp_path)
 
     assert len(rows) == 1
     assert rows[0].agent_key == "codex"
-    assert rows[0].identity_name == "unseriousai"
+    assert rows[0].identity_name == "bot-user"
     assert rows[0].ok is False
     assert "Could not resolve" in rows[0].detail
 
@@ -784,7 +784,7 @@ def test_report_identity_repo_access_skips_disabled_agents(
     monkeypatch.setattr(
         identity_mod.IdentityResolver,
         "validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
     checked = False
 
@@ -795,13 +795,13 @@ def test_report_identity_repo_access_skips_disabled_agents(
     monkeypatch.setattr(identity_mod, "verify_identity_repo_access", record_repo_access)
     cfg = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="unseriousAI",
+            "bot-user": GitHubIdentity(
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
                 gh_token_env="BOT_GH_TOKEN",
             ),
         },
-        agents={"codex": AgentConfig(enabled=False, identity="unseriousai")},
+        agents={"codex": AgentConfig(enabled=False, identity="bot-user")},
     )
 
     assert identity_mod.report_identity_repo_access(cfg, tmp_path) == []
@@ -1000,15 +1000,15 @@ def test_require_two_identities_accepts_keychain_token(monkeypatch: pytest.Monke
                 git_user_email="user@example.com",
                 gh_token_login="example-user",
             ),
-            "unseriousAI": GitHubIdentity(
-                git_user_name="Unserious AI",
+            "bot-user": GitHubIdentity(
+                git_user_name="Bot User",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousAI",
+                gh_token_keychain="agentshore/bot-user",
             ),
         },
         agents={
             "claude_code": AgentConfig(identity="example-user"),
-            "codex": AgentConfig(identity="unseriousAI"),
+            "codex": AgentConfig(identity="bot-user"),
         },
     )
     require_two_distinct_gh_identities(fc)  # no raise

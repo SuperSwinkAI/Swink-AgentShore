@@ -171,13 +171,13 @@ def test_start_fails_fast_when_identity_token_lacks_repo_access(
     cfg = RuntimeConfig(
         budget=BudgetConfig(enabled=True, total=20.0),
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="unseriousAI",
+            "bot-user": GitHubIdentity(
+                git_user_name="Bot-User",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousai",
+                gh_token_keychain="agentshore/bot-user",
             ),
         },
-        agents={"codex": AgentConfig(enabled=True, identity="unseriousai")},
+        agents={"codex": AgentConfig(enabled=True, identity="bot-user")},
     )
     monkeypatch.setattr(sp, "_SESSIONS_DIR", tmp_path / "sessions")
 
@@ -195,12 +195,12 @@ def test_start_fails_fast_when_identity_token_lacks_repo_access(
             return_value=[
                 IdentityStatus(
                     agent_key="codex",
-                    identity_name="unseriousai",
+                    identity_name="bot-user",
                     token_source="keychain",
                     token_resolved=True,
                     token_valid=True,
-                    detail="keychain agentshore/unseriousai (unseriousAI)",
-                    resolved_login="unseriousAI",
+                    detail="keychain agentshore/bot-user (Bot-User)",
+                    resolved_login="Bot-User",
                 )
             ],
         ),
@@ -209,7 +209,7 @@ def test_start_fails_fast_when_identity_token_lacks_repo_access(
             return_value=[
                 RepoAccessStatus(
                     agent_key="codex",
-                    identity_name="unseriousai",
+                    identity_name="bot-user",
                     ok=False,
                     detail=(
                         "GitHub repository access preflight failed for the assigned "

@@ -48,7 +48,7 @@ github.com
     - Git operations protocol: ssh
     - Token: gho_*****
     - Token scopes: 'gist', 'read:org', 'repo'
-  ✓ Logged in to github.com account unseriousAI
+  ✓ Logged in to github.com account bot-user
     - Active account: false
     - Git operations protocol: ssh
     - Token: gho_*****
@@ -58,7 +58,7 @@ github.com
 def test_parse_gh_auth_status_two_accounts() -> None:
     accounts = parse_gh_auth_status(_GH_STATUS_TEXT)
     logins = [a.login for a in accounts]
-    assert logins == ["example-user", "unseriousAI"]
+    assert logins == ["example-user", "bot-user"]
     assert accounts[0].active is True
     assert accounts[1].active is False
 
@@ -110,14 +110,14 @@ def test_patcher_writes_identities_and_links_agents(tmp_path: Path) -> None:
                 git_user_email="user@example.com",
                 gh_token_login="example-user",
             ),
-            "unseriousAI": IdentityBinding(
-                name="unseriousAI",
-                git_user_name="unseriousAI",
+            "bot-user": IdentityBinding(
+                name="bot-user",
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
-                gh_token_env="UNSERIOUSAI_GH_TOKEN",
+                gh_token_env="BOT_USER_GH_TOKEN",
             ),
         },
-        agent_to_identity={"claude_code": "example-user", "codex": "unseriousAI"},
+        agent_to_identity={"claude_code": "example-user", "codex": "bot-user"},
     )
 
     assert patch_yaml_with_bindings(config_path, result) is True
@@ -126,10 +126,10 @@ def test_patcher_writes_identities_and_links_agents(tmp_path: Path) -> None:
     assert text.startswith("# Auto-generated"), "leading comment must be preserved"
     data = yaml.safe_load(text)
     assert data["identities"]["example-user"]["gh_token_login"] == "example-user"
-    assert data["identities"]["unseriousai"]["gh_token_env"] == "UNSERIOUSAI_GH_TOKEN"
+    assert data["identities"]["bot-user"]["gh_token_env"] == "BOT_USER_GH_TOKEN"
     assert data["agents"]["claude_code"]["identity"] == "example-user"
-    assert data["agents"]["codex"]["identity"] == "unseriousai"
-    assert data["trusted_ids"]["github_logins"] == ["example-user", "unseriousai"]
+    assert data["agents"]["codex"]["identity"] == "bot-user"
+    assert data["trusted_ids"]["github_logins"] == ["example-user", "bot-user"]
     # Pre-existing keys preserved.
     assert data["budget"]["enabled"] is False
 
@@ -142,18 +142,18 @@ def test_patcher_merges_agent_identities_into_existing_trusted_ids(tmp_path: Pat
 trusted_ids:
   github_logins:
     - ExternalUser
-    - unseriousai
+    - bot-user
 """,
         encoding="utf-8",
     )
 
     result = WizardResult(
         identities={
-            "unseriousai": IdentityBinding(
-                name="unseriousAI",
-                git_user_name="unseriousAI",
+            "bot-user": IdentityBinding(
+                name="bot-user",
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousAI",
+                gh_token_keychain="agentshore/bot-user",
             ),
             "example-user": IdentityBinding(
                 name="example-user",
@@ -162,7 +162,7 @@ trusted_ids:
                 gh_token_login="example-user",
             ),
         },
-        agent_to_identity={"claude_code": "example-user", "codex": "unseriousAI"},
+        agent_to_identity={"claude_code": "example-user", "codex": "bot-user"},
     )
 
     assert patch_yaml_with_bindings(config_path, result) is True
@@ -170,7 +170,7 @@ trusted_ids:
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["trusted_ids"]["github_logins"] == [
         "externaluser",
-        "unseriousai",
+        "bot-user",
         "example-user",
     ]
 
@@ -182,14 +182,14 @@ def test_normalizer_merges_existing_bound_env_identity_not_git_user_name(
     config_path.write_text(
         _BASE_YAML.replace(
             "  codex:\n    enabled: true\n    binary: codex",
-            "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousai",
+            "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
         )
         + """\
 identities:
-  unseriousai:
-    git_user_name: "Unserious AI Bot"
+  bot-user:
+    git_user_name: "Bot User"
     git_user_email: bot@example.com
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 trusted_ids:
   github_logins:
     - ExternalUser
@@ -200,7 +200,7 @@ trusted_ids:
     assert normalize_trusted_ids_for_bound_agents(config_path) is True
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["trusted_ids"]["github_logins"] == ["externaluser", "unseriousai"]
+    assert data["trusted_ids"]["github_logins"] == ["externaluser", "bot-user"]
 
 
 def test_normalizer_uses_keychain_service_login_not_git_user_name(
@@ -215,9 +215,9 @@ def test_normalizer_uses_keychain_service_login_not_git_user_name(
         + """\
 identities:
   bot:
-    git_user_name: "Unserious AI Bot"
+    git_user_name: "Bot User"
     git_user_email: bot@example.com
-    gh_token_keychain: agentshore/example-user/example-repo/unseriousAI
+    gh_token_keychain: agentshore/example-user/example-repo/bot-user
 """,
         encoding="utf-8",
     )
@@ -225,7 +225,7 @@ identities:
     assert normalize_trusted_ids_for_bound_agents(config_path) is True
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["trusted_ids"]["github_logins"] == ["unseriousai"]
+    assert data["trusted_ids"]["github_logins"] == ["bot-user"]
 
 
 def test_identity_prefill_uses_configured_login_not_git_user_name(
@@ -245,9 +245,9 @@ def test_identity_prefill_uses_configured_login_not_git_user_name(
         + """\
 identities:
   bot:
-    git_user_name: "Unserious AI Bot"
+    git_user_name: "Bot User"
     git_user_email: bot@example.com
-    gh_token_keychain: agentshore/example-user/example-repo/unseriousAI
+    gh_token_keychain: agentshore/example-user/example-repo/bot-user
 """,
         encoding="utf-8",
     )
@@ -255,9 +255,9 @@ identities:
     defaults = _identity_defaults_from_yaml(config_path)
     existing = _existing_identities_from_yaml(config_path)
 
-    assert defaults["codex"] == "unseriousai"
-    assert list(existing) == ["unseriousai"]
-    assert "unserious ai bot" not in existing
+    assert defaults["codex"] == "bot-user"
+    assert list(existing) == ["bot-user"]
+    assert "bot user" not in existing
 
 
 def test_patcher_no_op_when_empty_result(tmp_path: Path) -> None:
@@ -300,11 +300,11 @@ def test_patcher_collapses_duplicate_case_insensitive_identity_keys(tmp_path: Pa
         _BASE_YAML
         + """\
 identities:
-  unseriousAI:
+  bot-user:
     git_user_name: Old Mixed
     git_user_email: old-mixed@example.com
     gh_token_env: OLD_TOKEN
-  unseriousai:
+  bot-user:
     git_user_name: Old Lower
     git_user_email: old-lower@example.com
     gh_token_env: OLD_LOWER_TOKEN
@@ -314,25 +314,25 @@ identities:
 
     result = WizardResult(
         identities={
-            "unseriousai": IdentityBinding(
-                name="unseriousai",
-                git_user_name="unseriousAI",
+            "bot-user": IdentityBinding(
+                name="bot-user",
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
-                gh_token_keychain="agentshore/unseriousAI",
+                gh_token_keychain="agentshore/bot-user",
             )
         },
-        agent_to_identity={"codex": "unseriousAI"},
+        agent_to_identity={"codex": "bot-user"},
     )
 
     assert patch_yaml_with_bindings(config_path, result) is True
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert list(data["identities"]) == ["unseriousai"]
-    assert data["identities"]["unseriousai"]["gh_token_keychain"] == "agentshore/unseriousai"
-    assert data["agents"]["codex"]["identity"] == "unseriousai"
+    assert list(data["identities"]) == ["bot-user"]
+    assert data["identities"]["bot-user"]["gh_token_keychain"] == "agentshore/bot-user"
+    assert data["agents"]["codex"]["identity"] == "bot-user"
     cfg = load_config(config_path)
-    assert cfg.identities["unseriousai"].gh_token_keychain == "agentshore/unseriousai"
-    assert cfg.agents["codex"].identity == "unseriousai"
+    assert cfg.identities["bot-user"].gh_token_keychain == "agentshore/bot-user"
+    assert cfg.agents["codex"].identity == "bot-user"
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ def test_run_wizard_binds_each_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     # Two-pass flow:
     #   Pass 1 (mapping):  claude_code → 1 (example-user, default), codex → 2.
     #   Pass 2 (details):  example-user  email "", name "", strategy "1";
-    #                      unseriousAI email "", name "", strategy "1".
+    #                      bot-user email "", name "", strategy "1".
     inputs = iter(["1", "2", "", "", "1", "", "", "1"])
     confirms: object = iter([])  # gh_token_login takes no confirms
 
@@ -389,16 +389,16 @@ def test_run_wizard_binds_each_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 
     accounts = [
         GhAccount(login="example-user", active=True),
-        GhAccount(login="unseriousAI", active=False),
+        GhAccount(login="bot-user", active=False),
     ]
     result = run_wizard(["claude_code", "codex"], accounts=accounts)
 
     assert result.agent_to_identity == {
         "claude_code": "example-user",
-        "codex": "unseriousai",
+        "codex": "bot-user",
     }
     assert result.identities["example-user"].gh_token_login == "example-user"
-    assert result.identities["unseriousai"].gh_token_login == "unseriousAI"
+    assert result.identities["bot-user"].gh_token_login == "bot-user"
     assert (
         result.identities["example-user"].git_user_email == "example-user@users.noreply.github.com"
     )
@@ -530,14 +530,14 @@ def test_run_identity_wizard_noninteractive_normalizes_existing_trusted_ids(
     config_path.write_text(
         _BASE_YAML.replace(
             "  codex:\n    enabled: true\n    binary: codex",
-            "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousai",
+            "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
         )
         + """\
 identities:
-  unseriousai:
-    git_user_name: "Unserious AI Bot"
+  bot-user:
+    git_user_name: "Bot User"
     git_user_email: bot@example.com
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 trusted_ids:
   github_logins:
     - ExistingUser
@@ -548,7 +548,7 @@ trusted_ids:
     run_identity_wizard(config_path, ["codex"], force_run=True)
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["trusted_ids"]["github_logins"] == ["existinguser", "unseriousai"]
+    assert data["trusted_ids"]["github_logins"] == ["existinguser", "bot-user"]
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +563,10 @@ def test_agentshore_identity_prints_table_when_resolved(
 
     from agentshore.cli import main
 
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
         "agentshore.agents.identity.IdentityResolver.validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
@@ -576,16 +576,16 @@ def test_agentshore_identity_prints_table_when_resolved(
         _BASE_YAML
         + """
 identities:
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     )
     # Add the agent->identity link manually.
     yaml_text = yaml_text.replace(
         "  codex:\n    enabled: true\n    binary: codex",
-        "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousAI",
+        "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
     )
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
 
@@ -593,7 +593,7 @@ identities:
     result = runner.invoke(main, ["identity", "--project", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "codex" in result.output
-    assert "unseriousAI" in result.output
+    assert "bot-user" in result.output
     assert "token: ok" in result.output
 
 
@@ -604,20 +604,20 @@ def test_agentshore_identity_exits_nonzero_on_missing_token(
 
     from agentshore.cli import main
 
-    monkeypatch.delenv("UNSERIOUSAI_GH_TOKEN", raising=False)
+    monkeypatch.delenv("BOT_USER_GH_TOKEN", raising=False)
     yaml_text = (
         _BASE_YAML
         + """
 identities:
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     )
     yaml_text = yaml_text.replace(
         "  codex:\n    enabled: true\n    binary: codex",
-        "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousAI",
+        "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
     )
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
 
@@ -635,17 +635,17 @@ def test_agentshore_identity_prints_repo_access_when_available(
     from agentshore.agents.identity import RepoAccessStatus
     from agentshore.cli import main
 
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
         "agentshore.agents.identity.IdentityResolver.validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
         lambda _cfg, _project: [
             RepoAccessStatus(
                 agent_key="codex",
-                identity_name="unseriousai",
+                identity_name="bot-user",
                 ok=True,
                 detail="ok",
             )
@@ -654,14 +654,14 @@ def test_agentshore_identity_prints_repo_access_when_available(
     yaml_text = (
         _BASE_YAML.replace(
             "  codex:\n    enabled: true\n    binary: codex",
-            "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousai",
+            "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
         )
         + """
 identities:
-  unseriousai:
-    git_user_name: "Unserious AI Bot"
+  bot-user:
+    git_user_name: "Bot User"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     )
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
@@ -682,17 +682,17 @@ def test_agentshore_identity_exits_nonzero_on_repo_access_block(
     from agentshore.agents.identity import RepoAccessStatus
     from agentshore.cli import main
 
-    monkeypatch.setenv("UNSERIOUSAI_GH_TOKEN", "ghp_x")
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", "ghp_x")
     monkeypatch.setattr(
         "agentshore.agents.identity.IdentityResolver.validate_github_token",
-        lambda _self, _token: (True, "unseriousAI", None),
+        lambda _self, _token: (True, "bot-user", None),
     )
     monkeypatch.setattr(
         "agentshore.agents.identity.report_identity_repo_access",
         lambda _cfg, _project: [
             RepoAccessStatus(
                 agent_key="codex",
-                identity_name="unseriousai",
+                identity_name="bot-user",
                 ok=False,
                 detail="GraphQL: Could not resolve to a Repository",
             )
@@ -701,14 +701,14 @@ def test_agentshore_identity_exits_nonzero_on_repo_access_block(
     yaml_text = (
         _BASE_YAML.replace(
             "  codex:\n    enabled: true\n    binary: codex",
-            "  codex:\n    enabled: true\n    binary: codex\n    identity: unseriousai",
+            "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
         )
         + """
 identities:
-  unseriousai:
-    git_user_name: "Unserious AI Bot"
+  bot-user:
+    git_user_name: "Bot User"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     )
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
@@ -731,7 +731,7 @@ def test_prompt_choice_reprompts_on_garbage(monkeypatch: pytest.MonkeyPatch) -> 
     silently falling back to the default option."""
     from agentshore.identity_wizard import wizard as mod
 
-    inputs = iter(["unseriousai", "2"])
+    inputs = iter(["bot-user", "2"])
 
     def fake_prompt(_msg: str, default: str | None = None, **_kw: object) -> str:
         try:
@@ -740,8 +740,8 @@ def test_prompt_choice_reprompts_on_garbage(monkeypatch: pytest.MonkeyPatch) -> 
             raise AssertionError("unexpected prompt") from exc
 
     monkeypatch.setattr(mod.click, "prompt", fake_prompt)
-    chosen = mod._prompt_choice("agent", ["example-user", "unseriousAI"], 0)
-    assert chosen == "unseriousAI"
+    chosen = mod._prompt_choice("agent", ["example-user", "bot-user"], 0)
+    assert chosen == "bot-user"
 
 
 def test_prompt_choice_returns_extra_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,9 +781,9 @@ def test_prompt_choice_max_attempts_raises_abort(monkeypatch: pytest.MonkeyPatch
 def test_prompt_new_login_accepts_valid(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.identity_wizard import wizard as mod
 
-    inputs = iter(["unseriousai-bot"])
+    inputs = iter(["other-bot-user"])
     monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
-    assert mod._prompt_new_login(set()) == "unseriousai-bot"
+    assert mod._prompt_new_login(set()) == "other-bot-user"
 
 
 def test_prompt_new_login_rejects_invalid_format(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -970,14 +970,14 @@ def test_prompt_token_strategy_paste_pat_stores_repo_specific_keychain(
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
 
     strategy, fields = mod._prompt_token_strategy(
-        "unseriousAI",
+        "bot-user",
         is_new_account=True,
         repo_name_with_owner="example-user/example-repo",
     )
 
     assert strategy == "keychain"
-    assert fields == {"gh_token_keychain": "agentshore/example-user/example-repo/unseriousai"}
-    assert stored == {"agentshore/example-user/example-repo/unseriousai": "ghp_realtoken12345"}
+    assert fields == {"gh_token_keychain": "agentshore/example-user/example-repo/bot-user"}
+    assert stored == {"agentshore/example-user/example-repo/bot-user": "ghp_realtoken12345"}
 
 
 def test_prompt_token_strategy_keychain_service_uses_lowercase_login(
@@ -999,10 +999,10 @@ def test_prompt_token_strategy_keychain_service_uses_lowercase_login(
     monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: "ghp_realtoken12345")
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: True)
 
-    strategy, fields = mod._prompt_token_strategy("unseriousAI", is_new_account=True)
+    strategy, fields = mod._prompt_token_strategy("bot-user", is_new_account=True)
     assert strategy == "keychain"
-    assert fields == {"gh_token_keychain": "agentshore/unseriousai"}
-    assert stored == {"agentshore/unseriousai": "ghp_realtoken12345"}
+    assert fields == {"gh_token_keychain": "agentshore/bot-user"}
+    assert stored == {"agentshore/bot-user": "ghp_realtoken12345"}
 
 
 def test_run_wizard_replaces_agentshore_global_keychain_with_repo_service(
@@ -1012,16 +1012,16 @@ def test_run_wizard_replaces_agentshore_global_keychain_with_repo_service(
     from unittest.mock import patch
 
     existing = {
-        "unseriousAI": IdentityBinding(
-            name="unseriousAI",
-            git_user_name="UnseriousAI",
+        "bot-user": IdentityBinding(
+            name="bot-user",
+            git_user_name="Bot-User",
             git_user_email="bot@example.com",
-            gh_token_keychain="agentshore/unseriousAI",
+            gh_token_keychain="agentshore/bot-user",
         )
     }
 
     with (
-        patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="unseriousai"),
+        patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="bot-user"),
         patch(
             "agentshore.identity_wizard.wizard._migrate_keychain_token", return_value=True
         ) as mock_migrate,
@@ -1029,19 +1029,19 @@ def test_run_wizard_replaces_agentshore_global_keychain_with_repo_service(
         result = run_wizard(
             ["codex"],
             accounts=[GhAccount(login="example-user", active=True)],
-            defaults={"codex": "unseriousAI"},
+            defaults={"codex": "bot-user"},
             existing_identities=existing,
             repo_name_with_owner="example-user/example-repo",
         )
 
     mock_migrate.assert_called_once_with(
-        "agentshore/unseriousai",
-        "agentshore/example-user/example-repo/unseriousai",
+        "agentshore/bot-user",
+        "agentshore/example-user/example-repo/bot-user",
     )
-    assert result.identities["unseriousai"].gh_token_keychain == (
-        "agentshore/example-user/example-repo/unseriousai"
+    assert result.identities["bot-user"].gh_token_keychain == (
+        "agentshore/example-user/example-repo/bot-user"
     )
-    assert result.identities["unseriousai"].git_user_name == "UnseriousAI"
+    assert result.identities["bot-user"].git_user_name == "Bot-User"
 
 
 def test_prompt_token_strategy_uses_existing_keychain_token(
@@ -1064,15 +1064,15 @@ def test_prompt_token_strategy_uses_existing_keychain_token(
     monkeypatch.setattr(
         mod,
         "_keychain_has_token",
-        lambda service: service == "agentshore/unseriousai",
+        lambda service: service == "agentshore/bot-user",
     )
     monkeypatch.setattr(mod.click, "confirm", fake_confirm)
     monkeypatch.setattr(mod.click, "prompt", fail_prompt)
 
-    strategy, fields = mod._prompt_token_strategy("unseriousai", is_new_account=True)
+    strategy, fields = mod._prompt_token_strategy("bot-user", is_new_account=True)
 
     assert strategy == "keychain"
-    assert fields == {"gh_token_keychain": "agentshore/unseriousai"}
+    assert fields == {"gh_token_keychain": "agentshore/bot-user"}
     assert len(confirm_calls) == 1
     assert "Use the existing keychain token" in str(confirm_calls[0][0][0])
     assert confirm_calls[0][1]["default"] is True
@@ -1098,10 +1098,10 @@ def test_prompt_token_strategy_declining_existing_keychain_falls_through(
 
     monkeypatch.setattr(mod.click, "prompt", fake_prompt)
 
-    strategy, fields = mod._prompt_token_strategy("unseriousai", is_new_account=True)
+    strategy, fields = mod._prompt_token_strategy("bot-user", is_new_account=True)
 
     assert strategy == "env"
-    assert fields == {"gh_token_env": "UNSERIOUSAI_GH_TOKEN"}
+    assert fields == {"gh_token_env": "BOT_USER_GH_TOKEN"}
 
 
 def test_prompt_env_var_name_rejects_pat_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1111,7 +1111,7 @@ def test_prompt_env_var_name_rejects_pat_shape(monkeypatch: pytest.MonkeyPatch) 
 
     inputs = iter(["ghp_realtoken12345", "github_pat_11A46VGFA0lE", "MY_GH_TOKEN"])
     monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
-    name = mod._prompt_env_var_name("unseriousai")
+    name = mod._prompt_env_var_name("bot-user")
     assert name == "MY_GH_TOKEN"
 
 
@@ -1151,7 +1151,7 @@ def test_looks_like_pat() -> None:
     assert looks_like_pat("ghr_xxxxx")
     assert looks_like_pat("  ghp_with_whitespace  ")
     # Negatives
-    assert not looks_like_pat("UNSERIOUSAI_GH_TOKEN")
+    assert not looks_like_pat("BOT_USER_GH_TOKEN")
     assert not looks_like_pat("MY_VAR")
     assert not looks_like_pat("")
     assert not looks_like_pat("agentshore/example-user")
@@ -1174,13 +1174,13 @@ def test_report_identities_redacts_pat_in_env_field(
     leaked_pat = "ghp_thisIsTheLeakedToken12345"
     cfg = RuntimeConfig(
         identities={
-            "unseriousai": GitHubIdentity(
-                git_user_name="unseriousai",
+            "bot-user": GitHubIdentity(
+                git_user_name="bot-user",
                 git_user_email="bot@example.com",
                 gh_token_env=leaked_pat,
             )
         },
-        agents={"codex": AgentConfig(identity="unseriousai")},
+        agents={"codex": AgentConfig(identity="bot-user")},
     )
     rows = report_identities(cfg)
     (row,) = rows
@@ -1188,7 +1188,7 @@ def test_report_identities_redacts_pat_in_env_field(
     assert "REDACTED" in row.detail
     assert leaked_pat not in row.detail
     # Identity name and the suggested replacement are mentioned for guidance.
-    assert "UNSERIOUSAI_GH_TOKEN" in row.detail
+    assert "BOT-USER_GH_TOKEN" in row.detail
 
 
 def test_echo_identity_report_format() -> None:
@@ -1211,10 +1211,10 @@ def test_echo_identity_report_format() -> None:
         ),
         IdentityStatus(
             agent_key="codex",
-            identity_name="unseriousai",
+            identity_name="bot-user",
             token_source="env",
             token_resolved=False,
-            detail="env var UNSERIOUSAI_GH_TOKEN is unset",
+            detail="env var BOT_USER_GH_TOKEN is unset",
         ),
     ]
     buf = StringIO()
@@ -1222,7 +1222,7 @@ def test_echo_identity_report_format() -> None:
         echo_identity_report(rows, header=False)
     text = buf.getvalue()
     assert "[token: ok via gh auth token -u example-user]" in text
-    assert "[token: MISSING — env var UNSERIOUSAI_GH_TOKEN is unset]" in text
+    assert "[token: MISSING — env var BOT_USER_GH_TOKEN is unset]" in text
 
 
 def test_run_identity_wizard_emits_verification_table(

@@ -577,9 +577,9 @@ def test_serialize_state_includes_assigned_github_identity() -> None:
         budget_total=0.0,
         budget_spent=0.0,
         learnings_count=0,
-        assigned_github_identity="unseriousai",
+        assigned_github_identity="bot-user",
     )
-    assert payload["assigned_github_identity"] == "unseriousai"
+    assert payload["assigned_github_identity"] == "bot-user"
 
 
 def test_serialize_state_includes_target_branch_when_set() -> None:
@@ -748,7 +748,7 @@ def test_write_play_context_preserves_prior_play_context(tmp_path: Path) -> None
         {
             "schema_version": 1,
             "play_id": 8,
-            "assigned_github_identity": "unseriousAI",
+            "assigned_github_identity": "bot-user",
             "open_issues": [],
             "pull_requests": [],
         },
@@ -759,7 +759,7 @@ def test_write_play_context_preserves_prior_play_context(tmp_path: Path) -> None
     latest_data = json.loads((tmp_path / ".agentshore" / "context.json").read_text())
     assert first_data["assigned_github_identity"] == "example-user"
     assert first_data["context_file"] == first_path
-    assert latest_data["assigned_github_identity"] == "unseriousAI"
+    assert latest_data["assigned_github_identity"] == "bot-user"
     assert latest_data["context_file"] == second_path
 
 

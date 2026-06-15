@@ -35,26 +35,26 @@ identities:
     git_user_name: "Example User"
     git_user_email: "user@example.com"
     gh_token_login: example-user
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
-    ssh_key_path: ~/.ssh/id_unseriousai
+    gh_token_env: BOT_USER_GH_TOKEN
+    ssh_key_path: ~/.ssh/id_bot-user
 """
     )
     cfg = load_config(_write(tmp_path, yaml_text))
 
-    assert set(cfg.identities) == {"example-user", "unseriousai"}
+    assert set(cfg.identities) == {"example-user", "bot-user"}
     jw = cfg.identities["example-user"]
     assert isinstance(jw, GitHubIdentity)
     assert jw.git_user_email == "user@example.com"
     assert jw.gh_token_login == "example-user"
     assert jw.gh_token_env is None
 
-    bot = cfg.identities["unseriousai"]
-    assert bot.gh_token_env == "UNSERIOUSAI_GH_TOKEN"
+    bot = cfg.identities["bot-user"]
+    assert bot.gh_token_env == "BOT_USER_GH_TOKEN"
     assert bot.gh_token_login is None
-    assert bot.ssh_key_path == "~/.ssh/id_unseriousai"
+    assert bot.ssh_key_path == "~/.ssh/id_bot-user"
 
 
 def test_agent_identity_field_links_to_identities_block(tmp_path: Path) -> None:
@@ -67,21 +67,21 @@ agents:
   codex:
     enabled: true
     binary: codex
-    identity: unseriousAI
+    identity: bot-user
 
 identities:
   example-user:
     git_user_name: "Example User"
     git_user_email: "user@example.com"
     gh_token_login: example-user
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     cfg = load_config(_write(tmp_path, yaml_text))
     assert cfg.agents["claude_code"].identity == "example-user"
-    assert cfg.agents["codex"].identity == "unseriousai"
+    assert cfg.agents["codex"].identity == "bot-user"
 
 
 def test_identity_keys_and_agent_refs_are_casefolded(tmp_path: Path) -> None:
@@ -90,18 +90,18 @@ agents:
   codex:
     enabled: true
     binary: codex
-    identity: unseriousAI
+    identity: bot-user
 
 identities:
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_keychain: agentshore/unseriousAI
+    gh_token_keychain: agentshore/bot-user
 """
     cfg = load_config(_write(tmp_path, yaml_text))
-    assert set(cfg.identities) == {"unseriousai"}
-    assert cfg.agents["codex"].identity == "unseriousai"
-    assert cfg.identities["unseriousai"].git_user_name == "unseriousAI"
+    assert set(cfg.identities) == {"bot-user"}
+    assert cfg.agents["codex"].identity == "bot-user"
+    assert cfg.identities["bot-user"].git_user_name == "bot-user"
 
 
 def test_duplicate_casefolded_identity_keys_raise(tmp_path: Path) -> None:
@@ -112,10 +112,10 @@ agents:
     binary: codex
 
 identities:
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  Bot-User:
+    git_user_name: "Bot-User"
     git_user_email: "bot@example.com"
-  unseriousai:
+  bot-user:
     git_user_name: "lower"
     git_user_email: "lower@example.com"
 """
@@ -246,22 +246,22 @@ identities:
     path.write_text(v1, encoding="utf-8")
     cfg_v1 = load_config(path)
     assert cfg_v1.agents["claude_code"].identity == "example-user"
-    assert "unseriousAI" not in cfg_v1.identities
+    assert "bot-user" not in cfg_v1.identities
 
     v2 = """\
 agents:
   claude_code:
     enabled: true
     binary: claude
-    identity: unseriousAI
+    identity: bot-user
 identities:
-  unseriousAI:
-    git_user_name: "unseriousAI"
+  bot-user:
+    git_user_name: "bot-user"
     git_user_email: "bot@example.com"
-    gh_token_env: UNSERIOUSAI_GH_TOKEN
+    gh_token_env: BOT_USER_GH_TOKEN
 """
     path.write_text(v2, encoding="utf-8")
     cfg_v2 = load_config(path)
-    assert cfg_v2.agents["claude_code"].identity == "unseriousai"
+    assert cfg_v2.agents["claude_code"].identity == "bot-user"
     assert "example-user" not in cfg_v2.identities
-    assert cfg_v2.identities["unseriousai"].gh_token_env == "UNSERIOUSAI_GH_TOKEN"
+    assert cfg_v2.identities["bot-user"].gh_token_env == "BOT_USER_GH_TOKEN"
