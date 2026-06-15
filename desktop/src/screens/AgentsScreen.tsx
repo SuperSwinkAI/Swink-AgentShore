@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useState, type JSX, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { AGENT_TYPES, agentLabel } from "@agentshore/dashboard";
@@ -13,19 +13,48 @@ import { listIdentities, type IdentityRow } from "../rpc/identitiesClient";
 
 import styles from "./AgentsScreen.module.css";
 
+const TIER_ORDER = [
+  ["small", "S"],
+  ["medium", "M"],
+  ["large", "L"],
+] as const;
+
 function tierSummary(row: AgentRow): string {
-  const TIER_INITIALS: Record<string, string> = { small: "S", medium: "M", large: "L" };
-  const parts = ["small", "medium", "large"]
+  const parts = TIER_ORDER
     .map((tier) => {
-      const t = row.tier_models[tier];
+      const [tierName, initial] = tier;
+      const t = row.tier_models[tierName];
       if (!t) return null;
-      const initial = TIER_INITIALS[tier] ?? tier[0].toUpperCase();
       if (t.enabled === false) return `${initial}✗`;
       const maxVal = t.max ?? 1;
       return `${initial}×${maxVal}`;
     })
     .filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : "no tiers";
+}
+
+function tierCapacity(row: AgentRow, tier: string): number {
+  if (!row.enabled) return 0;
+  const config = row.tier_models[tier];
+  if (config === undefined || config.enabled === false) return 0;
+  const max = config.max ?? 1;
+  if (!Number.isFinite(max)) return 0;
+  return Math.max(0, Math.trunc(max));
+}
+
+function fleetTotals(rows: AgentRow[]): {
+  tiers: { key: string; label: string; total: number }[];
+  total: number;
+} {
+  const tiers = TIER_ORDER.map(([key, label]) => ({
+    key,
+    label,
+    total: rows.reduce((sum, row) => sum + tierCapacity(row, key), 0),
+  }));
+  return {
+    tiers,
+    total: tiers.reduce((sum, tier) => sum + tier.total, 0),
+  };
 }
 
 export interface AgentsAdapter {
@@ -44,11 +73,13 @@ const defaultAdapter: AgentsAdapter = {
 
 export interface AgentsScreenProps {
   adapter?: AgentsAdapter;
+  footerAction?: ReactNode;
   onAgentRowsChange?: (rows: AgentRow[]) => void;
 }
 
 export function AgentsScreen({
   adapter = defaultAdapter,
+  footerAction,
   onAgentRowsChange,
 }: AgentsScreenProps): JSX.Element {
   const navigate = useNavigate();
@@ -159,6 +190,7 @@ export function AgentsScreen({
   const loaded = agents !== null;
   const isEmpty = loaded && agents.length === 0;
   const enabledCount = loaded ? agents.filter((row) => row.enabled).length : 0;
+  const totals = loaded ? fleetTotals(agents) : null;
   const unconfiguredDetected = loaded
     ? detectedTypes.filter((type) => !agents.some((a) => a.type === type))
     : [];
@@ -336,6 +368,32 @@ export function AgentsScreen({
           </div>
         )}
       </section>
+
+      {loaded && (agents.length > 0 || footerAction !== undefined) && (
+        <footer className={styles.footer}>
+          {agents.length > 0 && totals !== null && (
+            <div
+              className={styles.fleetTotal}
+              data-testid="fleet-total"
+              aria-label={`Fleet total ${totals.total} agents`}
+            >
+              <span className={styles.fleetLabel}>Fleet Total</span>
+              <span className={styles.fleetFormula}>
+                {totals.tiers.map((tier) => (
+                  <span key={tier.key} className={styles.fleetChip}>
+                    {tier.label}×{tier.total}
+                  </span>
+                ))}
+              </span>
+              <span className={styles.fleetEquals}>=</span>
+              <span className={styles.fleetGrand}>Total {totals.total}</span>
+            </div>
+          )}
+          {footerAction !== undefined && (
+            <div className={styles.footerAction}>{footerAction}</div>
+          )}
+        </footer>
+      )}
     </main>
   );
 }

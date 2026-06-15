@@ -101,6 +101,50 @@ describe("AgentsScreen", () => {
     expect(await screen.findByTestId("agents-enabled-count")).toHaveTextContent("1 enabled");
   });
 
+  it("shows fleet total capacity across enabled runners", async () => {
+    const agents: AgentRow[] = [
+      {
+        type: "claude_code",
+        enabled: true,
+        identity: "unseriousai",
+        tier_models: {
+          small: { enabled: true, max: 3 },
+          medium: { enabled: true, max: 5 },
+          large: { enabled: false, max: 20 },
+        },
+      },
+      {
+        type: "codex",
+        enabled: true,
+        identity: "review-bot",
+        tier_models: {
+          small: { enabled: false, max: 8 },
+          medium: { enabled: true, max: 4 },
+          large: { enabled: true },
+        },
+      },
+      {
+        type: "gemini",
+        enabled: false,
+        identity: "review-bot",
+        tier_models: {
+          small: { enabled: true, max: 20 },
+          medium: { enabled: true, max: 20 },
+          large: { enabled: true, max: 20 },
+        },
+      },
+    ];
+    const adapter = makeAdapter(agents, IDENTITIES);
+    renderScreen(adapter);
+
+    const total = await screen.findByTestId("fleet-total");
+    expect(within(total).getByText("Fleet Total")).toBeInTheDocument();
+    expect(within(total).getByText("S×3")).toBeInTheDocument();
+    expect(within(total).getByText("M×9")).toBeInTheDocument();
+    expect(within(total).getByText("L×1")).toBeInTheDocument();
+    expect(within(total).getByText("Total 13")).toBeInTheDocument();
+  });
+
   it("calls configureAgent({enabled}) when the toggle is clicked", async () => {
     const adapter = makeAdapter(AGENTS, IDENTITIES);
     renderScreen(adapter);
@@ -260,4 +304,3 @@ describe("AgentsScreen", () => {
   });
 
 });
-
