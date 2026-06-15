@@ -161,6 +161,13 @@ for the remainder of the session, since a new backend token would require a new
 session to pick up. This prevents a single expired token from burning every
 subsequent play to the timeout.
 
+Grok has one additional runtime backstop: if the CLI process starts but never
+emits a first stdout byte before the launch-wedge watchdog fires, AgentShore
+keeps the dispatch classified as `timeout_stream_idle` but suppresses the Grok
+agent type for the rest of the session through the same candidate-mask path.
+That avoids repeatedly spending the 120-second first-byte window across fresh
+Grok handles when the backend is wedged before any stream event arrives.
+
 ## Windows SSH agent setup
 
 AgentShore uses SSH-signed commits for merge-play provenance. On Windows,

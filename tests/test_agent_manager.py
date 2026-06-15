@@ -471,6 +471,66 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.consecutive_timeouts == 1
 
 
+async def test_grok_first_byte_launch_wedge_suppresses_type(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={"grok": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)}
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.GROK)
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            "agent 'grok-1' (grok/medium, prompt_bytes=10054) never produced first byte "
+            "within 120s (launch wedge)",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+    assert handle.timeout_count == 1
+    assert handle.consecutive_timeouts == 1
+    assert mgr.last_auth_failed_types == {"grok"}
+
+
+async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_type(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={"grok": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)}
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.GROK)
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            "agent 'grok-1' (grok/medium) stopped producing stdout for 120s",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+    assert mgr.last_auth_failed_types == set()
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker integration
 # ---------------------------------------------------------------------------
