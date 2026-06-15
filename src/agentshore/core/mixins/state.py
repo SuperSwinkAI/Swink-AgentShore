@@ -325,6 +325,17 @@ class StateBuilder:
                 play_count=play_count,
             )
 
+    def _in_flight_claim_group_ids(self) -> set[str]:
+        """Claim groups backing currently-dispatched plays — never release these."""
+        ids: set[str] = set()
+        for ctx in self._runtime.dispatch_ctx.values():
+            claim_group_id = getattr(getattr(ctx, "params", None), "extras", {}).get(
+                "claim_group_id"
+            )
+            if isinstance(claim_group_id, str) and claim_group_id:
+                ids.add(claim_group_id)
+        return ids
+
     async def release_claims_for_prolonged_idle_agents(self, state: OrchestratorState) -> None:
         """Release active claims owned by agents that have stayed idle for several ticks."""
         from agentshore.state import AgentStatus
@@ -345,8 +356,16 @@ class StateBuilder:
             return
 
         claims = await find_method(self._session_id, idle_ids)
+        protected_claim_group_ids = self._in_flight_claim_group_ids()
+        releasable_claims = [
+            claim
+            for claim in claims
+            if getattr(claim, "claim_group_id", None) not in protected_claim_group_ids
+        ]
         claim_agent_ids = {
-            claim.agent_id for claim in claims if getattr(claim, "agent_id", None) in idle_ids
+            claim.agent_id
+            for claim in releasable_claims
+            if getattr(claim, "agent_id", None) in idle_ids
         }
         for agent_id in list(self._idle_agent_claim_ticks):
             if agent_id not in claim_agent_ids:
@@ -362,7 +381,14 @@ class StateBuilder:
         if not release_agent_ids:
             return
 
-        released_count = await release_method(self._session_id, release_agent_ids)
+        if protected_claim_group_ids:
+            released_count = await release_method(
+                self._session_id,
+                release_agent_ids,
+                exclude_claim_group_ids=protected_claim_group_ids,
+            )
+        else:
+            released_count = await release_method(self._session_id, release_agent_ids)
         for agent_id in release_agent_ids:
             self._idle_agent_claim_ticks.pop(agent_id, None)
         if released_count:
