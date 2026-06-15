@@ -288,6 +288,24 @@ class SkillBackedPlay(Play, ABC):
                     error=str(exc),
                     play_id=ctx.play_id,
                 )
+        elif self.play_type == PlayType.PRUNE:
+            # Inject the set of currently-claimed worktrees so the skill can
+            # skip them unconditionally, even when they have no pushed branch
+            # yet. Without this, active pickup worktrees look like orphans
+            # (no open PR, no commits beyond target) and get deleted mid-play.
+            from agentshore.core.wedge_signals import collect_active_worktree_paths
+
+            try:
+                extra_context["active_worktree_paths"] = collect_active_worktree_paths(
+                    ctx.project_path,
+                    session_id=ctx.session_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+                _logger.warning(
+                    "prune_active_worktrees_inject_failed",
+                    error=str(exc),
+                    play_id=ctx.play_id,
+                )
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(

@@ -175,6 +175,40 @@ def collect_orphan_worktree_paths(
     return [p for p in listed if p not in active]
 
 
+def collect_active_worktree_paths(
+    project_path: Path,
+    *,
+    db_path: Path | None = None,
+    session_id: str | None = None,
+) -> list[str]:
+    """Return worktree paths that have an active claim in this session.
+
+    Used by the prune play to inject a protected set into the skill's context
+    JSON so the skill never deletes a worktree that is mid-flight.
+    Errors return an empty list (best-effort; a missing field is safer than a
+    failed dispatch).
+    """
+    if not session_id:
+        return []
+    db_path = db_path or project_db_path(project_path)
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cursor = conn.execute(
+                "SELECT worktree_path FROM worktrees "
+                "WHERE session_id = ? AND status = 'active'",
+                (session_id,),
+            )
+            return [str(row[0]) for row in cursor]
+        finally:
+            conn.close()
+    except (sqlite3.DatabaseError, OSError) as exc:
+        _logger.warning("active_worktree_paths_query_failed", error=str(exc))
+        return []
+
+
 def collect_recent_failed_plays(
     project_path: Path,
     *,
