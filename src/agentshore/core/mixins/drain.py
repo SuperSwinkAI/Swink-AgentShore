@@ -37,6 +37,12 @@ if TYPE_CHECKING:
 
 SHUTDOWN_GRACE_PERIOD_SECONDS = 5.0
 
+# How often the bounded graceful-drain watchdog (#180) re-checks the deadline.
+# Mirrors ``_LOOP_LIVENESS_CHECK_INTERVAL_SECONDS`` in loop.py: a coarse poll is
+# fine because the deadline is a coarse (minutes-scale) backstop, and a short
+# interval keeps the escalation prompt once the deadline passes.
+_GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS = 15.0
+
 
 class _DrainHost(Protocol):
     """Orchestrator *behaviour* the :class:`DrainController` invokes.
@@ -95,6 +101,12 @@ class DrainController:
         # One-shot guard for the drain-complete defensive-visibility warning
         # (``_on_drain_complete``) so it can never double-emit within a session.
         self._drain_complete_warned = False
+        # Bounded graceful-drain watchdog task (#180). Launched once when the
+        # graceful drain begins; escalates to the bounded hard stop if the drain
+        # has not completed within ``feedback.graceful_drain_timeout_seconds``.
+        # Runs OFF the core loop (like the loop-liveness watchdog) so a drain
+        # whose single in-flight play never finishes still gets reaped.
+        self._graceful_drain_watchdog_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
 
@@ -191,6 +203,87 @@ class DrainController:
         )
         self._runtime.pause_event.set()
         _logger.info("session_draining", reason=reason, session_id=self._session_id)
+        # Arm the bounded graceful-drain deadline (#180): if the drain has not
+        # completed within the configured timeout the watchdog escalates to the
+        # bounded hard stop, so a stuck in-flight play can no longer hang
+        # ``agentshore stop`` for hours.
+        self._start_graceful_drain_watchdog()
+
+    def graceful_drain_timeout_seconds(self) -> float | None:
+        """Resolve the configured graceful-drain deadline (None disables it)."""
+        return self._runtime.cfg.feedback.graceful_drain_timeout_seconds
+
+    def _start_graceful_drain_watchdog(self) -> None:
+        """Launch the bounded graceful-drain watchdog task (#180).
+
+        Idempotent. No-op when the deadline is unset (``None`` ⇒ unbounded
+        graceful drain) or a live task already exists. The task runs OFF the
+        core loop so a drain whose only in-flight play never finishes — the
+        wedge that previously hung ``stop`` ~1h — still gets reaped.
+        """
+        if self.graceful_drain_timeout_seconds() is None:
+            return
+        existing = self._graceful_drain_watchdog_task
+        if existing is not None and not existing.done():
+            return
+        self._graceful_drain_watchdog_task = asyncio.get_event_loop().create_task(
+            self._graceful_drain_watchdog(),
+            name="agentshore.graceful_drain_watchdog",
+        )
+
+    def _stop_graceful_drain_watchdog(self) -> None:
+        """Cancel the graceful-drain watchdog task if running."""
+        task = self._graceful_drain_watchdog_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _graceful_drain_watchdog(self) -> None:
+        """Escalate a graceful drain to the bounded hard stop past its deadline (#180).
+
+        Records a monotonic deadline at drain start and polls on a fixed
+        interval. While the drain is still in progress with in-flight plays
+        outstanding, once the deadline passes it emits
+        ``graceful_drain_deadline_escalation`` (with elapsed seconds + in-flight
+        count) and falls through to the existing bounded hard stop
+        (``do_stop`` cancels in-flight plays under the shutdown grace period).
+        Exits early when the drain completes, is reversed (``draining`` cleared
+        by ``_exit_drain``), or a stop is already underway — ``stop`` is
+        re-entrancy safe regardless.
+        """
+        timeout = self.graceful_drain_timeout_seconds()
+        if timeout is None:
+            return
+        deadline = time.monotonic() + timeout
+        interval = _GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS
+        while not self._runtime.stop_requested and not self._runtime.stopped:
+            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            if self._runtime.stop_requested or self._runtime.stopped:
+                return
+            # Drain reversed (e.g. a raised budget cap un-drained the session) or
+            # already finished — the deadline no longer applies.
+            if not self._runtime.draining:
+                return
+            if time.monotonic() < deadline:
+                continue
+            in_flight = len(self._runtime.in_flight)
+            elapsed = time.monotonic() - (deadline - timeout)
+            _logger.warning(
+                "graceful_drain_deadline_escalation",
+                session_id=self._session_id,
+                elapsed_seconds=round(elapsed, 1),
+                timeout_seconds=timeout,
+                in_flight=in_flight,
+                note=(
+                    "graceful drain did not complete within "
+                    "feedback.graceful_drain_timeout_seconds; escalating to the "
+                    "bounded hard stop (cancelling in-flight plays)"
+                ),
+            )
+            # Drive the bounded teardown directly. ``stop`` is re-entrancy safe
+            # and shielded; it bounds the in-flight wait by the shutdown grace
+            # period, so this cannot itself hang.
+            await self._host._safe_call(self.stop(), "graceful_drain_deadline_stop")
+            return
 
     async def hard_stop(self) -> None:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
@@ -411,6 +504,8 @@ class DrainController:
 
     async def _exit_drain(self) -> None:
         """Reverse a budget/time reserve drain, returning the session to running."""
+        # A reversed drain must not be reaped by the bounded-drain watchdog (#180).
+        self._stop_graceful_drain_watchdog()
         self._runtime.draining = False
         self._runtime.drain_initialized = False
         self._runtime.drain_reason = None
@@ -437,6 +532,12 @@ class DrainController:
         if self._runtime.stopped:
             await self._runtime.stop_done.wait()
             return
+        # Cancel the bounded-drain watchdog (#180) now that a stop is underway so
+        # it cannot re-enter ``stop`` after this body completes. Harmless when the
+        # watchdog itself initiated this stop — cancelling a task from within its
+        # own awaited call is a no-op until it next suspends, and it returns
+        # immediately after awaiting ``stop``.
+        self._stop_graceful_drain_watchdog()
         self._runtime.stopped = True
         self._runtime.stop_requested = True
         self._runtime.pause_reason = None

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -44,6 +45,7 @@ from agentshore.agents.worktree.allocator import (
 )
 from agentshore.agents.worktree.reaper import (
     ReapReport,
+    _reap_one,
     free_disk_mb,
     reap_for_closed_prs,
     reap_for_disk_pressure,
@@ -53,6 +55,7 @@ from agentshore.agents.worktree.registry import (
     WorktreeAllocationConflict,
     WorktreeRow,
     insert_worktree,
+    list_stale,
     lookup_by_branch,
     lookup_by_prebranch_key,
     mark_status,
@@ -504,15 +507,69 @@ class WorktreeManager:
         await asyncio.to_thread(shutil.rmtree, legacy, ignore_errors=True)
         log.info("worktree_legacy_orphan_dir_removed", path=str(legacy))
 
-    async def reap_closed_prs(self, *, ttl_seconds: int) -> ReapReport:
-        """Reap ``stale`` rows older than ``ttl_seconds`` in this session."""
-        report = await reap_for_closed_prs(
-            self._store,
-            session_id=self._session_id,
-            main_repo=self._main_repo,
-            ttl_seconds=ttl_seconds,
-        )
+    async def reap_closed_prs(
+        self, *, ttl_seconds: int, protected_ids: set[int] | None = None
+    ) -> ReapReport:
+        """Reap ``stale`` rows older than ``ttl_seconds`` in this session.
+
+        Worktrees with a live dispatch (``protected_ids``) are never reaped —
+        a PR can close while its worktree is mid-play, and reclaiming it out
+        from under the running play is the same "worktree reclaimed mid-play"
+        failure the disk governor's ``protected_ids`` already guards against
+        (#189). When ``protected_ids`` is empty this delegates straight to
+        ``reap_for_closed_prs``; when ids are present the protected ``stale``
+        rows are held back and only the rest are reaped via the same
+        ENOSPC-safe ``_reap_one`` path.
+        """
+        protected = protected_ids or set()
+        if not protected:
+            report = await reap_for_closed_prs(
+                self._store,
+                session_id=self._session_id,
+                main_repo=self._main_repo,
+                ttl_seconds=ttl_seconds,
+            )
+        else:
+            report = await self._reap_closed_prs_protected(
+                ttl_seconds=ttl_seconds, protected=protected
+            )
         await self._prune_locks()
+        return report
+
+    async def _reap_closed_prs_protected(
+        self, *, ttl_seconds: int, protected: set[int]
+    ) -> ReapReport:
+        """``reap_for_closed_prs`` with in-flight worktrees held back (#189).
+
+        Mirrors ``reap_for_closed_prs`` exactly — same TTL cutoff, same
+        ``list_stale`` scan, same ``_reap_one`` per row — but skips any row
+        whose ``worktree_id`` is in ``protected`` (a live dispatch), emitting
+        the ``worktree_closed_pr_reap_skipped_in_flight`` marker so the held
+        rows are observable.
+        """
+        if ttl_seconds < 0:
+            msg = f"ttl_seconds must be >= 0, got {ttl_seconds}"
+            raise ValueError(msg)
+        cutoff = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
+        stale = await list_stale(
+            self._store, session_id=self._session_id, before_iso=cutoff.isoformat()
+        )
+        report = ReapReport()
+        for row in stale:
+            if row.worktree_id in protected:
+                log.info(
+                    "worktree_closed_pr_reap_skipped_in_flight",
+                    worktree_id=row.worktree_id,
+                    branch=row.branch_name,
+                )
+                continue
+            await _reap_one(
+                self._store,
+                row=row,
+                main_repo=self._main_repo,
+                reason="closed_pr_ttl",
+                report=report,
+            )
         return report
 
     def free_disk_mb(self) -> int:
