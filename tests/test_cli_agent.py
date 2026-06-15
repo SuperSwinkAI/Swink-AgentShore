@@ -1995,3 +1995,53 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     msg = str(excinfo.value)
     assert "never produced any stdout" in msg
     assert "agent-silent" in msg
+
+
+# ---------------------------------------------------------------------------
+# #176 — missing dispatch cwd (reclaimed worktree) maps to a recoverable error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_missing_cwd_raises_recoverable_not_filenotfound(
+    tmp_path: Path,
+) -> None:
+    """A dispatch whose cwd was reclaimed (TOCTOU) raises AgentProcessCrashed.
+
+    Regression for #176: a missing worktree cwd previously surfaced as a raw
+    ``FileNotFoundError`` (an OSError) from ``create_subprocess_exec``, which the
+    play executor's recoverable catch tuple does not match — so it logged
+    ``unexpected_play_error`` (category ``code_error``). It must instead map to
+    the typed, recoverable ``AgentProcessCrashed`` so the play fails cleanly.
+    """
+    from agentshore.errors import AgentProcessCrashed
+
+    missing = tmp_path / "worktrees" / "pickup-159"  # never created
+    assert not missing.exists()
+
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    with pytest.raises(AgentProcessCrashed) as exc_info:
+        await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=missing)
+
+    # Must NOT be a bare FileNotFoundError leaking through.
+    assert not isinstance(exc_info.value, FileNotFoundError)
+    assert "no longer exists" in str(exc_info.value)
+    assert str(missing) in str(exc_info.value)
+    assert handle.process is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cli_cwd_is_file_raises_recoverable(tmp_path: Path) -> None:
+    """A cwd that exists but is a file (not a dir) is also recoverable, not raw."""
+    from agentshore.errors import AgentProcessCrashed
+
+    not_a_dir = tmp_path / "cwd_is_a_file"
+    not_a_dir.write_text("x", encoding="utf-8")
+
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+
+    with pytest.raises(AgentProcessCrashed):
+        await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=not_a_dir)

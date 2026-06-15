@@ -16,6 +16,7 @@ from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
     AgentOutputInvalid,
+    AgentProcessCrashed,
     AgentProcessError,
     ErrorClass,
     PlayTimeoutError,
@@ -835,17 +836,44 @@ async def dispatch_cli(
     # never drains could block on a full pipe buffer.
     prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
 
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(effective_cwd),
-        limit=cfg.line_limit_bytes,
-        start_new_session=True,
-        creationflags=subprocess_env.no_window_creationflags(),
-        env=env,
-    )
+    # Backstop for the worktree-reclaim TOCTOU race (#176): the dispatch cwd is
+    # an AgentShore-managed worktree that reconcile / collision-reclaim churn can
+    # remove between allocation and spawn. POSIX surfaces a missing cwd as a raw
+    # ``FileNotFoundError`` (an ``OSError``) from ``create_subprocess_exec``,
+    # which ``manager.dispatch`` re-raises uncaught — the play executor then has
+    # no recoverable match and logs ``unexpected_play_error``. Detect it here and
+    # raise a *typed* recoverable error instead so the play fails cleanly and PPO
+    # re-picks. Done before spawn so the diagnosis is unambiguous (a spawn-time
+    # ``FileNotFoundError`` could otherwise mean a missing executable).
+    if not os.path.isdir(effective_cwd):
+        raise AgentProcessCrashed(f"dispatch cwd (worktree) no longer exists: {effective_cwd}")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(effective_cwd),
+            limit=cfg.line_limit_bytes,
+            start_new_session=True,
+            creationflags=subprocess_env.no_window_creationflags(),
+            env=env,
+        )
+    except NotADirectoryError as exc:
+        # cwd path exists but is a file, not a directory — same recoverable class
+        # as the missing-cwd race above.
+        raise AgentProcessCrashed(
+            f"dispatch cwd (worktree) is not a directory: {effective_cwd}"
+        ) from exc
+    except FileNotFoundError as exc:
+        # The pre-spawn ``isdir`` check ruled out a missing cwd, so a
+        # ``FileNotFoundError`` here is the agent executable being absent. Still
+        # recoverable (re-instantiate the agent), so map to the same typed class
+        # rather than letting a raw ``OSError`` reach ``unexpected_play_error``.
+        raise AgentProcessCrashed(
+            f"agent {handle.agent_id!r} executable not found: {argv[0]!r}"
+        ) from exc
     handle.process = proc
     stdin_feeder: asyncio.Task[None] | None = None
     if prompt_on_stdin and proc.stdin is not None:

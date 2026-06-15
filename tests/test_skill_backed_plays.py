@@ -1659,6 +1659,71 @@ async def test_execute_no_agent_id_returns_failure() -> None:
     assert outcome.agent_id is None
 
 
+@pytest.mark.asyncio
+async def test_execute_reclaimed_worktree_returns_recoverable_failure(
+    tmp_path: object,
+) -> None:
+    """#176: a worktree reclaimed before dispatch yields a clean recoverable failure.
+
+    The allocated worktree cwd is removed (TOCTOU race with reconcile /
+    collision-reclaim churn) between allocation and dispatch. The play must NOT
+    spawn — it returns ``PlayOutcome.failed`` with ``FailureKind.AGENT_ERROR`` and
+    a "worktree reclaimed before dispatch" reason so PPO re-picks cleanly.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.errors import FailureKind
+    from agentshore.plays.base import PlayParams
+    from agentshore.state import PlayType, SkillResult
+
+    assert isinstance(tmp_path, Path)
+    missing_worktree = tmp_path / "worktrees" / "pickup-159"  # never created
+    assert not missing_worktree.exists()
+
+    play = IssuePickupPlay()
+    ctx = _ctx_for_execute()
+    ctx.project_path = tmp_path  # real path so the isolation guard can resolve()
+
+    params = PlayParams(
+        agent_id="a1",
+        issue_number=159,
+        _runtime_allocation=WorktreeAllocation(
+            worktree_id=1,
+            path=missing_worktree,
+            branch_name="agentshore/pickup-159",
+            pre_branch_key=None,
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        ),
+    )
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=[]),
+        ),
+    ):
+        outcome = await play.execute(_state(), params, ctx=ctx)
+
+    # The dispatch must NOT have happened — short-circuited before the spawn.
+    ctx.manager.dispatch.assert_not_awaited()
+    assert outcome.success is False
+    assert outcome.agent_id == "a1"
+    assert outcome.failure_kind == FailureKind.AGENT_ERROR
+    assert outcome.retry_requested is True
+    assert "worktree reclaimed before dispatch" in (outcome.error or "")
+
+
 # ---------------------------------------------------------------------------
 # MergePRPlay execute()
 # ---------------------------------------------------------------------------

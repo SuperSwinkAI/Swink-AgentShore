@@ -459,6 +459,28 @@ class SkillBackedPlay(Play, ABC):
                     "trunk_artifact_presnapshot_failed", error=str(exc), play_id=ctx.play_id
                 )
 
+        # Graceful guard for the worktree-reclaim TOCTOU race (#176): the
+        # allocated worktree can be removed by reconcile / collision-reclaim
+        # churn between allocation and this dispatch. If the resolved cwd is gone,
+        # short-circuit to a recoverable failure rather than letting the spawn
+        # raise (which ``cli_agent`` now maps to AgentProcessCrashed anyway — this
+        # is the cheaper, no-spawn path). PPO re-picks cleanly on the next tick.
+        if dispatch_cwd is not None and not dispatch_cwd.exists():
+            _logger.warning(
+                "play_dispatch_cwd_reclaimed",
+                play_type=self.play_type.value,
+                play_id=ctx.play_id,
+                agent_id=agent_id,
+                dispatch_cwd=str(dispatch_cwd),
+            )
+            return PlayOutcome.failed(
+                self.play_type,
+                error=(f"worktree reclaimed before dispatch: {dispatch_cwd} no longer exists"),
+                agent_id=agent_id,
+                retry_requested=True,
+                failure_kind=FailureKind.AGENT_ERROR,
+            )
+
         invocation = await ctx.manager.dispatch(
             agent_id,
             prompt,
