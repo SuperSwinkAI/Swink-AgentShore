@@ -35,11 +35,14 @@ jobs:
         run: npm ci  # root workspace lockfile covers dashboard + desktop
 
       - name: Import Developer ID certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "APPLE_CERTIFICATE secret not set — skipping cert import (unsigned build)"
+            exit 0
+          fi
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -60,11 +63,12 @@ jobs:
 
       - name: Build macOS package
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ -z "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+          if [ -z "$APPLE_CERTIFICATE" ]; then
             uv run python -m scripts.buildkit macos --no-sign
           else
             uv run python -m scripts.buildkit macos
