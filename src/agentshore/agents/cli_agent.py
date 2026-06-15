@@ -24,6 +24,7 @@ from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.errors import (
     AgentOutputInvalid,
+    AgentProcessCrashed,
     AgentProcessError,
     ErrorClass,
     PlayTimeoutError,
@@ -370,6 +371,17 @@ class _ReadOutput:
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
+# Launch-to-first-byte deadline (#177). A healthy CLI agent emits its first JSON
+# stream event within seconds of launch; a wedged child (the intermittent codex
+# rollout-thread / keychain race) produces *nothing* and otherwise rides the full
+# wall-clock ``timeout`` (default 3600s) before any watchdog fires — the existing
+# ``stream_idle_timeout`` (default 1800s) only catches first-byte silence at its
+# own, much larger, bound. This dedicated short deadline caps the blast radius of
+# a launch wedge to ~2 min so the orchestrator retries promptly. It only governs
+# the *first* byte; once any stdout arrives, ``_watch_stream_idle`` owns silence
+# detection. Recoverable like the other timeouts — the orchestrator re-picks.
+_FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
+
 
 @dataclass(slots=True)
 class _StdoutActivity:
@@ -703,17 +715,32 @@ async def _await_output_or_timeout(
             agent_type=handle.agent_type.value,
         )
     )
+    # Launch-to-first-byte watchdog (#177). Caps a silent-launch wedge at
+    # ``_FIRST_BYTE_DEADLINE_S`` (~2 min) instead of the full wall-clock
+    # ``timeout``. Clamped to ``timeout`` so it never outlives the dispatch.
+    first_byte_task = asyncio.create_task(
+        _watch_first_byte(
+            stdout_activity,
+            deadline=min(_FIRST_BYTE_DEADLINE_S, timeout),
+            agent_id=handle.agent_id,
+            agent_type=handle.agent_type.value,
+            model_tier=handle.model_tier,
+            prompt_bytes=prompt_bytes,
+        )
+    )
+    # All non-read watchers, for uniform cancellation on every exit path.
+    watcher_tasks = (idle_task, auth_task, first_byte_task)
 
     done, _pending = await asyncio.wait(
-        {read_task, idle_task, auth_task},
+        {read_task, *watcher_tasks},
         timeout=float(timeout),
         return_when=asyncio.FIRST_COMPLETED,
     )
     if not done:
         read_task.cancel()
-        idle_task.cancel()
-        auth_task.cancel()
-        await asyncio.gather(read_task, idle_task, auth_task, return_exceptions=True)
+        for watcher in watcher_tasks:
+            watcher.cancel()
+        await asyncio.gather(read_task, *watcher_tasks, return_exceptions=True)
         # desktop-awc: enrich the wall-clock timeout error with the
         # agent shape so operators can spot whether timeouts correlate
         # with model tier or huge prompts without having to rejoin the
@@ -734,25 +761,42 @@ async def _await_output_or_timeout(
     if auth_task in done and read_task not in done:
         auth_exc = auth_task.exception()
         read_task.cancel()
-        idle_task.cancel()
-        await asyncio.gather(read_task, idle_task, return_exceptions=True)
+        for watcher in watcher_tasks:
+            if watcher is not auth_task:
+                watcher.cancel()
+        await asyncio.gather(
+            read_task,
+            *(w for w in watcher_tasks if w is not auth_task),
+            return_exceptions=True,
+        )
         raise (
             auth_exc
             if auth_exc is not None
             else AssertionError("stderr-auth watcher completed without raising")
         )
     if read_task in done:
-        idle_task.cancel()
-        auth_task.cancel()
-        await asyncio.gather(idle_task, auth_task, return_exceptions=True)
+        for watcher in watcher_tasks:
+            watcher.cancel()
+        await asyncio.gather(*watcher_tasks, return_exceptions=True)
         read_result = await read_task
         if isinstance(read_result, _ReadOutputFailed):
             raise read_result.exc
         return read_result, post_response_killed
     else:
-        auth_task.cancel()
-        await asyncio.gather(auth_task, return_exceptions=True)
-        idle_exc = idle_task.exception()
+        # A watchdog fired before the read completed. The first-byte watchdog and
+        # the idle watcher both raise PlayTimeoutError; the stderr-auth watcher is
+        # handled above. Pick whichever of idle/first-byte finished and cancel the
+        # rest. The first-byte deadline only fires when no stdout ever arrived, so
+        # it shares the stream-idle handling below.
+        fired_watcher = first_byte_task if first_byte_task in done else idle_task
+        for watcher in watcher_tasks:
+            if watcher is not fired_watcher:
+                watcher.cancel()
+        await asyncio.gather(
+            *(w for w in watcher_tasks if w is not fired_watcher),
+            return_exceptions=True,
+        )
+        idle_exc = fired_watcher.exception()
         if idle_exc is None:
             read_result = await read_task
         elif (
@@ -888,6 +932,11 @@ async def dispatch_cli(
     """
     timeout = cfg.timeout if cfg.timeout is not None else default_timeout
     stream_idle_timeout = float(cfg.stream_idle_timeout)
+    # Safety clamp (#177): a misconfigured ``stream_idle_timeout`` larger than the
+    # wall-clock ``timeout`` would let the silence watchdog never fire before the
+    # dispatch is force-killed — effectively disabling early silence detection. Cap
+    # it at the dispatch timeout so the idle watcher always gets a chance to run.
+    stream_idle_timeout = min(stream_idle_timeout, float(timeout))
     max_bytes = cfg.max_output_size
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
@@ -956,17 +1005,44 @@ async def dispatch_cli(
     # never drains could block on a full pipe buffer.
     prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
 
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(effective_cwd),
-        limit=cfg.line_limit_bytes,
-        start_new_session=True,
-        creationflags=subprocess_env.no_window_creationflags(),
-        env=env,
-    )
+    # Backstop for the worktree-reclaim TOCTOU race (#176): the dispatch cwd is
+    # an AgentShore-managed worktree that reconcile / collision-reclaim churn can
+    # remove between allocation and spawn. POSIX surfaces a missing cwd as a raw
+    # ``FileNotFoundError`` (an ``OSError``) from ``create_subprocess_exec``,
+    # which ``manager.dispatch`` re-raises uncaught — the play executor then has
+    # no recoverable match and logs ``unexpected_play_error``. Detect it here and
+    # raise a *typed* recoverable error instead so the play fails cleanly and PPO
+    # re-picks. Done before spawn so the diagnosis is unambiguous (a spawn-time
+    # ``FileNotFoundError`` could otherwise mean a missing executable).
+    if not os.path.isdir(effective_cwd):
+        raise AgentProcessCrashed(f"dispatch cwd (worktree) no longer exists: {effective_cwd}")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(effective_cwd),
+            limit=cfg.line_limit_bytes,
+            start_new_session=True,
+            creationflags=subprocess_env.no_window_creationflags(),
+            env=env,
+        )
+    except NotADirectoryError as exc:
+        # cwd path exists but is a file, not a directory — same recoverable class
+        # as the missing-cwd race above.
+        raise AgentProcessCrashed(
+            f"dispatch cwd (worktree) is not a directory: {effective_cwd}"
+        ) from exc
+    except FileNotFoundError as exc:
+        # The pre-spawn ``isdir`` check ruled out a missing cwd, so a
+        # ``FileNotFoundError`` here is the agent executable being absent. Still
+        # recoverable (re-instantiate the agent), so map to the same typed class
+        # rather than letting a raw ``OSError`` reach ``unexpected_play_error``.
+        raise AgentProcessCrashed(
+            f"agent {handle.agent_id!r} executable not found: {argv[0]!r}"
+        ) from exc
     handle.process = proc
     # Drains stderr live so a backend-auth signature aborts the dispatch as AUTH
     # (instead of waiting out the idle timeout). It also retains the stderr text
@@ -1232,6 +1308,52 @@ async def _watch_stream_idle(
                 f"agent {agent_id!r}{extra} {silence_qualifier} for {timeout:g}s",
                 error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
             )
+
+
+async def _watch_first_byte(
+    stdout_activity: _StdoutActivity,
+    *,
+    deadline: float,
+    agent_id: str,
+    agent_type: str = "?",
+    model_tier: str | None = None,
+    prompt_bytes: int | None = None,
+) -> NoReturn:
+    """Kill the dispatch if no stdout byte arrives within ``deadline`` seconds (#177).
+
+    A healthy CLI agent streams its first JSON event within seconds of launch;
+    a launch-wedged child (codex rollout-thread / keychain race) emits nothing
+    and would otherwise ride the full wall-clock ``timeout``. This watchdog fires
+    *only* on first-byte silence — once ``received_any`` flips True it exits and
+    leaves silence detection to ``_watch_stream_idle``. Recoverable via the same
+    ``ErrorClass.TIMEOUT_STREAM_IDLE`` class the idle watcher uses, so the
+    orchestrator retries rather than escalating.
+    """
+    start = time.monotonic()
+    sleep_s = min(2.0, max(deadline / 20.0, 0.01))
+    while True:
+        await asyncio.sleep(sleep_s)
+        if stdout_activity.received_any:
+            # First byte arrived — hand off to the idle watcher and stop here by
+            # sleeping forever (the caller cancels this task on read completion).
+            await asyncio.sleep(_NEVER_S)
+        if time.monotonic() - start >= deadline:
+            tier_label = model_tier or "?"
+            extra = f" ({agent_type}/{tier_label}"
+            if prompt_bytes is not None:
+                extra += f", prompt_bytes={prompt_bytes}"
+            extra += ")"
+            raise PlayTimeoutError(
+                f"agent {agent_id!r}{extra} never produced first byte within "
+                f"{deadline:g}s (launch wedge)",
+                error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+            )
+
+
+# Effectively-infinite sleep used to park the first-byte watchdog once it has
+# handed off to the idle watcher; the caller always cancels the task on read
+# completion, so this never actually elapses.
+_NEVER_S: Final[float] = 365 * 24 * 3600.0
 
 
 # ---------------------------------------------------------------------------
