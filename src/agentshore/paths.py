@@ -12,7 +12,7 @@ from typing import Final
 import platformdirs
 
 # ── Global (user-level) config dir ───────────────────────────────────────────
-GLOBAL_CONFIG_DIR: Final[Path] = Path(platformdirs.user_config_dir("agentshore", "swink"))
+GLOBAL_CONFIG_DIR: Final[Path] = Path(platformdirs.user_config_dir("agentshore", "SuperSwinkAI"))
 GLOBAL_WEIGHTS_DIR: Final[Path] = GLOBAL_CONFIG_DIR / "weights"
 GLOBAL_SESSIONS_DIR: Final[Path] = GLOBAL_CONFIG_DIR / "sessions"
 GLOBAL_AVAILABILITY_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "availability.yaml"

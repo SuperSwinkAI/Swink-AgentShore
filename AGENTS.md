@@ -8,7 +8,7 @@ AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agen
 
 ## Critical: Never Run AgentShore CLI Commands Directly
 
-**Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from this agent session.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and have cost hundreds of dollars in wasted spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
+**Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from this agent session.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and can generate significant unexpected spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
 
 **Single exception: the `/monitor_run` skill.** When the user directly invokes `/monitor_run` (and only then), the skill body is authorised to run `agentshore stop --project <DIR>` — and nothing else; `/monitor_run` attaches to an already-running session and never starts one. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the command it prescribes — every other AgentShore CLI invocation still falls under the rule above.
 
@@ -95,4 +95,4 @@ Comprehensive design documentation lives in `docs/design/`. The PRD cross-links 
 
 ## Git Signing
 
-Commits should remain signed. Do not bypass signing with `commit.gpgsign=false`. This repo uses SSH commit signing; if a commit prompts for your SSH key (e.g. `~/.ssh/id_ed25519`), make sure your SSH agent is reachable first. On macOS, `ssh-add --apple-use-keychain ~/.ssh/<your-key>` loads the key from the Keychain; if you sign through a keychain-backed wrapper, point `gpg.ssh.program` at it and ensure it exports `SSH_AUTH_SOCK` before invoking `ssh-keygen`.
+Commits should remain signed. Do not bypass signing with `commit.gpgsign=false`. This repo uses SSH commit signing; if a commit prompts for your SSH key, make sure your SSH agent is reachable first. On macOS, `ssh-add --apple-use-keychain ~/.ssh/<your-key>` loads the key from the Keychain; if you sign through a keychain-backed wrapper, point `gpg.ssh.program` at it and ensure it exports `SSH_AUTH_SOCK` before invoking `ssh-keygen`.
