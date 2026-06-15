@@ -32,9 +32,7 @@ jobs:
         run: uv sync --group dev --locked
 
       - name: Install npm dependencies
-        run: |
-          npm --prefix dashboard ci
-          npm --prefix desktop ci
+        run: npm ci  # root workspace lockfile covers dashboard + desktop
 
       - name: Import Developer ID certificate
         env:

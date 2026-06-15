@@ -82,13 +82,14 @@ packages = ["src/agentshore"]
 # 30+ GB) and dashboard/node_modules/, making `uv build` hang for 15+
 # minutes (desktop-otwc). The wheel target above is unaffected — it
 # enumerates only src/agentshore.
+#
+# dashboard/ and desktop/ are excluded entirely: dashboard/src/ alone is ~87 MB
+# (TypeScript/assets), which would push the sdist past PyPI's 100 MB per-file
+# limit. These directories are not needed to install or use the Python package;
+# building the UI requires a separate `npm ci && npm run build` step.
 exclude = [
-    "/desktop/src-tauri/target",
-    "/desktop/src-tauri/binaries",  # PyInstaller-frozen sidecar (~170 MB platform-specific)
-    "/desktop/node_modules",
-    "/desktop/dist",
-    "/dashboard/node_modules",
-    "/dashboard/dist",
+    "/dashboard",
+    "/desktop",
     "/.agentshore",
     "/dist",
     "/.git",
