@@ -185,6 +185,46 @@ async def test_release_active_work_claims_for_agents_releases_only_matching_agen
 
 
 @pytest.mark.asyncio
+async def test_release_active_work_claims_for_agents_skips_protected_groups(
+    tmp_path,
+) -> None:
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        protected_group = await store.acquire_work_claims(
+            "s1",
+            "issue_pickup",
+            ["issue:101"],
+            status="running",
+            agent_id="idle-agent",
+        )
+        stale_group = await store.acquire_work_claims(
+            "s1",
+            "issue_pickup",
+            ["issue:102"],
+            status="running",
+            agent_id="idle-agent",
+        )
+
+        released = await store.release_active_work_claims_for_agents(
+            "s1",
+            {"idle-agent"},
+            exclude_claim_group_ids={protected_group},
+        )
+
+        assert released == 1
+        assert protected_group is not None
+        assert stale_group is not None
+        protected_claims = await store.get_work_claim_group("s1", protected_group)
+        stale_claims = await store.get_work_claim_group("s1", stale_group)
+        assert [claim.status for claim in protected_claims] == ["running"]
+        assert [claim.status for claim in stale_claims] == ["released"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_add_pull_request_labels_preserves_existing_labels(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()

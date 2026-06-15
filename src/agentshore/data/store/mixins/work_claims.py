@@ -391,12 +391,21 @@ class _WorkClaimsMixin(_DataStoreBase):
         self,
         session_id: str,
         agent_ids: list[str] | tuple[str, ...] | set[str] | frozenset[str],
+        *,
+        exclude_claim_group_ids: set[str] | frozenset[str] | None = None,
     ) -> int:
-        """Release all active work claims owned by the provided idle agents."""
+        """Release active work claims owned by idle agents, excluding protected groups."""
         ids = sorted({str(agent_id) for agent_id in agent_ids if agent_id})
         if not ids:
             return 0
+        excluded = sorted({str(group_id) for group_id in (exclude_claim_group_ids or set())})
         agent_placeholders = ",".join("?" for _ in ids)
+        excluded_clause = ""
+        excluded_params: tuple[str, ...] = ()
+        if excluded:
+            excluded_placeholders = ",".join("?" for _ in excluded)
+            excluded_clause = f"AND claim_group_id NOT IN ({excluded_placeholders})"
+            excluded_params = tuple(excluded)
         status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
         cursor = await self._conn.execute(
             f"""
@@ -405,8 +414,9 @@ class _WorkClaimsMixin(_DataStoreBase):
              WHERE session_id = ?
                AND agent_id IN ({agent_placeholders})
                AND {status_clause}
+               {excluded_clause}
             """,
-            (now_iso(), session_id, *ids, *status_params),
+            (now_iso(), session_id, *ids, *status_params, *excluded_params),
         )
         await self._conn.commit()
         return cursor.rowcount

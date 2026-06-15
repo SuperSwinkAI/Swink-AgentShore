@@ -13,6 +13,7 @@ import pytest
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
 from agentshore.config.models import ModelTierConfig
 from agentshore.core import Orchestrator
+from agentshore.core.context import _DispatchContext
 from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
@@ -491,6 +492,66 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_awaited_once_with("s1", ["agent-1"])
+    assert orch._state_builder._idle_agent_claim_ticks == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_agent_claim_release_protects_in_flight_claim_group() -> None:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g-stale", resource_key="issue:42")
+    store = MagicMock()
+    store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
+    store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+
+    orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
+    orch._session_id = "s1"
+    orch._state_builder = StateBuilder(
+        host=orch,
+        runtime=orch._runtime,
+        store=store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id="s1",
+        repo_root=Path("/tmp"),
+        main_repo=orch._main_repo,
+        snapshots=MagicMock(),
+        velocity=MagicMock(),
+        recovery=MagicMock(),
+        overrides=MagicMock(),
+    )
+    in_flight_params = PlayParams(agent_id="agent-1", extras={"claim_group_id": "g-live"})
+    orch._runtime.dispatch_ctx = {
+        "dispatch-live": _DispatchContext(
+            dispatch_id="dispatch-live",
+            play_type=PlayType.ISSUE_PICKUP,
+            params=in_flight_params,
+            state_at_dispatch=OrchestratorState(
+                session_id="s1",
+                session_state=SessionState.RUNNING,
+                total_plays=0,
+                total_cost=0.0,
+            ),
+            pending_step=None,
+            dispatched_at=0.0,
+        )
+    }
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_idle_agent("agent-1")],
+    )
+
+    for _ in range(3):
+        await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
+
+    store.release_active_work_claims_for_agents.assert_awaited_once_with(
+        "s1",
+        ["agent-1"],
+        exclude_claim_group_ids={"g-live"},
+    )
     assert orch._state_builder._idle_agent_claim_ticks == {}
 
 
