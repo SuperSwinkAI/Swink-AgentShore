@@ -1,5 +1,7 @@
 # AgentShore
 
+[![CI](https://github.com/SuperSwinkAI/Swink-AgentShore/actions/workflows/ci.yml/badge.svg)](https://github.com/SuperSwinkAI/Swink-AgentShore/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/agentshore)](https://pypi.org/project/agentshore/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+
 **RL-based multi-agent coding orchestrator.** AgentShore runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, or Gemini agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
 
 ## What it does
