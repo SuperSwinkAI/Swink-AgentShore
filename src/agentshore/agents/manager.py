@@ -48,6 +48,14 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
     "launch wedge",
 )
 
+# A Grok first-byte launch wedge burns ~120s without producing output, but —
+# unlike a backend-auth failure — it is transient. Rather than permanently
+# disabling the agent type for the session (the old grow-only behavior, #196),
+# a wedge records a bounded cooldown so the type auto-recovers after this many
+# selector ticks (#202). No config field: this is a fixed backstop, not a
+# tunable, and keeping it module-local avoids a config-schema dependency.
+_GROK_WEDGE_COOLDOWN_TICKS = 20
+
 
 def _is_grok_launch_wedge_timeout(handle: AgentHandle, exc: BaseException) -> bool:
     if handle.agent_type != AgentType.GROK:
@@ -114,6 +122,14 @@ class AgentManager:
         # analyzer can mask the whole type. Grow-only for the session. #zeke
         # auth-hang / #196.
         self.last_auth_failed_types: set[str] = set()
+        # Agent-type values whose backend hit a *transient* launch wedge (Grok
+        # first-byte timeout) this session. Distinct from the permanent
+        # ``last_auth_failed_types`` above: the state-builder mixin drains this
+        # into a DECAYING per-tick cooldown so the type auto-recovers rather than
+        # being disabled for the whole session (#202). Membership here only marks
+        # "a wedge was recorded since the last snapshot" — the actual expiry is
+        # tracked tick-relative in the runtime, not here.
+        self.wedge_cooldown_types: set[str] = set()
         # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
         # read by _selection.py to bias away from branch-exposed agents.
         self.branch_exposure: dict[str, str] = {}  # branch → agent_id
@@ -384,11 +400,13 @@ class AgentManager:
                 # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
                 # lands here rather than in the generic-error branch below. Treat
                 # it as a session-wide agent-type auth failure so PPO can't keep
-                # re-selecting a dead backend.
-                if handle.last_error_class == ErrorClass.AUTH or _is_grok_launch_wedge_timeout(
-                    handle, exc
-                ):
+                # re-selecting a dead backend. A Grok launch wedge is transient,
+                # so it records a bounded COOLDOWN instead of the permanent auth
+                # suppression (#202).
+                if handle.last_error_class == ErrorClass.AUTH:
                     self.last_auth_failed_types.add(handle.agent_type.value)
+                elif _is_grok_launch_wedge_timeout(handle, exc):
+                    self.wedge_cooldown_types.add(handle.agent_type.value)
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)

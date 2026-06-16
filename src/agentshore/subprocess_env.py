@@ -302,11 +302,16 @@ def hardened_env(
     *,
     for_git: bool = False,
     for_gh: bool = False,
+    for_grok: bool = False,
 ) -> dict[str, str]:
     """Return ``os.environ`` plus a fully non-interactive git/gh environment.
 
     *overlay* (per-identity ``GH_TOKEN``/``GH_CONFIG_DIR``/``GIT_SSH_COMMAND``)
     is applied last so caller values win. ``None`` overlay values are dropped.
+
+    *for_grok* overlays headless keys for the Grok CLI (``CI``/``NO_COLOR``/
+    ``CLICOLOR`` and a ``TERM=dumb`` fallback) so it never tries to drive an
+    interactive TTY surface on a detached subprocess.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
@@ -333,6 +338,17 @@ def hardened_env(
         env["GH_NO_UPDATE_NOTIFIER"] = "1"
         env["GH_PAGER"] = "cat"
         env["CLICOLOR"] = "0"
+    if for_grok:
+        # Headless-CLI hardening for Grok: force non-interactive, colorless
+        # output so the binary never probes for a TTY/ANSI surface on a
+        # detached subprocess. Applied additively. ``TERM`` is only defaulted
+        # to ``dumb`` when the resolved env doesn't already carry one, so a
+        # caller/parent ``TERM`` is preserved.
+        env["CI"] = "1"
+        env["NO_COLOR"] = "1"
+        env["CLICOLOR"] = "0"
+        if not env.get("TERM"):
+            env["TERM"] = "dumb"
     if overlay:
         for key, value in overlay.items():
             if value is not None:

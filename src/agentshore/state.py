@@ -675,6 +675,14 @@ class OrchestratorState:
     # have PPO keep re-selecting codex into a dead backend (#zeke auth-hang).
     # Snapshotted each tick from the orchestrator's in-memory set; empty by default.
     auth_suppressed_agent_types: frozenset[str] = field(default_factory=frozenset)
+    # Agent-type values currently in a transient launch-wedge cooldown (Grok
+    # first-byte timeout). Unlike ``auth_suppressed_agent_types`` this is a
+    # DECAYING mask: the state-builder drops each entry once its cooldown expires,
+    # so the type auto-recovers without a new session/token (#202). The candidate
+    # analyzer masks plays resolving to a type in this set, with a distinct block
+    # reason. Snapshotted each tick (active, non-expired entries only); empty by
+    # default.
+    wedge_cooldown_agent_types: frozenset[str] = field(default_factory=frozenset)
     # Consecutive plays of the same type regardless of success/failure. Catches
     # PPO collapses onto a cheap repeated play (where every play succeeds and
     # `same_type_failure_streak` stays at 0). Used for masking + reward penalty

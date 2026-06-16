@@ -108,6 +108,7 @@ class _RawAgent(TypedDict, total=False):
     cost_per_1k_output: _RawNumber
     timeout: _RawNumber | None
     stream_idle_timeout: _RawNumber
+    first_byte_timeout_seconds: _RawNumber | None
     max_output_size: _RawNumber
     line_limit_bytes: _RawNumber
     extra_flags: list[object]
@@ -403,6 +404,7 @@ def _parse_agent(
     name: str, raw: _RawAgent, *, legacy_max_default: int | None = None
 ) -> AgentConfig:
     timeout_raw = raw.get("timeout")
+    first_byte_raw = raw.get("first_byte_timeout_seconds")
     flags_raw = raw.get("extra_flags", ())
     extra_flags = tuple(str(f) for f in flags_raw) if isinstance(flags_raw, list) else ()
     models_raw = raw.get("approved_models", ())
@@ -445,6 +447,7 @@ def _parse_agent(
         ),
         timeout=int(timeout_raw) if timeout_raw is not None else None,
         stream_idle_timeout=int(raw.get("stream_idle_timeout", 1800)),
+        first_byte_timeout_seconds=(int(first_byte_raw) if first_byte_raw is not None else None),
         max_output_size=int(raw.get("max_output_size", 10_000_000)),
         line_limit_bytes=int(raw.get("line_limit_bytes", 4_194_304)),
         extra_flags=extra_flags,

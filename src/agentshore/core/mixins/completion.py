@@ -1545,6 +1545,8 @@ class CompletionProcessor:
         """
         if self._runtime.worktrees is None:
             return
+        from agentshore.agents.worktree.reaper import _canon_path
+
         protected = {
             wt_id
             for ctx in self._runtime.dispatch_ctx.values()
@@ -1557,10 +1559,27 @@ class CompletionProcessor:
                 int,
             )
         }
+        # Path-keyed protection for the #203 dup-path alias: a stale OLD-id row
+        # can share the ``pickup-<N>`` directory with the LIVE new-id row, and
+        # id-keyed protection alone would let the TTL reaper remove that live
+        # directory. ``path`` is canonicalised to match DB-stored paths.
+        protected_paths = {
+            _canon_path(path)
+            for ctx in self._runtime.dispatch_ctx.values()
+            if (
+                path := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "path",
+                    None,
+                )
+            )
+            is not None
+        }
         try:
             report = await self._runtime.worktrees.reap_closed_prs(
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
                 protected_ids=protected,
+                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
@@ -1586,6 +1605,8 @@ class CompletionProcessor:
         target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
         if target_mb <= 0:
             return
+        from agentshore.agents.worktree.reaper import _canon_path
+
         protected = {
             wt_id
             for ctx in self._runtime.dispatch_ctx.values()
@@ -1598,10 +1619,24 @@ class CompletionProcessor:
                 int,
             )
         }
+        # Mirror the closed-PR sweep's path-keyed protection (#203 dup-path alias).
+        protected_paths = {
+            _canon_path(path)
+            for ctx in self._runtime.dispatch_ctx.values()
+            if (
+                path := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "path",
+                    None,
+                )
+            )
+            is not None
+        }
         try:
             report = await self._runtime.worktrees.reap_for_disk_pressure(
                 target_free_mb=target_mb,
                 protected_ids=protected,
+                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))

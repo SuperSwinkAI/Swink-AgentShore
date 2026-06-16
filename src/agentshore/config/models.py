@@ -163,6 +163,11 @@ class AgentConfig:
     timeout: int | None = None
     # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
+    # Per-agent override for the launch-to-first-byte watchdog (#177/#204). When
+    # set, it overrides both the per-agent-type built-in default and the global
+    # ``_FIRST_BYTE_DEADLINE_S`` floor (still clamped to ``timeout``). ``None``
+    # falls back to the per-type default, then the global default.
+    first_byte_timeout_seconds: int | None = None
     max_output_size: int = 10_000_000
     # Per-line buffer size for asyncio.create_subprocess_exec. CLI agents emit
     # stream-json where a single result line can exceed asyncio's 64KB default

@@ -472,23 +472,52 @@ class PlayExecutor:
         )
 
         if not await self._start_claim_group(params, play_id):
-            await self._finish_claim_group(params, status="released")
-            await self._persist_play(
-                play_id,
-                started_at,
-                False,
-                error="work claim inactive",
-                failure_category="code_error",
-                agent_id=params.agent_id,
-            )
-            raise _SkipDispatchError(
-                PlayOutcome.failed(
-                    play_type,
-                    "work claim inactive",
+            # #205: a RETRY dispatch can lose its claim group to the idle-claim
+            # reaper in the window between scheduling and dispatch (the group is
+            # released → start_work_claim_group finds no active rows → False).
+            # For a retry, attempt to re-acquire the group's resource keys before
+            # giving up; if the re-acquire succeeds the dispatch proceeds normally.
+            reacquired = False
+            is_retry = "__retry_prompt" in params.extras
+            if is_retry:
+                reacquired = await self._reacquire_claim_group(params, play_id, play_type)
+            if not reacquired:
+                await self._finish_claim_group(params, status="released")
+                if is_retry:
+                    # The resource is genuinely unavailable (held by another live
+                    # claim, not just reaped). Reclassify away from CODE_ERROR so a
+                    # benign retry-vs-reaper race doesn't pollute failure counters.
+                    await self._persist_play(
+                        play_id,
+                        started_at,
+                        False,
+                        error="retry claim unavailable",
+                        failure_category="staffing",
+                        agent_id=params.agent_id,
+                    )
+                    raise _SkipDispatchError(
+                        PlayOutcome.skipped_outcome(
+                            play_type,
+                            "staffing",
+                            error="retry claim unavailable",
+                        )
+                    )
+                await self._persist_play(
+                    play_id,
+                    started_at,
+                    False,
+                    error="work claim inactive",
+                    failure_category="code_error",
                     agent_id=params.agent_id,
-                    failure_kind=FailureKind.CODE_ERROR,
                 )
-            )
+                raise _SkipDispatchError(
+                    PlayOutcome.failed(
+                        play_type,
+                        "work claim inactive",
+                        agent_id=params.agent_id,
+                        failure_kind=FailureKind.CODE_ERROR,
+                    )
+                )
 
         current_play_handle = await self._notify_dispatch_started(
             play, play_type, params, play_id, started_at
@@ -729,6 +758,33 @@ class PlayExecutor:
             play_id=play_id,
             agent_id=params.agent_id,
         )
+
+    async def _reacquire_claim_group(
+        self, params: PlayParams, play_id: int, play_type: PlayType
+    ) -> bool:
+        """Re-acquire a retry's released claim group, then start it (#205).
+
+        Returns True only when the group's resource keys were free and the group
+        is now ``running``. False means the resources are genuinely held by
+        another active claim (a real conflict, not a reaper race).
+        """
+        claim_group_id = _claim_group_id(params)
+        if claim_group_id is None:
+            return False
+        existing = await self._store.get_work_claim_group(self._session_id, claim_group_id)
+        resource_keys = [row.resource_key for row in existing if row.resource_key]
+        if not resource_keys:
+            return False
+        acquired = await self._store.acquire_work_claims(
+            self._session_id,
+            play_type.value,
+            resource_keys,
+            claim_group_id=claim_group_id,
+            agent_id=params.agent_id,
+        )
+        if acquired is None:
+            return False
+        return await self._start_claim_group(params, play_id)
 
     async def _finish_claim_group(self, params: PlayParams | None, *, status: str) -> None:
         claim_group_id = _claim_group_id(params)

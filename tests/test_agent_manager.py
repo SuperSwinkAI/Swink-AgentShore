@@ -471,7 +471,7 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.consecutive_timeouts == 1
 
 
-async def test_grok_first_byte_launch_wedge_suppresses_type(
+async def test_grok_first_byte_launch_wedge_records_cooldown_not_permanent_suppression(
     store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mgr = AgentManager(
@@ -500,7 +500,10 @@ async def test_grok_first_byte_launch_wedge_suppresses_type(
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
     assert handle.timeout_count == 1
     assert handle.consecutive_timeouts == 1
-    assert mgr.last_auth_failed_types == {"grok"}
+    # #202: a launch wedge records a DECAYING cooldown, NOT the permanent
+    # auth-suppression set — the type must auto-recover after the cooldown.
+    assert mgr.wedge_cooldown_types == {"grok"}
+    assert mgr.last_auth_failed_types == set()
 
 
 async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_type(
@@ -529,6 +532,8 @@ async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_t
 
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
     assert mgr.last_auth_failed_types == set()
+    # A plain stream-idle timeout (no launch-wedge markers) is not a wedge.
+    assert mgr.wedge_cooldown_types == set()
 
 
 # ---------------------------------------------------------------------------
