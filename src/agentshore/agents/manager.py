@@ -374,6 +374,7 @@ class AgentManager:
                 handle,
                 prompt,
                 cfg=agent_cfg,
+                pricing=self._cfg.pricebook.quote(handle.agent_type.value, handle.model),
                 default_timeout=effective_timeout,
                 python_executable=self._python_executable,
                 identity_env=identity_env,

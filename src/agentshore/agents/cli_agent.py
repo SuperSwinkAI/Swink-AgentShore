@@ -22,6 +22,7 @@ from agentshore.agents._jsonl import (
 )
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
+from agentshore.agents.pricing import PricingQuote, default_quote
 from agentshore.errors import (
     AgentOutputInvalid,
     AgentProcessCrashed,
@@ -980,6 +981,7 @@ async def dispatch_cli(
     prompt: str,
     *,
     cfg: AgentConfig,
+    pricing: PricingQuote | None = None,
     default_timeout: int = _DEFAULT_TIMEOUT,
     python_executable: str | None = None,
     identity_env: dict[str, str] | None = None,
@@ -998,6 +1000,11 @@ async def dispatch_cli(
         Pre-rendered skill prompt to pass to the agent.
     cfg:
         Per-agent configuration from ``RuntimeConfig.agents[name]``.
+    pricing:
+        Resolved per-model :class:`~agentshore.agents.pricing.PricingQuote` used
+        to price this dispatch's token usage. ``None`` (direct/test callers)
+        falls back to the bundled global-default quote; the manager always
+        resolves the live quote from ``RuntimeConfig.pricebook``.
     python_executable:
         If set, ``cfg.binary`` is treated as a Python script path invoked with
         this interpreter.  Used by tests to run ``mock_agent.py`` through the
@@ -1207,7 +1214,7 @@ async def dispatch_cli(
     dollar_cost = estimate_cost(
         usage.tokens_in,
         usage.tokens_out,
-        cfg,
+        pricing if pricing is not None else default_quote(),
         cached_tokens_in=usage.cached_tokens_in,
         cache_write_tokens_in=usage.cache_write_tokens_in,
     )

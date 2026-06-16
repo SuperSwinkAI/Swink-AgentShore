@@ -142,7 +142,6 @@ agents:
       medium:
         enabled: true
         model: sonnet
-$PRICING_claude_code
   codex:
     enabled: true
     binary: codex
@@ -157,7 +156,6 @@ $PRICING_claude_code
         enabled: true
         model: gpt-5.4
         reasoning_effort: medium
-$PRICING_codex
   gemini:
     enabled: true
     binary: gemini
@@ -172,7 +170,6 @@ $PRICING_codex
       large:
         enabled: true
         model: pro
-$PRICING_gemini
   grok:
     enabled: true
     binary: grok
@@ -191,7 +188,6 @@ $PRICING_gemini
         enabled: true
         model: grok-build
         reasoning_effort: high
-$PRICING_grok
   fresh_start:
     max_plays_before_reset: 20
     context_threshold: 0.80
@@ -321,26 +317,18 @@ def render_config_yaml() -> str:
 
     Single named entry point for the on-disk default config used by
     ``load_config(None)``, :func:`generate_default_config`, and the desktop /
-    init paths. Per-agent pricing blocks are injected from the canonical
-    :data:`agentshore.agents.pricing.AGENT_PRICING` source so the defaults
-    cannot drift from the config parser; the CLI's minimal/parameterised
-    generator (:func:`agentshore.cli_helpers._generate_default_config`) shares
-    the same per-agent block renderer.
+    init paths. Token pricing is NOT emitted here — it lives in the external
+    ``pricing.yaml`` table (bundled default + global override); see
+    :func:`agentshore.agents.pricing.load_pricebook`.
 
     NOTE: this canonical template intentionally curates ``claude_code`` and
     ``codex`` down to ``small``/``medium`` tiers (no ``large``), which is why it
     is rendered from a curated string rather than blindly from
     ``default_model_tiers_for`` (that map also defines a ``large`` tier for both).
     """
-    from agentshore.agents.pricing import pricing_yaml_lines
-
-    text = _DEFAULT_YAML_TEMPLATE.replace(
+    return _DEFAULT_YAML_TEMPLATE.replace(
         "$STANDARD_PLAY_COOLDOWN_PLAYS", str(STANDARD_PLAY_COOLDOWN_PLAYS)
     )
-    for agent_key in ("claude_code", "codex", "gemini", "grok"):
-        block = "\n".join(pricing_yaml_lines(agent_key))
-        text = text.replace(f"$PRICING_{agent_key}", block)
-    return text
 
 
 def _build_default_yaml() -> str:

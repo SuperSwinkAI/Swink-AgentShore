@@ -102,10 +102,6 @@ class _RawAgent(TypedDict, total=False):
     approved_models: list[object]
     model_tiers: _RawModelTiers
     max_context: _RawNumber
-    cost_per_1k_input: _RawNumber
-    cost_per_1k_cached_input: _RawNumber | None
-    cost_per_1k_cache_write_input: _RawNumber | None
-    cost_per_1k_output: _RawNumber
     timeout: _RawNumber | None
     stream_idle_timeout: _RawNumber
     first_byte_timeout_seconds: _RawNumber | None
@@ -349,17 +345,18 @@ def _agent_default(name: str, key: str, fallback: None) -> float | int | None: .
 
 
 def _agent_default(name: str, key: str, fallback: float | int | None) -> float | int | None:
-    from agentshore.agents.pricing import AGENT_PRICING
+    """Per-agent-type default for non-priced agent fields (currently max_context).
 
-    pricing = AGENT_PRICING.get(name)
-    if pricing is None:
+    Sourced from the bundled price book's ``agent_defaults`` so the one place
+    that carries per-agent model metadata is ``pricing.yaml``.
+    """
+    from agentshore.agents.pricing import bundled_pricebook
+
+    entry = bundled_pricebook().agent_defaults.get(name)
+    if entry is None:
         return fallback
-    value = getattr(pricing, key, fallback)
+    value = getattr(entry, key, fallback)
     return fallback if value is None else value
-
-
-def _optional_float(value: float | int | str | None) -> float | None:
-    return None if value is None else float(value)
 
 
 def _parse_project(raw: _RawProject) -> ProjectConfig:
@@ -427,24 +424,6 @@ def _parse_agent(
         approved_models=approved_models,
         model_tiers=model_tiers,
         max_context=int(raw.get("max_context", _agent_default(name, "max_context", 200_000))),
-        cost_per_1k_input=float(
-            raw.get("cost_per_1k_input", _agent_default(name, "cost_per_1k_input", 0.003))
-        ),
-        cost_per_1k_cached_input=_optional_float(
-            raw.get(
-                "cost_per_1k_cached_input",
-                _agent_default(name, "cost_per_1k_cached_input", None),
-            )
-        ),
-        cost_per_1k_cache_write_input=_optional_float(
-            raw.get(
-                "cost_per_1k_cache_write_input",
-                _agent_default(name, "cost_per_1k_cache_write_input", None),
-            )
-        ),
-        cost_per_1k_output=float(
-            raw.get("cost_per_1k_output", _agent_default(name, "cost_per_1k_output", 0.015))
-        ),
         timeout=int(timeout_raw) if timeout_raw is not None else None,
         stream_idle_timeout=int(raw.get("stream_idle_timeout", 1800)),
         first_byte_timeout_seconds=(int(first_byte_raw) if first_byte_raw is not None else None),
@@ -1091,6 +1070,8 @@ def _parse_play_timeouts(raw: object) -> dict[str, int]:
 
 
 def _build_config(data: _RawConfig) -> RuntimeConfig:
+    from agentshore.agents.pricing import load_pricebook
+
     # Migration: legacy agent_spawn block → per-tier max
     legacy_max_default: int | None = None
     agent_spawn_raw = data.get("agent_spawn")
@@ -1128,6 +1109,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         trusted_ids=_parse_trusted_ids(trusted_ids_raw if trusted_ids_raw is not None else {}),
         identities=identities,
         agents=agents,
+        pricebook=load_pricebook(),
         play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
         bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
         fresh_start=fresh_start,

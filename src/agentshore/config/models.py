@@ -12,9 +12,24 @@ from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from agentshore.agents.pricing import PriceBook
+
 
 def _tuple(value: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return tuple(value)
+
+
+def _default_pricebook() -> PriceBook:
+    """Deterministic price-book default for a bare ``RuntimeConfig()``.
+
+    Uses the bundled (no global override) table so test/programmatic config
+    construction never depends on a developer's global pricing file. The
+    on-disk load path (``_build_config``) passes the full ``load_pricebook()``
+    so the global override + SIGHUP reload work for real sessions.
+    """
+    from agentshore.agents.pricing import bundled_pricebook
+
+    return bundled_pricebook()
 
 
 def _string_tuple_mapping(
@@ -156,10 +171,6 @@ class AgentConfig:
     approved_models: tuple[str, ...] = ()
     model_tiers: Mapping[str, ModelTierConfig] = field(default_factory=dict)
     max_context: int = 200000
-    cost_per_1k_input: float = 0.003
-    cost_per_1k_cached_input: float | None = None
-    cost_per_1k_cache_write_input: float | None = None
-    cost_per_1k_output: float = 0.015
     timeout: int | None = None
     # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
@@ -560,6 +571,9 @@ class RuntimeConfig:
     trusted_ids: TrustedIdsConfig = field(default_factory=TrustedIdsConfig)
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)
+    # Per-model token pricing, loaded from data/pricing.yaml (+ global override).
+    # SIGHUP reload rebuilds this from disk so price edits apply mid-session.
+    pricebook: PriceBook = field(default_factory=_default_pricebook)
     play_pacing: PlayPacingConfig = field(default_factory=PlayPacingConfig)
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)

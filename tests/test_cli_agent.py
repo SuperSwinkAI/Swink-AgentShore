@@ -27,6 +27,7 @@ from agentshore.agents.cli_agent import (
     dispatch_cli,
 )
 from agentshore.agents.handle import AgentHandle
+from agentshore.agents.pricing import AgentPricing, PricingQuote
 from agentshore.config import AgentConfig
 from agentshore.errors import (
     AgentOutputInvalid,
@@ -36,6 +37,27 @@ from agentshore.errors import (
 )
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
+
+
+def _price_quote(
+    *,
+    cost_per_1k_input: float,
+    cost_per_1k_output: float,
+    cost_per_1k_cached_input: float | None = None,
+    cost_per_1k_cache_write_input: float | None = None,
+) -> PricingQuote:
+    """Resolved pricing for a single dispatch (replaces per-AgentConfig rates)."""
+    return PricingQuote(
+        pricing=AgentPricing(
+            max_context=200000,
+            cost_per_1k_input=cost_per_1k_input,
+            cost_per_1k_cached_input=cost_per_1k_cached_input,
+            cost_per_1k_cache_write_input=cost_per_1k_cache_write_input,
+            cost_per_1k_output=cost_per_1k_output,
+        ),
+        cache_read_multiplier=0.1,
+        cache_write_multiplier=1.25,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -831,16 +853,18 @@ async def test_dispatch_cli_success_grok_streaming_json(
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="grok",
-        timeout=10,
-        cost_per_1k_input=0.001,
-        cost_per_1k_cached_input=0.0002,
-        cost_per_1k_output=0.002,
-    )
+    cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
     handle = _make_handle(agent_type=AgentType.GROK)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(
+            cost_per_1k_input=0.001,
+            cost_per_1k_cached_input=0.0002,
+            cost_per_1k_output=0.002,
+        ),
+    )
 
     assert result.exit_code == 0
     assert result.tokens_in == 120
@@ -863,15 +887,15 @@ async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_doubl
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="codex",
-        timeout=10,
-        cost_per_1k_input=0.003,
-        cost_per_1k_output=0.012,
-    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
     handle = _make_handle(agent_type=AgentType.CODEX)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    # No explicit cached rate → cache_read_multiplier (0.1) yields 0.0003.
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.012),
+    )
 
     assert result.tokens_in == 1000
     assert result.cached_tokens_in == 800
@@ -936,17 +960,19 @@ async def test_dispatch_cli_claude_json_accounts_for_cache_read_and_write_tokens
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="claude",
-        timeout=10,
-        cost_per_1k_input=0.003,
-        cost_per_1k_cached_input=0.0003,
-        cost_per_1k_cache_write_input=0.00375,
-        cost_per_1k_output=0.015,
-    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(
+            cost_per_1k_input=0.003,
+            cost_per_1k_cached_input=0.0003,
+            cost_per_1k_cache_write_input=0.00375,
+            cost_per_1k_output=0.015,
+        ),
+    )
 
     assert result.tokens_in == 1000
     assert result.cached_tokens_in == 700

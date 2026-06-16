@@ -1,0 +1,103 @@
+# AgentShore pricing table — the single source of truth for per-model token rates.
+#
+# HOW TO UPDATE PRICES (no code change, no rebuild):
+#   1. Copy this file to the global touchpoint that overrides the bundled copy:
+#        macOS:   ~/Library/Application Support/agentshore/pricing.yaml
+#        Linux:   ~/.config/agentshore/pricing.yaml
+#        Windows: %LOCALAPPDATA%\SuperSwinkAI\agentshore\pricing.yaml
+#      (the exact path is agentshore.paths.GLOBAL_PRICING_PATH)
+#   2. Edit only the entries you want to change — the global file is DEEP-MERGED
+#      over this bundled default, so you may list just the models you reprice.
+#   3. Send SIGHUP to a running session (or restart). The next dispatch uses the
+#      new rates; in-flight agents finish at the old rate.
+#
+# All rates are US dollars per 1,000 tokens. Optional fields (cached / cache
+# write) may be omitted; when absent, the multipliers below are applied to the
+# uncached input rate. Resolution order at cost time:
+#   models[<model id>]  →  agent_defaults[<agent type>]  →  default
+# A miss past the model tier is logged once so the gap is visible.
+
+# Applied to cached-read / cache-write input tokens for any model that omits an
+# explicit cost_per_1k_cached_input / cost_per_1k_cache_write_input.
+cache_read_multiplier: 0.1
+cache_write_multiplier: 1.25
+
+# Last-resort fallback when neither the model id nor its agent type is listed.
+default:
+  max_context: 200000
+  cost_per_1k_input: 0.003
+  cost_per_1k_output: 0.015
+
+# Per-agent-type defaults — used when the resolved model id is not in `models`.
+# These mirror the historical built-in rates so billing is unchanged for any
+# model not yet enumerated below.
+agent_defaults:
+  claude_code:
+    max_context: 200000
+    cost_per_1k_input: 0.003
+    cost_per_1k_cached_input: 0.0003
+    cost_per_1k_cache_write_input: 0.00375
+    cost_per_1k_output: 0.015
+  codex:
+    max_context: 400000
+    cost_per_1k_input: 0.00175
+    cost_per_1k_cached_input: 0.000175
+    cost_per_1k_output: 0.014
+  gemini:
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  grok:
+    max_context: 256000
+    cost_per_1k_input: 0.001
+    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_output: 0.002
+
+# Per-model rates (highest precedence). Keys match the `model:` strings used in
+# agentshore.yaml model tiers. Seeded from the agent-type defaults so the shipped
+# default config never logs a fallback; refine with real per-model rates from the
+# provider pricing pages as they diverge.
+models:
+  # ── claude_code (Anthropic) ────────────────────────────────────────────────
+  sonnet:
+    max_context: 200000
+    cost_per_1k_input: 0.003
+    cost_per_1k_cached_input: 0.0003
+    cost_per_1k_cache_write_input: 0.00375
+    cost_per_1k_output: 0.015
+  haiku:
+    max_context: 200000
+    cost_per_1k_input: 0.001
+    cost_per_1k_cached_input: 0.0001
+    cost_per_1k_cache_write_input: 0.00125
+    cost_per_1k_output: 0.005
+  # ── codex (OpenAI) ─────────────────────────────────────────────────────────
+  gpt-5.4:
+    max_context: 400000
+    cost_per_1k_input: 0.00175
+    cost_per_1k_cached_input: 0.000175
+    cost_per_1k_output: 0.014
+  gpt-5.4-mini:
+    max_context: 400000
+    cost_per_1k_input: 0.0006
+    cost_per_1k_cached_input: 0.00006
+    cost_per_1k_output: 0.0048
+  # ── gemini (Google) ────────────────────────────────────────────────────────
+  auto:
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  pro:
+    max_context: 1000000
+    cost_per_1k_input: 0.00125
+    cost_per_1k_output: 0.01
+  flash-lite:
+    max_context: 1000000
+    cost_per_1k_input: 0.0001
+    cost_per_1k_output: 0.0004
+  # ── grok (xAI) ─────────────────────────────────────────────────────────────
+  grok-build:
+    max_context: 256000
+    cost_per_1k_input: 0.001
+    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_output: 0.002

@@ -44,9 +44,11 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["codex"].max_context == 400_000
-    assert config.agents["codex"].cost_per_1k_input == 0.00175
-    assert config.agents["codex"].cost_per_1k_output == 0.014
-    assert config.agents["codex"].cost_per_1k_cached_input == 0.000175
+    # Token rates now live in the pricebook (pricing.yaml), not on AgentConfig.
+    codex_price = config.pricebook.resolve("codex", None)
+    assert codex_price.cost_per_1k_input == 0.00175
+    assert codex_price.cost_per_1k_output == 0.014
+    assert codex_price.cost_per_1k_cached_input == 0.000175
     assert config.agents["gemini"].model_tiers["small"].enabled is True
     assert config.agents["gemini"].model == "auto"
     assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"
@@ -59,9 +61,10 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["grok"].model_tiers["large"].model == "grok-build"
     assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
     assert config.agents["grok"].max_context == 256_000
-    assert config.agents["grok"].cost_per_1k_input == 0.001
-    assert config.agents["grok"].cost_per_1k_cached_input == 0.0002
-    assert config.agents["grok"].cost_per_1k_output == 0.002
+    grok_price = config.pricebook.resolve("grok", None)
+    assert grok_price.cost_per_1k_input == 0.001
+    assert grok_price.cost_per_1k_cached_input == 0.0002
+    assert grok_price.cost_per_1k_output == 0.002
     assert config.skills.path == ".agents/skills/"
 
 
@@ -212,9 +215,9 @@ def test_agent_config_has_timeout_and_output_size() -> None:
         assert agent_cfg.max_output_size == 10_000_000
         assert agent_cfg.line_limit_bytes == 4_194_304
     assert config.agent_timeout == 3600
-    assert config.agents["claude_code"].cost_per_1k_cached_input == 0.0003
-    assert config.agents["codex"].cost_per_1k_cached_input == 0.000175
-    assert config.agents["grok"].cost_per_1k_cached_input == 0.0002
+    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0003
+    assert config.pricebook.resolve("codex", None).cost_per_1k_cached_input == 0.000175
+    assert config.pricebook.resolve("grok", None).cost_per_1k_cached_input == 0.0002
     assert config.skills.path == ".agents/skills/"
 
 
@@ -232,7 +235,7 @@ agents:
     assert config.agents["claude_code"].line_limit_bytes == 8_388_608
 
 
-def test_partial_agent_config_uses_agent_specific_pricing_defaults(tmp_path: Path) -> None:
+def test_partial_agent_config_uses_agent_specific_defaults(tmp_path: Path) -> None:
     yaml_text = """
 agents:
   codex:
@@ -242,14 +245,16 @@ agents:
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
     config = load_config(tmp_path / "agentshore.yaml")
 
-    codex = config.agents["codex"]
-    assert codex.max_context == 400_000
-    assert codex.cost_per_1k_input == 0.00175
-    assert codex.cost_per_1k_cached_input == 0.000175
-    assert codex.cost_per_1k_output == 0.014
+    # max_context default is sourced from the pricebook's agent_defaults.
+    assert config.agents["codex"].max_context == 400_000
+    # Token rates resolve through the pricebook, not the AgentConfig.
+    codex_price = config.pricebook.resolve("codex", None)
+    assert codex_price.cost_per_1k_input == 0.00175
+    assert codex_price.cost_per_1k_cached_input == 0.000175
+    assert codex_price.cost_per_1k_output == 0.014
 
 
-def test_partial_gemini_config_uses_cli_pricing_defaults(tmp_path: Path) -> None:
+def test_partial_gemini_config_uses_agent_specific_defaults(tmp_path: Path) -> None:
     yaml_text = """
 agents:
   gemini:
@@ -259,13 +264,13 @@ agents:
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
     config = load_config(tmp_path / "agentshore.yaml")
 
-    gemini = config.agents["gemini"]
-    assert gemini.max_context == 1_000_000
-    assert gemini.cost_per_1k_input == 0.0005
-    assert gemini.cost_per_1k_output == 0.003
+    assert config.agents["gemini"].max_context == 1_000_000
+    gemini_price = config.pricebook.resolve("gemini", None)
+    assert gemini_price.cost_per_1k_input == 0.0005
+    assert gemini_price.cost_per_1k_output == 0.003
 
 
-def test_partial_grok_config_uses_cli_pricing_defaults(tmp_path: Path) -> None:
+def test_partial_grok_config_uses_agent_specific_defaults(tmp_path: Path) -> None:
     yaml_text = """
 agents:
   grok:
@@ -275,11 +280,11 @@ agents:
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
     config = load_config(tmp_path / "agentshore.yaml")
 
-    grok = config.agents["grok"]
-    assert grok.max_context == 256_000
-    assert grok.cost_per_1k_input == 0.001
-    assert grok.cost_per_1k_cached_input == 0.0002
-    assert grok.cost_per_1k_output == 0.002
+    assert config.agents["grok"].max_context == 256_000
+    grok_price = config.pricebook.resolve("grok", None)
+    assert grok_price.cost_per_1k_input == 0.001
+    assert grok_price.cost_per_1k_cached_input == 0.0002
+    assert grok_price.cost_per_1k_output == 0.002
 
 
 def test_default_config_has_agent_model_tiers() -> None:
