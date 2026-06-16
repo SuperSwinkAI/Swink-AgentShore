@@ -423,14 +423,22 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 # detection. Recoverable like the other timeouts — the orchestrator re-picks.
 _FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
 
-# Per-agent-type override of the global first-byte deadline. Grok (#204) starts
-# emitting stream events within a handful of seconds when healthy, so a wedged
-# launch can be capped much tighter than the codex/#177 default without risking
-# false kills. The global default stays at 120s — codex needs the headroom for
-# its rollout-thread / keychain warmup. An explicit per-agent
-# ``first_byte_timeout_seconds`` in config overrides this map.
+# Per-agent-type override of the global first-byte deadline. The original #204
+# assumption — that healthy Grok emits stream events "within a handful of
+# seconds" — was empirically false for the Grok CLI 0.2.32: direct measurement
+# of ``grok -m grok-build`` headless dispatches (trivial and ~15KB prompts,
+# memory/web-search/plan disabled) put time-to-first-byte at 30–70s typically,
+# with a variance tail past 90s. The model/relay first-token latency, not local
+# startup (`grok inspect` is ~10s), dominates and is irreducible via flags. A
+# 45s cap therefore killed ~100% of Grok dispatches as bogus "launch wedges"
+# (0% Grok success across every observed session). 240s clears the measured
+# distribution with margin while still bounding a genuine hang. Grok stays the
+# slowest agent by far, so prefer it for overflow rather than primary work. The
+# global default stays at 120s — codex needs the headroom for its rollout-thread
+# / keychain warmup. An explicit per-agent ``first_byte_timeout_seconds`` in
+# config overrides this map.
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
-    AgentType.GROK: 45.0,
+    AgentType.GROK: 240.0,
 }
 
 

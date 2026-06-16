@@ -444,6 +444,10 @@ def test_build_argv_grok_shape() -> None:
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
+        # Ephemeral single-turn dispatches: cross-session memory is meaningless
+        # and slow, and plan mode adds an unwanted planning round.
+        "--no-memory",
+        "--no-plan",
         "--cwd",
         "/worktree",
         "--output-format",

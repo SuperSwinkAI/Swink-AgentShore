@@ -103,6 +103,15 @@ def build_argv(
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
+        # AgentShore dispatches are ephemeral and single-turn (a fresh worktree
+        # per task), so the Grok CLI's cross-session memory is meaningless and
+        # risks state bleed between unrelated dispatches; it also measurably
+        # raised time-to-first-byte (~50s with memory vs ~35s without). Plan
+        # mode likewise adds a planning round the orchestrator does not want —
+        # plays expect direct execution. Both are dropped to keep Grok inside
+        # its (already wide) 240s first-byte budget. Web search is left enabled.
+        "--no-memory",
+        "--no-plan",
     ]
     if project_dir:
         args += ["--cwd", project_dir]

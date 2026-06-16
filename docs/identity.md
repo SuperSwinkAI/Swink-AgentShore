@@ -165,8 +165,14 @@ Grok has one additional runtime backstop: if the CLI process starts but never
 emits a first stdout byte before the launch-wedge watchdog fires, AgentShore
 keeps the dispatch classified as `timeout_stream_idle` but suppresses the Grok
 agent type for the rest of the session through the same candidate-mask path.
-That avoids repeatedly spending the 120-second first-byte window across fresh
-Grok handles when the backend is wedged before any stream event arrives.
+The Grok first-byte deadline is **240s** (vs the 120s global default): direct
+measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
+30–70s — far slower than the other CLIs, and dominated by model/relay latency
+rather than local startup — so a tighter cap produced false launch-wedge kills
+on dispatches that were merely slow. To stay inside that budget Grok is also
+dispatched with `--no-memory --no-plan` (ephemeral single-turn dispatches gain
+nothing from cross-session memory or plan mode, and both add latency). At 240s
+the watchdog fires only on genuine wedges, not on Grok's ordinary slow start.
 
 ## Windows SSH agent setup
 

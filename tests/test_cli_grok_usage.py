@@ -120,8 +120,11 @@ def test_first_byte_deadline_resolution() -> None:
     )
 
     cfg = AgentConfig()
-    # Grok uses the tighter per-type default (45s).
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 45.0
+    # Grok uses its per-type default (240s) — the Grok CLI's measured
+    # time-to-first-byte is 30–70s+ with a variance tail, far above the codex
+    # default, so the deadline is widened rather than tightened (the original
+    # #204 "handful of seconds" assumption was empirically false for 0.2.32).
+    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 240.0
     # Codex/other falls back to the global default (unchanged at 120s).
     assert (
         _resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
