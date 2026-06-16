@@ -459,6 +459,7 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+    store.list_retrying_claim_group_ids = AsyncMock(return_value=set())
 
     orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
     orch._session_id = "s1"
@@ -503,6 +504,7 @@ async def test_idle_agent_claim_release_protects_in_flight_claim_group() -> None
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+    store.list_retrying_claim_group_ids = AsyncMock(return_value=set())
 
     orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
     orch._session_id = "s1"
