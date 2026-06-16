@@ -502,89 +502,100 @@ function AgentConfigScreen() {
                 key={tier}
                 className={`tier-plan-row${entry.enabled ? "" : " tier-plan-row--disabled"}`}
               >
-                <label className="desktop-label" htmlFor={`${tier}-model-select`}>
-                  {tier[0].toUpperCase() + tier.slice(1)} tier
-                </label>
-                <label
-                  className="tier-plan-toggle"
-                  data-testid={`tier-toggle-${tier}`}
-                  title={`Enable the ${tier} tier for this runner. Disabled tiers keep their saved model but are not instantiated.`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={entry.enabled}
-                    onChange={(event) => updateTierEnabled(tier, event.target.checked)}
-                    disabled={catalog === null}
-                  />
-                  <span>{entry.enabled ? "Enabled" : "Disabled"}</span>
-                </label>
-                {agentType === "grok" ? (
-                  <span
-                    id={`${tier}-model-select`}
-                    className="desktop-select desktop-select--readonly"
-                    aria-label={`Model for ${tier} tier`}
-                  >
-                    grok-build
+                <div className="tier-plan-row__head">
+                  <span className="tier-plan-row__title">
+                    {tier[0].toUpperCase() + tier.slice(1)} tier
                   </span>
-                ) : (
-                  <select
-                    id={`${tier}-model-select`}
-                    className="desktop-select"
-                    value={entry.model}
-                    onChange={(event) => updateTierModel(tier, event.target.value)}
-                    disabled={catalog === null || !entry.enabled}
+                  <label
+                    className="tier-plan-toggle"
+                    data-testid={`tier-toggle-${tier}`}
+                    title={`Enable the ${tier} tier for this runner. Disabled tiers keep their saved model but are not instantiated.`}
                   >
-                    {options.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <label className="desktop-label" htmlFor={`${tier}-max-input`}>
-                  Max agents
-                </label>
-                <input
-                  id={`${tier}-max-input`}
-                  type="number"
-                  min={1}
-                  max={20}
-                  step={1}
-                  value={entry.max ?? 1}
-                  disabled={catalog === null || !entry.enabled}
-                  onChange={(event) =>
-                    updateTierMax(
-                      tier,
-                      Math.min(20, Math.max(1, parseInt(event.target.value, 10) || 1)),
-                    )
-                  }
-                  aria-label={`Max agents for ${tier} tier`}
-                  data-testid={`tier-max-${tier}`}
-                />
-                {effortOptions.length > 0 && (
-                  <>
-                    <label className="desktop-label" htmlFor={`${tier}-effort-select`}>
-                      Reasoning effort
+                    <input
+                      type="checkbox"
+                      checked={entry.enabled}
+                      onChange={(event) => updateTierEnabled(tier, event.target.checked)}
+                      disabled={catalog === null}
+                    />
+                    <span>{entry.enabled ? "Enabled" : "Disabled"}</span>
+                  </label>
+                </div>
+                <div className="tier-plan-row__fields">
+                  <div className="tier-plan-field tier-plan-field--model">
+                    <label className="desktop-label" htmlFor={`${tier}-model-select`}>
+                      Model
                     </label>
-                    <select
-                      id={`${tier}-effort-select`}
-                      className="desktop-select"
-                      value={entry.reasoning_effort ?? ""}
-                      onChange={(event) => updateTierEffort(tier, event.target.value)}
+                    {agentType === "grok" ? (
+                      <span
+                        id={`${tier}-model-select`}
+                        className="desktop-select desktop-select--readonly"
+                        aria-label={`Model for ${tier} tier`}
+                      >
+                        grok-build
+                      </span>
+                    ) : (
+                      <select
+                        id={`${tier}-model-select`}
+                        className="desktop-select"
+                        value={entry.model}
+                        onChange={(event) => updateTierModel(tier, event.target.value)}
+                        disabled={catalog === null || !entry.enabled}
+                      >
+                        {options.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  {effortOptions.length > 0 && (
+                    <div className="tier-plan-field tier-plan-field--effort">
+                      <label className="desktop-label" htmlFor={`${tier}-effort-select`}>
+                        Reasoning effort
+                      </label>
+                      <select
+                        id={`${tier}-effort-select`}
+                        className="desktop-select"
+                        value={entry.reasoning_effort ?? ""}
+                        onChange={(event) => updateTierEffort(tier, event.target.value)}
+                        disabled={catalog === null || !entry.enabled}
+                        aria-label={`Reasoning effort for ${tier} tier`}
+                        data-testid={`tier-effort-${tier}`}
+                      >
+                        <option value="">— Default —</option>
+                        {effortOptions.map((effort) => (
+                          <option key={effort} value={effort}>
+                            {effort}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div className="tier-plan-field tier-plan-field--max">
+                    <label className="desktop-label" htmlFor={`${tier}-max-input`}>
+                      Max agents
+                    </label>
+                    <input
+                      id={`${tier}-max-input`}
+                      type="number"
+                      min={1}
+                      max={20}
+                      step={1}
+                      value={entry.max ?? 1}
                       disabled={catalog === null || !entry.enabled}
-                      aria-label={`Reasoning effort for ${tier} tier`}
-                      data-testid={`tier-effort-${tier}`}
-                    >
-                      <option value="">— Default —</option>
-                      {effortOptions.map((effort) => (
-                        <option key={effort} value={effort}>
-                          {effort}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
-                <small>
+                      onChange={(event) =>
+                        updateTierMax(
+                          tier,
+                          Math.min(20, Math.max(1, parseInt(event.target.value, 10) || 1)),
+                        )
+                      }
+                      aria-label={`Max agents for ${tier} tier`}
+                      data-testid={`tier-max-${tier}`}
+                    />
+                  </div>
+                </div>
+                <small className="tier-plan-row__hint">
                   {!entry.enabled
                     ? "Tier disabled — agent not instantiated at this size"
                     : isRecommended
