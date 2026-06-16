@@ -36,6 +36,7 @@ from agentshore.sidecar.server import ServerState, SessionContext, handle_reques
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
     STEP_CONFIG_MERGE,
+    STEP_INSTALL_SKILLS,
     SessionStartError,
     _make_bridge,
     run_session_start,
@@ -195,6 +196,70 @@ async def test_check_agent_auth_tolerates_non_blocking_status(tmp_path: Path) ->
         outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
 
     assert outcome.session_id == state.session_id
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_blocks_when_enabled_agents_share_one_github_login(
+    tmp_path: Path,
+) -> None:
+    """Desktop session.start must enforce the same identity-diversity invariant
+    as the CLI start path.
+
+    A disabled second identity does not help: code review / merge need two
+    distinct GitHub logins among enabled agents.
+    """
+    project = _write_valid_project(
+        tmp_path / "same-identity",
+        agentshore_yaml="""
+project: {}
+identities:
+  jwesleye:
+    git_user_name: Jwesleye
+    git_user_email: jwesleye@users.noreply.github.com
+    gh_token_login: jwesleye
+  unseriousai:
+    git_user_name: unseriousAI
+    git_user_email: unseriousai@users.noreply.github.com
+    gh_token_login: unseriousai
+agents:
+  claude_code:
+    enabled: false
+    identity: jwesleye
+  codex:
+    enabled: true
+    identity: unseriousai
+  grok:
+    enabled: true
+    identity: unseriousai
+  gemini:
+    enabled: true
+    identity: unseriousai
+""",
+    )
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    with pytest.raises(SessionStartError) as excinfo:
+        await run_session_start(
+            state,
+            progress_token="tok-identity",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert excinfo.value.code == -32603
+    assert "≥2 distinct GitHub identities" in str(excinfo.value)
+    assert "unseriousai" in str(excinfo.value)
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    assert steps == [
+        STEP_CONFIG_MERGE,
+        STEP_CONFIG_MERGE,
+        STEP_CHECK_AGENT_AUTH,
+        STEP_CHECK_AGENT_AUTH,
+    ]
+    assert STEP_INSTALL_SKILLS not in steps
 
 
 # ---------------------------------------------------------------------------
