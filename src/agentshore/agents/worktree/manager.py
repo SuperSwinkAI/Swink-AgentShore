@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from uuid import uuid4
 
 import structlog
 
@@ -45,6 +46,7 @@ from agentshore.agents.worktree.allocator import (
 )
 from agentshore.agents.worktree.reaper import (
     ReapReport,
+    _canon_path,
     _reap_one,
     free_disk_mb,
     reap_for_closed_prs,
@@ -508,7 +510,11 @@ class WorktreeManager:
         log.info("worktree_legacy_orphan_dir_removed", path=str(legacy))
 
     async def reap_closed_prs(
-        self, *, ttl_seconds: int, protected_ids: set[int] | None = None
+        self,
+        *,
+        ttl_seconds: int,
+        protected_ids: set[int] | None = None,
+        protected_paths: set[str] | None = None,
     ) -> ReapReport:
         """Reap ``stale`` rows older than ``ttl_seconds`` in this session.
 
@@ -516,13 +522,21 @@ class WorktreeManager:
         a PR can close while its worktree is mid-play, and reclaiming it out
         from under the running play is the same "worktree reclaimed mid-play"
         failure the disk governor's ``protected_ids`` already guards against
-        (#189). When ``protected_ids`` is empty this delegates straight to
-        ``reap_for_closed_prs``; when ids are present the protected ``stale``
-        rows are held back and only the rest are reaped via the same
-        ENOSPC-safe ``_reap_one`` path.
+        (#189).
+
+        ``protected_paths`` adds defense-in-depth for the alias class behind
+        #203: the ``pickup-<N>`` directory is reused across attempts, so a
+        stale OLD-id row can share an on-disk path with the LIVE new-id row
+        backing the dispatch. Id-keyed protection misses that — the stale row's
+        id isn't in ``protected_ids`` — so any ``stale`` row whose canonical
+        path matches a protected path is also held back, even when its id
+        differs. When neither set is populated this delegates straight to
+        ``reap_for_closed_prs``; otherwise the protected rows are held back and
+        only the rest are reaped via the same ENOSPC-safe ``_reap_one`` path.
         """
         protected = protected_ids or set()
-        if not protected:
+        protected_paths = protected_paths or set()
+        if not protected and not protected_paths:
             report = await reap_for_closed_prs(
                 self._store,
                 session_id=self._session_id,
@@ -531,21 +545,29 @@ class WorktreeManager:
             )
         else:
             report = await self._reap_closed_prs_protected(
-                ttl_seconds=ttl_seconds, protected=protected
+                ttl_seconds=ttl_seconds,
+                protected=protected,
+                protected_paths=protected_paths,
             )
         await self._prune_locks()
         return report
 
     async def _reap_closed_prs_protected(
-        self, *, ttl_seconds: int, protected: set[int]
+        self,
+        *,
+        ttl_seconds: int,
+        protected: set[int],
+        protected_paths: set[str],
     ) -> ReapReport:
-        """``reap_for_closed_prs`` with in-flight worktrees held back (#189).
+        """``reap_for_closed_prs`` with in-flight worktrees held back (#189, #203).
 
         Mirrors ``reap_for_closed_prs`` exactly — same TTL cutoff, same
         ``list_stale`` scan, same ``_reap_one`` per row — but skips any row
-        whose ``worktree_id`` is in ``protected`` (a live dispatch), emitting
-        the ``worktree_closed_pr_reap_skipped_in_flight`` marker so the held
-        rows are observable.
+        whose ``worktree_id`` is in ``protected`` (a live dispatch) OR whose
+        canonical path is in ``protected_paths`` (a live dispatch sharing the
+        path under a different id — the #203 alias). Either case emits the
+        ``worktree_closed_pr_reap_skipped_in_flight`` marker so the held rows
+        are observable.
         """
         if ttl_seconds < 0:
             msg = f"ttl_seconds must be >= 0, got {ttl_seconds}"
@@ -561,6 +583,16 @@ class WorktreeManager:
                     "worktree_closed_pr_reap_skipped_in_flight",
                     worktree_id=row.worktree_id,
                     branch=row.branch_name,
+                    reason="id_in_flight",
+                )
+                continue
+            if _canon_path(row.worktree_path) in protected_paths:
+                log.info(
+                    "worktree_closed_pr_reap_skipped_in_flight",
+                    worktree_id=row.worktree_id,
+                    branch=row.branch_name,
+                    path=row.worktree_path,
+                    reason="path_in_flight",
                 )
                 continue
             await _reap_one(
@@ -577,12 +609,17 @@ class WorktreeManager:
         return free_disk_mb(self._worktree_root)
 
     async def reap_for_disk_pressure(
-        self, *, target_free_mb: int, protected_ids: set[int] | None = None
+        self,
+        *,
+        target_free_mb: int,
+        protected_ids: set[int] | None = None,
+        protected_paths: set[str] | None = None,
     ) -> ReapReport:
         """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
 
         The build-agnostic disk governor (#180). Worktrees with a live dispatch
-        (``protected_ids``) are never reaped.
+        (``protected_ids`` or, for the #203 dup-path alias, ``protected_paths``)
+        are never reaped.
         """
         report = await reap_for_disk_pressure(
             self._store,
@@ -591,6 +628,7 @@ class WorktreeManager:
             worktree_root=self._worktree_root,
             target_free_mb=target_free_mb,
             protected_ids=protected_ids,
+            protected_paths=protected_paths,
         )
         if report.total:
             await self._prune_locks()
@@ -735,6 +773,18 @@ class WorktreeManager:
             )
 
         target = worktree_target_path(self._worktree_root, target_key)
+        # Per-attempt unique path (#203). The prebranch key (e.g. ``pickup-<N>``)
+        # is intentionally STABLE so ``lookup_by_prebranch_key`` reuse /
+        # resumability keeps working: a second dispatch for the same issue
+        # before the branch is cut shares the existing row (handled above). But
+        # the canonical directory ``pickup-<N>`` is reused across *attempts* —
+        # many distinct worktree_id rows can share one path — and a stale
+        # OLD-id row at that path lets the closed-PR TTL reaper remove the
+        # directory a LIVE new-id row is using. So when the canonical path is
+        # already held by a live row in this session, give this fresh
+        # allocation a unique sibling directory instead of aliasing it.
+        if await self._canon_path_live_in_session(target):
+            target = self._uniquify_target_path(target)
         allocate = await ensure_worktree(
             main_repo=self._main_repo,
             worktree_path=target,
@@ -779,6 +829,14 @@ class WorktreeManager:
             # materialised has no owning row and would leak — drop it.
             await _best_effort_remove(self._main_repo, allocate.path)
             raise
+        # Coalesce any lingering non-terminal row that still points at the same
+        # stored path (#203). The unique-path guard above keeps NEW allocations
+        # off a live row's path, but pre-existing dup-path rows from before this
+        # fix (or from a reused canonical path whose old row was never retired)
+        # would still alias the new directory. Retiring them to ``stale`` here
+        # stops dup-path rows from accumulating; the path-aware reap skip
+        # (below) guards the live row in the meantime.
+        await self._coalesce_dup_path_rows(row)
         return WorktreeAllocation(
             worktree_id=row.worktree_id,
             path=allocate.path,
@@ -787,6 +845,49 @@ class WorktreeManager:
             play_type=play_type,
             scope=scope,
         )
+
+    async def _canon_path_live_in_session(self, target: Path) -> bool:
+        """True when an active/reaping row in this session holds ``target``'s canon path."""
+        from agentshore.agents.worktree.registry import list_active
+
+        target_canon = _canon_path(target)
+        live_rows = await list_active(self._store, session_id=self._session_id)
+        return any(_canon_path(r.worktree_path) == target_canon for r in live_rows)
+
+    @staticmethod
+    def _uniquify_target_path(target: Path) -> Path:
+        """Append a short unique suffix to ``target``'s directory name.
+
+        Keeps the reclaimable ``pickup-`` prefix (so a crashed-session orphan
+        is still force-removable via ``_is_reclaimable_collision``) and the
+        slug-safe charset, while making each attempt's directory distinct.
+        """
+        short = uuid4().hex[:8]
+        return target.with_name(f"{target.name}-{short}")
+
+    async def _coalesce_dup_path_rows(self, row: WorktreeRow) -> None:
+        """Retire stale dup-path rows aliasing ``row``'s on-disk path (#203, best-effort)."""
+        try:
+            retired = await self._store.retire_stale_worktrees_at_path(
+                session_id=self._session_id,
+                worktree_path=row.worktree_path,
+                keep_worktree_id=row.worktree_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — coalesce is best-effort, never block allocation
+            log.warning(
+                "worktree_dup_path_coalesce_failed",
+                worktree_id=row.worktree_id,
+                path=row.worktree_path,
+                error=str(exc),
+            )
+            return
+        if retired:
+            log.info(
+                "worktree_dup_path_coalesced",
+                kept_worktree_id=row.worktree_id,
+                retired_worktree_ids=retired,
+                path=row.worktree_path,
+            )
 
 
 #: Directory-name prefix the manager keys a branch-creating ISSUE_PICKUP

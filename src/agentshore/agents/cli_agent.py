@@ -422,6 +422,32 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 # detection. Recoverable like the other timeouts — the orchestrator re-picks.
 _FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
 
+# Per-agent-type override of the global first-byte deadline. Grok (#204) starts
+# emitting stream events within a handful of seconds when healthy, so a wedged
+# launch can be capped much tighter than the codex/#177 default without risking
+# false kills. The global default stays at 120s — codex needs the headroom for
+# its rollout-thread / keychain warmup. An explicit per-agent
+# ``first_byte_timeout_seconds`` in config overrides this map.
+_FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
+    AgentType.GROK: 45.0,
+}
+
+
+def _resolve_first_byte_deadline(agent_type: AgentType, cfg: AgentConfig, timeout: float) -> float:
+    """Resolve the armed first-byte deadline for one dispatch.
+
+    Precedence: explicit per-agent ``first_byte_timeout_seconds`` override, then
+    the per-agent-type built-in default, then the global ``_FIRST_BYTE_DEADLINE_S``.
+    Always clamped to the wall-clock ``timeout`` so it never outlives the dispatch.
+    """
+    override = cfg.first_byte_timeout_seconds
+    base = (
+        float(override)
+        if override is not None
+        else _FIRST_BYTE_DEADLINE_BY_TYPE.get(agent_type, _FIRST_BYTE_DEADLINE_S)
+    )
+    return min(base, timeout)
+
 
 @dataclass(slots=True)
 class _StdoutActivity:
@@ -781,7 +807,7 @@ async def _await_output_or_timeout(
     first_byte_task = asyncio.create_task(
         _watch_first_byte(
             stdout_activity,
-            deadline=min(_FIRST_BYTE_DEADLINE_S, timeout),
+            deadline=_resolve_first_byte_deadline(handle.agent_type, cfg, timeout),
             agent_id=handle.agent_id,
             agent_type=handle.agent_type.value,
             model_tier=handle.model_tier,
@@ -1052,7 +1078,11 @@ async def dispatch_cli(
     git_overlay = dict(identity)
     if token:
         git_overlay.update(subprocess_env.git_auth_config_overlay(token))
-    env = subprocess_env.hardened_env(git_overlay, for_git=True)
+    env = subprocess_env.hardened_env(
+        git_overlay,
+        for_git=True,
+        for_grok=(handle.agent_type == AgentType.GROK),
+    )
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.

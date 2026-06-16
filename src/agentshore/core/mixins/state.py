@@ -357,6 +357,16 @@ class StateBuilder:
 
         claims = await find_method(self._session_id, idle_ids)
         protected_claim_group_ids = self._in_flight_claim_group_ids()
+        # #205: a claim group parked in ``retrying`` has no live dispatch (the
+        # retry is queued in the override channel and re-runs start_work_claim_group
+        # on its next dispatch), so without this it would look idle-owned and get
+        # released out from under the pending retry — surfacing as "work claim
+        # inactive". Protect those groups too.
+        list_retrying = getattr(self._store, "list_retrying_claim_group_ids", None)
+        if callable(list_retrying):
+            retrying_group_ids = await list_retrying(self._session_id)
+            if retrying_group_ids:
+                protected_claim_group_ids = protected_claim_group_ids | retrying_group_ids
         releasable_claims = [
             claim
             for claim in claims
@@ -468,6 +478,53 @@ class StateBuilder:
                 kept.append(pr)
         return kept, hidden
 
+    def _drain_wedge_cooldowns(self) -> frozenset[str]:
+        """Seed/decay transient launch-wedge cooldowns; return the active set.
+
+        Mirror of the permanent auth-suppression drain, but DECAYING: a wedge the
+        manager recorded since the last snapshot seeds an expiry tick
+        (``current_tick + _GROK_WEDGE_COOLDOWN_TICKS``), and any entry whose
+        expiry has passed is dropped so the type auto-recovers (#202). Pure
+        dict/set ops, no I/O. ``last_play_id`` is the monotonic per-play tick
+        counter (0 before the first play). ``getattr`` tolerates a stub manager
+        without the attribute.
+        """
+        from agentshore.agents.manager import _GROK_WEDGE_COOLDOWN_TICKS
+
+        current_tick = self._runtime.last_play_id or 0
+        cooldown_until = self._runtime.wedge_cooldown_until
+
+        manager_wedged: set[str] = getattr(self._manager, "wedge_cooldown_types", set())
+        newly_wedged = sorted(set(manager_wedged) - set(cooldown_until))
+        for agent_type in newly_wedged:
+            cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
+        if newly_wedged:
+            _logger.warning(
+                "agent_type_wedge_cooldown",
+                session_id=self._session_id,
+                agent_types=newly_wedged,
+                reason="launch_wedge",
+                cooldown_ticks=_GROK_WEDGE_COOLDOWN_TICKS,
+                expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
+            )
+
+        # Drop expired entries so the type becomes eligible again. An entry is
+        # active while the current tick has not yet reached its expiry tick.
+        expired = [
+            agent_type for agent_type, expiry in cooldown_until.items() if current_tick >= expiry
+        ]
+        for agent_type in expired:
+            del cooldown_until[agent_type]
+        if expired:
+            _logger.info(
+                "agent_type_wedge_cooldown_expired",
+                session_id=self._session_id,
+                agent_types=sorted(expired),
+                current_tick=current_tick,
+            )
+
+        return frozenset(cooldown_until)
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 
@@ -491,6 +548,7 @@ class StateBuilder:
                 agent_types=sorted(newly_auth_suppressed),
                 reason="backend_auth_failed",
             )
+        wedge_cooldown_types = self._drain_wedge_cooldowns()
         cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
@@ -603,6 +661,7 @@ class StateBuilder:
             ),
             parked_resource_keys=frozenset(self._runtime.parked_resource_keys),
             auth_suppressed_agent_types=frozenset(self._runtime.auth_suppressed_agent_types),
+            wedge_cooldown_agent_types=wedge_cooldown_types,
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,

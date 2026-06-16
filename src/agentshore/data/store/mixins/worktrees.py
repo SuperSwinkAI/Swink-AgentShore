@@ -352,6 +352,54 @@ class _WorktreesMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    async def retire_stale_worktrees_at_path(
+        self,
+        *,
+        session_id: str,
+        worktree_path: str,
+        keep_worktree_id: int,
+    ) -> list[int]:
+        """Mark non-terminal rows other than ``keep_worktree_id`` at this path stale.
+
+        Coalesces lingering duplicate-path rows so that when a fresh worktree
+        row is allocated at a canonical on-disk path, any earlier ``active`` /
+        ``reaping`` row still pointing at the *same* path is retired to
+        ``stale`` rather than left to alias the live directory (#203 — the
+        closed-PR TTL reaper would otherwise reap a stale alias row and
+        ``git worktree remove --force`` the directory a live row is using).
+
+        Compares ``worktree_path`` by exact stored string — callers pass the
+        same string the live row was inserted with, so no separator folding is
+        needed here. Returns the ids that were retired (empty when none match).
+        """
+        async with self._conn.execute(
+            """
+            SELECT worktree_id FROM worktrees
+             WHERE session_id = ?
+               AND worktree_path = ?
+               AND worktree_id != ?
+               AND status IN ('active', 'reaping')
+            """,
+            (session_id, worktree_path, keep_worktree_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        retired = [int(str(r[0])) for r in rows]
+        if not retired:
+            return []
+        ts = now_iso()
+        await self._conn.executemany(
+            """
+            UPDATE worktrees
+               SET status = 'stale',
+                   failure_reason = COALESCE(failure_reason, 'coalesced_dup_path'),
+                   last_used_at = ?
+             WHERE worktree_id = ?
+            """,
+            [(ts, wt_id) for wt_id in retired],
+        )
+        await self._conn.commit()
+        return retired
+
     async def touch_worktree(self, *, worktree_id: int, head_sha: str | None = None) -> None:
         """Bump ``last_used_at`` (and optionally ``head_sha``) for an active row."""
         await self._conn.execute(

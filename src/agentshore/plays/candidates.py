@@ -284,6 +284,26 @@ def _candidate_auth_suppressed_type(
     return None
 
 
+def _candidate_wedge_cooldown_type(
+    candidate: PlayCandidate,
+    wedge_cooldown: frozenset[str],
+    agent_id_to_type: dict[str, str],
+) -> str | None:
+    """Return the cooled-down agent-type value if this candidate is masked, else None.
+
+    Sibling of ``_candidate_auth_suppressed_type`` for the DECAYING launch-wedge
+    cooldown (#202): the cooldown set already contains only active (non-expired)
+    types, so auto-unmask happens for free once the state-builder drops the
+    expired entry.
+    """
+    if not wedge_cooldown:
+        return None
+    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
+    if resolved is not None and resolved in wedge_cooldown:
+        return resolved
+    return None
+
+
 def issue_pickup_sort_key(issue: IssueSnapshot) -> tuple[int, int, int, int]:
     """Sort tuple: bug first, then priority, size, and issue number."""
 
@@ -636,6 +656,7 @@ class PlayCandidateAnalyzer:
         active_keys = active_resource_keys(state)
         parked_keys = state.parked_resource_keys
         auth_suppressed = state.auth_suppressed_agent_types
+        wedge_cooldown = state.wedge_cooldown_agent_types
         # agent_id -> agent_type.value, so a candidate that names an existing
         # agent (target_agent_id) can be checked against the suppression set.
         agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
@@ -661,6 +682,18 @@ class PlayCandidateAnalyzer:
             if suppressed_type is not None:
                 reasons = blocked.setdefault(candidate.play_type, [])
                 msg = f"agent type auth-suppressed for session: {suppressed_type}"
+                if msg not in reasons:
+                    reasons.append(msg)
+                return
+            # #202: a transient launch wedge masks the type only for the duration
+            # of a DECAYING cooldown — distinct block reason, auto-unmasked once
+            # the cooldown expires (the set no longer contains the type).
+            cooldown_type = _candidate_wedge_cooldown_type(
+                candidate, wedge_cooldown, agent_id_to_type
+            )
+            if cooldown_type is not None:
+                reasons = blocked.setdefault(candidate.play_type, [])
+                msg = f"agent type in launch-wedge cooldown: {cooldown_type}"
                 if msg not in reasons:
                     reasons.append(msg)
                 return

@@ -187,6 +187,26 @@ class _WorkClaimsMixin(_DataStoreBase):
         ) as cursor:
             return await cursor.fetchone() is not None
 
+    async def list_retrying_claim_group_ids(self, session_id: str) -> set[str]:
+        """Return claim_group_ids with at least one row in ``retrying`` status.
+
+        A claim group is parked in ``retrying`` between a completion-retry being
+        scheduled and the retry dispatch re-running ``start_work_claim_group``.
+        During that window the group has no live dispatch, so the idle-claim
+        reaper would otherwise release it out from under the pending retry (#205).
+        The state-builder unions this into the protected set passed to
+        ``release_active_work_claims_for_agents``.
+        """
+        cursor = await self._conn.execute(
+            """
+            SELECT DISTINCT claim_group_id FROM work_claims
+            WHERE session_id = ? AND status = 'retrying'
+            """,
+            (session_id,),
+        )
+        rows = await cursor.fetchall()
+        return {str(row[0]) for row in rows if row[0]}
+
     async def find_active_work_claims(
         self, session_id: str, resource_keys: list[str] | tuple[str, ...]
     ) -> list[WorkClaimRecord]:

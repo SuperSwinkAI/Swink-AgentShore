@@ -440,9 +440,15 @@ def test_session_start_runs_bd_hooks_after_init(tmp_path: object) -> None:
     (project_path / ".beads").mkdir()
 
     mock_setup = AsyncMock(return_value=["claude", "codex"])
-    with patch(
-        "agentshore.beads.setup.bd_setup_for_agent_types",
-        mock_setup,
+    # This test exercises the bd-hooks phase, not the check_agent_auth gate that
+    # dd7fcb3 ("Guard desktop starts against single identity") added ahead of it.
+    # That gate requires two enabled agents to bind distinct identities; neutralise
+    # it here (matching how test_session_lifecycle isolates the auth phase) so the
+    # bd-hooks assertion is what's under test.
+    with (
+        patch("agentshore.beads.setup.bd_setup_for_agent_types", mock_setup),
+        patch("agentshore.agents.identity.require_two_distinct_gh_identities"),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
     ):
         from agentshore.sidecar.session_lifecycle import run_session_start
 

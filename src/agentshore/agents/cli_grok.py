@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import shutil
 
+import structlog
+
 from agentshore.agents._jsonl import (
     _first_int,
     _iter_json_events,
@@ -36,6 +38,14 @@ from agentshore.agents._jsonl import (
     _UsageTotals,
 )
 
+_logger = structlog.get_logger(__name__)
+
+# The installed Grok CLI (0.2.32) only accepts ``grok-build`` and
+# ``grok-composer-2.5-fast`` (verified via ``grok models``). The historic
+# ``grok-code-fast*`` ids are NOT valid model names, so a configured small tier
+# pointing at one would be rejected by the binary — we rewrite them to the
+# closest valid model (``grok-build``) and warn so the silent override is visible
+# (issue #204, task 4).
 _GROK_CLI_MODEL_ALIASES: dict[str, str] = {
     "grok-build-0.1": "grok-build",
     "grok-code-fast-1": "grok-build",
@@ -54,8 +64,24 @@ def default_binary() -> str:
 
 
 def cli_model(model: str) -> str:
-    """Return the model id accepted by the installed Grok CLI."""
-    return _GROK_CLI_MODEL_ALIASES.get(model, model)
+    """Return the model id accepted by the installed Grok CLI.
+
+    Configured ids in ``_GROK_CLI_MODEL_ALIASES`` (e.g. the invalid
+    ``grok-code-fast*`` family) are rewritten to a valid Grok model. The
+    installed CLI rejects those ids outright, so honoring them as-is would fail
+    every dispatch; rewriting is the safe option, but we emit a warning so the
+    override is not silent (issue #204, task 4).
+    """
+    aliased = _GROK_CLI_MODEL_ALIASES.get(model)
+    if aliased is not None and aliased != model:
+        _logger.warning(
+            "grok_model_alias_override",
+            configured_model=model,
+            resolved_model=aliased,
+            reason="configured model is not accepted by the installed Grok CLI",
+        )
+        return aliased
+    return model
 
 
 def build_argv(
@@ -106,16 +132,26 @@ def build_argv(
 def _grok_usage_from_dict(usage: dict[str, object]) -> _UsageTotals:
     """Extract usage totals from a Grok CLI usage dict.
 
-    Handles standard Anthropic keys (``input_tokens``, ``output_tokens``,
-    ``cached_input_tokens``) as well as Grok-native aliases
-    (``prompt_tokens``, ``completion_tokens``).
+    Tolerant of every shape observed or plausibly emitted across Grok CLI
+    versions, because the live binary (0.2.32) emits **no** usage block at all
+    in either ``streaming-json`` or ``json`` output (verified directly — the
+    terminal ``end``/``json`` event carries only ``stopReason``/``sessionId``/
+    ``requestId``), so this parser is written to capture usage *if* a future
+    version (or a different model/relay path) supplies it. Recognised shapes:
+
+    - standard Anthropic keys: ``input_tokens``/``output_tokens``,
+      ``cached_input_tokens``/``cache_read_input_tokens``,
+      ``cache_creation_input_tokens``, ``reasoning_output_tokens``;
+    - Grok/OpenAI-native aliases: ``prompt_tokens``/``completion_tokens``;
+    - flat top-level aliases: ``tokens_in``/``tokens_out`` (and
+      ``input``/``output``).
     """
-    input_tokens = _first_int(usage, "input_tokens", "prompt_tokens")
+    input_tokens = _first_int(usage, "input_tokens", "prompt_tokens", "tokens_in", "input")
     cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
         usage.get("cache_read_input_tokens")
     )
     cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(usage, "output_tokens", "completion_tokens")
+    output_tokens = _first_int(usage, "output_tokens", "completion_tokens", "tokens_out", "output")
     reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
 
     tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
@@ -126,6 +162,29 @@ def _grok_usage_from_dict(usage: dict[str, object]) -> _UsageTotals:
         cache_write_tokens_in=cache_write_tokens,
         max_turn_input_tokens=input_tokens,
     )
+
+
+def _grok_usage_block(event: dict[str, object]) -> dict[str, object] | None:
+    """Find a usage dict on a Grok terminal event, tolerant of nesting.
+
+    Grok may carry usage at the top level (``usage``) or — across relay/version
+    shapes — nested one level under ``result``/``message``/``response``/``turn``.
+    Also accepts a flat ``tokens_in``/``tokens_out`` pair promoted onto the event
+    itself. Returns ``None`` when no usage-bearing keys are present (the live
+    0.2.32 case).
+    """
+    direct = event.get("usage")
+    if isinstance(direct, dict):
+        return direct
+    for parent_key in ("result", "message", "response", "turn"):
+        parent = event.get(parent_key)
+        if isinstance(parent, dict):
+            nested = parent.get("usage")
+            if isinstance(nested, dict):
+                return nested
+    if "tokens_in" in event or "tokens_out" in event:
+        return event
+    return None
 
 
 def _grok_session_id(event: dict[str, object]) -> str | None:
@@ -182,8 +241,10 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
         if event_type == "end":
             # Terminal event - extract usage and session ID (may be here).
-            usage_raw = event.get("usage")
-            if isinstance(usage_raw, dict):
+            # NOTE: grok 0.2.32 emits NO usage on ``end`` (verified); this stays
+            # for forward-compat / relay shapes that do.
+            usage_raw = _grok_usage_block(event)
+            if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             # session_id was already updated above via _grok_session_id(event).
             continue
@@ -203,8 +264,8 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
                 content = message_field.get("content")
                 if isinstance(content, str):
                     terminal_text = content
-            usage_raw = event.get("usage")
-            if isinstance(usage_raw, dict):
+            usage_raw = _grok_usage_block(event)
+            if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             continue
 

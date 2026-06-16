@@ -91,6 +91,31 @@ def test_hardened_env_gh_disables_prompts_and_pager() -> None:
     assert env["GH_PAGER"] == "cat"
 
 
+def test_hardened_env_grok_overlays_headless_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TERM", raising=False)
+    env = subprocess_env.hardened_env(for_grok=True)
+    assert env["CI"] == "1"
+    assert env["NO_COLOR"] == "1"
+    assert env["CLICOLOR"] == "0"
+    # TERM defaults to dumb only when unset.
+    assert env["TERM"] == "dumb"
+
+
+def test_hardened_env_grok_preserves_existing_term(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    env = subprocess_env.hardened_env(for_grok=True)
+    assert env["TERM"] == "xterm-256color"
+
+
+def test_hardened_env_grok_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """for_grok must be opt-in: a plain git env carries none of the headless keys."""
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    env = subprocess_env.hardened_env(for_git=True)
+    assert "CI" not in env
+    assert "NO_COLOR" not in env
+
+
 def test_hardened_env_overlay_wins_and_drops_none() -> None:
     env = subprocess_env.hardened_env(
         {"GH_TOKEN": "tok", "GH_CONFIG_DIR": None},  # type: ignore[dict-item]
