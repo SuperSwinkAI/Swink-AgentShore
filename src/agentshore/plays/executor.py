@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import select_agent_for
-from agentshore.beads import load_graph
+from agentshore.beads import add_blocking_dependency, load_graph
 from agentshore.data.models import ReviewQueueRecord
 from agentshore.data.store import (
     ExternalMutationRecord,
@@ -30,7 +30,7 @@ from agentshore.errors import (
     IssueInflationDetected,
     PreconditionFailed,
 )
-from agentshore.github.labels import DISALLOWED_LABEL
+from agentshore.github.labels import BLOCKED_LABEL, DISALLOWED_LABEL
 from agentshore.identity_names import same_identity
 from agentshore.logging import get_logger
 from agentshore.plays._publish_reconciler import (
@@ -111,6 +111,27 @@ def _labels_from_value(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     return []
+
+
+def _block_issue_on_mutation(mut: dict[str, object]) -> tuple[int, int] | None:
+    """Parse a ``block_issue_on`` mutation into ``(blocked_issue, blocker_issue)``.
+
+    Emitted by ``agentshore-issue-pickup`` when its hard-dependency gate trips:
+    the picked-up issue is blocked by an unmerged prerequisite. Returns ``None``
+    for any malformed shape (missing/equal numbers) so a bad emission is ignored
+    rather than crashing the play.
+    """
+    if str(mut.get("type", "")) != "block_issue_on":
+        return None
+    issue_number = _issue_number_from_value(
+        mut.get("issue") or mut.get("issue_number") or mut.get("target")
+    )
+    blocker_number = _issue_number_from_value(
+        mut.get("blocker") or mut.get("blocker_issue") or mut.get("depends_on")
+    )
+    if issue_number is None or blocker_number is None or issue_number == blocker_number:
+        return None
+    return issue_number, blocker_number
 
 
 def _issue_label_mutation(mut: dict[str, object]) -> tuple[int, list[str]] | None:
@@ -652,7 +673,7 @@ class PlayExecutor:
             self._planned_issues.discard(params.issue_number)
 
         if skill_result is not None and isinstance(skill_result, SkillResult):
-            await self._persist_mutations(play_id, params, skill_result)
+            await self._persist_mutations(play_id, params, skill_result, state)
 
         await self._persist_completed_play(
             play_id=play_id,
@@ -1165,7 +1186,11 @@ class PlayExecutor:
             )
 
     async def _persist_mutations(
-        self, play_id: int, params: PlayParams, skill_result: SkillResult
+        self,
+        play_id: int,
+        params: PlayParams,
+        skill_result: SkillResult,
+        state: OrchestratorState,
     ) -> None:
         """Persist each requested mutation with an idempotency key."""
         now = now_iso()
@@ -1177,6 +1202,27 @@ class PlayExecutor:
                 issue_number, labels = issue_label
                 await self._apply_issue_labels(issue_number, labels, key)
                 applied_labels.update((issue_number, label) for label in labels)
+                continue
+            block = _block_issue_on_mutation(mut)
+            if block is not None:
+                blocked_issue, blocker_issue = block
+                resolution = await self._apply_block_issue_on(
+                    blocked_issue, blocker_issue, state, key
+                )
+                if resolution == "label_fallback":
+                    applied_labels.add((blocked_issue, BLOCKED_LABEL))
+                await self._store.record_external_mutation(
+                    ExternalMutationRecord(
+                        session_id=self._session_id,
+                        idempotency_key=key,
+                        mutation_type="block_issue_on",
+                        target=str(blocked_issue),
+                        status=resolution,
+                        created_at=now,
+                        play_id=play_id,
+                        request_json=json.dumps(mut),
+                    )
+                )
                 continue
             # ``request_play`` was an agent-driven "run this play next" directive
             # that bypassed PPO selection; the mechanism has been removed, so any
@@ -1218,6 +1264,52 @@ class PlayExecutor:
         if ok:
             await self._store.add_issue_labels(issue_number, self._session_id, labels)
         return bool(ok)
+
+    async def _apply_block_issue_on(
+        self,
+        blocked_issue: int,
+        blocker_issue: int,
+        state: OrchestratorState,
+        idempotency_key: str,
+    ) -> str:
+        """Persist a body-declared dependency the issue_pickup agent discovered.
+
+        Primary: add a real beads ``blocks`` edge (blocked → blocker) so the
+        existing candidate mask + ``DependenciesResolvedGate`` drop the issue
+        from the pool and ``_rearm_ready_issues`` restores it the tick the
+        blocker bead closes — no reaper needed. Fallback: stamp
+        ``agentshore/blocked`` (groom_backlog clears it once the blocker lands)
+        when either issue lacks a bead mirror or the beads write fails.
+
+        Closes the timing gap where issue_pickup discovers a dependency at
+        execute time but waits for the next groom_backlog pass to mirror it,
+        letting the PPO re-dispatch the same dep-blocked issue meanwhile.
+
+        Returns a short status for the mutation ledger: ``already_linked``,
+        ``beads_edge``, ``label_fallback``, or ``unpersisted``.
+        """
+        blocked_bead: str | None = None
+        blocker_bead: str | None = None
+        graph = state.graph
+        if graph is not None:
+            by_issue = {t.issue_number: t for t in graph.tasks if t.issue_number is not None}
+            blocked_task = by_issue.get(blocked_issue)
+            blocker_task = by_issue.get(blocker_issue)
+            if blocked_task is not None and blocker_task is not None:
+                blocked_bead = blocked_task.bead_id or None
+                blocker_bead = blocker_task.bead_id or None
+                if blocker_bead is not None and blocker_bead in blocked_task.blocked_by_ids:
+                    return "already_linked"
+        if (
+            blocked_bead is not None
+            and blocker_bead is not None
+            and await add_blocking_dependency(self._project_path, blocked_bead, blocker_bead)
+        ):
+            return "beads_edge"
+        # No bead mirror (or the beads write failed) → durable label gate.
+        if await self._apply_issue_labels(blocked_issue, [BLOCKED_LABEL], idempotency_key):
+            return "label_fallback"
+        return "unpersisted"
 
     async def _maybe_retarget_pr_base(
         self,

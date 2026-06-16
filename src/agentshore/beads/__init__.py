@@ -754,6 +754,56 @@ async def clear_in_progress_beads(project_path: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Graph mutation
+# ---------------------------------------------------------------------------
+
+
+async def add_blocking_dependency(
+    project_path: Path,
+    blocked_bead_id: str,
+    blocker_bead_id: str,
+) -> bool:
+    """Add a ``blocks`` edge so *blocked_bead_id* is blocked by *blocker_bead_id*.
+
+    Mirrors a body-declared ``depends on #N`` dependency into the beads graph
+    the moment ``issue_pickup`` discovers it at execute time, so the candidate
+    mask excludes the dependent issue before another agent is dispatched (#14)
+    rather than waiting for the next ``groom_backlog`` pass to mirror it.
+
+    Runs ``bd link <blocked> <blocker> --type blocks`` (id2 blocks id1, so the
+    second arg is the blocker — matching the groom/seed skills and bd's own
+    ``bd link`` semantics). No-ops and returns ``False`` when beads is not
+    initialised, either id is empty, or the two ids are equal. Returns ``False``
+    on a bd error so the caller can fall back to a label gate; the call is
+    swallowed rather than raised so a beads hiccup never fails the play.
+    """
+    if not (project_path / ".beads").exists():
+        return False
+    if not blocked_bead_id or not blocker_bead_id or blocked_bead_id == blocker_bead_id:
+        return False
+    try:
+        await bd(
+            "link",
+            blocked_bead_id,
+            blocker_bead_id,
+            "--type",
+            "blocks",
+            "--dolt-auto-commit=on",
+            cwd=project_path,
+        )
+    except BdError as exc:
+        _logger.warning(
+            "beads_add_blocking_dependency_failed",
+            project_path=str(project_path),
+            blocked=blocked_bead_id,
+            blocker=blocker_bead_id,
+            error=str(exc),
+        )
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Persistent memory helpers
 # ---------------------------------------------------------------------------
 

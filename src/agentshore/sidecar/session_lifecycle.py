@@ -252,19 +252,31 @@ def _check_config_merge(project_path: Path) -> RuntimeConfig:
 
 
 def _check_agent_auth(cfg: RuntimeConfig) -> None:
-    """Probe each configured CLI agent's backend auth; block on a dead session.
+    """Validate agent identity and backend auth before the desktop starts.
 
-    Blocking in nature (``probe_configured_cli_auth`` shells out via
-    ``subprocess.run``); call from the async runner through
-    ``asyncio.to_thread``. A definitively-expired backend session (e.g. the
-    Codex CLI's cached ``chatgpt.com`` token) raises a structured
-    :class:`SessionStartError` so the desktop blocks the launch and points at
-    the failing agent type(s) — otherwise that agent would hang every dispatch
-    to the idle timeout mid-run. Non-blocking non-ok statuses (timeout / probe
-    error / unprobeable) are logged and tolerated so a transient probe hiccup
-    never strands an otherwise-fine session.
+    This mirrors the CLI start path's identity guard: enabled CLI agents must
+    resolve to at least two distinct GitHub logins so review / merge can satisfy
+    anti-confirmation-bias constraints. After that, probe each configured CLI
+    agent's backend auth. The backend probe is blocking in nature
+    (``probe_configured_cli_auth`` shells out via ``subprocess.run``); call
+    from the async runner through ``asyncio.to_thread``.
+
+    A definitively-expired backend session (e.g. the Codex CLI's cached
+    ``chatgpt.com`` token) raises a structured :class:`SessionStartError` so the
+    desktop blocks the launch and points at the failing agent type(s) —
+    otherwise that agent would hang every dispatch to the idle timeout mid-run.
+    Non-blocking non-ok statuses (timeout / probe error / unprobeable) are
+    logged and tolerated so a transient probe hiccup never strands an
+    otherwise-fine session.
     """
     from agentshore.agents.auth_probe import probe_configured_cli_auth
+    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.errors import ConfigError
+
+    try:
+        require_two_distinct_gh_identities(cfg)
+    except ConfigError as exc:
+        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
 
     results = probe_configured_cli_auth(cfg)
     blocking = [r for r in results if r.blocks_launch]
