@@ -307,7 +307,9 @@ async def _phase_init_ppo_selector(
         # Wire the guarded RL experience recorder now that the PPO selector,
         # metrics, and policy/config versions are all final. The completion
         # path no-ops the RL tail when this stays None (non-PPO / headless).
+        from agentshore.core.concurrency_log import ConcurrencyLog
         from agentshore.core.experience_recorder import ExperienceRecorder
+        from agentshore.session_path import session_dir
 
         orch._experience_recorder = ExperienceRecorder(
             store=orch._store,
@@ -316,6 +318,7 @@ async def _phase_init_ppo_selector(
             cfg=cfg,
             host=orch,
             velocity=orch._velocity,
+            concurrency_log=ConcurrencyLog(session_dir(orch._repo_root), orch._session_id),
         )
 
         # Single autonomous-stop signal: drain after N consecutive ticks with no

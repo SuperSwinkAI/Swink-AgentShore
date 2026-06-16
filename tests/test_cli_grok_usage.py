@@ -15,7 +15,6 @@ import pytest
 import structlog
 
 from agentshore.agents.cli_grok import (
-    _GROK_CLI_MODEL_ALIASES,
     _grok_usage_block,
     _grok_usage_from_dict,
     cli_model,
@@ -84,27 +83,33 @@ def test_usage_block_nesting_tolerance() -> None:
     assert _grok_usage_block({"stopReason": "EndTurn", "sessionId": "x"}) is None
 
 
-def test_cli_model_alias_warns() -> None:
-    """Invalid grok-code-fast id is rewritten to grok-build and logs a warning."""
+@pytest.mark.parametrize(
+    "model",
+    [
+        "grok-code-fast",
+        "grok-code-fast-1",
+        "grok-code-fast-1-0825",
+        "grok-build-0.1",
+        "grok-4.3",
+        "grok-composer-2.5-fast",
+        "some-other-model",
+    ],
+)
+def test_cli_model_any_non_build_warns_and_collapses(model: str) -> None:
+    """Any model that is not grok-build is collapsed to grok-build with a warning."""
     with structlog.testing.capture_logs() as captured:
-        assert cli_model("grok-code-fast") == "grok-build"
+        result = cli_model(model)
+    assert result == "grok-build"
     events = [e["event"] for e in captured]
     assert "grok_model_alias_override" in events
 
 
-def test_cli_model_passthrough_no_warn() -> None:
-    """A valid model id is returned unchanged with no warning."""
+def test_cli_model_grok_build_passthrough_no_warn() -> None:
+    """grok-build passes through unchanged with no warning."""
     with structlog.testing.capture_logs() as captured:
         assert cli_model("grok-build") == "grok-build"
-        assert cli_model("grok-composer-2.5-fast") == "grok-composer-2.5-fast"
     events = [e["event"] for e in captured]
     assert "grok_model_alias_override" not in events
-
-
-def test_alias_table_targets_valid_model() -> None:
-    """Every alias must resolve to a model the installed CLI accepts."""
-    valid = {"grok-build", "grok-composer-2.5-fast"}
-    assert set(_GROK_CLI_MODEL_ALIASES.values()) <= valid
 
 
 def test_first_byte_deadline_resolution() -> None:
@@ -115,8 +120,11 @@ def test_first_byte_deadline_resolution() -> None:
     )
 
     cfg = AgentConfig()
-    # Grok uses the tighter per-type default (45s).
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 45.0
+    # Grok uses its per-type default (240s) — the Grok CLI's measured
+    # time-to-first-byte is 30–70s+ with a variance tail, far above the codex
+    # default, so the deadline is widened rather than tightened (the original
+    # #204 "handful of seconds" assumption was empirically false for 0.2.32).
+    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 240.0
     # Codex/other falls back to the global default (unchanged at 120s).
     assert (
         _resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S

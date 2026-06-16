@@ -623,6 +623,49 @@ def _validate_agent_identities(
             )
 
 
+def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
+    """Reject ``reasoning_effort`` on agent types whose CLI has no effort flag.
+
+    Currently only Gemini has no effort flag.  Top-level ``reasoning_effort``
+    and per-tier ``reasoning_effort`` entries are both checked.
+    """
+    from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
+    from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
+    from agentshore.state import AgentType
+
+    for agent_name, agent_cfg in agents.items():
+        # Resolve the AgentType for this agent entry. Prefer the binary→type
+        # registry, but fall back to the agent key when the binary is a custom
+        # path the registry doesn't know (e.g. ``binary: /opt/bin/gemini``) —
+        # otherwise a non-canonical binary would silently bypass validation.
+        resolved = BINARY_TO_AGENT_TYPE.get(agent_cfg.binary) if agent_cfg.binary else None
+        if resolved is None:
+            try:
+                resolved = AgentType(agent_name)
+            except ValueError:
+                resolved = None  # api_* or unknown key — skip
+
+        if resolved is None:
+            continue
+        if REASONING_EFFORTS.get(resolved):
+            # This agent type supports effort — nothing to reject.
+            continue
+
+        # Agent type has an empty effort vocabulary (e.g. Gemini).
+        if agent_cfg.reasoning_effort:
+            raise ConfigError(
+                f"agents.{agent_name}.reasoning_effort is not supported for "
+                f"{resolved.value} (the CLI has no effort flag); remove the field"
+            )
+        for tier, tier_cfg in agent_cfg.model_tiers.items():
+            if tier_cfg.reasoning_effort:
+                raise ConfigError(
+                    f"agents.{agent_name}.model_tiers.{tier}.reasoning_effort is not "
+                    f"supported for {resolved.value} (the CLI has no effort flag); "
+                    "remove the field"
+                )
+
+
 def _clamp_tier_max(value: object) -> int:
     """Clamp a raw tier max value to the valid 1–20 range.
 
@@ -1092,6 +1135,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
     identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
     trusted_ids_raw = data.get("trusted_ids", {})
     _validate_agent_identities(agents, identities)
+    _validate_agent_reasoning_efforts(agents)
 
     mode_raw = data.get("mode", RunMode.SOLO.value)
     try:

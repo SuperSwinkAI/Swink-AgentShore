@@ -48,7 +48,8 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
     "launch wedge",
 )
 
-# A Grok first-byte launch wedge burns ~120s without producing output, but —
+# A Grok first-byte launch wedge burns the grok first-byte deadline (240s, see
+# cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE) without producing output, but —
 # unlike a backend-auth failure — it is transient. Rather than permanently
 # disabling the agent type for the session (the old grow-only behavior, #196),
 # a wedge records a bounded cooldown so the type auto-recovers after this many
@@ -115,8 +116,9 @@ class AgentManager:
         # Agent-type values (e.g. "codex") whose backend should be suppressed for
         # this session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
         # (instantiate preflight, dispatch AUTH timeout, mark_agent_error), plus
-        # Grok first-byte launch wedges where repeated dispatch burns 120s without
-        # making progress. The manager holds no reference to ``SessionRuntime``;
+        # Grok first-byte launch wedges where repeated dispatch burns the 240s
+        # first-byte deadline without making progress. The manager holds no
+        # reference to ``SessionRuntime``;
         # the state-builder mixin drains this into
         # ``_runtime.auth_suppressed_agent_types`` each snapshot so the candidate
         # analyzer can mask the whole type. Grow-only for the session. #zeke

@@ -47,9 +47,13 @@ A CLI agent's **backend** session (the model-provider auth its harness uses, dis
 Grok launch wedges use the same type-suppression path without changing their
 error class to auth. If a Grok subprocess produces no first stdout byte before
 the first-byte watchdog fires, the dispatch remains `timeout_stream_idle`, but
-the Grok type is suppressed for the rest of the session. This keeps ordinary
-post-launch stream-idle timeouts recoverable while preventing repeated
-120-second Grok launch burns across new handles.
+the Grok type is suppressed (a bounded cooldown) so it auto-recovers later. The
+Grok first-byte deadline is **240s**, not the 120s global default: the Grok CLI
+(0.2.32) was measured at 30–70s to first byte for `grok-build` — model/relay
+latency, not local startup — so the original 45s cap killed ~100% of Grok
+dispatches as false launch wedges. 240s clears the measured distribution with
+margin while still bounding a genuine hang; Grok is also dispatched with
+`--no-memory --no-plan` to trim that latency on its ephemeral single-turn runs.
 
 ## Recovery Strategy
 

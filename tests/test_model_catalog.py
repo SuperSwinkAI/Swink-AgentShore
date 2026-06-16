@@ -12,7 +12,6 @@ from agentshore.agents.model_catalog import (
     _fetch_anthropic_models,
     _fetch_gemini_models,
     _fetch_openai_models,
-    _fetch_xai_models,
     models_for_agent,
 )
 
@@ -134,26 +133,17 @@ def test_gemini_live_extras_appended_after_known(monkeypatch: pytest.MonkeyPatch
     assert result.count("gemini-2.5-flash") == 1
 
 
-def test_grok_known_models_include_build_aliases() -> None:
-    assert KNOWN_MODELS["grok"] == [
-        "grok-build",
-        "grok-build-0.1",
-        "grok-4.3",
-        "grok-code-fast-1",
-        "grok-code-fast",
-        "grok-code-fast-1-0825",
-    ]
+def test_grok_known_models_hard_pinned_to_build() -> None:
+    # grok is hard-pinned: exactly one entry, grok-build.
+    assert KNOWN_MODELS["grok"] == ["grok-build"]
 
 
-def test_xai_fetch_used_for_grok(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # models_for_agent for grok must never call a live xAI API.
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
-    live = ["grok-future"]
-    with patch(
-        "agentshore.agents.model_catalog._fetch_xai_models", new=AsyncMock(return_value=live)
-    ):
-        result = models_for_agent("grok")
-
-    assert "grok-future" in result
+    result = models_for_agent("grok")
+    # Only the hard-pinned entry; no live extras possible.
+    assert result == ["grok-build"]
 
 
 # ---------------------------------------------------------------------------
@@ -277,31 +267,6 @@ def test_fetch_gemini_filters_non_generation_models(monkeypatch: pytest.MonkeyPa
         result = asyncio.run(_fetch_gemini_models())
 
     assert result == ["gemini-2.5-flash"]
-
-
-def test_fetch_xai_returns_empty_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.delenv("GROK_CODE_XAI_API_KEY", raising=False)
-    assert asyncio.run(_fetch_xai_models()) == []
-
-
-def test_fetch_xai_uses_grok_code_env_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setenv("GROK_CODE_XAI_API_KEY", "xai-test")
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status.return_value = None
-    mock_resp.json.return_value = {
-        "data": [
-            {"id": "grok-build-0.1"},
-            {"id": "not-grok-model"},
-        ]
-    }
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp)) as get:
-        result = asyncio.run(_fetch_xai_models())
-
-    assert result == ["grok-build-0.1"]
-    headers = get.call_args.kwargs["headers"]
-    assert headers["Authorization"] == "Bearer xai-test"
 
 
 def test_fetch_openai_filters_to_relevant_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:

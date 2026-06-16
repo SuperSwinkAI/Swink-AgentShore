@@ -13,9 +13,9 @@ MODEL_TIER_ORDER: tuple[str, ...] = ("small", "medium", "large")
 
 DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
     AgentType.CLAUDE_CODE: {
-        "small": ModelTierConfig(model="haiku"),
-        "medium": ModelTierConfig(model="sonnet"),
-        "large": ModelTierConfig(model="opus"),
+        "small": ModelTierConfig(model="haiku", reasoning_effort="low"),
+        "medium": ModelTierConfig(model="sonnet", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="opus", reasoning_effort="high"),
     },
     AgentType.CODEX: {
         # gpt-5.x (non-``-codex``) ids are the ChatGPT-account-compatible line.
@@ -37,6 +37,21 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="grok-build", reasoning_effort="high"),
     },
 }
+
+
+# Canonical reasoning-effort vocabularies per agent type.  Empty tuple means
+# the agent CLI has no effort flag and the field must not be set.
+REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
+    AgentType.CLAUDE_CODE: ("low", "medium", "high", "xhigh", "max"),
+    AgentType.GROK: ("low", "medium", "high", "xhigh", "max"),
+    AgentType.CODEX: ("minimal", "low", "medium", "high", "xhigh"),
+    AgentType.GEMINI: (),
+}
+
+
+def reasoning_efforts_for(agent_type: AgentType) -> tuple[str, ...]:
+    """Return the valid reasoning-effort values for an agent type."""
+    return REASONING_EFFORTS.get(agent_type, ())
 
 
 def default_model_tiers_for(agent_type: AgentType) -> dict[str, ModelTierConfig]:

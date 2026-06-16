@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from agentshore.core.concurrency_log import ConcurrencyLog, NullConcurrencyLog
 from agentshore.core.helpers import _build_reward_signals, _logger
 from agentshore.data.store import ExperienceRecord
 from agentshore.rl.action_space import ACTION_SPACE_VERSION
@@ -52,6 +53,7 @@ class ExperienceRecorder:
         cfg: RuntimeConfig,
         host: _RLStateHost,
         velocity: VelocityTracker,
+        concurrency_log: ConcurrencyLog | None = None,
     ) -> None:
         self._store = store
         self._metrics = metrics
@@ -59,6 +61,10 @@ class ExperienceRecorder:
         self._cfg = cfg
         self._host = host
         self._velocity = velocity
+        # Phase 1 fleet-concurrency log; no-op when unwired (headless / non-PPO).
+        self._concurrency_log: ConcurrencyLog | NullConcurrencyLog = (
+            concurrency_log or NullConcurrencyLog()
+        )
 
     @staticmethod
     def mask_reason_summary(state: object) -> str | None:
@@ -131,6 +137,13 @@ class ExperienceRecorder:
                 exc_info=True,
             )
             return
+
+        # Step 1b — fleet-concurrency sample. Self-guarding (never raises) and
+        # takes the whole next_state so even the field reads are inside its
+        # guard — a bad sample can't take down the loop or the RL tail below it.
+        await self._concurrency_log.record(
+            next_state=next_state, outcome=outcome, reward=reward
+        )
 
         # Step 2 — persist the experience row (independent of policy learning).
         if outcome.play_id is not None and pending_step is not None:

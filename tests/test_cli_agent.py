@@ -323,6 +323,22 @@ def test_build_argv_claude_code_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
+def test_build_argv_claude_code_reasoning_effort() -> None:
+    """``--effort`` flag is emitted for claude when reasoning_effort is set."""
+    argv = build_argv(
+        AgentType.CLAUDE_CODE,
+        "do the thing",
+        binary="claude",
+        model="sonnet",
+        reasoning_effort="high",
+    )
+
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "high"
+    # --effort must appear before extra_flags / prompt.
+    assert argv[-1] == "do the thing"
+
+
 def test_build_argv_codex_shape() -> None:
     argv = build_argv(AgentType.CODEX, "do the thing", binary="codex", project_dir="/work")
     assert argv[0] == "codex"
@@ -428,13 +444,17 @@ def test_build_argv_grok_shape() -> None:
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
+        # Ephemeral single-turn dispatches: cross-session memory is meaningless
+        # and slow, and plan mode adds an unwanted planning round.
+        "--no-memory",
+        "--no-plan",
         "--cwd",
         "/worktree",
         "--output-format",
         "streaming-json",
         "-m",
         "grok-build",
-        "--reasoning-effort",
+        "--effort",
         "medium",
         "--permission-mode",
         "bypassPermissions",

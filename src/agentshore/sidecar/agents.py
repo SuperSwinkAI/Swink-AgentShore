@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, TypedDict
 import yaml
 
 from agentshore.agents.model_catalog import KNOWN_MODELS
-from agentshore.agents.model_tiers import DEFAULT_MODEL_TIERS
+from agentshore.agents.model_tiers import DEFAULT_MODEL_TIERS, REASONING_EFFORTS
 from agentshore.environment import detect_agent_binaries
 from agentshore.identity_names import canonical_identity_name
 from agentshore.state import AgentType
@@ -46,7 +46,9 @@ def agents_catalog() -> dict[str, object]:
 
     Pure data: a per-agent-key list of known model IDs (matching the CLI
     wizard's source — agentshore.agents.model_catalog.KNOWN_MODELS) plus the
-    per-tier recommended defaults (agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS).
+    per-tier recommended defaults (agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS)
+    and the valid reasoning-effort vocabularies per agent type
+    (agentshore.agents.model_tiers.REASONING_EFFORTS).
     No I/O — the desktop calls this once on mount and renders dropdowns from
     the result. Keeping the catalog in one place means the CLI wizard and
     the desktop screen always offer the same models with the same defaults.
@@ -62,7 +64,10 @@ def agents_catalog() -> dict[str, object]:
             }
             for tier, cfg in tier_map.items()
         }
-    return {"models": models, "defaults": defaults}
+    efforts: dict[str, list[str]] = {
+        agent_type.value: list(values) for agent_type, values in REASONING_EFFORTS.items()
+    }
+    return {"models": models, "defaults": defaults, "efforts": efforts}
 
 
 _BINARY_TO_AGENT_TYPE: dict[str, str] = {
