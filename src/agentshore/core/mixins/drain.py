@@ -232,10 +232,22 @@ class DrainController:
         )
 
     def _stop_graceful_drain_watchdog(self) -> None:
-        """Cancel the graceful-drain watchdog task if running."""
+        """Cancel the graceful-drain watchdog task if running.
+
+        No-op when invoked from within the watchdog task itself (the escalation
+        path calls ``stop()`` → here): self-cancellation would deliver a
+        ``CancelledError`` at ``stop()``'s next await and abort teardown before
+        ``do_stop`` runs, wedging the session half-stopped. The watchdog returns
+        immediately after awaiting ``stop()``, so it needs no cancellation then;
+        for any other caller (sidecar, signal handler) the watchdog is a
+        different task and is cancelled as before.
+        """
         task = self._graceful_drain_watchdog_task
-        if task is not None and not task.done():
-            task.cancel()
+        if task is None or task.done():
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
 
     async def _graceful_drain_watchdog(self) -> None:
         """Escalate a graceful drain to the bounded hard stop past its deadline (#180).
@@ -533,10 +545,10 @@ class DrainController:
             await self._runtime.stop_done.wait()
             return
         # Cancel the bounded-drain watchdog (#180) now that a stop is underway so
-        # it cannot re-enter ``stop`` after this body completes. Harmless when the
-        # watchdog itself initiated this stop — cancelling a task from within its
-        # own awaited call is a no-op until it next suspends, and it returns
-        # immediately after awaiting ``stop``.
+        # it cannot re-enter ``stop`` after this body completes. Deliberate no-op
+        # when the watchdog itself initiated this stop — self-cancellation would
+        # land a ``CancelledError`` at the completion-gate await below and skip
+        # teardown (see ``_stop_graceful_drain_watchdog``).
         self._stop_graceful_drain_watchdog()
         self._runtime.stopped = True
         self._runtime.stop_requested = True
@@ -545,17 +557,24 @@ class DrainController:
             self._runtime.stop_reason = "stop_requested"
         self._runtime.pause_event.set()  # Wake loop if paused so it can check _stop_requested
         completion_idle = self._runtime.completion_processing_idle
-        if self._runtime.completion_processing_count > 0:
-            try:
-                await asyncio.wait_for(completion_idle.wait(), timeout=grace_period_s)
-            except TimeoutError:
-                _logger.warning(
-                    "completion_processing_shutdown_timeout",
-                    session_id=self._session_id,
-                    pending=self._runtime.completion_processing_count,
-                )
-
-        await asyncio.shield(self.do_stop(grace_period_s))
+        # Invariant: once ``stopped`` is committed above, ``do_stop`` MUST run — it
+        # is the only path that cancels in-flight agents, checkpoints the WAL,
+        # marks the session stopped, and sets ``stop_done`` (which any concurrent
+        # second caller is blocked on). The pre-teardown completion-gate await is
+        # cancellable, so drive ``do_stop`` from a ``finally`` to guarantee it runs
+        # even if that await is cancelled (self-cancel or an external caller).
+        try:
+            if self._runtime.completion_processing_count > 0:
+                try:
+                    await asyncio.wait_for(completion_idle.wait(), timeout=grace_period_s)
+                except TimeoutError:
+                    _logger.warning(
+                        "completion_processing_shutdown_timeout",
+                        session_id=self._session_id,
+                        pending=self._runtime.completion_processing_count,
+                    )
+        finally:
+            await asyncio.shield(self.do_stop(grace_period_s))
 
     async def do_stop(self, grace_period_s: float) -> None:
         """Actual shutdown body. Must only be called by ``stop()``."""
