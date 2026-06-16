@@ -71,6 +71,10 @@ Graceful stop uses **drain mode**: new work stops, running agents finish, and `E
 
 An independent **loop-liveness watchdog** force-drains the session if the core-loop heartbeat goes stale — a hard freeze the idle/unanswered-pause backstops cannot catch. It is a no-op when `feedback.loop_liveness_timeout_seconds` is unset.
 
+A **bounded graceful-drain watchdog** (#180) escalates a graceful drain to the hard stop once `feedback.graceful_drain_timeout_seconds` elapses with plays still in flight, so a stuck play can no longer hang `stop` for hours. The escalation calls `stop()` from inside the watchdog task; `stop()` must therefore **not** cancel its own running task (`_stop_graceful_drain_watchdog` is a no-op on the self-call path), and the teardown invariant is that **once `stop()` commits `stopped=True`, `do_stop()` always runs** — it is the only path that cancels in-flight agents, checkpoints the WAL, marks the session `stopped`, and sets `stop_done`.
+
+> **Drain-state recovery signature.** A session stuck in `DRAINING` with **no `shutdown_begin` log line** after a `graceful_drain_deadline_escalation` means teardown was aborted before `do_stop()`. The log fingerprint is `loop_terminating` followed by `cli_dispatch_done` events with **no trailing `play_completed`** and no `shutdown_*` steps — in-flight agents drain naturally but are never harvested or finalized, and any second `stop()` caller blocks forever on `stop_done`. The fixed teardown guarantees `do_stop()` runs even when a completion is being processed at the escalation instant.
+
 ## Loop Detection
 
 Two distinct mechanisms guard against the policy collapsing onto a repeated action.
