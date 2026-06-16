@@ -404,18 +404,21 @@ class FeedbackConfig:
     # has stopped iterating entirely (e.g. a deadlock in the play-mutation
     # promotion path). None disables the watchdog.
     loop_liveness_timeout_seconds: float | None = 600.0
-    # Bounded graceful-drain deadline (#180). A graceful drain only dispatches
-    # ``end_agent`` and waits for in-flight plays to finish; an agent stuck in a
-    # multi-hour play (or a never-finalizing broken-worktree play) made
-    # ``agentshore stop`` hang ~1h until SIGINT because that wait was unbounded.
-    # When the graceful drain has not completed within this many seconds, an
-    # independent watchdog task — NOT on the loop's critical path — escalates to
-    # the bounded hard stop (cancels in-flight plays under the shutdown grace
-    # period) instead of waiting forever. Distinct from the timeouts above: those
-    # cover a loop that is wedged on a human or hard-frozen; this covers a loop
-    # that is healthily ticking through a drain whose in-flight work never
-    # finishes. None disables the deadline (unbounded graceful drain).
-    graceful_drain_timeout_seconds: float | None = 300.0
+    # Optional graceful-drain deadline (#180), OPT-IN — defaults to None
+    # (unbounded). A graceful drain only dispatches ``end_agent`` and waits for
+    # in-flight plays to finish; the core design intent is that a drain is
+    # unbounded so agents always complete their work before the session stops.
+    # When set to a positive value, an independent watchdog task — NOT on the
+    # loop's critical path — escalates to the bounded hard stop (cancels
+    # in-flight plays under the shutdown grace period) once that many seconds
+    # elapse with plays still in flight. This was added to reap a drain wedged on
+    # a single stuck in-flight play (a multi-hour play, or a never-finalizing
+    # broken-worktree play) that previously hung ``agentshore stop`` ~1h until
+    # SIGINT. It must stay opt-in: a wall-clock cap cannot distinguish a wedged
+    # drain from a healthy-but-slow one (e.g. a large fleet draining serially via
+    # ``end_agent``), so a non-None default hard-kills in-flight agent work
+    # mid-task. Leave None unless a deployment specifically needs the backstop.
+    graceful_drain_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
