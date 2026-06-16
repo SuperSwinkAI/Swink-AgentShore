@@ -40,6 +40,9 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["codex"].binary == "codex"
     assert config.agents["gemini"].binary == "gemini"
     assert config.agents["grok"].binary == "grok"
+    assert config.agents["claude_code"].model_tiers["small"].reasoning_effort == "low"
+    assert config.agents["claude_code"].model_tiers["medium"].reasoning_effort == "medium"
+    assert config.agents["claude_code"].model_tiers["large"].reasoning_effort == "high"
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
@@ -380,6 +383,45 @@ def test_config_nested_containers_are_immutable() -> None:
         config.agents["codex"].model_tiers["extra"] = config.agents["codex"].model_tiers["small"]  # type: ignore[index]
     with pytest.raises(AttributeError):
         config.intake.seed_paths.append("docs/")  # type: ignore[attr-defined]
+
+
+def test_gemini_top_level_reasoning_effort_raises_config_error(tmp_path: Path) -> None:
+    """Top-level reasoning_effort on a gemini agent must be rejected."""
+    cfg_path = tmp_path / "agentshore.yaml"
+    cfg_path.write_text(
+        """\
+agents:
+  gemini:
+    enabled: true
+    binary: gemini
+    reasoning_effort: medium
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="reasoning_effort.*gemini.*no effort flag"):
+        load_config(cfg_path)
+
+
+def test_gemini_tier_reasoning_effort_raises_config_error(tmp_path: Path) -> None:
+    """Per-tier reasoning_effort on a gemini agent must be rejected."""
+    cfg_path = tmp_path / "agentshore.yaml"
+    cfg_path.write_text(
+        """\
+agents:
+  gemini:
+    enabled: true
+    binary: gemini
+    model_tiers:
+      medium:
+        model: auto
+        reasoning_effort: high
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="reasoning_effort.*gemini.*no effort flag"):
+        load_config(cfg_path)
 
 
 def test_generated_default_file_matches_runtime_defaults(tmp_path: Path) -> None:

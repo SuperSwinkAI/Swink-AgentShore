@@ -22,6 +22,11 @@ Usage keys emitted by the Grok CLI use both the standard Anthropic aliases
 (``prompt_tokens``/``completion_tokens``).  Both are handled here so that
 usage accounting is correct without widening the shared ``_usage_totals_from_dict``
 helper used by Claude/Codex.
+
+Model selection is hard-pinned: the only accepted model is ``grok-build``.
+Any configured model that is not already ``grok-build`` is collapsed to it with
+a warning so the override is visible in logs (issue #204, task 4).
+The effort flag for the Grok CLI is ``--effort`` (NOT ``--reasoning-effort``).
 """
 
 from __future__ import annotations
@@ -40,19 +45,6 @@ from agentshore.agents._jsonl import (
 
 _logger = structlog.get_logger(__name__)
 
-# The installed Grok CLI (0.2.32) only accepts ``grok-build`` and
-# ``grok-composer-2.5-fast`` (verified via ``grok models``). The historic
-# ``grok-code-fast*`` ids are NOT valid model names, so a configured small tier
-# pointing at one would be rejected by the binary — we rewrite them to the
-# closest valid model (``grok-build``) and warn so the silent override is visible
-# (issue #204, task 4).
-_GROK_CLI_MODEL_ALIASES: dict[str, str] = {
-    "grok-build-0.1": "grok-build",
-    "grok-code-fast-1": "grok-build",
-    "grok-code-fast": "grok-build",
-    "grok-code-fast-1-0825": "grok-build",
-}
-
 
 def default_binary() -> str:
     """Prefer ``grok`` but support hosts that only have the ``grok-build`` alias."""
@@ -66,22 +58,18 @@ def default_binary() -> str:
 def cli_model(model: str) -> str:
     """Return the model id accepted by the installed Grok CLI.
 
-    Configured ids in ``_GROK_CLI_MODEL_ALIASES`` (e.g. the invalid
-    ``grok-code-fast*`` family) are rewritten to a valid Grok model. The
-    installed CLI rejects those ids outright, so honoring them as-is would fail
-    every dispatch; rewriting is the safe option, but we emit a warning so the
-    override is not silent (issue #204, task 4).
+    The Grok CLI is hard-pinned to ``grok-build``. Any input that is not
+    already ``grok-build`` is collapsed to it with a warning so the override
+    is visible in logs (issue #204, task 4).
     """
-    aliased = _GROK_CLI_MODEL_ALIASES.get(model)
-    if aliased is not None and aliased != model:
+    if model != "grok-build":
         _logger.warning(
             "grok_model_alias_override",
             configured_model=model,
-            resolved_model=aliased,
+            resolved_model="grok-build",
             reason="configured model is not accepted by the installed Grok CLI",
         )
-        return aliased
-    return model
+    return "grok-build"
 
 
 def build_argv(
@@ -107,7 +95,9 @@ def build_argv(
     the prompt is passed directly via ``-p`` — never as an empty string.
     """
     resolved_binary = binary or default_binary()
-    resolved_model = cli_model(model) if model else None
+    # Model is always hard-pinned to grok-build; warn if the caller passed
+    # something else (cli_model handles the warning and collapse).
+    resolved_model = cli_model(model) if model else "grok-build"
     args = [
         resolved_binary,
         "--no-auto-update",
@@ -117,10 +107,9 @@ def build_argv(
     if project_dir:
         args += ["--cwd", project_dir]
     args += ["--output-format", "streaming-json"]
-    if resolved_model:
-        args += ["-m", resolved_model]
+    args += ["-m", resolved_model]
     if reasoning_effort:
-        args += ["--reasoning-effort", reasoning_effort]
+        args += ["--effort", reasoning_effort]
     args.extend(extra_flags)
     if prompt_file is not None:
         args += ["--prompt-file", prompt_file]

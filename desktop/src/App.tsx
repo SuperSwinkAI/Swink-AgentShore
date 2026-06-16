@@ -99,6 +99,7 @@ interface TierEntry {
   model: string;
   enabled: boolean;
   max: number;
+  reasoning_effort: string | null;
 }
 type TierPlan = Record<Tier, TierEntry>;
 
@@ -261,7 +262,7 @@ function persistSetup(next: SetupState): void {
 }
 
 function emptyTierEntry(): TierEntry {
-  return { model: "", enabled: true, max: 1 };
+  return { model: "", enabled: true, max: 1, reasoning_effort: null };
 }
 
 function emptyTierPlan(): TierPlan {
@@ -275,9 +276,24 @@ function tierPlanFromCatalog(
   if (!catalog) return emptyTierPlan();
   const defaults = catalog.defaults[agentType] ?? {};
   return {
-    small: { model: defaults.small?.model ?? "", enabled: true, max: 1 },
-    medium: { model: defaults.medium?.model ?? "", enabled: true, max: 1 },
-    large: { model: defaults.large?.model ?? "", enabled: true, max: 1 },
+    small: {
+      model: defaults.small?.model ?? "",
+      enabled: true,
+      max: 1,
+      reasoning_effort: defaults.small?.reasoning_effort ?? null,
+    },
+    medium: {
+      model: defaults.medium?.model ?? "",
+      enabled: true,
+      max: 1,
+      reasoning_effort: defaults.medium?.reasoning_effort ?? null,
+    },
+    large: {
+      model: defaults.large?.model ?? "",
+      enabled: true,
+      max: 1,
+      reasoning_effort: defaults.large?.reasoning_effort ?? null,
+    },
   };
 }
 
@@ -328,6 +344,9 @@ function AgentConfigScreen() {
             if (typeof savedTier.max === "number") {
               base[tier].max = savedTier.max;
             }
+            if (typeof savedTier.reasoning_effort === "string" && savedTier.reasoning_effort.length > 0) {
+              base[tier].reasoning_effort = savedTier.reasoning_effort;
+            }
           }
         }
         setTierPlan(base);
@@ -351,6 +370,11 @@ function AgentConfigScreen() {
     return catalog.models[agentType] ?? [];
   }, [catalog, agentType]);
 
+  const effortOptions = useMemo<string[]>(() => {
+    if (!catalog) return [];
+    return catalog.efforts[agentType] ?? [];
+  }, [catalog, agentType]);
+
   const updateTierModel = (tier: Tier, model: string) => {
     setTierPlan((prev) => ({ ...prev, [tier]: { ...prev[tier], model } }));
     setSaveError(null);
@@ -366,6 +390,14 @@ function AgentConfigScreen() {
     setSaveError(null);
   };
 
+  const updateTierEffort = (tier: Tier, value: string) => {
+    setTierPlan((prev) => ({
+      ...prev,
+      [tier]: { ...prev[tier], reasoning_effort: value.length > 0 ? value : null },
+    }));
+    setSaveError(null);
+  };
+
   const resetToRecommended = () => {
     setTierPlan(recommended);
     setSaveError(null);
@@ -375,15 +407,31 @@ function AgentConfigScreen() {
     setSaving(true);
     setSaveError(null);
     try {
-      const tier_models: Record<string, { enabled: boolean; model: string; max: number }> = {};
+      const tier_models: Record<
+        string,
+        { enabled: boolean; model: string; max: number; reasoning_effort?: string }
+      > = {};
+      // Grok is hard-pinned to grok-build; never round-trip a stale model id.
+      const isGrok = agentType === "grok";
+      // Only agents whose CLI exposes an effort flag may persist one — otherwise
+      // the backend config validator rejects the whole config (e.g. gemini).
+      const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
-        const { model, enabled, max } = tierPlan[tier];
+        const { model, enabled, max, reasoning_effort } = tierPlan[tier];
+        const persistedModel = isGrok ? "grok-build" : model;
         // Persist the entry whenever the model is set, even when disabled —
         // that way a tier toggled off keeps its model selection for next
         // time the user re-enables it (matches the CLI wizard's behavior
         // where unticked tiers persist as `enabled: false`).
-        if (model.length > 0) {
-          tier_models[tier] = { enabled, model, max: max ?? 1 };
+        if (persistedModel.length > 0) {
+          tier_models[tier] = {
+            enabled,
+            model: persistedModel,
+            max: max ?? 1,
+            ...(supportsEffort && reasoning_effort !== null && reasoning_effort.length > 0
+              ? { reasoning_effort }
+              : {}),
+          };
         }
       }
       await configureAgent(agentType, { tier_models });
@@ -470,19 +518,29 @@ function AgentConfigScreen() {
                   />
                   <span>{entry.enabled ? "Enabled" : "Disabled"}</span>
                 </label>
-                <select
-                  id={`${tier}-model-select`}
-                  className="desktop-select"
-                  value={entry.model}
-                  onChange={(event) => updateTierModel(tier, event.target.value)}
-                  disabled={catalog === null || !entry.enabled}
-                >
-                  {options.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
+                {agentType === "grok" ? (
+                  <span
+                    id={`${tier}-model-select`}
+                    className="desktop-select desktop-select--readonly"
+                    aria-label={`Model for ${tier} tier`}
+                  >
+                    grok-build
+                  </span>
+                ) : (
+                  <select
+                    id={`${tier}-model-select`}
+                    className="desktop-select"
+                    value={entry.model}
+                    onChange={(event) => updateTierModel(tier, event.target.value)}
+                    disabled={catalog === null || !entry.enabled}
+                  >
+                    {options.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <label className="desktop-label" htmlFor={`${tier}-max-input`}>
                   Max agents
                 </label>
@@ -503,6 +561,29 @@ function AgentConfigScreen() {
                   aria-label={`Max agents for ${tier} tier`}
                   data-testid={`tier-max-${tier}`}
                 />
+                {effortOptions.length > 0 && (
+                  <>
+                    <label className="desktop-label" htmlFor={`${tier}-effort-select`}>
+                      Reasoning effort
+                    </label>
+                    <select
+                      id={`${tier}-effort-select`}
+                      className="desktop-select"
+                      value={entry.reasoning_effort ?? ""}
+                      onChange={(event) => updateTierEffort(tier, event.target.value)}
+                      disabled={catalog === null || !entry.enabled}
+                      aria-label={`Reasoning effort for ${tier} tier`}
+                      data-testid={`tier-effort-${tier}`}
+                    >
+                      <option value="">— Default —</option>
+                      {effortOptions.map((effort) => (
+                        <option key={effort} value={effort}>
+                          {effort}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <small>
                   {!entry.enabled
                     ? "Tier disabled — agent not instantiated at this size"

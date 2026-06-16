@@ -612,6 +612,8 @@ def build_argv(
         args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
         if model:
             args += ["--model", model]
+        if reasoning_effort:
+            args += ["--effort", reasoning_effort]
         args.extend(extra_flags)
         if context_path:
             args += ["--append-system-prompt", f"Context file: {context_path}"]

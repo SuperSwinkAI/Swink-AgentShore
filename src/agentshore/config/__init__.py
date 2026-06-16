@@ -139,9 +139,11 @@ agents:
       small:
         enabled: true
         model: haiku
+        reasoning_effort: low
       medium:
         enabled: true
         model: sonnet
+        reasoning_effort: medium
   codex:
     enabled: true
     binary: codex

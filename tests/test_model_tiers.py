@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
+    REASONING_EFFORTS,
     default_model_tiers_for,
     effective_model_tier_config,
     enabled_model_tiers,
+    reasoning_efforts_for,
 )
 from agentshore.config.models import AgentConfig, ModelTierConfig
 from agentshore.state import AgentType
@@ -16,8 +18,12 @@ def test_default_model_tiers_for_claude_code() -> None:
     tiers = default_model_tiers_for(AgentType.CLAUDE_CODE)
 
     assert set(tiers) == {"small", "medium", "large"}
+    assert tiers["small"].model == "haiku"
+    assert tiers["small"].reasoning_effort == "low"
     assert tiers["medium"].model == "sonnet"
+    assert tiers["medium"].reasoning_effort == "medium"
     assert tiers["large"].model == "opus"
+    assert tiers["large"].reasoning_effort == "high"
     assert tiers["large"].enabled is True
 
 
@@ -104,3 +110,39 @@ def test_effective_model_tier_config_preserves_legacy_top_level_settings() -> No
 
     assert resolved.model == "custom-model"
     assert resolved.reasoning_effort == "xhigh"
+
+
+# ---------------------------------------------------------------------------
+# REASONING_EFFORTS / reasoning_efforts_for
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_efforts_claude_code_has_five_values() -> None:
+    efforts = reasoning_efforts_for(AgentType.CLAUDE_CODE)
+
+    assert efforts == ("low", "medium", "high", "xhigh", "max")
+    assert len(efforts) == 5
+
+
+def test_reasoning_efforts_grok_has_five_values() -> None:
+    efforts = reasoning_efforts_for(AgentType.GROK)
+
+    assert efforts == ("low", "medium", "high", "xhigh", "max")
+    assert len(efforts) == 5
+
+
+def test_reasoning_efforts_codex_includes_minimal() -> None:
+    efforts = reasoning_efforts_for(AgentType.CODEX)
+
+    assert efforts[0] == "minimal"
+    assert efforts == ("minimal", "low", "medium", "high", "xhigh")
+    assert len(efforts) == 5
+
+
+def test_reasoning_efforts_gemini_is_empty() -> None:
+    assert reasoning_efforts_for(AgentType.GEMINI) == ()
+
+
+def test_reasoning_efforts_constant_matches_helper() -> None:
+    for agent_type in AgentType:
+        assert reasoning_efforts_for(agent_type) == REASONING_EFFORTS.get(agent_type, ())

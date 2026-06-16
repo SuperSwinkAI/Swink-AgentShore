@@ -171,8 +171,6 @@ def test_agents_catalog_includes_grok_defaults() -> None:
     assert isinstance(models, dict)
     assert isinstance(defaults, dict)
     assert "grok-build" in models["grok"]
-    assert "grok-build-0.1" in models["grok"]
-    assert "grok-4.3" in models["grok"]
     assert defaults["grok"]["small"] == {
         "model": "grok-build",
         "reasoning_effort": "low",
@@ -185,6 +183,20 @@ def test_agents_catalog_includes_grok_defaults() -> None:
         "model": "grok-build",
         "reasoning_effort": "high",
     }
+
+
+def test_agents_catalog_efforts_map() -> None:
+    catalog = agents_catalog()
+
+    efforts = catalog["efforts"]
+    assert isinstance(efforts, dict)
+    # claude_code and grok share the same 5-value vocabulary.
+    assert efforts["claude_code"] == ["low", "medium", "high", "xhigh", "max"]
+    assert efforts["grok"] == ["low", "medium", "high", "xhigh", "max"]
+    # codex has a unique minimal tier.
+    assert efforts["codex"] == ["minimal", "low", "medium", "high", "xhigh"]
+    # gemini has no effort flag.
+    assert efforts["gemini"] == []
 
 
 def test_detect_available_agents_maps_grok_aliases(monkeypatch) -> None:

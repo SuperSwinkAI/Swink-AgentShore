@@ -45,6 +45,7 @@ export interface CatalogTierDefault {
 export interface AgentsCatalog {
   models: Record<string, string[]>;
   defaults: Record<string, Record<string, CatalogTierDefault>>;
+  efforts: Record<string, string[]>;
 }
 
 export async function getAgentsCatalog(): Promise<AgentsCatalog> {
