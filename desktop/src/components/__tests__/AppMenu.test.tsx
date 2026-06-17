@@ -58,6 +58,34 @@ describe("AppMenu", () => {
     expect(screen.getByText("Run QA")).toBeInTheDocument();
   });
 
+  it("reveals a terse play description when the info button is toggled", async () => {
+    const adapter = makeAdapter();
+    render(<AppMenu adapter={adapter} />);
+    await fire("menu:preferences");
+    const info = await screen.findByTestId("preferences-play-run_qa-info");
+    expect(info).toHaveAttribute("aria-expanded", "false");
+    // Description is hidden until the info button is pressed.
+    expect(
+      screen.queryByTestId("preferences-play-run_qa-description"),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      info.click();
+    });
+    expect(info).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByTestId("preferences-play-run_qa-description"),
+    ).toHaveTextContent("Runs the project's test/QA suite");
+    // Clicking info does not flip the play's enabled state.
+    expect(screen.getByTestId("preferences-play-run_qa")).toBeChecked();
+    // Toggling again collapses it.
+    await act(async () => {
+      info.click();
+    });
+    expect(
+      screen.queryByTestId("preferences-play-run_qa-description"),
+    ).not.toBeInTheDocument();
+  });
+
   it("reflects a disabled play as an off toggle", async () => {
     const adapter = makeAdapter({
       getPreferences: vi.fn(async () => ({

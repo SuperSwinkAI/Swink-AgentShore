@@ -432,8 +432,33 @@ function playLabel(value: string): string {
 }
 
 /**
+ * Terse (≤3 sentence) descriptions of what each disableable play does, shown
+ * inline behind the per-row info button. Keyed by PlayType value; an unknown
+ * play (backend adds a new allowlist entry the UI doesn't recognize) falls back
+ * to a generic line so the info button never renders empty.
+ */
+const PLAY_DESCRIPTIONS: Record<string, string> = {
+  cleanup:
+    "Runs a language-agnostic code-quality sweep — lint, format, typecheck, and tests — across the project. Auto-fixes land as a PR; anything unfixable is filed as an issue.",
+  groom_backlog:
+    "Reorganizes the beads task graph and reconciles it against GitHub, linking untracked issues and clearing resolved blockers. Keeps the backlog accurate so the policy selects real, ready work.",
+  prune:
+    "Retires infrastructure debt: orphaned worktrees, dead local and remote branches, and beads whose linked issue is closed. Conservative — it never removes unlinked or unmerged work.",
+  run_qa:
+    "Runs the project's test/QA suite against the trunk to catch regressions before they ship. A quality gate, not part of delivering any single issue.",
+};
+
+function playDescription(value: string): string {
+  return (
+    PLAY_DESCRIPTIONS[value] ??
+    "A non-critical maintenance play. Disabling it never blocks issue delivery."
+  );
+}
+
+/**
  * Global Preferences dialog (File → Preferences). Lists the non-critical plays
- * the user is allowed to disable, each a checkbox, and persists the set via the
+ * the user is allowed to disable, each a sliding toggle with an info button
+ * that reveals a terse description, and persists the set via the
  * `preferences.*` RPCs. A live session picks up the change on its next config
  * reload. Only allowlisted plays are ever shown, so nothing here can stall
  * issue delivery.
@@ -451,6 +476,17 @@ function PreferencesDialog({
   const [data, setData] = useState<PreferencesData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Which rows have their description expanded (info button toggled open).
+  const [openInfo, setOpenInfo] = useState<ReadonlySet<string>>(() => new Set());
+
+  const toggleInfo = useCallback((play: string) => {
+    setOpenInfo((prev) => {
+      const next = new Set(prev);
+      if (next.has(play)) next.delete(play);
+      else next.add(play);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -508,23 +544,48 @@ function PreferencesDialog({
         <ul className={styles.playList} data-testid="preferences-play-list">
           {data.disableable_plays.map((play) => {
             const enabled = !data.disabled_plays.includes(play);
+            const infoOpen = openInfo.has(play);
             return (
               <li key={play} className={styles.playRow}>
-                <label className={styles.playToggle}>
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={() => togglePlay(play)}
-                    data-testid={`preferences-play-${play}`}
-                  />
-                  <span className={styles.playName}>{playLabel(play)}</span>
-                  <span
-                    className={enabled ? styles.playStateOn : styles.playStateOff}
-                    data-testid={`preferences-play-${play}-state`}
+                <div className={styles.playRowMain}>
+                  <label className={styles.playToggle}>
+                    <span className={styles.switch}>
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        checked={enabled}
+                        onChange={() => togglePlay(play)}
+                        data-testid={`preferences-play-${play}`}
+                      />
+                      <span className={styles.switchTrack} aria-hidden="true" />
+                    </span>
+                    <span className={styles.playName}>{playLabel(play)}</span>
+                    <span
+                      className={enabled ? styles.playStateOn : styles.playStateOff}
+                      data-testid={`preferences-play-${play}-state`}
+                    >
+                      {enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    className={styles.infoButton}
+                    onClick={() => toggleInfo(play)}
+                    aria-expanded={infoOpen}
+                    aria-label={`About ${playLabel(play)}`}
+                    data-testid={`preferences-play-${play}-info`}
                   >
-                    {enabled ? "Enabled" : "Disabled"}
-                  </span>
-                </label>
+                    i
+                  </button>
+                </div>
+                {infoOpen && (
+                  <p
+                    className={styles.playDescription}
+                    data-testid={`preferences-play-${play}-description`}
+                  >
+                    {playDescription(play)}
+                  </p>
+                )}
               </li>
             );
           })}
