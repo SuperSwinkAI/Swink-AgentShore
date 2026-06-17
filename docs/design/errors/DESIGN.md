@@ -48,12 +48,15 @@ Grok launch wedges use the same type-suppression path without changing their
 error class to auth. If a Grok subprocess produces no first stdout byte before
 the first-byte watchdog fires, the dispatch remains `timeout_stream_idle`, but
 the Grok type is suppressed (a bounded cooldown) so it auto-recovers later. The
-Grok first-byte deadline is **240s**, not the 120s global default: the Grok CLI
-(0.2.32) was measured at 30–70s to first byte for `grok-build` — model/relay
-latency, not local startup — so the original 45s cap killed ~100% of Grok
-dispatches as false launch wedges. 240s clears the measured distribution with
-margin while still bounding a genuine hang; Grok is also dispatched with
-`--no-memory --no-plan` to trim that latency on its ephemeral single-turn runs.
+first-byte deadline is **600s for all streaming agents** (#213; antigravity is
+the structural exception at 1800s). The Grok CLI (0.2.32) was measured at 30–70s
+to first byte for `grok-build` — model/relay latency, not local startup — and on
+heavy `code_review` prompts both Grok (at the old 240s grok cap) and Gemini (at
+the old 120s global) timed out before their first token. Reasoning models
+legitimately go silent before first token, so the deadline only catches a broken
+child that emits nothing; the 3600s wall-clock backstops genuine hangs. Grok is
+also dispatched with `--no-memory --no-plan` to trim that latency on its
+ephemeral single-turn runs.
 
 ## Recovery Strategy
 

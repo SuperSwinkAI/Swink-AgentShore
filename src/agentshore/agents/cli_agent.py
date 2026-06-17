@@ -413,37 +413,41 @@ class _ReadOutput:
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
-# Launch-to-first-byte deadline (#177). A healthy CLI agent emits its first JSON
-# stream event within seconds of launch; a wedged child (the intermittent codex
+# Launch-to-first-byte deadline (#177). A wedged child (the intermittent codex
 # rollout-thread / keychain race) produces *nothing* and otherwise rides the full
 # wall-clock ``timeout`` (default 3600s) before any watchdog fires — the existing
 # ``stream_idle_timeout`` (default 1800s) only catches first-byte silence at its
-# own, much larger, bound. This dedicated short deadline caps the blast radius of
-# a launch wedge to ~2 min so the orchestrator retries promptly. It only governs
-# the *first* byte; once any stdout arrives, ``_watch_stream_idle`` owns silence
-# detection. Recoverable like the other timeouts — the orchestrator re-picks.
-_FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
+# own, much larger, bound. This dedicated deadline caps the blast radius of a
+# launch wedge so the orchestrator retries promptly. It only governs the *first*
+# byte; once any stdout arrives, ``_watch_stream_idle`` owns silence detection.
+# Recoverable like the other timeouts — the orchestrator re-picks.
+#
+# The bound is deliberately generous (#213). The original tight 120s cap was
+# calibrated to a fast-launch assumption that does not hold for reasoning models:
+# Grok (CLI 0.2.32) measures 30–70s to first byte with a variance tail past 90s,
+# and on heavy ``code_review`` prompts both Grok (killed at its old 240s) and
+# Gemini (killed at the old 120s global) went silent past their windows on the
+# same PR — the model/relay first-token latency, not local startup, dominates and
+# is irreducible via flags. The first-byte deadline's job is catching a *broken*
+# child that emits nothing, not bounding slow-but-healthy first-token latency
+# (the 3600s wall-clock is the real hang backstop). So all streaming agents now
+# share one 600s deadline: it clears the measured first-token distribution with
+# wide margin while still turning a genuine launch wedge around in ~10 min rather
+# than the full hour. Trade-off (#177): a true codex rollout/keychain wedge now
+# rides to 600s before the fast-kill instead of 120s. An explicit per-agent
+# ``first_byte_timeout_seconds`` in config still overrides this for tuning.
+_FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
 
-# Per-agent-type override of the global first-byte deadline. The original #204
-# assumption — that healthy Grok emits stream events "within a handful of
-# seconds" — was empirically false for the Grok CLI 0.2.32: direct measurement
-# of ``grok -m grok-build`` headless dispatches (trivial and ~15KB prompts,
-# memory/web-search/plan disabled) put time-to-first-byte at 30–70s typically,
-# with a variance tail past 90s. The model/relay first-token latency, not local
-# startup (`grok inspect` is ~10s), dominates and is irreducible via flags. A
-# 45s cap therefore killed ~100% of Grok dispatches as bogus "launch wedges"
-# (0% Grok success across every observed session). 240s clears the measured
-# distribution with margin while still bounding a genuine hang. Grok stays the
-# slowest agent by far, so prefer it for overflow rather than primary work. The
-# global default stays at 120s — codex needs the headroom for its rollout-thread
-# / keychain warmup. An explicit per-agent ``first_byte_timeout_seconds`` in
-# config overrides this map.
+# Per-agent-type override of the global first-byte deadline. Streaming agents
+# (codex, claude, gemini, grok) all use the global 600s above; the only override
+# is antigravity, which is structurally non-streaming.
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
-    AgentType.GROK: 240.0,
     # agy uses an async task system and emits no stdout until the task completes
     # (#217); first byte = task done, which can take up to 30 min (matching the
     # --print-timeout set in cli_antigravity.build_argv). The watchdog still
-    # fires for genuine hangs (process exits before emitting anything).
+    # fires for genuine hangs (process exits before emitting anything). This is a
+    # structural carve-out, NOT a slow-model tuning — collapsing it to the global
+    # 600s would kill healthy long-running agy tasks.
     AgentType.ANTIGRAVITY: 1800.0,
 }
 

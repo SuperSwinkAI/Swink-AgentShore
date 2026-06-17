@@ -108,8 +108,9 @@ def build_argv(
         # risks state bleed between unrelated dispatches; it also measurably
         # raised time-to-first-byte (~50s with memory vs ~35s without). Plan
         # mode likewise adds a planning round the orchestrator does not want —
-        # plays expect direct execution. Both are dropped to keep Grok inside
-        # its (already wide) 240s first-byte budget. Web search is left enabled.
+        # plays expect direct execution. Both are dropped to keep Grok's
+        # time-to-first-byte well inside the 600s first-byte budget (#213). Web
+        # search is left enabled.
         "--no-memory",
         "--no-plan",
     ]

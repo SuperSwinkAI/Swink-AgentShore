@@ -120,12 +120,16 @@ def test_first_byte_deadline_resolution() -> None:
     )
 
     cfg = AgentConfig()
-    # Grok uses its per-type default (240s) — the Grok CLI's measured
-    # time-to-first-byte is 30–70s+ with a variance tail, far above the codex
-    # default, so the deadline is widened rather than tightened (the original
-    # #204 "handful of seconds" assumption was empirically false for 0.2.32).
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 240.0
-    # Codex/other falls back to the global default (unchanged at 120s).
+    # All streaming agents share one generous 600s first-byte deadline (#213):
+    # reasoning models legitimately go silent past the old tight bounds before
+    # their first token (Grok 30–70s+ with a tail; both Grok and Gemini exceeded
+    # their windows on heavy code_review prompts). The deadline only catches a
+    # broken child that emits nothing — the wall-clock backstops genuine hangs.
+    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
+    assert (
+        _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
+    )
+    # Codex/other falls back to the same global default.
     assert (
         _resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )

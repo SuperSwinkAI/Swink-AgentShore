@@ -165,14 +165,18 @@ Grok has one additional runtime backstop: if the CLI process starts but never
 emits a first stdout byte before the launch-wedge watchdog fires, AgentShore
 keeps the dispatch classified as `timeout_stream_idle` but suppresses the Grok
 agent type for the rest of the session through the same candidate-mask path.
-The Grok first-byte deadline is **240s** (vs the 120s global default): direct
+The first-byte deadline is **600s for all streaming agents** (#213): direct
 measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
 30–70s — far slower than the other CLIs, and dominated by model/relay latency
-rather than local startup — so a tighter cap produced false launch-wedge kills
-on dispatches that were merely slow. To stay inside that budget Grok is also
-dispatched with `--no-memory --no-plan` (ephemeral single-turn dispatches gain
-nothing from cross-session memory or plan mode, and both add latency). At 240s
-the watchdog fires only on genuine wedges, not on Grok's ordinary slow start.
+rather than local startup — and on heavy `code_review` prompts both Grok (at the
+old 240s grok cap) and Gemini (at the old 120s global) went silent past their
+windows. Reasoning models legitimately think before the first token, so the
+deadline only catches a *broken* child that emits nothing; the 3600s wall-clock
+backstops genuine hangs. To trim that latency Grok is still dispatched with
+`--no-memory --no-plan` (ephemeral single-turn dispatches gain nothing from
+cross-session memory or plan mode, and both add latency). Antigravity (`agy`) is
+the one exception at 1800s — it is structurally non-streaming and emits no stdout
+until its async task completes.
 
 ## Windows SSH agent setup
 
