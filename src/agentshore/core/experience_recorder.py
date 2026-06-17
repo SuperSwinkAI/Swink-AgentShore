@@ -141,9 +141,7 @@ class ExperienceRecorder:
         # Step 1b — fleet-concurrency sample. Self-guarding (never raises) and
         # takes the whole next_state so even the field reads are inside its
         # guard — a bad sample can't take down the loop or the RL tail below it.
-        await self._concurrency_log.record(
-            next_state=next_state, outcome=outcome, reward=reward
-        )
+        await self._concurrency_log.record(next_state=next_state, outcome=outcome, reward=reward)
 
         # Step 2 — persist the experience row (independent of policy learning).
         if outcome.play_id is not None and pending_step is not None:
