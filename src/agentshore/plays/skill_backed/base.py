@@ -61,7 +61,12 @@ _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.SYSTEMATIC_DEBUGGING,
     }
 )
-_PRUNE_WORKTREE_MIN_AGE_HOURS = 3
+# Minimum worktree age before any destructive worktree sweep may delete it.
+# Shared by PRUNE and RECONCILE_STATE — both remove worktrees and both must keep
+# anything younger, which is the load-bearing guard against the allocate-then-
+# delete race (#189, #218): a worktree created inside this window is protected
+# regardless of how stale a claim query looks.
+_WORKTREE_MIN_AGE_HOURS = 3
 
 
 class SkillBackedPlay(Play, ABC):
@@ -207,6 +212,50 @@ class SkillBackedPlay(Play, ABC):
         except OSError:
             return False
 
+    def _inject_worktree_guards(
+        self, extra_context: dict[str, object], ctx: PlayExecutionContext
+    ) -> None:
+        """Inject the protected-worktree lists a destructive worktree sweep must honour.
+
+        Shared by PRUNE and RECONCILE_STATE: both delete worktrees and must keep any
+        that (a) carry a live work claim or (b) are too young to prove stale. The age
+        guard is the load-bearing protection against the allocate-then-delete race
+        (#189, #218) — a worktree created inside the min-age window is kept regardless
+        of claim-query freshness. Best-effort: a missing list is the conservative
+        outcome (skip nothing extra) and never blocks the dispatch.
+        """
+        from agentshore.core.wedge_signals import (
+            collect_active_worktree_paths,
+            collect_recent_worktree_paths,
+        )
+
+        extra_context["worktree_min_age_hours"] = _WORKTREE_MIN_AGE_HOURS
+        try:
+            extra_context["active_worktree_paths"] = collect_active_worktree_paths(
+                ctx.project_path,
+                session_id=ctx.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+            _logger.warning(
+                "worktree_active_inject_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+        try:
+            extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
+                ctx.project_path,
+                session_id=ctx.session_id,
+                min_age_hours=_WORKTREE_MIN_AGE_HOURS,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+            _logger.warning(
+                "worktree_young_inject_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
@@ -289,40 +338,17 @@ class SkillBackedPlay(Play, ABC):
                     error=str(exc),
                     play_id=ctx.play_id,
                 )
+            # RECONCILE_STATE also removes worktrees (orphan + #214 divergent-
+            # stale paths), so it needs the same active-claim + age guards prune
+            # uses — without them its diagnose-then-remediate-later flow can delete
+            # a worktree allocated mid-run to a freshly dispatched agent (#218).
+            self._inject_worktree_guards(extra_context, ctx)
         elif self.play_type == PlayType.PRUNE:
-            # Inject the set of currently-claimed worktrees so the skill can
-            # skip them unconditionally, even when they have no pushed branch
-            # yet. Without this, active pickup worktrees look like orphans
-            # (no open PR, no commits beyond target) and get deleted mid-play.
-            from agentshore.core.wedge_signals import (
-                collect_active_worktree_paths,
-                collect_recent_worktree_paths,
-            )
-
-            extra_context["worktree_min_age_hours"] = _PRUNE_WORKTREE_MIN_AGE_HOURS
-            try:
-                extra_context["active_worktree_paths"] = collect_active_worktree_paths(
-                    ctx.project_path,
-                    session_id=ctx.session_id,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
-                _logger.warning(
-                    "prune_active_worktrees_inject_failed",
-                    error=str(exc),
-                    play_id=ctx.play_id,
-                )
-            try:
-                extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
-                    ctx.project_path,
-                    session_id=ctx.session_id,
-                    min_age_hours=_PRUNE_WORKTREE_MIN_AGE_HOURS,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
-                _logger.warning(
-                    "prune_young_worktrees_inject_failed",
-                    error=str(exc),
-                    play_id=ctx.play_id,
-                )
+            # Inject the set of currently-claimed / too-young worktrees so the
+            # skill skips them, even when they have no pushed branch yet. Without
+            # this, active pickup worktrees look like orphans (no open PR, no
+            # commits beyond target) and get deleted mid-play.
+            self._inject_worktree_guards(extra_context, ctx)
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(

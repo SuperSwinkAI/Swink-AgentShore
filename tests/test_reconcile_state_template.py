@@ -88,6 +88,22 @@ def test_orphan_remediation_removes_registration(template_text: str) -> None:
     assert "worktree remove --force:*" in template_text  # allow-listed in frontmatter
 
 
+def test_worktree_removal_age_and_claim_guard(template_text: str) -> None:
+    """Destructive worktree ops must honour the young/active guards (#218).
+
+    reconcile diagnoses then removes minutes later, so a worktree allocated to a
+    freshly dispatched agent in that gap must be protected: by age
+    (``young_worktree_paths`` / ``worktree_min_age_hours``), by live claim
+    (``active_worktree_paths``), and by a re-read of the claim set at remediation.
+    """
+    assert "young_worktree_paths" in template_text
+    assert "active_worktree_paths" in template_text
+    assert "worktree_min_age_hours" in template_text
+    assert "Worktree-removal safety guard" in template_text
+    # The guard must be re-validated at remediation time, not only at diagnosis.
+    assert "re-read the live claim set" in template_text
+
+
 def test_forbidden_ci_configs(template_text: str) -> None:
     """Per ``project_skill_templates_no_ci_workflows`` memory."""
     assert ".github/workflows/**" in template_text

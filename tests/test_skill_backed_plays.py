@@ -16,6 +16,7 @@ from agentshore.plays.skill_backed.groom_backlog import GroomBacklogPlay
 from agentshore.plays.skill_backed.issue_pickup import IssuePickupPlay
 from agentshore.plays.skill_backed.merge_pr import MergePRPlay
 from agentshore.plays.skill_backed.prune import PrunePlay
+from agentshore.plays.skill_backed.reconcile_state import ReconcileStatePlay
 from agentshore.plays.skill_backed.refine_tasks import RefineTaskBreakdownPlay
 from agentshore.plays.skill_backed.run_qa import RunQAPlay
 from agentshore.plays.skill_backed.seed_project import SeedProjectPlay
@@ -1307,6 +1308,40 @@ async def test_prune_injects_worktree_protection_context_payload() -> None:
     assert captured_payloads
     extra = captured_payloads[0]["extra"]
     assert isinstance(extra, dict)
+    assert extra["active_worktree_paths"] == ["/tmp/active"]
+    assert extra["young_worktree_paths"] == ["/tmp/young"]
+    assert extra["worktree_min_age_hours"] == 3
+
+
+def test_reconcile_state_injects_worktree_guards_via_shared_helper() -> None:
+    """RECONCILE_STATE removes worktrees too, so it must inject the same guards (#218).
+
+    Exercises the shared ``_inject_worktree_guards`` directly — both PRUNE and
+    RECONCILE_STATE route through it, so the protected lists land in the skill
+    context for reconcile exactly as they do for prune.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    ctx = SimpleNamespace(
+        project_path=Path("/tmp/proj"),
+        session_id="sess",
+        play_id=7,
+    )
+    extra: dict[str, object] = {}
+    with (
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=["/tmp/active"],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=["/tmp/young"],
+        ),
+    ):
+        ReconcileStatePlay()._inject_worktree_guards(extra, ctx)  # type: ignore[arg-type]
+
     assert extra["active_worktree_paths"] == ["/tmp/active"]
     assert extra["young_worktree_paths"] == ["/tmp/young"]
     assert extra["worktree_min_age_hours"] == 3
