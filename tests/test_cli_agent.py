@@ -547,6 +547,15 @@ async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> Non
     assert parsed.success is True
 
 
+def test_antigravity_first_byte_deadline_is_1800s() -> None:
+    """agy emits no stdout until its async task completes (#217); the first-byte
+    watchdog must match the --print-timeout (30 min) so code-review tasks don't
+    die as spurious launch wedges."""
+    from agentshore.agents.cli_agent import _FIRST_BYTE_DEADLINE_BY_TYPE
+
+    assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.ANTIGRAVITY] == 1800.0
+
+
 def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
     """Plain streaming output (no task-status envelope) is returned unchanged."""
     from agentshore.agents.cli_antigravity import extract_output

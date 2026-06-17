@@ -440,6 +440,11 @@ _FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
 # config overrides this map.
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     AgentType.GROK: 240.0,
+    # agy uses an async task system and emits no stdout until the task completes
+    # (#217); first byte = task done, which can take up to 30 min (matching the
+    # --print-timeout set in cli_antigravity.build_argv). The watchdog still
+    # fires for genuine hangs (process exits before emitting anything).
+    AgentType.ANTIGRAVITY: 1800.0,
 }
 
 
