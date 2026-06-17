@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from agentshore.data.store.base import (
     _ACTIVE_WORK_CLAIM_STATUSES,
     _DataStoreBase,
+    _serialized,
     _status_in_clause,
 )
 from agentshore.data.store.rows import _row_to_play_record
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 class _PlaysMixin(_DataStoreBase):
     """Methods that operate on the ``plays`` table."""
 
+    @_serialized
     async def record_play(self, play: PlayRecord) -> int:
         """Insert a play record and return the auto-assigned ``play_id``."""
         return await self._insert(
@@ -46,6 +48,7 @@ class _PlaysMixin(_DataStoreBase):
             artifacts=json.dumps(play.artifacts) if play.artifacts else None,
         )
 
+    @_serialized
     async def update_play(
         self,
         play_id: int,
@@ -96,6 +99,7 @@ class _PlaysMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def abandon_unfinished_plays(
         self,
         session_id: str,
@@ -121,6 +125,7 @@ class _PlaysMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def abandon_work_for_missing_agents(
         self,
         session_id: str,
@@ -172,6 +177,7 @@ class _PlaysMixin(_DataStoreBase):
         await self._conn.commit()
         return (claim_cursor.rowcount, play_cursor.rowcount)
 
+    @_serialized
     async def count_running_trunk_plays(
         self, session_id: str, *, exclude_play_id: int, play_types: Sequence[str]
     ) -> int:
@@ -200,6 +206,7 @@ class _PlaysMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
+    @_serialized
     async def list_trunk_play_windows(
         self, *, play_types: Sequence[str]
     ) -> list[tuple[int, str, str | None]]:
@@ -224,6 +231,7 @@ class _PlaysMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return [(int(r[0]), str(r[1]), (str(r[2]) if r[2] is not None else None)) for r in rows]
 
+    @_serialized
     async def session_play_totals(self, session_id: str) -> tuple[int, float]:
         """Return ``(play_count, total_dollar_cost)`` aggregated over a session.
 
@@ -247,6 +255,7 @@ class _PlaysMixin(_DataStoreBase):
             return (0, 0.0)
         return (int(row[0]), float(row[1]))
 
+    @_serialized
     async def get_play_history(self, session_id: str) -> list[PlayRecord]:
         """Return all plays for a session, ordered by play_id."""
         async with self._conn.execute(

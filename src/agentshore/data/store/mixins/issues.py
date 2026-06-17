@@ -7,7 +7,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.helpers import _GITHUB_ISSUE_SELECT
 from agentshore.data.store.rows import _row_to_github_issue
 from agentshore.utils import now_iso
@@ -31,6 +31,7 @@ class _IssuesMixin(_DataStoreBase):
             commit: bool = True,
         ) -> None: ...
 
+    @_serialized
     async def get_last_issue_sync_at(self, session_id: str) -> str | None:
         """Return the ISO8601 cursor for incremental issue sync, or None if unset.
 
@@ -47,6 +48,7 @@ class _IssuesMixin(_DataStoreBase):
         value = row["last_issue_sync_at"]
         return str(value) if value is not None else None
 
+    @_serialized
     async def set_last_issue_sync_at(self, session_id: str, ts: str) -> None:
         """Advance the incremental sync cursor for ``session_id``."""
         await self._conn.execute(
@@ -55,6 +57,7 @@ class _IssuesMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def cache_github_issues(self, session_id: str, issues: list[GitHubIssueRecord]) -> None:
         """Bulk insert or update cached GitHub issues for a session.
 
@@ -104,6 +107,7 @@ class _IssuesMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_open_issues(self, session_id: str) -> list[GitHubIssueRecord]:
         """Return all open issues for a session, ordered by priority ASC (nulls last)."""
         cursor = await self._conn.execute(
@@ -119,6 +123,7 @@ class _IssuesMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_github_issue(row) for row in rows]
 
+    @_serialized
     async def get_github_issue(
         self, issue_number: int, session_id: str
     ) -> GitHubIssueRecord | None:
@@ -133,6 +138,7 @@ class _IssuesMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return _row_to_github_issue(row) if row is not None else None
 
+    @_serialized
     async def list_all_issues(self, session_id: str) -> list[GitHubIssueRecord]:
         """Return all issues for a session (open and closed), ordered by issue number."""
         cursor = await self._conn.execute(
@@ -146,6 +152,7 @@ class _IssuesMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_github_issue(row) for row in rows]
 
+    @_serialized
     async def list_recently_closed_issues(
         self, session_id: str, *, hours: int = 24
     ) -> list[GitHubIssueRecord]:
@@ -176,6 +183,7 @@ class _IssuesMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_github_issue(row) for row in rows]
 
+    @_serialized
     async def update_issue_state(self, issue_number: int, session_id: str, state: str) -> None:
         """Update the state (and ``closed_at`` if closing) of a cached issue.
 
@@ -205,6 +213,7 @@ class _IssuesMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def update_issues_state_batch(
         self, issue_numbers: list[int], session_id: str, state: str
     ) -> None:
@@ -239,6 +248,7 @@ class _IssuesMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def add_issue_labels(
         self,
         issue_number: int,

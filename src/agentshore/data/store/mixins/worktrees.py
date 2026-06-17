@@ -17,7 +17,7 @@ from agentshore.data.models import (
     WorktreeRow,
     WorktreeStatus,
 )
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.errors import OrchestratorError
 from agentshore.utils import now_iso
 
@@ -59,6 +59,7 @@ def _row_to_worktree(row: sqlite3.Row | dict[str, object]) -> WorktreeRow:
 class _WorktreesMixin(_DataStoreBase):
     """Methods that operate on the ``worktrees`` table."""
 
+    @_serialized
     async def insert_worktree(
         self,
         *,
@@ -132,6 +133,7 @@ class _WorktreesMixin(_DataStoreBase):
             failure_reason=None,
         )
 
+    @_serialized
     async def lookup_worktree_by_branch(
         self,
         *,
@@ -153,6 +155,7 @@ class _WorktreesMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return _row_to_worktree(row) if row is not None else None
 
+    @_serialized
     async def lookup_worktree_by_prebranch_key(
         self,
         *,
@@ -174,6 +177,7 @@ class _WorktreesMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return _row_to_worktree(row) if row is not None else None
 
+    @_serialized
     async def lookup_worktree_by_id(
         self,
         *,
@@ -187,6 +191,7 @@ class _WorktreesMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return _row_to_worktree(row) if row is not None else None
 
+    @_serialized
     async def list_active_worktrees(self, *, session_id: str) -> list[WorktreeRow]:
         """Every row in ``active`` or ``reaping`` status for the session."""
         async with self._conn.execute(
@@ -201,6 +206,7 @@ class _WorktreesMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return [_row_to_worktree(r) for r in rows]
 
+    @_serialized
     async def list_orphan_worktrees(self, *, current_session_id: str) -> list[WorktreeRow]:
         """Rows from prior sessions that still hold an on-disk worktree.
 
@@ -222,6 +228,7 @@ class _WorktreesMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return [_row_to_worktree(r) for r in rows]
 
+    @_serialized
     async def all_known_worktree_paths(self) -> set[str]:
         """Every ``worktree_path`` recorded in any row, any status, any session.
 
@@ -236,6 +243,7 @@ class _WorktreesMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return {str(r[0]) for r in rows if r[0]}
 
+    @_serialized
     async def live_worktree_paths(self) -> set[str]:
         """Worktree paths from rows in non-terminal status across all sessions.
 
@@ -253,6 +261,7 @@ class _WorktreesMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return {str(r[0]) for r in rows if r[0]}
 
+    @_serialized
     async def list_stale_worktrees(self, *, session_id: str, before_iso: str) -> list[WorktreeRow]:
         """Reapable rows in the current session older than ``before_iso``.
 
@@ -273,6 +282,7 @@ class _WorktreesMixin(_DataStoreBase):
             rows = await cursor.fetchall()
         return [_row_to_worktree(r) for r in rows]
 
+    @_serialized
     async def rekey_worktree(
         self,
         *,
@@ -316,6 +326,7 @@ class _WorktreesMixin(_DataStoreBase):
             raise RuntimeError(msg)
         return row
 
+    @_serialized
     async def mark_worktree_status(
         self,
         *,
@@ -352,6 +363,7 @@ class _WorktreesMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def retire_stale_worktrees_at_path(
         self,
         *,
@@ -400,6 +412,7 @@ class _WorktreesMixin(_DataStoreBase):
         await self._conn.commit()
         return retired
 
+    @_serialized
     async def touch_worktree(self, *, worktree_id: int, head_sha: str | None = None) -> None:
         """Bump ``last_used_at`` (and optionally ``head_sha``) for an active row."""
         await self._conn.execute(

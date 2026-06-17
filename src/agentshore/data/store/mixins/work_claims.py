@@ -10,6 +10,7 @@ from agentshore.data.store.base import (
     _ACTIVE_WORK_CLAIM_STATUSES,
     _TERMINAL_WORK_CLAIM_STATUSES,
     _DataStoreBase,
+    _serialized,
     _status_in_clause,
 )
 from agentshore.data.store.helpers import _WORK_CLAIM_SELECT, _dedupe_resource_keys
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 class _WorkClaimsMixin(_DataStoreBase):
     """Methods that operate on ``work_claims`` and ``dispatch_replay``."""
 
+    @_serialized
     async def acquire_work_claims(
         self,
         session_id: str,
@@ -69,6 +71,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def claim_review_with_work_claims(
         self,
         *,
@@ -116,6 +119,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def _insert_work_claim_rows(
         self,
         claim_group_id: str,
@@ -157,6 +161,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             ],
         )
 
+    @_serialized
     async def get_work_claim_group(
         self, session_id: str, claim_group_id: str
     ) -> list[WorkClaimRecord]:
@@ -172,6 +177,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_work_claim(row) for row in rows]
 
+    @_serialized
     async def work_claim_group_is_active(self, session_id: str, claim_group_id: str) -> bool:
         """Return True when at least one row in the group is still active."""
         status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)
@@ -187,6 +193,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         ) as cursor:
             return await cursor.fetchone() is not None
 
+    @_serialized
     async def list_retrying_claim_group_ids(self, session_id: str) -> set[str]:
         """Return claim_group_ids with at least one row in ``retrying`` status.
 
@@ -207,6 +214,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return {str(row[0]) for row in rows if row[0]}
 
+    @_serialized
     async def find_active_work_claims(
         self, session_id: str, resource_keys: list[str] | tuple[str, ...]
     ) -> list[WorkClaimRecord]:
@@ -229,6 +237,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_work_claim(row) for row in rows]
 
+    @_serialized
     async def find_active_work_claims_for_agents(
         self,
         session_id: str,
@@ -253,6 +262,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_work_claim(row) for row in rows]
 
+    @_serialized
     async def start_work_claim_group(
         self,
         session_id: str,
@@ -286,6 +296,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             await self._conn.commit()
             return cursor.rowcount > 0
 
+    @_serialized
     async def finish_work_claim_group(
         self, session_id: str, claim_group_id: str, *, status: str
     ) -> None:
@@ -324,6 +335,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def save_dispatch_replay(
         self,
         *,
@@ -358,6 +370,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_dispatch_replay(
         self, *, session_id: str, claim_group_id: str, play_id: int
     ) -> DispatchReplayRecord | None:
@@ -377,6 +390,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             return None
         return _row_to_dispatch_replay(row)
 
+    @_serialized
     async def get_work_claim_retry_attempts(self, session_id: str, claim_group_id: str) -> int:
         """Return current retry attempt count for a claim group."""
         async with self._conn.execute(
@@ -390,6 +404,7 @@ class _WorkClaimsMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return int(row["attempts"]) if row is not None else 0
 
+    @_serialized
     async def increment_work_claim_retry(self, session_id: str, claim_group_id: str) -> int:
         """Increment retry attempts for all rows in a claim group and return new value."""
         await self._conn.execute(
@@ -403,10 +418,12 @@ class _WorkClaimsMixin(_DataStoreBase):
         await self._conn.commit()
         return await self.get_work_claim_retry_attempts(session_id, claim_group_id)
 
+    @_serialized
     async def release_work_claim_group(self, session_id: str, claim_group_id: str) -> None:
         """Release active rows in a claim group."""
         await self.finish_work_claim_group(session_id, claim_group_id, status="released")
 
+    @_serialized
     async def release_active_work_claims_for_agents(
         self,
         session_id: str,
@@ -441,6 +458,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         await self._conn.commit()
         return cursor.rowcount
 
+    @_serialized
     async def supersede_work_claims(
         self,
         session_id: str,
@@ -473,6 +491,7 @@ class _WorkClaimsMixin(_DataStoreBase):
         if commit:
             await self._conn.commit()
 
+    @_serialized
     async def abandon_active_work_claims(self, session_id: str) -> None:
         """Mark leftover active claims abandoned during startup recovery."""
         status_clause, status_params = _status_in_clause(_ACTIVE_WORK_CLAIM_STATUSES)

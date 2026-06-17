@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.utils import now_iso
 
 
 class _BranchActivityMixin(_DataStoreBase):
     """Methods that operate on the ``branch_activity`` table."""
 
+    @_serialized
     async def rebuild_branch_activity(self, session_id: str, branch_pr_map: dict[str, int]) -> None:
         """Reconstitute skeleton branch_activity rows from open PRs after a session reset.
 
@@ -27,6 +28,7 @@ class _BranchActivityMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def update_branch_activity(
         self,
         branch: str,
@@ -50,6 +52,7 @@ class _BranchActivityMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_last_implementer(self, branch: str, session_id: str) -> str | None:
         """Return the agent_id that last committed to *branch*, or None."""
         async with self._conn.execute(

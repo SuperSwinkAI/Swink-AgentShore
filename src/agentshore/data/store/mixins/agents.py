@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_agent_record, _row_to_handoff_record
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _AgentsMixin(_DataStoreBase):
     """Methods that operate on the ``agents`` and ``agent_handoffs`` tables."""
 
+    @_serialized
     async def register_agent(self, agent: AgentRecord) -> None:
         """Insert a new agent row."""
         await self._insert(
@@ -32,6 +33,7 @@ class _AgentsMixin(_DataStoreBase):
             dispatch_count=agent.dispatch_count,
         )
 
+    @_serialized
     async def update_agent_stats(self, agent_id: str, tokens: int, cost: float) -> None:
         """Increment an agent's cumulative token and cost counters."""
         await self._conn.execute(
@@ -45,6 +47,7 @@ class _AgentsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def update_agent_terminated(self, agent_id: str, terminated_at: str) -> None:
         """Set the termination timestamp for an agent."""
         await self._conn.execute(
@@ -53,6 +56,7 @@ class _AgentsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def increment_agent_tasks(
         self, agent_id: str, *, completed: int = 0, failed: int = 0
     ) -> None:
@@ -68,6 +72,7 @@ class _AgentsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def increment_agent_dispatch_count(self, agent_id: str) -> None:
         """Increment the cumulative dispatch counter for an agent (desktop-31h2).
 
@@ -87,6 +92,7 @@ class _AgentsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_agents(self, session_id: str) -> list[AgentRecord]:
         """Return all agents for a session, ordered by ``created_at`` ascending."""
         cursor = await self._conn.execute(
@@ -103,6 +109,7 @@ class _AgentsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_agent_record(row) for row in rows]
 
+    @_serialized
     async def record_handoff(self, handoff: HandoffRecord) -> None:
         """Insert a Switch or Fresh-Start handoff record."""
         await self._insert(
@@ -116,6 +123,7 @@ class _AgentsMixin(_DataStoreBase):
             context_loss_estimate=handoff.context_loss_estimate,
         )
 
+    @_serialized
     async def list_handoffs(self, session_id: str, *, limit: int = 100) -> list[HandoffRecord]:
         """Return most-recent handoff rows for a session, oldest-first."""
         fetch_limit = max(1, limit)

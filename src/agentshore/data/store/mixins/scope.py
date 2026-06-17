@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_scope_drift
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _ScopeMixin(_DataStoreBase):
     """Methods that operate on the ``scope_drift_log`` table."""
 
+    @_serialized
     async def log_scope_drift(self, record: ScopeDriftRecord) -> None:
         """Insert a scope-drift log entry."""
         await self._insert(
@@ -25,6 +26,7 @@ class _ScopeMixin(_DataStoreBase):
             logged_at=record.logged_at,
         )
 
+    @_serialized
     async def list_scope_drift(self, session_id: str) -> list[ScopeDriftRecord]:
         """Return all scope-drift entries for a session, ordered by ``logged_at`` ascending."""
         cursor = await self._conn.execute(

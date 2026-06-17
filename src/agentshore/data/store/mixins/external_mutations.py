@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_external_mutation
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _ExternalMutationsMixin(_DataStoreBase):
     """Methods that operate on the ``external_mutations`` table."""
 
+    @_serialized
     async def record_external_mutation(self, mutation: ExternalMutationRecord) -> None:
         """Insert a GitHub-mutation audit record (idempotency_key must be unique)."""
         await self._conn.execute(
@@ -37,6 +38,7 @@ class _ExternalMutationsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def get_external_mutation(
         self, session_id: str, idempotency_key: str
     ) -> ExternalMutationRecord | None:
@@ -50,6 +52,7 @@ class _ExternalMutationsMixin(_DataStoreBase):
             return None
         return _row_to_external_mutation(row)
 
+    @_serialized
     async def update_external_mutation_status(
         self,
         session_id: str,
@@ -68,6 +71,7 @@ class _ExternalMutationsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def batch_update_external_mutations_status(
         self,
         session_id: str,
@@ -83,6 +87,7 @@ class _ExternalMutationsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def list_external_mutations(
         self,
         session_id: str,
