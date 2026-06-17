@@ -172,6 +172,20 @@ agents:
       large:
         enabled: true
         model: pro
+  antigravity:
+    enabled: true
+    binary: agy
+    model: "Gemini 3.5 Flash (High)"
+    model_tiers:
+      small:
+        enabled: true
+        model: "Gemini 3.5 Flash (Low)"
+      medium:
+        enabled: true
+        model: "Gemini 3.5 Flash (High)"
+      large:
+        enabled: true
+        model: "Gemini 3.1 Pro (High)"
   grok:
     enabled: true
     binary: grok

@@ -36,6 +36,13 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "medium": ModelTierConfig(model="grok-build", reasoning_effort="medium"),
         "large": ModelTierConfig(model="grok-build", reasoning_effort="high"),
     },
+    AgentType.ANTIGRAVITY: {
+        # Reasoning effort is baked into the model display-name, so no
+        # reasoning_effort is set (mirrors gemini — REASONING_EFFORTS is empty).
+        "small": ModelTierConfig(model="Gemini 3.5 Flash (Low)"),
+        "medium": ModelTierConfig(model="Gemini 3.5 Flash (High)"),
+        "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),
+    },
 }
 
 
@@ -46,6 +53,7 @@ REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GROK: ("low", "medium", "high", "xhigh", "max"),
     AgentType.CODEX: ("minimal", "low", "medium", "high", "xhigh"),
     AgentType.GEMINI: (),
+    AgentType.ANTIGRAVITY: (),
 }
 
 

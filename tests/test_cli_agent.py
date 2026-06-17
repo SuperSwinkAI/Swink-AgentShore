@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agentshore.agents.cli_agent import (
+    _PARSERS,
     _classify_error,
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
@@ -21,6 +22,7 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
+    _read_output,
     _StderrSniffer,
     _watch_stderr_auth,
     build_argv,
@@ -461,6 +463,86 @@ def test_build_argv_grok_shape() -> None:
         "-p",
         "do the thing",
     ]
+
+
+def test_build_argv_antigravity_shape() -> None:
+    """``agy`` argv: plain-text passthrough — no ``--output-format``, no effort flag.
+
+    The YOLO default supplies ``--dangerously-skip-permissions``; the model is the
+    display-name string with the reasoning effort baked in, so there is no
+    separate ``--effort`` flag and no JSON stream-format flag.
+    """
+    argv = build_argv(
+        AgentType.ANTIGRAVITY,
+        "do the thing",
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+    )
+
+    assert argv == [
+        "agy",
+        "--model",
+        "Gemini 3.5 Flash (Low)",
+        "--add-dir",
+        "/wt",
+        "--dangerously-skip-permissions",
+        "-p",
+        "do the thing",
+    ]
+    assert "--output-format" not in argv
+
+
+def test_build_argv_antigravity_prompt_always_in_argv_never_stdin() -> None:
+    """``agy`` has no stdin prompt mode — the real prompt must always ride ``-p``.
+
+    Even when ``prompt_on_stdin`` is set (the Windows arg-length path the other
+    CLIs use), antigravity keeps the verbatim prompt as the trailing ``-p`` value
+    and never emits an empty ``-p``/``-`` placeholder. The dispatch layer relies
+    on this to keep stdin closed for antigravity (it would otherwise block on a
+    pipe the child never drains).
+    """
+    huge = "x" * 20000
+    argv = build_argv(
+        AgentType.ANTIGRAVITY,
+        huge,
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+        prompt_on_stdin=True,
+    )
+    assert argv[-2:] == ["-p", huge]
+    assert "" not in argv
+    assert "-" not in argv
+
+
+async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> None:
+    """``agy`` has no ``_PARSERS`` entry, so plain-text stdout is returned verbatim.
+
+    The embedded JSON result block survives untouched (no JSONL extraction), and
+    ``parse_skill_result`` can still pull ``success=True`` out of the raw text.
+    """
+    # No parser for antigravity → the read loop takes the raw passthrough branch.
+    assert AgentType.ANTIGRAVITY not in _PARSERS
+
+    raw_text = 'Working on it...\nHere is the result: {"success": true, "summary": "ok"}\nDone.\n'
+    proc = _FakeProcess([raw_text.encode()])
+    out = await _read_output(
+        proc,  # type: ignore[arg-type]
+        AgentType.ANTIGRAVITY,
+        max_bytes=10_000_000,
+        line_limit=4_194_304,
+        agent_id="agy-1",
+    )
+
+    # Raw stdout is returned byte-for-byte; no token usage is parsed.
+    assert out.raw == raw_text
+    assert out.usage.tokens_in == 0
+    assert out.usage.tokens_out == 0
+    assert out.session_id is None
+
+    parsed = parse_skill_result(out.raw)
+    assert parsed.success is True
 
 
 @pytest.mark.parametrize(

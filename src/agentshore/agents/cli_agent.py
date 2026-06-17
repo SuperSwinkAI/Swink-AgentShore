@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
-from agentshore.agents import cli_grok
+from agentshore.agents import cli_antigravity, cli_grok
 from agentshore.agents._jsonl import (
     _first_int,
     _iter_json_events,
@@ -400,6 +400,7 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     ),
     AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
+    AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
 }
 
 
@@ -665,6 +666,18 @@ def build_argv(
 
     if agent_type == AgentType.GROK:
         return cli_grok.build_argv(
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    if agent_type == AgentType.ANTIGRAVITY:
+        return cli_antigravity.build_argv(
             prompt=prompt,
             binary=binary,
             model=model,
@@ -1099,6 +1112,7 @@ async def dispatch_cli(
         git_overlay,
         for_git=True,
         for_grok=(handle.agent_type == AgentType.GROK),
+        for_antigravity=(handle.agent_type == AgentType.ANTIGRAVITY),
     )
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
@@ -1106,11 +1120,16 @@ async def dispatch_cli(
     argv = _resolve_executable(argv)
 
     # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
-    # limit (see build_argv); elsewhere stdin stays closed. Grok is the
-    # exception: it never reads the prompt from stdin (it's in --prompt-file),
-    # so we keep stdin closed for it — opening a PIPE and writing a prompt Grok
-    # never drains could block on a full pipe buffer.
-    prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
+    # limit (see build_argv); elsewhere stdin stays closed. Two exceptions keep
+    # stdin closed because they never read the prompt from it: Grok (it's in
+    # --prompt-file) and Antigravity (``agy`` has no stdin mode — the prompt is
+    # always in ``-p``). Opening a PIPE and writing a prompt the child never
+    # drains could block on a full pipe buffer.
+    prompt_on_stdin = (
+        _prompt_on_stdin(python_executable)
+        and grok_prompt_file is None
+        and handle.agent_type != AgentType.ANTIGRAVITY
+    )
 
     # Backstop for the worktree-reclaim TOCTOU race (#176): the dispatch cwd is
     # an AgentShore-managed worktree that reconcile / collision-reclaim churn can

@@ -107,6 +107,7 @@ class AgentType(enum.Enum):
     CODEX = "codex"
     GEMINI = "gemini"
     GROK = "grok"
+    ANTIGRAVITY = "antigravity"
 
 
 # Single canonical definition of which AgentType values are CLI (subprocess)
@@ -114,7 +115,13 @@ class AgentType(enum.Enum):
 # manager to gate identity resolution. Define it once here, adjacent to the
 # enum, so adding a new CLI agent type requires only one edit.
 CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
+    {
+        AgentType.CLAUDE_CODE,
+        AgentType.CODEX,
+        AgentType.GEMINI,
+        AgentType.GROK,
+        AgentType.ANTIGRAVITY,
+    }
 )
 
 

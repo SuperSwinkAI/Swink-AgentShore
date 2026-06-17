@@ -96,6 +96,16 @@ export const AGENT_REGISTRY = {
       large: grokLargeSpriteUrl,
     },
   },
+  antigravity: {
+    label: "Antigravity",
+    colorFill: "#9334E6",
+    colorLabel: "A",
+    spriteUrls: {
+      small: geminiSmallSpriteUrl,
+      medium: geminiMediumSpriteUrl,
+      large: geminiLargeSpriteUrl,
+    },
+  },
 } as const satisfies Record<string, AgentRegistryEntry>;
 
 /** The canonical AgentType union, always in sync with AGENT_REGISTRY. */

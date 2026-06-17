@@ -22,6 +22,7 @@ BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "gemini": AgentType.GEMINI,
     "grok": AgentType.GROK,
     "grok-build": AgentType.GROK,
+    "agy": AgentType.ANTIGRAVITY,
 }
 
 # Inverse: AgentType → canonical binary name (first/primary name only).
@@ -31,6 +32,7 @@ AGENT_TYPE_TO_BINARY: dict[AgentType, str] = {
     AgentType.CODEX: "codex",
     AgentType.GEMINI: "gemini",
     AgentType.GROK: "grok",
+    AgentType.ANTIGRAVITY: "agy",
 }
 
 # String-keyed variants for callers that compare against AgentType.value

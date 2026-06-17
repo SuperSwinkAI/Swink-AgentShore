@@ -69,6 +69,7 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.CODEX: "codex",
     AgentType.GEMINI: "gemini",
     AgentType.GROK: "grok",
+    AgentType.ANTIGRAVITY: "agy",
 }
 
 # Output markers indicating the backend is NOT authenticated / the cached
