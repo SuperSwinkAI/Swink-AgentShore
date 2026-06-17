@@ -224,6 +224,25 @@ class BootstrapConfig:
 
 
 @dataclass(frozen=True)
+class PreferencesConfig:
+    """Machine-global user preferences, folded in from ``preferences.yaml``.
+
+    Sourced from the user-level global file (not ``agentshore.yaml``) at load
+    time, so a config reload re-reads it mid-session. ``disabled_plays`` holds
+    ``PlayType.value`` strings the user has turned off; only plays in
+    :data:`agentshore.preferences.USER_DISABLEABLE_PLAYS` are honored (the mask
+    re-checks the allowlist, so a hand-edited file cannot disable a critical
+    play). Not to be confused with :class:`AgentPreferencesConfig`, which is the
+    per-project play→agent affinity/exclusion map.
+    """
+
+    disabled_plays: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "disabled_plays", _tuple(self.disabled_plays))
+
+
+@dataclass(frozen=True)
 class AgentPreferencesConfig:
     affinity: Mapping[str, str] = field(default_factory=dict)
     exclude: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -581,6 +600,10 @@ class RuntimeConfig:
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)
     agent_preferences: AgentPreferencesConfig = field(default_factory=AgentPreferencesConfig)
+    # Machine-global user preferences (disabled non-critical plays, …) folded in
+    # from the global ``preferences.yaml`` at load time. NOT sourced from
+    # ``agentshore.yaml``; see ``agentshore.preferences``.
+    preferences: PreferencesConfig = field(default_factory=PreferencesConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
     data_integrity: DataIntegrityConfig = field(default_factory=DataIntegrityConfig)

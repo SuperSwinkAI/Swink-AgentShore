@@ -21,6 +21,12 @@ GLOBAL_AVAILABILITY_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "availability.yaml"
 # it then sending SIGHUP repriced every project's next dispatch without a code
 # change or restart. See ``agentshore.agents.pricing.load_pricebook``.
 GLOBAL_PRICING_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "pricing.yaml"
+# Machine-global user preferences (e.g. disabled non-critical plays, runtime
+# timeouts). Folded into every project's ``RuntimeConfig`` at load time, so a
+# reload (SIGHUP / IPC reload-config) re-reads it mid-session. There is NO
+# per-project preferences file — these are deliberately global-only. See
+# ``agentshore.preferences``.
+GLOBAL_PREFERENCES_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "preferences.yaml"
 
 # ── Per-project directory name ────────────────────────────────────────────────
 PROJECT_DIR_NAME: Final[str] = ".agentshore"

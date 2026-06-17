@@ -1462,9 +1462,10 @@ def test_run_identity_wizard_force_run_non_tty(
 # ---------------------------------------------------------------------------
 
 
-def test_agent_keys_from_yaml_filters_disabled_and_api(tmp_path: Path) -> None:
-    """``enabled: false`` agents and ``api_*`` agents are filtered out;
-    missing ``enabled`` defaults to enabled."""
+def test_agent_keys_from_yaml_filters_disabled(tmp_path: Path) -> None:
+    """``enabled: false`` agents are filtered out; missing ``enabled`` defaults
+    to enabled. (This wizard helper reads raw YAML and does not validate agent
+    types — that gate lives in load_config's _validate_agent_types.)"""
     from agentshore.cli.identity_helpers import _agent_keys_from_yaml
 
     yaml_text = """\

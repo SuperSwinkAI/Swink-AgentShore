@@ -44,6 +44,7 @@ class MaskSource(StrEnum):
     CANDIDATE = "candidate"
     CONFIG = "config"
     CONTROL = "control"
+    PREFERENCE = "preference"
     DRAIN = "drain"
     TERMINAL = "terminal"
     RESERVED = "reserved"
@@ -126,4 +127,15 @@ END_SESSION_IN_FLIGHT: Final = MaskReason(
     text="end_session already in flight",
     classification=MaskClassification.TRANSIENT,
     source=MaskSource.CONTROL,
+)
+# Play turned off via the machine-global Preferences. HARD + structural: honored
+# everywhere (including the reverse failsafe), so an explicit user choice is
+# never resurrected by an escape hatch. Only allowlisted, non-critical plays can
+# reach this state, so it can never wedge delivery — and the dedicated source
+# lets observability distinguish "user disabled this" from a stuck/all-masked
+# state rather than flagging it as a wedge.
+USER_DISABLED: Final = MaskReason(
+    text="disabled by user preference",
+    classification=MaskClassification.HARD,
+    source=MaskSource.PREFERENCE,
 )

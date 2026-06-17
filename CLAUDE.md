@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agents (Claude Code, Codex CLI, API-based LLMs) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays + 3 reserved, action-space version 13) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
+AgentShore is an RL-based orchestrator that coordinates multiple CLI coding agents (Claude Code, Codex, Gemini, Grok, Antigravity) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays + 3 reserved, action-space version 13) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
 
 ## Critical: Never Run AgentShore CLI Commands Directly
 
@@ -60,7 +60,7 @@ The system runs as a single asyncio process. The core loop is: observe state →
 
 **Plays** (`src/agentshore/plays/`): Each play implements a `Play` protocol with `preconditions()`, `execute()`, and `estimated_cost()`. The RL engine selects the play type; a separate parameter resolver picks which agent/issue/PR. Anti-confirmation bias is a hard invariant for Code Review: the reviewer GitHub identity must differ from the PR author. Run QA validates trunk/default-branch state and is not identity-blocked in the current implementation.
 
-**Agents** (`src/agentshore/agents/`): CLI agents (Claude Code, Codex, Gemini) are asyncio subprocesses. API agents (GPT and other OpenAI-compatible backends) use httpx. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
+**Agents** (`src/agentshore/agents/`): every agent is a CLI subprocess driven over asyncio — the five supported types are Claude Code, Codex, Gemini, Grok, and Antigravity (the `AgentType` enum). There is no API/httpx agent-execution path; httpx appears only for model-list discovery, the bd-binary download, and the GitHub API identity preflight. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
 
 **Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema version 4). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
 
@@ -91,7 +91,7 @@ The demo transport lives in `dashboard/src/demoTransport.ts`; the mock server in
 
 ## Per-Agent GitHub Identities
 
-CLI agents (Claude Code, Codex, Gemini) can be bound to different GitHub identities via the `identities:` block in `agentshore.yaml` and an `identity:` field per agent. The Agent Manager applies the resolved identity (git authorship + `GH_TOKEN`) as a per-subprocess env overlay in `src/agentshore/agents/identity.py:resolve_identity_env`. API-only agents (`api_*`) reject `identity:` at parse time. Tokens load via `gh_token_login`, `gh_token_env`, or AgentShore-managed `gh_token_keychain` services; they never appear in log events. See `docs/identity.md` for the full reference and provisioning recipe. Use `agentshore identity` to verify token resolution and repository access; `agentshore identity --reconfigure` re-runs the wizard against an existing project without resetting the database.
+CLI agents (Claude Code, Codex, Gemini) can be bound to different GitHub identities via the `identities:` block in `agentshore.yaml` and an `identity:` field per agent. The Agent Manager applies the resolved identity (git authorship + `GH_TOKEN`) as a per-subprocess env overlay in `src/agentshore/agents/identity.py:resolve_identity_env`. Config parse rejects any agent key that does not resolve to a supported `AgentType` (`_validate_agent_types`), so a typo'd or unsupported agent fails fast instead of being silently dropped. Tokens load via `gh_token_login`, `gh_token_env`, or AgentShore-managed `gh_token_keychain` services; they never appear in log events. See `docs/identity.md` for the full reference and provisioning recipe. Use `agentshore identity` to verify token resolution and repository access; `agentshore identity --reconfigure` re-runs the wizard against an existing project without resetting the database.
 
 ## Design Docs
 

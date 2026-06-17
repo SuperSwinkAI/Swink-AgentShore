@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import TypedDict, cast, overload
+from typing import TYPE_CHECKING, TypedDict, cast, overload
+
+if TYPE_CHECKING:
+    # Runtime imports stay function-local to avoid the config→state→config.models
+    # cycle; this is for annotations only (deferred by `from __future__`).
+    from agentshore.state import AgentType
 
 from agentshore.config.models import (
     AgentConfig,
@@ -598,7 +603,44 @@ def _parse_trusted_ids(raw: _RawTrustedIds) -> TrustedIdsConfig:
     )
 
 
-_API_AGENT_PREFIX = "api_"
+def _resolve_agent_type(agent_cfg: AgentConfig, agent_name: str) -> AgentType | None:
+    """Resolve an agent entry to its built-in ``AgentType``, or ``None``.
+
+    Prefers the binary→type registry (so a custom key like ``my_claude`` with
+    ``binary: claude`` resolves), then falls back to the key itself (so a custom
+    binary path like ``binary: /opt/bin/gemini`` still validates when the key is
+    a canonical type). ``None`` means the entry maps to no supported CLI agent.
+    """
+    from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
+    from agentshore.state import AgentType
+
+    resolved = BINARY_TO_AGENT_TYPE.get(agent_cfg.binary) if agent_cfg.binary else None
+    if resolved is not None:
+        return resolved
+    try:
+        return AgentType(agent_name)
+    except ValueError:
+        return None
+
+
+def _validate_agent_types(agents: dict[str, AgentConfig]) -> None:
+    """Reject any agent entry that maps to no supported CLI agent type.
+
+    AgentShore only runs the built-in CLI agents; an entry whose key is not an
+    ``AgentType`` and whose ``binary`` does not resolve to one (a typo'd key, or
+    a removed concept) is otherwise silently dropped downstream — it never
+    instantiates — so fail fast here with an actionable message.
+    """
+    from agentshore.state import AgentType
+
+    valid = ", ".join(t.value for t in AgentType)
+    for agent_name, agent_cfg in agents.items():
+        if _resolve_agent_type(agent_cfg, agent_name) is None:
+            raise ConfigError(
+                f"agents.{agent_name!r} is not a supported agent. AgentShore runs "
+                f"only the built-in CLI agents ({valid}); rename the key to one of "
+                f"those, or set agents.{agent_name}.binary to a recognised CLI."
+            )
 
 
 def _validate_agent_identities(
@@ -610,11 +652,6 @@ def _validate_agent_identities(
         ident = agent_cfg.identity
         if ident is None:
             continue
-        if agent_name.startswith(_API_AGENT_PREFIX):
-            raise ConfigError(
-                f"agents.{agent_name}.identity is not supported for API-only "
-                "agents (gh is never invoked); remove the field"
-            )
         if ident not in identities:
             known = ", ".join(sorted(identities)) or "<none>"
             raise ConfigError(
@@ -630,21 +667,10 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
     and per-tier ``reasoning_effort`` entries are both checked.
     """
     from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
-    from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
-    from agentshore.state import AgentType
 
     for agent_name, agent_cfg in agents.items():
-        # Resolve the AgentType for this agent entry. Prefer the binary→type
-        # registry, but fall back to the agent key when the binary is a custom
-        # path the registry doesn't know (e.g. ``binary: /opt/bin/gemini``) —
-        # otherwise a non-canonical binary would silently bypass validation.
-        resolved = BINARY_TO_AGENT_TYPE.get(agent_cfg.binary) if agent_cfg.binary else None
-        if resolved is None:
-            try:
-                resolved = AgentType(agent_name)
-            except ValueError:
-                resolved = None  # api_* or unknown key — skip
-
+        # Every agent has already passed _validate_agent_types, so this resolves.
+        resolved = _resolve_agent_type(agent_cfg, agent_name)
         if resolved is None:
             continue
         if REASONING_EFFORTS.get(resolved):
@@ -713,8 +739,7 @@ def _apply_legacy_default_tiers(
     Fill in every default tier the user didn't explicitly configure, carrying
     the migrated ``max`` so the per-(type, tier) ceiling survives the upgrade.
 
-    Unknown agent types (no built-in defaults — e.g. ``api_*`` or custom keys)
-    are returned unchanged.
+    Agent types with no built-in defaults are returned unchanged.
     """
     import dataclasses
 
@@ -1134,6 +1159,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
     agents, fresh_start, prefs = _parse_agents(agents_raw, legacy_max_default=legacy_max_default)
     identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
     trusted_ids_raw = data.get("trusted_ids", {})
+    _validate_agent_types(agents)
     _validate_agent_identities(agents, identities)
     _validate_agent_reasoning_efforts(agents)
 

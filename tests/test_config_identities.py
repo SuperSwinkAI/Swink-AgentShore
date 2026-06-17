@@ -140,6 +140,37 @@ identities:
         load_config(_write(tmp_path, yaml_text))
 
 
+def test_unsupported_agent_key_raises(tmp_path: Path) -> None:
+    """An agent key that resolves to no AgentType fails fast (#api-purge).
+
+    Covers both a typo'd key and the removed ``api_*`` placeholder concept —
+    neither ever instantiated, so they must be rejected at load, not dropped.
+    """
+    for bad_key in ("api_gpt", "claud_code", "aider"):
+        yaml_text = f"""\
+agents:
+  claude_code:
+    enabled: true
+    binary: claude
+  {bad_key}:
+    enabled: true
+"""
+        with pytest.raises(ConfigError, match="is not a supported agent"):
+            load_config(_write(tmp_path, yaml_text))
+
+
+def test_custom_agent_key_with_known_binary_is_accepted(tmp_path: Path) -> None:
+    """A custom key is fine when its binary resolves to a built-in AgentType."""
+    yaml_text = """\
+agents:
+  my_claude:
+    enabled: true
+    binary: claude
+"""
+    cfg = load_config(_write(tmp_path, yaml_text))
+    assert "my_claude" in cfg.agents
+
+
 def test_both_token_sources_set_raises(tmp_path: Path) -> None:
     yaml_text = (
         _BASE_AGENTS_YAML

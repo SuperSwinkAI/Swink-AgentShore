@@ -30,6 +30,7 @@ from agentshore.config.models import (
     PlayPacingConfig,
     PolicyMode,
     PPOConfig,
+    PreferencesConfig,
     ProjectConfig,
     RewardConfig,
     RLConfig,
@@ -76,6 +77,7 @@ __all__ = [
     "PPOConfig",
     "PolicyMode",
     "PlayPacingConfig",
+    "PreferencesConfig",
     "ProjectConfig",
     "RewardConfig",
     "RLConfig",
@@ -365,15 +367,35 @@ def _build_default_yaml() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _apply_global_preferences(cfg: RuntimeConfig) -> RuntimeConfig:
+    """Fold the machine-global ``preferences.yaml`` into *cfg*.
+
+    Read at every ``load_config`` (and therefore every reload) so a preference
+    change applies mid-session via the existing atomic config swap. The global
+    file is the sole source for these fields — they are deliberately not read
+    from ``agentshore.yaml``. A missing / malformed file yields defaults, so
+    config loading never depends on preference-file state.
+    """
+    from dataclasses import replace
+
+    from agentshore.preferences import load_preferences_data
+
+    data = load_preferences_data()
+    disabled = data.get("disabled_plays", ())
+    return replace(cfg, preferences=PreferencesConfig(disabled_plays=tuple(disabled)))
+
+
 def load_config(path: Path | None = None) -> RuntimeConfig:
     """Load configuration from a YAML file.
 
     If *path* is ``None`` or the file does not exist, returns the built-in
     default YAML parsed through the same validation and normalization path as
-    project config files.
+    project config files. The machine-global ``preferences.yaml`` is folded in
+    on top regardless of *path*, so a reload re-applies preference changes.
     """
     if path is None or not path.exists():
-        return _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
+        cfg = _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
+        return _apply_global_preferences(cfg)
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -388,7 +410,7 @@ def load_config(path: Path | None = None) -> RuntimeConfig:
     if not isinstance(data, dict):
         raise ConfigError(f"config root must be a mapping, got {type(data).__name__}")
 
-    return _build_config(cast("_RawConfig", data))
+    return _apply_global_preferences(_build_config(cast("_RawConfig", data)))
 
 
 def generate_default_config(project_path: Path) -> Path:
