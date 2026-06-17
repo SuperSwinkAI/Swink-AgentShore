@@ -33,7 +33,7 @@ def test_get_returns_empty_with_menu(global_prefs: Path) -> None:
     result = _drive("preferences.get")["result"]
     assert result == {
         "disabled_plays": [],
-        "disableable_plays": ["cleanup", "design_audit", "groom_backlog", "prune", "run_qa"],
+        "disableable_plays": ["cleanup", "groom_backlog", "prune", "run_qa"],
     }
 
 

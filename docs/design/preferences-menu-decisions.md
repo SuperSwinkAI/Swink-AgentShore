@@ -5,7 +5,7 @@
 Add a global, machine-level **Preferences** system to AgentShore: a Desktop settings
 pane plus an `agentshore preferences` CLI, both backed by a single user-level
 `preferences.yaml`. The headline capability is letting a user disable non-delivery-critical
-plays (QA, cleanup, prune, design-audit, groom-backlog). Secondary scope migrates a curated
+plays (QA, cleanup, prune, groom-backlog). Secondary scope migrates a curated
 set of genuinely machine-global config fields (agent/drain timeouts, log level, UI theme)
 out of the per-project `agentshore.yaml` and into this global file. All preferences apply
 mid-run. The per-project **agent roster** (enabled/models/max) is explicitly *out of scope*
@@ -105,8 +105,11 @@ The `disabled_plays` capability is built end-to-end:
 - **CLI command shape:** `agentshore preferences` subcommand surface (e.g.
   `get`/`set`/`list`/`reset`) not finalized — minor; a `get`/`set`/`list` trio with a
   `--reset` is the assumed default unless changed.
-- **Exact `USER_DISABLEABLE_PLAYS` membership:** Starting set is QA/cleanup/prune/
-  design-audit/groom-backlog; confirm whether `CALIBRATE_ALIGNMENT` or others belong.
+- **Exact `USER_DISABLEABLE_PLAYS` membership:** Set is QA/cleanup/prune/groom-backlog.
+  `design_audit` is intentionally excluded — the PPO's end-of-session path gates on a
+  fresh terminal audit (`terminal_audits_are_fresh`), so disabling it could prevent a
+  session from ever ending. (`CALIBRATE_ALIGNMENT` also stays out for the same delivery
+  reasons.)
 - **Agents menu (mid-run roster editing) — immediate next plan:** A separate Desktop pane to
   edit enabled/models/max mid-run, requiring live agent-manager reconciliation. Reuses the
   `preferences.get/set` RPC pattern and Desktop-pane scaffolding from this plan, but its

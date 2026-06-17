@@ -39,8 +39,17 @@ def global_prefs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_allowlist_excludes_delivery_and_selfheal_plays() -> None:
     allowed = set(gp.disableable_play_values())
-    assert allowed == {"cleanup", "design_audit", "groom_backlog", "prune", "run_qa"}
-    for critical in ("issue_pickup", "code_review", "merge_pr", "reconcile_state", "end_session"):
+    assert allowed == {"cleanup", "groom_backlog", "prune", "run_qa"}
+    # design_audit is excluded too: the PPO's end-of-session path gates on a
+    # fresh terminal audit, so it must always be available.
+    for critical in (
+        "issue_pickup",
+        "code_review",
+        "merge_pr",
+        "reconcile_state",
+        "end_session",
+        "design_audit",
+    ):
         assert critical not in allowed
 
 

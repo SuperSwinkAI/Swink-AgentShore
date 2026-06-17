@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { AppMenu, type AppMenuAdapter, type AvailableUpdate } from "../AppMenu";
 
-const DISABLEABLE = ["cleanup", "design_audit", "groom_backlog", "prune", "run_qa"];
+const DISABLEABLE = ["cleanup", "groom_backlog", "prune", "run_qa"];
 
 function makeAdapter(overrides: Partial<AppMenuAdapter> = {}): AppMenuAdapter {
   return {
