@@ -651,12 +651,11 @@ const HELP_ISSUES_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore/
 /// (no-op rather than show a dialog: cheaper than keeping Rust enabled-state
 /// synced over IPC).
 ///
-/// macOS layout (per product direction, diverges from the HIG): a single lean
-/// "AgentShore" app menu holds Preferences (Cmd+,), the former File items
-/// (Adjust Budget / Stop Session / Close Window) and Quit; About + Services live
-/// in Help; the Hide / Hide Others / Show All group lives in View; there is no
-/// File menu. Windows/Linux keep the conventional File menu (with Preferences).
-/// Check for Updates is currently hidden everywhere (updater not provisioned).
+/// Follows the macOS HIG application-menu convention: the leading "AgentShore"
+/// app menu holds About, Preferences (Cmd+,), Services, the Hide / Hide Others /
+/// Show All group, and Quit; Adjust Budget / Stop Session / Close Window live in
+/// File. Windows/Linux have no app menu, so Preferences lives in File. Check for
+/// Updates is hidden everywhere until the updater is provisioned.
 #[cfg(not(test))]
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let stop_session = MenuItemBuilder::with_id("stop_session", "Stop Session")
@@ -705,89 +704,66 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
 
     let mut menu = MenuBuilder::new(app);
 
-    // macOS layout (per product direction, diverges from the HIG): the File
-    // menu is folded into a single lean "AgentShore" app menu; About + Services
-    // live in Help; the Hide / Hide Others / Show All group lives in View.
+    // macOS: the leading application menu (HIG convention). Building it
+    // explicitly replaces the menu macOS would auto-supply, so we re-add the
+    // standard About / Services / Hide / Show All / Quit items in their
+    // conventional positions. Preferences (Cmd+,) belongs here too.
     #[cfg(target_os = "macos")]
     {
         let app_menu = SubmenuBuilder::new(app, "AgentShore")
+            .item(&PredefinedMenuItem::about(app, None, None)?)
+            .separator()
             .item(&preferences)
             .separator()
-            .item(&adjust_budget)
-            .item(&stop_session)
-            .separator()
-            .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
-            .separator()
-            .item(&PredefinedMenuItem::quit(app, None)?)
-            .build()?;
-
-        let view = SubmenuBuilder::new(app, "View")
-            .item(&PredefinedMenuItem::fullscreen(app, None)?)
+            .item(&PredefinedMenuItem::services(app, None)?)
             .separator()
             .item(&PredefinedMenuItem::hide(app, None)?)
             .item(&PredefinedMenuItem::hide_others(app, None)?)
             .item(&PredefinedMenuItem::show_all(app, None)?)
+            .separator()
+            .item(&PredefinedMenuItem::quit(app, None)?)
             .build()?;
-
-        let help = SubmenuBuilder::new(app, "Help")
-            .item(&PredefinedMenuItem::about(app, None, None)?)
-            .separator()
-            .item(&documentation)
-            .item(&release_notes)
-            .item(&report_issue)
-            .separator()
-            .item(&keyboard_shortcuts)
-            .separator()
-            .item(&open_logs)
-            .item(&copy_diagnostics)
-            .separator()
-            .item(&PredefinedMenuItem::services(app, None)?)
-            .build()?;
-
-        menu = menu
-            .item(&app_menu)
-            .item(&edit)
-            .item(&view)
-            .item(&window)
-            .item(&help);
+        menu = menu.item(&app_menu);
     }
 
-    // Windows/Linux: no application menu — keep File (Adjust Budget / Stop
-    // Session / Preferences / Close Window) and Check for Updates in Help.
+    // File holds the session/window commands. Preferences lives here only on
+    // Windows/Linux (no app menu there); on macOS it's in the app menu above.
+    #[allow(unused_mut)]
+    let mut file_builder = SubmenuBuilder::new(app, "File")
+        .item(&adjust_budget)
+        .item(&stop_session);
     #[cfg(not(target_os = "macos"))]
     {
-        let file = SubmenuBuilder::new(app, "File")
-            .item(&adjust_budget)
-            .item(&stop_session)
-            .separator()
-            .item(&preferences)
-            .separator()
-            .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
-            .build()?;
-
-        let view = SubmenuBuilder::new(app, "View")
-            .item(&PredefinedMenuItem::fullscreen(app, None)?)
-            .build()?;
-
-        let help = SubmenuBuilder::new(app, "Help")
-            .item(&documentation)
-            .item(&release_notes)
-            .item(&report_issue)
-            .separator()
-            .item(&keyboard_shortcuts)
-            .separator()
-            .item(&open_logs)
-            .item(&copy_diagnostics)
-            .build()?;
-
-        menu = menu
-            .item(&file)
-            .item(&edit)
-            .item(&view)
-            .item(&window)
-            .item(&help);
+        file_builder = file_builder.separator().item(&preferences);
     }
+    let file = file_builder
+        .separator()
+        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+        .build()?;
 
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&PredefinedMenuItem::fullscreen(app, None)?)
+        .build()?;
+
+    // Help: documentation / support links plus the diagnostics helpers. Check
+    // for Updates is intentionally omitted until the updater is provisioned.
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&documentation)
+        .item(&release_notes)
+        .item(&report_issue)
+        .separator()
+        .item(&keyboard_shortcuts)
+        .separator()
+        .item(&open_logs)
+        .item(&copy_diagnostics)
+        .build()?;
+
+    menu = menu
+        .item(&file)
+        .item(&edit)
+        .item(&view)
+        .item(&window)
+        .item(&help);
     menu.build()
 }
 
