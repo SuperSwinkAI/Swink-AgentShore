@@ -260,19 +260,7 @@ export function AppMenu({
   }
 
   if (dialog === "preferences") {
-    return (
-      <Modal
-        title="Preferences"
-        description="Desktop preferences will live here."
-        testId="preferences-dialog"
-        onClose={close}
-      >
-        <p className={styles.placeholder} data-testid="preferences-placeholder">
-          There's nothing to configure yet — this is a placeholder for upcoming
-          desktop preferences (theme, notifications, window behavior).
-        </p>
-      </Modal>
-    );
+    return <PreferencesDialog adapter={adapter} onClose={close} />;
   }
 
   if (dialog === "shortcuts") {
@@ -432,5 +420,112 @@ function Modal({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Humanize a PlayType value (`"run_qa"` → `"Run QA"`) for display. */
+function playLabel(value: string): string {
+  const words = value.split("_");
+  return words
+    .map((w) => (w.toLowerCase() === "qa" ? "QA" : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+/**
+ * Global Preferences dialog (File → Preferences). Lists the non-critical plays
+ * the user is allowed to disable, each a checkbox, and persists the set via the
+ * `preferences.*` RPCs. A live session picks up the change on its next config
+ * reload. Only allowlisted plays are ever shown, so nothing here can stall
+ * issue delivery.
+ *
+ * Owns its own load/edit/save state so the hooks stay unconditional (the parent
+ * renders it only while the dialog is open).
+ */
+function PreferencesDialog({
+  adapter,
+  onClose,
+}: {
+  adapter: AppMenuAdapter;
+  onClose: () => void;
+}): JSX.Element {
+  const [data, setData] = useState<PreferencesData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void adapter
+      .getPreferences()
+      .then((prefs) => {
+        if (!cancelled) setData(prefs);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter]);
+
+  const togglePlay = useCallback((play: string) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      const disabled = prev.disabled_plays.includes(play)
+        ? prev.disabled_plays.filter((p) => p !== play)
+        : [...prev.disabled_plays, play];
+      return { ...prev, disabled_plays: disabled };
+    });
+  }, []);
+
+  const onSave = useCallback(() => {
+    if (!data) return;
+    setSaving(true);
+    setError(null);
+    void adapter
+      .setPreferences(data.disabled_plays)
+      .then(() => onClose())
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setSaving(false);
+      });
+  }, [adapter, data, onClose]);
+
+  return (
+    <Modal
+      title="Preferences"
+      description="Turn off non-critical plays. Delivery and self-heal plays can't be disabled."
+      testId="preferences-dialog"
+      onClose={onClose}
+      cancelLabel="Cancel"
+      primary={{ label: saving ? "Saving…" : "Save", onClick: onSave, disabled: saving || !data }}
+    >
+      {!data && !error && (
+        <p className={styles.placeholder} data-testid="preferences-loading">
+          Loading…
+        </p>
+      )}
+      {data && (
+        <ul className={styles.playList} data-testid="preferences-play-list">
+          {data.disableable_plays.map((play) => (
+            <li key={play} className={styles.playRow}>
+              <label className={styles.playToggle}>
+                <input
+                  type="checkbox"
+                  checked={data.disabled_plays.includes(play)}
+                  onChange={() => togglePlay(play)}
+                  data-testid={`preferences-play-${play}`}
+                />
+                <span>{playLabel(play)}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p className={styles.error} role="alert" data-testid="preferences-error">
+          {error}
+        </p>
+      )}
+    </Modal>
   );
 }

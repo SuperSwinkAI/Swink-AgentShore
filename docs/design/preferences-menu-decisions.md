@@ -80,6 +80,26 @@ mechanics differ fundamentally — roster changes require agent-manager *reconci
 lifecycle work touching `INSTANTIATE_AGENT`/`END_AGENT`, claim release, and in-flight drain —
 not a config swap.
 
+## Implementation status (v1 — disabled plays, shipped)
+
+The `disabled_plays` capability is built end-to-end:
+- **Core**: `agentshore/preferences.py` (global file IO + `USER_DISABLEABLE_PLAYS`
+  allowlist), `GLOBAL_PREFERENCES_PATH`, `PreferencesConfig` on `RuntimeConfig`,
+  folded in by `load_config` (re-read on every reload → live mid-run).
+- **Mask**: `USER_DISABLED` (`MaskSource.PREFERENCE`, HARD) + `_stage_user_disabled`
+  in `rl/mask.py`, allowlist-guarded and re-applied after the reverse failsafe.
+- **Surfaces**: `preferences.get`/`preferences.set` sidecar RPCs (global file;
+  `set` triggers a live `reload_config`); `agentshore preferences
+  list|disable|enable|reset` CLI; Desktop **File → Preferences** modal
+  (`PreferencesDialog` in `components/AppMenu.tsx` + `rpc/preferencesClient.ts`).
+- **Placement decision**: the Desktop surface is the existing native **File →
+  Preferences** menu item (Cmd/Ctrl+,) opening a dedicated modal — the app's
+  menu/event plumbing already existed; only the modal body + RPC client were new.
+- **Tests**: Python (`tests/test_preferences.py`, `tests/sidecar/test_preferences.py`,
+  `tests/test_cli_preferences.py`) and Desktop (`AppMenu.test.tsx`).
+- Migration of timeouts/drain/UX fields (global-only) is **not yet done** — see
+  Open Items; the file shape (`plays:`) leaves room for them.
+
 ## Open Items
 
 - **CLI command shape:** `agentshore preferences` subcommand surface (e.g.

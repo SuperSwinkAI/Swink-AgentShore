@@ -12,12 +12,22 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { AppMenu, type AppMenuAdapter, type AvailableUpdate } from "../AppMenu";
 
+const DISABLEABLE = ["cleanup", "design_audit", "groom_backlog", "prune", "run_qa"];
+
 function makeAdapter(overrides: Partial<AppMenuAdapter> = {}): AppMenuAdapter {
   return {
     checkForUpdate: vi.fn(async () => null),
     relaunch: vi.fn(async () => undefined),
     openLogFolder: vi.fn(async () => undefined),
     copyText: vi.fn(async () => true),
+    getPreferences: vi.fn(async () => ({
+      disabled_plays: [],
+      disableable_plays: DISABLEABLE,
+    })),
+    setPreferences: vi.fn(async (disabled: string[]) => ({
+      disabled_plays: disabled,
+      disableable_plays: DISABLEABLE,
+    })),
     ...overrides,
   };
 }
@@ -35,11 +45,50 @@ describe("AppMenu", () => {
     listeners.clear();
   });
 
-  it("opens the Preferences placeholder on menu:preferences", async () => {
-    render(<AppMenu adapter={makeAdapter()} />);
+  it("loads the disableable-play list on menu:preferences", async () => {
+    const adapter = makeAdapter();
+    render(<AppMenu adapter={adapter} />);
     await fire("menu:preferences");
     expect(screen.getByTestId("preferences-dialog")).toBeInTheDocument();
-    expect(screen.getByTestId("preferences-placeholder")).toBeInTheDocument();
+    expect(adapter.getPreferences).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("preferences-play-run_qa")).toBeInTheDocument();
+    expect(screen.getByText("Run QA")).toBeInTheDocument();
+  });
+
+  it("saves the toggled disabled-play set on Save", async () => {
+    const adapter = makeAdapter();
+    render(<AppMenu adapter={adapter} />);
+    await fire("menu:preferences");
+    const checkbox = await screen.findByTestId("preferences-play-cleanup");
+    await act(async () => {
+      checkbox.click();
+    });
+    await act(async () => {
+      screen.getByTestId("preferences-dialog-primary").click();
+    });
+    expect(adapter.setPreferences).toHaveBeenCalledWith(["cleanup"]);
+    // Dialog closes on a successful save.
+    await waitFor(() =>
+      expect(screen.queryByTestId("preferences-dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("surfaces a rejected play on Save without closing", async () => {
+    const adapter = makeAdapter({
+      setPreferences: vi.fn(async () => {
+        throw new Error("not user-disableable: issue_pickup");
+      }),
+    });
+    render(<AppMenu adapter={adapter} />);
+    await fire("menu:preferences");
+    await screen.findByTestId("preferences-play-run_qa");
+    await act(async () => {
+      screen.getByTestId("preferences-dialog-primary").click();
+    });
+    expect(await screen.findByTestId("preferences-error")).toHaveTextContent(
+      "not user-disableable",
+    );
+    expect(screen.getByTestId("preferences-dialog")).toBeInTheDocument();
   });
 
   it("shows the keyboard-shortcut cheat-sheet on menu:keyboard_shortcuts", async () => {

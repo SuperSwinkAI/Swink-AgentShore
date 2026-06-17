@@ -114,6 +114,42 @@
   color: var(--muted, #6b7280);
 }
 
+/* Preferences: one checkbox row per disableable play. */
+.playList {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.playRow {
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.playRow:last-child {
+  border-bottom: none;
+}
+
+.playToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.playToggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.error {
+  font-size: 13px;
+  color: var(--danger, #dc2626);
+  margin: 12px 0 0 0;
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;
