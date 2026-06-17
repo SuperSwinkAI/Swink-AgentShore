@@ -8,6 +8,7 @@ import type {
 import { makeActivePlay } from "../types";
 import {
   formatAgentClass,
+  formatAgentType,
   formatPlayType,
   formatPlayWithTarget,
   shortAgentName,
@@ -21,6 +22,7 @@ interface SidePanelState {
   agents: AgentSnapshot[];
   activePlay: ActivePlay | null;
   selectedAgentId: string | null;
+  providerFilter: string | null;
   eventCurrentPlay: Map<string, ActivePlay>;
   onAgentClick: AgentClickHandler | null;
 }
@@ -34,6 +36,7 @@ type SidePanelAction =
     }
   | { type: "play_event"; event: PlayEvent }
   | { type: "select_agent"; agentId: string | null }
+  | { type: "set_provider_filter"; provider: string | null }
   | { type: "set_click_handler"; handler: AgentClickHandler | null }
   | { type: "set_active_play"; activePlay: ActivePlay | null };
 
@@ -49,10 +52,25 @@ function reducer(
       for (const agent of action.agents) {
         if (agent.current_play) nextEventCurrentPlay.delete(agent.agent_id);
       }
+      const availableProviders = new Set<string>(
+        action.agents.map((agent) => agent.agent_type),
+      );
+      const providerFilter = state.providerFilter
+        ? availableProviders.has(state.providerFilter)
+          ? state.providerFilter
+          : null
+        : null;
+      const selectedAgentId = action.agents.some(
+        (agent) => agent.agent_id === state.selectedAgentId,
+      )
+        ? state.selectedAgentId
+        : null;
       return {
         ...state,
         agents: action.agents,
         activePlay: action.activePlay,
+        selectedAgentId,
+        providerFilter,
         eventCurrentPlay: nextEventCurrentPlay,
       };
     }
@@ -82,6 +100,8 @@ function reducer(
     }
     case "select_agent":
       return { ...state, selectedAgentId: action.agentId };
+    case "set_provider_filter":
+      return { ...state, providerFilter: action.provider };
     case "set_click_handler":
       return { ...state, onAgentClick: action.handler };
     case "set_active_play":
@@ -93,6 +113,7 @@ const INITIAL_STATE: SidePanelState = {
   agents: [],
   activePlay: null,
   selectedAgentId: null,
+  providerFilter: null,
   eventCurrentPlay: new Map(),
   onAgentClick: null,
 };
@@ -181,6 +202,36 @@ function currentPlayTargetLabel(current: ActivePlay | null): string | null {
   return null;
 }
 
+function providerLabel(agentType: string): string {
+  switch (agentType) {
+    case "claude_code":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "gemini":
+      return "Google";
+    case "grok":
+      return "Grok";
+    case "api_gpt":
+      return "OpenAI";
+    case "api_other":
+      return "API";
+    default:
+      return formatAgentType(agentType);
+  }
+}
+
+function sessionProviders(agents: AgentSnapshot[]): string[] {
+  const seen = new Set<string>();
+  const providers: string[] = [];
+  for (const agent of agents) {
+    if (seen.has(agent.agent_type)) continue;
+    seen.add(agent.agent_type);
+    providers.push(agent.agent_type);
+  }
+  return providers;
+}
+
 function DetailRow({
   label,
   value,
@@ -263,15 +314,49 @@ export function SidePanelComponent(): React.ReactElement {
     state.onAgentClick?.(nextId);
   }
 
-  const selectedAgent = state.agents.find(
-    (a) => a.agent_id === state.selectedAgentId,
-  );
+  const providers = sessionProviders(state.agents);
+  const visibleAgents = state.providerFilter
+    ? state.agents.filter((agent) => agent.agent_type === state.providerFilter)
+    : state.agents;
 
   return (
     <div className="side-panel-content">
       <div className="side-section-title">Agents</div>
+      {providers.length > 0 && (
+        <div
+          className="agent-provider-filters"
+          role="group"
+          aria-label="Filter agents by provider"
+        >
+          <button
+            type="button"
+            className="agent-provider-filter"
+            data-agent-provider-filter="all"
+            aria-pressed={state.providerFilter === null}
+            onClick={() =>
+              dispatch({ type: "set_provider_filter", provider: null })
+            }
+          >
+            All
+          </button>
+          {providers.map((provider) => (
+            <button
+              key={provider}
+              type="button"
+              className="agent-provider-filter"
+              data-agent-provider-filter={provider}
+              aria-pressed={state.providerFilter === provider}
+              onClick={() =>
+                dispatch({ type: "set_provider_filter", provider })
+              }
+            >
+              {providerLabel(provider)}
+            </button>
+          ))}
+        </div>
+      )}
       <div id="agent-list">
-        {state.agents.map((agent) => {
+        {visibleAgents.map((agent) => {
           const current = currentPlayForAgent(agent, state);
           const displayStatus = displayStatusForAgent(agent, current);
           const playLabel = current
@@ -292,50 +377,52 @@ export function SidePanelComponent(): React.ReactElement {
           const dispatchShare =
             typeof agent.dispatch_share === "number" ? agent.dispatch_share : 0;
           const dispatchPct = Math.round(dispatchShare * 100);
+          const selected = agent.agent_id === state.selectedAgentId;
           return (
-            <button
+            <div
               key={agent.agent_id}
-              type="button"
-              className={`agent-item${agent.agent_id === state.selectedAgentId ? " selected" : ""}`}
-              data-agent-id={agent.agent_id}
-              onClick={() => handleAgentClick(agent.agent_id)}
+              className={`agent-entry${selected ? " selected" : ""}`}
+              data-agent-entry-id={agent.agent_id}
             >
-              <div className="agent-heading">
-                <span
-                  className={`agent-status ${displayStatus}`}
-                  style={{
-                    background:
-                      AGENT_COLORS[agent.agent_type]?.fill ??
-                      "var(--color-fm-neutral)",
-                  }}
-                  data-agent-type={agent.agent_type}
-                />
-                <span className="agent-name" title={shortAgentName(agent)}>
-                  {shortAgentName(agent)}
-                </span>
-                <div className="agent-type">{formatAgentClass(agent)}</div>
-                <span
-                  className="agent-dispatch-share"
-                  data-agent-dispatch-share={dispatchPct}
-                  title={`Dispatch share: ${dispatchPct}% (${agent.dispatch_count ?? 0} dispatches)`}
-                >
-                  {dispatchPct}%
-                </span>
-              </div>
-              <div className="agent-cost">{costText}</div>
-            </button>
+              <button
+                type="button"
+                className={`agent-item${selected ? " selected" : ""}`}
+                data-agent-id={agent.agent_id}
+                aria-expanded={selected}
+                onClick={() => handleAgentClick(agent.agent_id)}
+              >
+                <div className="agent-heading">
+                  <span
+                    className={`agent-status ${displayStatus}`}
+                    style={{
+                      background:
+                        AGENT_COLORS[agent.agent_type]?.fill ??
+                        "var(--color-fm-neutral)",
+                    }}
+                    data-agent-type={agent.agent_type}
+                  />
+                  <span className="agent-name" title={shortAgentName(agent)}>
+                    {shortAgentName(agent)}
+                  </span>
+                  <div className="agent-type">{formatAgentClass(agent)}</div>
+                  <span
+                    className="agent-dispatch-share"
+                    data-agent-dispatch-share={dispatchPct}
+                    title={`Dispatch share: ${dispatchPct}% (${agent.dispatch_count ?? 0} dispatches)`}
+                  >
+                    {dispatchPct}%
+                  </span>
+                </div>
+                <div className="agent-cost">{costText}</div>
+              </button>
+              {selected && (
+                <div id="agent-detail" className="agent-detail-drawer">
+                  <AgentDetail agent={agent} current={current} />
+                </div>
+              )}
+            </div>
           );
         })}
-      </div>
-      <div id="agent-detail" className="side-section">
-        {selectedAgent ? (
-          <AgentDetail
-            agent={selectedAgent}
-            current={currentPlayForAgent(selectedAgent, state)}
-          />
-        ) : (
-          "Select an agent"
-        )}
       </div>
     </div>
   );
