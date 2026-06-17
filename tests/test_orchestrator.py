@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
-from agentshore.config.models import ModelTierConfig
+from agentshore.config.models import ModelTierConfig, PreferencesConfig
 from agentshore.core import Orchestrator
 from agentshore.core.context import _DispatchContext
 from agentshore.core.mixins.snapshots import SnapshotProjector
@@ -1386,13 +1386,16 @@ def test_bootstrap_recipe_order() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _bootstrap_cfg(*, cleanup_threshold: int = 50) -> RuntimeConfig:
+def _bootstrap_cfg(
+    *, cleanup_threshold: int = 50, disabled_plays: tuple[str, ...] = ()
+) -> RuntimeConfig:
     return RuntimeConfig(
         agents={
             AgentType.CLAUDE_CODE.value: AgentConfig(enabled=True),
             AgentType.CODEX.value: AgentConfig(enabled=True),
         },
         bootstrap=BootstrapConfig(cleanup_threshold=cleanup_threshold),
+        preferences=PreferencesConfig(disabled_plays=disabled_plays),
     )
 
 
@@ -1491,6 +1494,49 @@ def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
     assert entries[1].params.bypass_preconditions is True
     # Groom still waits for the (seedless) seed audit to complete.
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
+
+
+def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
+    """A user-disabled GROOM_BACKLOG must not be bootstrap-queued.
+
+    The bootstrap override bypasses preconditions AND the action mask, so the
+    mask-level USER_DISABLED suppression never reaches it — the recipe honors
+    the preference at enqueue time instead. Open-start then queues only the
+    cold-start INSTANTIATE_AGENT and hands straight to the PPO.
+    """
+    cfg = _bootstrap_cfg(disabled_plays=(PlayType.GROOM_BACKLOG.value,))
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120, graph_has_epics=True
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+
+
+def test_bootstrap_seed_recipe_skips_groom_when_user_disabled(tmp_path: Path) -> None:
+    """The seed recipe likewise drops its GROOM_BACKLOG step when groom is
+    user-disabled — instantiate → seed → instantiate, no groom override."""
+    cfg = _bootstrap_cfg(disabled_plays=(PlayType.GROOM_BACKLOG.value,))
+    orch = _make_mock_orch()
+    seed_file = tmp_path / "seed.md"
+    seed_file.write_text("# Seed", encoding="utf-8")
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=0
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.SEED_PROJECT,
+        PlayType.INSTANTIATE_AGENT,
+    ]
 
 
 def test_bootstrap_open_start_ignores_backlog_size() -> None:
