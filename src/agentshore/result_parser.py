@@ -219,6 +219,20 @@ def parse_skill_result(output: str) -> SkillResult:
     if error is not None:
         error = str(error)
 
+    # When success=False and the skill left error=null, synthesize the error
+    # from verification_failures so play_completed always carries a diagnostic.
+    if not success and error is None:
+        vf = data.get("verification_failures")
+        if isinstance(vf, list) and vf:
+            parts: list[str] = []
+            for item in vf:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("detail") or item.get("type") or item))
+                elif isinstance(item, str):
+                    parts.append(item)
+            if parts:
+                error = "; ".join(parts)
+
     requested_mutations = _json_object_list(data, "requested_mutations")
 
     spec_compliance_raw = data.get("spec_compliance")

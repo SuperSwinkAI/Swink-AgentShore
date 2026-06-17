@@ -486,6 +486,8 @@ def test_build_argv_antigravity_shape() -> None:
         "Gemini 3.5 Flash (Low)",
         "--add-dir",
         "/wt",
+        "--print-timeout",
+        "30m0s",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
@@ -543,6 +545,47 @@ async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> Non
 
     parsed = parse_skill_result(out.raw)
     assert parsed.success is True
+
+
+def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
+    """Plain streaming output (no task-status envelope) is returned unchanged."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = 'Thinking...\n{"success": true, "error": null}\n'
+    assert extract_output(raw) == raw
+
+
+def test_extract_output_antigravity_extracts_output_section() -> None:
+    """Task-status block: the content between Output: and Error: is returned."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = (
+        "[Task abc123/task-1 Status Update]\n"
+        "Status: COMPLETED\n"
+        "Exit Code: 0\n"
+        "Log Path: file:///some/path/task-1.log\n"
+        "Output:\n"
+        '{"success": true, "error": null}\n'
+        "Error: (none)\n"
+    )
+    result = extract_output(raw)
+    assert result == '{"success": true, "error": null}'
+
+
+def test_extract_output_antigravity_empty_output_normalised() -> None:
+    """(empty) output section is normalised to empty string, not the literal string."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = (
+        "[Task abc123/task-2 Status Update]\n"
+        "Status: COMPLETED\n"
+        "Exit Code: 0\n"
+        "Log Path: file:///some/path/task-2.log\n"
+        "Output:\n"
+        "(empty)\n"
+        "Error: timed out waiting for response\n"
+    )
+    assert extract_output(raw) == ""
 
 
 @pytest.mark.parametrize(

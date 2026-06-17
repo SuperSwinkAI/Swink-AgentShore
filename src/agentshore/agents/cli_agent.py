@@ -1234,6 +1234,11 @@ async def dispatch_cli(
 
     duration_ms = int((time.monotonic() - t_start) * 1000)
 
+    # agy wraps actual output inside a task-status block; unwrap it so
+    # parse_skill_result sees the model's content, not the status envelope.
+    if handle.agent_type == AgentType.ANTIGRAVITY:
+        raw_output = cli_antigravity.extract_output(raw_output)
+
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
         await _finalize_nonzero_exit(

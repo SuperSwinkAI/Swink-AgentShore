@@ -39,7 +39,11 @@ Violations populate `verification_failures` and force `success: false`.
 
 Keep the human-facing GitHub backlog correct first. These are GH-surface edits (`gh`), no beads-graph traversal required.
 
-**Triage label hygiene.** For each open GH issue, derive its category + state from the table above. Conflicting state labels (e.g. both `agentshore/blocked` and `priority/critical`) → record in `verification_failures` (do not guess a resolution).
+**Triage label hygiene.** For each open GH issue, derive its category + state from the table above.
+
+**Blocked + priority conflict (auto-resolve).** When an issue carries both `agentshore/blocked` and any `priority/*` label simultaneously, `blocked` wins: remove every `priority/*` label with `gh issue edit <N> --remove-label "<label>"` (one call per label; removing an absent label errors — only remove labels the issue actually carries), then add a comment `gh issue comment <N> --body "groom-backlog: removed priority label(s) while issue is blocked. Re-apply once unblocked."`. Record each resolution in `conflicting_labels_resolved` as `{"issue": N, "removed": ["priority/..."], "reason": "blocked wins"}`. Cap 20 per run; record extras in `conflicting_labels_deferred` as `{"issue": N}`.
+
+Any other conflicting state label combination → record in `verification_failures` (do not guess a resolution).
 
 **Remove resolved blocked labels.** A GH issue's `blocked` / `agentshore/blocked` label is sticky — it does **not** auto-clear when the blocker resolves, so the issue silently stays out of the `issue_pickup` pool forever even though nothing blocks it. For each open GH issue carrying `blocked` or `agentshore/blocked`, read its `blocked by #N` / `depends on #N` declarations **from the body in the GH list already fetched** (no bd calls). Remove the label **only** when there is ≥ 1 identifiable dependency **AND every** referenced `#N` is `CLOSED` (decidable from the open/closed GH lists in hand): `gh issue edit <N> --remove-label "<the blocking label actually present>"` (remove whichever of `blocked` / `agentshore/blocked` the issue carries — removing an absent label errors), then `gh issue comment <N> --body "Unblocked by groom-backlog: all blocking dependencies resolved (<#N…>)."`. **Leave the label in place** when no dependency can be identified (an opaque/manual block — a human gate we cannot reason about), any referenced blocker is still open, or the issue also carries `needs-human-review`. **Cap 15 per run** (oldest issue number first). Record each removal in `blocks_cleared` as `{"issue": N, "resolved_deps": [...]}`; record any beyond the cap in `blocks_clear_deferred` as `{"issue": N}`.
 
@@ -104,6 +108,8 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "issues_created": [],
   "issues_flagged_for_refinement": [],
   "blocks_cleared": [],
+  "conflicting_labels_resolved": [],
+  "conflicting_labels_deferred": [],
   "trackers_closed": [],
   "epics_closed": [],
   "dependency_edges_added": [],

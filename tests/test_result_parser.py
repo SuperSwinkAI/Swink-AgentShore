@@ -306,6 +306,49 @@ def test_parse_issue_pickup_publish_reconciliation_fields() -> None:
     ]
 
 
+def test_parse_verification_failures_surfaced_as_error_when_error_null() -> None:
+    """verification_failures synthesised into error when success=False and error=null."""
+    output = """
+    {
+      "success": false,
+      "error": null,
+      "verification_failures": [
+        {
+          "type": "conflicting_state_labels",
+          "issues": [81, 82, 97],
+          "detail": "Open issues carry agentshore/blocked together with priority/* labels."
+        },
+        "Strict task-bead invariant has non-task bead records for open GH issues: 115, 117."
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert result.success is False
+    assert result.error is not None
+    assert "agentshore/blocked together with priority/*" in result.error
+    assert "task-bead invariant" in result.error
+
+
+def test_parse_verification_failures_not_applied_when_error_set() -> None:
+    """Explicit error field takes precedence over verification_failures synthesis."""
+    output = """
+    {
+      "success": false,
+      "error": "explicit error message",
+      "verification_failures": [{"type": "something", "detail": "ignored"}]
+    }
+    """
+    result = parse_skill_result(output)
+    assert result.error == "explicit error message"
+
+
+def test_parse_verification_failures_empty_list_no_synthesis() -> None:
+    """Empty verification_failures leaves error as None (no spurious synthesis)."""
+    output = '{"success": false, "error": null, "verification_failures": []}'
+    result = parse_skill_result(output)
+    assert result.error is None
+
+
 def test_parse_extracts_review_patterns() -> None:
     output = """
     {

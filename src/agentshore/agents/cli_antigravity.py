@@ -48,6 +48,40 @@ def build_argv(
         args += ["--model", model]
     if project_dir:
         args += ["--add-dir", project_dir]
+    # The agy default --print-timeout of 5m0s is too short for coding tasks that
+    # typically run 8-15 min. Match the AgentShore dispatch wall-clock budget.
+    args += ["--print-timeout", "30m0s"]
     args.extend(extra_flags)
     args += ["-p", prompt]
     return args
+
+
+def extract_output(raw: str) -> str:
+    """Extract the actual agent output from an agy task-status block.
+
+    When agy uses its async task system it emits:
+        [Task <id>/task-N Status Update]
+        Status: COMPLETED
+        Exit Code: 0
+        Log Path: file:///...
+        Output:
+        <actual model output>
+        Error: <message or "(none)">
+
+    ``parse_skill_result`` needs the content of the ``Output:`` section, not
+    the wrapper. When the block is absent (streaming mode), returns *raw* unchanged.
+    ``(empty)`` output is normalised to an empty string so the caller gets a
+    clean ``no valid result block`` error rather than trying to parse "(empty)".
+    """
+    if "[Task " not in raw or "Status Update]" not in raw:
+        return raw
+
+    output_marker = "\nOutput:\n"
+    error_marker = "\nError:"
+    start = raw.find(output_marker)
+    if start == -1:
+        return raw
+    content_start = start + len(output_marker)
+    end = raw.find(error_marker, content_start)
+    content = raw[content_start:end].strip() if end != -1 else raw[content_start:].strip()
+    return "" if content == "(empty)" else content
