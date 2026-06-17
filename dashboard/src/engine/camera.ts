@@ -148,6 +148,14 @@ export class Camera {
     this.followTarget = target;
   }
 
+  focusOn(target: { x: number; y: number }, zoomMultiplier = 2.4): void {
+    this.followTarget = target;
+    this.zoom = Math.max(
+      this.minimumZoom,
+      Math.min(MAX_ZOOM, this.minimumZoom * zoomMultiplier),
+    );
+  }
+
   panBy(dx: number, dy: number): void {
     this.followTarget = null;
     this.x += dx;

@@ -594,6 +594,97 @@ test("event drawer running filter mirrors current play snapshots", async ({
   await expect(page.locator("#event-list")).toContainText("Issue Pickup 108");
 });
 
+test("event drawer filters stay pinned while history scrolls", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop event drawer assertion");
+  await page.setViewportSize({ width: 1800, height: 720 });
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+
+  await page.evaluate(async () => {
+    const drawer = await import("/src/components/EventDrawer.tsx");
+    const agents = Array.from({ length: 36 }, (_, index) => {
+      const playId = 900 + index;
+      return {
+        agent_id: `scroll-agent-${index}`,
+        agent_type: "codex" as const,
+        display_name: `Codex: Scroll Agent ${index + 1}`,
+        model_tier: "medium",
+        status: "busy" as const,
+        context_size: 0,
+        total_cost: 0,
+        total_tokens: 0,
+        tasks_completed: 0,
+        tasks_failed: 0,
+        current_play: {
+          play_type: "issue_pickup",
+          play_id: playId,
+          started_at: "2026-01-01T00:00:00.000Z",
+          issue_number: playId,
+          pr_number: null,
+          branch: null,
+          trigger_agent_id: null,
+          trigger_agent_type: null,
+          trigger_error_class: null,
+        },
+      };
+    });
+    drawer.notifyEventDrawerStateUpdate({
+      type: "state_update",
+      session_id: "event-drawer-scroll",
+      session_state: "running",
+      policy_mode: "learning",
+      total_plays: 0,
+      total_cost: 0,
+      agents,
+      open_issues: [],
+      pull_requests: [],
+      budget: null,
+      trajectory: null,
+      active_play: null,
+      stats: null,
+      same_type_failure_streak: 0,
+      last_play_type: null,
+      forced_mask_zeros: [],
+      action_mask: Array(22).fill(true),
+      mask_reasons: {},
+    });
+  });
+
+  const leftPanel = page.locator("#left-panel");
+  const filters = page.locator("#event-drawer .drawer-filters");
+  await expect(filters).toBeVisible();
+
+  const before = await filters.boundingBox();
+  expect(before).not.toBeNull();
+
+  await leftPanel.evaluate((panel) => {
+    panel.scrollTop = panel.scrollHeight;
+  });
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector("#left-panel")!;
+    const filtersEl = document.querySelector("#event-drawer .drawer-filters")!;
+    const panelRect = panel.getBoundingClientRect();
+    const filtersRect = filtersEl.getBoundingClientRect();
+    return {
+      position: getComputedStyle(filtersEl).position,
+      panelTop: panelRect.top,
+      filtersTop: filtersRect.top,
+    };
+  });
+
+  expect(geometry.position).toBe("sticky");
+  expect(Math.abs(geometry.filtersTop - geometry.panelTop)).toBeLessThanOrEqual(
+    1,
+  );
+  expect(before).not.toBeNull();
+  if (before) {
+    expect(Math.abs(geometry.filtersTop - before.y)).toBeLessThanOrEqual(1);
+  }
+});
+
 test("plays panel active counts follow current play snapshots when status lags", async ({
   page,
   isMobile,
@@ -2812,14 +2903,230 @@ test("selected agent details show current play or idle state", async ({
   await expect(page.locator("#agent-detail")).toContainText("Idle");
 });
 
+test("selected agent detail drawer opens under the selected card", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel assertion");
+  await page.goto("/?demo=1&scenario=active&freeze=1");
+
+  const agent = page.locator(
+    '#agent-list .agent-item[data-agent-id="agent-claude"]',
+  );
+  await agent.click();
+
+  const geometry = await page.evaluate(() => {
+    const entry = document.querySelector(
+      '.agent-entry[data-agent-entry-id="agent-claude"]',
+    )!;
+    const button = entry.querySelector(".agent-item")!;
+    const detail = entry.querySelector("#agent-detail")!;
+    const detachedDetail = document.querySelector(
+      ".side-panel-content > #agent-detail",
+    );
+    const buttonRect = button.getBoundingClientRect();
+    const detailRect = detail.getBoundingClientRect();
+    return {
+      buttonBottom: buttonRect.bottom,
+      detailTop: detailRect.top,
+      detached: detachedDetail !== null,
+    };
+  });
+
+  expect(geometry.detached).toBe(false);
+  expect(Math.abs(geometry.detailTop - geometry.buttonBottom)).toBeLessThanOrEqual(
+    1,
+  );
+});
+
+test("agent provider filters only show current-session providers", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel assertion");
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+
+  await page.evaluate(async () => {
+    const panel = await import("/src/components/SidePanel.tsx");
+    panel.notifySidePanelUpdate({
+      type: "state_update",
+      session_id: "provider-filter-session",
+      session_state: "running",
+      policy_mode: "learning",
+      total_plays: 0,
+      total_cost: 0,
+      agents: [
+        {
+          agent_id: "filter-claude",
+          agent_type: "claude_code",
+          display_name: "Claude: Filter Claude",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+        {
+          agent_id: "filter-codex",
+          agent_type: "codex",
+          display_name: "Codex: Filter Codex",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+        {
+          agent_id: "filter-gemini",
+          agent_type: "gemini",
+          display_name: "Gemini: Filter Gemini",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+      ],
+      open_issues: [],
+      pull_requests: [],
+      budget: null,
+      trajectory: null,
+      active_play: null,
+      stats: null,
+      same_type_failure_streak: 0,
+      last_play_type: null,
+      forced_mask_zeros: [],
+      action_mask: Array(22).fill(true),
+      mask_reasons: {},
+    });
+  });
+
+  await expect(page.locator(".agent-provider-filter")).toHaveText([
+    "All",
+    "Claude",
+    "Codex",
+    "Google",
+  ]);
+  await expect(page.locator(".agent-provider-filters")).not.toContainText(
+    "Grok",
+  );
+
+  await page.locator('[data-agent-provider-filter="gemini"]').click();
+  await expect(page.locator("#agent-list .agent-entry")).toHaveCount(1);
+  await expect(page.locator("#agent-list")).toContainText("Filter Gemini");
+  await expect(page.locator("#agent-list")).not.toContainText("Filter Claude");
+  await expect(page.locator("#agent-list")).not.toContainText("Filter Codex");
+});
+
+test("side-panel agent selection focuses and zooms the office camera", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel camera assertion");
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await page.goto("/?demo=1&scenario=active&freeze=1");
+  await expect(
+    page.locator("[data-agentshore-dashboard-canvas]"),
+  ).toHaveAttribute("data-mounted", "true");
+
+  const before = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __agentshoreDashboardTest?: {
+        camera: { x: number; y: number; zoom: number };
+      };
+    };
+    const camera = testWindow.__agentshoreDashboardTest?.camera;
+    if (!camera) throw new Error("camera test hook unavailable");
+    return { x: camera.x, y: camera.y, zoom: camera.zoom };
+  });
+
+  const agent = page.locator(
+    '#agent-list .agent-item[data-agent-id="agent-claude"]',
+  );
+  await agent.click();
+
+  await expect
+    .poll(async () => {
+      const current = await page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            camera: { x: number; y: number; zoom: number };
+          };
+        };
+        const camera = testWindow.__agentshoreDashboardTest?.camera;
+        if (!camera) throw new Error("camera test hook unavailable");
+        return { zoom: camera.zoom };
+      });
+      return current.zoom / before.zoom;
+    })
+    .toBeGreaterThan(1.5);
+
+  const focused = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __agentshoreDashboardTest?: {
+        camera: { x: number; y: number; zoom: number };
+      };
+    };
+    const camera = testWindow.__agentshoreDashboardTest?.camera;
+    if (!camera) throw new Error("camera test hook unavailable");
+    return { x: camera.x, y: camera.y, zoom: camera.zoom };
+  });
+  expect(focused.zoom / before.zoom).toBeGreaterThan(1.5);
+  expect(
+    Math.abs(focused.x - before.x) + Math.abs(focused.y - before.y),
+  ).toBeGreaterThan(20);
+
+  await agent.click();
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            camera: { x: number; y: number; zoom: number };
+          };
+        };
+        const camera = testWindow.__agentshoreDashboardTest?.camera;
+        if (!camera) throw new Error("camera test hook unavailable");
+        return camera.zoom;
+      });
+    })
+    .toBeCloseTo(before.zoom, 2);
+});
+
 test("character click selects an agent detail", async ({ page, isMobile }) => {
   test.skip(isMobile, "desktop side panel detail assertion");
   await page.setViewportSize({ width: 1800, height: 1000 });
   await page.goto("/?demo=1&scenario=active&freeze=1");
   const canvas = page.locator("#office");
   await expectCanvasNonBlank(page);
+
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            characters: () => Array<{ npcKind: string | null }>;
+          };
+        };
+        return (
+          testWindow.__agentshoreDashboardTest
+            ?.characters?.()
+            .filter((character) => character.npcKind === null).length ?? 0
+        );
+      });
+    })
+    .toBeGreaterThan(0);
+
   const clickPoints = await canvas.evaluate(async (canvasElement) => {
-    const layout = await import("/src/office/layout.ts");
     const sprites = await import("/src/characters/sprites.ts");
     const canvas = canvasElement as HTMLCanvasElement;
     const testWindow = window as unknown as {
@@ -2828,28 +3135,43 @@ test("character click selects an agent detail", async ({ page, isMobile }) => {
           zoom: number;
           worldToScreen: (x: number, y: number, z?: number) => [number, number];
         };
+        characters: () => Array<{
+          agentId: string;
+          agentType: string;
+          modelTier: string | null;
+          npcKind: string | null;
+          x: number;
+          y: number;
+        }>;
       };
     };
     const camera = testWindow.__agentshoreDashboardTest?.camera;
     if (!camera) throw new Error("camera test hook unavailable");
+    const characters = testWindow.__agentshoreDashboardTest?.characters?.() ?? [];
     const scale = canvas.width / canvas.getBoundingClientRect().width;
-    const agentSize = sprites.agentVisualSize(camera.zoom);
-    return layout.FRONT_DESK_SPAWN_SPOTS.map((spawn) => {
-      const [sx, sy] = camera.worldToScreen(
-        spawn.x * layout.TILE_SIZE + layout.TILE_SIZE / 2,
-        spawn.y * layout.TILE_SIZE + layout.TILE_SIZE / 2,
-      );
-      return {
-        x: sx / scale,
-        y: (sy - agentSize.height / 2) / scale,
-      };
-    });
+    return characters
+      .filter((character) => character.npcKind === null)
+      .map((character) => {
+        const [sx, sy] = camera.worldToScreen(character.x, character.y);
+        const size = sprites.agentVisualSize(
+          camera.zoom,
+          1,
+          character.modelTier,
+          character.agentType,
+        );
+        return {
+          x: sx / scale,
+          y: (sy - size.height / 2) / scale,
+        };
+      });
   });
   for (const point of clickPoints) {
     await canvas.click({ position: point });
-    if (
-      (await page.locator("#agent-detail").textContent())?.includes("Tokens")
-    ) {
+    const detailText = await page
+      .locator("#agent-detail")
+      .textContent({ timeout: 250 })
+      .catch(() => null);
+    if (detailText?.includes("Tokens")) {
       break;
     }
   }
@@ -2870,5 +3192,5 @@ test("clicking selected side-panel agent toggles selection off", async ({
 
   await firstAgent.click();
   await expect(firstAgent).not.toHaveClass(/selected/);
-  await expect(page.locator("#agent-detail")).toContainText("Select an agent");
+  await expect(page.locator("#agent-detail")).toHaveCount(0);
 });

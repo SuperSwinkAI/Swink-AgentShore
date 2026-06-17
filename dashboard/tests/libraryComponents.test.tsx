@@ -962,4 +962,158 @@ describe("SidePanelComponent", () => {
     expect(badge).not.toBeNull();
     expect(badge?.getAttribute("data-agent-dispatch-share")).toBe("0");
   });
+
+  it("opens agent details directly under the selected agent card", async () => {
+    notifySidePanelUpdate(
+      stateUpdate({
+        agents: [
+          {
+            agent_id: "agent-top",
+            agent_type: "codex",
+            display_name: "Codex: Top",
+            model_tier: "medium",
+            status: "idle",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 1200,
+            tasks_completed: 1,
+            tasks_failed: 0,
+            current_play: null,
+          },
+          {
+            agent_id: "agent-bottom",
+            agent_type: "claude_code",
+            display_name: "Claude: Bottom",
+            model_tier: "large",
+            status: "busy",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 3400,
+            tasks_completed: 2,
+            tasks_failed: 1,
+            current_play: {
+              play_type: "code_review",
+              play_id: 77,
+              started_at: "2026-01-01T00:00:00.000Z",
+              issue_number: null,
+              pr_number: 77,
+              branch: null,
+            },
+          },
+        ],
+      }),
+    );
+
+    await act(async () => {
+      root.render(<SidePanelComponent />);
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-agent-id="agent-bottom"]')
+        ?.click();
+    });
+
+    const selectedEntry = container.querySelector<HTMLElement>(
+      '.agent-entry[data-agent-entry-id="agent-bottom"]',
+    );
+    const topEntry = container.querySelector<HTMLElement>(
+      '.agent-entry[data-agent-entry-id="agent-top"]',
+    );
+    const inlineDetail = selectedEntry?.querySelector("#agent-detail");
+
+    expect(selectedEntry).not.toBeNull();
+    expect(topEntry?.querySelector("#agent-detail")).toBeNull();
+    expect(inlineDetail).not.toBeNull();
+    expect(inlineDetail?.textContent).toContain("Current play");
+    expect(inlineDetail?.textContent).toContain("Code Review");
+    expect(inlineDetail?.textContent).toContain("PR #77");
+    expect(
+      container.querySelector(".side-panel-content > #agent-detail"),
+    ).toBeNull();
+  });
+
+  it("filters agents by provider using only providers present in the session", async () => {
+    notifySidePanelUpdate(
+      stateUpdate({
+        agents: [
+          {
+            agent_id: "agent-claude",
+            agent_type: "claude_code",
+            display_name: "Claude: Present",
+            model_tier: "medium",
+            status: "idle",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 0,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            current_play: null,
+          },
+          {
+            agent_id: "agent-codex",
+            agent_type: "codex",
+            display_name: "Codex: Present",
+            model_tier: "medium",
+            status: "idle",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 0,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            current_play: null,
+          },
+          {
+            agent_id: "agent-gemini",
+            agent_type: "gemini",
+            display_name: "Gemini: Present",
+            model_tier: "medium",
+            status: "idle",
+            context_size: 0,
+            total_cost: 0,
+            total_tokens: 0,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            current_play: null,
+          },
+        ],
+      }),
+    );
+
+    await act(async () => {
+      root.render(<SidePanelComponent />);
+    });
+
+    const filters = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        ".agent-provider-filter",
+      ),
+    );
+    const labels = filters.map((filter) => filter.textContent);
+
+    expect(labels).toEqual(["All", "Claude", "Codex", "Google"]);
+    expect(labels).not.toContain("Grok");
+    expect(container.querySelectorAll(".agent-entry")).toHaveLength(3);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-agent-provider-filter="gemini"]',
+        )
+        ?.click();
+    });
+
+    const visibleAgents = Array.from(
+      container.querySelectorAll<HTMLElement>(".agent-entry"),
+    ).map((entry) => entry.dataset.agentEntryId);
+
+    expect(visibleAgents).toEqual(["agent-gemini"]);
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-agent-provider-filter="gemini"]',
+        )
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
 });
