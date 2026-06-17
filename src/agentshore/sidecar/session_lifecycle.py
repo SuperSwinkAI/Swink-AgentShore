@@ -227,7 +227,7 @@ def _emit(
     notify(_progress(token, step, status, error=error))
 
 
-def _check_config_merge(project_path: Path) -> RuntimeConfig:
+def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = True) -> RuntimeConfig:
     """Load and return the merged AgentShore config for ``project_path``.
 
     Replaces the previous existence-only check: ``load_config`` parses the
@@ -246,9 +246,24 @@ def _check_config_merge(project_path: Path) -> RuntimeConfig:
     from agentshore.errors import ConfigError
 
     try:
-        return load_config(config_path)
+        cfg = load_config(config_path)
     except ConfigError as exc:
         raise SessionStartError(STEP_CONFIG_MERGE, -32602, str(exc)) from exc
+    if require_tier_coverage:
+        from agentshore.agents.model_tiers import REQUIRED_MODEL_TIERS, missing_required_model_tiers
+
+        missing = missing_required_model_tiers(cfg.agents)
+        if missing:
+            missing_text = ", ".join(missing)
+            required = ", ".join(REQUIRED_MODEL_TIERS)
+            msg = (
+                f"missing required model tier coverage: {missing_text}. "
+                "AgentShore start requires at least one enabled, startable agent config "
+                f"for each model tier: {required}. Configure agents.<type>.model_tiers "
+                "in agentshore.yaml, or rerun agent setup to generate tiered agent configuration."
+            )
+            raise SessionStartError(STEP_CONFIG_MERGE, -32602, msg)
+    return cfg
 
 
 def _check_agent_auth(cfg: RuntimeConfig) -> None:
@@ -423,7 +438,7 @@ async def run_session_start(
     cfg: RuntimeConfig | None = None
     if project_path is not None:
         try:
-            cfg = _check_config_merge(project_path)
+            cfg = _check_config_merge(project_path, require_tier_coverage=start_orchestrator)
         except SessionStartError as exc:
             _emit(notify, progress_token, exc.step, "failed", error=str(exc))
             raise

@@ -35,6 +35,36 @@ import pytest
 
 from agentshore.sidecar.build_id import load_build_info
 
+VALID_TIERED_CONFIG = """\
+project: {}
+identities:
+  alpha:
+    git_user_name: Alpha
+    git_user_email: alpha@example.com
+    gh_token_login: alpha
+  beta:
+    git_user_name: Beta
+    git_user_email: beta@example.com
+    gh_token_login: beta
+agents:
+  claude_code:
+    enabled: true
+    binary: agentshore-missing-claude
+    identity: alpha
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    binary: agentshore-missing-codex
+    identity: beta
+    model_tiers:
+      large:
+        enabled: true
+"""
+
 # Target band from DESIGN §8.
 HANDSHAKE_TARGET_MS = 1000.0
 IDLE_RSS_TARGET_MB = 250.0
@@ -216,7 +246,7 @@ def test_active_sidecar_rss_under_warning_band(
     # agentshore.yaml present + .beads/ directory present.
     project_path = tmp_path / "nfr-project"
     project_path.mkdir()
-    (project_path / "agentshore.yaml").write_text("project: {}\n", encoding="utf-8")
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
 
     child = _spawn_sidecar()

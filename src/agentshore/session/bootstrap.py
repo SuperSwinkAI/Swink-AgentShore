@@ -210,6 +210,28 @@ def _load_config_with_overrides(
     return cfg, effective_policy_mode
 
 
+def require_startup_model_tier_coverage(cfg: RuntimeConfig) -> None:
+    """Fail fast when enabled agent config cannot cover all required tiers."""
+    from agentshore.agents.model_tiers import REQUIRED_MODEL_TIERS, missing_required_model_tiers
+
+    missing = missing_required_model_tiers(cfg.agents)
+    if not missing:
+        return
+
+    required = ", ".join(REQUIRED_MODEL_TIERS)
+    missing_text = ", ".join(missing)
+    click.echo(
+        "Error: missing required model tier coverage: "
+        f"{missing_text}.\n\n"
+        "AgentShore start requires at least one enabled, startable agent config "
+        f"for each model tier: {required}.\n"
+        "Configure agents.<type>.model_tiers in agentshore.yaml, or rerun agent "
+        "setup to generate tiered agent configuration.",
+        err=True,
+    )
+    raise SystemExit(1)
+
+
 def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     """Resolve everything ``agentshore start`` needs before dispatch.
 
@@ -314,6 +336,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         policy_mode_override=opts.policy_mode_override,
         strict=opts.strict,
     )
+    require_startup_model_tier_coverage(cfg)
     # The merged config is the source of truth for the effective budget shown in
     # the banner and propagated to detached subprocesses.
     effective_budget = cfg.budget.total if cfg.budget.enabled else None

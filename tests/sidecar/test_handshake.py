@@ -24,6 +24,36 @@ from agentshore.sidecar.server import (
     serve,
 )
 
+VALID_TIERED_CONFIG = """\
+project: {}
+identities:
+  alpha:
+    git_user_name: Alpha
+    git_user_email: alpha@example.com
+    gh_token_login: alpha
+  beta:
+    git_user_name: Beta
+    git_user_email: beta@example.com
+    gh_token_login: beta
+agents:
+  claude_code:
+    enabled: true
+    binary: agentshore-missing-claude
+    identity: alpha
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    binary: agentshore-missing-codex
+    identity: beta
+    model_tiers:
+      large:
+        enabled: true
+"""
+
 
 def test_build_response_carries_required_fields() -> None:
     response = build_response()
@@ -350,7 +380,7 @@ def test_session_start_fails_when_beads_init_fails(tmp_path: object) -> None:
 
     project_path = Path(tmp_path) / "no-beads"  # type: ignore[arg-type]
     project_path.mkdir()
-    (project_path / "agentshore.yaml").write_text("project: {}\n", encoding="utf-8")
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     notifications: list[dict[str, object]] = []
 
     # Simulate bd binary not found so the automatic init fails.
@@ -399,7 +429,7 @@ def test_session_start_succeeds_with_valid_project(tmp_path: object) -> None:
 
     project_path = Path(tmp_path) / "valid-project"  # type: ignore[arg-type]
     project_path.mkdir()
-    (project_path / "agentshore.yaml").write_text("project: {}\n", encoding="utf-8")
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
     state = ServerState(active_project_path=str(project_path))
     # start_bridge=False keeps the unit-test fast: skip real uvicorn binding.
@@ -472,7 +502,7 @@ def test_session_start_succeeds_when_bd_hooks_fail(tmp_path: object) -> None:
 
     project_path = Path(tmp_path) / "hooks-fail"  # type: ignore[arg-type]
     project_path.mkdir()
-    (project_path / "agentshore.yaml").write_text("project: {}\n", encoding="utf-8")
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
 
     mock_setup = AsyncMock(side_effect=RuntimeError("bd hooks install failed"))

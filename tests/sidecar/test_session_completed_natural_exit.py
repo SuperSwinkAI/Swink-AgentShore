@@ -47,6 +47,35 @@ EXPECTED_ESR_KEYS = frozenset(
     }
 )
 
+VALID_TIERED_CONFIG = """\
+identities:
+  alpha:
+    git_user_name: Alpha
+    git_user_email: alpha@example.com
+    gh_token_login: alpha
+  beta:
+    git_user_name: Beta
+    git_user_email: beta@example.com
+    gh_token_login: beta
+agents:
+  claude_code:
+    enabled: true
+    binary: agentshore-missing-claude
+    identity: alpha
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    binary: agentshore-missing-codex
+    identity: beta
+    model_tiers:
+      large:
+        enabled: true
+"""
+
 pytestmark = pytest.mark.skipif(
     sys.platform.startswith("win") or shutil.which("ps") is None,
     reason="sidecar subprocess tests are POSIX-only (select() on a pipe fails on "
@@ -147,7 +176,7 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
     # max_plays=0 → first tick: total_plays=0 >= 0 → terminate with
     # reason="max_plays", which is a natural exit (not "stop_requested").
     (project_path / "agentshore.yaml").write_text(
-        "session:\n  max_plays: 0\n",
+        f"{VALID_TIERED_CONFIG}session:\n  max_plays: 0\n",
         encoding="utf-8",
     )
     (project_path / ".beads").mkdir()

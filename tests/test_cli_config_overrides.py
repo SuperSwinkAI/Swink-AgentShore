@@ -22,6 +22,7 @@ from agentshore.cli_helpers import _DEFAULT_BUDGET, _DEFAULT_TIME_MINUTES
 from agentshore.config.models import PolicyMode
 from agentshore.session.bootstrap import (
     _load_config_with_overrides,
+    require_startup_model_tier_coverage,
     validate_budget_flag,
 )
 
@@ -184,6 +185,90 @@ def test_policy_mode_override_wins(tmp_path: Path) -> None:
     cfg, effective = _resolve(cfg_path, policy_mode_override=PolicyMode.LEARNING)
     assert cfg.rl.policy_mode == PolicyMode.LEARNING
     assert effective == PolicyMode.LEARNING
+
+
+# --------------------------------------------------------------------------- #
+# Startup model-tier coverage
+# --------------------------------------------------------------------------- #
+
+
+def test_startup_tier_coverage_blocks_missing_large(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, _ = _resolve(
+        _write_cfg(
+            tmp_path,
+            """
+agents:
+  claude_code:
+    enabled: true
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+""",
+        )
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        require_startup_model_tier_coverage(cfg)
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "missing required model tier coverage: large" in err
+    assert "agents.<type>.model_tiers" in err
+
+
+def test_startup_tier_coverage_allows_cross_agent_coverage(tmp_path: Path) -> None:
+    cfg, _ = _resolve(
+        _write_cfg(
+            tmp_path,
+            """
+agents:
+  claude_code:
+    enabled: true
+    model_tiers:
+      small:
+        enabled: true
+  codex:
+    enabled: true
+    model_tiers:
+      medium:
+        enabled: true
+  grok:
+    enabled: true
+    model_tiers:
+      large:
+        enabled: true
+""",
+        )
+    )
+
+    require_startup_model_tier_coverage(cfg)
+
+
+def test_startup_tier_coverage_blocks_legacy_medium_only_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, _ = _resolve(
+        _write_cfg(
+            tmp_path,
+            """
+agents:
+  claude_code:
+    enabled: true
+    model: sonnet
+""",
+        )
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        require_startup_model_tier_coverage(cfg)
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "missing required model tier coverage: small, large" in err
 
 
 # --------------------------------------------------------------------------- #

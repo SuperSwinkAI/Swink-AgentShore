@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from agentshore.config.models import AgentConfig, ModelTierConfig
 from agentshore.state import AgentType
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 DEFAULT_MODEL_TIER = "medium"
 # Spawn order for INSTANTIATE_AGENT round-robin: medium first (workhorse, runs
 # every play), then small (cheap-band coverage), then large (high-complexity).
 MODEL_TIER_PRIORITY: tuple[str, ...] = ("medium", "small", "large")
 MODEL_TIER_ORDER: tuple[str, ...] = ("small", "medium", "large")
+REQUIRED_MODEL_TIERS: tuple[str, ...] = MODEL_TIER_ORDER
 
 DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
     AgentType.CLAUDE_CODE: {
@@ -81,6 +87,44 @@ def enabled_model_tiers(agent_type: AgentType, agent_cfg: AgentConfig) -> tuple[
 
     defaults = DEFAULT_MODEL_TIERS.get(agent_type, {})
     return tuple(tier for tier in MODEL_TIER_PRIORITY if tier in defaults)
+
+
+def _agent_type_for_config(agent_name: str, agent_cfg: AgentConfig) -> AgentType | None:
+    """Resolve a configured agent entry to a built-in AgentType when possible."""
+    try:
+        return AgentType(agent_name)
+    except ValueError:
+        pass
+
+    if agent_cfg.binary:
+        from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
+
+        return BINARY_TO_AGENT_TYPE.get(agent_cfg.binary)
+    return None
+
+
+def configured_model_tier_coverage(agents: Mapping[str, AgentConfig]) -> frozenset[str]:
+    """Return required tiers provided by the effective enabled agent config.
+
+    This intentionally uses :func:`enabled_model_tiers` instead of checking raw
+    YAML keys so legacy top-level model config contributes only the default
+    medium tier, while implicit built-in defaults contribute all default tiers.
+    """
+    covered: set[str] = set()
+    for agent_name, agent_cfg in agents.items():
+        if not agent_cfg.enabled:
+            continue
+        agent_type = _agent_type_for_config(agent_name, agent_cfg)
+        if agent_type is None:
+            continue
+        covered.update(enabled_model_tiers(agent_type, agent_cfg))
+    return frozenset(tier for tier in REQUIRED_MODEL_TIERS if tier in covered)
+
+
+def missing_required_model_tiers(agents: Mapping[str, AgentConfig]) -> tuple[str, ...]:
+    """Return required model tiers absent from the effective enabled config."""
+    covered = configured_model_tier_coverage(agents)
+    return tuple(tier for tier in REQUIRED_MODEL_TIERS if tier not in covered)
 
 
 def effective_model_tier_config(

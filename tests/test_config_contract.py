@@ -9,6 +9,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+from agentshore.agents.model_tiers import missing_required_model_tiers
 from agentshore.cli_helpers import _generate_default_config
 from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default_config, load_config
 
@@ -86,6 +87,12 @@ def test_default_config_uses_v1_reward_names() -> None:
     assert config.play_pacing.standard_cooldown_plays == 42
     assert config.rl.reward.issue_inflation_penalty == 2.0
     assert config.rl.reward.concurrent_agent_bonus == 0.1
+
+
+def test_default_config_satisfies_required_model_tier_coverage() -> None:
+    config = load_config(None)
+
+    assert missing_required_model_tiers(config.agents) == ()
 
 
 def test_enabled_budget_below_floor_raises_config_error(tmp_path: Path) -> None:
@@ -295,8 +302,8 @@ agents:
 def test_default_config_has_agent_model_tiers() -> None:
     config = load_config(None)
 
-    assert set(config.agents["claude_code"].model_tiers) == {"small", "medium"}
-    assert set(config.agents["codex"].model_tiers) == {"small", "medium"}
+    assert set(config.agents["claude_code"].model_tiers) == {"small", "medium", "large"}
+    assert set(config.agents["codex"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["gemini"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["grok"].model_tiers) == {"small", "medium", "large"}
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"

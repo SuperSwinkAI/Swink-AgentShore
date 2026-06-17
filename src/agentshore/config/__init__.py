@@ -144,6 +144,10 @@ agents:
         enabled: true
         model: sonnet
         reasoning_effort: medium
+      large:
+        enabled: true
+        model: opus
+        reasoning_effort: high
   codex:
     enabled: true
     binary: codex
@@ -158,6 +162,10 @@ agents:
         enabled: true
         model: gpt-5.4
         reasoning_effort: medium
+      large:
+        enabled: true
+        model: gpt-5.5
+        reasoning_effort: high
   gemini:
     enabled: true
     binary: gemini

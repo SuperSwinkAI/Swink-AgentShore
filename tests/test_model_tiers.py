@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
+    MODEL_TIER_ORDER,
     REASONING_EFFORTS,
+    configured_model_tier_coverage,
     default_model_tiers_for,
     effective_model_tier_config,
     enabled_model_tiers,
+    missing_required_model_tiers,
     reasoning_efforts_for,
 )
 from agentshore.config.models import AgentConfig, ModelTierConfig
@@ -83,6 +86,62 @@ def test_enabled_model_tiers_uses_legacy_model_as_default_tier() -> None:
     cfg = AgentConfig(model="claude-sonnet-custom")
 
     assert enabled_model_tiers(AgentType.CLAUDE_CODE, cfg) == (DEFAULT_MODEL_TIER,)
+
+
+def test_configured_model_tier_coverage_uses_effective_enabled_tiers() -> None:
+    agents = {
+        "claude_code": AgentConfig(
+            model_tiers={
+                "small": ModelTierConfig(enabled=True),
+                "medium": ModelTierConfig(enabled=False),
+            }
+        ),
+        "codex": AgentConfig(
+            model_tiers={
+                "large": ModelTierConfig(enabled=True),
+            }
+        ),
+        "gemini": AgentConfig(enabled=False),
+    }
+
+    assert configured_model_tier_coverage(agents) == frozenset({"small", "large"})
+    assert missing_required_model_tiers(agents) == ("medium",)
+
+
+def test_missing_required_model_tiers_treats_legacy_model_as_medium_only() -> None:
+    agents = {"claude_code": AgentConfig(model="claude-sonnet-custom")}
+
+    assert configured_model_tier_coverage(agents) == frozenset({DEFAULT_MODEL_TIER})
+    assert missing_required_model_tiers(agents) == ("small", "large")
+
+
+def test_missing_required_model_tiers_allows_coverage_across_agent_types() -> None:
+    agents = {
+        "claude_code": AgentConfig(model_tiers={"small": ModelTierConfig(enabled=True)}),
+        "codex": AgentConfig(model_tiers={"medium": ModelTierConfig(enabled=True)}),
+        "grok": AgentConfig(model_tiers={"large": ModelTierConfig(enabled=True)}),
+    }
+
+    assert configured_model_tier_coverage(agents) == frozenset(MODEL_TIER_ORDER)
+    assert missing_required_model_tiers(agents) == ()
+
+
+def test_missing_required_model_tiers_reports_single_missing_small() -> None:
+    agents = {
+        "claude_code": AgentConfig(model_tiers={"medium": ModelTierConfig(enabled=True)}),
+        "codex": AgentConfig(model_tiers={"large": ModelTierConfig(enabled=True)}),
+    }
+
+    assert missing_required_model_tiers(agents) == ("small",)
+
+
+def test_missing_required_model_tiers_reports_single_missing_large() -> None:
+    agents = {
+        "claude_code": AgentConfig(model_tiers={"small": ModelTierConfig(enabled=True)}),
+        "codex": AgentConfig(model_tiers={"medium": ModelTierConfig(enabled=True)}),
+    }
+
+    assert missing_required_model_tiers(agents) == ("large",)
 
 
 def test_effective_model_tier_config_merges_settings() -> None:

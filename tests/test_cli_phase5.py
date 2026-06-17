@@ -45,6 +45,12 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _skip_startup_tier_guard_for_mocked_config() -> None:
+    with patch("agentshore.session.bootstrap.require_startup_model_tier_coverage"):
+        yield
+
+
 def _make_git_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with agentshore.yaml."""
     (tmp_path / ".git").mkdir()
