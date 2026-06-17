@@ -87,6 +87,7 @@ export interface DashboardCanvasProps {
    * arrive over the (future) WebSocket bridge.
    */
   stateManager?: AgentShoreStateManager;
+  hidden?: boolean;
 }
 
 interface FrameContext {
@@ -135,6 +136,7 @@ export function DashboardCanvas({
   initialClock = 0,
   theme = "light",
   stateManager,
+  hidden = false,
 }: DashboardCanvasProps = {}): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -172,6 +174,7 @@ export function DashboardCanvas({
             npcKind: char.npcKind ?? null,
             x: char.x,
             y: char.y,
+            screenBounds: characterScreenBounds(char, camera.zoom, camera),
           })),
       };
     }
@@ -418,7 +421,12 @@ export function DashboardCanvas({
       className="agentshore-dashboard-canvas"
       data-agentshore-dashboard-canvas
       data-mounted={mounted ? "true" : "false"}
-      style={{ width: "100%", height: "100%", display: "block", imageRendering: "pixelated" }}
+      style={{
+        width: "100%",
+        height: "100%",
+        display: hidden ? "none" : "block",
+        imageRendering: "pixelated",
+      }}
     />
   );
 }

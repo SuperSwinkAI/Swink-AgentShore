@@ -29,7 +29,8 @@ function readStoredMode(): ThemeMode | null {
       window.localStorage.setItem(STORAGE_KEY, migrated);
     }
     return migrated;
-  } catch {
+  } catch (err) {
+    console.warn("[theme] could not read stored theme mode:", err);
     return null;
   }
 }
@@ -37,8 +38,8 @@ function readStoredMode(): ThemeMode | null {
 function writeStoredMode(mode: ThemeMode): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, mode);
-  } catch {
-    /* localStorage may be disabled — silently degrade. */
+  } catch (err) {
+    console.warn("[theme] could not persist theme mode:", err);
   }
 }
 
@@ -62,6 +63,8 @@ function applyTheme(mode: ThemeMode): ResolvedTheme {
 export interface ThemeToggleProps {
   /** Fires when the *resolved* theme changes (after system fallback). */
   onResolvedThemeChange?: (theme: ResolvedTheme) => void;
+  /** Optional URL-driven mode. When set, it overrides stored preference. */
+  modeOverride?: ThemeMode;
 }
 
 /**
@@ -69,14 +72,23 @@ export interface ThemeToggleProps {
  * Persists the mode to localStorage and tracks the system colour scheme
  * when set to "system" (matches the imperative initThemeController).
  */
-export function ThemeToggle({ onResolvedThemeChange }: ThemeToggleProps = {}): JSX.Element {
-  const [mode, setMode] = useState<ThemeMode>(() => readStoredMode() ?? "light");
+export function ThemeToggle({
+  modeOverride,
+  onResolvedThemeChange,
+}: ThemeToggleProps = {}): JSX.Element {
+  const [mode, setMode] = useState<ThemeMode>(
+    () => modeOverride ?? readStoredMode() ?? "light",
+  );
+
+  useEffect(() => {
+    if (modeOverride) setMode(modeOverride);
+  }, [modeOverride]);
 
   useEffect(() => {
     const resolved = applyTheme(mode);
     onResolvedThemeChange?.(resolved);
-    writeStoredMode(mode);
-  }, [mode, onResolvedThemeChange]);
+    if (!modeOverride) writeStoredMode(mode);
+  }, [mode, modeOverride, onResolvedThemeChange]);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -90,11 +102,14 @@ export function ThemeToggle({ onResolvedThemeChange }: ThemeToggleProps = {}): J
     return () => mq.removeEventListener("change", handler);
   }, [mode, onResolvedThemeChange]);
 
-  const tabs: Array<{ value: ThemeMode; label: string }> = [
+  const allTabs: Array<{ value: ThemeMode; label: string }> = [
     { value: "system", label: "Auto" },
     { value: "light", label: "Light" },
     { value: "dark", label: "Dark" },
   ];
+  const tabs: Array<{ value: ThemeMode; label: string }> = modeOverride
+    ? allTabs.filter(({ value }) => value === modeOverride)
+    : allTabs;
 
   return (
     <div className="theme-toggle" id="theme-toggle" role="group" aria-label="Theme">

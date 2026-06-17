@@ -57,7 +57,7 @@ import { TopBarHud, notifyTopBarHud } from "./TopBarHud";
 
 import { dashboardLogger } from "../logger";
 import { AgentShoreStateManager } from "../state";
-import type { ResolvedTheme } from "../theme";
+import type { ResolvedTheme, ThemeMode } from "../theme";
 import type { AgentShoreMessage } from "../types";
 import { WebSocketClient, type ConnectionState, type DashboardTransport } from "../ws";
 
@@ -88,6 +88,8 @@ export interface DashboardProps {
    * is right for both the bridge SPA and the desktop session route.
    */
   showThemeToggle?: boolean;
+  /** Optional URL-driven theme mode for standalone dashboard QA links. */
+  themeMode?: ThemeMode;
   /**
    * Fires once when the first ``instantiate_agent`` play_event arrives
    * with status="started". The desktop uses this to dismiss the
@@ -113,6 +115,7 @@ export function Dashboard({
   transport,
   theme = "light",
   showThemeToggle = true,
+  themeMode,
   onFirstAgentInstantiated,
   onFirstStateUpdate,
 }: DashboardProps): JSX.Element {
@@ -371,14 +374,16 @@ export function Dashboard({
 
   return (
     <>
-      <DashboardCanvas theme={theme} stateManager={stateManagerRef.current} />
+      <DashboardCanvas
+        theme={theme}
+        stateManager={stateManagerRef.current}
+        hidden={viewMode !== "office"}
+      />
 
       <div id="kanban-stage" hidden={viewMode !== "kanban"}>
         <KanbanStage />
       </div>
-      <div id="stats-stage" hidden={viewMode !== "stats"}>
-        <StatsStage />
-      </div>
+      <StatsStage />
 
       <div id="hud">
         <div id="top-bar" className="dashboard-main-chrome">
@@ -389,7 +394,7 @@ export function Dashboard({
             <StageTabs initial={viewMode} onChange={setViewMode} />
           </div>
           <div className="top-controls">
-            {showThemeToggle && <ThemeToggle />}
+            {showThemeToggle && <ThemeToggle modeOverride={themeMode} />}
             <span id="connection-status" className="hud-chip" title={connectionTitle}>
               {connectionLabel}
             </span>

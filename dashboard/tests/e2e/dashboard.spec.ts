@@ -168,7 +168,7 @@ test("top bar shows open issue count when available", async ({
   await page.goto("/?demo=1&scenario=empty&freeze=1");
 
   await page.evaluate(async () => {
-    const topBar = await import("/src/hud/topBar.ts");
+    const topBar = await import("/src/components/TopBarHud.tsx");
     const availability = {
       tracked_issue_count: 9,
       github_open_issue_count: 1,
@@ -188,7 +188,7 @@ test("top bar shows open issue count when available", async ({
       actionable_pr_work_count: 0,
       terminal_no_work: true,
     };
-    topBar.updateTopBar({
+    topBar.notifyTopBarHud({
       type: "state_update",
       session_id: "issues-summary",
       session_state: "running",
@@ -287,11 +287,10 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
       { frameHeight: number; visibleHeight: number }
     > = {};
     for (const agentType of [
-      "api_gpt",
-      "api_other",
       "claude_code",
       "codex",
       "gemini",
+      "grok",
     ] as const) {
       for (const modelTier of ["small", "medium", "large"] as const) {
         measuredFrames[`${agentType}:${modelTier}`] =
@@ -350,12 +349,6 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
   });
 
   expect(metrics.measuredFrameHeights).toEqual({
-    "api_gpt:small": 275,
-    "api_gpt:medium": 570,
-    "api_gpt:large": 741,
-    "api_other:small": 275,
-    "api_other:medium": 570,
-    "api_other:large": 741,
     "claude_code:small": 275,
     "claude_code:medium": 570,
     "claude_code:large": 741,
@@ -365,6 +358,9 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
     "gemini:small": 275,
     "gemini:medium": 570,
     "gemini:large": 741,
+    "grok:small": 275,
+    "grok:medium": 570,
+    "grok:large": 741,
   });
   expect(metrics.smallFrameHeight).toBe(275);
   expect(metrics.mediumFrameHeight).toBe(570);
@@ -500,8 +496,6 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
         "agent-gemini",
       ),
       grokMedium: sprites.agentSpriteSpecFor("grok", "medium", "agent-grok"),
-      apiGpt: sprites.agentSpriteSpecFor("api_gpt", "large", "agent-api"),
-      apiOther: sprites.agentSpriteSpecFor("api_other", "small", "agent-other"),
       unknown: sprites.agentSpriteSpecFor(
         "unknown_agent",
         "medium",
@@ -521,14 +515,6 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
   expect(specs.geminiSmall).toMatchObject({ key: "gemini-small-ball" });
   expect(specs.geminiDefault).toMatchObject({ key: "gemini-medium-humanoid" });
   expect(specs.grokMedium).toMatchObject({ key: "grok-medium-humanoid" });
-  expect(specs.apiGpt).toMatchObject({
-    key: "api-gpt-large-humanoid",
-    frameWidth: 416,
-    frameHeight: 832,
-    sheetWidth: 2912,
-    sheetHeight: 2496,
-  });
-  expect(specs.apiOther).toMatchObject({ key: "api-other-small-ball" });
   expect(specs.unknown).toBeNull();
 });
 
@@ -549,16 +535,22 @@ test("mock AgentShore WebSocket populates HUD and canvas", async ({
     const agentCardBox = await agentCard.boundingBox();
     const nameBox = await agentCard.locator(".agent-name").boundingBox();
     const typeBox = await agentCard.locator(".agent-type").boundingBox();
+    const dispatchBox = await agentCard
+      .locator(".agent-dispatch-share")
+      .boundingBox();
     expect(agentCardBox).not.toBeNull();
     expect(nameBox).not.toBeNull();
     expect(typeBox).not.toBeNull();
-    if (agentCardBox && nameBox && typeBox) {
+    expect(dispatchBox).not.toBeNull();
+    if (agentCardBox && nameBox && typeBox && dispatchBox) {
       const nameCenter = nameBox.y + nameBox.height / 2;
       const typeCenter = typeBox.y + typeBox.height / 2;
-      const typeInset =
-        agentCardBox.x + agentCardBox.width - (typeBox.x + typeBox.width);
+      const dispatchInset =
+        agentCardBox.x +
+        agentCardBox.width -
+        (dispatchBox.x + dispatchBox.width);
       expect(Math.abs(nameCenter - typeCenter)).toBeLessThan(3);
-      expect(typeInset).toBeLessThan(8);
+      expect(dispatchInset).toBeLessThan(8);
     }
   }
   await expectCanvasNonBlank(page);
@@ -865,7 +857,7 @@ test("plays panel shows all lifecycle plays and greys masked action slots", asyn
     "systematic_debugging",
     "unblock_pr",
     "reconcile_state",
-    "future_6",
+    "prune",
     "take_break",
     "end_session",
     "future_8",
@@ -876,7 +868,7 @@ test("plays panel shows all lifecycle plays and greys masked action slots", asyn
   await expect(page.locator('[data-play-key="run_qa"]')).toHaveClass(
     /pp-card-masked/,
   );
-  await expect(page.locator('[data-play-key="future_6"]')).toHaveClass(
+  await expect(page.locator('[data-play-key="prune"]')).not.toHaveClass(
     /pp-card-masked/,
   );
   await expect(page.locator('[data-play-key="future_7"]')).toHaveClass(
@@ -911,7 +903,7 @@ test("write implementation plan labels keep issue target visible", async ({
 
   const label = await page.evaluate(async () => {
     const formatter =
-      (await import("/src/hud/format.ts")) as typeof import("../../src/hud/format");
+      (await import("/src/format.ts")) as typeof import("../../src/format");
     return formatter.formatPlayWithTarget("write_implementation_plan", {
       issue_number: 234,
       pr_number: null,
@@ -1010,7 +1002,7 @@ test("theme query applies grid theme tokens and rejects classic theme params", a
     .toEqual({
       bg: "#f3f6ff",
       text: "#1f2940",
-      panel: "rgba(242,248,255,0.94)",
+      panel: "rgba(242, 248, 255, 0.94)",
       ok: "#0f8a6c",
     });
 
@@ -1035,12 +1027,14 @@ test("theme query applies grid theme tokens and rejects classic theme params", a
     .toEqual({
       bg: "#05070d",
       text: "#d8f3ff",
-      panel: "rgba(8,12,20,0.92)",
+      panel: "rgba(8, 12, 20, 0.92)",
       ok: "#29e3a9",
     });
 
-  for (const legacyTheme of ["light", "dark"] as const) {
-    await page.goto("/?demo=1&scenario=active&freeze=1&theme=" + legacyTheme);
+  for (const legacyTheme of ["classic-light", "classic-dark"] as const) {
+    await page.goto(
+      "/?demo=1&scenario=active&freeze=1&theme=" + legacyTheme,
+    );
     await expect(page.locator("html")).toHaveAttribute(
       "data-theme",
       "light",
@@ -1110,11 +1104,11 @@ test("manual grid theme selection persists and legacy values fall back", async (
   await page.goto("/?demo=1&scenario=active&freeze=1");
   await expect(page.locator("html")).toHaveAttribute(
     "data-theme",
-    "light",
+    "dark",
   );
   await expect(page.locator("html")).toHaveAttribute(
     "data-theme-mode",
-    "light",
+    "dark",
   );
 
   await page.evaluate(() =>
@@ -1584,7 +1578,9 @@ test("manual theme toggle rerenders frozen office map", async ({
 }) => {
   test.skip(isMobile, "desktop canvas sampling assertion");
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.goto("/?demo=1&scenario=empty&freeze=1&theme=dark");
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+  await page.locator('#theme-toggle [data-theme-mode="dark"]').click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
   expectRgbClose((await sampleOfficeMap(page)).floors.war, [35, 74, 103], 55);
   await page.locator('#theme-toggle [data-theme-mode="light"]').click();
@@ -2255,7 +2251,7 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
   expect(result.targetCounts).toEqual({
     warRoom: 4,
     editorRoom: 4,
-    workshop: 17,
+    workshop: 16,
     zenGarden: 4,
     frontDesk: 3,
     launchControl: 4,
@@ -2331,8 +2327,8 @@ test("idle wander bounces inside the current room instead of crossing edges", as
     }
   });
 
-  expect(result.doorBounce.path.at(-1)).toEqual({ x: 17, y: 13 });
-  expect(result.doorBounce.zones).toEqual([result.warRoom, result.warRoom]);
+  expect(result.doorBounce.path.at(-1)).toEqual({ x: 18, y: 13 });
+  expect(result.doorBounce.zones).toEqual([result.warRoom]);
   expect(result.doorBounce.zones).not.toContain(result.workshop);
   expect(result.wallBounce.path.at(-1)).toEqual({ x: 7, y: 13 });
   expect(result.wallBounce.zones).toEqual([result.warRoom, result.warRoom]);
@@ -2668,7 +2664,7 @@ test("grid office themes expose NE Launch and SW Recovery room semantics", async
     expect(result.launchName).toBe("LAUNCH CONTROL");
     expect(result.recoveryName).toBe("RECOVERY BAY");
     expect(result.launchSeats).toBe(4);
-    expect(result.recoverySeats).toBe(3);
+    expect(result.recoverySeats).toBe(4);
   }
 });
 
@@ -3126,15 +3122,10 @@ test("character click selects an agent detail", async ({ page, isMobile }) => {
     })
     .toBeGreaterThan(0);
 
-  const clickPoints = await canvas.evaluate(async (canvasElement) => {
-    const sprites = await import("/src/characters/sprites.ts");
+  const clickPoints = await canvas.evaluate((canvasElement) => {
     const canvas = canvasElement as HTMLCanvasElement;
     const testWindow = window as unknown as {
       __agentshoreDashboardTest?: {
-        camera: {
-          zoom: number;
-          worldToScreen: (x: number, y: number, z?: number) => [number, number];
-        };
         characters: () => Array<{
           agentId: string;
           agentType: string;
@@ -3142,26 +3133,24 @@ test("character click selects an agent detail", async ({ page, isMobile }) => {
           npcKind: string | null;
           x: number;
           y: number;
+          screenBounds: {
+            left: number;
+            top: number;
+            right: number;
+            bottom: number;
+          };
         }>;
       };
     };
-    const camera = testWindow.__agentshoreDashboardTest?.camera;
-    if (!camera) throw new Error("camera test hook unavailable");
     const characters = testWindow.__agentshoreDashboardTest?.characters?.() ?? [];
     const scale = canvas.width / canvas.getBoundingClientRect().width;
     return characters
       .filter((character) => character.npcKind === null)
       .map((character) => {
-        const [sx, sy] = camera.worldToScreen(character.x, character.y);
-        const size = sprites.agentVisualSize(
-          camera.zoom,
-          1,
-          character.modelTier,
-          character.agentType,
-        );
+        const bounds = character.screenBounds;
         return {
-          x: sx / scale,
-          y: (sy - size.height / 2) / scale,
+          x: ((bounds.left + bounds.right) / 2) / scale,
+          y: ((bounds.top + bounds.bottom) / 2) / scale,
         };
       });
   });

@@ -62,7 +62,9 @@ test("WebSocket malformed or objectless messages return null", async ({
   expect(result).toEqual([null, null, null, null, null]);
   expect(
     warnings.some((text) =>
-      text.includes("[ws] malformed broadcast frame, dropping:"),
+      text.includes("[agentshore-dashboard]") &&
+      text.includes("ws") &&
+      text.includes("malformed broadcast frame, dropping"),
     ),
   ).toBe(true);
 });
