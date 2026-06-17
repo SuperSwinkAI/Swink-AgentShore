@@ -652,11 +652,11 @@ const HELP_ISSUES_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore/
 /// synced over IPC).
 ///
 /// macOS layout (per product direction, diverges from the HIG): a single lean
-/// "AgentShore" app menu holds Check for Updates, Preferences (Cmd+,), the
-/// former File items (Adjust Budget / Stop Session / Close Window) and Quit;
-/// About + Services live in Help; the Hide / Hide Others / Show All group lives
-/// in View; there is no File menu. Windows/Linux keep the conventional File menu
-/// (with Preferences) and Check for Updates in Help.
+/// "AgentShore" app menu holds Preferences (Cmd+,), the former File items
+/// (Adjust Budget / Stop Session / Close Window) and Quit; About + Services live
+/// in Help; the Hide / Hide Others / Show All group lives in View; there is no
+/// File menu. Windows/Linux keep the conventional File menu (with Preferences).
+/// Check for Updates is currently hidden everywhere (updater not provisioned).
 #[cfg(not(test))]
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let stop_session = MenuItemBuilder::with_id("stop_session", "Stop Session")
@@ -667,13 +667,14 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .accelerator("CmdOrCtrl+B")
         .build(app)?;
 
-    // Shared between the macOS App menu and the non-macOS File/Help menus —
-    // each platform branch references both, so neither goes unused.
+    // Preferences lives in the macOS App menu and the non-macOS File menu.
     let preferences = MenuItemBuilder::with_id("preferences", "Preferences…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
-    let check_updates =
-        MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
+    // Check for Updates is hidden until the updater is provisioned (a real
+    // signing keypair + a published `latest.json` release manifest). The React
+    // update machinery and the `menu:check_updates` handler stay in place, so
+    // re-adding this item to the menu is all that's needed to re-enable it.
 
     let edit = SubmenuBuilder::new(app, "Edit")
         .item(&PredefinedMenuItem::undo(app, None)?)
@@ -710,8 +711,6 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     #[cfg(target_os = "macos")]
     {
         let app_menu = SubmenuBuilder::new(app, "AgentShore")
-            .item(&check_updates)
-            .separator()
             .item(&preferences)
             .separator()
             .item(&adjust_budget)
@@ -779,8 +778,6 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
             .separator()
             .item(&open_logs)
             .item(&copy_diagnostics)
-            .separator()
-            .item(&check_updates)
             .build()?;
 
         menu = menu
