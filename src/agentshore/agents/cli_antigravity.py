@@ -48,6 +48,13 @@ def build_argv(
         args += ["--model", model]
     if project_dir:
         args += ["--add-dir", project_dir]
+    # agy's print-mode wait defaults to 5m0s — far too short for coding tasks
+    # (8-15 min) and there is no documented "disable" sentinel (0s would time out
+    # immediately). Pass a generous 50m ceiling so agy doesn't self-time-out
+    # before AgentShore's own bounds apply; AgentShore owns the dispatch timeout
+    # via the wall-clock budget and the 1800s first-byte watchdog, exactly as it
+    # does for the other CLIs (Claude/Codex have no internal wall-clock). (#216)
+    args += ["--print-timeout", "50m0s"]
     args.extend(extra_flags)
     args += ["-p", prompt]
     return args

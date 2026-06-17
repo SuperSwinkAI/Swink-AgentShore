@@ -486,12 +486,13 @@ def test_build_argv_antigravity_shape() -> None:
         "Gemini 3.5 Flash (Low)",
         "--add-dir",
         "/wt",
+        "--print-timeout",
+        "50m0s",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
     ]
     assert "--output-format" not in argv
-    assert "--print-timeout" not in argv
 
 
 def test_build_argv_antigravity_prompt_always_in_argv_never_stdin() -> None:
