@@ -76,6 +76,7 @@ import { RecoveryScreen } from "./screens/RecoveryScreen";
 import { StartScreen, type StartSelection } from "./screens/StartScreen";
 import { TargetBranchScreen } from "./screens/TargetBranchScreen";
 import { StartingProgressRoute } from "./StartingProgressRoute";
+import { AppMenu } from "./components/AppMenu";
 import { listen } from "@tauri-apps/api/event";
 
 type UiState = {
@@ -1234,6 +1235,7 @@ export function App() {
   return (
     <div className={`desktop-shell ${chromeHidden ? "desktop-shell--immersive" : ""}`}>
       <SessionStartingOverlay />
+      <AppMenu />
       {!chromeHidden && (
         <nav className="desktop-nav">
           <div className="desktop-nav__brand">
