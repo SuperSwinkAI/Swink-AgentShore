@@ -469,10 +469,24 @@ class _StdoutActivity:
     last_stdout_at: float
     received_any: bool = False
     response_complete: bool = False
+    # Monotonic dispatch-start reference (set by ``_await_output_or_timeout`` from
+    # the pre-spawn ``t_start``) and the monotonic instant the first stdout byte
+    # arrived. Together they give an accurate time-to-first-byte for #212. Left at
+    # the 0.0 / None defaults when the activity is constructed without a dispatch
+    # context (e.g. focused unit tests of ``_read_output``), which suppresses the
+    # ``cli_first_byte`` emission below rather than logging a garbage elapsed.
+    dispatch_start: float = 0.0
+    first_byte_at: float | None = None
 
-    def mark(self) -> None:
-        self.last_stdout_at = time.monotonic()
+    def mark(self) -> bool:
+        """Record stdout activity; return True only on the very first byte."""
+        now = time.monotonic()
+        self.last_stdout_at = now
+        first = not self.received_any
         self.received_any = True
+        if first:
+            self.first_byte_at = now
+        return first
 
     def mark_response_complete(self) -> None:
         self.response_complete = True
@@ -776,6 +790,7 @@ async def _await_output_or_timeout(
     timeout: float,
     prompt_bytes: int,
     sniffer: _StderrSniffer,
+    dispatch_start: float,
 ) -> tuple[_ReadOutput, bool]:
     """Drive the read/idle/stderr-auth race and return ``(result, post_response_killed)``.
 
@@ -788,7 +803,9 @@ async def _await_output_or_timeout(
     is killed in well under a second rather than after the full idle window.
     """
     post_response_killed = False
-    stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    stdout_activity = _StdoutActivity(
+        last_stdout_at=time.monotonic(), dispatch_start=dispatch_start
+    )
     read_task = asyncio.create_task(
         _read_output_guarded(
             proc,
@@ -1195,6 +1212,7 @@ async def dispatch_cli(
             timeout=float(timeout),
             prompt_bytes=prompt_bytes,
             sniffer=stderr_sniffer,
+            dispatch_start=t_start,
         )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
@@ -1318,8 +1336,28 @@ async def _read_output(
 
     try:
         async for line in proc.stdout:
-            if stdout_activity is not None:
-                stdout_activity.mark()
+            # First stdout byte for this dispatch (#212). ``mark()`` runs on every
+            # line (short-circuit keeps it evaluated) but returns True only on the
+            # first; emitting here — at the transition, not at dispatch end — keeps
+            # the log event's position faithful to real first-byte time so live
+            # monitors can tell "slow to start" from "never started" and observe
+            # first-byte-deadline enforcement. ``dispatch_start`` is 0.0 only when no
+            # dispatch context was supplied (unit tests), so the guard suppresses a
+            # garbage elapsed there.
+            if (
+                stdout_activity is not None
+                and stdout_activity.mark()
+                and stdout_activity.dispatch_start
+                and stdout_activity.first_byte_at
+            ):
+                _logger.info(
+                    "cli_first_byte",
+                    agent_id=agent_id,
+                    agent_type=str(agent_type),
+                    elapsed_ms=int(
+                        (stdout_activity.first_byte_at - stdout_activity.dispatch_start) * 1000
+                    ),
+                )
             total_bytes += len(line)
             if total_bytes > max_bytes:
                 raise AgentOutputInvalid(

@@ -547,6 +547,61 @@ async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> Non
     assert parsed.success is True
 
 
+async def test_read_output_emits_cli_first_byte_once_with_elapsed() -> None:
+    """First stdout byte emits exactly one ``cli_first_byte`` with a TTFB (#212)."""
+    import time
+
+    import structlog
+
+    from agentshore.agents.cli_agent import _StdoutActivity
+
+    activity = _StdoutActivity(
+        last_stdout_at=time.monotonic(), dispatch_start=time.monotonic() - 0.05
+    )
+    proc = _FakeProcess(_codex_json_lines())  # multiple stdout lines
+    with structlog.testing.capture_logs() as logs:
+        await _read_output(
+            proc,  # type: ignore[arg-type]
+            AgentType.CODEX,
+            max_bytes=10_000_000,
+            line_limit=4_194_304,
+            agent_id="codex-1",
+            stdout_activity=activity,
+        )
+
+    first_byte = [e for e in logs if e.get("event") == "cli_first_byte"]
+    assert len(first_byte) == 1  # only the first byte, not every line
+    evt = first_byte[0]
+    assert evt["agent_id"] == "codex-1"
+    assert evt["agent_type"] == str(AgentType.CODEX)
+    assert evt["elapsed_ms"] >= 0
+    assert activity.first_byte_at is not None
+
+
+async def test_read_output_no_first_byte_event_without_dispatch_context() -> None:
+    """No ``cli_first_byte`` when the activity carries no dispatch_start (unit path)."""
+    import time
+
+    import structlog
+
+    from agentshore.agents.cli_agent import _StdoutActivity
+
+    activity = _StdoutActivity(last_stdout_at=time.monotonic())  # dispatch_start=0.0
+    proc = _FakeProcess(_codex_json_lines())
+    with structlog.testing.capture_logs() as logs:
+        await _read_output(
+            proc,  # type: ignore[arg-type]
+            AgentType.CODEX,
+            max_bytes=10_000_000,
+            line_limit=4_194_304,
+            agent_id="codex-1",
+            stdout_activity=activity,
+        )
+
+    assert not any(e.get("event") == "cli_first_byte" for e in logs)
+    assert activity.received_any is True  # mark() still flipped
+
+
 def test_antigravity_first_byte_deadline_is_1800s() -> None:
     """agy emits no stdout until its async task completes (#217); the first-byte
     watchdog must match the --print-timeout (30 min) so code-review tasks don't
