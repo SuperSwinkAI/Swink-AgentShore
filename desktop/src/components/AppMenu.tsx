@@ -9,6 +9,11 @@ import {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { SessionContext } from "../services/sessionContext";
+import {
+  getPreferences,
+  setPreferences,
+  type PreferencesData,
+} from "../rpc/preferencesClient";
 import styles from "./AppMenu.module.css";
 
 /**
@@ -55,6 +60,8 @@ export interface AppMenuAdapter {
   relaunch: () => Promise<void>;
   openLogFolder: (projectPath: string | null) => Promise<void>;
   copyText: (text: string) => Promise<boolean>;
+  getPreferences: () => Promise<PreferencesData>;
+  setPreferences: (disabledPlays: string[]) => Promise<PreferencesData>;
 }
 
 async function defaultCheckForUpdate(): Promise<AvailableUpdate | null> {
@@ -95,6 +102,8 @@ export const defaultAppMenuAdapter: AppMenuAdapter = {
   relaunch: defaultRelaunch,
   openLogFolder: defaultOpenLogFolder,
   copyText: defaultCopyText,
+  getPreferences,
+  setPreferences,
 };
 
 const IS_MAC =

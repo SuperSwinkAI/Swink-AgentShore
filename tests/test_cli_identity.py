@@ -1462,10 +1462,10 @@ def test_run_identity_wizard_force_run_non_tty(
 # ---------------------------------------------------------------------------
 
 
-def test_agent_keys_from_yaml_filters_disabled(tmp_path: Path) -> None:
-    """``enabled: false`` agents are filtered out; missing ``enabled`` defaults
-    to enabled. (This wizard helper reads raw YAML and does not validate agent
-    types — that gate lives in load_config's _validate_agent_types.)"""
+def test_agent_keys_from_yaml_filters_disabled_and_unsupported(tmp_path: Path) -> None:
+    """Filters out ``enabled: false`` agents AND keys that resolve to no
+    AgentType (so the wizard never offers an identity binding for a key
+    ``load_config`` would reject). Missing ``enabled`` defaults to enabled."""
     from agentshore.cli.identity_helpers import _agent_keys_from_yaml
 
     yaml_text = """\
@@ -1486,9 +1486,9 @@ agents:
     cfg_path.write_text(yaml_text, encoding="utf-8")
     keys = _agent_keys_from_yaml(cfg_path)
     assert "claude_code" in keys
-    assert "aider" in keys
     assert "gemini" in keys
     assert "codex" not in keys  # explicitly disabled
+    assert "aider" not in keys  # unsupported agent type — load_config would reject it
 
 
 # ---------------------------------------------------------------------------

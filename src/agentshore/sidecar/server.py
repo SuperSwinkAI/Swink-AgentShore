@@ -47,7 +47,6 @@ from agentshore.sidecar.agents import (
 )
 from agentshore.sidecar.archive_rpc import ArchiveError
 from agentshore.sidecar.config import read_config, write_config
-from agentshore.sidecar.preferences import get_preferences, set_preferences
 from agentshore.sidecar.esr import build_esr_payload
 from agentshore.sidecar.handshake import build_response, validate_params
 from agentshore.sidecar.identities import (
@@ -61,6 +60,7 @@ from agentshore.sidecar.identities import (
     remove_trusted_source,
     update_identity,
 )
+from agentshore.sidecar.preferences import get_preferences, set_preferences
 from agentshore.sidecar.recents import (
     list_recents,
     recents_path,

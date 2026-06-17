@@ -7,6 +7,8 @@
     "recents.touch",
     "recents.remove",
     "config.read",
+    "preferences.get",
+    "preferences.set",
     "agents.catalog",
     "identities.list_trusted",
     "identities.check_keychain",

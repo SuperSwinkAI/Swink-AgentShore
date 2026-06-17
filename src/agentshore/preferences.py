@@ -98,7 +98,7 @@ def _coerce_disabled_plays(values: object) -> tuple[str, ...]:
     return tuple(v for v in disableable_play_values() if v in seen)
 
 
-def load_preferences_data(path: Path | None = None) -> dict[str, object]:
+def load_preferences_data(path: Path | None = None) -> dict[str, tuple[str, ...]]:
     """Read the global preferences file into a normalized dict.
 
     Returns sane defaults on a missing or malformed file (the orchestrator must
@@ -120,14 +120,14 @@ def load_preferences_data(path: Path | None = None) -> dict[str, object]:
     return {"disabled_plays": _coerce_disabled_plays(disabled)}
 
 
-def save_preferences_data(
-    data: dict[str, object], path: Path = GLOBAL_PREFERENCES_PATH
-) -> None:
+def save_preferences_data(data: dict[str, object], path: Path | None = None) -> None:
     """Atomically write the global preferences file from a normalized dict.
 
     Mirrors the disk shape ``load_preferences_data`` reads. Atomic
     (temp + fsync + replace) so a concurrent reload never observes a torn file.
+    ``path`` resolves to :data:`GLOBAL_PREFERENCES_PATH` when ``None``.
     """
+    path = path or GLOBAL_PREFERENCES_PATH
     disabled = _coerce_disabled_plays(data.get("disabled_plays"))
     document: dict[str, object] = {"plays": {"disabled": list(disabled)}}
     text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)

@@ -21,6 +21,7 @@ from agentshore.plays.candidates import (
     qa_ran_within_terminal_window,
     terminal_audits_are_fresh,
 )
+from agentshore.preferences import USER_DISABLEABLE_PLAYS
 from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
 from agentshore.rl.eligibility import (
@@ -32,7 +33,6 @@ from agentshore.rl.eligibility import (
 from agentshore.rl.eligibility import (
     compute_config_mask as compute_config_mask,
 )
-from agentshore.preferences import USER_DISABLEABLE_PLAYS
 from agentshore.rl.mask_reason import (
     END_SESSION_IN_FLIGHT,
     MAIN_REPO_DISPATCH_PAUSED,
