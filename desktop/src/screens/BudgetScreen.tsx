@@ -74,6 +74,7 @@ export function BudgetScreen({
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [estimateInfoOpen, setEstimateInfoOpen] = useState(false);
 
   // When a dimension is unlimited we keep its last picked value around so the
   // slider snaps back to it (rather than the default) when re-selecting Capped.
@@ -174,13 +175,33 @@ export function BudgetScreen({
   return (
     <main className={styles.screen} data-testid="budget-screen">
       <header className={styles.header}>
-        <h1>Budget</h1>
+        <div className={styles.titleRow}>
+          <h1>Budget</h1>
+          <button
+            type="button"
+            className={styles.infoButton}
+            onClick={() => setEstimateInfoOpen((open) => !open)}
+            aria-expanded={estimateInfoOpen}
+            aria-label="About dollar estimates"
+            data-testid="budget-estimate-info"
+          >
+            i
+          </button>
+        </div>
         <p>
           Set soft caps for this session. AgentShore stops assigning new plays within{" "}
           {formatDollars(BUDGET_DRAIN_RESERVE_USD)} of the dollar cap and{" "}
           {TIME_DRAIN_RESERVE_MINUTES} minutes before the time cap, while agents already working can
           finish so their work is not wasted. Final spend and runtime may land slightly above a cap.
         </p>
+        {estimateInfoOpen && (
+          <p className={styles.estimateNote} data-testid="budget-estimate-note">
+            Dollar figures are estimates, not a bill. Claude reports its own API-equivalent cost;
+            Codex and Gemini are derived from published per-token rates; agents that don&apos;t
+            report usage (Grok, Antigravity) are charged the session&apos;s average play cost. Treat
+            the running total as a best-guess guardrail, not an invoice.
+          </p>
+        )}
       </header>
 
       <CapSliderPanel
