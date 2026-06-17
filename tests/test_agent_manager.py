@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from agentshore.agents.manager import AgentManager
+from agentshore.agents.handle import AgentInvocationResult
+from agentshore.agents.manager import _PLACEHOLDER_COLD_START_COST, AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.errors import (
@@ -868,3 +869,46 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     assert result is False
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+
+
+# ---------------------------------------------------------------------------
+# placeholder cost for no-usage agents (grok / antigravity)
+# ---------------------------------------------------------------------------
+
+
+def _invocation(dollar_cost: float) -> AgentInvocationResult:
+    return AgentInvocationResult(
+        raw_output="ok",
+        tokens_in=0,
+        tokens_out=0,
+        dollar_cost=dollar_cost,
+        duration_ms=1,
+        exit_code=0,
+    )
+
+
+def test_placeholder_cost_uses_cold_start_before_any_measured_play(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    # No measured play yet → no-usage dispatch ($0) is re-billed the cold-start cost.
+    out = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.ANTIGRAVITY)
+    assert out.dollar_cost == pytest.approx(_PLACEHOLDER_COLD_START_COST)
+
+
+def test_placeholder_cost_is_running_mean_of_measured_plays(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    # Two measured (usage-reporting) dispatches pass through unchanged and seed the mean.
+    a = mgr._apply_placeholder_cost(_invocation(1.00), agent_type=AgentType.CLAUDE_CODE)
+    b = mgr._apply_placeholder_cost(_invocation(3.00), agent_type=AgentType.CODEX)
+    assert a.dollar_cost == pytest.approx(1.00)
+    assert b.dollar_cost == pytest.approx(3.00)
+    # A no-usage grok dispatch is billed the mean of the two measured plays (= 2.00).
+    grok = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
+    assert grok.dollar_cost == pytest.approx(2.00)
+    # Placeholder plays must NOT pollute the measured mean: another no-usage play
+    # still sees 2.00, not a drifted value.
+    grok2 = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
+    assert grok2.dollar_cost == pytest.approx(2.00)

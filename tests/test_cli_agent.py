@@ -1086,6 +1086,87 @@ async def test_dispatch_cli_success_grok_streaming_json(
     assert sr.success is True
 
 
+async def test_dispatch_cli_claude_prefers_vendor_total_cost_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude's authoritative ``total_cost_usd`` overrides token-derivation.
+
+    The pricing quote here would derive a far smaller figure from the tokens; the
+    vendor number (which accounts for the exact model + 1h ephemeral-cache tier)
+    must win, fixing the ~2x dashboard cost undercount.
+    """
+    lines = [
+        json.dumps(
+            {
+                "type": "result",
+                "session_id": "claude-cost",
+                "total_cost_usd": 0.063115,
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 200,
+                    "cache_read_input_tokens": 700,
+                    "output_tokens": 50,
+                },
+                "result": "ok",
+            }
+        ).encode()
+        + b"\n"
+    ]
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(lines)
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
+    )
+
+    # Token counts are still captured for stats/display...
+    assert result.tokens_in == 1000  # 100 + 700 cache-read + 200 cache-write
+    assert result.tokens_out == 50
+    # ...but the billed cost is the vendor figure, not the token derivation.
+    assert result.dollar_cost == pytest.approx(0.063115)
+
+
+async def test_dispatch_cli_claude_falls_back_to_token_cost_without_total_cost_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``total_cost_usd`` on the result event → token-derived cost as before."""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(_claude_cached_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
+    )
+
+    # uncached 100 @ .003 + cache-read 700 @ .0003 + cache-write 200 @ .00375 + out 50 @ .015
+    expected = (
+        (100 / 1000) * 0.003
+        + (700 / 1000) * 0.0003
+        + (200 / 1000) * 0.00375
+        + (50 / 1000) * 0.015
+    )
+    assert result.dollar_cost == pytest.approx(expected)
+
+
 async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_double_count_reasoning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

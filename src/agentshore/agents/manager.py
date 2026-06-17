@@ -7,6 +7,7 @@ import contextlib
 import os
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,12 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
 
 _logger = get_logger(__name__)
+
+# Cold-start placeholder cost for a no-usage agent (grok/antigravity) that
+# completes before any measured (usage-reporting) dispatch has, so there is no
+# running mean yet. Matches snapshots.COLD_START_COST_ESTIMATE / MIN_COST_PER_PLAY
+# (kept as a local literal to avoid an agents→core import edge).
+_PLACEHOLDER_COLD_START_COST: float = 0.05
 
 _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
     "never produced first byte",
@@ -137,6 +144,15 @@ class AgentManager:
         self.branch_exposure: dict[str, str] = {}  # branch → agent_id
         self._on_subprocess_spawned = on_subprocess_spawned
         self._on_subprocess_exited = on_subprocess_exited
+
+        # Placeholder-cost accounting for no-usage agents. Grok (live binary) and
+        # Antigravity emit no token-usage block, so their parsed dollar_cost is
+        # $0 — billing those plays at zero dragged the session total (budget +
+        # reward) far below reality. Instead we charge them the running mean
+        # measured cost-per-play of the agents that DO report usage. These two
+        # running totals accumulate only *measured* (non-zero-cost) dispatches.
+        self._measured_cost_total: float = 0.0
+        self._measured_play_count: int = 0
 
         # Safety net for desktop-ieql: if the sidecar process dies for any
         # reason (signal, crash, lost stdio pipe) without the Tauri
@@ -456,6 +472,7 @@ class AgentManager:
 
         cb.record_success()
         handle.consecutive_timeouts = 0
+        result = self._apply_placeholder_cost(result, agent_type=handle.agent_type)
         handle.accumulate(
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,
@@ -471,6 +488,37 @@ class AgentManager:
         await self._store.increment_agent_tasks(agent_id, completed=1)
 
         return result
+
+    def _apply_placeholder_cost(
+        self, result: AgentInvocationResult, *, agent_type: AgentType
+    ) -> AgentInvocationResult:
+        """Bill no-usage agents the running mean measured cost-per-play.
+
+        Grok and Antigravity emit no token-usage block, so the adapter returns a
+        parsed cost of $0; charging them nothing drags the session total far
+        below reality. A dispatch that reported real usage (``dollar_cost > 0``)
+        feeds the running mean and passes through unchanged. A dispatch that
+        reported nothing is re-billed at that mean (or a cold-start default until
+        the first measured play completes). Keyed on the *absence of measured
+        cost*, not the agent type, so a future Grok/agy build that starts
+        reporting usage bills its real cost automatically.
+        """
+        if result.dollar_cost > 0:
+            self._measured_cost_total += result.dollar_cost
+            self._measured_play_count += 1
+            return result
+        placeholder = (
+            self._measured_cost_total / self._measured_play_count
+            if self._measured_play_count > 0
+            else _PLACEHOLDER_COLD_START_COST
+        )
+        _logger.info(
+            "dispatch_cost_placeholder",
+            agent_type=agent_type.value,
+            placeholder_cost=placeholder,
+            measured_plays=self._measured_play_count,
+        )
+        return replace(result, dollar_cost=placeholder)
 
     def active_play_agent_ids(self) -> frozenset[str]:
         """Return the set of agent IDs that currently have an active in-flight play.

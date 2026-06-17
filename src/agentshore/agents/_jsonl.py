@@ -27,6 +27,13 @@ class _UsageTotals:
     cache_write_tokens_in: int = 0
     turn_count: int = 0
     max_turn_input_tokens: int = 0
+    # Vendor-authoritative dollar cost when the agent reports one (Claude Code's
+    # ``total_cost_usd`` on the result event). 0.0 means "agent reported no cost"
+    # — the dispatch layer then derives cost from the token counts above. This
+    # is preferred over token-derivation because the vendor figure accounts for
+    # the exact model and 5-minute vs 1-hour ephemeral-cache tiers, which the
+    # static pricing table cannot reconstruct from token counts alone.
+    reported_cost: float = 0.0
 
 
 def _iter_json_events(raw: str) -> Iterator[dict[str, object]]:
@@ -95,6 +102,7 @@ def _max_usage(left: _UsageTotals, right: _UsageTotals) -> _UsageTotals:
         cache_write_tokens_in=max(left.cache_write_tokens_in, right.cache_write_tokens_in),
         turn_count=max(left.turn_count, right.turn_count),
         max_turn_input_tokens=max(left.max_turn_input_tokens, right.max_turn_input_tokens),
+        reported_cost=max(left.reported_cost, right.reported_cost),
     )
 
 

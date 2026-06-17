@@ -8,7 +8,7 @@ import json
 import os
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
@@ -1272,15 +1272,22 @@ async def dispatch_cli(
             proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
         )
 
-    dollar_cost = estimate_cost(
-        usage.tokens_in,
-        usage.tokens_out,
-        pricing if pricing is not None else default_quote(),
-        cached_tokens_in=usage.cached_tokens_in,
-        cache_write_tokens_in=usage.cache_write_tokens_in,
-    )
+    if usage.reported_cost > 0:
+        # Vendor-authoritative cost (Claude Code's total_cost_usd). See _UsageTotals.
+        dollar_cost = usage.reported_cost
+        cost_source = "vendor_reported"
+    else:
+        dollar_cost = estimate_cost(
+            usage.tokens_in,
+            usage.tokens_out,
+            pricing if pricing is not None else default_quote(),
+            cached_tokens_in=usage.cached_tokens_in,
+            cache_write_tokens_in=usage.cache_write_tokens_in,
+        )
+        cost_source = "token_derived"
     _logger.info(
         "cli_dispatch_done",
+        cost_source=cost_source,
         agent_id=handle.agent_id,
         duration_ms=duration_ms,
         tokens_in=usage.tokens_in,
@@ -1611,6 +1618,14 @@ def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
     if not isinstance(usage, dict):
         return current
     parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
+    # Claude Code stamps an authoritative ``total_cost_usd`` on the terminal
+    # ``result`` event. Prefer it over token-derivation: it bills the exact model
+    # and the 5m/1h ephemeral-cache tiers the static pricing table can't see, and
+    # was observed ~2x higher than the token-derived figure (dashboard undercount).
+    if event.get("type") == "result":
+        reported = event.get("total_cost_usd")
+        if isinstance(reported, int | float) and not isinstance(reported, bool) and reported > 0:
+            parsed = replace(parsed, reported_cost=float(reported))
     return _max_usage(current, parsed)
 
 
