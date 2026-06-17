@@ -649,11 +649,14 @@ const HELP_ISSUES_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore/
 /// (e.g. File > Stop Session → `menu:stop_session` → `session.stop` drain).
 /// Items stay enabled — React decides what to do based on current state
 /// (no-op rather than show a dialog: cheaper than keeping Rust enabled-state
-/// synced over IPC). Standard parity items added here:
-///   - Preferences… (Cmd+,): App menu on macOS, File menu elsewhere.
-///   - Check for Updates…: App menu on macOS, Help menu elsewhere.
-///   - Help: Documentation / Release Notes / Report an Issue (URLs),
-///     Keyboard Shortcuts, Open Log Folder, Copy Diagnostics.
+/// synced over IPC).
+///
+/// macOS layout (per product direction, diverges from the HIG): a single lean
+/// "AgentShore" app menu holds Check for Updates, Preferences (Cmd+,), the
+/// former File items (Adjust Budget / Stop Session / Close Window) and Quit;
+/// About + Services live in Help; the Hide / Hide Others / Show All group lives
+/// in View; there is no File menu. Windows/Linux keep the conventional File menu
+/// (with Preferences) and Check for Updates in Help.
 #[cfg(not(test))]
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let stop_session = MenuItemBuilder::with_id("stop_session", "Stop Session")
@@ -672,46 +675,6 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     let check_updates =
         MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
 
-    let mut menu = MenuBuilder::new(app);
-
-    // macOS: build the leading App menu explicitly so Preferences and Check
-    // for Updates land in their conventional home. Doing so replaces the menu
-    // macOS would otherwise auto-supply, so we re-add the standard items.
-    #[cfg(target_os = "macos")]
-    {
-        let app_menu = SubmenuBuilder::new(app, "AgentShore")
-            .item(&PredefinedMenuItem::about(app, None, None)?)
-            .item(&check_updates)
-            .separator()
-            .item(&preferences)
-            .separator()
-            .item(&PredefinedMenuItem::services(app, None)?)
-            .separator()
-            .item(&PredefinedMenuItem::hide(app, None)?)
-            .item(&PredefinedMenuItem::hide_others(app, None)?)
-            .item(&PredefinedMenuItem::show_all(app, None)?)
-            .separator()
-            .item(&PredefinedMenuItem::quit(app, None)?)
-            .build()?;
-        menu = menu.item(&app_menu);
-    }
-
-    // `mut` is used only on the non-macOS branch (Preferences in File); on
-    // macOS Preferences lives in the App menu, so the builder isn't rebound.
-    #[allow(unused_mut)]
-    let mut file_builder = SubmenuBuilder::new(app, "File")
-        .item(&adjust_budget)
-        .item(&stop_session);
-    // On Windows/Linux there is no App menu, so Preferences lives in File.
-    #[cfg(not(target_os = "macos"))]
-    {
-        file_builder = file_builder.separator().item(&preferences);
-    }
-    let file = file_builder
-        .separator()
-        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
-        .build()?;
-
     let edit = SubmenuBuilder::new(app, "Edit")
         .item(&PredefinedMenuItem::undo(app, None)?)
         .item(&PredefinedMenuItem::redo(app, None)?)
@@ -720,10 +683,6 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .item(&PredefinedMenuItem::copy(app, None)?)
         .item(&PredefinedMenuItem::paste(app, None)?)
         .item(&PredefinedMenuItem::select_all(app, None)?)
-        .build()?;
-
-    let view = SubmenuBuilder::new(app, "View")
-        .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
 
     let window = SubmenuBuilder::new(app, "Window")
@@ -743,31 +702,95 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     let copy_diagnostics =
         MenuItemBuilder::with_id("help_copy_diagnostics", "Copy Diagnostics").build(app)?;
 
-    // `mut` is used only on the non-macOS branch (Check for Updates in Help).
-    #[allow(unused_mut)]
-    let mut help_builder = SubmenuBuilder::new(app, "Help")
-        .item(&documentation)
-        .item(&release_notes)
-        .item(&report_issue)
-        .separator()
-        .item(&keyboard_shortcuts)
-        .separator()
-        .item(&open_logs)
-        .item(&copy_diagnostics);
-    // Check for Updates is in the App menu on macOS; everywhere else its
-    // conventional home is the Help menu.
+    let mut menu = MenuBuilder::new(app);
+
+    // macOS layout (per product direction, diverges from the HIG): the File
+    // menu is folded into a single lean "AgentShore" app menu; About + Services
+    // live in Help; the Hide / Hide Others / Show All group lives in View.
+    #[cfg(target_os = "macos")]
+    {
+        let app_menu = SubmenuBuilder::new(app, "AgentShore")
+            .item(&check_updates)
+            .separator()
+            .item(&preferences)
+            .separator()
+            .item(&adjust_budget)
+            .item(&stop_session)
+            .separator()
+            .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+            .separator()
+            .item(&PredefinedMenuItem::quit(app, None)?)
+            .build()?;
+
+        let view = SubmenuBuilder::new(app, "View")
+            .item(&PredefinedMenuItem::fullscreen(app, None)?)
+            .separator()
+            .item(&PredefinedMenuItem::hide(app, None)?)
+            .item(&PredefinedMenuItem::hide_others(app, None)?)
+            .item(&PredefinedMenuItem::show_all(app, None)?)
+            .build()?;
+
+        let help = SubmenuBuilder::new(app, "Help")
+            .item(&PredefinedMenuItem::about(app, None, None)?)
+            .separator()
+            .item(&documentation)
+            .item(&release_notes)
+            .item(&report_issue)
+            .separator()
+            .item(&keyboard_shortcuts)
+            .separator()
+            .item(&open_logs)
+            .item(&copy_diagnostics)
+            .separator()
+            .item(&PredefinedMenuItem::services(app, None)?)
+            .build()?;
+
+        menu = menu
+            .item(&app_menu)
+            .item(&edit)
+            .item(&view)
+            .item(&window)
+            .item(&help);
+    }
+
+    // Windows/Linux: no application menu — keep File (Adjust Budget / Stop
+    // Session / Preferences / Close Window) and Check for Updates in Help.
     #[cfg(not(target_os = "macos"))]
     {
-        help_builder = help_builder.separator().item(&check_updates);
-    }
-    let help = help_builder.build()?;
+        let file = SubmenuBuilder::new(app, "File")
+            .item(&adjust_budget)
+            .item(&stop_session)
+            .separator()
+            .item(&preferences)
+            .separator()
+            .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+            .build()?;
 
-    menu = menu
-        .item(&file)
-        .item(&edit)
-        .item(&view)
-        .item(&window)
-        .item(&help);
+        let view = SubmenuBuilder::new(app, "View")
+            .item(&PredefinedMenuItem::fullscreen(app, None)?)
+            .build()?;
+
+        let help = SubmenuBuilder::new(app, "Help")
+            .item(&documentation)
+            .item(&release_notes)
+            .item(&report_issue)
+            .separator()
+            .item(&keyboard_shortcuts)
+            .separator()
+            .item(&open_logs)
+            .item(&copy_diagnostics)
+            .separator()
+            .item(&check_updates)
+            .build()?;
+
+        menu = menu
+            .item(&file)
+            .item(&edit)
+            .item(&view)
+            .item(&window)
+            .item(&help);
+    }
+
     menu.build()
 }
 
