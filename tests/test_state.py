@@ -10,6 +10,7 @@ from agentshore.state import (
     AgentSnapshot,
     AgentStatus,
     AgentType,
+    BudgetSnapshot,
     IssueSnapshot,
     NullStateProvider,
     OrchestratorState,
@@ -442,6 +443,9 @@ def test_custom_state_provider_passes_protocol() -> None:
 
     class _Fake:
         async def on_state_update(self, state: OrchestratorState) -> None:
+            pass
+
+        async def on_budget_update(self, budget: BudgetSnapshot) -> None:
             pass
 
         async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:

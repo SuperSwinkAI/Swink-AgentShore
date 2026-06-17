@@ -397,8 +397,21 @@ export interface BootstrapPhase extends MessageEnvelope {
   elapsed_ms: number;
 }
 
+/**
+ * Budget-only heartbeat frame. Emitted by the orchestrator on a fixed cadence
+ * so the remaining-time countdown keeps ticking down during quiet stretches
+ * (idle fleet, or one long-running play) when no full ``state_update`` fires.
+ * Deliberately budget-only: consumers refresh just the budget bar and never
+ * re-process agents, so the office sprites don't jitter.
+ */
+export interface BudgetUpdate extends MessageEnvelope {
+  type: "budget_update";
+  budget: BudgetSnapshot;
+}
+
 export type AgentShoreMessage =
   | StateUpdate
+  | BudgetUpdate
   | PlayEvent
   | AgentChanged
   | FeedbackRequested

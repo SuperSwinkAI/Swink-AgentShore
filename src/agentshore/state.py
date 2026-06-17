@@ -835,6 +835,17 @@ class StateProvider(Protocol):
         """Push a full state snapshot after each play cycle."""
         ...
 
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
+        """Push a budget-only snapshot (the time-budget countdown heartbeat).
+
+        Emitted on a fixed cadence so the dashboard's remaining-time figure keeps
+        ticking down during quiet stretches (idle fleet, a single long-running
+        play) when no full ``on_state_update`` fires. Deliberately budget-only so
+        consumers refresh just the budget bar and never re-process agents — a
+        full snapshot every few seconds would make the office sprites jitter.
+        """
+        ...
+
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:
         """Notify that a play has started executing."""
         ...
@@ -893,6 +904,9 @@ class NullStateProvider:
     """No-op StateProvider for headless / testing use."""
 
     async def on_state_update(self, state: OrchestratorState) -> None:
+        pass
+
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
         pass
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:

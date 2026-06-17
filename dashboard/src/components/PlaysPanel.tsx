@@ -2,6 +2,7 @@ import React, { useEffect, useReducer } from "react";
 import type {
   AgentSnapshot,
   BudgetSnapshot,
+  BudgetUpdate,
   PlayEvent,
   StateUpdate,
 } from "../types";
@@ -32,6 +33,7 @@ export interface DrainStatus {
 
 type PanelAction =
   | { type: "state_update"; state: StateUpdate }
+  | { type: "budget_update"; budget: BudgetSnapshot }
   | { type: "play_event"; event: PlayEvent }
   | { type: "toggle_collapse" };
 
@@ -39,6 +41,15 @@ function reducer(panel: PanelState, action: PanelAction): PanelState {
   switch (action.type) {
     case "state_update":
       return { ...panel, latestState: action.state };
+    case "budget_update":
+      // Budget-only heartbeat: patch just the budget so the remaining-time
+      // countdown advances without disturbing agents or any other panel data.
+      // Ignored until a full state has arrived (the bar needs the rest of it).
+      if (!panel.latestState) return panel;
+      return {
+        ...panel,
+        latestState: { ...panel.latestState, budget: action.budget },
+      };
     case "play_event":
       return panel;
     case "toggle_collapse": {
@@ -58,6 +69,11 @@ function broadcast(action: PanelAction): void {
 
 export function notifyPlaysPanelUpdate(state: StateUpdate): void {
   broadcast({ type: "state_update", state });
+}
+
+/** Budget-only heartbeat — advances the remaining-time countdown only. */
+export function notifyPlaysPanelBudget(msg: BudgetUpdate): void {
+  broadcast({ type: "budget_update", budget: msg.budget });
 }
 
 export function notifyPlaysPanelEvent(event: PlayEvent): void {

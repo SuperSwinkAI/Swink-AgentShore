@@ -93,6 +93,14 @@ _WEDGED_IDLE_STOP_TICKS = 12
 # tick spacing vary. Reset to None on any dispatch / busy agent.
 _FLEET_IDLE_END_SESSION_SECONDS: float = 1200.0
 
+# Cadence for the budget-countdown heartbeat: a budget-only frame the loop emits
+# so the dashboard's remaining-time figure keeps ticking down during quiet
+# stretches (idle fleet, or a single long-running play) when no full state update
+# fires. Budget-only by design so the office sprites never re-process and jitter.
+# 30s keeps the displayed minute fresh to within ~30s + one idle-backoff (≤21s),
+# i.e. under a minute even when fully idle.
+_BUDGET_HEARTBEAT_SECONDS: float = 30.0
+
 # How many times an unanswered loop-detection auto-stop is deferred while
 # actionable work (merge-ready PRs / workable issues) still remains. Each
 # reprieve lifts the pause and resumes the loop (it never leaves the loop
@@ -202,6 +210,9 @@ class LoopRunner:
         self._last_loop_iteration_at: float = float("inf")
         # Per-tick guard circuit-breaker counter (see _MAX_CONSECUTIVE_TICK_FAILURES).
         self._tick_failure_streak: int = 0
+        # Monotonic timestamp of the last budget-countdown heartbeat emit. 0.0
+        # until the first one fires (so the first eligible tick emits promptly).
+        self._last_budget_heartbeat_at: float = 0.0
 
     # ------------------------------------------------------------------
 
@@ -903,6 +914,28 @@ class LoopRunner:
             await self._drain.stop()
             return
 
+    async def _maybe_emit_budget_heartbeat(self) -> None:
+        """Emit a budget-only frame if the heartbeat cadence has elapsed.
+
+        Throttled to ``_BUDGET_HEARTBEAT_SECONDS``. No-op when no time cap is set
+        (nothing to count down) or before the first full state assembly has
+        cached the dollar inputs. Budget-only so the dashboard refreshes just the
+        remaining-time figure and never re-processes agents (no sprite jitter).
+        A full state update that fires on the same tick is harmless — the
+        dashboard applies whichever budget arrives last.
+        """
+        now = time.monotonic()
+        if now - self._last_budget_heartbeat_at < _BUDGET_HEARTBEAT_SECONDS:
+            return
+        budget = self._state_builder.current_budget_snapshot()
+        if budget is None:
+            return
+        self._last_budget_heartbeat_at = now
+        await self._host._safe_call(
+            self._runtime.state_provider.on_budget_update(budget),
+            "on_budget_update_heartbeat",
+        )
+
     async def run_until_idle(self) -> None:
         """Drive the RL loop until selector returns None or a stop is requested.
 
@@ -923,6 +956,12 @@ class LoopRunner:
             # the per-tick guard so it advances even on a throwing tick — a
             # fast-failing-but-looping tick must not look hard-frozen.
             self._last_loop_iteration_at = time.monotonic()
+            # Budget-countdown heartbeat: emit a budget-only frame on a fixed
+            # cadence so the dashboard's remaining-time figure keeps ticking even
+            # when this tick neither dispatches nor completes a play (idle fleet,
+            # or one long-running play). Outside the per-tick guard — a heartbeat
+            # failure must never trip the loop breaker.
+            await self._maybe_emit_budget_heartbeat()
             tick_raised = False
             try:
                 should_break = await self._run_loop_body()

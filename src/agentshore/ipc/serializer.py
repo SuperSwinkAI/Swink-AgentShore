@@ -188,6 +188,15 @@ def _serialize_pull_request(pr: PullRequestSnapshot) -> dict[str, object]:
     }
 
 
+def serialize_budget_update(budget: BudgetSnapshot) -> dict[str, object]:
+    """Wire payload for a budget-only ``budget_update`` heartbeat frame.
+
+    Carries just the budget snapshot so the dashboard refreshes the budget bar
+    (the remaining-time countdown) without re-processing agents.
+    """
+    return {"budget": _serialize_budget(budget)}
+
+
 def _serialize_budget(budget: BudgetSnapshot) -> dict[str, object]:
     def _finite_or_none(value: float | None) -> float | None:
         return value if value is not None and math.isfinite(value) else None

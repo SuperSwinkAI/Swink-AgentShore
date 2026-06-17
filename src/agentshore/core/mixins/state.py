@@ -15,6 +15,7 @@ from agentshore.github.trust import trusted_issue_author_logins
 from agentshore.rl.action_space import ACTION_SPACE_VERSION
 from agentshore.state import (
     INTERNAL_PLAY_TYPES,
+    BudgetSnapshot,
     OrchestratorState,
     PendingReviewSnapshot,
     PlayType,
@@ -174,6 +175,12 @@ class StateBuilder:
         # Per-agent consecutive-idle-tick counter for stale claim release. Owned
         # here (only read inside release_claims_for_prolonged_idle_agents).
         self._idle_agent_claim_ticks: dict[str, int] = {}
+        # Last (total_plays, total_cost) seen by assemble_state, cached so the
+        # budget-countdown heartbeat (current_budget_snapshot) can recompute the
+        # remaining-time figure from a fresh monotonic clock without a DB read.
+        # None until the first full state assembly. GH: dashboard time-budget
+        # heartbeat.
+        self._last_budget_inputs: tuple[int, float] | None = None
 
     # ------------------------------------------------------------------
 
@@ -525,6 +532,35 @@ class StateBuilder:
 
         return frozenset(cooldown_until)
 
+    def current_budget_snapshot(self) -> BudgetSnapshot | None:
+        """Re-derive the budget snapshot from cached inputs + a fresh clock.
+
+        Used by the loop's budget-countdown heartbeat so the dashboard's
+        remaining-time figure keeps ticking during quiet stretches without a DB
+        read. Returns ``None`` until the first full state assembly has cached the
+        dollar inputs, or when no time cap is configured (nothing to count down).
+        Only the time fields move between calls — the dollar figures are the
+        last-assembled values, which is correct because spend only changes on a
+        dispatch/completion, both of which already push a full state update.
+        """
+        inputs = self._last_budget_inputs
+        if inputs is None:
+            return None
+        budget_cfg = self._host.effective_budget_caps()
+        if not budget_cfg.time_enabled:
+            return None
+        total_plays, total_cost = inputs
+        loop_started_at = self._runtime.loop_started_at
+        elapsed_minutes = (
+            (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
+        )
+        return self._snapshots.build_budget_snapshot(
+            total_plays,
+            total_cost,
+            budget_cfg=budget_cfg,
+            elapsed_minutes=elapsed_minutes,
+        )
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 
@@ -604,6 +640,9 @@ class StateBuilder:
             budget_cfg=self._host.effective_budget_caps(),
             elapsed_minutes=elapsed_minutes,
         )
+        # Cache the dollar inputs so the budget heartbeat can re-derive the
+        # remaining-time countdown from a fresh clock without re-reading the DB.
+        self._last_budget_inputs = (total_plays, total_cost)
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)
 

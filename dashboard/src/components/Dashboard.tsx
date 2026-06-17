@@ -32,6 +32,7 @@ import PlayBar, {
 import {
   PlaysPanelComponent,
   type DrainStatus,
+  notifyPlaysPanelBudget,
   notifyPlaysPanelEvent,
   notifyPlaysPanelUpdate,
 } from "./PlaysPanel";
@@ -203,6 +204,12 @@ export function Dashboard({
             firstStateUpdateFiredRef.current = true;
             onFirstStateUpdate?.();
           }
+          break;
+        case "budget_update":
+          // Budget-countdown heartbeat: refresh only the budget bar. Routed
+          // nowhere near the office StateManager's agent handling, so the
+          // sprites never re-process or jitter on these frequent frames.
+          notifyPlaysPanelBudget(msg);
           break;
         case "play_event":
           notifyPlayBarEvent(msg);

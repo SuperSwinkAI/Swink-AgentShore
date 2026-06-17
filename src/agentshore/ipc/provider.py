@@ -20,11 +20,19 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from agentshore.ipc.serializer import (
     build_play_started_payload,
     make_message,
+    serialize_budget_update,
     serialize_feedback_requested,
     serialize_play_event,
     serialize_state,
 )
-from agentshore.state import AgentStatus, AgentType, OrchestratorState, PlayOutcome, PlayType
+from agentshore.state import (
+    AgentStatus,
+    AgentType,
+    BudgetSnapshot,
+    OrchestratorState,
+    PlayOutcome,
+    PlayType,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -93,6 +101,17 @@ class IpcStateProvider:
         await self._writer.write_state(msg)
         if self._server is not None:
             self._server.set_cached_state(msg)
+
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
+        """Append a budget-only heartbeat frame (the time-budget countdown).
+
+        Goes through the event stream (not ``write_state``) so it never replaces
+        the cached full snapshot — a reconnecting client must still receive the
+        last complete state, not a budget-only frame.
+        """
+        await self._writer.append_event(
+            self._emit("budget_update", serialize_budget_update(budget))
+        )
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:
         """Append a play-started event built from the single canonical builder."""

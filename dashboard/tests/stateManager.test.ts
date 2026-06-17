@@ -76,6 +76,25 @@ function playStarted(
   };
 }
 
+function budgetUpdate(seq: number): AgentShoreMessage {
+  return {
+    type: "budget_update",
+    seq,
+    session_id: "s1",
+    budget: {
+      enabled: true,
+      total_budget: 200,
+      spent: 5,
+      remaining: 195,
+      estimated_cost_per_play: 0.5,
+      time_enabled: true,
+      time_total_minutes: 120,
+      time_elapsed_minutes: 45,
+      time_remaining_minutes: 75,
+    },
+  } as AgentShoreMessage;
+}
+
 function activePlayReplay(
   overrides: Partial<ActivePlayReplay> = {},
 ): ActivePlayReplay {
@@ -111,6 +130,33 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
     expect(accepted).toBe(false);
     expect(mgr.latestState).toBe(before);
     expect(mgr.latestState?.total_plays).toBe(3);
+  });
+
+  it("ignores a budget_update: no character churn (no sprite jitter)", () => {
+    const mgr = new AgentShoreStateManager();
+    // Busy agent mid-play so a character exists and has a routed target.
+    mgr.handleMessage(stateUpdate(10, { agents: [agent({ status: "busy" })] }));
+    mgr.handleMessage(playStarted(11));
+    const char = mgr.characters.get("agent-1");
+    expect(char).toBeDefined();
+    const targetBefore = char?.targetState;
+    const xBefore = char?.x;
+    const yBefore = char?.y;
+    const stateBefore = mgr.latestState;
+
+    // The budget heartbeat must not touch the office StateManager at all: it
+    // carries no agent data and returns false, leaving every character (and the
+    // last full snapshot) exactly as they were.
+    const accepted = mgr.handleMessage(budgetUpdate(12));
+    expect(accepted).toBe(false);
+    expect(mgr.characters.size).toBe(1);
+    expect(mgr.characters.get("agent-1")).toBe(char);
+    expect(char?.targetState).toBe(targetBefore);
+    expect(char?.x).toBe(xBefore);
+    expect(char?.y).toBe(yBefore);
+    // latestState (the full snapshot) is untouched — budget lives on the
+    // separate PlaysPanel consumer, not here.
+    expect(mgr.latestState).toBe(stateBefore);
   });
 
   it("drops a strictly-older seq even if the payload would otherwise mutate state", () => {
