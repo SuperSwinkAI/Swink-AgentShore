@@ -45,24 +45,43 @@ describe("AppMenu", () => {
     listeners.clear();
   });
 
-  it("loads the disableable-play list on menu:preferences", async () => {
+  it("loads the disableable-play list as enabled toggles on menu:preferences", async () => {
     const adapter = makeAdapter();
     render(<AppMenu adapter={adapter} />);
     await fire("menu:preferences");
     expect(screen.getByTestId("preferences-dialog")).toBeInTheDocument();
     expect(adapter.getPreferences).toHaveBeenCalledTimes(1);
-    expect(await screen.findByTestId("preferences-play-run_qa")).toBeInTheDocument();
+    // Polarity: a play not in disabled_plays renders checked (enabled).
+    const runQa = await screen.findByTestId("preferences-play-run_qa");
+    expect(runQa).toBeChecked();
+    expect(screen.getByTestId("preferences-play-run_qa-state")).toHaveTextContent("Enabled");
     expect(screen.getByText("Run QA")).toBeInTheDocument();
   });
 
-  it("saves the toggled disabled-play set on Save", async () => {
+  it("reflects a disabled play as an off toggle", async () => {
+    const adapter = makeAdapter({
+      getPreferences: vi.fn(async () => ({
+        disabled_plays: ["cleanup"],
+        disableable_plays: DISABLEABLE,
+      })),
+    });
+    render(<AppMenu adapter={adapter} />);
+    await fire("menu:preferences");
+    const cleanup = await screen.findByTestId("preferences-play-cleanup");
+    expect(cleanup).not.toBeChecked();
+    expect(screen.getByTestId("preferences-play-cleanup-state")).toHaveTextContent("Disabled");
+  });
+
+  it("disables a play when its toggle is turned off and saved", async () => {
     const adapter = makeAdapter();
     render(<AppMenu adapter={adapter} />);
     await fire("menu:preferences");
     const checkbox = await screen.findByTestId("preferences-play-cleanup");
+    expect(checkbox).toBeChecked(); // starts enabled
     await act(async () => {
-      checkbox.click();
+      checkbox.click(); // toggle off → disable
     });
+    expect(checkbox).not.toBeChecked();
     await act(async () => {
       screen.getByTestId("preferences-dialog-primary").click();
     });

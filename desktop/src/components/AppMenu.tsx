@@ -493,7 +493,7 @@ function PreferencesDialog({
   return (
     <Modal
       title="Preferences"
-      description="Turn off non-critical plays. Delivery and self-heal plays can't be disabled."
+      description="Enable or disable non-critical plays. Delivery and self-heal plays are always on."
       testId="preferences-dialog"
       onClose={onClose}
       cancelLabel="Cancel"
@@ -506,19 +506,28 @@ function PreferencesDialog({
       )}
       {data && (
         <ul className={styles.playList} data-testid="preferences-play-list">
-          {data.disableable_plays.map((play) => (
-            <li key={play} className={styles.playRow}>
-              <label className={styles.playToggle}>
-                <input
-                  type="checkbox"
-                  checked={data.disabled_plays.includes(play)}
-                  onChange={() => togglePlay(play)}
-                  data-testid={`preferences-play-${play}`}
-                />
-                <span>{playLabel(play)}</span>
-              </label>
-            </li>
-          ))}
+          {data.disableable_plays.map((play) => {
+            const enabled = !data.disabled_plays.includes(play);
+            return (
+              <li key={play} className={styles.playRow}>
+                <label className={styles.playToggle}>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={() => togglePlay(play)}
+                    data-testid={`preferences-play-${play}`}
+                  />
+                  <span className={styles.playName}>{playLabel(play)}</span>
+                  <span
+                    className={enabled ? styles.playStateOn : styles.playStateOff}
+                    data-testid={`preferences-play-${play}-state`}
+                  >
+                    {enabled ? "Enabled" : "Disabled"}
+                  </span>
+                </label>
+              </li>
+            );
+          })}
         </ul>
       )}
       {error && (

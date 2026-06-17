@@ -144,6 +144,30 @@
   cursor: pointer;
 }
 
+/* Play name takes the remaining width so the state chip sits flush right. */
+.playName {
+  flex: 1;
+}
+
+.playStateOn,
+.playStateOff {
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.playStateOn {
+  color: var(--accent, #2563eb);
+  background: var(--fm-bg, #eff6ff);
+}
+
+.playStateOff {
+  color: var(--muted, #6b7280);
+  background: var(--fm-bg, #f3f4f6);
+}
+
 .error {
   font-size: 13px;
   color: var(--danger, #dc2626);
