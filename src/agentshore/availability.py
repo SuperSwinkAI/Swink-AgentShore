@@ -44,6 +44,7 @@ _BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "gemini": AgentType.GEMINI,
     "grok": AgentType.GROK,
     "grok-build": AgentType.GROK,
+    "agy": AgentType.ANTIGRAVITY,
 }
 
 

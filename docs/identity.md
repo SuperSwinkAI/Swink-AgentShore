@@ -1,7 +1,7 @@
 # Per-Agent GitHub Identities
 
-AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Gemini, and
-future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
+AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Gemini,
+Antigravity, and future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
 commits, and reviews to the agent that produced them, and — more importantly —
 lets GitHub enforce "review by someone other than the author" at the platform
 layer. AgentShore's Code Review play already refuses to let an agent review its
@@ -199,6 +199,6 @@ authorship report the problem clearly; they do not fail silently.
 
 ## Constraint: one identity per agent type
 
-Each agent type (claude_code, codex, gemini) binds to exactly one GitHub
-identity. Multi-instance pools with a different identity per instance are a
+Each agent type (claude_code, codex, gemini, antigravity) binds to exactly one
+GitHub identity. Multi-instance pools with a different identity per instance are a
 future enhancement.

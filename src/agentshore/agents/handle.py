@@ -131,6 +131,7 @@ def _generate_display_name(agent_type: AgentType, model_tier: str | None = None)
         "codex": "Codex",
         "gemini": "Gemini",
         "grok": "Grok",
+        "antigravity": "Antigravity",
     }.get(agent_type.value, "Agent")
     if model_tier:
         prefix = f"{prefix}/{model_tier}"

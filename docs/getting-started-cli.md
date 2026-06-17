@@ -8,7 +8,7 @@ Use this path when you want to run AgentShore from a terminal, from a source che
 - `uv` for local development and editable installs.
 - Git and the GitHub CLI, with `gh auth login` completed.
 - A GitHub repository with issues for AgentShore to work.
-- One or more supported coding agent CLIs on your `PATH`, such as `claude`, `codex`, `gemini`, or `grok`.
+- One or more supported coding agent CLIs on your `PATH`, such as `claude`, `codex`, `gemini`, `grok`, or `agy` (Antigravity).
 - Distinct GitHub identities if you want AgentShore to use the full implement, review, and merge workflow. Code review must run as a different identity from the PR author.
 
 ## Install

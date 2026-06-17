@@ -150,7 +150,7 @@ const SETUP_SCREEN_IDS = new Set<string>(SETUP_SCREENS.map((screen) => screen.id
 
 const defaultSetupState: SetupState = {
   targetBranch: "main",
-  enabledAgents: ["codex", "claude_code"],
+  enabledAgents: ["codex", "claude_code", "antigravity"],
   identities: [],
   budget: { mode: "unlimited", total: 0, timeMode: "unlimited", timeMinutes: 1440 },
   startSelection: { seedInputPath: null },

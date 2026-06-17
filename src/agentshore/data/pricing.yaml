@@ -52,6 +52,10 @@ agent_defaults:
     cost_per_1k_input: 0.001
     cost_per_1k_cached_input: 0.0002
     cost_per_1k_output: 0.002
+  antigravity:
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
 
 # Per-model rates (highest precedence). Keys match the `model:` strings used in
 # agentshore.yaml model tiers. Seeded from the agent-type defaults so the shipped
@@ -101,3 +105,25 @@ models:
     cost_per_1k_input: 0.001
     cost_per_1k_cached_input: 0.0002
     cost_per_1k_output: 0.002
+  # ── antigravity (Google, binary ``agy``) ───────────────────────────────────
+  # Reasoning effort is baked into the model display-name; rates mirror gemini.
+  Gemini 3.5 Flash (Low):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  Gemini 3.5 Flash (Medium):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  Gemini 3.5 Flash (High):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  Gemini 3.1 Pro (Low):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  Gemini 3.1 Pro (High):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003

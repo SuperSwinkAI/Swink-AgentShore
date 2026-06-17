@@ -271,7 +271,7 @@ export function AgentsScreen({
               </>
             ) : (
               <p className={styles.small}>
-                Install Claude Code, Codex CLI, Gemini CLI, or Grok CLI, then re-open this screen.
+                Install Claude Code, Codex CLI, Gemini CLI, Grok CLI, or Antigravity CLI (agy), then re-open this screen.
               </p>
             )}
           </div>

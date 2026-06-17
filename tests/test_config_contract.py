@@ -16,7 +16,7 @@ from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default
 def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     config_text = _generate_default_config(
         name_with_owner="owner/repo",
-        agents=["claude", "codex", "gemini", "grok"],
+        agents=["claude", "codex", "gemini", "grok", "agy"],
         budget=25.0,
         strict=True,
     )
@@ -35,11 +35,13 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.rl.stale_idle_claim_release_ticks == 3
     assert config.rl.update_every == 16
     assert config.play_pacing.standard_cooldown_plays == 42
-    assert set(config.agents) == {"claude_code", "codex", "gemini", "grok"}
+    assert set(config.agents) == {"claude_code", "codex", "gemini", "grok", "antigravity"}
     assert config.agents["claude_code"].binary == "claude"
     assert config.agents["codex"].binary == "codex"
     assert config.agents["gemini"].binary == "gemini"
     assert config.agents["grok"].binary == "grok"
+    assert config.agents["antigravity"].binary == "agy"
+    assert config.agents["antigravity"].model_tiers["small"].model == "Gemini 3.5 Flash (Low)"
     assert config.agents["claude_code"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["claude_code"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["claude_code"].model_tiers["large"].reasoning_effort == "high"

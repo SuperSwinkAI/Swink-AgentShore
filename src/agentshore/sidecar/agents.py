@@ -76,6 +76,7 @@ _BINARY_TO_AGENT_TYPE: dict[str, str] = {
     "gemini": "gemini",
     "grok": "grok",
     "grok-build": "grok",
+    "agy": "antigravity",
 }
 
 

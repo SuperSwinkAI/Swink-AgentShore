@@ -46,7 +46,7 @@ Both paths end in selecting a project, configuring agents and identities, and st
 
 - Python 3.12+
 - `gh` CLI authenticated (`gh auth login`)
-- One or more agent CLIs on PATH: `claude`, `codex`, `gemini`
+- One or more agent CLIs on PATH: `claude`, `codex`, `gemini`, `agy` (Antigravity)
 - A GitHub repository with issues
 
 ## Configuration

@@ -61,6 +61,16 @@ KNOWN_MODELS: dict[str, list[str]] = {
     "grok": [
         "grok-build",
     ],
+    "antigravity": [
+        # Antigravity (binary ``agy``) exposes the Google models by display name;
+        # the reasoning effort is baked into the name, so there is no separate
+        # effort flag. No live-fetch branch — ``agy`` has no models endpoint.
+        "Gemini 3.5 Flash (Low)",
+        "Gemini 3.5 Flash (Medium)",
+        "Gemini 3.5 Flash (High)",
+        "Gemini 3.1 Pro (Low)",
+        "Gemini 3.1 Pro (High)",
+    ],
 }
 
 _ANTHROPIC_PREFIXES = ("claude-",)
