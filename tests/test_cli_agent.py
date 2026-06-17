@@ -486,13 +486,12 @@ def test_build_argv_antigravity_shape() -> None:
         "Gemini 3.5 Flash (Low)",
         "--add-dir",
         "/wt",
-        "--print-timeout",
-        "30m0s",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
     ]
     assert "--output-format" not in argv
+    assert "--print-timeout" not in argv
 
 
 def test_build_argv_antigravity_prompt_always_in_argv_never_stdin() -> None:
@@ -604,8 +603,8 @@ async def test_read_output_no_first_byte_event_without_dispatch_context() -> Non
 
 def test_antigravity_first_byte_deadline_is_1800s() -> None:
     """agy emits no stdout until its async task completes (#217); the first-byte
-    watchdog must match the --print-timeout (30 min) so code-review tasks don't
-    die as spurious launch wedges."""
+    watchdog stays generous (30 min) so long code-review tasks don't die as
+    spurious launch wedges."""
     from agentshore.agents.cli_agent import _FIRST_BYTE_DEADLINE_BY_TYPE
 
     assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.ANTIGRAVITY] == 1800.0

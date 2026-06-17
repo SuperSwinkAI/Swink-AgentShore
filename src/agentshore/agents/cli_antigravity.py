@@ -48,9 +48,6 @@ def build_argv(
         args += ["--model", model]
     if project_dir:
         args += ["--add-dir", project_dir]
-    # The agy default --print-timeout of 5m0s is too short for coding tasks that
-    # typically run 8-15 min. Match the AgentShore dispatch wall-clock budget.
-    args += ["--print-timeout", "30m0s"]
     args.extend(extra_flags)
     args += ["-p", prompt]
     return args

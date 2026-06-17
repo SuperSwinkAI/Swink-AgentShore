@@ -443,10 +443,10 @@ _FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
 # is antigravity, which is structurally non-streaming.
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # agy uses an async task system and emits no stdout until the task completes
-    # (#217); first byte = task done, which can take up to 30 min (matching the
-    # --print-timeout set in cli_antigravity.build_argv). The watchdog still
-    # fires for genuine hangs (process exits before emitting anything). This is a
-    # structural carve-out, NOT a slow-model tuning — collapsing it to the global
+    # (#217); first byte = task done, which can take up to ~30 min for a heavy
+    # coding task. The watchdog still fires for genuine hangs (process exits
+    # before emitting anything). This is a structural carve-out, NOT a slow-model
+    # tuning — collapsing it to the global
     # 600s would kill healthy long-running agy tasks.
     AgentType.ANTIGRAVITY: 1800.0,
 }
