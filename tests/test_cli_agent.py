@@ -1159,10 +1159,7 @@ async def test_dispatch_cli_claude_falls_back_to_token_cost_without_total_cost_u
 
     # uncached 100 @ .003 + cache-read 700 @ .0003 + cache-write 200 @ .00375 + out 50 @ .015
     expected = (
-        (100 / 1000) * 0.003
-        + (700 / 1000) * 0.0003
-        + (200 / 1000) * 0.00375
-        + (50 / 1000) * 0.015
+        (100 / 1000) * 0.003 + (700 / 1000) * 0.0003 + (200 / 1000) * 0.00375 + (50 / 1000) * 0.015
     )
     assert result.dollar_cost == pytest.approx(expected)
 

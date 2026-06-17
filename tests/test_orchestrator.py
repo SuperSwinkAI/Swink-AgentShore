@@ -1524,9 +1524,7 @@ def test_bootstrap_seed_recipe_skips_groom_when_user_disabled(tmp_path: Path) ->
     orch = _make_mock_orch()
     seed_file = tmp_path / "seed.md"
     seed_file.write_text("# Seed", encoding="utf-8")
-    _phase_queue_agent_instantiation(
-        orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=0
-    )
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=0)
 
     entries = []
     while not orch._overrides.empty():

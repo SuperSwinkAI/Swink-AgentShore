@@ -31,9 +31,7 @@ def _projector() -> SnapshotProjector:
 
 def _budget_snapshot(*, time_total: int = 60, elapsed: float = 15.0) -> Any:
     cfg = BudgetConfig(time_enabled=True, time_total_minutes=time_total)
-    return _projector().build_budget_snapshot(
-        3, 1.25, budget_cfg=cfg, elapsed_minutes=elapsed
-    )
+    return _projector().build_budget_snapshot(3, 1.25, budget_cfg=cfg, elapsed_minutes=elapsed)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,9 +97,7 @@ def test_make_message_budget_update_roundtrips() -> None:
 def _state_builder_stub(
     *, inputs: tuple[int, float] | None, time_enabled: bool, loop_started_at: float
 ) -> SimpleNamespace:
-    cfg = BudgetConfig(
-        enabled=True, total=200.0, time_enabled=time_enabled, time_total_minutes=120
-    )
+    cfg = BudgetConfig(enabled=True, total=200.0, time_enabled=time_enabled, time_total_minutes=120)
     return SimpleNamespace(
         _last_budget_inputs=inputs,
         _host=SimpleNamespace(effective_budget_caps=lambda: cfg),
@@ -125,9 +121,7 @@ def test_current_budget_snapshot_recomputes_time_from_fresh_clock(
 ) -> None:
     # loop started at monotonic=100; "now" is 100 + 30min so 30 of 120 elapsed.
     stub = _state_builder_stub(inputs=(5, 2.0), time_enabled=True, loop_started_at=100.0)
-    monkeypatch.setattr(
-        "agentshore.core.mixins.state.time.monotonic", lambda: 100.0 + 30 * 60
-    )
+    monkeypatch.setattr("agentshore.core.mixins.state.time.monotonic", lambda: 100.0 + 30 * 60)
     snap = StateBuilder.current_budget_snapshot(stub)  # type: ignore[arg-type]
     assert snap is not None
     assert snap.time_elapsed_minutes == pytest.approx(30.0)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from agentshore.errors import DatabaseError
 
@@ -13,10 +13,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import aiosqlite
-
-# Bound to a coroutine method so the decorator preserves the exact wrapped
-# signature for callers (mypy keeps each method's real parameters/return type).
-_F = TypeVar("_F", bound="Callable[..., Awaitable[Any]]")
 
 
 class _ReentrantConnectionLock:
@@ -58,12 +54,15 @@ class _ReentrantConnectionLock:
             self._lock.release()
 
 
-def _serialized(method: _F) -> _F:
+def _serialized[F: Callable[..., Awaitable[Any]]](method: F) -> F:
     """Hold the connection lock for the full duration of a DataStore coroutine.
 
     Applied to every method that touches ``self._conn``/``self._db`` (or composes
     other such methods) so concurrent tasks can't interleave a commit into
     another task's open cursor. See :class:`_ReentrantConnectionLock` (GH #219).
+
+    The type parameter is bound to a coroutine method so the decorator preserves
+    each method's real parameters/return type for callers.
     """
 
     @functools.wraps(method)
@@ -71,7 +70,7 @@ def _serialized(method: _F) -> _F:
         async with self._db_lock:
             return await method(self, *args, **kwargs)
 
-    return cast("_F", wrapper)
+    return cast("F", wrapper)
 
 
 _ACTIVE_WORK_CLAIM_STATUSES = frozenset({"queued", "claimed", "running", "retrying"})
