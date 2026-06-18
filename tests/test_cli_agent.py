@@ -25,6 +25,7 @@ from agentshore.agents.cli_agent import (
     _StderrSniffer,
     _watch_stderr_auth,
     build_argv,
+    build_resume_argv,
     dispatch_cli,
 )
 from agentshore.agents.handle import AgentHandle
@@ -730,6 +731,165 @@ def test_build_argv_codex_reasoning_effort() -> None:
     assert "gpt-5.5" in argv
     assert "-c" in argv
     assert 'model_reasoning_effort="xhigh"' in argv
+
+
+# ---------------------------------------------------------------------------
+# build_resume_argv — the narrow JSON-retry re-entry shape, per agent (desktop-dy2j)
+# ---------------------------------------------------------------------------
+
+
+def test_build_resume_argv_claude_shape() -> None:
+    argv = build_resume_argv(AgentType.CLAUDE_CODE, "emit the block", "sess-abc", binary="claude")
+    assert argv == [
+        "claude",
+        "--resume",
+        "sess-abc",
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "emit the block",
+    ]
+
+
+def test_build_resume_argv_codex_shape() -> None:
+    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json + -C."""
+    argv = build_resume_argv(
+        AgentType.CODEX, "emit the block", "thread_x", binary="codex", project_dir="/wt"
+    )
+    assert argv[:4] == ["codex", "exec", "resume", "thread_x"]
+    assert "--json" in argv
+    assert "-C" in argv and argv[argv.index("-C") + 1] == "/wt"
+    assert argv[-1] == "emit the block"
+
+
+def test_build_resume_argv_grok_shape() -> None:
+    """grok resumes via ``-r <id>`` and keeps --no-memory (resume != memory)."""
+    argv = build_resume_argv(
+        AgentType.GROK, "emit the block", "grok-sess", binary="grok", project_dir="/wt"
+    )
+    assert argv[:3] == ["grok", "-r", "grok-sess"]
+    assert "--no-memory" in argv
+    assert argv[-1] == "emit the block"
+
+
+def test_build_resume_argv_antigravity_shape() -> None:
+    """agy resumes via ``--conversation <id>`` and keeps --add-dir <cwd>."""
+    argv = build_resume_argv(
+        AgentType.ANTIGRAVITY,
+        "emit the block",
+        "conv-uuid",
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+    )
+    assert argv[:3] == ["agy", "--conversation", "conv-uuid"]
+    assert "--add-dir" in argv and argv[argv.index("--add-dir") + 1] == "/wt"
+    assert argv[-2:] == ["-p", "emit the block"]
+
+
+async def test_dispatch_cli_resume_injects_codex_exec_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resuming codex dispatch builds ``codex exec resume <id>`` (was claude-only)."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id="thread_x")
+
+    assert captured[0][:4] == ["codex", "exec", "resume", "thread_x"]
+    assert "--json" in captured[0]
+
+
+async def test_dispatch_cli_resume_injects_grok_dash_r(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resuming grok dispatch builds ``grok -r <id>`` and keeps --no-memory."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess(_grok_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
+    handle = _make_handle(agent_type=AgentType.GROK)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id="grok-sess")
+
+    assert captured[0][:3] == ["grok", "-r", "grok-sess"]
+    assert "--no-memory" in captured[0]
+
+
+async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """agy emits no id on stdout, so dispatch_cli resolves it from the on-disk
+    conversation cache keyed by the dispatch cwd — giving agy a resumable id."""
+    home = tmp_path / "home"
+    cache_dir = home / ".gemini" / "antigravity-cli" / "cache"
+    cache_dir.mkdir(parents=True)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (cache_dir / "last_conversations.json").write_text(
+        json.dumps({str(wt): "conv-uuid-42"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        # agy emits plain text (no parser → session_id starts None).
+        return _FakeProcess([b'```json\n{"success": true, "artifacts": []}\n```\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
+    handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=wt)
+
+    assert result.session_id == "conv-uuid-42"
+
+
+async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No cache entry for the cwd → session_id stays None → no retry (graceful)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess([b"some plain agy output without a block\n"])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
+    handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=tmp_path)
+
+    assert result.session_id is None
 
 
 def test_build_argv_codex_no_resume() -> None:

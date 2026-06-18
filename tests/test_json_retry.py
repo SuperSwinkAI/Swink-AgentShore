@@ -177,3 +177,63 @@ async def test_retry_on_killed_exit_with_session() -> None:
     assert outcome.success is True
     assert ctx.manager.dispatch.await_count == 2
     assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == "sess-abc"
+
+
+def _state_with_agent(agent_type: AgentType, agent_id: str) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="test",
+        session_state=SessionState.RUNNING,
+        total_plays=5,
+        total_cost=0.5,
+        agents=[
+            AgentSnapshot(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                status=AgentStatus.IDLE,
+                context_size=0,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=0,
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "agent_id", "session_id"),
+    [
+        (AgentType.CODEX, "codex-1", "thread_x"),
+        (AgentType.GROK, "grok-1", "grok-sess"),
+        (AgentType.ANTIGRAVITY, "agy-1", "conv-uuid-42"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_retry_recovers_for_non_claude_agents(
+    agent_type: AgentType, agent_id: str, session_id: str
+) -> None:
+    """The JSON retry now recovers for codex/grok/antigravity, not just claude.
+
+    The base flow re-dispatches with the agent's session id regardless of type;
+    the per-agent resume *argv* shape (codex ``exec resume``, grok ``-r``, agy
+    ``--conversation``) and agy's id resolution are asserted in test_cli_agent.py
+    / test_cli_antigravity.py.
+    """
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state_with_agent(agent_type, agent_id)
+    params = PlayParams(issue_number=42, agent_id=agent_id)
+
+    first_result = _invocation(raw_output=NO_JSON, session_id=session_id)
+    retry_result = _invocation(raw_output=VALID_JSON, session_id=session_id)
+    ctx.manager.dispatch = AsyncMock(side_effect=[first_result, retry_result])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == session_id
