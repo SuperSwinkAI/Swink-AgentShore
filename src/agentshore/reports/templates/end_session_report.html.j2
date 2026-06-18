@@ -611,7 +611,7 @@
     {% endif %}
 
     <section>
-        <h2>Issues Closed During Session</h2>
+        <h2>Issues Closed During Session ({{ data.closed_issues | length }})</h2>
         {% if data.closed_issues %}
         <table>
             <thead>
