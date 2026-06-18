@@ -393,3 +393,22 @@ def test_untracked_root_not_owned_when_predates_active_play(tmp_path: Path) -> N
     agent = _agent_running(PlayType.CLEANUP, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "older.json")["owned_by_active_play"] is False
+
+
+def test_tracked_modification_owned_by_active_trunk_play(tmp_path: Path) -> None:
+    """#224: a tracked (M) file newer than an active trunk play's start is in-flight
+    work too — not just untracked root artifacts."""
+    repo = _init_repo_with_dirty_state(tmp_path)  # src.py is tracked + modified (status M)
+    os.utime(repo / "src.py", (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is True
+
+
+def test_tracked_modification_not_owned_when_predates_active_play(tmp_path: Path) -> None:
+    """A tracked file older than the active trunk play's start is not its in-flight output."""
+    repo = _init_repo_with_dirty_state(tmp_path)
+    os.utime(repo / "src.py", (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is False

@@ -3,7 +3,7 @@ name: agentshore-write-plan
 description: "Action slot 2 — Write Implementation Plan. Converts an issue into a concrete, task-level plan before implementation. Produces issue comments and labels that issue pickup can consume."
 argument-hint: [issue_number]
 disable-model-invocation: true
-allowed-tools: Read, Bash(gh:*, git fetch:*, git remote:*, git grep:*, git log:*, git status:*, git diff:*, git show:*, rg:*, sed:*, ls:*, find:*)
+allowed-tools: Read, Bash(gh:*, git fetch:*, git remote:*, git grep:*, git log:*, git status:*, git diff:*, git show:*, rg:*, ls:*, find:*)
 ---
 
 # agentshore-write-plan
@@ -70,7 +70,7 @@ Judge plan cohesion: if it covers multiple distinct deliverables that should be 
 
 **Forbidden — this play runs in the main checkout:**
 
-AgentShore runs you in the project's **main working tree on the target branch**, not an isolated worktree. You only read the codebase and write a plan to a GitHub issue comment — you must **never** touch the working tree or move git refs. **Never** `git checkout`/`git switch`/`git checkout -b`/`git switch -c`/`git branch`/`git worktree add`/`git reset`/`git clean`/`git stash`/`git commit`/`git merge`/`git rebase`/`git push`, and do not edit code. Creating or switching a branch here moves the **main checkout's HEAD** onto a feature branch and wedges the orchestrator — the trunk-dispatch guard cannot restore a branch-switched HEAD left with untracked work. Git is **read-only** in this play: `git fetch`, `git remote`, `git grep`, `git log`, `git status`, `git diff`, `git show` only. Leave the working tree clean (at most untracked scratch files at the repo root, which the orchestrator reclaims).
+AgentShore runs you in the project's **main working tree on the target branch**, not an isolated worktree. You only read the codebase and write a plan to a GitHub issue comment — you must **never** touch the working tree or move git refs. **Never** `git checkout`/`git switch`/`git checkout -b`/`git switch -c`/`git branch`/`git worktree add`/`git reset`/`git clean`/`git stash`/`git commit`/`git merge`/`git rebase`/`git push`, and do not edit code. Creating or switching a branch here moves the **main checkout's HEAD** onto a feature branch and wedges the orchestrator — the trunk-dispatch guard cannot restore a branch-switched HEAD left with untracked work. Git is **read-only** in this play: `git fetch`, `git remote`, `git grep`, `git log`, `git status`, `git diff`, `git show` only. The plan's **only** destination is the GitHub issue comment — never write it (or anything else) into a tracked file such as `plan.md`, whether with an editor, `sed -i`, `tee`, or shell redirection (`>`/`>>`). A modified tracked file left on trunk dirties the checkout and `reconcile_state` cannot always clear it. Leave the working tree clean (at most untracked scratch files at the repo root, which the orchestrator reclaims).
 
 Plans must not propose creating/editing/restoring/deleting `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. If the issue calls for any of these, exclude that work from the plan, leave a comment noting CI configuration is owned by the human maintainer, and plan only the non-CI portions. If the issue is entirely about CI, exit with `success: false`, request `agentshore/disallowed`, `error: "ci-change requested but forbidden by skill policy"`.
 

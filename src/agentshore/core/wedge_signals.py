@@ -358,7 +358,16 @@ def build_recent_wedge_signals(
     for entry in collect_dirty_trunk_paths(project_path):
         record = asdict(entry)
         owned = False
-        if entry.status == "??" and "/" not in entry.path and entry.mtime_utc:
+        # A dirty path whose mtime is at/after a live trunk-scoped play's start is
+        # in-flight work of that play, not a wedge — reconcile_state must leave it
+        # alone (#162/#224). Untracked (``??``) entries are restricted to depth-1
+        # root scratch files (the only untracked debris a trunk play leaves);
+        # tracked modifications (``M/A/D/R``…) may be nested anywhere, so they are
+        # not path-restricted. Without this, tracked in-flight edits always read as
+        # unowned and reconcile_state mis-classifies them as an ambiguous wedge.
+        is_root_untracked = entry.status == "??" and "/" not in entry.path
+        is_tracked = entry.status != "??"
+        if (is_tracked or is_root_untracked) and entry.mtime_utc:
             mtime = _iso_to_epoch(entry.mtime_utc)
             owned = mtime is not None and any(start <= mtime for start in active_trunk_starts)
         record["owned_by_active_play"] = owned
