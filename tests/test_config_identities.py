@@ -140,13 +140,16 @@ identities:
         load_config(_write(tmp_path, yaml_text))
 
 
-def test_unsupported_agent_key_raises(tmp_path: Path) -> None:
-    """An agent key that resolves to no AgentType fails fast (#api-purge).
+def test_unsupported_agent_key_is_stripped_with_warning(tmp_path: Path) -> None:
+    """An agent key that resolves to no AgentType is dropped, not fatal.
 
-    Covers both a typo'd key and the removed ``api_*`` placeholder concept —
-    neither ever instantiated, so they must be rejected at load, not dropped.
+    Covers a typo'd key, the removed ``api_*`` placeholder concept, and a retired
+    provider (``gemini``) left in an older config. None of them ever instantiate
+    downstream, so rather than wedge an otherwise valid session over a single
+    stale block, the loader drops the entry, warns, and keeps the supported
+    agents intact.
     """
-    for bad_key in ("api_gpt", "claud_code", "aider"):
+    for bad_key in ("api_gpt", "claud_code", "aider", "gemini"):
         yaml_text = f"""\
 agents:
   claude_code:
@@ -155,8 +158,27 @@ agents:
   {bad_key}:
     enabled: true
 """
-        with pytest.raises(ConfigError, match="is not a supported agent"):
-            load_config(_write(tmp_path, yaml_text))
+        with pytest.warns(UserWarning, match="unsupported agent"):
+            cfg = load_config(_write(tmp_path, yaml_text))
+        assert bad_key not in cfg.agents
+        assert "claude_code" in cfg.agents
+
+
+def test_supported_agents_load_without_warning(
+    tmp_path: Path, recwarn: pytest.WarningsRecorder
+) -> None:
+    """A clean all-supported config strips nothing and warns nothing."""
+    yaml_text = """\
+agents:
+  claude_code:
+    enabled: true
+    binary: claude
+  codex:
+    enabled: true
+"""
+    cfg = load_config(_write(tmp_path, yaml_text))
+    assert set(cfg.agents) == {"claude_code", "codex"}
+    assert not [w for w in recwarn.list if "unsupported agent" in str(w.message)]
 
 
 def test_custom_agent_key_with_known_binary_is_accepted(tmp_path: Path) -> None:

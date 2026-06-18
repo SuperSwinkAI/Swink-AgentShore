@@ -623,24 +623,39 @@ def _resolve_agent_type(agent_cfg: AgentConfig, agent_name: str) -> AgentType | 
         return None
 
 
-def _validate_agent_types(agents: dict[str, AgentConfig]) -> None:
-    """Reject any agent entry that maps to no supported CLI agent type.
+def _strip_unsupported_agents(agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+    """Drop agent entries that map to no supported CLI agent type, with a warning.
 
     AgentShore only runs the built-in CLI agents; an entry whose key is not an
     ``AgentType`` and whose ``binary`` does not resolve to one (a typo'd key, or
-    a removed concept) is otherwise silently dropped downstream — it never
-    instantiates — so fail fast here with an actionable message.
+    a retired concept such as a deprecated provider left in an older config) never
+    instantiates downstream. Rather than fail the entire load — which wedges an
+    otherwise valid session over a single stale block — such entries are dropped
+    and a warning is emitted, leaving the supported agents intact.
     """
     from agentshore.state import AgentType
 
-    valid = ", ".join(t.value for t in AgentType)
+    kept: dict[str, AgentConfig] = {}
+    dropped: list[str] = []
     for agent_name, agent_cfg in agents.items():
         if _resolve_agent_type(agent_cfg, agent_name) is None:
-            raise ConfigError(
-                f"agents.{agent_name!r} is not a supported agent. AgentShore runs "
-                f"only the built-in CLI agents ({valid}); rename the key to one of "
-                f"those, or set agents.{agent_name}.binary to a recognised CLI."
-            )
+            dropped.append(agent_name)
+            continue
+        kept[agent_name] = agent_cfg
+
+    if dropped:
+        valid = ", ".join(t.value for t in AgentType)
+        names = ", ".join(repr(n) for n in dropped)
+        plural = len(dropped) > 1
+        warnings.warn(
+            f"Ignoring unsupported agent {'entries' if plural else 'entry'} {names}: "
+            f"not a built-in CLI agent ({valid}). "
+            f"{'They were' if plural else 'It was'} dropped from the loaded config; "
+            f"rename the key to a supported agent or set its 'binary' to a recognised "
+            f"CLI to enable it.",
+            stacklevel=2,
+        )
+    return kept
 
 
 def _validate_agent_identities(
@@ -669,7 +684,8 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
     from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
 
     for agent_name, agent_cfg in agents.items():
-        # Every agent has already passed _validate_agent_types, so this resolves.
+        # Unsupported agents are already stripped by _strip_unsupported_agents, so
+        # this resolves for every remaining entry; the guard is belt-and-suspenders.
         resolved = _resolve_agent_type(agent_cfg, agent_name)
         if resolved is None:
             continue
@@ -1157,9 +1173,9 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
 
     agents_raw = cast("_RawAgents", dict(data.get("agents", {}) or {}))
     agents, fresh_start, prefs = _parse_agents(agents_raw, legacy_max_default=legacy_max_default)
+    agents = _strip_unsupported_agents(agents)
     identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
     trusted_ids_raw = data.get("trusted_ids", {})
-    _validate_agent_types(agents)
     _validate_agent_identities(agents, identities)
     _validate_agent_reasoning_efforts(agents)
 
