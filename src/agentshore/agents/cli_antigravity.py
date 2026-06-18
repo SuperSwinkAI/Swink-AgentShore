@@ -20,6 +20,19 @@ argv element via ``-p``.
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
+# agy persists a {<abs cwd>: <conversation-uuid>} map here, keyed by the
+# directory it ran in. Relative to the agy process's HOME.
+_CONVERSATIONS_CACHE_RELPATH = (
+    ".gemini",
+    "antigravity-cli",
+    "cache",
+    "last_conversations.json",
+)
+
 
 def build_argv(
     *,
@@ -89,3 +102,63 @@ def extract_output(raw: str) -> str:
     end = raw.find(error_marker, content_start)
     content = raw[content_start:end].strip() if end != -1 else raw[content_start:].strip()
     return "" if content == "(empty)" else content
+
+
+def build_resume_argv(
+    *,
+    resume_session_id: str,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None = None,
+) -> list[str]:
+    """Return argv for an agy JSON-retry RESUME dispatch (``--conversation <id>``).
+
+    Mirrors :func:`build_argv` but injects ``--conversation <id>`` so ``agy``
+    re-enters the prior conversation and emits the result block it omitted.
+    Narrow single-shot use only (desktop-dy2j) — not general session reuse.
+    Unlike the other CLIs, ``agy`` reveals no id on stdout; the caller resolves
+    it from disk via :func:`resolve_conversation_id`.
+    """
+    argv = build_argv(
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+    )
+    # argv[0] is the binary; inject --conversation <id> directly after it.
+    return [argv[0], "--conversation", resume_session_id, *argv[1:]]
+
+
+def resolve_conversation_id(cwd: Path | str, *, home: str | None) -> str | None:
+    """Resolve the agy conversation UUID for a dispatch worktree, or ``None``.
+
+    ``agy`` persists a ``{<abs cwd>: <conversation-uuid>}`` map at
+    ``<home>/.gemini/antigravity-cli/cache/last_conversations.json`` (keyed by
+    the directory it ran in). AgentShore dispatches each agy run in its own
+    unique worktree, so this lookup is per-worktree and unambiguous under a
+    parallel fleet. Used to give agy a resumable session id for the narrow
+    JSON-retry path (desktop-dy2j).
+
+    Fully defensive: a missing / unreadable / malformed cache, or an absent key,
+    returns ``None`` (the play then fails exactly as before — no retry).
+    """
+    base = home or os.environ.get("HOME") or str(Path.home())
+    cache_path = Path(base, *_CONVERSATIONS_CACHE_RELPATH)
+    try:
+        with cache_path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get(str(cwd))
+    return value if isinstance(value, str) and value else None

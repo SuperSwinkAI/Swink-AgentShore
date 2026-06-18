@@ -128,6 +128,40 @@ def build_argv(
     return args
 
 
+def build_resume_argv(
+    *,
+    resume_session_id: str,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None = None,
+) -> list[str]:
+    """Return argv for a Grok JSON-retry RESUME dispatch (``-r <id>``).
+
+    Mirrors :func:`build_argv` but injects ``-r <session_id>`` so Grok re-enters
+    the prior session and emits the result block it omitted. ``--no-memory`` is
+    retained from :func:`build_argv`: session resume re-enters a persisted
+    transcript and is independent of Grok's cross-session *memory* feature.
+    Narrow single-shot use only (desktop-dy2j).
+    """
+    argv = build_argv(
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+    )
+    # argv[0] is the binary; inject -r <id> directly after it.
+    return [argv[0], "-r", resume_session_id, *argv[1:]]
+
+
 def _grok_usage_from_dict(usage: dict[str, object]) -> _UsageTotals:
     """Extract usage totals from a Grok CLI usage dict.
 
