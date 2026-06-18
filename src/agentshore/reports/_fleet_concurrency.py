@@ -159,8 +159,10 @@ def _coerce_record(raw: object, session_id: str) -> dict[str, Any] | None:
 def _coerce_count(value: object) -> int | None:
     if isinstance(value, bool):
         return None
+    if not isinstance(value, (int, float, str)):
+        return None
     try:
-        count = int(value)  # type: ignore[arg-type]
+        count = int(value)
     except (TypeError, ValueError):
         return None
     if count < 0:
