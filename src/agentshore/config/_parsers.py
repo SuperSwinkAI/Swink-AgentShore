@@ -1198,7 +1198,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         learnings=_parse_learnings(data.get("learnings", {}) or {}),
         skills=_parse_skills(data.get("skills", {}) or {}),
         worktrees=_parse_worktrees(data.get("worktrees", {}) or {}),
-        agent_timeout=int(data.get("agent_timeout", 3600)),
+        agent_timeout=int(data.get("agent_timeout", 10800)),
         play_timeouts=_parse_play_timeouts(data.get("play_timeouts")),
         mode=mode,
         socket=data.get("socket"),

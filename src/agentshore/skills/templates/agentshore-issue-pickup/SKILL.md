@@ -92,4 +92,4 @@ For BLOCKED or policy-disallowed cases, populate `requested_mutations` so AgentS
 {"requested_mutations": [{"type": "label_issue", "issue": 17, "labels": ["agentshore/disallowed"]}]}
 ```
 
-Always emit the result block — skipping causes `no valid result block` and the work is recorded as failed.
+Always emit the result block — skipping causes `no valid result block` and the work is recorded as failed. Do not end your turn to wait for a build, test run, package-manager lock, CI, or any "notification"/"wake-up": run commands to completion in this turn (kill anything too slow and report what you have), then emit the block. There is no callback — waiting silently gets you killed mid-wait with no credit, even if you opened a PR.

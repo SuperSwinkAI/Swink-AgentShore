@@ -99,6 +99,11 @@ async def test_retry_recovers_on_missing_json() -> None:
     assert ctx.manager.dispatch.await_count == 2
     second_call = ctx.manager.dispatch.call_args_list[1]
     assert second_call.kwargs["resume_session_id"] == "sess-abc123"
+    # The resume retry sends the short finalize nudge, NOT the full original prompt —
+    # the agent already holds its prior context in-session. See #223 / _JSON_RETRY_PROMPT.
+    from agentshore.plays.skill_backed.base import _JSON_RETRY_PROMPT
+
+    assert second_call.args[1] == _JSON_RETRY_PROMPT
     assert outcome.dollar_cost == pytest.approx(0.02)
 
 

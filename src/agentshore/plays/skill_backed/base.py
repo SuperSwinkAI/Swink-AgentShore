@@ -34,6 +34,17 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
+# Sent (not the full original skill prompt) when the agent finished work but omitted the
+# JSON envelope and we retry over ``--resume``. The agent already holds all of its prior
+# context in the resumed session, so re-sending the ~10 KB skill prompt only risks it
+# re-doing the work and buries the one thing we need. This short, recency-optimal nudge
+# asks only for the missing block and explicitly forbids redoing work. See #223.
+_JSON_RETRY_PROMPT = (
+    "Your previous turn completed work but did not emit the required JSON result block. "
+    "Do not redo or repeat any work. Output only the fenced JSON result block for what "
+    "you already did, matching the schema in your instructions."
+)
+
 
 def _worktree_cwd_override(params: PlayParams) -> Path | None:
     """Return the dispatch cwd from an AgentShore-managed worktree allocation.
@@ -544,7 +555,7 @@ class SkillBackedPlay(Play, ABC):
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
-                prompt,
+                _JSON_RETRY_PROMPT,
                 capability=self.capability,
                 play_type=self.play_type.value,
                 cwd_override=dispatch_cwd,

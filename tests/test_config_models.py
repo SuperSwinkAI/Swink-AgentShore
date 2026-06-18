@@ -128,19 +128,19 @@ def test_effective_play_timeout_with_no_override() -> None:
     assert cfg.effective_play_timeout(None) == 900
 
 
-def test_agent_timeout_stays_at_1800_when_only_play_timeouts_set(tmp_path: Path) -> None:
+def test_agent_timeout_stays_at_default_when_only_play_timeouts_set(tmp_path: Path) -> None:
     """Loading a config with ``play_timeouts`` but no explicit ``agent_timeout``
-    must keep the historical 3600s loader default. We want the per-play
-    override to be additive, not a backdoor change to the global."""
+    must keep the 3h (10800s) loader default. We want the per-play override to be
+    additive, not a backdoor change to the global max-runtime backstop."""
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text(
         "play_timeouts:\n  issue_pickup: 3600\n",
         encoding="utf-8",
     )
     cfg = load_config(yaml_path)
-    assert cfg.agent_timeout == 3600
+    assert cfg.agent_timeout == 10800
     assert cfg.effective_play_timeout("issue_pickup") == 3600
-    assert cfg.effective_play_timeout("merge_pr") == 3600
+    assert cfg.effective_play_timeout("merge_pr") == 10800
 
 
 # ---------------------------------------------------------------------------

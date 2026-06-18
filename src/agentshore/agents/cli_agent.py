@@ -43,7 +43,11 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 
-_DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
+_DEFAULT_TIMEOUT = 10800  # seconds (3h) — max-runtime wall-clock backstop when
+# neither AgentConfig.timeout nor a resolved default_timeout is supplied. The
+# primary kill is the silence-based stream_idle watchdog (default 1800s); this
+# only bounds an agent that streams output for the full duration without
+# finishing. See AgentManager.dispatch / RuntimeConfig.agent_timeout.
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
 _LINE_DRIFT_WARN_BYTES = 1_048_576  # warn once if any single line exceeds 1MB
 _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from skill+params
@@ -415,8 +419,9 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
 # Launch-to-first-byte deadline (#177). A wedged child (the intermittent codex
 # rollout-thread / keychain race) produces *nothing* and otherwise rides the full
-# wall-clock ``timeout`` (default 3600s) before any watchdog fires — the existing
-# ``stream_idle_timeout`` (default 1800s) only catches first-byte silence at its
+# wall-clock ``timeout`` (default 3h, configurable via ``agent_timeout``) before any
+# watchdog fires — the existing ``stream_idle_timeout`` (default 1800s) only catches
+# first-byte silence at its
 # own, much larger, bound. This dedicated deadline caps the blast radius of a
 # launch wedge so the orchestrator retries promptly. It only governs the *first*
 # byte; once any stdout arrives, ``_watch_stream_idle`` owns silence detection.
@@ -430,7 +435,7 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 # same PR — the model/relay first-token latency, not local startup, dominates and
 # is irreducible via flags. The first-byte deadline's job is catching a *broken*
 # child that emits nothing, not bounding slow-but-healthy first-token latency
-# (the 3600s wall-clock is the real hang backstop). So all streaming agents now
+# (the 3h wall-clock is the real hang backstop). So all streaming agents now
 # share one 600s deadline: it clears the measured first-token distribution with
 # wide margin while still turning a genuine launch wedge around in ~10 min rather
 # than the full hour. Trade-off (#177): a true codex rollout/keychain wedge now

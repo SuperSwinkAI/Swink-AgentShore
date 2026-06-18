@@ -66,7 +66,7 @@ Basic-auth header derived from that agent's token (the same mechanism
 authenticates **as its own identity** — `claude_code` pushes as its login,
 `codex` as its login — with no shared-token bleed. Without this hardening an
 HTTPS credential prompt has no TTY to answer and the agent hangs to the
-wall-clock timeout instead of failing fast (the cause of the codex 3600s
+wall-clock timeout instead of failing fast (the cause of the codex wall-clock
 `issue_pickup` hang).
 
 The **shared worktree fetch** is the one git op with no owning agent — it runs
@@ -171,7 +171,7 @@ measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
 rather than local startup — and on heavy `code_review` prompts both Grok (at the
 old 240s grok cap) and Gemini (at the old 120s global) went silent past their
 windows. Reasoning models legitimately think before the first token, so the
-deadline only catches a *broken* child that emits nothing; the 3600s wall-clock
+deadline only catches a *broken* child that emits nothing; the 3h wall-clock
 backstops genuine hangs. To trim that latency Grok is still dispatched with
 `--no-memory --no-plan` (ephemeral single-turn dispatches gain nothing from
 cross-session memory or plan mode, and both add latency). Antigravity (`agy`) is

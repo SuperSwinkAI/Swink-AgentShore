@@ -54,7 +54,7 @@ to first byte for `grok-build` — model/relay latency, not local startup — an
 heavy `code_review` prompts both Grok (at the old 240s grok cap) and Gemini (at
 the old 120s global) timed out before their first token. Reasoning models
 legitimately go silent before first token, so the deadline only catches a broken
-child that emits nothing; the 3600s wall-clock backstops genuine hangs. Grok is
+child that emits nothing; the 3h wall-clock backstops genuine hangs. Grok is
 also dispatched with `--no-memory --no-plan` to trim that latency on its
 ephemeral single-turn runs.
 

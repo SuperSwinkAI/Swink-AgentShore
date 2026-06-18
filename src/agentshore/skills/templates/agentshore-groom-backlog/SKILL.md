@@ -120,4 +120,4 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 }
 ```
 
-A clean graph with no changes is `success: true` with all empty lists — not an error. Always emit the block — skipping causes `no valid result block` and discards the work.
+A clean graph with no changes is `success: true` with all empty lists — not an error. Always emit the block — skipping causes `no valid result block` and discards the work. This is a single turn with no callback: never end it to "wait for the task notification" or watch a file/process. Finish your grooming pass now and emit the block.

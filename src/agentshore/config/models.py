@@ -618,11 +618,17 @@ class RuntimeConfig:
     learnings: LearningsConfig = field(default_factory=LearningsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
-    # Global fallback timeout for any agent dispatch (in seconds). When
-    # ``play_timeouts`` does not contain a per-play override, this is the
-    # cap that ``AgentManager.dispatch`` enforces (modulo per-agent
-    # ``AgentConfig.timeout``, which still takes priority if set).
-    agent_timeout: int = 1800
+    # Maximum agent runtime — the absolute wall-clock backstop for any single
+    # dispatch (in seconds), default 3h. This is NOT the primary timeout: a
+    # genuinely working agent that keeps streaming output runs until this cap;
+    # the primary kill is ``AgentConfig.stream_idle_timeout`` (silence, 30 min
+    # default), which resets on every stdout byte. This wall-clock only fires
+    # when an agent runs the full duration without finishing — its job is to
+    # bound a runaway that streams forever (e.g. a noise/poll loop making zero
+    # model calls, which defeats the byte-based idle watchdog). User-configurable
+    # via ``agent_timeout`` in agentshore.yaml; ``play_timeouts`` overrides it
+    # per play type, and per-agent ``AgentConfig.timeout`` still wins if set.
+    agent_timeout: int = 10800
     # Per-play-type timeout overrides (seconds). Resolved at dispatch time
     # via ``effective_play_timeout(play_type)``. Keys are
     # ``PlayType.value`` strings (e.g. ``"issue_pickup"``, ``"unblock_pr"``).
