@@ -219,7 +219,7 @@ def test_reward_float_alignment_delta_zero() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Observation vector size matches current contract (OBSERVATION_DIM=246 at v12)
+# Observation vector size matches current contract (OBSERVATION_DIM=250 at v14)
 # ---------------------------------------------------------------------------
 
 
@@ -229,11 +229,12 @@ def test_observation_vector_size_unchanged() -> None:
     assert obs.shape == (OBSERVATION_DIM,)
     # v0.15 Phase 5: 238 → 245 (action space 20 → 22 + skip-rate slot).
     # desktop-8zzy: 245 → 246 (added pr_pressure_ratio slot at 178).
-    assert OBSERVATION_DIM == 246
+    # #91: 246 → 250 (PR-author block 4 → 8 slots for 4 CLI providers).
+    assert OBSERVATION_DIM == 250
 
 
-def test_observation_version_bumped_to_13() -> None:
-    assert OBSERVATION_VERSION == 13
+def test_observation_version_bumped_to_14() -> None:
+    assert OBSERVATION_VERSION == 14
 
 
 def test_observation_vector_size_with_graph() -> None:

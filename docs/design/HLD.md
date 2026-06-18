@@ -20,7 +20,7 @@ masked when every enabled type/tier already has an idle agent available.
 
 ## Implementation Status
 
-Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, dashboard bridge, and packaged desktop app (version 0.3.0) are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 246-dim (observation version 13). Policy version 5. SQLite schema version 4 with 22 tables.
+Phases 1-6 have shipped: the agent layer, play system, RL engine, core orchestrator, Textual TUI, IPC transports, reports, archive, offline training, dashboard bridge, and packaged desktop app (version 0.3.0) are complete. The action space is locked at 22 discrete actions (19 active + 3 reserved, action-space version 13), and the observation vector is 250-dim (observation version 14). Policy version 5. SQLite schema version 4 with 22 tables.
 
 ## Tech Stack
 

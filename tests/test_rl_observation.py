@@ -128,12 +128,14 @@ def _budget(
 # ---------------------------------------------------------------------------
 
 
-def test_observation_dim_is_246():
+def test_observation_dim_is_250():
     # v0.15 Phase 5: action space grew 20 → 22 (spec block 60 → 66) and
     # added a new executor_skip_rate slot at index 177. 238 → 245.
     # desktop-8zzy: added pr_pressure_ratio at slot 178; spec block slid
     # one slot down. 245 → 246.
-    assert OBSERVATION_DIM == 246
+    # #91: PR-author block generalized from claude/codex (4 slots) to the 4
+    # curated CLI providers (8 slots); everything after shifted +4. 246 → 250.
+    assert OBSERVATION_DIM == 250
 
 
 def test_encode_returns_correct_shape():
@@ -565,48 +567,99 @@ def test_per_config_block_success_rate_uses_real_data():
     assert obs[74] == pytest.approx(0.8, abs=1e-5)
 
 
-def test_pr_author_slots_split_by_author_type():
+def _author_pr(num: int, author: str | None, decision: str | None = None):
     from agentshore.state import PullRequestSnapshot
 
-    def _pr(num: int, author: str | None, decision: str | None = None) -> PullRequestSnapshot:
-        return PullRequestSnapshot(
-            pr_number=num,
-            title="t",
-            state="open",
-            branch=None,
-            issue_number=None,
-            labels=[],
-            review_decision=decision,
-            status_check_summary=None,
-            is_draft=False,
-            blocked=False,
-            blocked_reasons=[],
-            author_agent_type=author,
-        )
+    return PullRequestSnapshot(
+        pr_number=num,
+        title="t",
+        state="open",
+        branch=None,
+        issue_number=None,
+        labels=[],
+        review_decision=decision,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+        author_agent_type=author,
+    )
 
+
+def test_pr_author_slots_split_by_author_type():
+    # #91: one (open, awaiting) pair per curated CLI provider, in order
+    # claude_code(168/169), codex(170/171), grok(172/173), antigravity(174/175).
     state = _state(
         pull_requests=[
-            _pr(1, "claude_code"),
-            _pr(2, "claude_code", decision="APPROVED"),
-            _pr(3, "codex"),
-            _pr(4, "codex"),
+            _author_pr(1, "claude_code"),
+            _author_pr(2, "claude_code", decision="APPROVED"),
+            _author_pr(3, "codex"),
+            _author_pr(4, "codex"),
+            _author_pr(5, "grok"),
+            _author_pr(6, "grok", decision="APPROVED"),
+            _author_pr(7, "grok"),
+            _author_pr(8, "antigravity"),
         ]
     )
     obs = encode_observation(state, _NULL_CTX)
     # 2 claude_code open, 1 awaiting review (#1 — #2 is APPROVED).
     assert obs[168] == pytest.approx(2 / 10.0, abs=1e-5)
-    assert obs[170] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[169] == pytest.approx(1 / 10.0, abs=1e-5)
     # 2 codex open, 2 awaiting review.
-    assert obs[169] == pytest.approx(2 / 10.0, abs=1e-5)
+    assert obs[170] == pytest.approx(2 / 10.0, abs=1e-5)
     assert obs[171] == pytest.approx(2 / 10.0, abs=1e-5)
+    # 3 grok open, 2 awaiting (#6 APPROVED).
+    assert obs[172] == pytest.approx(3 / 10.0, abs=1e-5)
+    assert obs[173] == pytest.approx(2 / 10.0, abs=1e-5)
+    # 1 antigravity open, 1 awaiting.
+    assert obs[174] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[175] == pytest.approx(1 / 10.0, abs=1e-5)
 
 
-def test_observation_version_is_13():
+def test_pr_author_block_ignores_retired_and_unknown_authors():
+    # #91: Gemini was retired from AgentType; a stray gemini-authored PR (or any
+    # unknown / None author) must resolve to no slot and leave the whole block 0.
+    state = _state(
+        pull_requests=[
+            _author_pr(1, "gemini"),
+            _author_pr(2, "some_unknown_agent"),
+            _author_pr(3, None),
+        ]
+    )
+    obs = encode_observation(state, _NULL_CTX)
+    assert np.all(obs[168:176] == 0.0)
+
+
+def test_pr_author_block_contract_is_pinned():
+    # #91: the curated provider order is the version-pinned slot contract — a
+    # silent enum reorder must NOT be able to rewrite it. Pin order, size, and
+    # the computed block/version anchors.
+    from agentshore.rl.observation import (
+        _PR_AUTHOR_AGENT_ORDER,
+        _PR_AUTHOR_FEATURES,
+        _S_OBS_VERSION,
+        _S_PR_AUTHOR_BLOCK_START,
+    )
+
+    assert [t.value for t in _PR_AUTHOR_AGENT_ORDER] == [
+        "claude_code",
+        "codex",
+        "grok",
+        "antigravity",
+    ]
+    assert _PR_AUTHOR_FEATURES == 8
+    assert _S_PR_AUTHOR_BLOCK_START == 168
+    assert _S_OBS_VERSION == 249
+
+
+def test_observation_version_is_14():
     # desktop-rni0: bumped 10 → 11 when IDLE_TICK / RECOVER were demoted.
     # desktop-8zzy: bumped 11 → 12 when pr_pressure_ratio slot was added.
     # Beads dependency: bumped 12 → 13 when blocked/ready task ratios
     # repurposed retired cluster slots 0-1.
-    assert OBSERVATION_VERSION == 13
+    # #91: bumped 13 → 14 when the PR-author block generalized from
+    # claude/codex to the 4 curated CLI providers (4 → 8 slots).
+    assert OBSERVATION_VERSION == 14
 
 
 # ---------------------------------------------------------------------------
@@ -805,24 +858,26 @@ def test_executor_skip_rate_clamps_above_one():
     assert obs[_S_EXECUTOR_SKIP_RATE] == pytest.approx(1.0)
 
 
-def test_executor_skip_rate_slot_index_is_177():
-    """Pin the slot index — Phase 5 contract is that skip-rate sits at 177."""
+def test_executor_skip_rate_slot_index_is_181():
+    """Pin the slot index — post-#91 the skip-rate slot sits at 181 (was 177
+    before the PR-author block grew 4 → 8 slots)."""
     from agentshore.rl.observation import _S_EXECUTOR_SKIP_RATE
 
-    assert _S_EXECUTOR_SKIP_RATE == 177
+    assert _S_EXECUTOR_SKIP_RATE == 181
 
 
 # ===========================================================================
-# desktop-8zzy — pr_pressure_ratio slot (178)
+# desktop-8zzy — pr_pressure_ratio slot (182 after #91)
 # ===========================================================================
 
 
-def test_pr_pressure_ratio_slot_index_is_178():
-    """desktop-8zzy contract: pr_pressure_ratio sits at slot 178, between the
-    executor-skip-rate slot (177) and the specialization block (179..244)."""
+def test_pr_pressure_ratio_slot_index_is_182():
+    """desktop-8zzy contract (post-#91): pr_pressure_ratio sits at slot 182,
+    between the executor-skip-rate slot (181) and the specialization block
+    (183..248)."""
     from agentshore.rl.observation import _S_PR_PRESSURE_RATIO
 
-    assert _S_PR_PRESSURE_RATIO == 178
+    assert _S_PR_PRESSURE_RATIO == 182
 
 
 def test_pr_pressure_ratio_default_zero():
