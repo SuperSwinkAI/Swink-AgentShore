@@ -64,6 +64,70 @@ class ControlRejectionStatsEntry(TypedDict):
     count: int
 
 
+class FleetConcurrencyPeakEntry(TypedDict):
+    label: str
+    peak_busy: int
+
+
+class FleetConcurrencyTierPeakEntry(TypedDict):
+    label: str
+    peak_busy: int
+    config_max: int | None
+
+
+class FleetConcurrencyHistogramEntry(TypedDict):
+    busy_level: int
+    samples: int
+    sample_share: float
+
+
+class FleetConcurrencyRateLimitEntry(TypedDict):
+    seq: int | None
+    ts: str | None
+    play_type: str | None
+    completed_agent_type: str | None
+    completed_model_tier: str | None
+    busy_total: int
+    busy_by_type: dict[str, int]
+    busy_by_type_tier: dict[str, int]
+
+
+class FleetConcurrencyTimelineAxisLabel(TypedDict):
+    x: float
+    y: float
+    label: str
+
+
+class FleetConcurrencyTimelineHarnessEntry(TypedDict):
+    label: str
+    display_label: str
+    color: str
+    fill: str
+    area_points: str
+
+
+class FleetConcurrencyTimelineData(TypedDict):
+    width: int
+    height: int
+    y_axis_labels: list[FleetConcurrencyTimelineAxisLabel]
+    x_axis_labels: list[FleetConcurrencyTimelineAxisLabel]
+    harnesses: list[FleetConcurrencyTimelineHarnessEntry]
+    total_points: str
+    duration_label: str
+    note: str
+
+
+class FleetConcurrencyData(TypedDict):
+    sample_count: int
+    peak_busy: int
+    mean_busy: float
+    peak_by_harness: list[FleetConcurrencyPeakEntry]
+    peak_by_harness_tier: list[FleetConcurrencyTierPeakEntry]
+    busy_histogram: list[FleetConcurrencyHistogramEntry]
+    timeline: FleetConcurrencyTimelineData
+    rate_limit_samples: list[FleetConcurrencyRateLimitEntry]
+
+
 class PlayLogColumnEntry(TypedDict):
     play_type: str
     label: str
@@ -242,6 +306,7 @@ class SessionSummaryData(TypedDict):
 class EndSessionReportData(TypedDict):
     overview: OverviewData
     repo_url: str | None
+    fleet_concurrency: FleetConcurrencyData | None
     play_stats: list[PlayStatsEntry]
     control_rejections: list[ControlRejectionStatsEntry]
     closed_issues: list[ClosedIssueEntry]

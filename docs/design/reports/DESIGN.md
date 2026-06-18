@@ -11,19 +11,20 @@ Turn session data into self-contained, shareable HTML artifacts of a AgentShore 
 - **Skips are not failures.** Gated no-op plays are counted separately (`skipped_plays`) and excluded from failure counts and from the ESR play log.
 - **Self-contained output.** `ReportGenerator` (`generator.py`) inlines vendored Chart.js for the charted reports; the ESR is deliberately chart-free and static.
 - **Derived, not hardcoded.** Play-log column set, total play slots, and unique-agent/plays-in-use counts are computed from the play registry and history, not baked into the template.
+- **Fleet-concurrency rollups stay derived.** The ESR reads the per-session `fleet_concurrency.ndjson` artifact at report time and computes peak/mean busy concurrency, harness/tier peaks, a stacked busy-agent timeline by harness, and rate-limit samples without persisting derived rollups. Per-tier rows also compare observed peak busy against the current project `agentshore.yaml` `model_tiers.<tier>.max` cap when the config is readable; missing config leaves the cap blank.
 
 ## Report Types
 
 | Report | Trigger | Contents |
 |--------|---------|----------|
 | **Session Summary** | Orchestrator on session end (also the TUI report action) | Full artifact: overview, play timeline, cost breakdown (by play type / by agent / cumulative), agent performance and specialization, failure analysis, scope-drift count, anti-confirmation audit, issue inflation, trajectory snapshots + analysis, learnings count, cleanup/revert count, loop incidents, code-review patterns, recommendations, epic summaries, and epic-closure timeline. Charted (Chart.js). |
-| **End-of-Session Report (ESR)** | Orchestrator drain path on shutdown, and `agentshore stop` | Compact static page (no charts): overview, repo URL, per-play-type stats, control rejections (dispatch revalidation / selector rejections), closed issues, and a phased play log (rows per executed play, plus plays-in-use / total-slots and unique-agent counts). |
+| **End-of-Session Report (ESR)** | Orchestrator drain path on shutdown, and `agentshore stop` | Compact static page (no charts): overview, repo URL, per-play-type stats, fleet-concurrency metrics from `fleet_concurrency.ndjson`, control rejections (dispatch revalidation / selector rejections), closed issues, and a phased play log (rows per executed play, plus plays-in-use / total-slots and unique-agent counts). |
 | **Progress** | Orchestrator mid-session (also the TUI report action) | Lightweight snapshot: overview, recent plays (last 10), remaining-budget estimate, and currently active agents. |
 | **Archive Comparison** | Reports engine, on demand (cross-session comparison) | Side-by-side of two sessions: cost / alignment / play-count diffs, cost breakdowns, issue throughput, play distribution, alignment trajectories, and a learnings diff (added / removed / shared). Charted. |
 
 ## Data Sources
 
-All reports read exclusively from the AgentShore SQLite DataStore (sessions, plays, agents, issues, scope drift, trajectory snapshots, learnings, review patterns, external mutations). Epic closure data is loaded from the beads project graph via `load_graph`. The collector performs no live IPC or agent calls — reports reflect persisted state only.
+Reports read from the AgentShore SQLite DataStore (sessions, plays, agents, issues, scope drift, trajectory snapshots, learnings, review patterns, external mutations) and local session artifacts. The ESR also reads `fleet_concurrency.ndjson` when present and derives concurrency metrics directly from that raw series. Epic closure data is loaded from the beads project graph via `load_graph`. The collector performs no live IPC or agent calls — reports reflect persisted state and completed artifacts only.
 
 ## Cross-References
 
