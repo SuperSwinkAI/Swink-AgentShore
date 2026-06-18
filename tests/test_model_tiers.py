@@ -49,7 +49,6 @@ def test_default_model_tiers_for_codex() -> None:
     assert tiers["large"].reasoning_effort == "high"
 
 
-
 def test_default_model_tiers_for_grok() -> None:
     tiers = default_model_tiers_for(AgentType.GROK)
 

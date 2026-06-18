@@ -220,7 +220,9 @@ def test_agent_config_has_timeout_and_output_size() -> None:
         assert agent_cfg.stream_idle_timeout == 1800  # bumped from 600s for desktop-awc
         assert agent_cfg.max_output_size == 10_000_000
         assert agent_cfg.line_limit_bytes == 4_194_304
-    assert config.agent_timeout == 10800  # 3h max-runtime backstop; silence (stream_idle) is primary
+    assert (
+        config.agent_timeout == 10800
+    )  # 3h max-runtime backstop; silence (stream_idle) is primary
     assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0003
     assert config.pricebook.resolve("codex", None).cost_per_1k_cached_input == 0.000175
     assert config.pricebook.resolve("grok", None).cost_per_1k_cached_input == 0.0002

@@ -140,9 +140,7 @@ def test_timeline_uses_dashboard_agent_marker_colors(tmp_path: Path) -> None:
     data = collect_fleet_concurrency(path, SID)
 
     assert data is not None
-    colors_by_harness = {
-        row["label"]: row["color"] for row in data["timeline"]["harnesses"]
-    }
+    colors_by_harness = {row["label"]: row["color"] for row in data["timeline"]["harnesses"]}
     assert colors_by_harness == {
         "antigravity": "#4285F4",
         "claude_code": "#E07B39",
@@ -191,8 +189,7 @@ def test_timeline_supports_grok_random_harness_mix_and_week_scale(
         "Grok",
     }
     assert any(
-        row["label"] == "grok" and row["color"] == "#14B8A6"
-        for row in timeline["harnesses"]
+        row["label"] == "grok" and row["color"] == "#14B8A6" for row in timeline["harnesses"]
     )
     assert len(timeline["total_points"].split()) == 220
     assert any("Jun" in row["label"] for row in timeline["x_axis_labels"])

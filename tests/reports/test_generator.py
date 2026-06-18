@@ -641,7 +641,7 @@ class TestEndSessionReport:
         assert "rate_limit" not in timeline_html
         assert "claude_code/large" in html
         assert "Config Max" in html
-        assert "<td class=\"num\">5</td>" in html
+        assert '<td class="num">5</td>' in html
         assert "Rate-Limit Samples" in html
         assert "codex: 1" in html
         assert "Control Rejections" in html

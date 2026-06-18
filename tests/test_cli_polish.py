@@ -416,9 +416,7 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     # Press Enter immediately → confirm & write.
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: "")
 
-    updated = _interactive_agent_select(
-        cfg, ["claude", "codex"], config_path, force_run=True
-    )
+    updated = _interactive_agent_select(cfg, ["claude", "codex"], config_path, force_run=True)
 
     out = capsys.readouterr().out
     assert "AgentShore — Agent Setup" in out
@@ -485,9 +483,7 @@ agents:
         encoding="utf-8",
     )
 
-    assert _agent_keys_from_yaml(config_path, detected_agents=["claude"]) == [
-        "claude_code"
-    ]
+    assert _agent_keys_from_yaml(config_path, detected_agents=["claude"]) == ["claude_code"]
 
 
 def test_init_force_resets_database_files_only(tmp_path: Path) -> None:
