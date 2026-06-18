@@ -83,6 +83,7 @@ def test_init_help_text() -> None:
     assert result.exit_code == 0
     assert "--force" in result.output
     assert "--install-skills" in result.output
+    assert "Deprecated" in result.output
     assert "--target-branch" in result.output
 
 
@@ -553,14 +554,33 @@ def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) ->
 
     runner = CliRunner()
     with (
-        patch("agentshore.skills.install_skills", return_value=[]),
+        patch("agentshore.skills.install_skills", return_value=[]) as install_skills,
         patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
     assert "agentshore init --force" in result.output
+    install_skills.assert_not_called()
     # Original file should be preserved
     assert (repo / "agentshore.yaml").read_text() == original
+
+
+def test_init_force_does_not_install_skills(tmp_path: Path) -> None:
+    repo = _make_git_repo(tmp_path)
+
+    runner = CliRunner()
+    with (
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.skills.install_skills", return_value=[]) as install_skills,
+        patch("agentshore.cli.commands.init._run_beads_init"),
+        patch("agentshore.cli.commands.init._interactive_agent_select"),
+        patch("agentshore.identity_wizard.run_identity_wizard"),
+    ):
+        result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
+
+    assert result.exit_code == 0
+    install_skills.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +598,7 @@ def test_init_install_skills_only(tmp_path: Path) -> None:
         result = runner.invoke(main, ["init", "--project", str(repo), "--install-skills"])
 
     assert result.exit_code == 0
+    assert "--install-skills is deprecated" in result.output
     # Config should NOT have been created
     assert not (repo / "agentshore.yaml").exists()
     # Skills should have been installed
@@ -596,6 +617,7 @@ def test_init_install_skills_force_passes_force(tmp_path: Path) -> None:
         )
 
     assert result.exit_code == 0
+    assert "--install-skills is deprecated" in result.output
     mock_install.assert_called_once_with(repo, force=True)
 
 

@@ -49,7 +49,7 @@ Scope validation enforces issue-inflation limits after each skill-backed play; a
 
 Bootstrap is split into ordered, independently unit-testable `_phase_*` free functions (`phases.py`). Phase ordering is load-bearing: logging is set up first; the datastore must exist before the manager/executor; metrics must exist before the PPO selector; and the session row must be inserted before any FK-referencing write (skills install, GitHub cache, learnings load). The pipeline, in order: init datastore → reset session-scoped tables → init executor/manager/GitHub → init metrics → cleanup stale weights → init PPO selector → create session row → init worktree manager → session-start worktree sweep → clear stale beads in-progress → dirty-trunk baseline → git-safety sweep (default branch + main-repo HEAD) → install skills → fetch GitHub → ensure labels → load learnings → queue initial agent instantiation.
 
-`agentshore init` (separate from `start`) is the explicit setup command for config, skills, identities, and beads.
+`agentshore init` (separate from `start`) is the explicit setup command for config, identities, and beads. CLI `agentshore start` refreshes project skill templates automatically before dispatch so CLI and desktop startup use the same current bundled skills.
 
 ### Async Context Manager
 

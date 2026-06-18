@@ -232,6 +232,17 @@ def require_startup_model_tier_coverage(cfg: RuntimeConfig) -> None:
     raise SystemExit(1)
 
 
+def _install_startup_skills(repo_root: Path) -> None:
+    """Refresh project skill templates before a CLI-started session dispatches."""
+    from agentshore.skills import install_skills
+
+    try:
+        install_skills(repo_root, force=False)
+    except (OSError, ValueError) as exc:
+        click.echo(f"Error: failed to install skill templates: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
 def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     """Resolve everything ``agentshore start`` needs before dispatch.
 
@@ -337,6 +348,8 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         strict=opts.strict,
     )
     require_startup_model_tier_coverage(cfg)
+    _install_startup_skills(repo_root)
+
     # The merged config is the source of truth for the effective budget shown in
     # the banner and propagated to detached subprocesses.
     effective_budget = cfg.budget.total if cfg.budget.enabled else None
