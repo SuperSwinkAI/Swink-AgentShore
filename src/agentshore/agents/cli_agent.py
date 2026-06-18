@@ -622,10 +622,12 @@ def build_argv(
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
-    Each dispatch spawns a fresh CLI session — see
-    `feedback_persistent_sessions` memory: ``--resume`` was buggy in
-    production (silent state-rot late in long sessions) and is no longer
-    used.
+    Each normal dispatch spawns a fresh CLI session — see
+    `feedback_persistent_sessions` memory: *general* ``--resume`` was buggy in
+    production (silent state-rot late in long sessions) and is not used here.
+    The one sanctioned exception is the narrow single-shot JSON-retry re-entry
+    (:func:`build_resume_argv` / desktop-dy2j), which resumes the immediately
+    prior session exactly once to recover an omitted result block.
 
     When *prompt_on_stdin* is set the prompt is delivered over the child's
     stdin instead of as an argv element — on Windows the agent CLIs resolve to
@@ -706,6 +708,107 @@ def build_argv(
     raise ValueError(msg)
 
 
+# Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
+# holds a stable session id (claude/codex/grok parse it from stdout; agy
+# resolves it from its on-disk conversation cache). The narrow JSON-retry path
+# (desktop-dy2j) re-enters that one session to recover the omitted result block.
+_RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {
+        AgentType.CLAUDE_CODE,
+        AgentType.CODEX,
+        AgentType.GROK,
+        AgentType.ANTIGRAVITY,
+    }
+)
+
+
+def build_resume_argv(
+    agent_type: AgentType,
+    prompt: str,
+    resume_session_id: str,
+    *,
+    binary: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    extra_flags: tuple[str, ...] = (),
+    project_dir: str | None = None,
+    prompt_on_stdin: bool = False,
+    prompt_file: str | None = None,
+) -> list[str]:
+    """Return argv for a single JSON-retry RESUME dispatch (desktop-dy2j).
+
+    A narrow, single-shot re-entry of the *immediately prior* session to recover
+    the structured result block the agent omitted — NOT general long-session
+    resume (see ``feedback_persistent_sessions``). Each supported CLI exposes a
+    resume-by-id flag, and AgentShore holds a stable session id for each:
+    claude (``--resume``), codex (``exec resume``), grok (``-r``), antigravity
+    (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`).
+
+    Exported so tests can assert command shape without spawning a subprocess.
+    """
+    extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
+
+    if agent_type == AgentType.CLAUDE_CODE:
+        binary = binary or "claude"
+        argv = [
+            binary,
+            "--resume",
+            resume_session_id,
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+        ]
+        if not prompt_on_stdin:
+            argv.append(prompt)
+        return argv
+
+    if agent_type == AgentType.CODEX:
+        base = build_argv(
+            agent_type,
+            prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+        # base == [binary, "exec", "--json", ...]; turn it into the resume
+        # subcommand: [binary, "exec", "resume", <id>, "--json", ...].
+        return [base[0], "exec", "resume", resume_session_id, *base[2:]]
+
+    if agent_type == AgentType.GROK:
+        return cli_grok.build_resume_argv(
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    if agent_type == AgentType.ANTIGRAVITY:
+        return cli_antigravity.build_resume_argv(
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    msg = f"build_resume_argv: unsupported CLI agent type {agent_type!r}"
+    raise ValueError(msg)
+
+
 # ---------------------------------------------------------------------------
 # Core dispatch helpers
 # ---------------------------------------------------------------------------
@@ -730,6 +833,36 @@ def _build_dispatch_argv(
     if python_executable is not None:
         # Test shim: invoke cfg.binary as a Python script.
         argv: list[str] = [python_executable, cfg.binary or ""]
+        # A resuming shim dispatch keeps the minimal claude-style --resume shape
+        # (the shim is a python mock, not a real CLI — only the flag's presence
+        # matters to the tests that exercise this path).
+        if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
+            argv = [
+                argv[0],
+                "--resume",
+                resume_session_id,
+                "-p",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+            ]
+            if not prompt_on_stdin:
+                argv.append(prompt)
+    elif resume_session_id is not None and handle.agent_type in _RESUMABLE_AGENT_TYPES:
+        # desktop-dy2j: narrow JSON-retry re-entry of the prior session so the
+        # agent emits the structured trailer it missed. Per-agent resume shape.
+        argv = build_resume_argv(
+            handle.agent_type,
+            prompt,
+            resume_session_id,
+            binary=cfg.binary,
+            model=handle.model or cfg.model,
+            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
+            extra_flags=cfg.extra_flags,
+            project_dir=str(effective_cwd),
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
     else:
         argv = build_argv(
             handle.agent_type,
@@ -742,23 +875,6 @@ def _build_dispatch_argv(
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
         )
-
-    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
-    # re-enters the same session and emits the structured trailer it missed.
-    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
-        argv = [
-            argv[0],
-            "--resume",
-            resume_session_id,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-        ]
-        # On Windows the prompt rides stdin (see build_argv); elsewhere it is
-        # the trailing argv element.
-        if not prompt_on_stdin:
-            argv.append(prompt)
 
     prompt_bytes = len(prompt.encode("utf-8"))
 
@@ -1060,8 +1176,10 @@ async def dispatch_cli(
         handle may each target a different worktree. ``AGENTSHORE_PROJECT_PATH``
         in ``identity_env`` continues to point at the main repo.
 
-    Each call spawns a fresh CLI session. ``--resume`` is intentionally not
-    supported: see ``feedback_persistent_sessions`` memory.
+    Each call spawns a fresh CLI session, except the narrow single-shot
+    JSON-retry path: when *resume_session_id* is set, the prior session is
+    re-entered once to recover an omitted result block (desktop-dy2j). General
+    long-session ``--resume`` remains banned — see ``feedback_persistent_sessions``.
     """
     timeout = cfg.timeout if cfg.timeout is not None else default_timeout
     stream_idle_timeout = float(cfg.stream_idle_timeout)
@@ -1256,6 +1374,15 @@ async def dispatch_cli(
     # parse_skill_result sees the model's content, not the status envelope.
     if handle.agent_type == AgentType.ANTIGRAVITY:
         raw_output = cli_antigravity.extract_output(raw_output)
+        # agy reveals no session id on stdout (no parser), so resolve its
+        # conversation id from the on-disk cache keyed by this dispatch's cwd.
+        # This gives agy a resumable id for the narrow JSON-retry path
+        # (desktop-dy2j), exactly like the parsed agents. Best-effort: None on
+        # any miss, which simply means no retry — never fatal.
+        if _observed_session_id is None:
+            _observed_session_id = cli_antigravity.resolve_conversation_id(
+                effective_cwd, home=env.get("HOME")
+            )
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
@@ -1720,9 +1847,6 @@ def _extract_text_value(value: object) -> str | None:
         text_parts = [_extract_text_value(part) for part in value_parts]
         return "".join(part for part in text_parts if part)
     return None
-
-
-
 
 
 class CliOutputFormat(Protocol):
