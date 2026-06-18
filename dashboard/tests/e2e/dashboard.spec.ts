@@ -289,7 +289,7 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
     for (const agentType of [
       "claude_code",
       "codex",
-      "gemini",
+      "antigravity",
       "grok",
     ] as const) {
       for (const modelTier of ["small", "medium", "large"] as const) {
@@ -355,9 +355,9 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
     "codex:small": 275,
     "codex:medium": 570,
     "codex:large": 741,
-    "gemini:small": 275,
-    "gemini:medium": 570,
-    "gemini:large": 741,
+    "antigravity:small": 275,
+    "antigravity:medium": 570,
+    "antigravity:large": 741,
     "grok:small": 275,
     "grok:medium": 570,
     "grok:large": 741,
@@ -437,7 +437,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
       state([
         agent("agent-claude", "claude_code", "large"),
         agent("agent-codex", "codex", "medium"),
-        agent("agent-gemini", "gemini", "small"),
+        agent("agent-antigravity", "antigravity", "small"),
         agent("agent-default", "codex", "experimental"),
       ]),
     );
@@ -449,7 +449,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
       state([
         agent("agent-claude", "claude_code", "large"),
         agent("agent-codex", "codex", "large"),
-        agent("agent-gemini", "gemini", "small"),
+        agent("agent-antigravity", "antigravity", "small"),
         agent("agent-default", "codex", null),
       ]),
     );
@@ -464,7 +464,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
   expect(tiers.initial).toEqual({
     "agent-claude": "large",
     "agent-codex": "medium",
-    "agent-gemini": "small",
+    "agent-antigravity": "small",
     "agent-default": "medium",
   });
   expect(tiers.updated["agent-codex"]).toBe("large");
@@ -485,15 +485,15 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
         "agent-claude",
       ),
       codexMedium: sprites.agentSpriteSpecFor("codex", "medium", "agent-codex"),
-      geminiSmall: sprites.agentSpriteSpecFor(
-        "gemini",
+      antigravitySmall: sprites.agentSpriteSpecFor(
+        "antigravity",
         "small",
-        "agent-gemini",
+        "agent-antigravity",
       ),
-      geminiDefault: sprites.agentSpriteSpecFor(
-        "gemini",
+      antigravityDefault: sprites.agentSpriteSpecFor(
+        "antigravity",
         "experimental",
-        "agent-gemini",
+        "agent-antigravity",
       ),
       grokMedium: sprites.agentSpriteSpecFor("grok", "medium", "agent-grok"),
       unknown: sprites.agentSpriteSpecFor(
@@ -512,8 +512,8 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
     sheetHeight: 2496,
   });
   expect(specs.codexMedium).toMatchObject({ key: "codex-medium-humanoid" });
-  expect(specs.geminiSmall).toMatchObject({ key: "gemini-small-ball" });
-  expect(specs.geminiDefault).toMatchObject({ key: "gemini-medium-humanoid" });
+  expect(specs.antigravitySmall).toMatchObject({ key: "antigravity-small-ball" });
+  expect(specs.antigravityDefault).toMatchObject({ key: "antigravity-medium-humanoid" });
   expect(specs.grokMedium).toMatchObject({ key: "grok-medium-humanoid" });
   expect(specs.unknown).toBeNull();
 });
@@ -716,8 +716,8 @@ test("plays panel active counts follow current play snapshots when status lags",
         },
         {
           agent_id: "lag-qa",
-          agent_type: "gemini",
-          display_name: "Gemini: Lag QA",
+          agent_type: "antigravity",
+          display_name: "Antigravity: Lag QA",
           model_tier: "medium",
           status: "idle",
           context_size: 0,
@@ -2702,7 +2702,7 @@ test("state snapshots route current-play agents to rooms when status lags", asyn
         {
           ...baseAgent,
           agent_id: "review-agent",
-          agent_type: "gemini",
+          agent_type: "antigravity",
           current_play: {
             play_type: "code_review",
             play_id: 248,
@@ -2979,9 +2979,9 @@ test("agent provider filters only show current-session providers", async ({
           current_play: null,
         },
         {
-          agent_id: "filter-gemini",
-          agent_type: "gemini",
-          display_name: "Gemini: Filter Gemini",
+          agent_id: "filter-antigravity",
+          agent_type: "antigravity",
+          display_name: "Antigravity: Filter Antigravity",
           model_tier: "medium",
           status: "idle",
           context_size: 0,
@@ -3010,15 +3010,15 @@ test("agent provider filters only show current-session providers", async ({
     "All",
     "Claude",
     "Codex",
-    "Google",
+    "Antigravity",
   ]);
   await expect(page.locator(".agent-provider-filters")).not.toContainText(
     "Grok",
   );
 
-  await page.locator('[data-agent-provider-filter="gemini"]').click();
+  await page.locator('[data-agent-provider-filter="antigravity"]').click();
   await expect(page.locator("#agent-list .agent-entry")).toHaveCount(1);
-  await expect(page.locator("#agent-list")).toContainText("Filter Gemini");
+  await expect(page.locator("#agent-list")).toContainText("Filter Antigravity");
   await expect(page.locator("#agent-list")).not.toContainText("Filter Claude");
   await expect(page.locator("#agent-list")).not.toContainText("Filter Codex");
 });

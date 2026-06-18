@@ -197,7 +197,7 @@ export function BudgetScreen({
         {estimateInfoOpen && (
           <p className={styles.estimateNote} data-testid="budget-estimate-note">
             Dollar figures are estimates, not a bill. Claude reports its own API-equivalent cost;
-            Codex and Gemini are derived from published per-token rates; agents that don&apos;t
+            Codex is derived from published per-token rates; agents that don&apos;t
             report usage (Grok, Antigravity) are charged the session&apos;s average play cost. Treat
             the running total as a best-guess guardrail, not an invoice.
           </p>

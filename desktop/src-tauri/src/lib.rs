@@ -418,7 +418,7 @@ fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, o
 }
 
 /// Tear down agent subprocesses and the Python sidecar before the shell exits.
-/// Order matters: kill the AGENT subprocesses (Claude / Codex / Gemini CLIs and
+/// Order matters: kill the AGENT subprocesses (Claude / Codex / Antigravity CLIs and
 /// anything they spawned) FIRST. If we drop the supervisor before killing the
 /// agents, the sidecar's tracked-PID map disappears and the agent subprocesses
 /// are reparented to launchd, burning API tokens silently (desktop-ieql).

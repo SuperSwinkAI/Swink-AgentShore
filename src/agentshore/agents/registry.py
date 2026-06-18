@@ -19,7 +19,6 @@ from agentshore.state import AgentType
 BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "claude": AgentType.CLAUDE_CODE,
     "codex": AgentType.CODEX,
-    "gemini": AgentType.GEMINI,
     "grok": AgentType.GROK,
     "grok-build": AgentType.GROK,
     "agy": AgentType.ANTIGRAVITY,
@@ -30,7 +29,6 @@ BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
 AGENT_TYPE_TO_BINARY: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
-    AgentType.GEMINI: "gemini",
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
 }

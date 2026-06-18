@@ -345,7 +345,7 @@ identities:
     runner = CliRunner()
     with (
         patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex", "gemini"]),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex"]),
         patch("agentshore.skills.install_skills", return_value=[]),
         patch("agentshore.cli.commands.init._run_beads_init"),
     ):
@@ -353,8 +353,8 @@ identities:
 
     assert result.exit_code == 0, result.output
     assert captured["force_run"] is True
-    assert captured["detected_agents"] == ["claude", "codex", "gemini"]
-    assert captured["agent_keys"] == ["claude_code", "codex", "gemini"]
+    assert captured["detected_agents"] == ["claude", "codex"]
+    assert captured["agent_keys"] == ["claude_code", "codex"]
     assert captured["config_path"] == repo / "agentshore.yaml"
 
 
@@ -417,7 +417,7 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: "")
 
     updated = _interactive_agent_select(
-        cfg, ["claude", "codex", "gemini"], config_path, force_run=True
+        cfg, ["claude", "codex"], config_path, force_run=True
     )
 
     out = capsys.readouterr().out
@@ -427,11 +427,10 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     assert "[a]" in out  # first tier cell letter
     assert "[1]" in out  # first agent toggle number
     assert "toggle agent" in out and "confirm" in out
-    # All three detected agents appear and round-trip into config with binaries.
-    for label in ("claude", "codex", "gemini"):
+    # All detected agents appear and round-trip into config with binaries.
+    for label in ("claude", "codex"):
         assert label in out
     assert updated.agents["codex"].binary == "codex"
-    assert updated.agents["gemini"].binary == "gemini"
 
 
 def test_agent_setup_wizard_edit_tier_cell_sets_max(
@@ -482,14 +481,11 @@ agents:
   codex:
     enabled: true
     binary: codex
-  gemini:
-    enabled: false
-    binary: gemini
 """,
         encoding="utf-8",
     )
 
-    assert _agent_keys_from_yaml(config_path, detected_agents=["claude", "gemini"]) == [
+    assert _agent_keys_from_yaml(config_path, detected_agents=["claude"]) == [
         "claude_code"
     ]
 

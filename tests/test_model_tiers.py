@@ -49,15 +49,6 @@ def test_default_model_tiers_for_codex() -> None:
     assert tiers["large"].reasoning_effort == "high"
 
 
-def test_default_model_tiers_for_gemini() -> None:
-    tiers = default_model_tiers_for(AgentType.GEMINI)
-
-    assert set(tiers) == {"small", "medium", "large"}
-    assert tiers["small"].enabled is True
-    assert tiers["small"].model == "flash-lite"
-    assert tiers["medium"].model == "auto"
-    assert tiers["large"].model == "pro"
-
 
 def test_default_model_tiers_for_grok() -> None:
     tiers = default_model_tiers_for(AgentType.GROK)
@@ -101,7 +92,7 @@ def test_configured_model_tier_coverage_uses_effective_enabled_tiers() -> None:
                 "large": ModelTierConfig(enabled=True),
             }
         ),
-        "gemini": AgentConfig(enabled=False),
+        "grok": AgentConfig(enabled=False),
     }
 
     assert configured_model_tier_coverage(agents) == frozenset({"small", "large"})
@@ -198,8 +189,8 @@ def test_reasoning_efforts_codex_includes_minimal() -> None:
     assert len(efforts) == 5
 
 
-def test_reasoning_efforts_gemini_is_empty() -> None:
-    assert reasoning_efforts_for(AgentType.GEMINI) == ()
+def test_reasoning_efforts_antigravity_is_empty() -> None:
+    assert reasoning_efforts_for(AgentType.ANTIGRAVITY) == ()
 
 
 def test_reasoning_efforts_constant_matches_helper() -> None:

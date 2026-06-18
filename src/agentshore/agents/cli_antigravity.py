@@ -5,7 +5,7 @@ The Antigravity CLI is invoked headless as::
     agy --model "<MODEL>" --add-dir "<project_dir>" \
         --dangerously-skip-permissions -p "<PROMPT>"
 
-Unlike claude/codex/gemini/grok, ``agy`` emits **plain text** on stdout — there
+Unlike claude/codex/grok, ``agy`` emits **plain text** on stdout — there
 is no ``--output-format`` flag, no JSON/JSONL stream, and therefore no per-event
 usage block to parse. The dispatch layer relies on the no-parser passthrough:
 because ``agy`` is deliberately absent from ``cli_agent._PARSERS``, the read loop

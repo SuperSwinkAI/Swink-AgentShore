@@ -100,7 +100,6 @@ def test_start_hard_fail_no_agents_no_keys(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "ANTHROPIC_API_KEY" in result.output
     assert "OPENAI_API_KEY" in result.output
-    assert "Gemini CLI" in result.output
 
 
 def test_start_no_fail_when_api_key_present(tmp_path: Path) -> None:

@@ -250,13 +250,13 @@ def test_all_excluded_raises() -> None:
 
 
 def test_type_affinity_promotes_preferred_type() -> None:
-    gemini = _make_handle("g1", AgentType.GEMINI)
+    grok = _make_handle("g1", AgentType.GROK)
     claude = _make_handle("c1", AgentType.CLAUDE_CODE)
-    prefs = AgentPreferencesConfig(affinity={"code_review": "gemini"})
+    prefs = AgentPreferencesConfig(affinity={"code_review": "grok"})
 
     result = select_agent_for(
         PlayType.CODE_REVIEW,
-        _handles(claude, gemini),
+        _handles(claude, grok),
         preferences=prefs,
     )
     assert result.agent_id == "g1"

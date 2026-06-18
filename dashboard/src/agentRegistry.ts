@@ -16,9 +16,9 @@ import claudeSmallSpriteUrl from "./assets/agents/v2/claude-small-ball.png";
 import codexLargeSpriteUrl from "./assets/agents/v2/codex-large-humanoid.png";
 import codexMediumSpriteUrl from "./assets/agents/v2/codex-medium-humanoid.png";
 import codexSmallSpriteUrl from "./assets/agents/v2/codex-small-ball.png";
-import geminiLargeSpriteUrl from "./assets/agents/v2/gemini-large-humanoid.png";
-import geminiMediumSpriteUrl from "./assets/agents/v2/gemini-medium-humanoid.png";
-import geminiSmallSpriteUrl from "./assets/agents/v2/gemini-small-ball.png";
+import antigravityLargeSpriteUrl from "./assets/agents/v2/antigravity-large-humanoid.png";
+import antigravityMediumSpriteUrl from "./assets/agents/v2/antigravity-medium-humanoid.png";
+import antigravitySmallSpriteUrl from "./assets/agents/v2/antigravity-small-ball.png";
 import grokLargeSpriteUrl from "./assets/agents/v2/grok-large-humanoid.png";
 import grokMediumSpriteUrl from "./assets/agents/v2/grok-medium-humanoid.png";
 import grokSmallSpriteUrl from "./assets/agents/v2/grok-small-ball.png";
@@ -76,16 +76,6 @@ export const AGENT_REGISTRY = {
       large: codexLargeSpriteUrl,
     },
   },
-  gemini: {
-    label: "Gemini CLI",
-    colorFill: "#4285F4",
-    colorLabel: "G",
-    spriteUrls: {
-      small: geminiSmallSpriteUrl,
-      medium: geminiMediumSpriteUrl,
-      large: geminiLargeSpriteUrl,
-    },
-  },
   grok: {
     label: "Grok CLI",
     colorFill: "#14B8A6",
@@ -98,12 +88,12 @@ export const AGENT_REGISTRY = {
   },
   antigravity: {
     label: "Antigravity",
-    colorFill: "#9334E6",
+    colorFill: "#4285F4",
     colorLabel: "A",
     spriteUrls: {
-      small: geminiSmallSpriteUrl,
-      medium: geminiMediumSpriteUrl,
-      large: geminiLargeSpriteUrl,
+      small: antigravitySmallSpriteUrl,
+      medium: antigravityMediumSpriteUrl,
+      large: antigravityLargeSpriteUrl,
     },
   },
 } as const satisfies Record<string, AgentRegistryEntry>;

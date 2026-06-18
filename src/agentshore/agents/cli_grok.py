@@ -85,7 +85,7 @@ def build_argv(
 ) -> list[str]:
     """Return argv for one non-interactive Grok CLI invocation.
 
-    Unlike claude/codex/gemini, the Grok CLI has **no stdin prompt mode**: its
+    Unlike claude/codex, the Grok CLI has **no stdin prompt mode**: its
     ``-p/--single`` flag validates that the prompt value is non-empty before
     reading anything, so the empty ``-p ""`` headless shape the other CLIs use
     on Windows fails immediately with ``Error: --single: prompt is empty``

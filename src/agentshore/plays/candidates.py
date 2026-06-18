@@ -1350,7 +1350,7 @@ def idle_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
         and bool(AGENT_CAPABILITIES.get(agent.agent_type, {}).get("can_review", False))
         and (agent.model_tier or DEFAULT_MODEL_TIER) in allowed
         # Circuit breaker (#22): don't pin a review to a known-dead reviewer
-        # (the gemini-ETIMEDOUT case — 0 successes, repeated timeouts).
+        # (circuit-breaker case — 0 successes, repeated timeouts).
         and not is_agent_circuit_broken(
             tasks_completed=agent.tasks_completed,
             tasks_failed=agent.tasks_failed,

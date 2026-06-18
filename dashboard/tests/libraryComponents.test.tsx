@@ -1064,9 +1064,9 @@ describe("SidePanelComponent", () => {
             current_play: null,
           },
           {
-            agent_id: "agent-gemini",
-            agent_type: "gemini",
-            display_name: "Gemini: Present",
+            agent_id: "agent-antigravity",
+            agent_type: "antigravity",
+            display_name: "Antigravity: Present",
             model_tier: "medium",
             status: "idle",
             context_size: 0,
@@ -1091,14 +1091,14 @@ describe("SidePanelComponent", () => {
     );
     const labels = filters.map((filter) => filter.textContent);
 
-    expect(labels).toEqual(["All", "Claude", "Codex", "Google"]);
+    expect(labels).toEqual(["All", "Claude", "Codex", "Antigravity"]);
     expect(labels).not.toContain("Grok");
     expect(container.querySelectorAll(".agent-entry")).toHaveLength(3);
 
     await act(async () => {
       container
         .querySelector<HTMLButtonElement>(
-          '[data-agent-provider-filter="gemini"]',
+          '[data-agent-provider-filter="antigravity"]',
         )
         ?.click();
     });
@@ -1107,11 +1107,11 @@ describe("SidePanelComponent", () => {
       container.querySelectorAll<HTMLElement>(".agent-entry"),
     ).map((entry) => entry.dataset.agentEntryId);
 
-    expect(visibleAgents).toEqual(["agent-gemini"]);
+    expect(visibleAgents).toEqual(["agent-antigravity"]);
     expect(
       container
         .querySelector<HTMLButtonElement>(
-          '[data-agent-provider-filter="gemini"]',
+          '[data-agent-provider-filter="antigravity"]',
         )
         ?.getAttribute("aria-pressed"),
     ).toBe("true");

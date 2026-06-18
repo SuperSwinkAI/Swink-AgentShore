@@ -593,7 +593,7 @@ select:focus-visible {
 
 /* Model + reasoning effort sit side-by-side, with Max agents pinned to a
    narrow trailing column. Effort is absent for runners without an effort
-   flag (e.g. gemini), so flex lets Model reclaim the freed width. */
+   flag, so flex lets Model reclaim the freed width. */
 .tier-plan-row__fields {
   display: flex;
   flex-wrap: wrap;

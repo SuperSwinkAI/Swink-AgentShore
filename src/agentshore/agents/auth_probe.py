@@ -67,7 +67,6 @@ _PROBE_ARGV: dict[AgentType, tuple[str, ...]] = {
 _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
-    AgentType.GEMINI: "gemini",
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
 }

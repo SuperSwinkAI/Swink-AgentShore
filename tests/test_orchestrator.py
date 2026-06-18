@@ -288,7 +288,6 @@ def test_author_labels_cover_all_agent_types_with_dashboard_colors() -> None:
     label_map = dict(labels)
     assert label_map["agentshore/author:claude_code"] == "E07B39"
     assert label_map["agentshore/author:codex"] == "F4D44D"
-    assert label_map["agentshore/author:gemini"] == "4285F4"
     assert label_map["agentshore/author:grok"] == "14B8A6"
     assert "agentshore/author:custom_agent" not in label_map
 

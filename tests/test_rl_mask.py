@@ -588,7 +588,7 @@ def _make_cfg(
     )
 
     agents = {}
-    for name in ("claude_code", "codex", "gemini"):
+    for name in ("claude_code", "codex", "grok"):
         agents[name] = AgentConfig(
             enabled=name in enabled,
             model_tiers={"medium": ModelTierConfig(model="m", enabled=True, max=max_per_config)},
@@ -1415,10 +1415,10 @@ def test_compute_config_mask_rate_limit_error_blocks_respawn():
     from agentshore.rl.mask import compute_config_mask
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
-    cfg = _make_cfg(max_per_config=1, enabled=("claude_code", "gemini"))
+    cfg = _make_cfg(max_per_config=1, enabled=("claude_code", "grok"))
     rate_limited = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
@@ -1429,8 +1429,8 @@ def test_compute_config_mask_rate_limit_error_blocks_respawn():
         model_tier="medium",
     )
     state = _state(agents=[rate_limited])
-    mask = compute_config_mask(state, cfg, (("gemini", "medium"), ("claude_code", "medium")))
-    assert not mask[0]  # gemini blocked — rate_limit counts toward cap
+    mask = compute_config_mask(state, cfg, (("grok", "medium"), ("claude_code", "medium")))
+    assert not mask[0]  # grok blocked — rate_limit counts toward cap
     assert mask[1]  # claude_code unaffected
 
 
@@ -1507,10 +1507,10 @@ def test_compute_config_mask_invalid_model_blocks_same_config():
     from agentshore.rl.mask import compute_config_mask
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
-    cfg = _make_cfg(max_per_config=5, enabled=("gemini", "claude_code"))
+    cfg = _make_cfg(max_per_config=5, enabled=("grok", "claude_code"))
     bad_medium = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.INVALID_MODEL,
         context_size=0,
@@ -1524,10 +1524,10 @@ def test_compute_config_mask_invalid_model_blocks_same_config():
     mask = compute_config_mask(
         state,
         cfg,
-        (("gemini", "medium"), ("gemini", "small"), ("claude_code", "medium")),
+        (("grok", "medium"), ("grok", "small"), ("claude_code", "medium")),
     )
-    assert not mask[0]  # bad Gemini medium tier should not respawn
-    assert mask[1]  # other Gemini tiers remain available
+    assert not mask[0]  # bad Grok medium tier should not respawn
+    assert mask[1]  # other Grok tiers remain available
     assert mask[2]  # other agent types remain available
 
 
@@ -1923,7 +1923,7 @@ def test_take_break_enabled_for_rate_limit_error():
 
     agent = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
@@ -1981,7 +1981,7 @@ def test_take_break_does_not_force_global_session_pause_when_available():
 
     agent = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
@@ -2016,7 +2016,7 @@ def test_take_break_masked_when_trigger_agent_already_cooling_down():
 
     agent = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.RATE_LIMIT,
         current_play_type=PlayType.TAKE_BREAK,
@@ -2031,12 +2031,12 @@ def test_take_break_masked_when_trigger_agent_already_cooling_down():
 
 
 def test_rate_limited_type_blocks_idle_same_type_agent():
-    """An IDLE Gemini agent is blocked from dispatch when another Gemini is rate-limited."""
+    """An IDLE Grok agent is blocked from dispatch when another Grok is rate-limited."""
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
     rate_limited = AgentSnapshot(
         agent_id="gem-1",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.RATE_LIMIT,
         context_size=0,
@@ -2045,9 +2045,9 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
         tasks_completed=0,
         tasks_failed=1,
     )
-    idle_gemini = AgentSnapshot(
+    idle_grok = AgentSnapshot(
         agent_id="gem-2",
-        agent_type=AgentType.GEMINI,
+        agent_type=AgentType.GROK,
         status=AgentStatus.IDLE,
         context_size=0,
         total_cost=0.0,
@@ -2055,17 +2055,17 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
         tasks_completed=0,
         tasks_failed=0,
     )
-    cfg = _make_cfg(enabled=("gemini",))
-    state = _state(agents=[rate_limited, idle_gemini])
+    cfg = _make_cfg(enabled=("grok",))
+    state = _state(agents=[rate_limited, idle_grok])
     elig = compute_agent_eligibility_mask(state, build_default_registry(), cfg=cfg)
     # Every non-internal play should be blocked since the only IDLE agent type
-    # (gemini) is rate-limited.
+    # (grok) is rate-limited.
     from agentshore.rl.action_space import V1_ACTION_ORDER
 
     for i, pt in enumerate(V1_ACTION_ORDER):
         play = build_default_registry().get(pt)
         if play.capability is not None:  # skip internal plays
-            assert not elig[i], f"Expected {pt.value} to be blocked for rate-limited gemini"
+            assert not elig[i], f"Expected {pt.value} to be blocked for rate-limited grok"
 
 
 # ===========================================================================

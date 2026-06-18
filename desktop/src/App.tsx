@@ -415,7 +415,7 @@ function AgentConfigScreen() {
       // Grok is hard-pinned to grok-build; never round-trip a stale model id.
       const isGrok = agentType === "grok";
       // Only agents whose CLI exposes an effort flag may persist one — otherwise
-      // the backend config validator rejects the whole config (e.g. gemini).
+      // the backend config validator rejects the whole config.
       const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
         const { model, enabled, max, reasoning_effort } = tierPlan[tier];

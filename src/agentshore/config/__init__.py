@@ -168,20 +168,6 @@ agents:
         enabled: true
         model: gpt-5.5
         reasoning_effort: high
-  gemini:
-    enabled: true
-    binary: gemini
-    model: auto
-    model_tiers:
-      small:
-        enabled: true
-        model: flash-lite
-      medium:
-        enabled: true
-        model: auto
-      large:
-        enabled: true
-        model: pro
   antigravity:
     enabled: true
     binary: agy

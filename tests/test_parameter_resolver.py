@@ -1909,8 +1909,8 @@ async def test_resolve_take_break_attributes_rate_limit_trigger() -> None:
                 last_error_class=ErrorClass.UNKNOWN,
             ),
             _make_snapshot(
-                "gemini-rate-limit",
-                agent_type=AgentType.GEMINI,
+                "grok-rate-limit",
+                agent_type=AgentType.GROK,
                 status=AgentStatus.ERROR,
                 last_error_class=ErrorClass.RATE_LIMIT,
             ),
@@ -1920,10 +1920,10 @@ async def test_resolve_take_break_attributes_rate_limit_trigger() -> None:
     result = await resolver.resolve(PlayType.TAKE_BREAK, state)
 
     assert result == PlayParams(
-        agent_id="gemini-rate-limit",
+        agent_id="grok-rate-limit",
         extras={
-            "trigger_agent_id": "gemini-rate-limit",
-            "trigger_agent_type": "gemini",
+            "trigger_agent_id": "grok-rate-limit",
+            "trigger_agent_type": "grok",
             "trigger_error_class": "rate_limit",
         },
     )
@@ -1945,8 +1945,8 @@ async def test_resolve_take_break_skips_agent_already_cooling_down() -> None:
     state = _make_state(
         agents=[
             _make_snapshot(
-                "gemini-cooling",
-                agent_type=AgentType.GEMINI,
+                "grok-cooling",
+                agent_type=AgentType.GROK,
                 status=AgentStatus.ERROR,
                 last_error_class=ErrorClass.RATE_LIMIT,
                 current_play_type=PlayType.TAKE_BREAK,

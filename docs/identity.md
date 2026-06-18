@@ -1,6 +1,6 @@
 # Per-Agent GitHub Identities
 
-AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Gemini,
+AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Grok,
 Antigravity, and future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
 commits, and reviews to the agent that produced them, and — more importantly —
 lets GitHub enforce "review by someone other than the author" at the platform
@@ -168,9 +168,8 @@ agent type for the rest of the session through the same candidate-mask path.
 The first-byte deadline is **600s for all streaming agents** (#213): direct
 measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
 30–70s — far slower than the other CLIs, and dominated by model/relay latency
-rather than local startup — and on heavy `code_review` prompts both Grok (at the
-old 240s grok cap) and Gemini (at the old 120s global) went silent past their
-windows. Reasoning models legitimately think before the first token, so the
+rather than local startup — and on heavy `code_review` prompts Grok (at the
+old 240s grok cap) went silent past its window. Reasoning models legitimately think before the first token, so the
 deadline only catches a *broken* child that emits nothing; the 3h wall-clock
 backstops genuine hangs. To trim that latency Grok is still dispatched with
 `--no-memory --no-plan` (ephemeral single-turn dispatches gain nothing from
@@ -203,6 +202,6 @@ authorship report the problem clearly; they do not fail silently.
 
 ## Constraint: one identity per agent type
 
-Each agent type (claude_code, codex, gemini, antigravity) binds to exactly one
+Each agent type (claude_code, codex, grok, antigravity) binds to exactly one
 GitHub identity. Multi-instance pools with a different identity per instance are a
 future enhancement.

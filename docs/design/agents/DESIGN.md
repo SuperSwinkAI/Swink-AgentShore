@@ -4,7 +4,7 @@
 
 The agent layer owns coding-agent lifecycle, dispatch, GitHub identity, and per-dispatch worktree placement:
 
-- Instantiate CLI agents (`claude_code`, `codex`, `gemini`, `grok`, `antigravity`) as subprocess-backed handles. All supported agents are CLI-harnessed; raw HTTP/API agents are not supported.
+- Instantiate CLI agents (`claude_code`, `codex`, `grok`, `antigravity`) as subprocess-backed handles. All supported agents are CLI-harnessed; raw HTTP/API agents are not supported.
 - Track per-agent health, status, cost, token totals, dispatch count, task history, GitHub identity, model, model tier, and reasoning effort.
 - Resolve and verify each agent's GitHub identity overlay once, then dispatch rendered AgentShore skill prompts and return raw output to the play executor.
 - Place each dispatch in the correct git checkout (per-PR worktree, fresh branch worktree, or the main trunk checkout) without mutating the shared handle.
@@ -18,9 +18,8 @@ The agent manager does not decide which play should run. The RL selector chooses
 |------|---------|-------|
 | `claude_code` | CLI subprocess | Claude Code with JSON/stream output. Tiers: haiku / sonnet / opus, with reasoning effort low/medium/high passed via `--effort` (enum low/medium/high/xhigh/max). |
 | `codex` | CLI subprocess | Codex CLI. Tiers: gpt-5.4-mini / gpt-5.4 / gpt-5.5 with reasoning effort low/medium/high via `-c model_reasoning_effort` (enum minimal/low/medium/high/xhigh). |
-| `gemini` | CLI subprocess | Gemini. Tiers: flash-lite / auto / pro. The Gemini CLI exposes no reasoning-effort flag, so `reasoning_effort` is rejected at config-parse for gemini agents. |
 | `grok` | CLI subprocess | Grok CLI. `grok-build` is the only model; tiers differ solely by reasoning effort low/medium/high passed via `--effort` (enum low/medium/high/xhigh/max). Dispatched with `--no-memory --no-plan` (ephemeral single-turn runs). **Slowest agent by far** — measured time-to-first-byte is 30–70s (model/relay latency, not startup), so its first-byte watchdog deadline is widened to 240s (vs the 120s default) to avoid false launch-wedge kills. Prefer it for overflow over latency-sensitive plays. |
-| `antigravity` | CLI subprocess | Antigravity CLI (binary `agy`). Google-only models (Gemini 3.5 Flash / Gemini 3.1 Pro variants), **plain-text output (no JSON format flag)**. Reasoning effort is baked into the model name, so there is no `--effort` flag and `reasoning_effort` is rejected at config-parse. Backend auth is `unprobeable`; the CLI emits no token usage, so token tracking is $0. Permission gates bypassed via `--dangerously-skip-permissions`. Added in parallel to `gemini` as the forward path while Google deprecates the Gemini CLI for unpaid tiers. |
+| `antigravity` | CLI subprocess | Antigravity CLI (binary `agy`). Google-only models (Gemini 3.5 Flash / Gemini 3.1 Pro variants), **plain-text output (no JSON format flag)**. Reasoning effort is baked into the model name, so there is no `--effort` flag and `reasoning_effort` is rejected at config-parse. Backend auth is `unprobeable`; the CLI emits no token usage, so token tracking is $0. Permission gates bypassed via `--dangerously-skip-permissions`. Replaced the deprecated Gemini CLI as Google's official AgentShore integration. |
 
 Capabilities are declared statically per type in `capabilities.py` (`can_implement`, `can_review`, `can_test`, `can_create_pr`, `can_merge`, `can_create_issues`, plus `max_context` and per-token cost). Merge and issue creation are deliberately available to every type - they are AgentShore-mediated GitHub/repository operations, so scheduler availability can never strand an approved PR behind a disabled or saturated provider.
 
@@ -28,7 +27,7 @@ Capabilities are declared statically per type in `capabilities.py` (`can_impleme
 
 Each type exposes `small`, `medium`, and `large` tiers (`model_tiers.py`). `medium` is the default and the universal workhorse; `INSTANTIATE_AGENT` spawns in priority order medium -> small -> large. Explicit `model_tiers` config wins over the pinned defaults; legacy top-level `model`/`reasoning_effort` map onto the medium tier.
 
-The flat model catalog (`model_catalog.py`) can expose additional opt-in models without making them defaults. Current examples: `claude-fable-5` for maximum-capability Claude runs, `gpt-5.4-nano` for lightweight Codex runs, and explicit Gemini 3 IDs when the Gemini CLI/API supports them. Grok is the exception: it is hard-pinned to `grok-build` (the only model the Grok CLI accepts for coding), so the catalog exposes no grok alternatives — grok tiers vary only by reasoning effort.
+The flat model catalog (`model_catalog.py`) can expose additional opt-in models without making them defaults. Current examples: `claude-fable-5` for maximum-capability Claude runs, `gpt-5.4-nano` for lightweight Codex runs, and explicit Gemini 3 model IDs for Antigravity. Grok is the exception: it is hard-pinned to `grok-build` (the only model the Grok CLI accepts for coding), so the catalog exposes no grok alternatives — grok tiers vary only by reasoning effort.
 
 Per-play tier eligibility is a hard selection filter (`_selection.py`). Plays not listed accept any tier. Three design bands plus a universal exception:
 

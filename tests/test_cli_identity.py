@@ -1478,15 +1478,11 @@ agents:
     binary: codex
   aider:
     binary: aider
-  gemini:
-    enabled: true
-    binary: gemini
 """
     cfg_path = tmp_path / "agentshore.yaml"
     cfg_path.write_text(yaml_text, encoding="utf-8")
     keys = _agent_keys_from_yaml(cfg_path)
     assert "claude_code" in keys
-    assert "gemini" in keys
     assert "codex" not in keys  # explicitly disabled
     assert "aider" not in keys  # unsupported agent type — load_config would reject it
 

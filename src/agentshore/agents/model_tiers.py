@@ -32,11 +32,6 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "medium": ModelTierConfig(model="gpt-5.4", reasoning_effort="medium"),
         "large": ModelTierConfig(model="gpt-5.5", reasoning_effort="high"),
     },
-    AgentType.GEMINI: {
-        "small": ModelTierConfig(model="flash-lite"),
-        "medium": ModelTierConfig(model="auto"),
-        "large": ModelTierConfig(model="pro"),
-    },
     AgentType.GROK: {
         "small": ModelTierConfig(model="grok-build", reasoning_effort="low"),
         "medium": ModelTierConfig(model="grok-build", reasoning_effort="medium"),
@@ -58,7 +53,6 @@ REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.CLAUDE_CODE: ("low", "medium", "high", "xhigh", "max"),
     AgentType.GROK: ("low", "medium", "high", "xhigh", "max"),
     AgentType.CODEX: ("minimal", "low", "medium", "high", "xhigh"),
-    AgentType.GEMINI: (),
     AgentType.ANTIGRAVITY: (),
 }
 

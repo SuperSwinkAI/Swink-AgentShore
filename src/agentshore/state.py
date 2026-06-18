@@ -105,7 +105,6 @@ class AgentType(enum.Enum):
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
-    GEMINI = "gemini"
     GROK = "grok"
     ANTIGRAVITY = "antigravity"
 
@@ -118,7 +117,6 @@ CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {
         AgentType.CLAUDE_CODE,
         AgentType.CODEX,
-        AgentType.GEMINI,
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
     }
@@ -151,7 +149,7 @@ RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
 # plays this session and has either hit a dispatch timeout or accumulated
 # repeated failures is treated as non-functional and masked/deprioritized from
 # work selection until it succeeds. Guards against routing critical plays
-# (e.g. code_review) to a known-dead agent (the gemini-ETIMEDOUT case, where a
+# (e.g. code_review) to a known-dead agent (an agent where a
 # single failed dispatch burned a full ~30-min idle timeout). The mask lifts
 # automatically the moment the agent completes any play (``tasks_completed > 0``).
 CIRCUIT_BREAKER_FAILURE_LIMIT = 2

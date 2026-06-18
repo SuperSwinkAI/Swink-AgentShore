@@ -1,6 +1,6 @@
 """Shared JSONL / usage-accounting primitives for the CLI agent adapters.
 
-The CLI agents (Claude Code, Codex, Gemini, Grok) all emit JSONL on stdout and
+The CLI agents (Claude Code, Codex, Grok) all emit JSONL on stdout and
 share the same token-usage bookkeeping. These primitives used to live in
 ``cli_agent``; ``cli_grok`` imported them from there while ``cli_agent``
 lazily imported ``cli_grok`` back — a circular edge that forced two

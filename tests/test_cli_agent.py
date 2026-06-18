@@ -18,7 +18,6 @@ from agentshore.agents.cli_agent import (
     _classify_error,
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
-    _extract_text_from_gemini_jsonl,
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
@@ -251,37 +250,6 @@ def _claude_cached_json_lines() -> list[bytes]:
     ]
 
 
-def _gemini_json_lines() -> list[bytes]:
-    result = {
-        "schema_version": 1,
-        "success": True,
-        "artifacts": [],
-        "issues_created": [],
-        "requested_mutations": [],
-        "metrics": {},
-        "error": None,
-    }
-    content = f"```json\n{json.dumps(result)}\n```"
-    return [
-        b'{"type":"init","session_id":"gemini-session","model":"gemini-3-flash-preview"}\n',
-        b'{"type":"message","role":"assistant","message":{"content":"ignored chunk"}}\n',
-        json.dumps(
-            {
-                "type": "result",
-                "response": content,
-                "stats": {
-                    "usageMetadata": {
-                        "promptTokenCount": 42,
-                        "candidatesTokenCount": 13,
-                        "cachedContentTokenCount": 7,
-                    }
-                },
-            }
-        ).encode()
-        + b"\n",
-    ]
-
-
 def _grok_json_lines() -> list[bytes]:
     result = {
         "schema_version": 1,
@@ -355,25 +323,6 @@ def test_build_argv_codex_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
-def test_build_argv_gemini_shape() -> None:
-    argv = build_argv(
-        AgentType.GEMINI,
-        "do the thing",
-        binary="gemini",
-        model="gemini-3-flash-preview",
-    )
-
-    assert argv[0] == "gemini"
-    assert "--output-format" in argv
-    assert "stream-json" in argv
-    assert "--approval-mode=yolo" in argv
-    assert "--skip-trust" in argv
-    assert "--model" in argv
-    assert "gemini-3-flash-preview" in argv
-    assert "-p" in argv
-    assert argv[-1] == "do the thing"
-
-
 def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     """Windows: the prompt rides stdin to dodge the cmd.exe command-line limit,
     so the (possibly huge) prompt text must never appear as an argv element."""
@@ -382,14 +331,13 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     codex = build_argv(
         AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
     )
-    gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
     # Grok has no stdin prompt mode, so the dispatch layer hands it a prompt-file
     # path instead (issue #160); that is what keeps the prompt out of argv.
     grok = build_argv(
         AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
     )
 
-    for argv in (claude, codex, gemini, grok):
+    for argv in (claude, codex, grok):
         assert huge not in argv
 
     # claude -p with no prompt arg reads stdin (last token stays a flag/value).
@@ -397,8 +345,6 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     assert claude[-1] != huge
     # codex exec reads the prompt from stdin when handed "-".
     assert codex[-1] == "-"
-    # gemini stays headless via an empty -p while the prompt arrives on stdin.
-    assert gemini[-2:] == ["-p", ""]
     # grok reads the prompt from a file (no stdin mode; empty -p errors).
     assert grok[-2:] == ["--prompt-file", "/tmp/p.txt"]
 
@@ -1030,28 +976,6 @@ async def test_dispatch_cli_success_codex_json(
     assert sr.success is True
 
 
-async def test_dispatch_cli_success_gemini_stream_json(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
-        return _FakeProcess(_gemini_json_lines())
-
-    monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
-    )
-    cfg = AgentConfig(enabled=True, binary="gemini", timeout=10)
-    handle = _make_handle(agent_type=AgentType.GEMINI)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
-
-    assert result.exit_code == 0
-    assert result.tokens_in == 42
-    assert result.tokens_out == 13
-    assert result.cached_tokens_in == 7
-    sr = parse_skill_result(result.raw_output)
-    assert sr.success is True
-
-
 async def test_dispatch_cli_success_grok_streaming_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1301,38 +1225,6 @@ async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(AgentProcessError):
         await dispatch_cli(handle, "p", cfg=cfg, python_executable=sys.executable)
-
-
-async def test_dispatch_cli_gemini_model_not_found_is_concise(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stderr = (
-        b"YOLO mode is enabled. All tool calls will be automatically approved.\n"
-        b"Ripgrep is not available. Falling back to GrepTool.\n"
-        b"Error when talking to Gemini API Full report available at: /tmp/gemini.json "
-        b"ModelNotFoundError: Requested entity was not found.\n"
-    )
-    lines = [b'{"type":"message","role":"user","message":{"content":"PROMPT SHOULD NOT LEAK"}}\n']
-
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
-        return _FakeProcess(lines, returncode=1, stderr=stderr)
-
-    monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
-    )
-    cfg = AgentConfig(enabled=True, binary="gemini", model="gemini-3-pro", timeout=10)
-    handle = _make_handle(agent_type=AgentType.GEMINI)
-
-    with pytest.raises(AgentProcessError) as exc_info:
-        await dispatch_cli(handle, "prompt", cfg=cfg)
-
-    message = str(exc_info.value)
-    assert "[invalid_model]" in message
-    assert "gemini model 'gemini-3-pro' is not available" in message
-    assert "Full report: /tmp/gemini.json" in message
-    assert "YOLO mode" not in message
-    assert "PROMPT SHOULD NOT LEAK" not in message
 
 
 # ---------------------------------------------------------------------------
@@ -1703,7 +1595,7 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
 def test_resolve_executable_resolves_npm_shim_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """codex/claude/gemini are .cmd npm shims; CreateProcess only finds bare
+    """codex/claude are .cmd npm shims; CreateProcess only finds bare
     names ending in .exe, so resolve to the full .cmd path via shutil.which."""
     import shutil
     import sys
@@ -2219,11 +2111,10 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
 
 
 def test_is_terminal_event_detects_each_agent_type() -> None:
-    """Claude/Gemini emit type:result; Codex emits turn.completed. CLI agents
+    """Claude emits type:result; Codex emits turn.completed. CLI agents
     must be recognized so the 60s post-response grace applies (not the 30-min
     stream_idle_timeout)."""
     assert _is_terminal_event(b'{"type":"result","result":"ok"}', AgentType.CLAUDE_CODE)
-    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GEMINI)
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
     )
@@ -2240,13 +2131,8 @@ def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
     # Mid-stream events are not terminal.
     assert not _is_terminal_event(b'{"type":"assistant","message":{}}', AgentType.CLAUDE_CODE)
     assert not _is_terminal_event(b'{"type":"item.completed","item":{}}', AgentType.CODEX)
-    # Codex's terminal type must not fire for Claude/Gemini and vice versa.
-    assert not _is_terminal_event(b'{"type":"turn.completed"}', AgentType.GEMINI)
+    # Codex's terminal type must not fire for Claude and vice versa.
     assert not _is_terminal_event(b'{"type":"result"}', AgentType.CODEX)
-    # Work product mentioning the word "result" is not a result event.
-    assert not _is_terminal_event(
-        b'{"type":"assistant","text":"the result is 42"}', AgentType.GEMINI
-    )
     # Non-JSON lines never raise.
     assert not _is_terminal_event(b"not json at all", AgentType.CLAUDE_CODE)
 
@@ -2319,17 +2205,6 @@ def test_extract_text_from_codex_jsonl_handles_whitespace_lines() -> None:
     assert text == "hello"
     assert session_id == "t-1"
     assert usage.tokens_in == 0
-
-
-def test_extract_text_from_gemini_jsonl_handles_whitespace_lines() -> None:
-    raw = (
-        '\n  {"type":"init","session_id":"g-1"}  \n'
-        '  {"type":"message","role":"assistant","message":{"content":"hi"}}  \n'
-    )
-    text, usage, session_id = _extract_text_from_gemini_jsonl(raw)
-    assert text == "hi"
-    assert session_id == "g-1"
-    assert usage.tokens_out == 0
 
 
 def test_extract_text_from_grok_jsonl_real_format_with_usage() -> None:

@@ -1,8 +1,8 @@
-"""desktop-ctnl regression: rate_limit on one gemini agent must not freeze the fleet.
+"""desktop-ctnl regression: rate_limit on one grok agent must not freeze the fleet.
 
 After desktop-rni0 IDLE_TICK / RECOVER are no longer in the policy head, so PPO
 cannot learn to prefer idling under rate_limit. The mask invariant the test
-pins: rate_limit on a single gemini agent only zeros gemini's slots in
+pins: rate_limit on a single grok agent only zeros grok's slots in
 ``compute_agent_eligibility_mask``; claude_code / codex slots stay selectable
 for plays whose preconditions are otherwise met.
 """
@@ -64,12 +64,12 @@ def _cfg() -> MagicMock:
     return cfg
 
 
-def test_rate_limit_on_gemini_does_not_zero_claude_codex_eligibility() -> None:
-    """A single gemini agent in rate_limit ERROR must leave claude/codex slots open."""
+def test_rate_limit_on_grok_does_not_zero_claude_codex_eligibility() -> None:
+    """A single grok agent in rate_limit ERROR must leave claude/codex slots open."""
     agents = [
         _agent(
-            agent_id="gem-1",
-            agent_type=AgentType.GEMINI,
+            agent_id="grok-1",
+            agent_type=AgentType.GROK,
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
@@ -82,15 +82,15 @@ def test_rate_limit_on_gemini_does_not_zero_claude_codex_eligibility() -> None:
     mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
 
     # Work plays that claude_code or codex are capable of must remain eligible
-    # — the rate_limit on the gemini agent must not collapse the whole fleet.
+    # — the rate_limit on the grok agent must not collapse the whole fleet.
     # CODE_REVIEW additionally requires a PR snapshot for anti-confirmation
     # gating, so we cover it in the dedicated test below.
     for play in (PlayType.ISSUE_PICKUP, PlayType.RUN_QA, PlayType.WRITE_IMPLEMENTATION_PLAN):
-        assert mask[PLAY_TO_INDEX[play]], f"{play.value} was zeroed by gemini rate_limit"
+        assert mask[PLAY_TO_INDEX[play]], f"{play.value} was zeroed by grok rate_limit"
 
 
 def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> None:
-    """A rate_limited gemini agent must not block code_review for claude/codex agents.
+    """A rate_limited grok agent must not block code_review for claude/codex agents.
 
     With a PR snapshot whose ``github_author`` differs from the healthy agents'
     identities, the anti-confirmation gate accepts at least one (agent, PR)
@@ -98,8 +98,8 @@ def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> N
     """
     agents = [
         _agent(
-            agent_id="gem-1",
-            agent_type=AgentType.GEMINI,
+            agent_id="grok-1",
+            agent_type=AgentType.GROK,
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
@@ -133,23 +133,23 @@ def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> N
     mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
 
     assert mask[PLAY_TO_INDEX[PlayType.CODE_REVIEW]], (
-        "code_review was zeroed despite a reviewable PR and healthy non-gemini agents"
+        "code_review was zeroed despite a reviewable PR and healthy non-grok agents"
     )
 
 
 def test_rate_limit_excludes_only_same_type_candidates() -> None:
-    """If all gemini agents are rate_limited but other types are healthy, gemini-only
+    """If all grok agents are rate_limited but other types are healthy, grok-only
     candidacy is the only thing that disappears."""
     agents = [
         _agent(
-            agent_id="gem-1",
-            agent_type=AgentType.GEMINI,
+            agent_id="grok-1",
+            agent_type=AgentType.GROK,
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
         _agent(
-            agent_id="gem-2",
-            agent_type=AgentType.GEMINI,
+            agent_id="grok-2",
+            agent_type=AgentType.GROK,
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),

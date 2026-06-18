@@ -17,7 +17,7 @@ from agentshore.config import ConfigError, PolicyMode, RunMode, generate_default
 def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     config_text = _generate_default_config(
         name_with_owner="owner/repo",
-        agents=["claude", "codex", "gemini", "grok", "agy"],
+        agents=["claude", "codex", "grok", "agy"],
         budget=25.0,
         strict=True,
     )
@@ -36,10 +36,9 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.rl.stale_idle_claim_release_ticks == 3
     assert config.rl.update_every == 16
     assert config.play_pacing.standard_cooldown_plays == 42
-    assert set(config.agents) == {"claude_code", "codex", "gemini", "grok", "antigravity"}
+    assert set(config.agents) == {"claude_code", "codex", "grok", "antigravity"}
     assert config.agents["claude_code"].binary == "claude"
     assert config.agents["codex"].binary == "codex"
-    assert config.agents["gemini"].binary == "gemini"
     assert config.agents["grok"].binary == "grok"
     assert config.agents["antigravity"].binary == "agy"
     assert config.agents["antigravity"].model_tiers["small"].model == "Gemini 3.5 Flash (Low)"
@@ -55,11 +54,6 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert codex_price.cost_per_1k_input == 0.00175
     assert codex_price.cost_per_1k_output == 0.014
     assert codex_price.cost_per_1k_cached_input == 0.000175
-    assert config.agents["gemini"].model_tiers["small"].enabled is True
-    assert config.agents["gemini"].model == "auto"
-    assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"
-    assert config.agents["gemini"].model_tiers["medium"].model == "auto"
-    assert config.agents["gemini"].model_tiers["large"].model == "pro"
     assert config.agents["grok"].model_tiers["small"].model == "grok-build"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
@@ -266,22 +260,6 @@ agents:
     assert codex_price.cost_per_1k_output == 0.014
 
 
-def test_partial_gemini_config_uses_agent_specific_defaults(tmp_path: Path) -> None:
-    yaml_text = """
-agents:
-  gemini:
-    enabled: true
-    binary: gemini
-"""
-    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
-    config = load_config(tmp_path / "agentshore.yaml")
-
-    assert config.agents["gemini"].max_context == 1_000_000
-    gemini_price = config.pricebook.resolve("gemini", None)
-    assert gemini_price.cost_per_1k_input == 0.0005
-    assert gemini_price.cost_per_1k_output == 0.003
-
-
 def test_partial_grok_config_uses_agent_specific_defaults(tmp_path: Path) -> None:
     yaml_text = """
 agents:
@@ -304,16 +282,11 @@ def test_default_config_has_agent_model_tiers() -> None:
 
     assert set(config.agents["claude_code"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["codex"].model_tiers) == {"small", "medium", "large"}
-    assert set(config.agents["gemini"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["grok"].model_tiers) == {"small", "medium", "large"}
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.4-mini"
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["gemini"].model_tiers["small"].enabled is True
-    assert config.agents["gemini"].model_tiers["small"].model == "flash-lite"
-    assert config.agents["gemini"].model_tiers["medium"].model == "auto"
-    assert config.agents["gemini"].model_tiers["large"].model == "pro"
     assert config.agents["grok"].model_tiers["small"].model == "grok-build"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
@@ -394,45 +367,7 @@ def test_config_nested_containers_are_immutable() -> None:
         config.intake.seed_paths.append("docs/")  # type: ignore[attr-defined]
 
 
-def test_gemini_top_level_reasoning_effort_raises_config_error(tmp_path: Path) -> None:
-    """Top-level reasoning_effort on a gemini agent must be rejected."""
-    cfg_path = tmp_path / "agentshore.yaml"
-    cfg_path.write_text(
-        """\
-agents:
-  gemini:
-    enabled: true
-    binary: gemini
-    reasoning_effort: medium
-""",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ConfigError, match="reasoning_effort.*gemini.*no effort flag"):
-        load_config(cfg_path)
-
-
-def test_gemini_tier_reasoning_effort_raises_config_error(tmp_path: Path) -> None:
-    """Per-tier reasoning_effort on a gemini agent must be rejected."""
-    cfg_path = tmp_path / "agentshore.yaml"
-    cfg_path.write_text(
-        """\
-agents:
-  gemini:
-    enabled: true
-    binary: gemini
-    model_tiers:
-      medium:
-        model: auto
-        reasoning_effort: high
-""",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ConfigError, match="reasoning_effort.*gemini.*no effort flag"):
-        load_config(cfg_path)
-
-
+# Drift guard: generated default file matches runtime defaults.
 def test_generated_default_file_matches_runtime_defaults(tmp_path: Path) -> None:
     """Drift guard for the single-sourced defaults (H3).
 

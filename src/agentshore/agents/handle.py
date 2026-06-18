@@ -129,7 +129,6 @@ def _generate_display_name(agent_type: AgentType, model_tier: str | None = None)
     prefix = {
         "claude_code": "Claude",
         "codex": "Codex",
-        "gemini": "Gemini",
         "grok": "Grok",
         "antigravity": "Antigravity",
     }.get(agent_type.value, "Agent")

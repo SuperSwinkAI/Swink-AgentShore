@@ -29,15 +29,6 @@ AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
         "can_run_skill": True,
         "max_context": 400_000,
     },
-    AgentType.GEMINI: {
-        "can_implement": True,
-        "can_review": True,
-        "can_test": True,
-        "can_create_pr": True,
-        "can_merge": True,
-        "can_run_skill": True,
-        "max_context": 1_000_000,
-    },
     AgentType.GROK: {
         "can_implement": True,
         "can_review": True,

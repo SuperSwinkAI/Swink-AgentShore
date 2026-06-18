@@ -88,7 +88,7 @@ def test_aggregates_split_busy_live_and_per_harness_and_tier() -> None:
         _agent("c2", AgentType.CLAUDE_CODE, AgentStatus.BUSY, model_tier="small"),
         _agent("c3", AgentType.CLAUDE_CODE, AgentStatus.IDLE),
         _agent("x1", AgentType.CODEX, AgentStatus.BUSY, model_tier="medium"),
-        _agent("g1", AgentType.GEMINI, AgentStatus.ERROR),
+        _agent("g1", AgentType.GROK, AgentStatus.ERROR),
         _agent("k1", AgentType.GROK, AgentStatus.TERMINATED),
     ]
     rec = _record_for(agents, _outcome("c1"))

@@ -260,8 +260,8 @@ def test_serialize_state_active_play_trigger_metadata() -> None:
         play_type=PlayType.TAKE_BREAK,
         agent_id=None,
         started_at="2026-01-01T00:00:00Z",
-        trigger_agent_id="gemini-1",
-        trigger_agent_type="gemini",
+        trigger_agent_id="grok-1",
+        trigger_agent_type="grok",
         trigger_error_class="rate_limit",
     )
     state = _minimal_state(active_play=active)
@@ -270,8 +270,8 @@ def test_serialize_state_active_play_trigger_metadata() -> None:
     assert isinstance(payload, dict)
     assert payload["play_type"] == "take_break"
     assert payload["agent_id"] is None
-    assert payload["trigger_agent_id"] == "gemini-1"
-    assert payload["trigger_agent_type"] == "gemini"
+    assert payload["trigger_agent_id"] == "grok-1"
+    assert payload["trigger_agent_type"] == "grok"
     assert payload["trigger_error_class"] == "rate_limit"
 
 

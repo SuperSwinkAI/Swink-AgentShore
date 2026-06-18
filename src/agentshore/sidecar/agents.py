@@ -73,7 +73,6 @@ def agents_catalog() -> dict[str, object]:
 _BINARY_TO_AGENT_TYPE: dict[str, str] = {
     "claude": "claude_code",
     "codex": "codex",
-    "gemini": "gemini",
     "grok": "grok",
     "grok-build": "grok",
     "agy": "antigravity",

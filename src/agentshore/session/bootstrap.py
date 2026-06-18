@@ -301,10 +301,9 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
             "AgentShore needs at least one agent. Options:\n"
             "  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code\n"
             "  2. Install Codex CLI:    pip install codex-cli\n"
-            "  3. Install Gemini CLI:   npm install -g @google/gemini-cli\n"
-            "  4. Install Grok CLI:     npm install -g @xai-official/grok\n"
-            "  5. Install Antigravity CLI (agy):  https://antigravity.google/product/antigravity-cli\n"
-            "  6. Set an API key:       export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  3. Install Grok CLI:     npm install -g @xai-official/grok\n"
+            "  4. Install Antigravity CLI (agy):  https://antigravity.google/product/antigravity-cli\n"
+            "  5. Set an API key:       export ANTHROPIC_API_KEY=sk-ant-...\n"
             "                           export OPENAI_API_KEY=sk-...",
             err=True,
         )

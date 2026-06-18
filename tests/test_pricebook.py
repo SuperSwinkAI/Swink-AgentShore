@@ -37,7 +37,7 @@ def test_bundled_pricing_yaml_is_resource_readable() -> None:
 
 def test_load_pricebook_has_expected_structure() -> None:
     pb = load_pricebook()
-    assert {"claude_code", "codex", "gemini", "grok", "antigravity"} <= set(pb.agent_defaults)
+    assert {"claude_code", "codex", "grok", "antigravity"} <= set(pb.agent_defaults)
     assert "sonnet" in pb.models
     assert pb.cache_read_multiplier == 0.1
     assert pb.cache_write_multiplier == 1.25

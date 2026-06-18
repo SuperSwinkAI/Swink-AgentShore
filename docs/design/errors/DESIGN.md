@@ -51,8 +51,7 @@ the Grok type is suppressed (a bounded cooldown) so it auto-recovers later. The
 first-byte deadline is **600s for all streaming agents** (#213; antigravity is
 the structural exception at 1800s). The Grok CLI (0.2.32) was measured at 30–70s
 to first byte for `grok-build` — model/relay latency, not local startup — and on
-heavy `code_review` prompts both Grok (at the old 240s grok cap) and Gemini (at
-the old 120s global) timed out before their first token. Reasoning models
+heavy `code_review` prompts Grok (at the old 240s grok cap) timed out before its first token. Reasoning models
 legitimately go silent before first token, so the deadline only catches a broken
 child that emits nothing; the 3h wall-clock backstops genuine hangs. Grok is
 also dispatched with `--no-memory --no-plan` to trim that latency on its

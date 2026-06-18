@@ -10,7 +10,6 @@ import pytest
 from agentshore.agents.model_catalog import (
     KNOWN_MODELS,
     _fetch_anthropic_models,
-    _fetch_gemini_models,
     _fetch_openai_models,
     models_for_agent,
 )
@@ -99,40 +98,6 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     assert "gpt-5.4-nano" in KNOWN_MODELS["codex"]
 
 
-def test_gemini_falls_back_to_known_models_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    with (
-        patch("agentshore.agents.model_catalog._fetch_anthropic_models", new=AsyncMock()) as mock_a,
-        patch("agentshore.agents.model_catalog._fetch_openai_models", new=AsyncMock()) as mock_o,
-        patch(
-            "agentshore.agents.model_catalog._fetch_gemini_models", new=AsyncMock(return_value=[])
-        ) as mock_g,
-    ):
-        result = models_for_agent("gemini")
-
-    mock_a.assert_not_called()
-    mock_o.assert_not_called()
-    mock_g.assert_called_once()
-    assert result == KNOWN_MODELS["gemini"]
-
-
-def test_gemini_live_extras_appended_after_known(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
-    live = ["gemini-future", "gemini-2.5-flash"]
-    with patch(
-        "agentshore.agents.model_catalog._fetch_gemini_models", new=AsyncMock(return_value=live)
-    ):
-        result = models_for_agent("gemini")
-
-    known = KNOWN_MODELS["gemini"]
-    assert result[: len(known)] == known
-    assert "gemini-future" in result
-    assert result.count("gemini-2.5-flash") == 1
-
-
 def test_grok_known_models_hard_pinned_to_build() -> None:
     # grok is hard-pinned: exactly one entry, grok-build.
     assert KNOWN_MODELS["grok"] == ["grok-build"]
@@ -216,57 +181,6 @@ def test_fetch_openai_returns_empty_on_http_error(monkeypatch: pytest.MonkeyPatc
         provider="openai",
         error="timeout",
     )
-
-
-# ---------------------------------------------------------------------------
-# _fetch_gemini_models - failure modes
-# ---------------------------------------------------------------------------
-
-
-def test_fetch_gemini_returns_empty_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    assert asyncio.run(_fetch_gemini_models()) == []
-
-
-def test_fetch_gemini_returns_empty_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
-    import httpx
-
-    with (
-        patch("httpx.AsyncClient.get", new=AsyncMock(side_effect=httpx.RequestError("timeout"))),
-        patch("agentshore.agents.model_catalog._logger") as logger,
-    ):
-        assert asyncio.run(_fetch_gemini_models()) == []
-
-    logger.debug.assert_called_once_with(
-        "model_catalog.fetch_failed",
-        provider="gemini",
-        error="timeout",
-    )
-
-
-def test_fetch_gemini_filters_non_generation_models(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status.return_value = None
-    mock_resp.json.return_value = {
-        "models": [
-            {
-                "name": "models/gemini-2.5-flash",
-                "supportedGenerationMethods": ["generateContent"],
-            },
-            {
-                "name": "models/gemini-embedding-001",
-                "supportedGenerationMethods": ["embedContent"],
-            },
-            {"name": "models/gemma-4", "supportedGenerationMethods": ["generateContent"]},
-        ]
-    }
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp)):
-        result = asyncio.run(_fetch_gemini_models())
-
-    assert result == ["gemini-2.5-flash"]
 
 
 def test_fetch_openai_filters_to_relevant_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:

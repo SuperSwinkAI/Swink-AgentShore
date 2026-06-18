@@ -208,8 +208,6 @@ function providerLabel(agentType: string): string {
       return "Claude";
     case "codex":
       return "Codex";
-    case "gemini":
-      return "Google";
     case "grok":
       return "Grok";
     case "api_gpt":

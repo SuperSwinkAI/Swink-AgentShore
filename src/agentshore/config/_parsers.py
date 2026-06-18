@@ -608,7 +608,7 @@ def _resolve_agent_type(agent_cfg: AgentConfig, agent_name: str) -> AgentType | 
 
     Prefers the binary→type registry (so a custom key like ``my_claude`` with
     ``binary: claude`` resolves), then falls back to the key itself (so a custom
-    binary path like ``binary: /opt/bin/gemini`` still validates when the key is
+    binary path like ``binary: /opt/bin/agy`` still validates when the key is
     a canonical type). ``None`` means the entry maps to no supported CLI agent.
     """
     from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
@@ -663,8 +663,8 @@ def _validate_agent_identities(
 def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
     """Reject ``reasoning_effort`` on agent types whose CLI has no effort flag.
 
-    Currently only Gemini has no effort flag.  Top-level ``reasoning_effort``
-    and per-tier ``reasoning_effort`` entries are both checked.
+    Top-level ``reasoning_effort`` and per-tier ``reasoning_effort`` entries are
+    both checked.
     """
     from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
 
@@ -677,7 +677,7 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
             # This agent type supports effort — nothing to reject.
             continue
 
-        # Agent type has an empty effort vocabulary (e.g. Gemini).
+        # Agent type has an empty effort vocabulary (e.g. Antigravity).
         if agent_cfg.reasoning_effort:
             raise ConfigError(
                 f"agents.{agent_name}.reasoning_effort is not supported for "

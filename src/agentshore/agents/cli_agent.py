@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 from agentshore import subprocess_env
 from agentshore.agents import cli_antigravity, cli_grok
 from agentshore.agents._jsonl import (
-    _first_int,
     _iter_json_events,
     _max_usage,
     _usage_totals_from_dict,
@@ -70,7 +69,7 @@ def _resolve_executable(argv: list[str]) -> list[str]:
 
     ``subprocess_env.resolve_tool`` is for known tools (git/gh); here we need
     the same PATHEXT-aware which() for arbitrary agent CLI names (claude.cmd,
-    codex.cmd, gemini.cmd) that are npm shims on Windows.
+    codex.cmd, agy.cmd) that are npm shims on Windows.
     """
     import os
     import shutil
@@ -402,7 +401,6 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
         "--ignore-rules",
         "--dangerously-bypass-approvals-and-sandbox",
     ),
-    AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
     AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
 }
@@ -430,9 +428,8 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 # The bound is deliberately generous (#213). The original tight 120s cap was
 # calibrated to a fast-launch assumption that does not hold for reasoning models:
 # Grok (CLI 0.2.32) measures 30–70s to first byte with a variance tail past 90s,
-# and on heavy ``code_review`` prompts both Grok (killed at its old 240s) and
-# Gemini (killed at the old 120s global) went silent past their windows on the
-# same PR — the model/relay first-token latency, not local startup, dominates and
+# and on heavy ``code_review`` prompts Grok (killed at its old 240s) went silent
+# past its window — the model/relay first-token latency, not local startup, dominates and
 # is irreducible via flags. The first-byte deadline's job is catching a *broken*
 # child that emits nothing, not bounding slow-but-healthy first-token latency
 # (the 3h wall-clock is the real hang backstop). So all streaming agents now
@@ -444,7 +441,7 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 _FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
 
 # Per-agent-type override of the global first-byte deadline. Streaming agents
-# (codex, claude, gemini, grok) all use the global 600s above; the only override
+# (codex, claude, grok) all use the global 600s above; the only override
 # is antigravity, which is structurally non-streaming.
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # agy uses an async task system and emits no stdout until the task completes
@@ -635,8 +632,7 @@ def build_argv(
     npm ``.cmd`` shims, which expand a large prompt argument through cmd.exe and
     hit its ~8191-char command-line limit ("The command line is too long.").
     Each CLI is told to read the prompt from stdin: codex via the ``-`` prompt
-    placeholder, claude via ``-p`` with no prompt argument, gemini via an empty
-    ``-p`` (its ``--prompt`` value is appended to whatever arrives on stdin).
+    placeholder, claude via ``-p`` with no prompt argument.
     Grok is the exception — it has no stdin prompt mode, so the caller writes
     the prompt to a temp file and passes its path as *prompt_file*, which Grok
     reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
@@ -680,16 +676,6 @@ def build_argv(
             args += ["-C", project_dir]
         # "-" tells `codex exec` to read the prompt from stdin.
         args.append("-" if prompt_on_stdin else prompt)
-        return args
-
-    if agent_type == AgentType.GEMINI:
-        binary = binary or "gemini"
-        args = [binary, "--output-format", "stream-json"]
-        if model:
-            args += ["--model", model]
-        args.extend(extra_flags)
-        # Empty -p keeps headless mode while the real prompt arrives on stdin.
-        args += ["-p", "" if prompt_on_stdin else prompt]
         return args
 
     if agent_type == AgentType.GROK:
@@ -1555,13 +1541,11 @@ _NEVER_S: Final[float] = 365 * 24 * 3600.0
 # Detecting it lets the idle watcher apply the short _POST_RESPONSE_GRACE_S
 # (60s) instead of waiting the full stream_idle_timeout (default 1800s) for a
 # finished-but-unexited subprocess. Previously only Claude was wired up, so a
-# finished gemini/codex lingered up to 30 min each — stacking memory across
-# plays toward OOM (#21). Codex emits ``turn.completed``; Gemini and Claude
-# emit ``type: "result"``.
+# finished codex lingered up to 30 min — stacking memory across
+# plays toward OOM (#21). Codex emits ``turn.completed``; Claude emits ``type: "result"``.
 _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
-    AgentType.GEMINI: frozenset({"result"}),
     AgentType.GROK: frozenset({"end"}),
 }
 
@@ -1680,44 +1664,6 @@ def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | N
     return (messages[-1] if messages else raw), usage_totals, session_id
 
 
-def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    session_id: str | None = None
-    usage_totals = _UsageTotals()
-    messages: list[str] = []
-    final_response: str | None = None
-
-    for event in _iter_json_events(raw):
-        session_id = session_id or _extract_gemini_session_id(event)
-
-        event_type = event.get("type")
-        if event_type == "message":
-            role = event.get("role")
-            message = event.get("message")
-            if role is None and isinstance(message, dict):
-                role = message.get("role")
-            if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
-                continue
-            text = _extract_text_value(event.get("message"))
-            if text is None:
-                text = _extract_text_value(event)
-            if text:
-                messages.append(text)
-            continue
-
-        if event_type == "result" or "response" in event:
-            text = _extract_text_value(event.get("response"))
-            if text is None:
-                text = _extract_text_value(event.get("result"))
-            if text:
-                final_response = text
-
-            stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
-            if isinstance(stats, dict):
-                usage_totals = _max_usage(usage_totals, _usage_totals_from_gemini_stats(stats))
-
-    return (final_response or "".join(messages) or raw), usage_totals, session_id
-
-
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
     return cli_grok.parse_grok_jsonl(raw)
@@ -1755,20 +1701,6 @@ def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
     return _extract_text_from_stream_json(raw), usage, _extract_session_id_from_jsonl(raw)
 
 
-def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    for key in ("session_id", "sessionId", "thread_id", "id"):
-        value = event.get(key)
-        if isinstance(value, str) and value:
-            return value
-    metadata = event.get("metadata")
-    if isinstance(metadata, dict):
-        for key in ("session_id", "sessionId", "thread_id", "id"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return None
-
-
 def _extract_text_value(value: object) -> str | None:
     if isinstance(value, str):
         return value
@@ -1790,42 +1722,7 @@ def _extract_text_value(value: object) -> str | None:
     return None
 
 
-def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-    usage = stats.get("usageMetadata")
-    if isinstance(usage, dict):
-        stats = usage
 
-    tokens_in = _first_int(
-        stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-    )
-    cached_tokens_in = _first_int(
-        stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
-    )
-    tokens_out = _first_int(
-        stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-    )
-
-    if tokens_in == 0 and tokens_out == 0:
-        nested = [
-            _usage_totals_from_gemini_stats(value)
-            for value in stats.values()
-            if isinstance(value, dict)
-        ]
-        if nested:
-            return _UsageTotals(
-                tokens_in=sum(item.tokens_in for item in nested),
-                tokens_out=sum(item.tokens_out for item in nested),
-                cached_tokens_in=sum(item.cached_tokens_in for item in nested),
-                cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
-                max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
-            )
-
-    return _UsageTotals(
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        max_turn_input_tokens=tokens_in,
-    )
 
 
 class CliOutputFormat(Protocol):
@@ -1849,7 +1746,6 @@ class _FunctionFormat:
 _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
-    AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
 }
 

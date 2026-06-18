@@ -120,7 +120,6 @@ def _agent_key_for_detected_binary(binary: str) -> str | None:
 _AGENT_LABELS: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
-    "gemini": "gemini",
     "grok": "grok",
     "antigravity": "agy",
 }
@@ -399,8 +398,7 @@ def _interactive_agent_select(
         efforts = reasoning_efforts_for(agent_type)
         is_grok = agent_type == AgentType.GROK
         # Steps after the header: enable, model (skipped — grok is hard-pinned to
-        # grok-build), reasoning effort (only when the agent's CLI exposes one;
-        # gemini does not), then max.
+        # grok-build), reasoning effort (only when the agent's CLI exposes one), then max.
         total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
         n = 0
 
@@ -448,7 +446,7 @@ def _interactive_agent_select(
             else:
                 chosen = chosen_sel
 
-        # reasoning effort — only agents whose CLI exposes one (gemini has none).
+        # reasoning effort — only agents whose CLI exposes one.
         if efforts:
             n += 1
             default_effort = (

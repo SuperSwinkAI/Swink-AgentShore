@@ -1,7 +1,7 @@
 """Resolve a per-agent GitHub identity into a subprocess env overlay.
 
 The overlay is layered on top of ``os.environ`` when dispatching CLI agent
-subprocesses (Claude Code, Codex, Gemini).
+subprocesses (Claude Code, Codex, Grok, Antigravity).
 
 Token sources, in priority order:
 

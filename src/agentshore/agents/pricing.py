@@ -53,9 +53,8 @@ _WARNED_FALLBACKS: set[tuple[str, str]] = set()
 class AgentPricing:
     """Token rates + context window for a single pricing entry.
 
-    Optional cost fields are ``None`` when the provider has no such tier (e.g.
-    Gemini has no cached-input price); :class:`PricingQuote` carries the
-    multipliers used to derive a rate in that case.
+    Optional cost fields are ``None`` when the provider has no such tier;
+    :class:`PricingQuote` carries the multipliers used to derive a rate in that case.
     """
 
     max_context: int

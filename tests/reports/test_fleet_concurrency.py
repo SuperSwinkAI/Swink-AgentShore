@@ -131,7 +131,6 @@ def test_timeline_uses_dashboard_agent_marker_colors(tmp_path: Path) -> None:
                     "antigravity": 1,
                     "claude_code": 2,
                     "codex": 3,
-                    "gemini": 4,
                     "grok": 5,
                 },
             )
@@ -145,10 +144,9 @@ def test_timeline_uses_dashboard_agent_marker_colors(tmp_path: Path) -> None:
         row["label"]: row["color"] for row in data["timeline"]["harnesses"]
     }
     assert colors_by_harness == {
-        "antigravity": "#9334E6",
+        "antigravity": "#4285F4",
         "claude_code": "#E07B39",
         "codex": "#F4D44D",
-        "gemini": "#4285F4",
         "grok": "#14B8A6",
     }
 

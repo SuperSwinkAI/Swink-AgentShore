@@ -300,9 +300,6 @@ agents:
   grok:
     enabled: true
     identity: unseriousai
-  gemini:
-    enabled: true
-    identity: unseriousai
 """,
     )
     state = ServerState(active_project_path=str(project))

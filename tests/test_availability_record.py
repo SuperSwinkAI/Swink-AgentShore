@@ -135,7 +135,7 @@ def test_refresh_picks_up_gh_accounts(tmp_path: Path) -> None:
     [
         ("claude", "claude_code"),
         ("codex", "codex"),
-        ("gemini", "gemini"),
+
         ("grok", "grok"),
         ("grok-build", "grok"),
     ],

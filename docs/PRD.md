@@ -2,7 +2,7 @@
 
 ## Overview
 
-AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agents (Claude, Codex, Gemini, etc.) to autonomously progress coding projects. A reinforcement learning agent selects high-level "plays" — discrete skills that advance the project — while the human's control surface is the GitHub issue tracker, not AgentShore-specific configuration.
+AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agents (Claude, Codex, Grok, Antigravity, etc.) to autonomously progress coding projects. A reinforcement learning agent selects high-level "plays" — discrete skills that advance the project — while the human's control surface is the GitHub issue tracker, not AgentShore-specific configuration.
 
 The RL agent does not write code. It decides *what to do next* and *which agent does it*. The PPO policy drives all direction; deterministic code only backstops invalid plays and never gates with human-in-the-loop.
 
