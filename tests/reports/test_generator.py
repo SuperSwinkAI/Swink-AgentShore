@@ -204,10 +204,78 @@ def _progress_report_data() -> ProgressReportData:
     )
 
 
-def _end_session_report_data() -> EndSessionReportData:
+def _fleet_concurrency_data() -> dict[str, object]:
+    return {
+        "sample_count": 3,
+        "peak_busy": 3,
+        "mean_busy": 2.3333333333333335,
+        "peak_by_harness": [
+            {"label": "claude_code", "peak_busy": 2},
+            {"label": "codex", "peak_busy": 2},
+        ],
+        "peak_by_harness_tier": [
+            {"label": "claude_code/large", "peak_busy": 2, "config_max": 2},
+            {"label": "codex/medium", "peak_busy": 2, "config_max": 5},
+        ],
+        "busy_histogram": [
+            {"busy_level": 1, "samples": 1, "sample_share": 1 / 3},
+            {"busy_level": 3, "samples": 2, "sample_share": 2 / 3},
+        ],
+        "timeline": {
+            "width": 1000,
+            "height": 360,
+            "y_axis_labels": [
+                {"x": 38.0, "y": 300.0, "label": "0"},
+                {"x": 38.0, "y": 178.0, "label": "2"},
+                {"x": 38.0, "y": 56.0, "label": "4"},
+            ],
+            "x_axis_labels": [
+                {"x": 54.0, "y": 334.0, "label": "00:01"},
+                {"x": 271.0, "y": 334.0, "label": "00:02"},
+                {"x": 488.0, "y": 334.0, "label": "00:03"},
+                {"x": 705.0, "y": 334.0, "label": "00:04"},
+                {"x": 922.0, "y": 334.0, "label": "00:05"},
+            ],
+            "harnesses": [
+                {
+                    "label": "grok",
+                    "display_label": "Grok",
+                    "color": "#14B8A6",
+                    "fill": "rgba(20,184,166,0.22)",
+                    "area_points": "72.0,296.0 506.0,174.0 940.0,174.0 940.0,296.0 506.0,296.0 72.0,296.0",
+                },
+                {
+                    "label": "codex",
+                    "display_label": "Codex",
+                    "color": "#F4D44D",
+                    "fill": "rgba(244,212,77,0.28)",
+                    "area_points": "72.0,235.0 506.0,52.0 940.0,52.0 940.0,174.0 506.0,174.0 72.0,296.0",
+                },
+            ],
+            "total_points": "72.0,235.0 506.0,52.0 940.0,52.0",
+            "duration_label": "3 completion samples across 1.0h",
+            "note": "Stacked by harness at completion samples; total busy is overlaid as a line.",
+        },
+        "rate_limit_samples": [
+            {
+                "seq": 2,
+                "ts": "2026-06-18T00:02:00+00:00",
+                "play_type": "issue_pickup",
+                "completed_agent_type": "claude_code",
+                "completed_model_tier": "large",
+                "busy_total": 3,
+                "busy_by_type": {"claude_code": 2, "codex": 1},
+                "busy_by_type_tier": {"claude_code/large": 2, "codex/medium": 1},
+            }
+        ],
+    }
+
+
+def _end_session_report_data(*, fleet_concurrency: bool = True) -> EndSessionReportData:
     return EndSessionReportData(
         overview=_overview(),
         repo_url="https://github.com/acme/widgets",
+        fleet_concurrency=_fleet_concurrency_data() if fleet_concurrency else None,
         play_stats=[
             {
                 "play_type": "issue_pickup",
@@ -293,6 +361,7 @@ def _end_session_report_data() -> EndSessionReportData:
                 "play_type": "instantiate_agent",
                 "agent_name": "agentshore",
                 "success": True,
+                "status": "ok",
                 "started_at": NOW,
                 "duration_seconds": 1.0,
                 "dollar_cost": 0.0,
@@ -304,6 +373,7 @@ def _end_session_report_data() -> EndSessionReportData:
                 "play_type": "issue_pickup",
                 "agent_name": "agent-1",
                 "success": False,
+                "status": "fail",
                 "started_at": NOW,
                 "duration_seconds": 12.0,
                 "dollar_cost": 1.5,
@@ -312,6 +382,7 @@ def _end_session_report_data() -> EndSessionReportData:
         ],
         play_log_unique_agents=1,
         play_log_plays_in_use=2,
+        play_log_total_slots=22,
     )
 
 
@@ -554,6 +625,25 @@ class TestEndSessionReport:
         assert path.name == f"end-session-{SID}.html"
         assert "End Session Report" in html
         assert "Play Statistics" in html
+        assert "Fleet Concurrency" in html
+        assert "Peak Busy" in html
+        assert "Mean Busy" in html
+        assert ">2.33<" in html
+        assert "Busy Timeline" in html
+        assert "Stacked Busy Agents Over Session" in html
+        assert "Grok" in html
+        assert "timeline-line-total" in html
+        timeline_html = html.split('<div class="timeline-card">', 1)[1].split(
+            '<h3 class="subsection-title">Rate-Limit Samples</h3>',
+            1,
+        )[0]
+        assert "Rate-Limit" not in timeline_html
+        assert "rate_limit" not in timeline_html
+        assert "claude_code/large" in html
+        assert "Config Max" in html
+        assert "<td class=\"num\">5</td>" in html
+        assert "Rate-Limit Samples" in html
+        assert "codex: 1" in html
         assert "Control Rejections" in html
         assert "run_qa cooldown" in html
         assert "Issues Closed During Session" in html
@@ -566,6 +656,19 @@ class TestEndSessionReport:
         assert "Closed in session" in html
         assert html.count("<a href=") == 1
         assert "https://github.com/acme/widgets" in html
+
+    async def test_omits_fleet_concurrency_section_when_absent(self, tmp_path: Path) -> None:
+        collector = AsyncMock()
+        collector.collect_end_session_report.return_value = _end_session_report_data(
+            fleet_concurrency=False
+        )
+        gen = _make_generator(collector)
+
+        path = await gen.generate_end_session_report(SID, tmp_path)
+        html = path.read_text(encoding="utf-8")
+
+        assert "Fleet Concurrency" not in html
+        assert "Rate-Limit Samples" not in html
 
     async def test_uses_light_mode_style_guide_tokens(self, tmp_path: Path) -> None:
         collector = AsyncMock()

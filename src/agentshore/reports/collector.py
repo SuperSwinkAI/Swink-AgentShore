@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agentshore.beads import GraphReadError, load_graph
+from agentshore.core.concurrency_log import CONCURRENCY_FILENAME
 from agentshore.reports._aggregations import (
     compute_agent_performance,
     compute_agent_specialization,
@@ -46,6 +47,7 @@ from agentshore.reports._aggregations import (
     compute_trajectory,
     compute_trajectory_analysis,
 )
+from agentshore.reports._fleet_concurrency import collect_fleet_concurrency
 from agentshore.reports._loop_incidents import compute_loop_incidents
 from agentshore.reports._repo_url import resolve_repo_url
 from agentshore.reports.types import (
@@ -62,6 +64,14 @@ from agentshore.reports.types import (
     EpicSummary,
     FailureAnalysisEntry,
     FailurePlayEntry,
+    FleetConcurrencyData,
+    FleetConcurrencyHistogramEntry,
+    FleetConcurrencyPeakEntry,
+    FleetConcurrencyRateLimitEntry,
+    FleetConcurrencyTierPeakEntry,
+    FleetConcurrencyTimelineAxisLabel,
+    FleetConcurrencyTimelineData,
+    FleetConcurrencyTimelineHarnessEntry,
     IssueInflationData,
     IssueThroughputData,
     LearningsDiffData,
@@ -97,6 +107,14 @@ __all__ = [
     "EpicSummary",
     "FailureAnalysisEntry",
     "FailurePlayEntry",
+    "FleetConcurrencyData",
+    "FleetConcurrencyHistogramEntry",
+    "FleetConcurrencyPeakEntry",
+    "FleetConcurrencyRateLimitEntry",
+    "FleetConcurrencyTierPeakEntry",
+    "FleetConcurrencyTimelineAxisLabel",
+    "FleetConcurrencyTimelineData",
+    "FleetConcurrencyTimelineHarnessEntry",
     "IssueInflationData",
     "IssueThroughputData",
     "LearningsDiffData",
@@ -113,6 +131,32 @@ __all__ = [
     "TrajectoryAnalysisData",
     "TrajectorySnapshotEntry",
 ]
+
+
+def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
+    """Return ``agent_type/tier`` spawn caps from the project's config, best-effort."""
+    try:
+        from agentshore.agents.model_tiers import effective_model_tier_config
+        from agentshore.config import load_config
+        from agentshore.state import AgentType
+
+        cfg = load_config(project_path / "agentshore.yaml")
+    except Exception:
+        return {}
+
+    maxes: dict[str, int] = {}
+    for agent_name, agent_cfg in cfg.agents.items():
+        try:
+            agent_type = AgentType(agent_name)
+        except ValueError:
+            continue
+        for tier in agent_cfg.model_tiers:
+            maxes[f"{agent_type.value}/{tier}"] = effective_model_tier_config(
+                agent_type,
+                agent_cfg,
+                tier,
+            ).max
+    return maxes
 
 
 class ReportDataCollector:
@@ -221,10 +265,19 @@ class ReportDataCollector:
         )
         agents = await self._store.get_agents(session_id)
         overview = compute_overview(session, plays)
+        project_path = Path(session.project_path)
+        from agentshore.session_path import session_dir
+
+        concurrency_path = session_dir(project_path) / CONCURRENCY_FILENAME
 
         return EndSessionReportData(
             overview=overview,
             repo_url=await resolve_repo_url(session.project_path, issues),
+            fleet_concurrency=collect_fleet_concurrency(
+                concurrency_path,
+                session_id,
+                tier_config_maxes=_load_tier_config_maxes(project_path),
+            ),
             play_stats=compute_play_stats(plays),
             control_rejections=compute_control_rejections(control_rejections),
             closed_issues=compute_closed_issues(session, issues),

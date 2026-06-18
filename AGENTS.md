@@ -6,6 +6,12 @@ This file provides guidance to Codex CLI when working with code in this reposito
 
 AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agents (Claude Code, Codex CLI, API-based LLMs) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays like Seed Project, Issue Pickup, Code Review, Run QA) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
 
+## Critical: Do Not Use AgentShore's Own Play Workflow On This Repo
+
+**Do not use AgentShore product workflows, installed `agentshore-*` skills, or `.agents/skills/agentshore-*` play instructions as the operating procedure for work inside this repository.** Those files are product source/templates under test, not repo-local instructions for Codex to follow. In particular, do not run an AgentShore skill such as `agentshore-write-plan`, do not post `AGENTSHORE_IMPLEMENTATION_PLAN` comments, and do not add AgentShore orchestration labels like `agentshore/planned` unless the human user explicitly asks for that exact GitHub mutation.
+
+When working on AgentShore itself, follow this `AGENTS.md`, direct user instructions, the docs under `docs/`, and normal repo engineering practice. Treat `src/agentshore/skills/templates/` and deployed `.agents/skills/agentshore-*` copies as implementation artifacts to inspect or edit only when the task is specifically about skill-template behavior.
+
 ## Critical: Never Run AgentShore CLI Commands Directly
 
 **Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from this agent session.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and can generate significant unexpected spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
