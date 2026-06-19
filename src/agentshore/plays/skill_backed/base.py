@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.handle import is_noop_invocation
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
@@ -21,8 +20,7 @@ from agentshore.plays.dispatch import (
     write_play_context,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayOutcome, PlayType, SkillResult
+from agentshore.state import PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,7 +29,8 @@ if TYPE_CHECKING:
     from agentshore.agents.handle import AgentInvocationResult
     from agentshore.plays.base import PlayExecutionContext, PlayParams
     from agentshore.plays.skill_backed.gates import Gate
-    from agentshore.state import AgentSnapshot, OrchestratorState
+    from agentshore.rl.mask_reason import MaskReason
+    from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
 
@@ -199,31 +198,21 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability."""
+        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
+
+        Delegates to :class:`CapabilityGate` so the precondition-override helper
+        and the gate apply the *same* filter — including the circuit-breaker
+        exclusion (#22). A hand-rolled copy here previously omitted the
+        circuit-broken check, so issue_pickup / groom_backlog could be deemed
+        eligible on an agent the breaker had marked dead.
+        """
+        from agentshore.plays.skill_backed.gates import CapabilityGate  # noqa: PLC0415
+
         cap_key = self.capability
         if cap_key is None:
             return []
-        rate_limited: set[str] = {
-            a.agent_type.value
-            for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
-        }
-        capable: list[AgentSnapshot] = [
-            a
-            for a in state.agents
-            if a.status == AgentStatus.IDLE
-            and a.agent_type.value not in rate_limited
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-        if not capable:
-            return [
-                MaskReason(
-                    text=f"no IDLE agent with {cap_key} capability",
-                    classification=MaskClassification.TRANSIENT,
-                    source=MaskSource.ELIGIBILITY,
-                )
-            ]
-        return []
+        reason = CapabilityGate(cap_key)(state)
+        return [reason] if reason is not None else []
 
     def _is_trunk_scoped_dispatch(self, dispatch_cwd: Path | None, project_path: Path) -> bool:
         """True when this play dispatches into the main checkout and is a trunk type.

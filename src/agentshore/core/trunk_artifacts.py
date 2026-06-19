@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore import command
-from agentshore.core.wedge_signals import _path_is_agentshore_owned
+from agentshore.core.wedge_signals import _path_is_agentshore_owned, parse_porcelain_lines
 from agentshore.state import PlayType
 
 if TYPE_CHECKING:
@@ -111,16 +111,10 @@ def snapshot_untracked_root_artifacts(project_path: Path) -> set[str]:
     if result.tool_missing or result.returncode != 0:
         return set()
     artifacts: set[str] = set()
-    for line in result.stdout.splitlines():
-        if len(line) < 4 or line[:2] != "??":
-            continue
-        path = line[3:].strip()
-        if not path or path.startswith('"'):
-            # Quoted == git escaped a special char; don't risk a bad unescape.
-            continue
-        if "/" in path:
-            continue
-        if _path_is_agentshore_owned(path):
+    for status, path in parse_porcelain_lines(result.stdout):
+        # Only depth-1 untracked files that AgentShore doesn't own. (Quoted /
+        # blank paths are already dropped by the shared parser.)
+        if status != "??" or "/" in path or _path_is_agentshore_owned(path):
             continue
         artifacts.add(path)
     return artifacts

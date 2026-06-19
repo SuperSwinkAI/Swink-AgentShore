@@ -268,18 +268,25 @@ def path_contains_backslash_space(path: str | Path) -> bool:
     return PATH_ESCAPE_MARKER in str(path)
 
 
-_REQUIRED_GITIGNORE_ENTRIES: tuple[str, ...] = (
+# Canonical set of repo-root paths AgentShore (or its plays / sidecars) owns.
+# Single source of truth for BOTH consumers so they can't drift (#594): the
+# gitignore writer below ignores them (left untracked they dirty the trunk and
+# block merge_pr / reconcile_state on the next run), and
+# ``wedge_signals._AGENTSHORE_OWNED_UNTRACKED_PREFIXES`` derives from this to
+# filter them out of the dirty-trunk wedge signal. Previously two hand-kept
+# literals had drifted — the two ``*_refs.txt`` artifacts were gitignored here
+# but still counted dirty by wedge_signals.
+AGENTSHORE_OWNED_ROOT_PATHS: tuple[str, ...] = (
     ".agentshore/",
     ".agents/",
     ".beads/",
     "agentshore.yaml",
-    # Working-tree artifacts AgentShore (or its plays) drop at the repo root.
-    # Left untracked they dirty the trunk and block merge_pr / reconcile_state
-    # on the next run. Ignoring them on startup keeps `git status` clean.
     "timelapse-runs/",
     "closed_issue_refs.txt",
     "open_bead_refs.txt",
 )
+
+_REQUIRED_GITIGNORE_ENTRIES: tuple[str, ...] = AGENTSHORE_OWNED_ROOT_PATHS
 
 
 def ensure_gitignore_entries(repo_root: Path) -> list[str]:
