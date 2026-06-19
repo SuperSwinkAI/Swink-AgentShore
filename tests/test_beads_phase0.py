@@ -145,24 +145,51 @@ async def test_load_graph_raises_graph_read_error_when_bd_command_fails(
     """load_graph raises GraphReadError after exhausting retries — never returns stale None."""
     from pathlib import Path
 
-    from agentshore.beads import BdError, GraphReadError, load_graph
+    from agentshore.beads import _GRAPH_READ_RETRIES, BdError, GraphReadError, load_graph
 
     p = Path(str(tmp_path))
     (p / ".beads").mkdir()
 
     # All retry attempts fail — GraphReadError must be raised, not None returned.
     with (
-        patch("agentshore.beads.bd", side_effect=BdError("bd failed")),
+        patch("agentshore.beads.bd", side_effect=BdError("bd failed")) as mock_bd,
         pytest.raises(GraphReadError),
     ):
         await load_graph(p)
+    # Transient BdError is retried the full _GRAPH_READ_RETRIES times.
+    assert mock_bd.call_count == _GRAPH_READ_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_load_graph_fails_fast_on_timeout_without_retrying(
+    tmp_path: object,
+) -> None:
+    """A bd timeout raises GraphReadError on the first attempt — no 3x retry (#237).
+
+    Retrying a timeout only re-pays the full timeout budget (the 360s = 3x120s
+    pathology), so the graph reader must fail fast on ``BdTimeoutError`` rather
+    than treat it as a transient, retry-worthy failure.
+    """
+    from pathlib import Path
+
+    from agentshore.beads import BdTimeoutError, GraphReadError, load_graph
+
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+
+    with (
+        patch("agentshore.beads.bd", side_effect=BdTimeoutError("bd list timed out")) as mock_bd,
+        pytest.raises(GraphReadError),
+    ):
+        await load_graph(p)
+    assert mock_bd.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_load_graph_populates_tasks_and_resolves_epic(tmp_path: object) -> None:
     from pathlib import Path
 
-    from agentshore.beads import load_graph
+    from agentshore.beads import _BD_GRAPH_TIMEOUT_SECONDS, load_graph
 
     p = Path(str(tmp_path))
     (p / ".beads").mkdir()
@@ -192,7 +219,15 @@ async def test_load_graph_populates_tasks_and_resolves_epic(tmp_path: object) ->
         result = await load_graph(p)
 
     assert result is not None
-    bd.assert_awaited_once_with("list", "--all", "--json", "--limit", "0", cwd=p)
+    bd.assert_awaited_once_with(
+        "list",
+        "--all",
+        "--json",
+        "--limit",
+        "0",
+        cwd=p,
+        timeout_seconds=_BD_GRAPH_TIMEOUT_SECONDS,
+    )
     assert result.tasks_ready == 1
     assert result.tasks_total == 2
     assert result.global_closure_ratio == pytest.approx(0.5)

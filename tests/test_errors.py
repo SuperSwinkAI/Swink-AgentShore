@@ -25,25 +25,10 @@ def test_failure_category_matches_persisted_play_categories() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    ("recoverable", "recovery_action"),
-    [
-        (None, None),
-        (False, "surface to human"),
-    ],
-)
-def test_orchestrator_error_overrides_are_instance_scoped(
-    recoverable: bool | None,
-    recovery_action: str | None,
-) -> None:
-    exc = OrchestratorError(
-        "failed",
-        recoverable=recoverable,
-        recovery_action=recovery_action,
-    )
+def test_orchestrator_error_carries_message_and_error_type() -> None:
+    exc = OrchestratorError("failed")
     assert exc.message == "failed"
-    assert exc.recoverable is (True if recoverable is None else recoverable)
-    assert exc.recovery_action == (recovery_action or "none")
+    assert exc.error_type == "agentshore_error"
 
 
 def test_play_timeout_error_preserves_error_class() -> None:
@@ -54,6 +39,20 @@ def test_play_timeout_error_preserves_error_class() -> None:
 
 def test_crash_enospc_is_a_member() -> None:
     assert ErrorClass.CRASH_ENOSPC == "crash_enospc"
+
+
+def test_errorclass_coerce_passes_through_enum() -> None:
+    assert ErrorClass.coerce(ErrorClass.AUTH) is ErrorClass.AUTH
+
+
+def test_errorclass_coerce_maps_known_string() -> None:
+    assert ErrorClass.coerce("rate_limit") is ErrorClass.RATE_LIMIT
+    assert ErrorClass.coerce("timeout_stream_idle") is ErrorClass.TIMEOUT_STREAM_IDLE
+
+
+@pytest.mark.parametrize("garbage", ["author", "nonsense", "", None, 42, object()])
+def test_errorclass_coerce_collapses_unknown_to_unknown(garbage: object) -> None:
+    assert ErrorClass.coerce(garbage) is ErrorClass.UNKNOWN
 
 
 def test_is_disk_full_direct_enospc() -> None:

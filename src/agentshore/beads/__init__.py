@@ -109,6 +109,12 @@ _logger = get_logger(__name__)
 
 _BD_LOCK: asyncio.Lock = asyncio.Lock()
 _BD_TIMEOUT_SECONDS = 120.0
+# The full-graph dump (``bd list --all --json --limit 0``) is O(graph size) and
+# legitimately needs more headroom than a point mutation like ``bd close`` on a
+# large beads graph. Keep mutations at the tight 120s ceiling; give the dump its
+# own larger budget so a big-but-completable graph succeeds instead of timing out
+# (#237).
+_BD_GRAPH_TIMEOUT_SECONDS = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +256,17 @@ class BdError(RuntimeError):
     """Raised when a bd subcommand exits with a non-zero return code."""
 
 
+class BdTimeoutError(BdError):
+    """Raised when a bd subcommand exceeds its timeout.
+
+    Distinct from the generic ``BdError`` so callers can tell a "too big / too
+    slow" timeout apart from a transient, retry-worthy failure (e.g. lock
+    contention). Retrying a timeout cannot help — the command was already given
+    its full budget — so the graph reader fails fast on this rather than
+    re-paying the timeout N times (#237).
+    """
+
+
 class GraphReadError(BdError):
     """Raised when load_graph exhausts all retries and cannot return a fresh graph.
 
@@ -274,10 +291,12 @@ async def bd(
     *args: str,
     cwd: Path,
     stdin_data: bytes | None = None,
+    timeout_seconds: float = _BD_TIMEOUT_SECONDS,
 ) -> str:
     """Run a bd subcommand in *cwd* and return stdout as a string.
 
-    Raises BdError on non-zero exit.
+    Raises ``BdTimeoutError`` when the command exceeds *timeout_seconds* and
+    ``BdError`` on any other failure (non-zero exit, OSError, missing binary).
 
     All calls are serialised through ``_BD_LOCK`` (C5) to avoid concurrent
     plays racing at the bd filesystem layer.
@@ -293,10 +312,12 @@ async def bd(
                 *args,
                 cwd=cwd,
                 stdin_data=stdin_data,
-                timeout_seconds=_BD_TIMEOUT_SECONDS,
+                timeout_seconds=timeout_seconds,
                 resolve_executable=False,
             )
-        except (CommandTimeoutError, OSError) as exc:
+        except CommandTimeoutError as exc:
+            raise BdTimeoutError(f"bd {' '.join(args)} timed out: {exc}") from exc
+        except OSError as exc:
             raise BdError(f"bd {' '.join(args)} failed: {exc}") from exc
     if result.returncode != 0:
         raise BdError(
@@ -569,12 +590,37 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
     Raises ``GraphReadError`` after exhausting all retries.  This ensures
     callers cannot silently consume stale data — a persistent failure surfaces
     immediately rather than being hidden behind a fallback cache.
+
+    A *timeout* (``BdTimeoutError``) is not retried: the command already ran for
+    its full ``_BD_GRAPH_TIMEOUT_SECONDS`` budget, so re-running it would just
+    re-pay that cost N times (the #237 360s = 3×120s pathology). Only transient
+    failures (lock contention, a parse blip) are worth a retry.
     """
     last_exc: Exception | None = None
     for attempt in range(1, _GRAPH_READ_RETRIES + 1):
         try:
-            raw = await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+            raw = await bd(
+                "list",
+                "--all",
+                "--json",
+                "--limit",
+                "0",
+                cwd=project_path,
+                timeout_seconds=_BD_GRAPH_TIMEOUT_SECONDS,
+            )
             return _as_json_list(raw)
+        except BdTimeoutError as exc:
+            # Fail fast — a timeout means "too big to dump in budget", not a
+            # transient blip; retrying only multiplies the wasted wall-clock.
+            _logger.warning(
+                "beads_graph_load_timed_out",
+                project_path=str(project_path),
+                timeout_seconds=_BD_GRAPH_TIMEOUT_SECONDS,
+                error=str(exc),
+            )
+            raise GraphReadError(
+                f"bd list timed out after {_BD_GRAPH_TIMEOUT_SECONDS}s for {project_path}"
+            ) from exc
         except BdError as exc:
             last_exc = exc
             _logger.warning(

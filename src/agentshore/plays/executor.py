@@ -6,7 +6,6 @@ Covers target confirmation, context creation, execution, validation, and persist
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import re
 import time
@@ -14,12 +13,10 @@ from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import select_agent_for
 from agentshore.beads import add_blocking_dependency, load_graph
-from agentshore.data.models import ReviewQueueRecord
 from agentshore.data.store import (
     ExternalMutationRecord,
     HandoffRecord,
     PlayRecord,
-    PullRequestRecord,
 )
 from agentshore.errors import (
     AgentOutputInvalid,
@@ -31,14 +28,21 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.github.labels import BLOCKED_LABEL, DISALLOWED_LABEL
-from agentshore.identity_names import same_identity
 from agentshore.logging import get_logger
 from agentshore.plays._publish_reconciler import (
-    _AUTH_ERROR_MARKERS,
     IssuePickupPublishReconciler,
-    _pr_number_from_payload,
 )
 from agentshore.plays.base import PlayExecutionContext, PlayParams
+from agentshore.plays.execution.artifacts import (
+    _maybe_retarget_pr_base,
+    _record_commit_artifact,
+    _record_pr_artifact,
+)
+from agentshore.plays.execution.failure import _infer_failure_category
+from agentshore.plays.execution.mutations import build_idempotency_key
+from agentshore.plays.execution.validation import (
+    _anti_confirmation_check as _anti_confirmation_check_free,
+)
 from agentshore.plays.scope import validate_scope
 from agentshore.state import AgentStatus, PlayOutcome, PlayType, SkillResult
 from agentshore.utils import now_iso
@@ -244,7 +248,9 @@ class PlayExecutor:
             # any PR-scoped play so merge_pr can merge and code_review diffs the
             # right base. Idempotent; a no-op when the base already matches.
             if params.pr_number is not None and play.retarget_pr_base:
-                await self._maybe_retarget_pr_base(play_type, params, state)
+                await _maybe_retarget_pr_base(
+                    self._github, self._cfg, self._session_id, play_type, params, state
+                )
 
             params = await self._select_skill_agent(play, play_type, params, started_at)
             setup = await self._prepare_execution_context(
@@ -839,40 +845,51 @@ class PlayExecutor:
     async def _anti_confirmation_check(
         self, play_type: PlayType, params: PlayParams, candidate_agent_id: str
     ) -> str | None:
-        """Return an error string if the candidate violates self-review.
+        """Thin delegator to the free function in execution/validation.py."""
+        return await _anti_confirmation_check_free(
+            self._manager,
+            self._store,
+            self._session_id,
+            play_type,
+            params,
+            candidate_agent_id,
+        )
 
-        CODE_REVIEW is the only play with an anti-confirmation invariant:
-        the reviewer's GitHub identity must differ from the PR author's
-        GitHub login. Every other play (including RUN_QA, which exercises
-        the merged trunk) accepts any qualified agent.
+    async def _maybe_retarget_pr_base(
+        self,
+        play_type: PlayType,
+        params: PlayParams,
+        state: OrchestratorState,
+    ) -> None:
+        """Thin delegator to the free function in execution/artifacts.py."""
+        await _maybe_retarget_pr_base(
+            self._github, self._cfg, self._session_id, play_type, params, state
+        )
 
-        Identity is the only deconfliction key. Agent type plays no role —
-        a human and an agent can share a GH login, and two agents of the
-        same type can have different logins. The resolver pre-filters to a
-        cross-identity reviewer; this check is defense-in-depth against
-        races (handle reassignment between resolve and dispatch).
-        """
-        if play_type != PlayType.CODE_REVIEW or params.pr_number is None:
-            return None
+    async def _retarget_pr_to_target(
+        self,
+        pr_number: int,
+        current_base: str | None,
+        *,
+        idempotency_prefix: str,
+        success_event: str,
+        failure_event: str,
+        log_fields: dict[str, str] | None = None,
+    ) -> bool:
+        """Thin delegator to the free function in execution/artifacts.py."""
+        from agentshore.plays.execution.artifacts import _retarget_pr_to_target as _free
 
-        try:
-            handle = self._manager.get_handle(candidate_agent_id)
-        except (PreconditionFailed, KeyError):
-            return None
-        candidate_identity = handle.github_identity
-        if candidate_identity is None:
-            return None
-
-        pr_author = await self._store.get_pr_github_author(params.pr_number, self._session_id)
-        if pr_author is None:
-            return None
-
-        if same_identity(candidate_identity, pr_author):
-            return (
-                f"anti_confirmation_violation: agent {candidate_agent_id!r} "
-                f"identity {candidate_identity!r} authored PR #{params.pr_number}"
-            )
-        return None
+        return await _free(
+            self._github,
+            self._cfg,
+            self._session_id,
+            pr_number,
+            current_base,
+            idempotency_prefix=idempotency_prefix,
+            success_event=success_event,
+            failure_event=failure_event,
+            log_fields=log_fields,
+        )
 
     def _snapshot_context_size(self, play: Play, params: PlayParams) -> int:
         """Return source agent's context_size before handoff plays reset it."""
@@ -1037,153 +1054,27 @@ class PlayExecutor:
                 # authorship — skip the entire authorship-recording block.
                 if not play.authors_prs:
                     continue
-                await self._record_pr_artifact(play_type, params, outcome, artifact, now)
+                await _record_pr_artifact(
+                    self._manager,
+                    self._github,
+                    self._cfg,
+                    self._store,
+                    self._session_id,
+                    play_type,
+                    params,
+                    outcome,
+                    artifact,
+                    now,
+                )
             elif artifact_type == "commit":
-                await self._record_commit_artifact(params, outcome, artifact)
-
-    async def _record_pr_artifact(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        outcome: PlayOutcome,
-        artifact: dict[str, object],
-        now: str,
-    ) -> None:
-        """Record authorship, enrich, retarget, enqueue, and label a created PR."""
-        pr_number = _pr_number_from_payload(artifact)
-        branch = str(artifact.get("branch") or params.branch or "")
-        if pr_number is None or not outcome.agent_id:
-            return
-
-        if not branch:
-            # Surface the leak loudly: a PR-authoring play returned a PR
-            # artifact without a branch, and the dispatch params had no
-            # fallback either. The record will be persisted with
-            # ``branch=None``; the COALESCE upsert preserves any later refresh,
-            # but the in-memory snapshot used by the next code_review dispatch
-            # will see ``None`` and fail worktree allocation with
-            # ``missing_branch``. See issue #567 follow-up.
-            _logger.warning(
-                "pr_record_missing_branch",
-                pr_number=pr_number,
-                play_type=play_type.value,
-                agent_id=outcome.agent_id,
-                artifact_keys=sorted(artifact.keys()),
-                params_branch=params.branch,
-            )
-        self._manager.record_branch_exposure(branch, outcome.agent_id)
-
-        author_agent_type, author_github_login = self._resolve_pr_author(outcome.agent_id)
-        await self._store.record_pull_request(
-            PullRequestRecord(
-                pr_number=pr_number,
-                session_id=self._session_id,
-                issue_number=params.issue_number,
-                branch=branch or None,
-                state="open",
-                author_agent_id=outcome.agent_id,
-                author_agent_type=author_agent_type,
-                # Stamp the resolved GH login here so identity-based
-                # anti-confirmation works the moment the PR is recorded — without
-                # waiting for the next GitHub refresh to fill github_author from
-                # the API.
-                github_author=author_github_login,
-                created_at=now,
-            )
-        )
-        await self._enrich_and_retarget_pr(
-            pr_number, outcome.agent_id, author_agent_type, author_github_login
-        )
-        # Enqueue PR for code review.
-        await self._store.enqueue_review(
-            ReviewQueueRecord(
-                pr_number=pr_number,
-                session_id=self._session_id,
-                author_label=author_agent_type,
-                enqueued_at=now,
-            )
-        )
-        # Apply author label to GitHub PR for visibility.
-        if author_agent_type is not None and self._github is not None:
-            label_name = f"{self._cfg.intake.label_prefix}author:{author_agent_type}"
-            idem_key = f"author_label:pr{pr_number}:{author_agent_type}"
-            await self._github.label_issue(pr_number, [label_name], idem_key)
-
-    def _resolve_pr_author(self, agent_id: str) -> tuple[str | None, str | None]:
-        """Return (agent_type, github_login) for the PR author, or (None, None).
-
-        Falls back to (None, None) when the agent has already terminated: the
-        executor's identity check treats author=None as "any reviewer eligible"
-        and the next GitHub state refresh will populate github_author.
-        """
-        try:
-            handle = self._manager.get_handle(agent_id)
-        except (PreconditionFailed, KeyError):
-            return None, None
-        return handle.agent_type.value, handle.github_identity
-
-    async def _enrich_and_retarget_pr(
-        self,
-        pr_number: int,
-        author_agent_id: str,
-        author_agent_type: str | None,
-        author_github_login: str | None,
-    ) -> None:
-        """Enrich the freshly-recorded PR row from GitHub and correct its base.
-
-        Immediately enrich review_decision/mergeable/head_sha/is_draft from
-        GitHub so the next code_review / merge_pr eligibility check sees real
-        data, not the NULL defaults left by ``record_pull_request``. Without
-        this, the next periodic refresh's COALESCE upsert can fail to populate
-        these fields if the PR-trust filter or another sync path drops the
-        record before the cache write commits.
-        """
-        if self._github is None:
-            return
-        try:
-            enriched = await self._github.fetch_pull_request_by_number(pr_number)
-        except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover
-            _logger.warning("pr_enrichment_failed", pr_number=pr_number, error=str(exc))
-            enriched = None
-        if enriched is None:
-            return
-        # Preserve the authorship fields we just stamped.
-        enriched.author_agent_id = author_agent_id
-        enriched.author_agent_type = author_agent_type
-        if author_github_login is not None:
-            enriched.github_author = author_github_login
-        # Deterministic base correction at creation: agents skip the skill's
-        # base step ~1-in-6 times, opening PRs against the wrong base (e.g.
-        # `main`). Retarget to the configured target_branch now, using the fresh
-        # enriched base_ref (not a stale snapshot — the gap in the pre-merge
-        # _maybe_retarget_pr_base path). Idempotent via the mutation ledger;
-        # pairs with the merge-side gate so a wrong-base PR never lands on the
-        # wrong trunk regardless of agent adherence.
-        retargeted = await self._retarget_pr_to_target(
-            pr_number,
-            enriched.base_ref,
-            idempotency_prefix="create_retarget_base",
-            success_event="pr_base_auto_corrected",
-            failure_event="pr_base_auto_correct_failed",
-        )
-        if retargeted:
-            enriched.base_ref = self._cfg.project.target_branch
-        await self._store.record_pull_request(enriched)
-
-    async def _record_commit_artifact(
-        self,
-        params: PlayParams,
-        outcome: PlayOutcome,
-        artifact: dict[str, object],
-    ) -> None:
-        """Record branch-commit activity from a ``commit`` artifact."""
-        branch = str(artifact.get("branch") or params.branch or "")
-        sha = str(artifact.get("sha") or "")
-        if branch and outcome.agent_id:
-            self._manager.record_branch_commit(branch, outcome.agent_id, sha)
-            await self._store.update_branch_activity(
-                branch, self._session_id, outcome.agent_id, sha or None
-            )
+                await _record_commit_artifact(
+                    self._manager,
+                    self._store,
+                    self._session_id,
+                    params,
+                    outcome,
+                    artifact,
+                )
 
     async def _persist_mutations(
         self,
@@ -1311,74 +1202,6 @@ class PlayExecutor:
             return "label_fallback"
         return "unpersisted"
 
-    async def _maybe_retarget_pr_base(
-        self,
-        play_type: PlayType,
-        params: PlayParams,
-        state: OrchestratorState,
-    ) -> None:
-        """Retarget a PR opened against the wrong base to the configured target.
-
-        No-op when GitHub is unavailable, no ``project.target_branch`` is
-        configured, the PR's base is unknown, or the base already matches.
-        Idempotent via the mutation ledger (see
-        :meth:`GitHubAdapter.retarget_pr_base`). Self-heals #8 regardless of
-        whether the authoring agent honored the skill's base instruction.
-        """
-        pr_number = params.pr_number
-        if pr_number is None:
-            return
-        snapshot = next((pr for pr in state.pull_requests if pr.pr_number == pr_number), None)
-        base_ref = snapshot.base_ref if snapshot is not None else None
-        await self._retarget_pr_to_target(
-            pr_number,
-            base_ref,
-            idempotency_prefix="retarget_base",
-            success_event="pr_base_retargeted",
-            failure_event="pr_base_retarget_failed",
-            log_fields={"play_type": play_type.value},
-        )
-
-    async def _retarget_pr_to_target(
-        self,
-        pr_number: int,
-        current_base: str | None,
-        *,
-        idempotency_prefix: str,
-        success_event: str,
-        failure_event: str,
-        log_fields: dict[str, str] | None = None,
-    ) -> bool:
-        """Retarget *pr_number* from *current_base* to the configured target.
-
-        Single source for both the pre-dispatch self-heal
-        (:meth:`_maybe_retarget_pr_base`) and the create-time correction in
-        :meth:`_wire_deferrals`. Returns True only when a retarget was issued
-        and GitHub reported success. No-op (returns False) when GitHub is
-        unavailable, no ``project.target_branch`` is configured, the base is
-        unknown, or it already matches the target. Idempotent via the mutation
-        ledger keyed on ``<idempotency_prefix>:<pr>:<from>-><to>``.
-        """
-        if self._github is None:
-            return False
-        target = self._cfg.project.target_branch
-        if not target or not current_base or current_base == target:
-            return False
-        retargeted = await self._github.retarget_pr_base(
-            pr_number,
-            target,
-            idempotency_key=f"{idempotency_prefix}:{pr_number}:{current_base}->{target}",
-        )
-        _logger.info(
-            success_event if retargeted else failure_event,
-            pr_number=pr_number,
-            from_base=current_base,
-            to_base=target,
-            session_id=self._session_id,
-            **(log_fields or {}),
-        )
-        return retargeted
-
     async def _record_pre_dispatch_skip(
         self,
         play_type: PlayType,
@@ -1476,63 +1299,6 @@ class PlayExecutor:
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-
-def build_idempotency_key(session_id: str, mutation: dict[str, object]) -> str:
-    """Build a globally-unique idempotency key for an external mutation.
-
-    The key is a 16-character hex prefix of the SHA-256 digest of
-    ``{"session": session_id, **mutation}`` (keys sorted for stability).
-
-    ``session_id`` is always embedded so that cross-session runs cannot
-    collide: a pending row from a killed session cannot block the same
-    mutation in a fresh session.
-
-    Raises ``ValueError`` if *session_id* is empty.
-    """
-    if not session_id:
-        raise ValueError("session_id must not be empty when building an idempotency key")
-    key_payload = {"session": session_id, **mutation}
-    return hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode()).hexdigest()[:16]
-
-
-def _infer_failure_category(outcome: PlayOutcome) -> str:
-    """Map a failed PlayOutcome to a FailureCategory string.
-
-    Prefer the typed ``failure_kind`` the play set at the failure site; the
-    substring ladder below is the fallback for legacy / uncaught-Exception
-    paths that never set a kind.
-    """
-    if outcome.failure_kind is not None:
-        return str(outcome.failure_kind.to_category())
-    error = (outcome.error or "").lower()
-    if any(marker in error for marker in _AUTH_ERROR_MARKERS) or "auth" in error:
-        return "agent_error"
-    if error.startswith(("test", "ci", "pytest", "lint")):
-        return "test_failure"
-    if "anti_confirmation" in error or "approval" in error or "scope" in error:
-        return "alignment_drift"
-    if any(
-        kw in error
-        for kw in (
-            "timeout",
-            "crash",
-            "circuit breaker",
-            "circuit_breaker",
-            "malformed",
-            "invalid output",
-        )
-    ):
-        return "agent_error"
-    if any(
-        kw in error
-        for kw in (
-            "needs different reviewer",
-            "status-checks-pending",
-            "status_checks_pending",
-            "too ambiguous",
-            "blocked by open dependency",
-            "merge_conflicts",
-        )
-    ):
-        return "gate_rejection"
-    return "code_error"
+# Re-export build_idempotency_key so ``agentshore.plays.executor.build_idempotency_key``
+# continues to resolve (imported by tests and core mixins).
+__all__ = ["PlayExecutor", "build_idempotency_key"]

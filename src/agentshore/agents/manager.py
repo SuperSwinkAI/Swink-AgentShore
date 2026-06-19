@@ -62,6 +62,12 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
 # a wedge records a bounded cooldown so the type auto-recovers after this many
 # selector ticks (#202). No config field: this is a fixed backstop, not a
 # tunable, and keeping it module-local avoids a config-schema dependency.
+#
+# CLOCK: this horizon is measured in ``last_play_id`` ticks (cooldown.Clock.TICKS),
+# decayed in core/mixins/state.py:_drain_wedge_cooldowns. It is deliberately NOT
+# the same clock as the like-valued issue-pickup skip cooldown
+# (_SKIP_CIRCUIT_COOLDOWN_PLAYS, measured in state.total_plays / Clock.PLAYS) — the
+# shared literal ``20`` is a coincidence, not a relationship. Do not merge them.
 _GROK_WEDGE_COOLDOWN_TICKS = 20
 
 # Consecutive zero-stdout stream-idle timeouts for one agent TYPE before the type
@@ -433,11 +439,7 @@ class AgentManager:
                 # a bare AgentTimeout has no attribute, so the default applies.
                 # Coerce to ErrorClass, collapsing any unexpected value to
                 # UNKNOWN rather than persisting an unclassified string.
-                handle.last_error_class = (
-                    ErrorClass(raw_error_class)
-                    if raw_error_class in ErrorClass._value2member_map_
-                    else ErrorClass.UNKNOWN
-                )
+                handle.last_error_class = ErrorClass.coerce(raw_error_class)
                 # The stderr auth-sniffer surfaces a backend session-token expiry
                 # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
                 # lands here rather than in the generic-error branch below. Treat
@@ -697,11 +699,7 @@ class AgentManager:
         handle = self._get_handle(agent_id)
         cb = self._circuit_breakers[agent_id]
         cb.record_failure()
-        coerced = (
-            ErrorClass(error_class)
-            if error_class in ErrorClass._value2member_map_
-            else ErrorClass.UNKNOWN
-        )
+        coerced = ErrorClass.coerce(error_class)
         error_class = coerced
         handle.last_error_class = coerced
         if coerced == ErrorClass.AUTH:

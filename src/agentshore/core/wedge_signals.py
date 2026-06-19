@@ -21,9 +21,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from agentshore import command
+from agentshore.core.git_safety import AGENTSHORE_OWNED_ROOT_PATHS
 from agentshore.paths import project_db_path, project_dir
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from agentshore.state import OrchestratorState
@@ -31,20 +33,11 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 # Untracked paths that every AgentShore session leaves in the target project's
-# working tree. Filtered out of ``dirty_trunk_paths`` so reconcile_state
-# doesn't try to "restore" runtime state it has no business touching. Kept
-# in sync with the example-project session observation 2026-05-23 (see
-# AgentShore #594 — the merge_pr skill's own dirty-trunk check needs the same
-# allowlist).
-_AGENTSHORE_OWNED_UNTRACKED_PREFIXES: frozenset[str] = frozenset(
-    {
-        ".agentshore/",
-        ".beads/",
-        ".agents/",
-        "agentshore.yaml",
-        "timelapse-runs/",
-    }
-)
+# working tree. Filtered out of ``dirty_trunk_paths`` so reconcile_state doesn't
+# try to "restore" runtime state it has no business touching (#594). Derived
+# from the single canonical owned-paths tuple in ``git_safety`` so this and the
+# gitignore writer can never drift apart again.
+_AGENTSHORE_OWNED_UNTRACKED_PREFIXES: frozenset[str] = frozenset(AGENTSHORE_OWNED_ROOT_PATHS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +84,26 @@ def _path_is_agentshore_owned(path: str) -> bool:
     return False
 
 
+def parse_porcelain_lines(stdout: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(XY status, path)`` for each ``git status --porcelain`` v1 line.
+
+    Single parser shared by the dirty-trunk wedge signal and the
+    untracked-artifact reclaim (they previously hand-rolled two copies that had
+    drifted on quoting). Blank lines and **quoted** paths (git escapes names
+    with spaces/specials in ``"..."``) are skipped — a name that can't be safely
+    unquoted is treated as out of scope by both consumers rather than risk an
+    unescape mismatch. Each consumer applies its own status/owned filtering on
+    the yielded tuples.
+    """
+    for line in stdout.splitlines():
+        if len(line) < 4:
+            continue
+        status, path = line[:2], line[3:].strip()
+        if not path or path.startswith('"'):
+            continue
+        yield status, path
+
+
 def collect_dirty_trunk_paths(project_path: Path) -> list[DirtyTrunkEntry]:
     """Return tracked-file modifications on trunk, filtered for sidecars.
 
@@ -105,12 +118,7 @@ def collect_dirty_trunk_paths(project_path: Path) -> list[DirtyTrunkEntry]:
     if result.returncode != 0:
         return []
     entries: list[DirtyTrunkEntry] = []
-    for line in result.stdout.splitlines():
-        if len(line) < 3:
-            continue
-        status, path = line[:2], line[3:].strip()
-        if not path:
-            continue
+    for status, path in parse_porcelain_lines(result.stdout):
         if status == "??" and _path_is_agentshore_owned(path):
             continue
         mtime_utc: str | None = None

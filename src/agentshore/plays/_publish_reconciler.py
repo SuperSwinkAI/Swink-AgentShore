@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 from agentshore.agents.identity import IdentityResolutionError, resolve_identity_env
 from agentshore.command import CommandTimeoutError, run_command
+from agentshore.error_markers import AUTH_MARKERS
+from agentshore.error_markers import PUBLISH_AUTH_MARKERS as _AUTH_ERROR_MARKERS
 from agentshore.errors import PreconditionFailed
 from agentshore.logging import get_logger
 from agentshore.state import PlayOutcome, PlayType
@@ -36,19 +38,13 @@ _logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Error markers
 # ---------------------------------------------------------------------------
+# ``_AUTH_ERROR_MARKERS`` (the narrow publish-failure-recovery auth view,
+# PUBLISH_AUTH_MARKERS) only scopes the publish-related gate below — a failure is
+# "publish related" if it mentions a publish verb OR a narrow auth marker. The
+# auth *classification* (mark_agent_error "auth") instead uses the broad canonical
+# AUTH_MARKERS (Phase 4), so a publish failure carrying a wider GitHub-auth
+# spelling ("repository not found", …) is still marked auth.
 
-_AUTH_ERROR_MARKERS = (
-    "bad credentials",
-    "http 401",
-    "401 unauthorized",
-    "http 403",
-    "403 forbidden",
-    "irrecoverable github access failure",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-)
 _PR_PUBLISH_ERROR_MARKERS = (
     "pull request",
     "pr creation",
@@ -242,7 +238,7 @@ class IssuePickupPublishReconciler:
                 )
                 return _issue_pickup_success_from_pr(outcome, pr, branch)
 
-        if any(marker in error_text for marker in _AUTH_ERROR_MARKERS) and params.agent_id:
+        if any(marker in error_text for marker in AUTH_MARKERS) and params.agent_id:
             await self._manager.mark_agent_error(
                 params.agent_id,
                 "auth",

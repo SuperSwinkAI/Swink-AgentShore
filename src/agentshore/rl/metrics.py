@@ -14,7 +14,7 @@ import structlog
 
 from agentshore.play_rules import pr_is_awaiting_review
 from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
-from agentshore.rl.observation import ObservationContext
+from agentshore.rl.observation import _HIST_LEN, ObservationContext
 from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayType
 
 if TYPE_CHECKING:
@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-_HIST_LEN = 5
+# _HIST_LEN is single-homed in ``observation`` (the RL obs vector is index-
+# sensitive; a one-sided edit would silently corrupt the encoding) and imported
+# above so metrics' rolling history length can never drift from it.
 _ROLLING_WINDOW = 10  # plays to average over
 _AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset(
     {"agentshore/intake", "agentshore/qa", "agentshore/review"}

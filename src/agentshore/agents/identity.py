@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agentshore import command
+from agentshore.config.coerce import str_or_none
 from agentshore.errors import AgentAuthError, OrchestratorError
 from agentshore.identity_names import (
     canonical_identity_name,
@@ -39,7 +40,7 @@ from agentshore.identity_names import (
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 
@@ -131,6 +132,26 @@ def configured_github_login_for_identity(ident: GitHubIdentity, ident_name: str)
         gh_token_login=ident.gh_token_login,
         gh_token_env=ident.gh_token_env,
         gh_token_keychain=ident.gh_token_keychain,
+    )
+
+
+def configured_github_login_from_yaml_fields(
+    ident_name: str, ident_fields: Mapping[str, object]
+) -> str | None:
+    """Resolve a raw YAML ``identities:`` entry's configured GitHub login.
+
+    Single home for the token-source extraction the CLI identity helpers and the
+    wizard's ``yaml_patch`` all need — they previously hand-rolled the same
+    ``configured_github_login_from_fields(str_or_none(...))`` block. This is
+    security-sensitive (it decides which GitHub login a token maps to), so the
+    extraction must not silently diverge. ``ident_name`` is canonicalised here
+    (idempotent), so callers may pass the raw or already-canonical name.
+    """
+    return configured_github_login_from_fields(
+        ident_name=canonical_identity_name(ident_name),
+        gh_token_login=str_or_none(ident_fields.get("gh_token_login")),
+        gh_token_env=str_or_none(ident_fields.get("gh_token_env")),
+        gh_token_keychain=str_or_none(ident_fields.get("gh_token_keychain")),
     )
 
 

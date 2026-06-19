@@ -104,6 +104,15 @@ def extract_output(raw: str) -> str:
     return "" if content == "(empty)" else content
 
 
+_MANAGE_TASK_HANDOFF_MARKER = "manage_task status"
+
+
+def is_manage_task_handoff(raw: str) -> bool:
+    """Return True when agy ended its turn by delegating to an async manage_task
+    operation instead of completing work and emitting a JSON result block."""
+    return _MANAGE_TASK_HANDOFF_MARKER in raw
+
+
 def build_resume_argv(
     *,
     resume_session_id: str,

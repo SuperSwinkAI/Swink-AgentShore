@@ -1991,6 +1991,19 @@ def test_classify_error_github_repo_access_as_auth() -> None:
     )
 
 
+def test_classify_error_repository_not_found_on_stderr_is_auth() -> None:
+    # Phase 4: stderr auth detection now uses the canonical AUTH_MARKERS superset,
+    # so the GitHub-table spelling "repository not found" (absent from the old
+    # cli-stderr table) classifies as AUTH on stderr.
+    assert _classify_error(1, "fatal: repository not found", "") is ErrorClass.AUTH
+
+
+def test_classify_error_repository_not_found_on_stdout_only_is_not_auth() -> None:
+    # stdout stays on the narrow high-precision subset: the same phrase in an
+    # agent's work product must NOT classify as auth.
+    assert _classify_error(1, "", "fatal: repository not found") is not ErrorClass.AUTH
+
+
 @pytest.mark.parametrize(
     "stderr",
     [
@@ -2367,26 +2380,32 @@ def test_connection_reset_classifies_as_transient_network() -> None:
 def test_transient_network_is_recoverable_and_in_unknown_path() -> None:
     """transient_network keeps the recoverable take_break treatment of the old
     "unknown" classification, via the distinct unknown-error path (#23/#24)."""
-    from agentshore.core.mixins.completion import _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    from agentshore.core.recovery_tracker import _RECOVERY_OVERRIDE_KIND
+    from agentshore.errors import ErrorClass
+    from agentshore.plays.override import OverrideKind
     from agentshore.state import RECOVERABLE_ERROR_CLASSES
 
-    assert "transient_network" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
+    assert (
+        _RECOVERY_OVERRIDE_KIND[ErrorClass.TRANSIENT_NETWORK] is OverrideKind.UNKNOWN_ERROR_RECOVERY
+    )
     assert "transient_network" in RECOVERABLE_ERROR_CLASSES
 
 
 def test_codex_rollout_is_in_take_break_recovery_set() -> None:
-    # If this assertion ever fails, the classifier name changed but the
-    # recovery set did not â€” the agent will skip the take_break override and
-    # surface a permanent ERROR instead of rotating to a fresh codex process.
-    # codex_rollout now lives in the unknown-error recovery path (split from
-    # rate-limit recovery in #23/#24), not the rate-limit set.
-    from agentshore.core.mixins.completion import (
-        _RATE_LIMIT_RECOVERY_ERROR_CLASSES,
-        _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES,
-    )
+    # If this assertion ever fails, the classifier name changed but the recovery
+    # routing did not — the agent will skip the take_break override and surface a
+    # permanent ERROR instead of rotating to a fresh codex process. codex_rollout
+    # routes through the unknown-error recovery path (split from rate-limit
+    # recovery in #23/#24), not the rate-limit set, and is recoverable for
+    # eligibility (reconciled with the routing map — see test_recovery_routing).
+    from agentshore.core.recovery_tracker import _RECOVERY_OVERRIDE_KIND
+    from agentshore.errors import ErrorClass
+    from agentshore.plays.override import OverrideKind
+    from agentshore.state import RECOVERABLE_ERROR_CLASSES
 
-    assert "codex_rollout" in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES
-    assert "codex_rollout" not in _RATE_LIMIT_RECOVERY_ERROR_CLASSES
+    assert _RECOVERY_OVERRIDE_KIND[ErrorClass.CODEX_ROLLOUT] is OverrideKind.UNKNOWN_ERROR_RECOVERY
+    assert _RECOVERY_OVERRIDE_KIND[ErrorClass.CODEX_ROLLOUT] is not OverrideKind.RATE_LIMIT_RECOVERY
+    assert "codex_rollout" in RECOVERABLE_ERROR_CLASSES
 
 
 def test_extract_session_id_from_jsonl_handles_whitespace_lines() -> None:

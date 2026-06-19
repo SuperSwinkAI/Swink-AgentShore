@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.agents import cli_antigravity
 from agentshore.agents.handle import is_noop_invocation
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
@@ -21,8 +21,7 @@ from agentshore.plays.dispatch import (
     write_play_context,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayOutcome, PlayType, SkillResult
+from agentshore.state import PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,7 +30,8 @@ if TYPE_CHECKING:
     from agentshore.agents.handle import AgentInvocationResult
     from agentshore.plays.base import PlayExecutionContext, PlayParams
     from agentshore.plays.skill_backed.gates import Gate
-    from agentshore.state import AgentSnapshot, OrchestratorState
+    from agentshore.rl.mask_reason import MaskReason
+    from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
 
@@ -57,12 +57,25 @@ _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Do not invent other keys. Output only that one fenced JSON block."
 )
 
+# #236: agy-specific variant for when the agent ended its turn by delegating to its
+# internal manage_task async tool instead of completing the work. Unlike the generic nudge
+# (which says "don't redo work"), the work was never finished — the agent must re-run it
+# synchronously without manage_task. Resume context gives it the full history of what it
+# was trying to do; the nudge redirects execution style, not scope.
+_JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
+    "Your previous turn ended by delegating a command to manage_task instead of running "
+    "it to completion. Do not use manage_task. Re-run the remaining work in this turn "
+    "synchronously — wait for each command to finish before proceeding — then emit the "
+    "fenced JSON result block. Do not end this turn until the JSON block is emitted."
+)
+
 # First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
 # the agent to re-print a result block it already computed, so it should start streaming
 # within seconds. Without an override it inherits the per-agent-type default — 1800s for
 # antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
 # into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
 # and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
+# Not applied for manage_task handoffs (#236) — those require completing real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
 
 # Maximum consecutive clean-exit empty no-op dispatches before the play is failed
@@ -199,31 +212,21 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability."""
+        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
+
+        Delegates to :class:`CapabilityGate` so the precondition-override helper
+        and the gate apply the *same* filter — including the circuit-breaker
+        exclusion (#22). A hand-rolled copy here previously omitted the
+        circuit-broken check, so issue_pickup / groom_backlog could be deemed
+        eligible on an agent the breaker had marked dead.
+        """
+        from agentshore.plays.skill_backed.gates import CapabilityGate  # noqa: PLC0415
+
         cap_key = self.capability
         if cap_key is None:
             return []
-        rate_limited: set[str] = {
-            a.agent_type.value
-            for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
-        }
-        capable: list[AgentSnapshot] = [
-            a
-            for a in state.agents
-            if a.status == AgentStatus.IDLE
-            and a.agent_type.value not in rate_limited
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-        if not capable:
-            return [
-                MaskReason(
-                    text=f"no IDLE agent with {cap_key} capability",
-                    classification=MaskClassification.TRANSIENT,
-                    source=MaskSource.ELIGIBILITY,
-                )
-            ]
-        return []
+        reason = CapabilityGate(cap_key)(state)
+        return [reason] if reason is not None else []
 
     def _is_trunk_scoped_dispatch(self, dispatch_cwd: Path | None, project_path: Path) -> bool:
         """True when this play dispatches into the main checkout and is a trunk type.
@@ -646,14 +649,17 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
-            # #229: when the failure is a near-miss (JSON present but no top-level
-            # boolean ``success``), name the exact defect; otherwise use the generic
-            # "emit the JSON block" nudge.
-            retry_prompt = (
-                _JSON_RETRY_MISSING_SUCCESS_PROMPT
-                if skill_result.missing_success_envelope
-                else _JSON_RETRY_PROMPT
-            )
+            # #236: agy manage_task handoff — agent delegated work async instead of
+            # completing it; the work is unfinished so we cannot ask for re-emission.
+            # #229: near-miss — JSON present but no top-level boolean ``success``.
+            # Otherwise: generic "emit the JSON block" nudge.
+            is_manage_task = cli_antigravity.is_manage_task_handoff(invocation.raw_output)
+            if is_manage_task:
+                retry_prompt = _JSON_RETRY_ASYNC_HANDOFF_PROMPT
+            elif skill_result.missing_success_envelope:
+                retry_prompt = _JSON_RETRY_MISSING_SUCCESS_PROMPT
+            else:
+                retry_prompt = _JSON_RETRY_PROMPT
             _logger.info(
                 "agent_json_retry",
                 agent_id=agent_id,
@@ -661,6 +667,7 @@ class SkillBackedPlay(Play, ABC):
                 session_id=invocation.session_id,
                 original_output_length=len(invocation.raw_output),
                 missing_success_envelope=skill_result.missing_success_envelope,
+                manage_task_handoff=is_manage_task,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
@@ -671,7 +678,11 @@ class SkillBackedPlay(Play, ABC):
                 resume_session_id=invocation.session_id,
                 # #232: a re-emission should stream promptly — don't inherit agy's
                 # 1800s fresh-task first-byte deadline; fast-fail instead.
-                first_byte_timeout_override=_JSON_RETRY_FIRST_BYTE_S,
+                # #236: manage_task handoffs require completing real work, not just
+                # re-printing — let them inherit the full per-agent-type deadline.
+                first_byte_timeout_override=(
+                    None if is_manage_task else _JSON_RETRY_FIRST_BYTE_S
+                ),
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(
@@ -799,5 +810,11 @@ def _merge_invocation_costs(
 
 
 def _looks_like_auth_failure(error: str | None) -> bool:
+    # Skill error strings are work-product-adjacent free text, so this stays on
+    # the high-precision GITHUB_AUTH_ERROR_MARKERS view (phrased forms like
+    # "http 403", not the bare "403"/"forbidden" tokens in the broad AUTH_MARKERS
+    # superset) to avoid false positives — the same precision rationale as the
+    # stdout-vs-stderr split. The view is pinned ⊆ AUTH_MARKERS in
+    # tests/test_error_markers.py.
     text = (error or "").lower()
     return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)
