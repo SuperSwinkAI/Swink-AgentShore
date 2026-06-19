@@ -8,12 +8,14 @@ import StatsStage, {
   appendConcurrencySample,
   buildConcurrencyChartModel,
   colorForConcurrencyAgentType,
-  CONCURRENCY_WINDOW_MS,
+  CONCURRENCY_MAX_WINDOW_MS,
   deriveBusyAgentCounts,
+  formatConcurrencyWindowDuration,
   notifyStatsStageUpdate,
   notifyStatsStageVisible,
   orderConcurrencyAgentTypes,
   pruneConcurrencySamples,
+  resolveConcurrencyWindowMs,
   resetStatsStageForTests,
   type ConcurrencySample,
 } from "../src/components/StatsStage";
@@ -94,11 +96,11 @@ describe("StatsStage fleet concurrency helpers", () => {
     ).toEqual({ claude_code: 1, codex: 1 });
   });
 
-  it("prunes samples outside the 20 minute window", () => {
-    const now = 1_500_000;
+  it("prunes samples outside the three hour cap", () => {
+    const now = 5 * 60 * 60 * 1000;
     const samples: ConcurrencySample[] = [
-      { timestampMs: now - CONCURRENCY_WINDOW_MS - 1, counts: { codex: 1 } },
-      { timestampMs: now - CONCURRENCY_WINDOW_MS, counts: { codex: 2 } },
+      { timestampMs: now - CONCURRENCY_MAX_WINDOW_MS - 1, counts: { codex: 1 } },
+      { timestampMs: now - CONCURRENCY_MAX_WINDOW_MS, counts: { codex: 2 } },
       { timestampMs: now, counts: { codex: 3 } },
     ];
 
@@ -110,7 +112,7 @@ describe("StatsStage fleet concurrency helpers", () => {
       [{ timestampMs: 10_000, counts: { codex: 1 } }],
       { timestampMs: 10_250, counts: { codex: 1 } },
       10_250,
-      CONCURRENCY_WINDOW_MS,
+      CONCURRENCY_MAX_WINDOW_MS,
       1000,
     );
 
@@ -149,6 +151,37 @@ describe("StatsStage fleet concurrency helpers", () => {
     expect(model.totalLinePoints).toHaveLength(2);
     expect(model.series[1].points[1].value).toBe(1);
   });
+
+  it("uses the full shorter session span for the concurrency window", () => {
+    const now = 2 * 60 * 60 * 1000;
+    const samples: ConcurrencySample[] = [
+      { timestampMs: now - 90 * 60 * 1000, counts: { claude_code: 1 } },
+      { timestampMs: now, counts: { claude_code: 2 } },
+    ];
+
+    const model = buildConcurrencyChartModel(samples, now);
+
+    expect(resolveConcurrencyWindowMs(samples, now)).toBe(90 * 60 * 1000);
+    expect(model.windowStartMs).toBe(now - 90 * 60 * 1000);
+    expect(model.totalLinePoints).toHaveLength(2);
+    expect(formatConcurrencyWindowDuration(model.windowDurationMs)).toBe("1h 30m");
+  });
+
+  it("caps the concurrency window at three hours for longer sessions", () => {
+    const now = 5 * 60 * 60 * 1000;
+    const samples: ConcurrencySample[] = [
+      { timestampMs: now - 4 * 60 * 60 * 1000, counts: { claude_code: 1 } },
+      { timestampMs: now - 2 * 60 * 60 * 1000, counts: { claude_code: 2 } },
+      { timestampMs: now, counts: { claude_code: 3 } },
+    ];
+
+    const model = buildConcurrencyChartModel(samples, now);
+
+    expect(model.windowDurationMs).toBe(CONCURRENCY_MAX_WINDOW_MS);
+    expect(model.windowStartMs).toBe(now - CONCURRENCY_MAX_WINDOW_MS);
+    expect(model.totalLinePoints).toHaveLength(2);
+    expect(formatConcurrencyWindowDuration(model.windowDurationMs)).toBe("3h");
+  });
 });
 
 describe("StatsStage fleet concurrency rendering", () => {
@@ -184,6 +217,7 @@ describe("StatsStage fleet concurrency rendering", () => {
     expect(container.querySelectorAll(".stats-concurrency-band")).toHaveLength(2);
     expect(container.textContent).toContain("Claude Code busy");
     expect(container.textContent).toContain("Codex CLI busy");
+    expect(container.textContent).toContain("rolling 1m window");
   });
 
   it("resets accumulated history when the session changes", () => {

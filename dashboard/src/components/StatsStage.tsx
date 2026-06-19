@@ -41,11 +41,12 @@ interface StatsStageState {
   visible: boolean;
   insets: StatsStageInsets | null;
   concurrencySamples: ConcurrencySample[];
+  concurrencySessionStartedAtMs: number | null;
   nowMs: number;
 }
 
-export const CONCURRENCY_WINDOW_MS = 20 * 60 * 1000;
-export const CONCURRENCY_RECALC_INTERVAL_MS = 20 * 60 * 1000;
+export const CONCURRENCY_MAX_WINDOW_MS = 3 * 60 * 60 * 1000;
+export const CONCURRENCY_RECALC_INTERVAL_MS = 60 * 1000;
 const CONCURRENCY_SAMPLE_BUCKET_MS = 1000;
 const CHART_WIDTH = 960;
 const CHART_HEIGHT = 280;
@@ -93,18 +94,21 @@ export interface ConcurrencyChartModel {
   currentTotal: number;
   peakTotal: number;
   yMax: number;
+  windowDurationMs: number;
   windowStartMs: number;
   windowEndMs: number;
 }
 
 const listeners = new Set<(s: StatsStageState) => void>();
 let concurrencySessionId: string | null = null;
+let concurrencySessionStartedAtMs: number | null = null;
 let concurrencySamples: ConcurrencySample[] = [];
 let latestState: StatsStageState = {
   state: null,
   visible: false,
   insets: null,
   concurrencySamples: [],
+  concurrencySessionStartedAtMs: null,
   nowMs: Date.now(),
 };
 
@@ -116,7 +120,13 @@ function broadcast(next: StatsStageState): void {
 export function notifyStatsStageUpdate(state: StateUpdate): void {
   const nowMs = Date.now();
   const nextSamples = updateConcurrencyHistory(state, nowMs);
-  broadcast({ ...latestState, state, concurrencySamples: nextSamples, nowMs });
+  broadcast({
+    ...latestState,
+    state,
+    concurrencySamples: nextSamples,
+    concurrencySessionStartedAtMs,
+    nowMs,
+  });
 }
 
 export function notifyStatsStageVisible(visible: boolean): void {
@@ -147,7 +157,7 @@ function useStatsStageState(): StatsStageState {
       concurrencySamples = pruneConcurrencySamples(
         concurrencySamples,
         nowMs,
-        CONCURRENCY_WINDOW_MS,
+        CONCURRENCY_MAX_WINDOW_MS,
       );
       broadcast({ ...latestState, concurrencySamples, nowMs });
     }, CONCURRENCY_RECALC_INTERVAL_MS);
@@ -171,7 +181,7 @@ export function deriveBusyAgentCounts(
 export function pruneConcurrencySamples(
   samples: ConcurrencySample[],
   nowMs: number,
-  windowMs = CONCURRENCY_WINDOW_MS,
+  windowMs = CONCURRENCY_MAX_WINDOW_MS,
 ): ConcurrencySample[] {
   const startMs = nowMs - windowMs;
   return samples.filter((sample) => sample.timestampMs >= startMs);
@@ -218,7 +228,7 @@ export function appendConcurrencySample(
   samples: ConcurrencySample[],
   sample: ConcurrencySample,
   nowMs: number,
-  windowMs = CONCURRENCY_WINDOW_MS,
+  windowMs = CONCURRENCY_MAX_WINDOW_MS,
   bucketMs = CONCURRENCY_SAMPLE_BUCKET_MS,
 ): ConcurrencySample[] {
   const pruned = pruneConcurrencySamples(samples, nowMs, windowMs);
@@ -233,14 +243,45 @@ export function appendConcurrencySample(
   return [...pruned, sample];
 }
 
+export function resolveConcurrencyWindowMs(
+  samples: ConcurrencySample[],
+  nowMs: number,
+  maxWindowMs = CONCURRENCY_MAX_WINDOW_MS,
+): number {
+  const oldestTimestampMs = Math.min(nowMs, ...samples.map((sample) => sample.timestampMs));
+  return Math.min(maxWindowMs, Math.max(0, nowMs - oldestTimestampMs));
+}
+
+export function formatConcurrencyWindowDuration(windowMs: number): string {
+  if (windowMs < 60 * 1000) return "<1m";
+  const totalMinutes = Math.max(1, Math.round(windowMs / (60 * 1000)));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+}
+
 export function buildConcurrencyChartModel(
   samples: ConcurrencySample[],
   nowMs: number,
-  windowMs = CONCURRENCY_WINDOW_MS,
+  maxWindowMs = CONCURRENCY_MAX_WINDOW_MS,
+  sessionStartedAtMs?: number | null,
 ): ConcurrencyChartModel {
-  const windowStartMs = nowMs - windowMs;
   const windowEndMs = nowMs;
-  const orderedSamples = pruneConcurrencySamples(samples, nowMs, windowMs)
+  const sortedSamples = samples.slice().sort((a, b) => a.timestampMs - b.timestampMs);
+  const sessionSamples =
+    sessionStartedAtMs === undefined || sessionStartedAtMs === null
+      ? sortedSamples
+      : [{ timestampMs: sessionStartedAtMs, counts: {} }, ...sortedSamples];
+  const windowDurationMs = resolveConcurrencyWindowMs(
+    sessionSamples,
+    nowMs,
+    maxWindowMs,
+  );
+  const windowStartMs = windowEndMs - windowDurationMs;
+  const orderedSamples = sortedSamples
+    .filter((sample) => sample.timestampMs >= windowStartMs)
     .slice()
     .sort((a, b) => a.timestampMs - b.timestampMs);
   const agentTypes = orderConcurrencyAgentTypes(orderedSamples);
@@ -297,6 +338,7 @@ export function buildConcurrencyChartModel(
     currentTotal: totals.at(-1) ?? 0,
     peakTotal,
     yMax,
+    windowDurationMs,
     windowStartMs,
     windowEndMs,
   };
@@ -313,24 +355,31 @@ function updateConcurrencyHistory(
 ): ConcurrencySample[] {
   if (concurrencySessionId !== state.session_id) {
     concurrencySessionId = state.session_id;
+    concurrencySessionStartedAtMs = null;
     concurrencySamples = [];
   }
   const sample = {
     timestampMs: timestampMsForState(state, nowMs),
     counts: deriveBusyAgentCounts(state.agents),
   };
+  concurrencySessionStartedAtMs =
+    concurrencySessionStartedAtMs === null
+      ? sample.timestampMs
+      : Math.min(concurrencySessionStartedAtMs, sample.timestampMs);
   concurrencySamples = appendConcurrencySample(concurrencySamples, sample, nowMs);
   return concurrencySamples;
 }
 
 export function resetStatsStageForTests(): void {
   concurrencySessionId = null;
+  concurrencySessionStartedAtMs = null;
   concurrencySamples = [];
   latestState = {
     state: null,
     visible: false,
     insets: null,
     concurrencySamples: [],
+    concurrencySessionStartedAtMs: null,
     nowMs: Date.now(),
   };
   listeners.clear();
@@ -629,12 +678,15 @@ function colorStyle(color: string): React.CSSProperties & Record<`--${string}`, 
 
 function FleetConcurrencySection({
   samples,
+  sessionStartedAtMs,
   nowMs,
 }: {
   samples: ConcurrencySample[];
+  sessionStartedAtMs: number | null;
   nowMs: number;
 }): React.ReactElement {
-  const model = buildConcurrencyChartModel(samples, nowMs);
+  const model = buildConcurrencyChartModel(samples, nowMs, undefined, sessionStartedAtMs);
+  const windowLabel = formatConcurrencyWindowDuration(model.windowDurationMs);
   const gridValues = Array.from({ length: model.yMax + 1 }, (_, index) => index);
   const yForGridValue = (value: number): number =>
     CHART_TOP + CHART_PLOT_HEIGHT - (value / model.yMax) * CHART_PLOT_HEIGHT;
@@ -646,7 +698,7 @@ function FleetConcurrencySection({
         <div className="stats-concurrency-meta" aria-label="Fleet concurrency summary">
           <span>{`current ${model.currentTotal} busy`}</span>
           <span>{`peak ${model.peakTotal}`}</span>
-          <span>rolling 20m window</span>
+          <span>{`rolling ${windowLabel} window`}</span>
         </div>
       </div>
 
@@ -701,7 +753,7 @@ function FleetConcurrencySection({
               x={CHART_LEFT}
               y={CHART_HEIGHT - 8}
             >
-              -20m
+              {`-${windowLabel}`}
             </text>
             <text
               className="stats-concurrency-axis-label"
@@ -746,7 +798,14 @@ function FleetConcurrencySection({
 }
 
 export default function StatsStage(): React.ReactElement {
-  const { state, visible, insets, concurrencySamples, nowMs } = useStatsStageState();
+  const {
+    state,
+    visible,
+    insets,
+    concurrencySamples,
+    concurrencySessionStartedAtMs,
+    nowMs,
+  } = useStatsStageState();
 
   const style: React.CSSProperties = {};
   if (insets) {
@@ -769,7 +828,11 @@ export default function StatsStage(): React.ReactElement {
           </div>
           <PlayTypesSection rows={state.stats?.by_play_type ?? []} />
           <AgentsSection agents={state.agents} />
-          <FleetConcurrencySection samples={concurrencySamples} nowMs={nowMs} />
+          <FleetConcurrencySection
+            samples={concurrencySamples}
+            sessionStartedAtMs={concurrencySessionStartedAtMs}
+            nowMs={nowMs}
+          />
         </div>
       )}
     </div>
