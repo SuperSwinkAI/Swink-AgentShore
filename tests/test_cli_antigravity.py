@@ -80,3 +80,33 @@ def test_build_resume_argv_injects_conversation_flag() -> None:
     assert argv[:3] == ["agy", "--conversation", "conv-uuid-9"]
     assert "--add-dir" in argv and argv[argv.index("--add-dir") + 1] == "/wt"
     assert argv[-2:] == ["-p", "emit the block"]
+
+
+def test_is_async_handoff_detects_manage_task_marker() -> None:
+    # #236: original variant — delegated to the internal manage_task async tool.
+    raw = (
+        "Obtaining command output... To check progress: `manage_task status "
+        "0aaf5ef8-1242-46f9-ba7e-41bf3dcb47d0/task-14` or wait for notification."
+    )
+    assert cli_antigravity.is_async_handoff(raw) is True
+
+
+def test_is_async_handoff_detects_background_task_wait() -> None:
+    # #236 resurfacing (session aa0b28cd): same behaviour, no manage_task token —
+    # the agent paused and waited on a backgrounded command instead.
+    raw = (
+        "I will run cargo clippy with the isolated target directory to check for any "
+        "errors or warnings. I will pause calling tools and wait for the cargo clippy "
+        "background task to finish."
+    )
+    assert cli_antigravity.is_async_handoff(raw) is True
+
+
+def test_is_async_handoff_is_case_insensitive() -> None:
+    assert cli_antigravity.is_async_handoff("Pause Calling Tools and wait.") is True
+
+
+def test_is_async_handoff_false_for_completed_work() -> None:
+    # A normal terminal turn that emitted a result block must not be misclassified.
+    raw = '```json\n{"success": true, "summary": "opened PR #42"}\n```'
+    assert cli_antigravity.is_async_handoff(raw) is False
