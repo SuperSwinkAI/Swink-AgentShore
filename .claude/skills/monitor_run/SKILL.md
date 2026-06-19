@@ -15,249 +15,197 @@ allowed-tools:
 
 # monitor_run
 
-Babysit a live AgentShore session that the **user already started** in a
-target directory. This skill never runs `agentshore start` — it observes,
-reports, files bugs, and (only when the session wedges) runs `agentshore
-stop`. Argument: the project directory, e.g. `/monitor_run
-/path/to/my-project`.
+Babysit a live AgentShore session that the **user already started** in a target
+directory. Observes, reports, files bugs, and (only when the session wedges)
+stops it. Argument: the project directory, e.g. `/monitor_run /path/to/my-project`.
 
-> **CLI carve-out.** The repo rule forbids invoking `agentshore` CLI
-> subcommands from Claude Code. `/monitor_run` is a named exception, and **only
-> for `agentshore stop --project <DIR>`** — the graceful auto-stop in Step 5.
-> Never run `agentshore start`, `dashboard`, `report`, etc. from this skill.
+> **CLI carve-out.** The repo rule forbids invoking `agentshore` CLI subcommands
+> from Claude Code. `/monitor_run` is a named exception, and **only for
+> `agentshore stop --project <DIR>`** — the graceful auto-stop in Step 5, and
+> only for CLI-launched sessions. Never run `agentshore start`, `dashboard`,
+> `report`, etc. from this skill.
 
 ## Constants
 
 ```
-DIR             = <the directory argument>            # project being monitored
-LOG_DIR         = $DIR/.agentshore/logs               # NDJSON logs live here
-CHECKIN_SECONDS = 1800    # 30 minutes between check-ins
-STALE_AGE_S     = 300     # newest log line older than this + no process => exited
-SNAPSHOT        = <this skill dir>/snapshot.py         # human-readable readout
-PROGRESS        = <this skill dir>/progress.py         # machine-readable counters
+DIR             = <the directory argument>
+LOG_DIR         = $DIR/.agentshore/logs
+CHECKIN_SECONDS = 1800    # 30 minutes
+STALE_AGE_S     = 300     # log older than this => likely exited
+SNAPSHOT        = <this skill dir>/snapshot.py
+PROGRESS        = <this skill dir>/progress.py
 STATE_FILE      = <os-temp-dir>/agentshore-monitor-<sanitized-DIR>.json
-AGENTSHORE_REPO = <the AgentShore source repository — NOT $DIR>
-                  # Found via: python3 -c "import agentshore, pathlib; print(pathlib.Path(agentshore.__file__).parents[2])"
-                  # This is the orchestrator codebase whose recent commits you analyze for
-                  # regressions. It is entirely separate from the project being monitored.
+AGENTSHORE_REPO = <the AgentShore source repo — NOT $DIR>
+                  # python3 -c "import agentshore, pathlib; print(pathlib.Path(agentshore.__file__).parents[2])"
 ```
 
-Resolve `<this skill dir>` to the directory holding this `SKILL.md`.
-`<os-temp-dir>` = the platform temp directory (`$TMPDIR` or `/tmp` on
-macOS/Linux, `$env:TEMP` on Windows). `<sanitized-DIR>` = `DIR` with path
-separators replaced by `_` (keeps the state file unique per target, outside
-the project tree so the monitored project is never touched).
+`<this skill dir>` = directory holding this `SKILL.md`. `<os-temp-dir>` = `$TMPDIR` / `/tmp`
+(macOS/Linux) or `$env:TEMP` (Windows). `<sanitized-DIR>` = `DIR` with path separators
+replaced by `_`.
 
-## How the cadence works
+## Cadence
 
-Each invocation runs **one check-in cycle** and then schedules the next with
-`ScheduleWakeup(delaySeconds=CHECKIN_SECONDS)`, passing the same `/monitor_run
-<DIR>` prompt back so the loop re-enters in 30 minutes. All cross-check-in
-state (previous counters, idle streak, issues already filed) lives in
-`STATE_FILE`, so each wakeup resumes cleanly even after a context summary. When
-the session exits or you auto-stop it, **do not** schedule another wakeup —
-print the summary and finish.
+Each invocation runs one check-in and schedules the next via
+`ScheduleWakeup(delaySeconds=CHECKIN_SECONDS)` with the same `/monitor_run <DIR>` prompt.
+All cross-check-in state lives in `STATE_FILE` so wakeups resume cleanly after context
+summaries. When the session exits or is stopped, do not reschedule — print the summary
+and finish.
 
 ---
 
 ## Step 0 — Resolve target and load state
 
-1. Determine `DIR` from the argument. If no argument was given, read `DIR` from
-   `STATE_FILE` (a resuming wakeup). If neither is available, tell the user the
-   skill needs a directory and stop.
-2. `test -d $DIR/.git` and `test -d $LOG_DIR` — if the log dir is missing, the
-   project has no AgentShore session history; tell the user there's nothing to
-   monitor and stop.
-3. Load `STATE_FILE` if it exists. First run (no state file) → initialise:
-   `checkin_count=0, prev_ok_plays=null, prev_loop_detected=0,
-   idle_streak=0, filed_issues=[]`. Record `started_at` from `date +%s`.
-4. **Derive watch items from the AgentShore repo's recent commits** — these are the
-   orchestrator code changes most likely to regress during the live session.
-   **Do not run this against `$DIR` (the monitored project).** Run it against
-   `$AGENTSHORE_REPO` (the AgentShore source tree):
+1. Determine `DIR` from the argument; if none, read it from `STATE_FILE`. If neither is
+   available, stop and ask the user for a directory.
+2. Verify `test -d $DIR/.git` and `test -d $LOG_DIR`. If the log dir is missing, tell
+   the user there is nothing to monitor and stop.
+3. Load `STATE_FILE` if it exists. First run → initialise:
+   `checkin_count=0, prev_ok_plays=null, prev_session_id=null, prev_loop_detected=0,
+   idle_streak=0, launch_type=null, filed_issues=[], watch_items=[]`.
+   Record `started_at` from `date +%s`.
+4. **Derive watch items from AgentShore's recent commits** (first check-in only; reload
+   from state on resumes). These are orchestrator regression candidates — **not** commits
+   from `$DIR`. Run against `$AGENTSHORE_REPO`:
    ```bash
    git -C "$AGENTSHORE_REPO" log --since="24 hours ago" --oneline --no-merges
    ```
-   Read the subjects (and `git -C "$AGENTSHORE_REPO" show --stat <sha>` for anything
-   ambiguous) and derive a short list of **watch items** — subsystems, plays,
-   agent types, or fixes in AgentShore touched in the last day that a live run
-   could exercise and break. These are regression candidates in the orchestrator
-   itself, not features of the project being worked on. Persist this list in
-   `STATE_FILE` as `watch_items` so every subsequent wakeup reuses it without
-   re-deriving (re-run the `git log` only on the first check-in; on resumes,
-   reload `watch_items` from state). Surface the list once in the first check-in
-   header (`Watching: <items>`) and weight Step 4 errors/inefficiencies that touch
-   these areas as higher-priority — file them per Step 6 even when borderline,
-   citing the commit that introduced the risk.
+   Derive a short list of subsystems, plays, agent types, or fixes touched in the last
+   day that a live session could exercise and break. Persist as `watch_items`. Surface
+   once in the first check-in header (`Watching: <items>`).
 
 ## Step 1 — Locate the live log
-
-The newest log in `$LOG_DIR` is the active session:
 
 ```bash
 ls -t "$LOG_DIR"/agentshore-*.log 2>/dev/null | head -1
 ```
 
-Pin this path as `LOG_FILE` for the cycle. If no log file exists yet, print
-`no log yet`, schedule the next wakeup, and finish — the session may still be
-booting.
+Pin as `LOG_FILE`. If none exists, print `no log yet`, schedule the next wakeup, finish.
 
 ## Step 2 — Read the status
 
-Run both helpers against `LOG_FILE`:
-
 ```bash
-python3 <SNAPSHOT> "$LOG_FILE"   # print this readout to the user verbatim
-python3 <PROGRESS> "$LOG_FILE"   # capture the JSON line for the logic below
+python3 <SNAPSHOT> "$LOG_FILE"   # print verbatim
+python3 <PROGRESS> "$LOG_FILE"   # capture JSON
 ```
 
-Show the user the snapshot block plus a one-line check-in header
-(`Check-in #N — HH:MM`). The `progress.py` JSON drives Steps 3–6; its fields
-are documented at the top of `progress.py` (`play_completed`, `ok_plays`,
-`fail_plays`, `loop_detected`, `error_lines`, `traceback_lines`, `ended`,
-`last_event_age_s`, …). Note `play_completed = ok_plays + fail_plays`; the
-idle rule (Step 5) keys on `ok_plays`, not `play_completed`.
+**Output rule:** For a healthy session, print only the snapshot block plus a 2-3 line
+summary (session id, ok/fail counts, cost, next check-in time). Only expand with detail
+when there are errors, a rising idle streak, or bugs to file.
+
+**New session detection:** If `progress.session_id != prev_session_id` (AgentShore
+restarted mid-run), reset `prev_ok_plays = progress.ok_plays` and `idle_streak = 0`,
+note the new session, and skip the idle comparison this check-in. Update `prev_session_id`.
 
 ## Step 3 — Liveness / exit detection
 
-The session has **exited** if any of these hold:
+Session has **exited** if either:
 
-- `progress.ended == true` (a terminal `session_ended` / `shutdown_complete` /
-  `drain_complete` / `session_shutdown` event is in the log), **or**
-- The log has gone stale **and** no CLI process is running. Check both:
-  ```bash
-  pgrep -fa "agentshore start"   # look for one whose cmdline points at $DIR
-  ```
-  **Important:** `pgrep -fa "agentshore start"` only finds CLI-launched sessions.
-  Sessions started from the desktop app will NOT appear here — they run as a
-  child of the GUI process, not as a bare `agentshore start` command. The absence
-  of a matching process therefore does NOT imply the session has exited.
-  Use this rule: if `progress.last_event_age_s > STALE_AGE_S`, treat it as
-  exited regardless of the pgrep result. If the log is fresh (small
-  `last_event_age_s`), the session is running even if pgrep finds nothing.
+- `progress.ended == true` (terminal `session_ended` / `shutdown_complete` /
+  `drain_complete` / `session_shutdown` event), **or**
+- `progress.last_event_age_s > STALE_AGE_S` — the log has gone stale.
 
-A fresh log (`last_event_age_s` small) is the primary liveness signal — the
-process check is only a confirming signal when the log is already stale. If
-exited → go to **Step 7 (Summary)** and do not reschedule.
+**`last_event_age_s` is the primary liveness signal.** A fresh log means the session
+is running regardless of any process check.
+
+**Detect launch type** and store as `launch_type` in `STATE_FILE` on first detection:
+```bash
+pgrep -fa "agentshore start"   # only finds CLI-launched sessions
+```
+- pgrep finds a process referencing `$DIR` → `"cli"`
+- Log is fresh but pgrep finds nothing → `"desktop"` (desktop-app sessions run as a
+  child of the GUI process and never appear in pgrep)
+
+If exited → go to **Step 7 (Summary)**, do not reschedule.
 
 ## Step 4 — Errors and inefficiencies
 
-Compute deltas vs the previous check-in (`prev_*` from `STATE_FILE`). Keep the
-`watch_items` from Step 0 in mind throughout: any error or inefficiency that
-touches a recently-changed subsystem/play/agent is a regression suspect — lower
-your filing threshold for those and name the implicated commit.
+Compute deltas vs the previous check-in. Errors or inefficiencies touching `watch_items`
+are regression suspects — lower the filing threshold and name the implicated commit.
 
-**Errors** — investigate when any of these are present or rose since last time:
-`error_lines > 0`, `traceback_lines > 0`, `asyncio_unretrieved > 0`. Read the
-relevant slice of `LOG_FILE` (grep for `"level": "error"` / `"level":
-"critical"` / `Traceback`) to find the first real failure, its source file/line,
-and whether it traces into `src/agentshore/`. Distinguish:
-- **Transient** (network timeout, `rate_limit`, subprocess killed, clean
-  agent non-zero exit that the orchestrator recovered from) — note it, don't
-  file.
-- **AgentShore bug** (traceback into `src/agentshore/`, unhandled asyncio
-  exception, persistence corruption) — file per **Step 6**.
+**Errors** — investigate when `error_lines`, `traceback_lines`, or `asyncio_unretrieved`
+rose since last check-in. Grep `LOG_FILE` for `"level":"error"` / `"level":"critical"` /
+`Traceback` to find the first real failure. Distinguish:
+- **Transient** (network timeout, rate_limit, subprocess killed, clean non-zero exit the
+  orchestrator recovered from) — note it, don't file.
+- **AgentShore bug** (traceback into `src/agentshore/`, unhandled asyncio exception,
+  persistence corruption) — file per Step 6.
 
-**Inefficiencies** — flag and consider filing when you see, across check-ins:
-- `loop_detected` rising — the wedge signal; pairs with the idle rule below.
-- High / rising `ppo_selector.all_masked` or `selector_idle` with few new
-  `play_completed` — PPO is spinning with nothing valid to pick.
-- The same `play_type` failing repeatedly in the snapshot's "Last 5 plays".
-- A single play_type dominating spend with no alignment progress.
+**Inefficiencies** — flag and consider filing when:
+- `loop_detected` is rising.
+- The same `play_type` fails repeatedly in the last 5 plays.
+- A single play_type dominates spend with no alignment progress.
+- `all_masked` / `selector_idle` persists with **no running agents** and `ok_plays` flat
+  across check-ins — that combination is a genuine wedge. A transient `all_masked`
+  between plays while agents are live is normal; do not flag it.
 
-Do **not** flag the known-healthy patterns: `gate_rejections`,
-`refine_task_breakdown` running uncapped, and brief between-play agent idle are
-expected — never file or auto-stop on those alone.
+**Never flag:** `gate_rejections`, `refine_task_breakdown` running frequently, or brief
+between-play agent idle. These are expected healthy patterns.
 
 ## Step 5 — Idle rule (auto-stop)
 
-`new_ok = progress.ok_plays - prev_ok_plays` (skip on the
-very first check-in, where `prev_ok_plays` is null — that one only sets
-the baseline).
+Skip idle comparison when `prev_ok_plays` is null (first check-in) or when a new session
+was detected in Step 2.
 
-> **Key on `ok_plays`, not `play_completed`.** `play_completed` counts
-> *failed* plays too, so an orchestrator stuck re-selecting a play that
-> always fails (e.g. an `end_agent` self-deadlock spinning hundreds of
-> failures) keeps incrementing `play_completed` and masquerades as healthy
-> progress — the idle rule would never fire. `ok_plays` only counts
-> successful plays, so a fast-failing spin-wedge correctly reads as idle.
-> When `new_ok == 0` but `play_completed` is climbing, you're almost
-> certainly looking at exactly this kind of wedge — say so in the check-in.
+`new_ok = progress.ok_plays - prev_ok_plays`
 
-- A check-in is **idle** when `new_ok == 0` (no *successful* work finished
-  since last check-in, regardless of how many failed plays completed). A
-  rising `loop_detected` with `new_ok == 0`, or `fail_plays` climbing while
-  `ok_plays` is flat, is the same idle condition, more strongly confirmed
-  (wedged orchestrator).
-- Idle check-in → `idle_streak += 1`. Any real progress (`new_ok > 0`) →
-  `idle_streak = 0`.
-- When `idle_streak >= 2` (two consecutive idle check-ins), **auto-stop**:
-  ```bash
-  agentshore stop --project "$DIR"
-  ```
-  This is a graceful drain and emits an end-of-session report. Announce why you
-  stopped (idle for two check-ins; cite the counters). Then go to **Step 7**
-  and do not reschedule.
+> **Use `ok_plays`, not `play_completed`.** Failed plays increment `play_completed` — an
+> orchestrator stuck fast-failing the same play looks like progress by that count but reads
+> as idle here. When `new_ok == 0` but `play_completed` is climbing, that's a spin-wedge.
 
-> Idle for two check-ins ≈ ~60 minutes of no *successful* plays. This is the
-> documented orchestrator-wedge remedy (an unattended wedged session burns API
-> spend; see the loop-detection auto-stop intent, issue #9).
+- `new_ok == 0` → idle; `idle_streak += 1`. A rising `loop_detected` confirms wedge.
+- `new_ok > 0` → `idle_streak = 0`.
 
-## Step 6 — File bugs as you go (GitHub, dedup first)
+When `idle_streak >= 2` (~60 min of no successful plays), auto-stop — **branch on launch type**:
 
-For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
-**immediately**, after checking for duplicates:
+- **`"cli"`** → run `agentshore stop --project "$DIR"` (graceful drain). Announce why.
+- **`"desktop"`** → do NOT run `agentshore stop` (no-op for desktop sessions). Instead
+  report the wedge with counters and tell the user to stop the session via the desktop
+  app UI.
 
-1. List open issues once per check-in and match by symptom:
-   ```bash
-   gh issue list --repo SuperSwinkAI/Swink-AgentShore --state open --limit 50
-   ```
-   Standing inefficiency issues already cover the recurring findings (refine
-   loops, plan-blocked dispatch, merge_pr starvation, and similar). Match by
-   symptom against the live list — don't rely on memorized issue numbers, they
-   rot as issues close. If your finding matches an open one, add a brief comment
-   with the fresh evidence (session id, counts, cost) instead of opening a new
-   issue.
-2. Also skip anything already in `filed_issues` in `STATE_FILE` (filed earlier
-   this run).
-3. Otherwise create it:
-   ```bash
-   gh issue create --repo SuperSwinkAI/Swink-AgentShore --label bug \
-     --title "<concise symptom>" \
-     --body "<what happened, session id, log path $LOG_FILE, relevant counters/costs, suspected cause>"
-   ```
-4. Record the issue number/title in `filed_issues` and report it in the
-   check-in (`filed #NN — <title>`). Match the register of the existing
-   inefficiency issues: concrete symptom, cost/efficiency impact, evidence.
+Then go to **Step 7**, do not reschedule.
+
+## Step 6 — File bugs (dedup first)
+
+```bash
+gh issue list --repo SuperSwinkAI/Swink-AgentShore --state open --limit 50
+```
+
+Match by symptom against the live list — don't rely on memorized issue numbers. If your
+finding matches an open issue, add a comment with fresh evidence (session id, counts,
+log path). Skip anything already in `filed_issues`.
+
+Otherwise:
+```bash
+gh issue create --repo SuperSwinkAI/Swink-AgentShore --label bug \
+  --title "<concise symptom>" \
+  --body "<what happened, session id, log path $LOG_FILE, relevant counters/costs, suspected cause>"
+```
+
+Record the issue number in `filed_issues` and report it in the check-in (`filed #NN — <title>`).
 
 ## Step 7 — Persist state and schedule (or summarize)
 
-**Always** write `STATE_FILE` with updated counters before finishing:
-`checkin_count+1`, `prev_ok_plays`, `prev_loop_detected`, `idle_streak`,
-`filed_issues`, `watch_items`.
+Write `STATE_FILE`: `checkin_count+1`, `prev_ok_plays`, `prev_session_id`,
+`prev_loop_detected`, `idle_streak`, `launch_type`, `filed_issues`, `watch_items`.
 
-- **Session still running and not auto-stopped** → schedule the next cycle and
-  finish the turn:
-  `ScheduleWakeup(delaySeconds=1800, prompt="/monitor_run <DIR>", reason="next AgentShore monitor check-in")`.
-- **Session exited (Step 3) or auto-stopped (Step 5)** → do not reschedule.
-  Print the **Run Summary**, then delete `STATE_FILE` (`rm -f STATE_FILE`).
+- **Running, not stopped** → `ScheduleWakeup(delaySeconds=1800, prompt="/monitor_run <DIR>", reason="next AgentShore monitor check-in")`.
+- **Exited or auto-stopped** → print Run Summary, `rm -f STATE_FILE`, do not reschedule.
 
 ## Run Summary
-
-When the run ends, print:
 
 ```
 AgentShore Monitor Summary — <DIR>
 ──────────────────────────────────
 Session:          <session_id>
 Watched for:      <HH:MM:SS>   (<N> check-ins)
-Ended by:         <clean exit | shutdown event | auto-stop (idle x2)>
+Ended by:         <clean exit | shutdown event | auto-stop (idle x2) | user>
 Plays:            <play_completed> completed  (<ok_plays> ok / <fail_plays> fail)
 Total cost:       $<from snapshot>
 Errors seen:      <count + one-line each, transient vs bug>
-Inefficiencies:   <bullet list of what you flagged>
+Inefficiencies:   <bullet list>
 Bugs filed:       <#NN title> ...  (or "none")
-Last snapshot:    <the final snapshot.py block>
+Last snapshot:    <final snapshot.py block>
 ```
 
-If the session was auto-stopped, state plainly that you stopped it and why.
+If auto-stopped, state plainly that you stopped it (CLI) or surfaced it to the user
+(desktop) and why.
