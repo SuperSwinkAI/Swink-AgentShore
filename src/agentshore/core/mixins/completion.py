@@ -19,15 +19,6 @@ from agentshore.core.learnings_harvester import LearningsHarvester
 from agentshore.core.recovery_tracker import (
     BREAK_RECOVERY_FAILURE_LIMIT,
 )
-from agentshore.core.recovery_tracker import (
-    NOOP_RECOVERY_ERROR_CLASSES as _NOOP_RECOVERY_ERROR_CLASSES,  # noqa: F401
-)
-from agentshore.core.recovery_tracker import (
-    RATE_LIMIT_RECOVERY_ERROR_CLASSES as _RATE_LIMIT_RECOVERY_ERROR_CLASSES,  # noqa: F401
-)
-from agentshore.core.recovery_tracker import (
-    UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES as _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES,  # noqa: F401
-)
 from agentshore.core.terminal_park import (
     _UNBLOCK_MANUAL_REQUIRED_MARKERS,
     _WRITE_PLAN_UNPLANNABLE_MARKERS,

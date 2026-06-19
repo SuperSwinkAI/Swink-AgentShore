@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.errors import ErrorClass
+from agentshore.plays.override import OverrideKind
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -16,16 +17,31 @@ if TYPE_CHECKING:
 # Consecutive take_break failures after which END_AGENT is unmasked.
 BREAK_RECOVERY_FAILURE_LIMIT = 2
 
-# Error classes that trigger loop-produced take_break overrides. Crash, auth,
-# invalid-model, and timeout classes are intentionally excluded.
-RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMIT})
-UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
-    {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
-)
-# A clean-exit empty no-op rides its own recovery branch so the take_break it
-# triggers is distinctly labelled (agent_noop_break_enqueued) and never confused
-# with a real quota/rate-limit in telemetry (desktop no-op resilience).
-NOOP_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.NO_OP})
+# Single source of truth for loop-produced take_break recovery: which error
+# classes are recoverable, and the take_break OverrideKind each routes to. Crash,
+# auth, invalid-model, and timeout classes are intentionally absent (they fall to
+# the END_AGENT path, no take_break). The NO_OP class rides its own kind so the
+# take_break it triggers is distinctly labelled (agent_noop_break_enqueued) and
+# never confused with a real quota/rate-limit in telemetry (desktop no-op
+# resilience).
+#
+# This map's KEY SET is asserted equal to ``state.RECOVERABLE_ERROR_CLASSES`` in
+# tests/test_recovery_routing.py, so a class can never be recoverable-for-
+# eligibility but unroutable here (the CODEX_ROLLOUT drift this collapse fixes).
+_RECOVERY_OVERRIDE_KIND: dict[ErrorClass, OverrideKind] = {
+    ErrorClass.RATE_LIMIT: OverrideKind.RATE_LIMIT_RECOVERY,
+    ErrorClass.UNKNOWN: OverrideKind.UNKNOWN_ERROR_RECOVERY,
+    ErrorClass.CODEX_ROLLOUT: OverrideKind.UNKNOWN_ERROR_RECOVERY,
+    ErrorClass.TRANSIENT_NETWORK: OverrideKind.UNKNOWN_ERROR_RECOVERY,
+    ErrorClass.NO_OP: OverrideKind.NOOP_RECOVERY,
+}
+
+# Per-kind structured log event emitted when a take_break override is enqueued.
+_RECOVERY_EVENT: dict[OverrideKind, str] = {
+    OverrideKind.RATE_LIMIT_RECOVERY: "rate_limit_recovery_enqueued",
+    OverrideKind.UNKNOWN_ERROR_RECOVERY: "unknown_error_recovery_enqueued",
+    OverrideKind.NOOP_RECOVERY: "agent_noop_break_enqueued",
+}
 
 
 class RecoveryTracker:
@@ -108,7 +124,7 @@ class RecoveryTracker:
         """Enqueue a take_break override for recoverable agent errors."""
         from agentshore.core.helpers import _logger  # noqa: PLC0415
         from agentshore.plays.base import PlayParams  # noqa: PLC0415
-        from agentshore.plays.override import OverrideEntry, OverrideKind  # noqa: PLC0415
+        from agentshore.plays.override import OverrideEntry  # noqa: PLC0415
         from agentshore.state import AgentStatus as _AgentStatus  # noqa: PLC0415
         from agentshore.state import PlayType
 
@@ -122,27 +138,30 @@ class RecoveryTracker:
             return
         error_class = getattr(handle, "last_error_class", None)
 
-        if error_class in RATE_LIMIT_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.RATE_LIMIT_RECOVERY
-            event = "rate_limit_recovery_enqueued"
-            already = self.is_rate_limit_enqueued(agent_id)
-            mark = self.mark_rate_limit_enqueued
-        elif error_class in UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.UNKNOWN_ERROR_RECOVERY
-            event = "unknown_error_recovery_enqueued"
-            already = self.is_unknown_error_enqueued(agent_id)
-            mark = self.mark_unknown_error_enqueued
-        elif error_class in NOOP_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.NOOP_RECOVERY
-            event = "agent_noop_break_enqueued"
-            already = self.is_noop_enqueued(agent_id)
-            mark = self.mark_noop_enqueued
-        else:
+        # ``ec == error_class`` membership (not ``.get``) so a bare-string
+        # ``last_error_class`` resolves the same way the old frozenset ``in``
+        # checks did (ErrorClass is a StrEnum).
+        kind = next((k for ec, k in _RECOVERY_OVERRIDE_KIND.items() if ec == error_class), None)
+        if kind is None:
             # Not a recovery-eligible class (auth, invalid_model, crash_*,
             # timeout*) — leave it for the END_AGENT path, no take_break.
             return
+        # Per-kind dedup latch (route the is/mark pair off the resolved kind).
+        latches = {
+            OverrideKind.RATE_LIMIT_RECOVERY: (
+                self.is_rate_limit_enqueued,
+                self.mark_rate_limit_enqueued,
+            ),
+            OverrideKind.UNKNOWN_ERROR_RECOVERY: (
+                self.is_unknown_error_enqueued,
+                self.mark_unknown_error_enqueued,
+            ),
+            OverrideKind.NOOP_RECOVERY: (self.is_noop_enqueued, self.mark_noop_enqueued),
+        }
+        is_enqueued, mark = latches[kind]
+        event = _RECOVERY_EVENT[kind]
 
-        if already:
+        if is_enqueued(agent_id):
             return
         params = PlayParams(
             agent_id=agent_id,
