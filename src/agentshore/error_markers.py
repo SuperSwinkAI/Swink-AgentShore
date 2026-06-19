@@ -9,15 +9,17 @@ scoped view a consumer reads is defined here verbatim, and the canonical
 ``*_MARKERS`` supersets are *derived* from those views, so a future edit that
 widens one view without the others is caught by ``tests/test_error_markers.py``.
 
-Phase 1 of ``tmp/PLAN-error-cooldown-unification.md`` only *relocates* these
-tables — every consumer still reads the exact set it read before, now sourced
-from one place. The behaviour-changing merges (routing the string consumers
-through :func:`classify_text` against the canonical supersets) are Phase 4.
+Phase 1 of ``tmp/PLAN-error-cooldown-unification.md`` relocated these tables here
+without changing any consumer's matched set; Phase 4 then pointed the broad
+auth-classification sites (the executor failure inferer, the publish reconciler,
+and the CLI stderr classifier) at the canonical ``AUTH_MARKERS`` superset. The
+high-precision views (``STDOUT_AUTH_MARKERS`` for agent work product,
+``GITHUB_AUTH_ERROR_MARKERS`` for skill error strings) stay narrow by design.
 """
 
 from __future__ import annotations
 
-from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass
+from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 
 # ===========================================================================
 # Auth family
@@ -104,10 +106,6 @@ CACHE_RENEWAL_MARKERS: frozenset[str] = frozenset(
 AUTH_MARKERS: frozenset[str] = frozenset(GITHUB_AUTH_ERROR_MARKERS).union(
     PUBLISH_AUTH_MARKERS, STDERR_AUTH_PATTERNS, STDOUT_AUTH_MARKERS
 )
-
-# "Hard" auth: a genuine rejection, excluding the transient cache-renewal blips.
-# Derived (not hand-maintained) so it can never drift from AUTH_MARKERS.
-HARD_AUTH_MARKERS: frozenset[str] = AUTH_MARKERS - CACHE_RENEWAL_MARKERS
 
 # ---------------------------------------------------------------------------
 # Auth-adjacent probe vocabularies (siblings, NOT subsets of AUTH_MARKERS).
@@ -252,38 +250,3 @@ ENOSPC_MARKERS: frozenset[str] = frozenset(
         "disk quota exceeded",
     }
 )
-
-
-def classify_text(text: str) -> ErrorClass | None:
-    """First-match scan of *text* against the canonical marker supersets.
-
-    Returns the matched :class:`ErrorClass`, or ``None`` if nothing matched
-    (the caller decides UNKNOWN vs. an rc-based class). The precedence mirrors
-    the CLI classifier (:func:`agentshore.agents.cli.errors._classify_error`):
-    rate-limit → auth → timeout → invalid-model → codex-rollout →
-    transient-network → ENOSPC → OOM.
-
-    This scans the canonical *supersets*, so it is broader than any single
-    scoped view. It is the one classifier the free-form string consumers
-    (skill auth detection, the publish reconciler, the executor failure
-    inferer) route through in Phase 4; it is intentionally unused by those
-    sites in Phase 1, where they still read their narrower scoped views.
-    """
-    lowered = text.lower()
-    if any(m in lowered for m in RATE_LIMIT_MARKERS):
-        return ErrorClass.RATE_LIMIT
-    if any(m in lowered for m in AUTH_MARKERS):
-        return ErrorClass.AUTH
-    if any(m in lowered for m in TIMEOUT_MARKERS):
-        return ErrorClass.TIMEOUT
-    if any(m in lowered for m in INVALID_MODEL_MARKERS):
-        return ErrorClass.INVALID_MODEL
-    if any(m in lowered for m in CODEX_ROLLOUT_MARKERS):
-        return ErrorClass.CODEX_ROLLOUT
-    if any(m in lowered for m in TRANSIENT_NETWORK_MARKERS):
-        return ErrorClass.TRANSIENT_NETWORK
-    if any(m in lowered for m in ENOSPC_MARKERS):
-        return ErrorClass.CRASH_ENOSPC
-    if any(m in lowered for m in OOM_MARKERS):
-        return ErrorClass.CRASH_OOM
-    return None

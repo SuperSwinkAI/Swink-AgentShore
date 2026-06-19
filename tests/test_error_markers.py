@@ -14,7 +14,6 @@ from agentshore.error_markers import (
     AUTH_MARKERS,
     CACHE_RENEWAL_MARKERS,
     GIT_AUTH_FAILED_MARKERS,
-    HARD_AUTH_MARKERS,
     INVALID_MODEL_MARKERS,
     INVALID_MODEL_STDERR_PATTERNS,
     INVALID_MODEL_STDOUT_MARKERS,
@@ -28,9 +27,8 @@ from agentshore.error_markers import (
     TIMEOUT_MARKERS,
     TIMEOUT_STDERR_PATTERNS,
     TIMEOUT_STDOUT_MARKERS,
-    classify_text,
 )
-from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass
+from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 
 # Frozen snapshot of the canonical auth superset. Update this deliberately when
 # intentionally adding an auth spelling — the diff is the audit trail.
@@ -90,11 +88,6 @@ def test_auth_markers_is_exactly_the_union_of_its_views() -> None:
     )
 
 
-def test_hard_auth_is_auth_minus_cache_renewal() -> None:
-    assert HARD_AUTH_MARKERS == AUTH_MARKERS - CACHE_RENEWAL_MARKERS
-    assert HARD_AUTH_MARKERS.isdisjoint(CACHE_RENEWAL_MARKERS)
-
-
 def test_cache_renewal_is_nested_in_stderr_auth() -> None:
     # The watchdog subtracts CACHE_RENEWAL_MARKERS from STDERR_AUTH_PATTERNS at
     # runtime, so the renewal markers must actually be present in that view.
@@ -143,25 +136,3 @@ def test_consumers_read_the_registry_objects() -> None:
     assert _AUTH_ERROR_MARKERS is PUBLISH_AUTH_MARKERS
     assert _NOT_AUTHED_MARKERS is PROBE_NOT_AUTHED_MARKERS
     assert _AUTH_FAILED_MARKERS is GIT_AUTH_FAILED_MARKERS
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("Repository not found", ErrorClass.AUTH),
-        ("HTTP 403 forbidden", ErrorClass.AUTH),
-        ("HTTP 429 too many requests", ErrorClass.RATE_LIMIT),
-        ("deadline exceeded", ErrorClass.TIMEOUT),
-        ("model not found for api version", ErrorClass.INVALID_MODEL),
-        ("failed to record rollout items", ErrorClass.CODEX_ROLLOUT),
-        ("connection reset by peer", ErrorClass.TRANSIENT_NETWORK),
-        ("No space left on device", ErrorClass.CRASH_ENOSPC),
-        ("out of memory", ErrorClass.CRASH_OOM),
-        # No false positive on "author"/"authored" — the bare "auth" substring is
-        # deliberately absent from AUTH_MARKERS.
-        ("the author of the PR", None),
-        ("all tests passed", None),
-    ],
-)
-def test_classify_text(text: str, expected: ErrorClass | None) -> None:
-    assert classify_text(text) is expected

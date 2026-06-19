@@ -799,5 +799,11 @@ def _merge_invocation_costs(
 
 
 def _looks_like_auth_failure(error: str | None) -> bool:
+    # Skill error strings are work-product-adjacent free text, so this stays on
+    # the high-precision GITHUB_AUTH_ERROR_MARKERS view (phrased forms like
+    # "http 403", not the bare "403"/"forbidden" tokens in the broad AUTH_MARKERS
+    # superset) to avoid false positives — the same precision rationale as the
+    # stdout-vs-stderr split. The view is pinned ⊆ AUTH_MARKERS in
+    # tests/test_error_markers.py.
     text = (error or "").lower()
     return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)
