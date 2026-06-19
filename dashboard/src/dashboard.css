@@ -2159,6 +2159,105 @@ body.stats-active .agentshore-dashboard-canvas {
   font-size: 11px;
   padding: 12px;
 }
+.stats-concurrency-section {
+  padding-bottom: 0;
+}
+.stats-concurrency-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.stats-concurrency-head h2 {
+  margin-bottom: 0;
+}
+.stats-concurrency-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fm-text-muted);
+  font-size: 10px;
+}
+.stats-concurrency-meta span {
+  border: 1px solid var(--fm-border-subtle);
+  background: var(--fm-card);
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+.stats-concurrency-chart {
+  overflow-x: auto;
+  border: 1px solid var(--fm-border-subtle);
+  background:
+    linear-gradient(var(--fm-track) 1px, transparent 1px),
+    linear-gradient(90deg, var(--fm-track) 1px, transparent 1px),
+    var(--fm-card);
+  background-size: 44px 44px, 44px 44px, auto;
+  padding: 10px 12px 12px;
+}
+.stats-concurrency-svg {
+  display: block;
+  width: 100%;
+  min-height: 260px;
+  max-width: none;
+}
+.stats-concurrency-axis,
+.stats-concurrency-grid-line {
+  vector-effect: non-scaling-stroke;
+}
+.stats-concurrency-axis {
+  stroke: var(--fm-text-muted);
+  stroke-width: 1;
+}
+.stats-concurrency-grid-line {
+  stroke: var(--fm-border-subtle);
+  stroke-width: 1;
+}
+.stats-concurrency-axis-label {
+  fill: var(--fm-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.stats-concurrency-band {
+  fill: var(--series-color);
+  fill-opacity: 0.38;
+  stroke: var(--series-color);
+  stroke-opacity: 0.95;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.stats-concurrency-total-line {
+  fill: none;
+  stroke: var(--color-fm-busy);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.stats-concurrency-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 10px;
+  font-size: 10px;
+}
+.stats-concurrency-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fm-text-muted);
+  white-space: nowrap;
+}
+.stats-concurrency-swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--fm-border-subtle);
+  flex: 0 0 auto;
+}
+.stats-concurrency-swatch-total {
+  height: 3px;
+  background: var(--color-fm-busy);
+}
 @media (max-width: 1200px) {
   .stats-tile-grid {
     grid-template-columns: repeat(3, minmax(96px, 1fr));
@@ -2179,6 +2278,16 @@ body.stats-active .agentshore-dashboard-canvas {
   }
   .stats-tile-value {
     font-size: 16px;
+  }
+  .stats-concurrency-head {
+    align-items: start;
+    flex-direction: column;
+  }
+  .stats-concurrency-meta {
+    justify-content: flex-start;
+  }
+  .stats-concurrency-svg {
+    width: 880px;
   }
 }
 
