@@ -5,11 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
-import re
-import time
 from typing import TYPE_CHECKING, Protocol
-
-import aiosqlite
 
 from agentshore.budget import budget_reserve_reached
 from agentshore.core.git_safety import check_main_repo_branch_mutated, restore_default_branch
@@ -18,11 +14,27 @@ from agentshore.core.helpers import (
     _ppo_selector_cls,
     _str_extra,
 )
-from agentshore.core.recovery_tracker import BREAK_RECOVERY_FAILURE_LIMIT
-from agentshore.data.store import PlayRecord, PullRequestRecord
-from agentshore.errors import ErrorClass
+from agentshore.core.issue_syncer import _ALREADY_CLOSED_SIGNATURES, IssueSyncer
+from agentshore.core.learnings_harvester import LearningsHarvester
+from agentshore.core.recovery_tracker import (
+    BREAK_RECOVERY_FAILURE_LIMIT,
+)
+from agentshore.core.recovery_tracker import (
+    NOOP_RECOVERY_ERROR_CLASSES as _NOOP_RECOVERY_ERROR_CLASSES,  # noqa: F401
+)
+from agentshore.core.recovery_tracker import (
+    RATE_LIMIT_RECOVERY_ERROR_CLASSES as _RATE_LIMIT_RECOVERY_ERROR_CLASSES,  # noqa: F401
+)
+from agentshore.core.recovery_tracker import (
+    UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES as _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES,  # noqa: F401
+)
+from agentshore.core.terminal_park import (
+    _UNBLOCK_MANUAL_REQUIRED_MARKERS,
+    _WRITE_PLAN_UNPLANNABLE_MARKERS,
+    TerminalParkPolicy,
+)
+from agentshore.data.store import PlayRecord
 from agentshore.github.labels import (
-    MANUAL_REQUIRED_LABEL,
     NEEDS_HUMAN_LABEL,
     ROOT_CAUSE_FOUND_LABEL,
 )
@@ -54,9 +66,6 @@ if TYPE_CHECKING:
     )
 
 
-DEFAULT_LEARNING_CONFIDENCE = 0.5
-
-
 class _CompletionVerdict(enum.Enum):
     """Outcome of an early completion-pipeline step.
 
@@ -72,59 +81,6 @@ class _CompletionVerdict(enum.Enum):
     RETRIED = "retried"
 
 
-# Error classes that trigger loop-produced take_break overrides. Crash, auth,
-# invalid-model, and timeout classes are intentionally excluded.
-_RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.RATE_LIMIT})
-_UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
-    {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
-)
-# A clean-exit empty no-op rides its own recovery branch so the take_break it
-# triggers is distinctly labelled (agent_noop_break_enqueued) and never confused
-# with a real quota/rate-limit in telemetry (desktop no-op resilience).
-_NOOP_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.NO_OP})
-
-# Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an
-# agent — it needs a human maintainer or CI/infra change. Matching any marks the
-# PR manual-required on the FIRST such failure (#6), instead of waiting for the
-# attempt-count exhaustion threshold, so the orchestrator stops re-dispatching
-# expensive agents at a permanently-blocked PR. Transient blockers (CI pending,
-# resolvable merge conflicts) intentionally do NOT match and stay retryable.
-_UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
-    "forbidden by skill policy",
-    "ci-change",
-    "human maintainer",
-    "manual maintainer",
-    "not fixable in code",
-    "infrastructure failures",
-    "external ci",
-    "ci config or infrastructure",
-)
-
-# Markers in a failed write_implementation_plan outcome that mean the issue
-# cannot be turned into a plan by re-dispatching an agent — it needs a human to
-# split or clarify it. Matching any parks the issue with NEEDS_HUMAN_LABEL on the
-# FIRST such failure (#458) so the planner stops re-selecting it every tick
-# (comment spam + wasted budget). Transient/ambiguous failures do NOT match and
-# stay retryable.
-_WRITE_PLAN_UNPLANNABLE_MARKERS: tuple[str, ...] = (
-    "too ambiguous",
-    "too large",
-    "too broad",
-    "cannot produce a plan",
-    "cannot be planned",
-    "unable to plan",
-    "needs human",
-    "needs decomposition",
-    "must be split",
-    "requires human",
-)
-
-# Used by ``refresh_issues`` — declared module-level so renaming inside the
-# function body doesn't drift them away from the constants the original
-# monolithic ``core.py`` referenced.
-_DUPLICATE_BEAD_TITLE_RE = re.compile(r"^Duplicate bead", re.IGNORECASE)
-_PR_LIMIT = 50
-
 # Plays that should trigger a *full* paginated re-sync of GitHub issues, vs.
 # the incremental ``since=`` sync used for everything else. Deletions and
 # repo transfers don't bump ``updated_at`` and so are invisible to incremental
@@ -136,19 +92,6 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.RECONCILE_STATE,
         PlayType.PRUNE,
     }
-)
-
-# Substring signatures that mean "the agent ran issue_pickup, looked at the
-# real GH state, and discovered the issue was already CLOSED while our cache
-# still listed it open." GitHub's incremental ``since=`` query has been
-# observed missing close-state transitions for 30+ refresh cycles, leaving
-# the orchestrator burning $0.10–0.20 per phantom pickup. Detecting this
-# signal forces a paginated full sync on the next refresh so the cache
-# self-heals (observed 2026-05-28 session 08a948ed, issue #966).
-_ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
-    "is already closed",
-    "already CLOSED",
-    "already closed",
 )
 
 
@@ -289,6 +232,71 @@ class CompletionProcessor:
         self._state_builder = state_builder
         self._lifecycle = lifecycle
         self._drain = drain
+
+        # Extracted collaborators — constructed from already-injected deps.
+        self._issue_syncer = IssueSyncer(
+            store=store,
+            session_id=session_id,
+            repo_root=repo_root,
+            runtime=runtime,
+        )
+        self._terminal_park = TerminalParkPolicy(
+            store=store,
+            session_id=session_id,
+            github_api=getattr(executor, "_github", None),
+        )
+        self._learnings_harvester = LearningsHarvester(
+            repo_root=repo_root,
+            learnings_cfg=runtime.cfg.learnings,
+        )
+
+    # ------------------------------------------------------------------
+
+    def _get_terminal_park(self) -> TerminalParkPolicy:
+        """Return the cached ``TerminalParkPolicy``, constructing one lazily if absent.
+
+        Test harnesses that bypass ``__init__`` (e.g. the ``_Harness`` in
+        ``test_write_plan_unplannable_backoff.py``) only carry ``_store``,
+        ``_session_id``, and ``_executor`` — they never set ``_terminal_park``
+        directly. The lazy path builds a compatible instance from those same
+        attrs so the harness continues to work without test edits.
+        """
+        park = getattr(self, "_terminal_park", None)
+        if park is None:
+            park = TerminalParkPolicy(
+                store=self._store,
+                session_id=self._session_id,
+                github_api=getattr(getattr(self, "_executor", None), "_github", None),
+            )
+            self._terminal_park = park
+        return park
+
+    async def _mark_worktrees_stale_for_closed_prs(
+        self,
+        refetched_prs: list[object],
+    ) -> None:
+        """Delegation shim — actual logic lives in ``IssueSyncer``.
+
+        Kept on ``CompletionProcessor`` so tests that call
+        ``CompletionProcessor._mark_worktrees_stale_for_closed_prs(stub, prs)``
+        (unbound) continue to work: the method is called with the stub as
+        ``self``, and ``IssueSyncer._mark_worktrees_stale_for_closed_prs``
+        only accesses ``self._runtime``, ``self._store``, and
+        ``self._session_id`` — exactly the attrs those stubs expose.
+        """
+        await IssueSyncer._mark_worktrees_stale_for_closed_prs(self, refetched_prs)  # type: ignore[arg-type]
+
+    async def _sweep_closed_pr_worktrees(self) -> None:
+        """Delegation shim — actual logic lives in ``IssueSyncer``."""
+        await IssueSyncer._sweep_closed_pr_worktrees(self)  # type: ignore[arg-type]
+
+    async def _sweep_disk_pressure_worktrees(self) -> None:
+        """Delegation shim — actual logic lives in ``IssueSyncer``."""
+        await IssueSyncer._sweep_disk_pressure_worktrees(self)  # type: ignore[arg-type]
+
+    async def _ensure_ssh_key_fresh(self) -> None:
+        """Delegation shim — actual logic lives in ``IssueSyncer``."""
+        await IssueSyncer._ensure_ssh_key_fresh(self)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
 
@@ -785,24 +793,7 @@ class CompletionProcessor:
 
     async def mark_issue_needs_human(self, issue_number: int) -> None:
         """Park an un-plannable issue behind NEEDS_HUMAN_LABEL (store + GitHub)."""
-        await self._store.add_issue_labels(
-            issue_number,
-            self._session_id,
-            [NEEDS_HUMAN_LABEL],
-        )
-        github = getattr(self._executor, "_github", None)
-        if github is not None:
-            await github.label_issue(
-                issue_number,
-                [NEEDS_HUMAN_LABEL],
-                f"needs_human:issue{issue_number}",
-            )
-        _logger.warning(
-            "issue_needs_human",
-            session_id=self._session_id,
-            issue_number=issue_number,
-            label=NEEDS_HUMAN_LABEL,
-        )
+        await self._get_terminal_park().mark_issue_needs_human(issue_number)
 
     async def _run_completion_control_checks(self, outcome: PlayOutcome) -> OrchestratorState:
         next_state = await self._state_builder.build_state()
@@ -1053,24 +1044,7 @@ class CompletionProcessor:
 
     async def mark_pr_manual_required(self, pr_number: int) -> None:
         """Persist a terminal manual gate after repeated unblock_pr failures."""
-        await self._store.add_pull_request_labels(
-            self._session_id,
-            pr_number,
-            [MANUAL_REQUIRED_LABEL],
-        )
-        github = getattr(self._executor, "_github", None)
-        if github is not None:
-            await github.label_issue(
-                pr_number,
-                [MANUAL_REQUIRED_LABEL],
-                f"manual_required:pr{pr_number}",
-            )
-        _logger.warning(
-            "pr_manual_required",
-            session_id=self._session_id,
-            pr_number=pr_number,
-            label=MANUAL_REQUIRED_LABEL,
-        )
+        await self._get_terminal_park().mark_pr_manual_required(pr_number)
 
     async def _retire_or_recover_errored_agent(
         self,
@@ -1100,59 +1074,12 @@ class CompletionProcessor:
         final_status: AgentStatus,
     ) -> None:
         """Enqueue a take_break override for recoverable agent errors."""
-
-        if final_status != AgentStatus.ERROR:
-            self._recovery.clear_rate_limit_enqueued(agent_id)
-            self._recovery.clear_unknown_error_enqueued(agent_id)
-            self._recovery.clear_noop_enqueued(agent_id)
-            return
-        handle = self._manager.handles.get(agent_id)
-        if handle is None:
-            return
-        error_class = getattr(handle, "last_error_class", None)
-
-        if error_class in _RATE_LIMIT_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.RATE_LIMIT_RECOVERY
-            event = "rate_limit_recovery_enqueued"
-            already = self._recovery.is_rate_limit_enqueued(agent_id)
-            mark = self._recovery.mark_rate_limit_enqueued
-        elif error_class in _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.UNKNOWN_ERROR_RECOVERY
-            event = "unknown_error_recovery_enqueued"
-            already = self._recovery.is_unknown_error_enqueued(agent_id)
-            mark = self._recovery.mark_unknown_error_enqueued
-        elif error_class in _NOOP_RECOVERY_ERROR_CLASSES:
-            kind = OverrideKind.NOOP_RECOVERY
-            event = "agent_noop_break_enqueued"
-            already = self._recovery.is_noop_enqueued(agent_id)
-            mark = self._recovery.mark_noop_enqueued
-        else:
-            # Not a recovery-eligible class (auth, invalid_model, crash_*,
-            # timeout*) — leave it for the END_AGENT path, no take_break.
-            return
-
-        if already:
-            return
-        params = PlayParams(
-            agent_id=agent_id,
-            extras={
-                "trigger_agent_id": agent_id,
-                "trigger_error_class": error_class,
-            },
-        )
-        self._overrides.put_nowait(
-            OverrideEntry(
-                play_type=PlayType.TAKE_BREAK,
-                params=params,
-                kind=kind,
-            )
-        )
-        mark(agent_id)
-        _logger.info(
-            event,
+        self._recovery.maybe_enqueue_error_recovery(
+            agent_id,
+            final_status,
+            handles=self._manager.handles,
+            overrides=self._overrides,
             session_id=self._session_id,
-            agent_id=agent_id,
-            error_class=error_class,
         )
 
     def _handle_take_break_outcome(self, outcome: PlayOutcome) -> None:
@@ -1220,70 +1147,7 @@ class CompletionProcessor:
 
     async def update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""
-        from agentshore.learnings import Learning, load, reinforce, save_atomic, top_k
-
-        learnings_path = self._repo_root / self._runtime.cfg.learnings.file
-        entries = await asyncio.to_thread(load, learnings_path)
-        changed = False
-
-        if outcome.success and outcome.play_id is not None:
-            # Build a reinforcement key from skill_name + play_type + artifact paths
-            artifact_paths = " ".join(
-                str(a.get("path", "")) for a in outcome.artifacts if isinstance(a, dict)
-            )
-            reinforce_key = f"{play_type.value} {artifact_paths}".strip()
-            reinforced = reinforce(entries, reinforce_key, source_play_id=outcome.play_id)
-            if any(
-                r.last_reinforced_play_id != e.last_reinforced_play_id
-                for r, e in zip(reinforced, entries, strict=True)
-            ):
-                entries = reinforced
-                changed = True
-
-        # Harvest new learnings from GROOM_BACKLOG artifacts
-        if play_type == PlayType.GROOM_BACKLOG and outcome.success:
-            import uuid as _uuid
-            from datetime import UTC, datetime
-
-            for artifact in outcome.artifacts:
-                if not isinstance(artifact, dict):
-                    continue
-                if artifact.get("type") != "learnings":
-                    continue
-                raw_learnings = artifact.get("learnings", [])
-                if not isinstance(raw_learnings, list):
-                    continue
-                for raw_entry in raw_learnings:
-                    if not isinstance(raw_entry, dict):
-                        continue
-                    pattern = raw_entry.get("pattern", "")
-                    if not pattern:
-                        continue
-                    if any(e.pattern == pattern for e in entries):
-                        continue
-                    entries.append(
-                        Learning(
-                            id=str(_uuid.uuid4()),
-                            pattern=pattern,
-                            confidence=float(
-                                raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
-                            ),
-                            sessions_since_use=0,
-                            source_play_id=outcome.play_id,
-                            last_reinforced_play_id=outcome.play_id,
-                            created_at=datetime.now(UTC).isoformat(),
-                            category=str(raw_entry.get("category", "general")),
-                        )
-                    )
-                changed = True
-
-        # Trim to max_entries keeping highest confidence
-        if len(entries) > self._runtime.cfg.learnings.max_entries:
-            entries = top_k(entries, k=self._runtime.cfg.learnings.max_entries)
-            changed = True
-
-        if changed:
-            await asyncio.to_thread(save_atomic, learnings_path, entries)
+        await self._learnings_harvester.update_learnings(outcome, play_type)
 
     async def check_no_forward_progress(
         self, state: OrchestratorState, outcome: PlayOutcome
@@ -1360,302 +1224,8 @@ class CompletionProcessor:
         Re-fetching those by number via ``state="all"`` lets the cache pick
         up the new state.
         """
-        from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
-
-        try:
-            from agentshore.github.adapter import GitHubAdapter
-
-            gh = GitHubAdapter(
-                store=self._store, session_id=self._session_id, cfg=self._runtime.cfg
-            )
-            await gh.probe()
-            syncer = GitHubSyncer(
-                gh=gh, store=self._store, cfg=self._runtime.cfg, session_id=self._session_id
-            )
-            if gh.available:
-                last_sync = await self._store.get_last_issue_sync_at(self._session_id)
-                full_sync = (
-                    force_full_sync
-                    or completing_play in _FULL_ISSUE_SYNC_PLAYS
-                    or last_sync is None
-                )
-                since = None if full_sync else last_sync
-
-                # Capture the cutoff *before* the fetch so anything that
-                # updates mid-fetch is picked up next time. Lookback absorbs
-                # clock skew between gh and the local box.
-                new_cutoff = sync_cursor_now()
-
-                # ``state="all"`` so close/reopen transitions surface — the
-                # cache_github_issues upsert flips local state to match.
-                issues = await syncer.fetch_issues(state="all", since=since)
-                if issues is None:
-                    _logger.warning(
-                        "github_issues_refresh_failed",
-                        full_sync=full_sync,
-                        since=since,
-                    )
-                else:
-                    await syncer.cache_issues(issues, cursor=new_cutoff)
-                    _logger.info(
-                        "github_issues_refreshed",
-                        changed_count=len(issues),
-                        full_sync=full_sync,
-                        cursor=new_cutoff,
-                    )
-
-                # Duplicate-bead close sweep runs only on full sync — it
-                # needs the complete open-issue set to safely identify
-                # issues whose only linked beads are closed duplicates.
-                if full_sync and issues is not None:
-                    open_issues = [iss for iss in issues if iss.state == "open"]
-                    from agentshore.beads import (
-                        BeadStatus,
-                        GraphReadError,
-                        GraphTask,
-                        load_graph,
-                    )
-
-                    try:
-                        graph = await load_graph(self._repo_root)
-                    except GraphReadError:
-                        graph = None
-                    if graph is not None:
-                        tasks_by_issue: dict[int, list[GraphTask]] = {}
-                        for task in graph.tasks:
-                            issue_number = task.issue_number
-                            if issue_number is None:
-                                continue
-                            tasks_by_issue.setdefault(issue_number, []).append(task)
-                        for issue in open_issues:
-                            related = tasks_by_issue.get(issue.issue_number, [])
-                            if not related:
-                                continue
-                            has_live = any(task.status != BeadStatus.CLOSED for task in related)
-                            if has_live:
-                                continue
-                            if not any(
-                                _DUPLICATE_BEAD_TITLE_RE.match(task.title) for task in related
-                            ):
-                                continue
-                            key = f"{self._session_id}:duplicate-close:{issue.issue_number}"
-                            closed = await gh.close_issue(issue.issue_number, idempotency_key=key)
-                            if closed:
-                                await self._store.update_issue_state(
-                                    issue.issue_number,
-                                    self._session_id,
-                                    "closed",
-                                )
-                                _logger.info(
-                                    "github_issue_duplicate_bead_closed",
-                                    issue_number=issue.issue_number,
-                                    bead_count=len(related),
-                                )
-                trusted_pr_authors = syncer.trusted_authors()
-                pull_requests = await syncer.fetch_trusted_open_pull_requests(
-                    limit=_PR_LIMIT,
-                    trusted_authors=trusted_pr_authors,
-                    context="refresh_open",
-                )
-                refetched = await syncer.resync_missing_pull_requests(
-                    fetched_open=pull_requests,
-                    limit=_PR_LIMIT,
-                    trusted_authors=trusted_pr_authors,
-                )
-                if refetched:
-                    pull_requests.extend(refetched)
-                    _logger.info("github_pull_requests_state_resync", count=len(refetched))
-                if pull_requests:
-                    await syncer.cache_pull_requests(pull_requests)
-                    _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
-                # desktop-12g9: mark worktree rows ``stale`` for PRs that
-                # transitioned to MERGED or CLOSED, then run the TTL reaper.
-                # ``refetched`` carries the resolved state for previously-open
-                # PRs that disappeared from the open-list. ``stale`` rows older
-                # than ``reap_ttl_seconds`` get reaped.
-                await self._mark_worktrees_stale_for_closed_prs(refetched)
-                await self._sweep_closed_pr_worktrees()
-                await self._sweep_disk_pressure_worktrees()
-        except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
-            _logger.warning("github_refresh_failed", error=str(exc))
-        finally:
-            self._runtime.last_refresh_time = time.monotonic()
-            await self._ensure_ssh_key_fresh()
-
-    async def _ensure_ssh_key_fresh(self) -> None:
-        """Re-check the SSH signing key periodically so merge_pr doesn't fail."""
-        try:
-            from agentshore.core.git_safety import ensure_ssh_signing_key_loaded
-
-            loaded, detail = await asyncio.to_thread(ensure_ssh_signing_key_loaded)
-            if not loaded:
-                _logger.debug("ssh_signing_key_refresh_failed", detail=detail)
-        except Exception:
-            pass
-
-    async def _mark_worktrees_stale_for_closed_prs(
-        self,
-        refetched_prs: list[PullRequestRecord],
-    ) -> None:
-        """Transition worktree rows to ``stale`` for PRs that just closed/merged.
-
-        Called from ``refresh_issues`` with the PRs we re-pulled at
-        ``state='all'`` to confirm their new state. A PR whose new state is
-        anything other than ``"open"`` no longer needs an active worktree;
-        the closed-PR TTL reaper will sweep it after the grace period.
-        """
-        if self._runtime.worktrees is None or not refetched_prs:
-            return
-        from agentshore.agents.worktree.registry import lookup_by_branch, mark_status
-
-        for pr in refetched_prs:
-            if pr.state == "open" or not pr.branch:
-                continue
-            try:
-                row = await lookup_by_branch(
-                    self._store, session_id=self._session_id, branch_name=pr.branch
-                )
-            except (OSError, aiosqlite.Error) as exc:
-                _logger.warning(
-                    "worktree_stale_lookup_failed",
-                    branch=pr.branch,
-                    error=str(exc),
-                )
-                continue
-            if row is None or row.status != "active":
-                continue
-            try:
-                await mark_status(
-                    self._store,
-                    worktree_id=row.worktree_id,
-                    status="stale",
-                    failure_reason=f"pr_closed_state_{pr.state}",
-                )
-                _logger.info(
-                    "worktree_marked_stale_for_closed_pr",
-                    worktree_id=row.worktree_id,
-                    branch=pr.branch,
-                    pr_state=pr.state,
-                )
-            except (OSError, aiosqlite.Error) as exc:
-                _logger.warning(
-                    "worktree_stale_mark_failed",
-                    worktree_id=row.worktree_id,
-                    branch=pr.branch,
-                    error=str(exc),
-                )
-
-    async def _sweep_closed_pr_worktrees(self) -> None:
-        """Run the TTL reaper for ``stale`` worktree rows in the current session.
-
-        In-flight worktrees are protected: a PR can close (marking its row
-        ``stale``) while the worktree is mid-dispatch, and reaping it out from
-        under the running play is the "worktree reclaimed mid-play" failure
-        (#189). The protected set is derived the same way the disk-pressure
-        sweep derives it — from the live dispatch contexts.
-        """
-        if self._runtime.worktrees is None:
-            return
-        from agentshore.agents.worktree.reaper import _canon_path
-
-        protected = {
-            wt_id
-            for ctx in self._runtime.dispatch_ctx.values()
-            if isinstance(
-                wt_id := getattr(
-                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                    "worktree_id",
-                    None,
-                ),
-                int,
-            )
-        }
-        # Path-keyed protection for the #203 dup-path alias: a stale OLD-id row
-        # can share the ``pickup-<N>`` directory with the LIVE new-id row, and
-        # id-keyed protection alone would let the TTL reaper remove that live
-        # directory. ``path`` is canonicalised to match DB-stored paths.
-        protected_paths = {
-            _canon_path(path)
-            for ctx in self._runtime.dispatch_ctx.values()
-            if (
-                path := getattr(
-                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                    "path",
-                    None,
-                )
-            )
-            is not None
-        }
-        try:
-            report = await self._runtime.worktrees.reap_closed_prs(
-                ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
-                protected_ids=protected,
-                protected_paths=protected_paths,
-            )
-        except (OSError, aiosqlite.Error, ValueError) as exc:
-            _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
-            return
-        if report.total > 0:
-            _logger.info(
-                "worktree_pr_ttl_reap",
-                reaped=len(report.removed),
-                failed=len(report.failed),
-                ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
-            )
-
-    async def _sweep_disk_pressure_worktrees(self) -> None:
-        """Reap idle worktrees LRU when free disk is below the high-water mark.
-
-        The periodic arm of the build-agnostic disk governor (#180): runs on the
-        GitHub-poll cadence alongside the TTL reaper. No-op when
-        ``disk_high_water_mb == 0`` (disabled) or disk is already above target.
-        In-flight worktrees are protected.
-        """
-        if self._runtime.worktrees is None:
-            return
-        target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
-        if target_mb <= 0:
-            return
-        from agentshore.agents.worktree.reaper import _canon_path
-
-        protected = {
-            wt_id
-            for ctx in self._runtime.dispatch_ctx.values()
-            if isinstance(
-                wt_id := getattr(
-                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                    "worktree_id",
-                    None,
-                ),
-                int,
-            )
-        }
-        # Mirror the closed-PR sweep's path-keyed protection (#203 dup-path alias).
-        protected_paths = {
-            _canon_path(path)
-            for ctx in self._runtime.dispatch_ctx.values()
-            if (
-                path := getattr(
-                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                    "path",
-                    None,
-                )
-            )
-            is not None
-        }
-        try:
-            report = await self._runtime.worktrees.reap_for_disk_pressure(
-                target_free_mb=target_mb,
-                protected_ids=protected,
-                protected_paths=protected_paths,
-            )
-        except (OSError, aiosqlite.Error, ValueError) as exc:
-            _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))
-            return
-        if report.total > 0:
-            _logger.info(
-                "worktree_disk_pressure_reap",
-                reaped=len(report.removed),
-                failed=len(report.failed),
-                target_mb=target_mb,
-            )
+        await self._issue_syncer.refresh_issues(
+            completing_play,
+            force_full_sync=force_full_sync,
+            full_issue_sync_plays=_FULL_ISSUE_SYNC_PLAYS,
+        )
