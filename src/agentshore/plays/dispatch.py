@@ -104,6 +104,26 @@ Never pipe test or validation output through `tail`, `head`, or any buffering fi
 If the command exceeds the Bash timeout it gets promoted to a background task whose
 pipe keeps the process tree alive indefinitely, causing the play to time out.  Use
 compact output flags instead (`-q --tb=line` for pytest, `--short` for mypy).
+
+This is a single, non-interactive turn. Nothing will "wake you up", "re-invoke you on
+completion", or send a "task notification" — there is no callback and no scheduler
+watching for you. Never end your turn to wait for user input, a background job, a build
+or test run, a package-manager lock, CI, or any notification: run every command in the
+foreground to completion within this turn, or kill it and proceed with what you have.
+The closing reminder below restates the result block you must emit before you stop.
+"""
+
+# Appended to the VERY END of every rendered skill prompt (after the SKILL.md body), so
+# the completion contract sits in the most attention-privileged position — closest to
+# where the agent acts. Bookends the start-of-prompt discipline: terminal instructions
+# (emit the result block; do not pause to wait) are recency-sensitive, and in ``-p`` mode
+# the start of the prompt is far in the past by the time a long tool-use trajectory ends.
+_COMPLETION_CONTRACT_TEMPLATE = """## Before you stop — required
+
+Emit the fenced JSON result block defined above as the final thing you do. This was a
+single turn with no callback: do not pause to wait for anything still running — finish
+it or kill it, then emit the block. Omitting the block records the play as failed
+(`no valid result block`) and discards everything you did, including any PR you opened.
 """
 
 # Interpolated into ``_CONTEXT_DISCIPLINE_TEMPLATE`` as ``{cwd_block}`` when the
@@ -184,7 +204,7 @@ async def render_skill_prompt(
         else ""
     )
     discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path, cwd_block=cwd_block)
-    return f"{header}\n\n{discipline}\n\n{skill_content}"
+    return f"{header}\n\n{discipline}\n\n{skill_content}\n\n{_COMPLETION_CONTRACT_TEMPLATE}"
 
 
 async def _read_skill_md(project_path: Path, skill_name: str) -> str | None:

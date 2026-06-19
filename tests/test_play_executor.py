@@ -1744,3 +1744,116 @@ async def test_end_agent_play_clears_agent_through_executor(
         assert agent_id not in manager.handles, "agent handle must be removed"
     finally:
         await store.close()
+
+
+# ---------------------------------------------------------------------------
+# block_issue_on — persist a body-declared dependency the agent discovered
+# ---------------------------------------------------------------------------
+
+
+def _dep_graph(blocked_blocked_by: tuple[str, ...] = ()) -> object:
+    from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
+
+    return ProjectGraph(
+        tasks=[
+            GraphTask(
+                bead_id="bead-17",
+                title="t17",
+                status=BeadStatus.OPEN,
+                issue_number=17,
+                blocked_by_ids=frozenset(blocked_blocked_by),
+            ),
+            GraphTask(bead_id="bead-12", title="t12", status=BeadStatus.OPEN, issue_number=12),
+        ]
+    )
+
+
+async def _run_block_issue_on(state: OrchestratorState, github: AsyncMock) -> AsyncMock:
+    agent_id = "agent-1"
+    error = "blocked by open dependency: #12 (foo) is not merged"
+    play = _make_play(outcome=_make_outcome(success=False, agent_id=agent_id, error=error))
+    play._last_skill_result = SkillResult(
+        success=False,
+        requested_mutations=[{"type": "block_issue_on", "issue": 17, "blocker": 12}],
+        error=error,
+    )
+    store = _make_store()
+    manager = _make_manager(agent_id=agent_id)
+    with patch("agentshore.plays.executor.select_agent_for") as mock_select:
+        mock_select.return_value = manager.handles[agent_id]
+        executor = PlayExecutor(
+            registry=_make_registry(play),
+            resolver=_make_resolver(PlayParams(issue_number=17)),
+            store=store,
+            manager=manager,
+            cfg=_make_cfg(),
+            project_path=Path("/tmp/project"),
+            session_id="sess-test",
+            github=github,
+        )
+        await executor.execute(PlayType.ISSUE_PICKUP, state)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_block_issue_on_adds_beads_edge() -> None:
+    """Both issues bead-mirrored → a real beads ``blocks`` edge, no label."""
+    state = dataclasses.replace(_make_state(), graph=_dep_graph())
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=True),
+    ) as mock_add:
+        store = await _run_block_issue_on(state, github)
+
+    mock_add.assert_awaited_once_with(Path("/tmp/project"), "bead-17", "bead-12")
+    github.label_issue.assert_not_awaited()
+    store.record_external_mutation.assert_awaited_once()
+    rec = store.record_external_mutation.await_args.args[0]
+    assert rec.mutation_type == "block_issue_on"
+    assert rec.status == "beads_edge"
+    assert rec.target == "17"
+
+
+@pytest.mark.asyncio
+async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
+    """No beads graph → stamp ``agentshore/blocked`` so the issue leaves the pool."""
+    state = _make_state()  # graph is None
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=True),
+    ) as mock_add:
+        store = await _run_block_issue_on(state, github)
+
+    mock_add.assert_not_awaited()
+    github.label_issue.assert_awaited_once()
+    assert github.label_issue.await_args.args[0:2] == (17, ["agentshore/blocked"])
+    rec = store.record_external_mutation.await_args.args[0]
+    assert rec.status == "label_fallback"
+
+
+@pytest.mark.asyncio
+async def test_block_issue_on_skips_when_edge_already_present() -> None:
+    """An existing blocks edge is a no-op: no beads write, no label."""
+    state = dataclasses.replace(_make_state(), graph=_dep_graph(blocked_blocked_by=("bead-12",)))
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=True),
+    ) as mock_add:
+        store = await _run_block_issue_on(state, github)
+
+    mock_add.assert_not_awaited()
+    github.label_issue.assert_not_awaited()
+    rec = store.record_external_mutation.await_args.args[0]
+    assert rec.status == "already_linked"

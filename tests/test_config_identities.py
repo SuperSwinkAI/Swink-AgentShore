@@ -140,6 +140,59 @@ identities:
         load_config(_write(tmp_path, yaml_text))
 
 
+def test_unsupported_agent_key_is_stripped_with_warning(tmp_path: Path) -> None:
+    """An agent key that resolves to no AgentType is dropped, not fatal.
+
+    Covers a typo'd key, the removed ``api_*`` placeholder concept, and a retired
+    provider (``gemini``) left in an older config. None of them ever instantiate
+    downstream, so rather than wedge an otherwise valid session over a single
+    stale block, the loader drops the entry, warns, and keeps the supported
+    agents intact.
+    """
+    for bad_key in ("api_gpt", "claud_code", "aider", "gemini"):
+        yaml_text = f"""\
+agents:
+  claude_code:
+    enabled: true
+    binary: claude
+  {bad_key}:
+    enabled: true
+"""
+        with pytest.warns(UserWarning, match="unsupported agent"):
+            cfg = load_config(_write(tmp_path, yaml_text))
+        assert bad_key not in cfg.agents
+        assert "claude_code" in cfg.agents
+
+
+def test_supported_agents_load_without_warning(
+    tmp_path: Path, recwarn: pytest.WarningsRecorder
+) -> None:
+    """A clean all-supported config strips nothing and warns nothing."""
+    yaml_text = """\
+agents:
+  claude_code:
+    enabled: true
+    binary: claude
+  codex:
+    enabled: true
+"""
+    cfg = load_config(_write(tmp_path, yaml_text))
+    assert set(cfg.agents) == {"claude_code", "codex"}
+    assert not [w for w in recwarn.list if "unsupported agent" in str(w.message)]
+
+
+def test_custom_agent_key_with_known_binary_is_accepted(tmp_path: Path) -> None:
+    """A custom key is fine when its binary resolves to a built-in AgentType."""
+    yaml_text = """\
+agents:
+  my_claude:
+    enabled: true
+    binary: claude
+"""
+    cfg = load_config(_write(tmp_path, yaml_text))
+    assert "my_claude" in cfg.agents
+
+
 def test_both_token_sources_set_raises(tmp_path: Path) -> None:
     yaml_text = (
         _BASE_AGENTS_YAML

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from agentshore.state import (
         AgentStatus,
         AgentType,
+        BudgetSnapshot,
         OrchestratorState,
         PlayOutcome,
         PlayType,
@@ -29,6 +30,13 @@ class TuiStateProvider:
 
     async def on_state_update(self, state: OrchestratorState) -> None:
         self._app.post_message(OrchestratorApp.StateUpdated(state))
+
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
+        # No-op: the budget-countdown heartbeat is a dashboard concern (it keeps
+        # the browser's remaining-time figure ticking between full snapshots).
+        # The Textual TUI re-renders its budget widget on every full state
+        # update, so it needs no extra heartbeat frame.
+        return None
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:
         self._app.post_message(OrchestratorApp.PlayStarted(play_type, params))

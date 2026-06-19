@@ -120,8 +120,8 @@ def _agent_key_for_detected_binary(binary: str) -> str | None:
 _AGENT_LABELS: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
-    "gemini": "gemini",
     "grok": "grok",
+    "antigravity": "agy",
 }
 
 
@@ -218,7 +218,11 @@ def _interactive_agent_select(
     """
     import os
 
-    from agentshore.agents.model_tiers import MODEL_TIER_ORDER, default_model_tiers_for
+    from agentshore.agents.model_tiers import (
+        MODEL_TIER_ORDER,
+        default_model_tiers_for,
+        reasoning_efforts_for,
+    )
     from agentshore.config.models import ModelTierConfig
     from agentshore.state import AgentType
     from agentshore.subprocess_env import NONINTERACTIVE_ENV, is_interactive
@@ -391,8 +395,16 @@ def _interactive_agent_select(
 
         click.echo(f"\n  Edit {label} · {tier}")
 
-        # [1/3] tier enabled?
-        click.echo("  [1/3] tier enabled?")
+        efforts = reasoning_efforts_for(agent_type)
+        is_grok = agent_type == AgentType.GROK
+        # Steps after the header: enable, model (skipped — grok is hard-pinned to
+        # grok-build), reasoning effort (only when the agent's CLI exposes one), then max.
+        total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
+        n = 0
+
+        # tier enabled?
+        n += 1
+        click.echo(f"  [{n}/{total}] tier enabled?")
         enable_choice: str | None = beaupy_select(
             options=["Enable", "Disable"],
             cursor_index=0 if (cur is None or cur.enabled) else 1,
@@ -411,26 +423,49 @@ def _interactive_agent_select(
             )
             return
 
-        # [2/3] model
-        available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]
-        default_model = cur.model if cur and cur.model else dtcfg.model or ""
-        cursor_idx = (
-            available_models.index(default_model) if default_model in available_models else 0
-        )
-        click.echo("  [2/3] model")
-        chosen: str | None = beaupy_select(
-            options=available_models, cursor_index=cursor_idx, cursor_style="cyan"
-        )
-        if not chosen:
-            chosen = default_model
-        elif chosen == _CUSTOM_MODEL_SENTINEL:
-            typed = beaupy_prompt(f"  Model for {label}/{tier}: ", initial_value=default_model)
-            chosen = (typed or default_model).strip()
+        # model — grok is hard-pinned to grok-build, so skip the picker entirely.
+        if is_grok:
+            chosen = "grok-build"
+            click.echo("  model · grok-build (fixed)")
+        else:
+            n += 1
+            available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]
+            default_model = cur.model if cur and cur.model else dtcfg.model or ""
+            cursor_idx = (
+                available_models.index(default_model) if default_model in available_models else 0
+            )
+            click.echo(f"  [{n}/{total}] model")
+            chosen_sel: str | None = beaupy_select(
+                options=available_models, cursor_index=cursor_idx, cursor_style="cyan"
+            )
+            if not chosen_sel:
+                chosen = default_model
+            elif chosen_sel == _CUSTOM_MODEL_SENTINEL:
+                typed = beaupy_prompt(f"  Model for {label}/{tier}: ", initial_value=default_model)
+                chosen = (typed or default_model).strip()
+            else:
+                chosen = chosen_sel
 
-        # [3/3] max
+        # reasoning effort — only agents whose CLI exposes one.
+        if efforts:
+            n += 1
+            default_effort = (
+                cur.reasoning_effort if cur and cur.reasoning_effort else dtcfg.reasoning_effort
+            ) or efforts[0]
+            effort_cursor = list(efforts).index(default_effort) if default_effort in efforts else 0
+            click.echo(f"  [{n}/{total}] reasoning effort")
+            effort_sel: str | None = beaupy_select(
+                options=list(efforts), cursor_index=effort_cursor, cursor_style="cyan"
+            )
+            chosen_effort: str | None = effort_sel or default_effort
+        else:
+            chosen_effort = cur.reasoning_effort if cur else dtcfg.reasoning_effort
+
+        # max
+        n += 1
         current_max = cur.max if cur else dtcfg.max
         new_max: int = click.prompt(
-            "  [3/3] Max agents",
+            f"  [{n}/{total}] Max agents",
             default=current_max,
             type=click.IntRange(1, 20),
             show_default=True,
@@ -442,7 +477,7 @@ def _interactive_agent_select(
             ModelTierConfig(
                 enabled=True,
                 model=chosen,
-                reasoning_effort=cur.reasoning_effort if cur else dtcfg.reasoning_effort,
+                reasoning_effort=chosen_effort,
                 max=new_max,
             ),
         )

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agentshore.core.wedge_signals import (
@@ -24,6 +26,7 @@ from agentshore.core.wedge_signals import (
     collect_dirty_trunk_paths,
     collect_orphan_worktree_paths,
     collect_recent_failed_plays,
+    collect_recent_worktree_paths,
     write_session_start_dirty_baseline,
 )
 from agentshore.state import (
@@ -88,6 +91,51 @@ def test_recent_fails_returns_empty_without_session(tmp_path: Path) -> None:
 
 def test_recent_fails_returns_empty_without_db(tmp_path: Path) -> None:
     assert collect_recent_failed_plays(tmp_path, session_id="sess-x") == []
+
+
+# --- collect_recent_worktree_paths -----------------------------------------
+
+
+def test_recent_worktrees_returns_paths_created_inside_age_guard(tmp_path: Path) -> None:
+    db_path = tmp_path / "agentshore.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE worktrees (
+                worktree_id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                worktree_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+        rows = [
+            (1, "sess", "/tmp/young", "active", (now - timedelta(hours=2)).isoformat()),
+            (2, "sess", "/tmp/old", "active", (now - timedelta(hours=4)).isoformat()),
+            (3, "sess", "/tmp/bad-ts", "active", "not-a-timestamp"),
+            (4, "sess", "/tmp/reaped", "reaped", (now - timedelta(minutes=5)).isoformat()),
+        ]
+        conn.executemany(
+            "INSERT INTO worktrees VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert collect_recent_worktree_paths(
+        tmp_path,
+        db_path=db_path,
+        now=now,
+        min_age_hours=3,
+    ) == ["/tmp/young", "/tmp/bad-ts"]
+
+
+def test_recent_worktrees_returns_empty_without_db(tmp_path: Path) -> None:
+    assert collect_recent_worktree_paths(tmp_path, session_id="sess-x") == []
 
 
 # --- build_recent_wedge_signals: structure ----------------------------------
@@ -345,3 +393,22 @@ def test_untracked_root_not_owned_when_predates_active_play(tmp_path: Path) -> N
     agent = _agent_running(PlayType.CLEANUP, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "older.json")["owned_by_active_play"] is False
+
+
+def test_tracked_modification_owned_by_active_trunk_play(tmp_path: Path) -> None:
+    """#224: a tracked (M) file newer than an active trunk play's start is in-flight
+    work too — not just untracked root artifacts."""
+    repo = _init_repo_with_dirty_state(tmp_path)  # src.py is tracked + modified (status M)
+    os.utime(repo / "src.py", (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is True
+
+
+def test_tracked_modification_not_owned_when_predates_active_play(tmp_path: Path) -> None:
+    """A tracked file older than the active trunk play's start is not its in-flight output."""
+    repo = _init_repo_with_dirty_state(tmp_path)
+    os.utime(repo / "src.py", (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is False

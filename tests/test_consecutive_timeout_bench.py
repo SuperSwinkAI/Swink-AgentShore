@@ -3,7 +3,7 @@ stream-idle timeouts, instead of being re-selected for reconcile_state forever.
 
 reconcile_state is deliberately never play-benched (self-heal must stay
 available), and a stream-idle timeout returns the agent to IDLE — so a
-previously-productive agent that hangs producing no stdout (gemini) is otherwise
+previously-productive agent that hangs producing no stdout (grok) is otherwise
 re-picked and hangs for the full 1800s window again, repeatedly. The
 consecutive-timeout counter benches the AGENT (not the play) so dispatch routes
 elsewhere, and keeps END_AGENT available so the wedged agent can be reaped.
@@ -24,8 +24,8 @@ from agentshore.state import (
 
 def _agent(consecutive_timeouts: int = 0, tasks_completed: int = 5) -> AgentSnapshot:
     return AgentSnapshot(
-        agent_id="gemini0",
-        agent_type=AgentType.GEMINI,
+        agent_id="grok0",
+        agent_type=AgentType.GROK,
         status=AgentStatus.IDLE,
         context_size=0,
         total_cost=0.0,

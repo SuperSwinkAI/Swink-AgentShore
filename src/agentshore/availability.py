@@ -41,9 +41,9 @@ _VIA_GH_LOGIN = "gh_token_login"
 _BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "claude": AgentType.CLAUDE_CODE,
     "codex": AgentType.CODEX,
-    "gemini": AgentType.GEMINI,
     "grok": AgentType.GROK,
     "grok-build": AgentType.GROK,
+    "agy": AgentType.ANTIGRAVITY,
 }
 
 

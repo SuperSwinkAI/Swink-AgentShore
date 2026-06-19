@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.agents.handle import is_noop_invocation
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
@@ -33,6 +34,44 @@ if TYPE_CHECKING:
     from agentshore.state import AgentSnapshot, OrchestratorState
 
 _logger = structlog.get_logger(__name__)
+
+# Sent (not the full original skill prompt) when the agent finished work but omitted the
+# JSON envelope and we retry over ``--resume``. The agent already holds all of its prior
+# context in the resumed session, so re-sending the ~10 KB skill prompt only risks it
+# re-doing the work and buries the one thing we need. This short, recency-optimal nudge
+# asks only for the missing block and explicitly forbids redoing work. See #223.
+_JSON_RETRY_PROMPT = (
+    "Your previous turn completed work but did not emit the required JSON result block. "
+    "Do not redo or repeat any work. Output only the fenced JSON result block for what "
+    "you already did, matching the schema in your instructions."
+)
+
+# Defect-specific variant (#229): used when the agent DID emit a JSON object but it
+# lacked the required top-level boolean ``success`` (the near-miss case flagged by
+# ``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more
+# of these than the generic nudge, which the agent answers by re-emitting the same shape.
+_JSON_RETRY_MISSING_SUCCESS_PROMPT = (
+    "Your previous turn emitted a JSON result block, but it is missing the required "
+    "top-level boolean `success` field. Do not redo or repeat any work. Re-emit the exact "
+    'same JSON for what you already did, adding a top-level "success": true (or false). '
+    "Do not invent other keys. Output only that one fenced JSON block."
+)
+
+# First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
+# the agent to re-print a result block it already computed, so it should start streaming
+# within seconds. Without an override it inherits the per-agent-type default — 1800s for
+# antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
+# into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
+# and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
+_JSON_RETRY_FIRST_BYTE_S = 120.0
+
+# Maximum consecutive clean-exit empty no-op dispatches before the play is failed
+# and the agent is routed into a standard take_break. The first dispatch counts as
+# attempt 1, so this bounds the play at 1 initial + 2 fresh re-dispatches. Each
+# re-dispatch is FRESH (no --resume): an empty agy session resumes empty (verified
+# live), so resuming a no-op is useless — only a fresh turn can recover. These 3
+# attempts ARE the "3 no-ops in a row" that trip the break (desktop no-op resilience).
+_NOOP_STREAK_LIMIT = 3
 
 
 def _worktree_cwd_override(params: PlayParams) -> Path | None:
@@ -61,6 +100,12 @@ _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.SYSTEMATIC_DEBUGGING,
     }
 )
+# Minimum worktree age before any destructive worktree sweep may delete it.
+# Shared by PRUNE and RECONCILE_STATE — both remove worktrees and both must keep
+# anything younger, which is the load-bearing guard against the allocate-then-
+# delete race (#189, #218): a worktree created inside this window is protected
+# regardless of how stale a claim query looks.
+_WORKTREE_MIN_AGE_HOURS = 3
 
 
 class SkillBackedPlay(Play, ABC):
@@ -206,6 +251,50 @@ class SkillBackedPlay(Play, ABC):
         except OSError:
             return False
 
+    def _inject_worktree_guards(
+        self, extra_context: dict[str, object], ctx: PlayExecutionContext
+    ) -> None:
+        """Inject the protected-worktree lists a destructive worktree sweep must honour.
+
+        Shared by PRUNE and RECONCILE_STATE: both delete worktrees and must keep any
+        that (a) carry a live work claim or (b) are too young to prove stale. The age
+        guard is the load-bearing protection against the allocate-then-delete race
+        (#189, #218) — a worktree created inside the min-age window is kept regardless
+        of claim-query freshness. Best-effort: a missing list is the conservative
+        outcome (skip nothing extra) and never blocks the dispatch.
+        """
+        from agentshore.core.wedge_signals import (
+            collect_active_worktree_paths,
+            collect_recent_worktree_paths,
+        )
+
+        extra_context["worktree_min_age_hours"] = _WORKTREE_MIN_AGE_HOURS
+        try:
+            extra_context["active_worktree_paths"] = collect_active_worktree_paths(
+                ctx.project_path,
+                session_id=ctx.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+            _logger.warning(
+                "worktree_active_inject_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+        try:
+            extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
+                ctx.project_path,
+                session_id=ctx.session_id,
+                min_age_hours=_WORKTREE_MIN_AGE_HOURS,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
+            _logger.warning(
+                "worktree_young_inject_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
@@ -288,24 +377,17 @@ class SkillBackedPlay(Play, ABC):
                     error=str(exc),
                     play_id=ctx.play_id,
                 )
+            # RECONCILE_STATE also removes worktrees (orphan + #214 divergent-
+            # stale paths), so it needs the same active-claim + age guards prune
+            # uses — without them its diagnose-then-remediate-later flow can delete
+            # a worktree allocated mid-run to a freshly dispatched agent (#218).
+            self._inject_worktree_guards(extra_context, ctx)
         elif self.play_type == PlayType.PRUNE:
-            # Inject the set of currently-claimed worktrees so the skill can
-            # skip them unconditionally, even when they have no pushed branch
-            # yet. Without this, active pickup worktrees look like orphans
-            # (no open PR, no commits beyond target) and get deleted mid-play.
-            from agentshore.core.wedge_signals import collect_active_worktree_paths
-
-            try:
-                extra_context["active_worktree_paths"] = collect_active_worktree_paths(
-                    ctx.project_path,
-                    session_id=ctx.session_id,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
-                _logger.warning(
-                    "prune_active_worktrees_inject_failed",
-                    error=str(exc),
-                    play_id=ctx.play_id,
-                )
+            # Inject the set of currently-claimed / too-young worktrees so the
+            # skill skips them, even when they have no pushed branch yet. Without
+            # this, active pickup worktrees look like orphans (no open PR, no
+            # commits beyond target) and get deleted mid-play.
+            self._inject_worktree_guards(extra_context, ctx)
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(
@@ -458,6 +540,78 @@ class SkillBackedPlay(Play, ABC):
             cwd_override=dispatch_cwd,
         )
 
+        # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
+        # task envelope — exit 0, no output) is a transient agy/backend flake, not
+        # real work. Re-dispatch FRESH (no --resume; an empty session resumes empty)
+        # up to _NOOP_STREAK_LIMIT times. Any attempt that produces output recovers
+        # the play; _NOOP_STREAK_LIMIT consecutive no-ops is treated like a quota
+        # limit — the agent takes a standard break and the play fails for re-pick.
+        if is_noop_invocation(invocation):
+            attempt = 1
+            _logger.info(
+                "agent_noop",
+                agent_id=agent_id,
+                play_type=self.play_type.value,
+                attempt=attempt,
+                duration_ms=invocation.duration_ms,
+            )
+            while is_noop_invocation(invocation) and attempt < _NOOP_STREAK_LIMIT:
+                # Same worktree-reclaim TOCTOU window the json-retry guards below.
+                if dispatch_cwd is not None and not dispatch_cwd.exists():
+                    return PlayOutcome.failed(
+                        self.play_type,
+                        error=(
+                            f"worktree reclaimed before no-op retry: {dispatch_cwd} "
+                            "no longer exists"
+                        ),
+                        agent_id=agent_id,
+                        retry_requested=True,
+                        failure_kind=FailureKind.AGENT_ERROR,
+                    )
+                retry_invocation = await ctx.manager.dispatch(
+                    agent_id,
+                    prompt,
+                    capability=self.capability,
+                    play_type=self.play_type.value,
+                    cwd_override=dispatch_cwd,
+                )
+                invocation = _merge_invocation_costs(invocation, retry_invocation)
+                attempt += 1
+                if is_noop_invocation(invocation):
+                    _logger.info(
+                        "agent_noop",
+                        agent_id=agent_id,
+                        play_type=self.play_type.value,
+                        attempt=attempt,
+                        duration_ms=retry_invocation.duration_ms,
+                    )
+            recovered = not is_noop_invocation(invocation)
+            _logger.info(
+                "agent_noop_retry_outcome",
+                agent_id=agent_id,
+                play_type=self.play_type.value,
+                recovered=recovered,
+                attempts=attempt,
+            )
+            if not recovered:
+                # _NOOP_STREAK_LIMIT in a row: route the agent into the standard
+                # take_break via a recoverable NO_OP error, then fail for re-pick.
+                await ctx.manager.mark_agent_error(
+                    agent_id,
+                    ErrorClass.NO_OP,
+                    f"agent produced no output on {attempt} consecutive dispatches (no-op)",
+                )
+                return PlayOutcome.failed(
+                    self.play_type,
+                    error=(
+                        "no valid result block found in agent output (agent produced no "
+                        f"output on {attempt} consecutive dispatches)"
+                    ),
+                    agent_id=agent_id,
+                    retry_requested=True,
+                    failure_kind=FailureKind.AGENT_ERROR,
+                )
+
         # Parse the raw result block emitted by the skill
         skill_result = parse_skill_result(invocation.raw_output)
 
@@ -492,20 +646,32 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
+            # #229: when the failure is a near-miss (JSON present but no top-level
+            # boolean ``success``), name the exact defect; otherwise use the generic
+            # "emit the JSON block" nudge.
+            retry_prompt = (
+                _JSON_RETRY_MISSING_SUCCESS_PROMPT
+                if skill_result.missing_success_envelope
+                else _JSON_RETRY_PROMPT
+            )
             _logger.info(
                 "agent_json_retry",
                 agent_id=agent_id,
                 play_type=self.play_type.value,
                 session_id=invocation.session_id,
                 original_output_length=len(invocation.raw_output),
+                missing_success_envelope=skill_result.missing_success_envelope,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
-                prompt,
+                retry_prompt,
                 capability=self.capability,
                 play_type=self.play_type.value,
                 cwd_override=dispatch_cwd,
                 resume_session_id=invocation.session_id,
+                # #232: a re-emission should stream promptly — don't inherit agy's
+                # 1800s fresh-task first-byte deadline; fast-fail instead.
+                first_byte_timeout_override=_JSON_RETRY_FIRST_BYTE_S,
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(

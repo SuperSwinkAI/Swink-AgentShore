@@ -138,7 +138,6 @@ def test_build_config_index_uses_config_order_and_tier_order():
         agents={
             "codex": _agent_cfg(tiers=("medium",)),
             "claude_code": _agent_cfg(tiers=("small", "medium")),
-            "gemini": _agent_cfg(tiers=("medium", "large")),
             "grok": _agent_cfg(tiers=("small", "medium", "large")),
         }
     )
@@ -149,8 +148,6 @@ def test_build_config_index_uses_config_order_and_tier_order():
         ("codex", "medium"),
         ("claude_code", "medium"),
         ("claude_code", "small"),
-        ("gemini", "medium"),
-        ("gemini", "large"),
         ("grok", "medium"),
         ("grok", "small"),
         ("grok", "large"),

@@ -168,7 +168,7 @@ test("top bar shows open issue count when available", async ({
   await page.goto("/?demo=1&scenario=empty&freeze=1");
 
   await page.evaluate(async () => {
-    const topBar = await import("/src/hud/topBar.ts");
+    const topBar = await import("/src/components/TopBarHud.tsx");
     const availability = {
       tracked_issue_count: 9,
       github_open_issue_count: 1,
@@ -188,7 +188,7 @@ test("top bar shows open issue count when available", async ({
       actionable_pr_work_count: 0,
       terminal_no_work: true,
     };
-    topBar.updateTopBar({
+    topBar.notifyTopBarHud({
       type: "state_update",
       session_id: "issues-summary",
       session_state: "running",
@@ -287,11 +287,10 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
       { frameHeight: number; visibleHeight: number }
     > = {};
     for (const agentType of [
-      "api_gpt",
-      "api_other",
       "claude_code",
       "codex",
-      "gemini",
+      "antigravity",
+      "grok",
     ] as const) {
       for (const modelTier of ["small", "medium", "large"] as const) {
         measuredFrames[`${agentType}:${modelTier}`] =
@@ -350,21 +349,18 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
   });
 
   expect(metrics.measuredFrameHeights).toEqual({
-    "api_gpt:small": 275,
-    "api_gpt:medium": 570,
-    "api_gpt:large": 741,
-    "api_other:small": 275,
-    "api_other:medium": 570,
-    "api_other:large": 741,
     "claude_code:small": 275,
     "claude_code:medium": 570,
     "claude_code:large": 741,
     "codex:small": 275,
     "codex:medium": 570,
     "codex:large": 741,
-    "gemini:small": 275,
-    "gemini:medium": 570,
-    "gemini:large": 741,
+    "antigravity:small": 275,
+    "antigravity:medium": 570,
+    "antigravity:large": 741,
+    "grok:small": 275,
+    "grok:medium": 570,
+    "grok:large": 741,
   });
   expect(metrics.smallFrameHeight).toBe(275);
   expect(metrics.mediumFrameHeight).toBe(570);
@@ -441,7 +437,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
       state([
         agent("agent-claude", "claude_code", "large"),
         agent("agent-codex", "codex", "medium"),
-        agent("agent-gemini", "gemini", "small"),
+        agent("agent-antigravity", "antigravity", "small"),
         agent("agent-default", "codex", "experimental"),
       ]),
     );
@@ -453,7 +449,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
       state([
         agent("agent-claude", "claude_code", "large"),
         agent("agent-codex", "codex", "large"),
-        agent("agent-gemini", "gemini", "small"),
+        agent("agent-antigravity", "antigravity", "small"),
         agent("agent-default", "codex", null),
       ]),
     );
@@ -468,7 +464,7 @@ test("state manager normalizes configured model tiers for agent sprites", async 
   expect(tiers.initial).toEqual({
     "agent-claude": "large",
     "agent-codex": "medium",
-    "agent-gemini": "small",
+    "agent-antigravity": "small",
     "agent-default": "medium",
   });
   expect(tiers.updated["agent-codex"]).toBe("large");
@@ -489,19 +485,17 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
         "agent-claude",
       ),
       codexMedium: sprites.agentSpriteSpecFor("codex", "medium", "agent-codex"),
-      geminiSmall: sprites.agentSpriteSpecFor(
-        "gemini",
+      antigravitySmall: sprites.agentSpriteSpecFor(
+        "antigravity",
         "small",
-        "agent-gemini",
+        "agent-antigravity",
       ),
-      geminiDefault: sprites.agentSpriteSpecFor(
-        "gemini",
+      antigravityDefault: sprites.agentSpriteSpecFor(
+        "antigravity",
         "experimental",
-        "agent-gemini",
+        "agent-antigravity",
       ),
       grokMedium: sprites.agentSpriteSpecFor("grok", "medium", "agent-grok"),
-      apiGpt: sprites.agentSpriteSpecFor("api_gpt", "large", "agent-api"),
-      apiOther: sprites.agentSpriteSpecFor("api_other", "small", "agent-other"),
       unknown: sprites.agentSpriteSpecFor(
         "unknown_agent",
         "medium",
@@ -518,17 +512,9 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
     sheetHeight: 2496,
   });
   expect(specs.codexMedium).toMatchObject({ key: "codex-medium-humanoid" });
-  expect(specs.geminiSmall).toMatchObject({ key: "gemini-small-ball" });
-  expect(specs.geminiDefault).toMatchObject({ key: "gemini-medium-humanoid" });
+  expect(specs.antigravitySmall).toMatchObject({ key: "antigravity-small-ball" });
+  expect(specs.antigravityDefault).toMatchObject({ key: "antigravity-medium-humanoid" });
   expect(specs.grokMedium).toMatchObject({ key: "grok-medium-humanoid" });
-  expect(specs.apiGpt).toMatchObject({
-    key: "api-gpt-large-humanoid",
-    frameWidth: 416,
-    frameHeight: 832,
-    sheetWidth: 2912,
-    sheetHeight: 2496,
-  });
-  expect(specs.apiOther).toMatchObject({ key: "api-other-small-ball" });
   expect(specs.unknown).toBeNull();
 });
 
@@ -549,16 +535,22 @@ test("mock AgentShore WebSocket populates HUD and canvas", async ({
     const agentCardBox = await agentCard.boundingBox();
     const nameBox = await agentCard.locator(".agent-name").boundingBox();
     const typeBox = await agentCard.locator(".agent-type").boundingBox();
+    const dispatchBox = await agentCard
+      .locator(".agent-dispatch-share")
+      .boundingBox();
     expect(agentCardBox).not.toBeNull();
     expect(nameBox).not.toBeNull();
     expect(typeBox).not.toBeNull();
-    if (agentCardBox && nameBox && typeBox) {
+    expect(dispatchBox).not.toBeNull();
+    if (agentCardBox && nameBox && typeBox && dispatchBox) {
       const nameCenter = nameBox.y + nameBox.height / 2;
       const typeCenter = typeBox.y + typeBox.height / 2;
-      const typeInset =
-        agentCardBox.x + agentCardBox.width - (typeBox.x + typeBox.width);
+      const dispatchInset =
+        agentCardBox.x +
+        agentCardBox.width -
+        (dispatchBox.x + dispatchBox.width);
       expect(Math.abs(nameCenter - typeCenter)).toBeLessThan(3);
-      expect(typeInset).toBeLessThan(8);
+      expect(dispatchInset).toBeLessThan(8);
     }
   }
   await expectCanvasNonBlank(page);
@@ -592,6 +584,97 @@ test("event drawer running filter mirrors current play snapshots", async ({
   await expect(page.locator("#event-list")).toContainText("Issue Pickup 101");
   await expect(page.locator("#event-list")).toContainText("Agent 8");
   await expect(page.locator("#event-list")).toContainText("Issue Pickup 108");
+});
+
+test("event drawer filters stay pinned while history scrolls", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop event drawer assertion");
+  await page.setViewportSize({ width: 1800, height: 720 });
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+
+  await page.evaluate(async () => {
+    const drawer = await import("/src/components/EventDrawer.tsx");
+    const agents = Array.from({ length: 36 }, (_, index) => {
+      const playId = 900 + index;
+      return {
+        agent_id: `scroll-agent-${index}`,
+        agent_type: "codex" as const,
+        display_name: `Codex: Scroll Agent ${index + 1}`,
+        model_tier: "medium",
+        status: "busy" as const,
+        context_size: 0,
+        total_cost: 0,
+        total_tokens: 0,
+        tasks_completed: 0,
+        tasks_failed: 0,
+        current_play: {
+          play_type: "issue_pickup",
+          play_id: playId,
+          started_at: "2026-01-01T00:00:00.000Z",
+          issue_number: playId,
+          pr_number: null,
+          branch: null,
+          trigger_agent_id: null,
+          trigger_agent_type: null,
+          trigger_error_class: null,
+        },
+      };
+    });
+    drawer.notifyEventDrawerStateUpdate({
+      type: "state_update",
+      session_id: "event-drawer-scroll",
+      session_state: "running",
+      policy_mode: "learning",
+      total_plays: 0,
+      total_cost: 0,
+      agents,
+      open_issues: [],
+      pull_requests: [],
+      budget: null,
+      trajectory: null,
+      active_play: null,
+      stats: null,
+      same_type_failure_streak: 0,
+      last_play_type: null,
+      forced_mask_zeros: [],
+      action_mask: Array(22).fill(true),
+      mask_reasons: {},
+    });
+  });
+
+  const leftPanel = page.locator("#left-panel");
+  const filters = page.locator("#event-drawer .drawer-filters");
+  await expect(filters).toBeVisible();
+
+  const before = await filters.boundingBox();
+  expect(before).not.toBeNull();
+
+  await leftPanel.evaluate((panel) => {
+    panel.scrollTop = panel.scrollHeight;
+  });
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector("#left-panel")!;
+    const filtersEl = document.querySelector("#event-drawer .drawer-filters")!;
+    const panelRect = panel.getBoundingClientRect();
+    const filtersRect = filtersEl.getBoundingClientRect();
+    return {
+      position: getComputedStyle(filtersEl).position,
+      panelTop: panelRect.top,
+      filtersTop: filtersRect.top,
+    };
+  });
+
+  expect(geometry.position).toBe("sticky");
+  expect(Math.abs(geometry.filtersTop - geometry.panelTop)).toBeLessThanOrEqual(
+    1,
+  );
+  expect(before).not.toBeNull();
+  if (before) {
+    expect(Math.abs(geometry.filtersTop - before.y)).toBeLessThanOrEqual(1);
+  }
 });
 
 test("plays panel active counts follow current play snapshots when status lags", async ({
@@ -633,8 +716,8 @@ test("plays panel active counts follow current play snapshots when status lags",
         },
         {
           agent_id: "lag-qa",
-          agent_type: "gemini",
-          display_name: "Gemini: Lag QA",
+          agent_type: "antigravity",
+          display_name: "Antigravity: Lag QA",
           model_tier: "medium",
           status: "idle",
           context_size: 0,
@@ -774,7 +857,7 @@ test("plays panel shows all lifecycle plays and greys masked action slots", asyn
     "systematic_debugging",
     "unblock_pr",
     "reconcile_state",
-    "future_6",
+    "prune",
     "take_break",
     "end_session",
     "future_8",
@@ -785,7 +868,7 @@ test("plays panel shows all lifecycle plays and greys masked action slots", asyn
   await expect(page.locator('[data-play-key="run_qa"]')).toHaveClass(
     /pp-card-masked/,
   );
-  await expect(page.locator('[data-play-key="future_6"]')).toHaveClass(
+  await expect(page.locator('[data-play-key="prune"]')).not.toHaveClass(
     /pp-card-masked/,
   );
   await expect(page.locator('[data-play-key="future_7"]')).toHaveClass(
@@ -820,7 +903,7 @@ test("write implementation plan labels keep issue target visible", async ({
 
   const label = await page.evaluate(async () => {
     const formatter =
-      (await import("/src/hud/format.ts")) as typeof import("../../src/hud/format");
+      (await import("/src/format.ts")) as typeof import("../../src/format");
     return formatter.formatPlayWithTarget("write_implementation_plan", {
       issue_number: 234,
       pr_number: null,
@@ -919,7 +1002,7 @@ test("theme query applies grid theme tokens and rejects classic theme params", a
     .toEqual({
       bg: "#f3f6ff",
       text: "#1f2940",
-      panel: "rgba(242,248,255,0.94)",
+      panel: "rgba(242, 248, 255, 0.94)",
       ok: "#0f8a6c",
     });
 
@@ -944,12 +1027,14 @@ test("theme query applies grid theme tokens and rejects classic theme params", a
     .toEqual({
       bg: "#05070d",
       text: "#d8f3ff",
-      panel: "rgba(8,12,20,0.92)",
+      panel: "rgba(8, 12, 20, 0.92)",
       ok: "#29e3a9",
     });
 
-  for (const legacyTheme of ["light", "dark"] as const) {
-    await page.goto("/?demo=1&scenario=active&freeze=1&theme=" + legacyTheme);
+  for (const legacyTheme of ["classic-light", "classic-dark"] as const) {
+    await page.goto(
+      "/?demo=1&scenario=active&freeze=1&theme=" + legacyTheme,
+    );
     await expect(page.locator("html")).toHaveAttribute(
       "data-theme",
       "light",
@@ -1019,11 +1104,11 @@ test("manual grid theme selection persists and legacy values fall back", async (
   await page.goto("/?demo=1&scenario=active&freeze=1");
   await expect(page.locator("html")).toHaveAttribute(
     "data-theme",
-    "light",
+    "dark",
   );
   await expect(page.locator("html")).toHaveAttribute(
     "data-theme-mode",
-    "light",
+    "dark",
   );
 
   await page.evaluate(() =>
@@ -1493,7 +1578,9 @@ test("manual theme toggle rerenders frozen office map", async ({
 }) => {
   test.skip(isMobile, "desktop canvas sampling assertion");
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.goto("/?demo=1&scenario=empty&freeze=1&theme=dark");
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+  await page.locator('#theme-toggle [data-theme-mode="dark"]').click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
   expectRgbClose((await sampleOfficeMap(page)).floors.war, [35, 74, 103], 55);
   await page.locator('#theme-toggle [data-theme-mode="light"]').click();
@@ -2164,7 +2251,7 @@ test("blueprint layout targets are walkable and route through the Workshop", asy
   expect(result.targetCounts).toEqual({
     warRoom: 4,
     editorRoom: 4,
-    workshop: 17,
+    workshop: 16,
     zenGarden: 4,
     frontDesk: 3,
     launchControl: 4,
@@ -2240,8 +2327,8 @@ test("idle wander bounces inside the current room instead of crossing edges", as
     }
   });
 
-  expect(result.doorBounce.path.at(-1)).toEqual({ x: 17, y: 13 });
-  expect(result.doorBounce.zones).toEqual([result.warRoom, result.warRoom]);
+  expect(result.doorBounce.path.at(-1)).toEqual({ x: 18, y: 13 });
+  expect(result.doorBounce.zones).toEqual([result.warRoom]);
   expect(result.doorBounce.zones).not.toContain(result.workshop);
   expect(result.wallBounce.path.at(-1)).toEqual({ x: 7, y: 13 });
   expect(result.wallBounce.zones).toEqual([result.warRoom, result.warRoom]);
@@ -2577,7 +2664,7 @@ test("grid office themes expose NE Launch and SW Recovery room semantics", async
     expect(result.launchName).toBe("LAUNCH CONTROL");
     expect(result.recoveryName).toBe("RECOVERY BAY");
     expect(result.launchSeats).toBe(4);
-    expect(result.recoverySeats).toBe(3);
+    expect(result.recoverySeats).toBe(4);
   }
 });
 
@@ -2615,7 +2702,7 @@ test("state snapshots route current-play agents to rooms when status lags", asyn
         {
           ...baseAgent,
           agent_id: "review-agent",
-          agent_type: "gemini",
+          agent_type: "antigravity",
           current_play: {
             play_type: "code_review",
             play_id: 248,
@@ -2812,44 +2899,268 @@ test("selected agent details show current play or idle state", async ({
   await expect(page.locator("#agent-detail")).toContainText("Idle");
 });
 
+test("selected agent detail drawer opens under the selected card", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel assertion");
+  await page.goto("/?demo=1&scenario=active&freeze=1");
+
+  const agent = page.locator(
+    '#agent-list .agent-item[data-agent-id="agent-claude"]',
+  );
+  await agent.click();
+
+  const geometry = await page.evaluate(() => {
+    const entry = document.querySelector(
+      '.agent-entry[data-agent-entry-id="agent-claude"]',
+    )!;
+    const button = entry.querySelector(".agent-item")!;
+    const detail = entry.querySelector("#agent-detail")!;
+    const detachedDetail = document.querySelector(
+      ".side-panel-content > #agent-detail",
+    );
+    const buttonRect = button.getBoundingClientRect();
+    const detailRect = detail.getBoundingClientRect();
+    return {
+      buttonBottom: buttonRect.bottom,
+      detailTop: detailRect.top,
+      detached: detachedDetail !== null,
+    };
+  });
+
+  expect(geometry.detached).toBe(false);
+  expect(Math.abs(geometry.detailTop - geometry.buttonBottom)).toBeLessThanOrEqual(
+    1,
+  );
+});
+
+test("agent provider filters only show current-session providers", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel assertion");
+  await page.goto("/?demo=1&scenario=empty&freeze=1");
+
+  await page.evaluate(async () => {
+    const panel = await import("/src/components/SidePanel.tsx");
+    panel.notifySidePanelUpdate({
+      type: "state_update",
+      session_id: "provider-filter-session",
+      session_state: "running",
+      policy_mode: "learning",
+      total_plays: 0,
+      total_cost: 0,
+      agents: [
+        {
+          agent_id: "filter-claude",
+          agent_type: "claude_code",
+          display_name: "Claude: Filter Claude",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+        {
+          agent_id: "filter-codex",
+          agent_type: "codex",
+          display_name: "Codex: Filter Codex",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+        {
+          agent_id: "filter-antigravity",
+          agent_type: "antigravity",
+          display_name: "Antigravity: Filter Antigravity",
+          model_tier: "medium",
+          status: "idle",
+          context_size: 0,
+          total_cost: 0,
+          total_tokens: 0,
+          tasks_completed: 0,
+          tasks_failed: 0,
+          current_play: null,
+        },
+      ],
+      open_issues: [],
+      pull_requests: [],
+      budget: null,
+      trajectory: null,
+      active_play: null,
+      stats: null,
+      same_type_failure_streak: 0,
+      last_play_type: null,
+      forced_mask_zeros: [],
+      action_mask: Array(22).fill(true),
+      mask_reasons: {},
+    });
+  });
+
+  await expect(page.locator(".agent-provider-filter")).toHaveText([
+    "All",
+    "Claude",
+    "Codex",
+    "Antigravity",
+  ]);
+  await expect(page.locator(".agent-provider-filters")).not.toContainText(
+    "Grok",
+  );
+
+  await page.locator('[data-agent-provider-filter="antigravity"]').click();
+  await expect(page.locator("#agent-list .agent-entry")).toHaveCount(1);
+  await expect(page.locator("#agent-list")).toContainText("Filter Antigravity");
+  await expect(page.locator("#agent-list")).not.toContainText("Filter Claude");
+  await expect(page.locator("#agent-list")).not.toContainText("Filter Codex");
+});
+
+test("side-panel agent selection focuses and zooms the office camera", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "desktop side panel camera assertion");
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await page.goto("/?demo=1&scenario=active&freeze=1");
+  await expect(
+    page.locator("[data-agentshore-dashboard-canvas]"),
+  ).toHaveAttribute("data-mounted", "true");
+
+  const before = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __agentshoreDashboardTest?: {
+        camera: { x: number; y: number; zoom: number };
+      };
+    };
+    const camera = testWindow.__agentshoreDashboardTest?.camera;
+    if (!camera) throw new Error("camera test hook unavailable");
+    return { x: camera.x, y: camera.y, zoom: camera.zoom };
+  });
+
+  const agent = page.locator(
+    '#agent-list .agent-item[data-agent-id="agent-claude"]',
+  );
+  await agent.click();
+
+  await expect
+    .poll(async () => {
+      const current = await page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            camera: { x: number; y: number; zoom: number };
+          };
+        };
+        const camera = testWindow.__agentshoreDashboardTest?.camera;
+        if (!camera) throw new Error("camera test hook unavailable");
+        return { zoom: camera.zoom };
+      });
+      return current.zoom / before.zoom;
+    })
+    .toBeGreaterThan(1.5);
+
+  const focused = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __agentshoreDashboardTest?: {
+        camera: { x: number; y: number; zoom: number };
+      };
+    };
+    const camera = testWindow.__agentshoreDashboardTest?.camera;
+    if (!camera) throw new Error("camera test hook unavailable");
+    return { x: camera.x, y: camera.y, zoom: camera.zoom };
+  });
+  expect(focused.zoom / before.zoom).toBeGreaterThan(1.5);
+  expect(
+    Math.abs(focused.x - before.x) + Math.abs(focused.y - before.y),
+  ).toBeGreaterThan(20);
+
+  await agent.click();
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            camera: { x: number; y: number; zoom: number };
+          };
+        };
+        const camera = testWindow.__agentshoreDashboardTest?.camera;
+        if (!camera) throw new Error("camera test hook unavailable");
+        return camera.zoom;
+      });
+    })
+    .toBeCloseTo(before.zoom, 2);
+});
+
 test("character click selects an agent detail", async ({ page, isMobile }) => {
   test.skip(isMobile, "desktop side panel detail assertion");
   await page.setViewportSize({ width: 1800, height: 1000 });
   await page.goto("/?demo=1&scenario=active&freeze=1");
   const canvas = page.locator("#office");
   await expectCanvasNonBlank(page);
-  const clickPoints = await canvas.evaluate(async (canvasElement) => {
-    const layout = await import("/src/office/layout.ts");
-    const sprites = await import("/src/characters/sprites.ts");
+
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const testWindow = window as unknown as {
+          __agentshoreDashboardTest?: {
+            characters: () => Array<{ npcKind: string | null }>;
+          };
+        };
+        return (
+          testWindow.__agentshoreDashboardTest
+            ?.characters?.()
+            .filter((character) => character.npcKind === null).length ?? 0
+        );
+      });
+    })
+    .toBeGreaterThan(0);
+
+  const clickPoints = await canvas.evaluate((canvasElement) => {
     const canvas = canvasElement as HTMLCanvasElement;
     const testWindow = window as unknown as {
       __agentshoreDashboardTest?: {
-        camera: {
-          zoom: number;
-          worldToScreen: (x: number, y: number, z?: number) => [number, number];
-        };
+        characters: () => Array<{
+          agentId: string;
+          agentType: string;
+          modelTier: string | null;
+          npcKind: string | null;
+          x: number;
+          y: number;
+          screenBounds: {
+            left: number;
+            top: number;
+            right: number;
+            bottom: number;
+          };
+        }>;
       };
     };
-    const camera = testWindow.__agentshoreDashboardTest?.camera;
-    if (!camera) throw new Error("camera test hook unavailable");
+    const characters = testWindow.__agentshoreDashboardTest?.characters?.() ?? [];
     const scale = canvas.width / canvas.getBoundingClientRect().width;
-    const agentSize = sprites.agentVisualSize(camera.zoom);
-    return layout.FRONT_DESK_SPAWN_SPOTS.map((spawn) => {
-      const [sx, sy] = camera.worldToScreen(
-        spawn.x * layout.TILE_SIZE + layout.TILE_SIZE / 2,
-        spawn.y * layout.TILE_SIZE + layout.TILE_SIZE / 2,
-      );
-      return {
-        x: sx / scale,
-        y: (sy - agentSize.height / 2) / scale,
-      };
-    });
+    return characters
+      .filter((character) => character.npcKind === null)
+      .map((character) => {
+        const bounds = character.screenBounds;
+        return {
+          x: ((bounds.left + bounds.right) / 2) / scale,
+          y: ((bounds.top + bounds.bottom) / 2) / scale,
+        };
+      });
   });
   for (const point of clickPoints) {
     await canvas.click({ position: point });
-    if (
-      (await page.locator("#agent-detail").textContent())?.includes("Tokens")
-    ) {
+    const detailText = await page
+      .locator("#agent-detail")
+      .textContent({ timeout: 250 })
+      .catch(() => null);
+    if (detailText?.includes("Tokens")) {
       break;
     }
   }
@@ -2870,5 +3181,5 @@ test("clicking selected side-panel agent toggles selection off", async ({
 
   await firstAgent.click();
   await expect(firstAgent).not.toHaveClass(/selected/);
-  await expect(page.locator("#agent-detail")).toContainText("Select an agent");
+  await expect(page.locator("#agent-detail")).toHaveCount(0);
 });

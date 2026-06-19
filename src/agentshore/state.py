@@ -105,8 +105,8 @@ class AgentType(enum.Enum):
 
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
-    GEMINI = "gemini"
     GROK = "grok"
+    ANTIGRAVITY = "antigravity"
 
 
 # Single canonical definition of which AgentType values are CLI (subprocess)
@@ -114,7 +114,12 @@ class AgentType(enum.Enum):
 # manager to gate identity resolution. Define it once here, adjacent to the
 # enum, so adding a new CLI agent type requires only one edit.
 CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GEMINI, AgentType.GROK}
+    {
+        AgentType.CLAUDE_CODE,
+        AgentType.CODEX,
+        AgentType.GROK,
+        AgentType.ANTIGRAVITY,
+    }
 )
 
 
@@ -137,14 +142,22 @@ class AgentStatus(enum.Enum):
 # "transient_network" (socket close / connection reset, #23) is recoverable —
 # it is a precise carve-out of the old "unknown" bucket, which was recoverable.
 RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
-    {ErrorClass.RATE_LIMIT, ErrorClass.UNKNOWN, ErrorClass.TRANSIENT_NETWORK}
+    {
+        ErrorClass.RATE_LIMIT,
+        ErrorClass.UNKNOWN,
+        ErrorClass.TRANSIENT_NETWORK,
+        # A clean-exit empty no-op (agy returns an empty task envelope) is
+        # recoverable: 3-in-a-row routes the agent into a standard take_break,
+        # exactly like a transient quota/throttle (desktop no-op resilience).
+        ErrorClass.NO_OP,
+    }
 )
 
 # Per-agent circuit breaker (#22): an agent that has produced ZERO successful
 # plays this session and has either hit a dispatch timeout or accumulated
 # repeated failures is treated as non-functional and masked/deprioritized from
 # work selection until it succeeds. Guards against routing critical plays
-# (e.g. code_review) to a known-dead agent (the gemini-ETIMEDOUT case, where a
+# (e.g. code_review) to a known-dead agent (an agent where a
 # single failed dispatch burned a full ~30-min idle timeout). The mask lifts
 # automatically the moment the agent completes any play (``tasks_completed > 0``).
 CIRCUIT_BREAKER_FAILURE_LIMIT = 2
@@ -306,6 +319,12 @@ class SkillResult:
     tests_passed: bool | None = None
     verification_evidence: list[JsonObject] = field(default_factory=list)
     review_patterns: list[JsonObject] = field(default_factory=list)
+    # Parse-failure discriminator (#229): True when the output DID contain a
+    # balanced JSON object but it lacked a top-level boolean ``success`` (a
+    # near-miss), as opposed to no JSON at all. Lets the skill-backed retry pick
+    # a defect-specific nudge instead of the generic "emit the JSON block" prompt.
+    # Only meaningful when ``success`` is False.
+    missing_success_envelope: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +694,14 @@ class OrchestratorState:
     # have PPO keep re-selecting codex into a dead backend (#zeke auth-hang).
     # Snapshotted each tick from the orchestrator's in-memory set; empty by default.
     auth_suppressed_agent_types: frozenset[str] = field(default_factory=frozenset)
+    # Agent-type values currently in a transient launch-wedge cooldown (Grok
+    # first-byte timeout). Unlike ``auth_suppressed_agent_types`` this is a
+    # DECAYING mask: the state-builder drops each entry once its cooldown expires,
+    # so the type auto-recovers without a new session/token (#202). The candidate
+    # analyzer masks plays resolving to a type in this set, with a distinct block
+    # reason. Snapshotted each tick (active, non-expired entries only); empty by
+    # default.
+    wedge_cooldown_agent_types: frozenset[str] = field(default_factory=frozenset)
     # Consecutive plays of the same type regardless of success/failure. Catches
     # PPO collapses onto a cheap repeated play (where every play succeeds and
     # `same_type_failure_streak` stays at 0). Used for masking + reward penalty
@@ -820,6 +847,17 @@ class StateProvider(Protocol):
         """Push a full state snapshot after each play cycle."""
         ...
 
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
+        """Push a budget-only snapshot (the time-budget countdown heartbeat).
+
+        Emitted on a fixed cadence so the dashboard's remaining-time figure keeps
+        ticking down during quiet stretches (idle fleet, a single long-running
+        play) when no full ``on_state_update`` fires. Deliberately budget-only so
+        consumers refresh just the budget bar and never re-process agents — a
+        full snapshot every few seconds would make the office sprites jitter.
+        """
+        ...
+
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:
         """Notify that a play has started executing."""
         ...
@@ -878,6 +916,9 @@ class NullStateProvider:
     """No-op StateProvider for headless / testing use."""
 
     async def on_state_update(self, state: OrchestratorState) -> None:
+        pass
+
+    async def on_budget_update(self, budget: BudgetSnapshot) -> None:
         pass
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:

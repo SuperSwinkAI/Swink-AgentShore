@@ -28,6 +28,10 @@ def test_desktop_capabilities_include_minimum_v1_acl() -> None:
     assert "shell:allow-open" in object_permissions
     assert "shell:allow-execute" in object_permissions
     assert "fs:allow-read" in object_permissions
+    # The Check-for-Updates app menu uses the updater plugin (declared in
+    # Cargo.toml / tauri.conf.json, used in AppMenu.tsx), so the updater grant
+    # is an intentional part of the v1 ACL.
+    assert "updater:default" in string_permissions
 
 
 def test_desktop_capabilities_disallow_extra_plugin_grants() -> None:
@@ -42,6 +46,8 @@ def test_desktop_capabilities_disallow_extra_plugin_grants() -> None:
             if isinstance(value, str):
                 identifiers.add(value)
 
-    banned_prefixes = ("store:", "updater:", "http:", "notification:")
+    # ``updater:`` is intentionally granted for the Check-for-Updates menu (see
+    # the min-ACL test); the rest stay banned to keep the surface minimal.
+    banned_prefixes = ("store:", "http:", "notification:")
     for identifier in identifiers:
         assert not identifier.startswith(banned_prefixes), identifier

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_session_record
 from agentshore.utils import now_iso
 
@@ -20,6 +20,7 @@ class _SessionsMixin(_DataStoreBase):
         # the DataStore MRO at runtime.
         async def session_play_totals(self, session_id: str) -> tuple[int, float]: ...
 
+    @_serialized
     async def create_session(self, session: SessionRecord) -> None:
         """Insert a new session row."""
         await self._insert(
@@ -38,6 +39,7 @@ class _SessionsMixin(_DataStoreBase):
             final_alignment=session.final_alignment,
         )
 
+    @_serialized
     async def get_session(self, session_id: str) -> SessionRecord | None:
         """Return a single session by ID, or ``None`` if not found."""
         async with self._conn.execute(
@@ -55,6 +57,7 @@ class _SessionsMixin(_DataStoreBase):
             return None
         return _row_to_session_record(row)
 
+    @_serialized
     async def list_sessions(self) -> list[SessionRecord]:
         """Return all sessions, ordered by ``created_at`` descending."""
         cursor = await self._conn.execute(
@@ -69,6 +72,7 @@ class _SessionsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_session_record(row) for row in rows]
 
+    @_serialized
     async def update_session_state(self, session_id: str, status: str) -> None:
         """Update the lifecycle status of a session (e.g. 'paused', 'running')."""
         await self._conn.execute(
@@ -77,6 +81,7 @@ class _SessionsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def complete_session(self, session_id: str, final_alignment: float) -> None:
         """Mark a session as completed and persist the finalized play aggregate.
 
@@ -102,6 +107,7 @@ class _SessionsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def fail_session(self, session_id: str, reason: str) -> None:
         """Finalize a session that crashed or was force-terminated.
 

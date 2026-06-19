@@ -181,7 +181,10 @@ def _run_beads_init(project_path: Path, config_path: Path | None) -> None:
     "--install-skills",
     "install_skills_only",
     is_flag=True,
-    help="Only install skill files, skip config generation",
+    help=(
+        "Deprecated: only install skill files, skip config generation "
+        "(agentshore start refreshes skills automatically)."
+    ),
 )
 @click.option(
     "--target-branch",
@@ -199,7 +202,7 @@ def init(
     install_skills_only: bool,
     target_branch: str | None,
 ) -> None:
-    """Initialise an AgentShore project: generate agentshore.yaml and install skills.
+    """Initialise an AgentShore project: generate agentshore.yaml and setup metadata.
 
     Examples:
 
@@ -211,18 +214,22 @@ def init(
 
       agentshore init --target-branch develop
     """
-    from agentshore.skills import install_skills
-
     project_path = Path(project).resolve()
     config_yaml = project_path / "agentshore.yaml"
 
     # --install-skills: run only phases 2 + 4, skip all config-mutating steps.
     if install_skills_only:
+        from agentshore.skills import install_skills
+
         if target_branch is not None:
             raise click.UsageError(
                 "--target-branch has no effect with --install-skills "
                 "(skill install skips config generation)."
             )
+        click.echo(
+            "Warning: agentshore init --install-skills is deprecated; "
+            "agentshore start refreshes skills automatically."
+        )
         # -- 2. Install skill files ---------------------------------------
         installed = install_skills(project_path, force=force)
         if installed:
@@ -280,13 +287,6 @@ def init(
             click.echo(f"Created {config_yaml}")
         elif not force:
             click.echo(f"Created {config_yaml}")
-
-    # -- 2. Install skill files ------------------------------------------
-    installed = install_skills(project_path, force=force)
-    if installed:
-        click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
-    else:
-        click.echo("All skills are up-to-date.")
 
     # -- 2b. Prompt for / persist the target branch ---------------------
     # Mirrors the desktop wizard's TargetBranchScreen so CLI-bootstrapped

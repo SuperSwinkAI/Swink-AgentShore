@@ -274,6 +274,25 @@ def test_unknown_classes_enqueue_unknown_recovery(error_class: ErrorClass) -> No
     assert entry.kind is OverrideKind.UNKNOWN_ERROR_RECOVERY
 
 
+def test_noop_class_enqueues_noop_recovery() -> None:
+    """A NO_OP error → the distinct NOOP_RECOVERY take_break + its own latch.
+
+    Routes the standard take_break (desktop no-op resilience) while staying
+    separable from real rate-limit/unknown recoveries in telemetry.
+    """
+    h = _enqueue_harness(ErrorClass.NO_OP)
+
+    h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
+
+    assert not h._overrides.empty()
+    assert "err1" in h._recovery._noop_recovery_enqueued
+    assert "err1" not in h._recovery._rate_limit_recovery_enqueued
+    assert "err1" not in h._recovery._unknown_error_recovery_enqueued
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.NOOP_RECOVERY
+
+
 # ---------------------------------------------------------------------------
 # Drain wind-down: retire an errored agent instead of recovering it (#30/#23)
 # ---------------------------------------------------------------------------

@@ -167,3 +167,11 @@ class SessionRuntime:
     # dead backend (the resource-key parking above is keyed on issues/branches,
     # not agent types, so it doesn't cover this).
     auth_suppressed_agent_types: set[str] = field(default_factory=set)
+    # Agent-type values whose backend hit a *transient* launch wedge (Grok
+    # first-byte timeout). Unlike ``auth_suppressed_agent_types`` above, this is
+    # a DECAYING suppression: maps agent_type -> the tick at which the cooldown
+    # expires. The state-builder seeds entries (expiry = current tick +
+    # ``_GROK_WEDGE_COOLDOWN_TICKS``) and drops expired ones each snapshot, so a
+    # wedged type auto-recovers instead of being disabled for the whole session
+    # (#202). ``last_play_id`` is the tick reference.
+    wedge_cooldown_until: dict[str, int] = field(default_factory=dict)

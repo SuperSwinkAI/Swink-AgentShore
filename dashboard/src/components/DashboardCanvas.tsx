@@ -9,7 +9,10 @@ import type { ResolvedTheme } from "../theme";
 import type { StateUpdate } from "../types";
 import { deriveColumns } from "../views/kanban/phase";
 import { PHASES } from "../views/kanban/phase";
-import { notifySidePanelSelectAgent } from "./SidePanel";
+import {
+  notifySidePanelClickHandler,
+  notifySidePanelSelectAgent,
+} from "./SidePanel";
 
 /**
  * In-office mural stickies — module-level notify so the React-port
@@ -84,9 +87,11 @@ export interface DashboardCanvasProps {
    * arrive over the (future) WebSocket bridge.
    */
   stateManager?: AgentShoreStateManager;
+  hidden?: boolean;
 }
 
 interface FrameContext {
+  canvas: HTMLCanvasElement;
   camera: Camera;
   renderer: OfficeRenderer;
   state: AgentShoreStateManager;
@@ -108,6 +113,7 @@ function startGameLoop(ctx: FrameContext, initialClock: number): () => void {
       updateCharacter(char, dtMs / 1000);
     }
 
+    ctx.camera.update(dtMs / 1000, ctx.canvas.width, ctx.canvas.height);
     ctx.renderer.render(ctx.state.getCharacters());
     rafHandle = requestAnimationFrame(tick);
   };
@@ -130,6 +136,7 @@ export function DashboardCanvas({
   initialClock = 0,
   theme = "light",
   stateManager,
+  hidden = false,
 }: DashboardCanvasProps = {}): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -152,6 +159,25 @@ export function DashboardCanvas({
 
     const camera = new Camera();
     const renderer = new OfficeRenderer(canvas, ctx2d, camera);
+    if (import.meta.env.DEV) {
+      const testWindow = window as typeof window & {
+        __agentshoreDashboardTest?: Record<string, unknown>;
+      };
+      testWindow.__agentshoreDashboardTest = {
+        ...(testWindow.__agentshoreDashboardTest ?? {}),
+        camera,
+        characters: () =>
+          state.getCharacters().map((char) => ({
+            agentId: char.agentId,
+            agentType: char.agentType,
+            modelTier: char.modelTier ?? null,
+            npcKind: char.npcKind ?? null,
+            x: char.x,
+            y: char.y,
+            screenBounds: characterScreenBounds(char, camera.zoom, camera),
+          })),
+      };
+    }
 
     // Resolve the initial theme from documentElement.dataset.theme if
     // ThemeToggle has already painted by the time the canvas mounts —
@@ -210,6 +236,18 @@ export function DashboardCanvas({
 
     const fitToView = () => {
       camera.fitToViewport(measureViewport(), DEFAULT_VIEW_PADDING * dpr);
+    };
+
+    const focusAgent = (agentId: string | null) => {
+      if (agentId === null) {
+        fitToView();
+        return;
+      }
+      const character = state
+        .getCharacters()
+        .find((char) => !char.npcKind && char.agentId === agentId);
+      if (!character) return;
+      camera.focusOn(character);
     };
 
     const resize = () => {
@@ -284,10 +322,12 @@ export function DashboardCanvas({
       if (!character) return;
       if (!character.npcKind) {
         notifySidePanelSelectAgent(character.agentId);
+        focusAgent(character.agentId);
       }
     };
     const onDblClick = () => {
       notifySidePanelSelectAgent(null);
+      focusAgent(null);
     };
     canvas.addEventListener("click", onClick);
     canvas.addEventListener("dblclick", onDblClick);
@@ -302,6 +342,7 @@ export function DashboardCanvas({
       switch (event.key) {
         case "0":
           notifySidePanelSelectAgent(null);
+          focusAgent(null);
           break;
         case "+":
         case "=":
@@ -326,9 +367,10 @@ export function DashboardCanvas({
       }
     };
     window.addEventListener("keydown", onKey);
+    notifySidePanelClickHandler(focusAgent);
 
     setMounted(true);
-    const stopLoop = startGameLoop({ camera, renderer, state }, initialClock);
+    const stopLoop = startGameLoop({ canvas, camera, renderer, state }, initialClock);
 
     // Wire the in-office mural to state_update payloads. notifyDashboard-
     // CanvasStickies is module-level so Dashboard.tsx can call it from
@@ -352,7 +394,17 @@ export function DashboardCanvas({
       canvas.removeEventListener("click", onClick);
       canvas.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("keydown", onKey);
+      notifySidePanelClickHandler(null);
       stickyListeners.delete(onStickies);
+      if (import.meta.env.DEV) {
+        const testWindow = window as typeof window & {
+          __agentshoreDashboardTest?: Record<string, unknown>;
+        };
+        if (testWindow.__agentshoreDashboardTest?.camera === camera) {
+          delete testWindow.__agentshoreDashboardTest.camera;
+          delete testWindow.__agentshoreDashboardTest.characters;
+        }
+      }
       setMounted(false);
     };
     // initialClock/theme/stateManager intentionally captured at mount.
@@ -365,10 +417,16 @@ export function DashboardCanvas({
   return (
     <canvas
       ref={canvasRef}
+      id="office"
       className="agentshore-dashboard-canvas"
       data-agentshore-dashboard-canvas
       data-mounted={mounted ? "true" : "false"}
-      style={{ width: "100%", height: "100%", display: "block", imageRendering: "pixelated" }}
+      style={{
+        width: "100%",
+        height: "100%",
+        display: hidden ? "none" : "block",
+        imageRendering: "pixelated",
+      }}
     />
   );
 }

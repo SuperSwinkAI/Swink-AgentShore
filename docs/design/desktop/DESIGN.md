@@ -136,6 +136,37 @@ In-session commands (pause, resume, drain, feedback, abort/override play, budget
 adjust, verification response, report generation) stay on the existing WebSocket
 channel and are out of scope for the JSON-RPC control plane.
 
+### 5.1 Native menu bar
+
+`build_app_menu` (`desktop/src-tauri/src/lib.rs`) builds the standard-app menu
+bar. Custom items emit a `menu:<id>` Tauri event; the session-scoped items
+(Stop Session, Adjust Budget) are handled by `SessionDashboardScreen`, and the
+app-global items by the `AppMenu` controller (`desktop/src/components/AppMenu.tsx`,
+mounted in `App.tsx` outside the route table so it works on every screen). Items
+stay enabled — React decides what to do for the current state rather than keeping
+enabled-state synced over IPC.
+
+- **File** — Adjust Budget…, Stop Session, Close Window.
+- **Edit / View / Window** — predefined items (undo/redo/clipboard; fullscreen;
+  minimize/maximize).
+- **Help** — Documentation / Release Notes / Report an Issue (opened in the
+  browser via the OS opener, inline in Rust), a Keyboard Shortcuts cheat-sheet,
+  Open Log Folder (the `open_log_folder` command reveals
+  `<project>/.agentshore/logs`, falling back to `~/.config/swink/agentshore`),
+  and Copy Diagnostics (Rust assembles `{app, version, os, arch}`; React renders
+  a copyable dialog).
+- **Preferences…** (Cmd+,) — placeholder dialog today; scope is being researched
+  separately (see `docs/design/preferences-menu-decisions.md`). UI-shell prefs
+  belong in `tauri-plugin-store`/`ui-state.json`, never in `agentshore.yaml`.
+- **Check for Updates…** — manual check plus a silent check on launch that
+  prompts only when an update exists; install reuses the `restart_sidecar`
+  command to relaunch.
+
+Placement follows platform convention: on macOS the leading App menu is built
+explicitly (About / Check for Updates / Preferences / Services / Hide / Quit) so
+those two items land there; on Windows/Linux Preferences sits in File and Check
+for Updates in Help. Decisions captured in `docs/design/desktop-menu-bar-decisions.md`.
+
 ---
 
 ## 6. Packaging and distribution
@@ -196,7 +227,8 @@ When the certs are present in the Keychain, the build auto-signs the `.app` with
 Developer ID Application and the `.pkg` with Developer ID Installer; absent certs
 produce unsigned output (right-click-Open on first launch). Optional
 notarization submits the `.pkg` via `notarytool` and staples it. Auto-update uses
-Tauri 2's built-in updater pointed at `latest.json` in GitHub Releases.
+Tauri 2's built-in updater pointed at `latest.json` in GitHub Releases, surfaced
+through a Check for Updates… menu item and a silent check on launch (§5.1).
 
 See `docs/release/signing.md` for the maintainer procedure.
 
@@ -232,7 +264,9 @@ See `docs/release/signing.md` for the maintainer procedure.
 
 - Telemetry and remote crash reporting (local crash screen only).
 - Multi-window (use recents to switch projects).
-- Native menus and enumerated keyboard shortcuts.
+- A real Preferences/Settings window (a placeholder ships today — §5.1), a
+  system tray, and an enriched View/Window menu (the native menu bar and a
+  keyboard-shortcuts cheat-sheet now ship — §5.1).
 - Localization (English only).
 - Windows / Linux packaging (macOS only today).
 - `agentshore.yaml` schema changes (desktop writes the schema the CLI emits).

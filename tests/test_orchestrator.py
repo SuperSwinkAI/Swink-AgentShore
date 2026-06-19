@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.config import AgentConfig, BootstrapConfig, RuntimeConfig
-from agentshore.config.models import ModelTierConfig
+from agentshore.config.models import ModelTierConfig, PreferencesConfig
 from agentshore.core import Orchestrator
+from agentshore.core.context import _DispatchContext
 from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.override_queue import OverrideQueue
@@ -287,7 +288,6 @@ def test_author_labels_cover_all_agent_types_with_dashboard_colors() -> None:
     label_map = dict(labels)
     assert label_map["agentshore/author:claude_code"] == "E07B39"
     assert label_map["agentshore/author:codex"] == "F4D44D"
-    assert label_map["agentshore/author:gemini"] == "4285F4"
     assert label_map["agentshore/author:grok"] == "14B8A6"
     assert "agentshore/author:custom_agent" not in label_map
 
@@ -458,6 +458,7 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     store = MagicMock()
     store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
     store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+    store.list_retrying_claim_group_ids = AsyncMock(return_value=set())
 
     orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
     orch._session_id = "s1"
@@ -491,6 +492,67 @@ async def test_idle_agent_active_claims_release_after_threshold() -> None:
     await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
 
     store.release_active_work_claims_for_agents.assert_awaited_once_with("s1", ["agent-1"])
+    assert orch._state_builder._idle_agent_claim_ticks == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_agent_claim_release_protects_in_flight_claim_group() -> None:
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    claim = SimpleNamespace(agent_id="agent-1", claim_group_id="g-stale", resource_key="issue:42")
+    store = MagicMock()
+    store.find_active_work_claims_for_agents = AsyncMock(return_value=[claim])
+    store.release_active_work_claims_for_agents = AsyncMock(return_value=1)
+    store.list_retrying_claim_group_ids = AsyncMock(return_value=set())
+
+    orch = make_test_orchestrator(Path("/tmp"), _cfg(), store=store)
+    orch._session_id = "s1"
+    orch._state_builder = StateBuilder(
+        host=orch,
+        runtime=orch._runtime,
+        store=store,
+        manager=MagicMock(),
+        executor=MagicMock(),
+        session_id="s1",
+        repo_root=Path("/tmp"),
+        main_repo=orch._main_repo,
+        snapshots=MagicMock(),
+        velocity=MagicMock(),
+        recovery=MagicMock(),
+        overrides=MagicMock(),
+    )
+    in_flight_params = PlayParams(agent_id="agent-1", extras={"claim_group_id": "g-live"})
+    orch._runtime.dispatch_ctx = {
+        "dispatch-live": _DispatchContext(
+            dispatch_id="dispatch-live",
+            play_type=PlayType.ISSUE_PICKUP,
+            params=in_flight_params,
+            state_at_dispatch=OrchestratorState(
+                session_id="s1",
+                session_state=SessionState.RUNNING,
+                total_plays=0,
+                total_cost=0.0,
+            ),
+            pending_step=None,
+            dispatched_at=0.0,
+        )
+    }
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_idle_agent("agent-1")],
+    )
+
+    for _ in range(3):
+        await orch._state_builder.release_claims_for_prolonged_idle_agents(state)
+
+    store.release_active_work_claims_for_agents.assert_awaited_once_with(
+        "s1",
+        ["agent-1"],
+        exclude_claim_group_ids={"g-live"},
+    )
     assert orch._state_builder._idle_agent_claim_ticks == {}
 
 
@@ -1323,13 +1385,16 @@ def test_bootstrap_recipe_order() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _bootstrap_cfg(*, cleanup_threshold: int = 50) -> RuntimeConfig:
+def _bootstrap_cfg(
+    *, cleanup_threshold: int = 50, disabled_plays: tuple[str, ...] = ()
+) -> RuntimeConfig:
     return RuntimeConfig(
         agents={
             AgentType.CLAUDE_CODE.value: AgentConfig(enabled=True),
             AgentType.CODEX.value: AgentConfig(enabled=True),
         },
         bootstrap=BootstrapConfig(cleanup_threshold=cleanup_threshold),
+        preferences=PreferencesConfig(disabled_plays=disabled_plays),
     )
 
 
@@ -1428,6 +1493,47 @@ def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
     assert entries[1].params.bypass_preconditions is True
     # Groom still waits for the (seedless) seed audit to complete.
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
+
+
+def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
+    """A user-disabled GROOM_BACKLOG must not be bootstrap-queued.
+
+    The bootstrap override bypasses preconditions AND the action mask, so the
+    mask-level USER_DISABLED suppression never reaches it — the recipe honors
+    the preference at enqueue time instead. Open-start then queues only the
+    cold-start INSTANTIATE_AGENT and hands straight to the PPO.
+    """
+    cfg = _bootstrap_cfg(disabled_plays=(PlayType.GROOM_BACKLOG.value,))
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch, cfg=cfg, seed_path=None, open_issues_count=120, graph_has_epics=True
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+
+
+def test_bootstrap_seed_recipe_skips_groom_when_user_disabled(tmp_path: Path) -> None:
+    """The seed recipe likewise drops its GROOM_BACKLOG step when groom is
+    user-disabled — instantiate → seed → instantiate, no groom override."""
+    cfg = _bootstrap_cfg(disabled_plays=(PlayType.GROOM_BACKLOG.value,))
+    orch = _make_mock_orch()
+    seed_file = tmp_path / "seed.md"
+    seed_file.write_text("# Seed", encoding="utf-8")
+    _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=0)
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    assert [e.play_type for e in entries] == [
+        PlayType.INSTANTIATE_AGENT,
+        PlayType.SEED_PROJECT,
+        PlayType.INSTANTIATE_AGENT,
+    ]
 
 
 def test_bootstrap_open_start_ignores_backlog_size() -> None:

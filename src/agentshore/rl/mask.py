@@ -21,6 +21,7 @@ from agentshore.plays.candidates import (
     qa_ran_within_terminal_window,
     terminal_audits_are_fresh,
 )
+from agentshore.preferences import USER_DISABLEABLE_PLAYS
 from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
 from agentshore.rl.eligibility import EligibilityAuthority, EligibilityReport
 from agentshore.rl.eligibility import (
@@ -38,6 +39,7 @@ from agentshore.rl.mask_reason import (
     NOT_AVAILABLE,
     RESERVED_SLOT,
     SESSION_DRAINING,
+    USER_DISABLED,
     MaskClassification,
     MaskReason,
     MaskSource,
@@ -379,12 +381,44 @@ class ActionMaskBuilder:
         self._candidate_plan = candidate_plan or build_candidate_plan(state)
         self._mask = np.zeros(NUM_ACTIONS, dtype=bool)
         self._report: EligibilityReport | None = None
+        self._user_disabled: frozenset[PlayType] | None = None
 
     @property
     def candidate_plan(self) -> PlayCandidatePlan:
         return self._candidate_plan
 
     # -- policy-overlay stages (mutate self._mask in place) ------------------
+
+    def _user_disabled_plays(self) -> frozenset[PlayType]:
+        """Plays the user turned off via global Preferences (allowlist-guarded).
+
+        Re-checks :data:`USER_DISABLEABLE_PLAYS` so a hand-edited preferences
+        file can never disable a delivery/lifecycle/self-heal play even if it
+        names one. Cached per build.
+        """
+        if self._user_disabled is not None:
+            return self._user_disabled
+        disabled: set[PlayType] = set()
+        if self._cfg is not None:
+            for value in self._cfg.preferences.disabled_plays:
+                try:
+                    pt = PlayType(value)
+                except ValueError:
+                    continue
+                if pt in USER_DISABLEABLE_PLAYS and pt in V1_ACTION_ORDER:
+                    disabled.add(pt)
+        self._user_disabled = frozenset(disabled)
+        return self._user_disabled
+
+    def _stage_user_disabled(self) -> None:
+        """Hard-mask user-disabled plays.
+
+        Structural, like reserved slots: applied among the overlays AND re-run
+        as the final word after the reverse-failsafe so the escape hatch can
+        never resurrect an explicit user choice.
+        """
+        for pt in self._user_disabled_plays():
+            self._mask[V1_ACTION_ORDER.index(pt)] = False
 
     def _breaker_benched(self, pt: PlayType) -> bool:
         """True if ``pt`` is currently benched by the 3-strikes circuit breaker.
@@ -493,6 +527,7 @@ class ActionMaskBuilder:
         self._stage_consecutive_failure_breaker()
         self._stage_lifecycle_churn_breaker()
         self._stage_reserved_slots()
+        self._stage_user_disabled()
         self._stage_end_session_in_flight()
 
         # Short-circuit stages run before the reverse-failsafe so the failsafe
@@ -515,6 +550,9 @@ class ActionMaskBuilder:
                 config_index=self._config_index,
                 base_mask=self._mask,
             )
+            # The failsafe may lift a play the user disabled — re-apply the
+            # user-disabled mask as the final, authoritative word.
+            self._stage_user_disabled()
 
         return self._mask
 
@@ -541,8 +579,16 @@ class ActionMaskBuilder:
                     reasons[pt] = SESSION_DRAINING
             return reasons
 
+        user_disabled = self._user_disabled_plays()
+
         for i, pt in enumerate(V1_ACTION_ORDER):
             if mask[i]:
+                continue
+
+            # User preference (B-type overlay) is authoritative: an explicit
+            # user choice explains the mask before any policy/validity reason.
+            if pt in user_disabled:
+                reasons[pt] = USER_DISABLED
                 continue
 
             # Circuit breaker (B-type overlay) takes priority: it benches a play

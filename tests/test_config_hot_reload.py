@@ -121,6 +121,69 @@ async def test_reload_config_logs_changed_fields(tmp_path: Path) -> None:
         assert orch._cfg.scope.strict_mode is True
 
 
+def _sonnet_pricing(output_rate: float, input_rate: float = 0.1) -> dict[str, object]:
+    return {
+        "models": {
+            "sonnet": {
+                "max_context": 200000,
+                "cost_per_1k_input": input_rate,
+                "cost_per_1k_output": output_rate,
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_reload_picks_up_global_pricing_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing the global pricing.yaml + SIGHUP reprices the next dispatch."""
+    from agentshore.agents import pricing as pricing_mod
+
+    config_path = tmp_path / "agentshore.yaml"
+    _write_config(config_path)
+    global_pricing = tmp_path / "pricing.yaml"
+    global_pricing.write_text(yaml.dump(_sonnet_pricing(0.2)), encoding="utf-8")
+    monkeypatch.setattr(pricing_mod, "GLOBAL_PRICING_PATH", global_pricing)
+
+    orch = await Orchestrator.bootstrap(
+        cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
+    )
+    async with orch:
+        # Edit the single global touchpoint and reload — no restart.
+        global_pricing.write_text(yaml.dump(_sonnet_pricing(0.9)), encoding="utf-8")
+        await orch._lifecycle.reload_config()
+
+        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+
+
+@pytest.mark.asyncio
+async def test_reload_rejects_malformed_global_pricing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken global pricing.yaml on reload is rejected; old pricing retained."""
+    from agentshore.agents import pricing as pricing_mod
+
+    config_path = tmp_path / "agentshore.yaml"
+    _write_config(config_path)
+    global_pricing = tmp_path / "pricing.yaml"
+    global_pricing.write_text(yaml.dump(_sonnet_pricing(0.9)), encoding="utf-8")
+    monkeypatch.setattr(pricing_mod, "GLOBAL_PRICING_PATH", global_pricing)
+
+    orch = await Orchestrator.bootstrap(
+        cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
+    )
+    async with orch:
+        await orch._lifecycle.reload_config()
+        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+
+        # Negative rate → ConfigError → reload aborts, prior pricing stands.
+        global_pricing.write_text(yaml.dump(_sonnet_pricing(0.2, input_rate=-5)), encoding="utf-8")
+        await orch._lifecycle.reload_config()
+
+        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+
+
 @pytest.mark.asyncio
 async def test_reload_config_rejects_budget_below_floor(tmp_path: Path) -> None:
     """Invalid enabled budget on reload is rejected; old config retained."""

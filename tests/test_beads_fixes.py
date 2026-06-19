@@ -673,3 +673,77 @@ def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
     # Open dup wins regardless of dict-insertion order in the input list.
     assert snap.bead_id == "desktop-tfq.1.2"
     assert snap.bead_status == "open"
+
+
+# ---------------------------------------------------------------------------
+# add_blocking_dependency — mirror a body-declared dep into a beads blocks edge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_dependency_runs_bd_link_blocks(tmp_path: Path) -> None:
+    """The blocked bead is linked to its blocker with a ``blocks`` edge.
+
+    ``bd link <id1> <id2>`` makes id2 block id1, so the blocked bead is the
+    first arg and the blocker the second (matching the groom/seed skills).
+    """
+    from agentshore.beads import add_blocking_dependency
+
+    (tmp_path / ".beads").mkdir()
+    captured: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        captured.append(args)
+        return ""
+
+    with patch("agentshore.beads.bd", side_effect=_fake_bd):
+        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+
+    assert ok is True
+    assert captured == [
+        ("link", "bead-blocked", "bead-blocker", "--type", "blocks", "--dolt-auto-commit=on")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_dependency_noops_without_beads_dir(tmp_path: Path) -> None:
+    from agentshore.beads import add_blocking_dependency
+
+    called = False
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        nonlocal called
+        called = True
+        return ""
+
+    with patch("agentshore.beads.bd", side_effect=_fake_bd):
+        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+
+    assert ok is False
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_dependency_rejects_equal_ids(tmp_path: Path) -> None:
+    from agentshore.beads import add_blocking_dependency
+
+    (tmp_path / ".beads").mkdir()
+    with patch("agentshore.beads.bd", side_effect=AssertionError("bd must not run")):
+        assert await add_blocking_dependency(tmp_path, "bead-x", "bead-x") is False
+        assert await add_blocking_dependency(tmp_path, "", "bead-y") is False
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_dependency_swallows_bd_error(tmp_path: Path) -> None:
+    """A bd failure returns False (caller falls back to a label) rather than raising."""
+    from agentshore.beads import BdError, add_blocking_dependency
+
+    (tmp_path / ".beads").mkdir()
+
+    async def _failing_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        raise BdError("link failed")
+
+    with patch("agentshore.beads.bd", side_effect=_failing_bd):
+        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+
+    assert ok is False

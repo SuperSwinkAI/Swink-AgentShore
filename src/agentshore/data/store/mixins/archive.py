@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_archive_record
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _ArchiveMixin(_DataStoreBase):
     """Methods that operate on the ``session_archives`` table."""
 
+    @_serialized
     async def create_archive(self, record: ArchiveRecord) -> None:
         """Insert an archive record."""
         await self._insert(
@@ -29,6 +30,7 @@ class _ArchiveMixin(_DataStoreBase):
             created_at=record.created_at,
         )
 
+    @_serialized
     async def list_archives(self) -> list[ArchiveRecord]:
         """Return all archives, ordered by ``created_at`` descending."""
         cursor = await self._conn.execute(
@@ -43,6 +45,7 @@ class _ArchiveMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_archive_record(row) for row in rows]
 
+    @_serialized
     async def get_archive(self, archive_id: str) -> ArchiveRecord | None:
         """Return a single archive by ID, or ``None`` if not found."""
         async with self._conn.execute(

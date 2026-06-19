@@ -26,8 +26,8 @@ class TestAgentCapabilities:
         assert caps["can_merge"] is True
         assert caps["can_run_skill"] is True
 
-    def test_gemini_cli_can_create_pr_and_merge(self) -> None:
-        caps = AGENT_CAPABILITIES[AgentType.GEMINI]
+    def test_antigravity_can_create_pr_and_merge(self) -> None:
+        caps = AGENT_CAPABILITIES[AgentType.ANTIGRAVITY]
         assert caps["can_create_pr"] is True
         assert caps["can_merge"] is True
 

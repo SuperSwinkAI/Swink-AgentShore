@@ -291,20 +291,38 @@ async def reap_for_closed_prs(
     session_id: str,
     main_repo: Path,
     ttl_seconds: int,
+    protected_paths: set[str] | None = None,
 ) -> ReapReport:
     """Remove ``stale`` rows older than ``ttl_seconds`` in the current session.
 
     The GitHub adapter marks a PR's worktree row ``stale`` when the PR is
     merged or closed (so the next finalize can downgrade it). After
     ``ttl_seconds`` of inactivity, the disk + row are cleaned up.
+
+    ``protected_paths`` (canonicalised via :func:`_canon_path`) carries the
+    on-disk paths of live dispatches. Any ``stale`` row whose canonical path
+    matches one is skipped EVEN IF its ``worktree_id`` differs from the live
+    row's — the ``pickup-<N>`` directory is reused across attempts, so a stale
+    OLD-id row can share a path with the LIVE new-id row mid-play; reaping it
+    would ``git worktree remove --force`` the live directory (#203).
     """
     if ttl_seconds < 0:
         msg = f"ttl_seconds must be >= 0, got {ttl_seconds}"
         raise ValueError(msg)
+    protected = protected_paths or set()
     cutoff = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
     stale = await list_stale(store, session_id=session_id, before_iso=cutoff.isoformat())
     report = ReapReport()
     for row in stale:
+        if _canon_path(row.worktree_path) in protected:
+            log.info(
+                "worktree_closed_pr_reap_skipped_in_flight",
+                worktree_id=row.worktree_id,
+                branch=row.branch_name,
+                path=row.worktree_path,
+                reason="path_in_flight",
+            )
+            continue
         await _reap_one(
             store,
             row=row,
@@ -336,6 +354,7 @@ async def reap_for_disk_pressure(
     worktree_root: Path,
     target_free_mb: int,
     protected_ids: set[int] | None = None,
+    protected_paths: set[str] | None = None,
 ) -> ReapReport:
     """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
 
@@ -359,6 +378,7 @@ async def reap_for_disk_pressure(
         return report
 
     protected = protected_ids or set()
+    protected_path_set = protected_paths or set()
     now_iso = datetime.now(UTC).isoformat()
     # ``stale`` (including crashed-mid-reap ``reaping``) ranks ahead of warm
     # ``active`` worktrees; within each group, oldest ``last_used_at`` first.
@@ -378,6 +398,15 @@ async def reap_for_disk_pressure(
         if free_disk_mb(worktree_root) >= target_free_mb:
             break
         if row.worktree_id in protected:
+            continue
+        if _canon_path(row.worktree_path) in protected_path_set:
+            log.info(
+                "worktree_disk_pressure_reap_skipped_in_flight",
+                worktree_id=row.worktree_id,
+                branch=row.branch_name,
+                path=row.worktree_path,
+                reason="path_in_flight",
+            )
             continue
         await _reap_one(
             store,

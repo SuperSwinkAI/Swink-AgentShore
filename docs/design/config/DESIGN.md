@@ -28,6 +28,13 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 
 `load_config(path)` returns the built-in default config when `path` is `None` or the file is absent; otherwise it reads the file, requires a mapping at the root, and runs full validation. `generate_default_config()` writes the default YAML into a project.
 
+Token pricing has its **own** file and precedence, separate from `agentshore.yaml` (see Pricing):
+
+| Source | Scope | Precedence |
+|--------|-------|------------|
+| Global `pricing.yaml` (`GLOBAL_PRICING_PATH`) | All projects on the machine | Higher (deep-merged over the bundled default) |
+| Bundled `agentshore/data/pricing.yaml` | Package default | Lower |
+
 ## Config Domains
 
 `RuntimeConfig` aggregates the following sub-configs. Each is a frozen dataclass with its own defaults and parser.
@@ -40,7 +47,8 @@ Cross-references: [HLD](../HLD.md) lists this component; per-agent GitHub identi
 | `budget` | Spend cap (see Budget). |
 | `trusted_ids` | GitHub logins and a PR allow-list treated as trusted for review/merge gating. |
 | `identities` | Named GitHub identities (git authorship + token source) bindable to CLI agents (see Identities). |
-| `agents` | Per-agent-type fleet definitions, including per-tier spawn caps (see Agents / Spawn Limits). |
+| `agents` | Per-agent-type fleet definitions, including per-tier spawn caps (see Agents / Spawn Limits). Token rates live in a separate file (see Pricing). |
+| `pricebook` | Per-model token rates resolved from `pricing.yaml` (bundled + global override); not a YAML block under `agentshore.yaml` (see Pricing). |
 | `play_pacing` | Standard post-run cooldown for heavyweight skill-backed plays (see Play Pacing). |
 | `bootstrap` | First-play recipe tunable: `cleanup_threshold` open-issue count above which bootstrap queues `cleanup` instead of `seed_project`. |
 | `fresh_start` | Context-reset thresholds (plays / context fraction / auto-trigger). |
@@ -64,7 +72,19 @@ Top-level scalars: `agent_timeout` (global dispatch timeout fallback), `play_tim
 
 ## Agents
 
-Each entry under `agents:` is an `AgentConfig`: binary/API base, default model and reasoning effort, an approved-model allow-list, named `model_tiers` (small/medium/large, each with its own model + effort), cost-per-1k token rates, context size, and stream/output/line-buffer limits. The line buffer defaults to 4 MB because CLI agents emit stream-json result lines that exceed asyncio's 64 KB default; the stream-idle timeout defaults to 30 minutes so legitimate long-think windows survive while genuinely hung agents are still detected. Known agent types (`claude_code`, `codex`, `gemini`) carry built-in cost/context defaults so a minimal entry is enough. The reserved `fresh_start` and `preferences` keys under `agents:` are parsed into their own configs, not as agents.
+Each entry under `agents:` is an `AgentConfig`: binary/API base, default model and reasoning effort, an approved-model allow-list, named `model_tiers` (small/medium/large, each with its own model + effort), context size, and stream/output/line-buffer limits. **Token rates are no longer part of `AgentConfig`** — they live in the external pricing table (see Pricing); `max_context` defaults still come from that table's per-agent-type entry. The line buffer defaults to 4 MB because CLI agents emit stream-json result lines that exceed asyncio's 64 KB default; the stream-idle timeout defaults to 30 minutes so legitimate long-think windows survive while genuinely hung agents are still detected. Known agent types (`claude_code`, `codex`, `grok`, `antigravity`) carry built-in context defaults so a minimal entry is enough. `reasoning_effort` is not configurable for `antigravity` (effort is baked into the model name, so the CLI exposes no effort flag and the parser rejects one — the same way it does for `grok`). The reserved `fresh_start` and `preferences` keys under `agents:` are parsed into their own configs, not as agents.
+
+## Pricing
+
+Per-model token rates are factored out of `agentshore.yaml` into a dedicated YAML table so prices — the values most likely to change as providers reprice — have a **single touchpoint** that can be edited without a code change or rebuild. The canonical default ships in the wheel at `agentshore/data/pricing.yaml`; a global file at `GLOBAL_PRICING_PATH` (`platformdirs` user-config dir, e.g. `~/Library/Application Support/agentshore/pricing.yaml`) **deep-merges** over it, so an operator lists only the models they reprice. `load_pricebook()` reads bundled + global on every call and builds a frozen `PriceBook` held on `RuntimeConfig.pricebook`.
+
+The table has three tiers plus the cache multipliers (the read/write factors applied to a model that omits an explicit cached / cache-write rate):
+
+- `models:` — per-model rates, keyed by the `model:` strings used in `model_tiers` (highest precedence).
+- `agent_defaults:` — per-agent-type fallback, used when the resolved model id is not listed.
+- `default:` — last-resort global fallback.
+
+At cost time the Agent Manager resolves `pricebook.resolve(agent_type, model)` (model id → agent-type default → global default) and hands `estimate_cost` a `PricingQuote` (the resolved `AgentPricing` plus the cache multipliers). A named model that falls past the per-model tier is logged once per `(agent_type, model)` so an unpriced model surfaces without crashing the play or silently mis-billing. The loader validates rates (positive, required input/output present) and shape, raising `ConfigError` exactly like a bad `agentshore.yaml`. Agent-type defaults mirror the historical built-in rates, so billing is unchanged for any model not yet enumerated under `models:`.
 
 ## Identities
 
@@ -118,3 +138,5 @@ Either timer set to `None` disables that backstop.
 ## Hot Reload
 
 The orchestrator reloads `agentshore.yaml` on SIGHUP. Because config is a single frozen instance, reload is atomic: the new file is parsed and validated in full, and only on success is the active `RuntimeConfig` instance swapped wholesale. An invalid reload is rejected and the previous instance stays active, so a bad edit can never partially apply or crash a running session.
+
+Reload rebuilds the `pricebook` too (it re-runs `load_pricebook()`, re-reading the bundled + global `pricing.yaml`), so editing the global pricing file then sending SIGHUP reprices the **next** dispatch with no restart — in-flight agents finish at the old rate. A malformed pricing file makes the reload fail validation and is rejected like any other bad edit.

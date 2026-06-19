@@ -8,9 +8,11 @@ import type {
   ActivePlayReplay,
   AgentSnapshot,
   AgentShoreMessage,
+  PlayEventCompleted,
   PlayEventStarted,
   StateUpdate,
 } from "../src/types";
+import { makeActivePlay } from "../src/types";
 
 function agent(overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
   return {
@@ -76,6 +78,64 @@ function playStarted(
   };
 }
 
+function playCompleted(
+  seq: number,
+  overrides: Partial<PlayEventCompleted> = {},
+): PlayEventCompleted {
+  return {
+    type: "play_event",
+    status: "completed",
+    seq,
+    play_type: "issue_pickup",
+    agent_id: "agent-1",
+    success: true,
+    duration_seconds: 60,
+    dollar_cost: 0.1,
+    token_cost: 100,
+    artifacts: [],
+    alignment_delta: 0,
+    error: null,
+    play_id: 1,
+    skipped: false,
+    skip_category: null,
+    trigger_agent_id: null,
+    trigger_agent_type: null,
+    trigger_error_class: null,
+    ...overrides,
+  };
+}
+
+function playFailed(
+  seq: number,
+  overrides: Partial<PlayEventCompleted> = {},
+): PlayEventCompleted {
+  return playCompleted(seq, {
+    status: "failed",
+    success: false,
+    error: "boom",
+    ...overrides,
+  });
+}
+
+function budgetUpdate(seq: number): AgentShoreMessage {
+  return {
+    type: "budget_update",
+    seq,
+    session_id: "s1",
+    budget: {
+      enabled: true,
+      total_budget: 200,
+      spent: 5,
+      remaining: 195,
+      estimated_cost_per_play: 0.5,
+      time_enabled: true,
+      time_total_minutes: 120,
+      time_elapsed_minutes: 45,
+      time_remaining_minutes: 75,
+    },
+  } as AgentShoreMessage;
+}
+
 function activePlayReplay(
   overrides: Partial<ActivePlayReplay> = {},
 ): ActivePlayReplay {
@@ -111,6 +171,33 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
     expect(accepted).toBe(false);
     expect(mgr.latestState).toBe(before);
     expect(mgr.latestState?.total_plays).toBe(3);
+  });
+
+  it("ignores a budget_update: no character churn (no sprite jitter)", () => {
+    const mgr = new AgentShoreStateManager();
+    // Busy agent mid-play so a character exists and has a routed target.
+    mgr.handleMessage(stateUpdate(10, { agents: [agent({ status: "busy" })] }));
+    mgr.handleMessage(playStarted(11));
+    const char = mgr.characters.get("agent-1");
+    expect(char).toBeDefined();
+    const targetBefore = char?.targetState;
+    const xBefore = char?.x;
+    const yBefore = char?.y;
+    const stateBefore = mgr.latestState;
+
+    // The budget heartbeat must not touch the office StateManager at all: it
+    // carries no agent data and returns false, leaving every character (and the
+    // last full snapshot) exactly as they were.
+    const accepted = mgr.handleMessage(budgetUpdate(12));
+    expect(accepted).toBe(false);
+    expect(mgr.characters.size).toBe(1);
+    expect(mgr.characters.get("agent-1")).toBe(char);
+    expect(char?.targetState).toBe(targetBefore);
+    expect(char?.x).toBe(xBefore);
+    expect(char?.y).toBe(yBefore);
+    // latestState (the full snapshot) is untouched — budget lives on the
+    // separate PlaysPanel consumer, not here.
+    expect(mgr.latestState).toBe(stateBefore);
   });
 
   it("drops a strictly-older seq even if the payload would otherwise mutate state", () => {
@@ -176,20 +263,113 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
 });
 
 describe("AgentShoreStateManager — state_update is authoritative", () => {
-  it("a play_event(started) followed by state_update with no current_play leaves the agent idle", () => {
+  it("preserves a newer play_event(started) across a stale idle/null state_update", () => {
     const mgr = new AgentShoreStateManager();
     mgr.handleMessage(stateUpdate(1));
     mgr.handleMessage(playStarted(2));
     expect(mgr.latestState?.agents[0].status).toBe("busy");
+    const char = mgr.getAgents()[0];
+    const targetBefore = char.targetState;
+    const activePlayBefore = mgr.latestState?.active_play;
 
-    // Authoritative snapshot says the agent is idle — even though play_event
-    // had said it was busy. The patched optimistic state must be overwritten.
+    // The full snapshot can be stale relative to the append-only play event
+    // stream; it must not visually clear the in-flight play.
     mgr.handleMessage(
       stateUpdate(3, {
         agents: [agent({ status: "idle", current_play: null })],
       }),
     );
+    expect(mgr.latestState?.agents[0].status).toBe("busy");
+    expect(mgr.latestState?.agents[0].current_play?.play_type).toBe(
+      "issue_pickup",
+    );
+    expect(mgr.latestState?.active_play).toEqual(activePlayBefore);
+    expect(mgr.getAgents()[0].bubble).toEqual({
+      text: "Issue Pickup 100",
+      tone: "work",
+    });
+    expect(mgr.getAgents()[0].targetState).toBe(targetBefore);
+    expect(mgr.getAgents()[0].targetState).not.toBe(CharacterState.IDLE);
+  });
+
+  it("clears a completed play before a following idle/null state_update", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(1));
+    mgr.handleMessage(playStarted(2));
+
+    mgr.handleMessage(playCompleted(3));
+    mgr.handleMessage(
+      stateUpdate(4, {
+        agents: [agent({ status: "idle", current_play: null })],
+      }),
+    );
+
+    expect(mgr.latestState?.active_play).toBeNull();
     expect(mgr.latestState?.agents[0].status).toBe("idle");
+    expect(mgr.latestState?.agents[0].current_play).toBeNull();
+    expect(mgr.getAgents()[0].bubble).toBeNull();
+    expect(mgr.getAgents()[0].targetState).toBe(CharacterState.IDLE);
+  });
+
+  it("clears a failed play before a following idle/null state_update", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(1));
+    mgr.handleMessage(playStarted(2));
+
+    mgr.handleMessage(playFailed(3));
+    mgr.handleMessage(
+      stateUpdate(4, {
+        agents: [agent({ status: "idle", current_play: null })],
+      }),
+    );
+
+    expect(mgr.latestState?.active_play).toBeNull();
+    expect(mgr.latestState?.agents[0].status).toBe("idle");
+    expect(mgr.latestState?.agents[0].current_play).toBeNull();
+    expect(mgr.getAgents()[0].bubble).toBeNull();
+    expect(mgr.getAgents()[0].targetState).toBe(CharacterState.IDLE);
+  });
+
+  it("uses a different non-null current_play from a state_update", () => {
+    const mgr = new AgentShoreStateManager();
+    const replacement = makeActivePlay({
+      play_type: "code_review",
+      agent_id: "agent-1",
+      play_id: 2,
+      pr_number: 55,
+      started_at: "2026-01-01T00:01:00.000Z",
+    });
+    mgr.handleMessage(stateUpdate(1));
+    mgr.handleMessage(playStarted(2));
+
+    mgr.handleMessage(
+      stateUpdate(3, {
+        active_play: replacement,
+        agents: [agent({ status: "busy", current_play: replacement })],
+      }),
+    );
+
+    expect(mgr.latestState?.active_play).toEqual(replacement);
+    expect(mgr.latestState?.agents[0].status).toBe("busy");
+    expect(mgr.latestState?.agents[0].current_play).toEqual(replacement);
+    expect(mgr.getAgents()[0].bubble).toEqual({
+      text: "Code Review 55",
+      tone: "work",
+    });
+  });
+
+  it("does not preserve a prior play when the state_update terminates the agent", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage(stateUpdate(1));
+    mgr.handleMessage(playStarted(2));
+
+    mgr.handleMessage(
+      stateUpdate(3, {
+        agents: [agent({ status: "terminated", current_play: null })],
+      }),
+    );
+
+    expect(mgr.latestState?.agents[0].status).toBe("terminated");
     expect(mgr.latestState?.agents[0].current_play).toBeNull();
     expect(mgr.getAgents()[0].bubble).toBeNull();
   });

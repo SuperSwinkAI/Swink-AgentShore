@@ -9,6 +9,9 @@ time, so the play must be reachable whenever the base gates pass.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from agentshore.plays.skill_backed.prune import PrunePlay
 from agentshore.state import (
     AgentSnapshot,
@@ -17,6 +20,16 @@ from agentshore.state import (
     OrchestratorState,
     PlayType,
     SessionState,
+)
+
+_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "agentshore"
+    / "skills"
+    / "templates"
+    / "agentshore-prune"
+    / "SKILL.md"
 )
 
 
@@ -87,3 +100,22 @@ def test_prune_play_metadata() -> None:
     assert play.play_type == PlayType.PRUNE
     assert play.skill_name == "agentshore-prune"
     assert play.capability == "can_implement"
+
+
+def test_prune_template_requires_three_hour_worktree_age_guard() -> None:
+    """Prune must prove a worktree is old enough before any stale checks."""
+    text = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert "worktree_min_age_hours" in text
+    assert "young_worktree_paths" in text
+    assert "3 hours" in text
+
+    match = re.search(
+        r"\*\*Worktree sweep\.\*\*(?P<section>.*?)\n\n\*\*Local branch sweep\.\*\*",
+        text,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    section = match.group("section")
+    assert "path in `young_worktree_paths` → keep" in section
+    assert section.index("young_worktree_paths") < section.index("closed_pr_branches")
+    assert "Only worktrees that pass this age guard may continue" in section

@@ -36,11 +36,42 @@ from agentshore.sidecar.server import ServerState, SessionContext, handle_reques
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
     STEP_CONFIG_MERGE,
+    STEP_INSTALL_SKILLS,
     SessionStartError,
     _make_bridge,
     run_session_start,
 )
 from agentshore.state import AgentType
+
+VALID_TIERED_CONFIG = """
+project: {}
+identities:
+  alpha:
+    git_user_name: Alpha Agent
+    git_user_email: alpha@example.com
+    gh_token_login: alpha-agent
+  beta:
+    git_user_name: Beta Agent
+    git_user_email: beta@example.com
+    gh_token_login: beta-agent
+agents:
+  claude_code:
+    enabled: true
+    binary: agentshore-missing-claude
+    identity: alpha
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    binary: agentshore-missing-codex
+    identity: beta
+    model_tiers:
+      large:
+        enabled: true
+"""
 
 
 def _write_valid_project(root: Path, *, agentshore_yaml: str | None = None) -> Path:
@@ -65,6 +96,45 @@ async def test_config_merge_missing_yaml_raises_structured_error(tmp_path: Path)
         await run_session_start(state, start_bridge=False, start_orchestrator=False)
     assert excinfo.value.step == STEP_CONFIG_MERGE
     assert excinfo.value.code == -32602
+
+
+@pytest.mark.asyncio
+async def test_config_merge_blocks_missing_model_tier_coverage(tmp_path: Path) -> None:
+    project = _write_valid_project(
+        tmp_path / "missing-tier-coverage",
+        agentshore_yaml="""
+project: {}
+agents:
+  claude_code:
+    enabled: true
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+""",
+    )
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    with (
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth") as auth_probe,
+        pytest.raises(SessionStartError) as excinfo,
+    ):
+        await run_session_start(
+            state,
+            progress_token="tok-tier-coverage",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=True,
+        )
+
+    assert excinfo.value.step == STEP_CONFIG_MERGE
+    assert excinfo.value.code == -32602
+    assert "missing required model tier coverage: large" in str(excinfo.value)
+    auth_probe.assert_not_called()
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    assert steps == [STEP_CONFIG_MERGE, STEP_CONFIG_MERGE]
 
 
 @pytest.mark.asyncio
@@ -195,6 +265,67 @@ async def test_check_agent_auth_tolerates_non_blocking_status(tmp_path: Path) ->
         outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
 
     assert outcome.session_id == state.session_id
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_blocks_when_enabled_agents_share_one_github_login(
+    tmp_path: Path,
+) -> None:
+    """Desktop session.start must enforce the same identity-diversity invariant
+    as the CLI start path.
+
+    A disabled second identity does not help: code review / merge need two
+    distinct GitHub logins among enabled agents.
+    """
+    project = _write_valid_project(
+        tmp_path / "same-identity",
+        agentshore_yaml="""
+project: {}
+identities:
+  jwesleye:
+    git_user_name: Jwesleye
+    git_user_email: jwesleye@users.noreply.github.com
+    gh_token_login: jwesleye
+  unseriousai:
+    git_user_name: unseriousAI
+    git_user_email: unseriousai@users.noreply.github.com
+    gh_token_login: unseriousai
+agents:
+  claude_code:
+    enabled: false
+    identity: jwesleye
+  codex:
+    enabled: true
+    identity: unseriousai
+  grok:
+    enabled: true
+    identity: unseriousai
+""",
+    )
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    with pytest.raises(SessionStartError) as excinfo:
+        await run_session_start(
+            state,
+            progress_token="tok-identity",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert excinfo.value.code == -32603
+    assert "≥2 distinct GitHub identities" in str(excinfo.value)
+    assert "unseriousai" in str(excinfo.value)
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    assert steps == [
+        STEP_CONFIG_MERGE,
+        STEP_CONFIG_MERGE,
+        STEP_CHECK_AGENT_AUTH,
+        STEP_CHECK_AGENT_AUTH,
+    ]
+    assert STEP_INSTALL_SKILLS not in steps
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +521,7 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     from agentshore.data.models import SessionRecord
     from agentshore.data.store import DataStore
 
-    project = _write_valid_project(tmp_path / "project")
+    project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
 
     session_id = "sess-natural-exit-e2e"
     db_path = tmp_path / "db.sqlite"
@@ -526,7 +657,7 @@ async def test_seed_path_forwarded_to_bootstrap(tmp_path: Path) -> None:
 
     Without this the sidecar dropped the wizard's seed selection and the
     orchestrator always took the open-start path (no_seed_input)."""
-    project = _write_valid_project(tmp_path / "project")
+    project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
     state = ServerState(active_project_path=str(project))
     with (
         patch("agentshore.core.Orchestrator") as mock_orch_cls,
@@ -547,7 +678,7 @@ async def test_seed_path_forwarded_to_bootstrap(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_no_seed_path_passes_none_to_bootstrap(tmp_path: Path) -> None:
-    project = _write_valid_project(tmp_path / "project2")
+    project = _write_valid_project(tmp_path / "project2", agentshore_yaml=VALID_TIERED_CONFIG)
     state = ServerState(active_project_path=str(project))
     with (
         patch("agentshore.core.Orchestrator") as mock_orch_cls,

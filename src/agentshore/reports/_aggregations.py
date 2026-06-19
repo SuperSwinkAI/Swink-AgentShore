@@ -136,8 +136,8 @@ def _is_issue_source_label(label: str) -> bool:
 _AGENT_TYPE_LABEL: dict[str, str] = {
     "claude_code": "Claude",
     "codex": "Codex",
-    "gemini": "Gemini",
     "grok": "Grok",
+    "antigravity": "Antigravity",
 }
 
 

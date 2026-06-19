@@ -263,6 +263,7 @@ body.dashboard-active .agentshore-dashboard-canvas {
 }
 .theme-toggle-btn:focus-visible,
 .drawer-filters button:focus-visible,
+.agent-provider-filter:focus-visible,
 .agent-item:focus-visible,
 .modal-btn:focus-visible,
 .km-card:focus-visible,
@@ -359,8 +360,18 @@ body.dashboard-active .agentshore-dashboard-canvas {
 .drawer-filters {
   display: flex;
   gap: 4px;
-  margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: -8px -8px 8px;
+  padding: 8px 8px 6px;
   flex-wrap: wrap;
+  background: var(--fm-panel);
+  border-bottom: 1px solid var(--fm-border-subtle);
+  box-shadow: 0 6px 12px rgba(8, 12, 20, 0.06);
+}
+:root[data-theme="dark"] .drawer-filters {
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.24);
 }
 .drawer-filters button {
   border: 1px solid var(--fm-border-subtle);
@@ -506,17 +517,46 @@ body.dashboard-active .agentshore-dashboard-canvas {
   margin-bottom: 7px;
   letter-spacing: 1px;
 }
+.agent-provider-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.agent-provider-filter {
+  border: 1px solid var(--fm-border-subtle);
+  background: var(--fm-bar);
+  color: var(--fm-text-body);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 6px;
+}
+.agent-provider-filter:hover {
+  color: var(--color-fm-text);
+  background: var(--fm-hover);
+}
+.agent-provider-filter[aria-pressed="true"] {
+  color: var(--fm-text-strong);
+  border-color: var(--color-fm-ok);
+  background: var(--fm-selected);
+}
 .side-section {
   border-top: 1px solid var(--fm-border-subtle);
   margin-top: 10px;
   padding-top: 8px;
+}
+.agent-entry {
+  border-bottom: 1px solid var(--fm-border-subtle);
+}
+.agent-entry.selected {
+  margin-bottom: 4px;
 }
 .agent-item {
   display: block;
   width: 100%;
   padding: 7px 6px;
   border: 1px solid transparent;
-  border-bottom-color: var(--fm-border-subtle);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -530,6 +570,13 @@ body.dashboard-active .agentshore-dashboard-canvas {
 .agent-item.selected {
   background: var(--fm-selected);
   border-color: var(--fm-selected-border);
+}
+.agent-detail-drawer {
+  border: 1px solid var(--fm-selected-border);
+  border-top: 0;
+  background: color-mix(in srgb, var(--fm-selected) 72%, transparent);
+  color: var(--fm-text-body);
+  padding: 8px 7px 10px;
 }
 .agent-heading {
   /* desktop-31h2: 4 columns — status dot, name (flex), agent type,

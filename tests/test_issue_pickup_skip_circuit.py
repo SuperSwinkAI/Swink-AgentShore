@@ -301,6 +301,80 @@ async def test_execution_failure_increments_skip_streak() -> None:
 
 
 @pytest.mark.asyncio
+async def test_timeout_increments_skip_streak_as_non_rearmable() -> None:
+    """#222: a dispatch timeout raises past the streak block and the executor
+    converts it — so without the ``except`` it never counted. Now it does, as a
+    NON-rearmable cooldown, and is re-raised so the executor still sees it."""
+    from agentshore.errors import AgentTimeout
+    from agentshore.plays.base import PlayParams
+
+    play = IssuePickupPlay()
+    params = PlayParams(issue_number=101)
+    state = _make_state([_make_issue(101)], total_plays=5)
+    ctx = object()
+
+    with patch(
+        "agentshore.plays.skill_backed.base.SkillBackedPlay.execute",
+        new=AsyncMock(side_effect=AgentTimeout("agent timed out")),
+    ):
+        for _ in range(_SKIP_CIRCUIT_THRESHOLD):
+            with pytest.raises(AgentTimeout):
+                await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
+
+    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip_rearmable[101] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_crash_increments_skip_streak_as_non_rearmable() -> None:
+    """#231: a -9-style agent crash feeds the same non-rearmable issue cooldown."""
+    from agentshore.errors import AgentProcessCrashed
+    from agentshore.plays.base import PlayParams
+
+    play = IssuePickupPlay()
+    params = PlayParams(issue_number=101)
+    state = _make_state([_make_issue(101)], total_plays=5)
+    ctx = object()
+
+    with patch(
+        "agentshore.plays.skill_backed.base.SkillBackedPlay.execute",
+        new=AsyncMock(side_effect=AgentProcessCrashed("agent exited with code -9")),
+    ):
+        for _ in range(_SKIP_CIRCUIT_THRESHOLD):
+            with pytest.raises(AgentProcessCrashed):
+                await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
+
+    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip_rearmable[101] is False
+
+
+def test_timeout_cooldown_does_not_rearm_on_ready_bead() -> None:
+    """#222: a timeout cooldown rides out its full window even when the bead is ready.
+
+    Contrast ``test_cooldown_rearms_immediately_when_blocker_clears``: a
+    dependency-block cooldown re-arms on readiness, but a timed-out issue's bead
+    was never blocked, so readiness must NOT clear its cooldown — otherwise the
+    timing-out issue is re-dispatched every tick with no backoff.
+    """
+    play = IssuePickupPlay()
+    issues = [_make_issue(101)]
+
+    for _ in range(_SKIP_CIRCUIT_THRESHOLD):
+        play._record_skip(101, total_plays=5, rearmable=False)
+    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+
+    # Bead is ready — a rearmable (dependency-block) cooldown would clear here,
+    # but this timeout cooldown must hold.
+    graph = ProjectGraph(tasks=[_ready_task(101)], tasks_ready=1, tasks_total=1)
+    state = _make_state(issues, total_plays=6, graph=graph)
+
+    reasons = play.preconditions(state)
+
+    assert any("no open issues eligible" in r.text for r in reasons)
+    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+
+
+@pytest.mark.asyncio
 async def test_execution_success_clears_skip_streak_and_cooldown() -> None:
     """A successful pickup wipes any accumulated streak or cooldown."""
     from agentshore.plays.base import PlayParams

@@ -15,6 +15,27 @@ if TYPE_CHECKING:
     from agentshore.identity_wizard import IdentityBinding
 
 
+def _raw_agent_resolves_to_type(name: str, cfg: object) -> bool:
+    """True when a raw YAML agent entry maps to a supported ``AgentType``.
+
+    Mirrors ``config._parsers._resolve_agent_type`` for the wizard's pre-load
+    view: prefer the ``binary``→type registry, else the key itself. Keeps the
+    wizard from offering identity bindings for keys ``load_config`` would reject
+    (typos, or the removed ``api_*`` concept).
+    """
+    from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
+    from agentshore.state import AgentType
+
+    binary = cfg.get("binary") if isinstance(cfg, dict) else None
+    if isinstance(binary, str) and BINARY_TO_AGENT_TYPE.get(binary) is not None:
+        return True
+    try:
+        AgentType(name)
+    except ValueError:
+        return False
+    return True
+
+
 def _agent_keys_from_yaml(
     config_path: Path,
     *,
@@ -24,8 +45,10 @@ def _agent_keys_from_yaml(
 
     Filters out agents with ``enabled: false`` so the identity wizard
     doesn't ask about them. Missing or non-bool ``enabled`` defaults to
-    enabled, mirroring the config loader. When *detected_agents* is provided,
-    only supported CLI agents currently detected on PATH are returned.
+    enabled, mirroring the config loader. Keys that resolve to no supported
+    ``AgentType`` are dropped too — ``load_config`` rejects them, so the wizard
+    must not offer them as identity-binding options. When *detected_agents* is
+    provided, only supported CLI agents currently detected on PATH are returned.
     """
     import yaml as _yaml
 
@@ -50,6 +73,8 @@ def _agent_keys_from_yaml(
         if available_keys is not None and name not in available_keys:
             continue
         if isinstance(cfg, dict) and cfg.get("enabled") is False:
+            continue
+        if not _raw_agent_resolves_to_type(name, cfg):
             continue
         keys.append(name)
     return keys

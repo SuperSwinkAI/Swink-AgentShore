@@ -297,4 +297,22 @@ describe("BudgetScreen", () => {
       }),
     );
   });
+
+  it("toggles the estimate disclaimer via the info button", async () => {
+    renderScreen(sel({ mode: "capped", total: 200 }));
+    const user = userEvent.setup();
+    const info = screen.getByTestId("budget-estimate-info");
+
+    // Collapsed by default.
+    expect(info).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("budget-estimate-note")).not.toBeInTheDocument();
+
+    await user.click(info);
+    expect(info).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("budget-estimate-note")).toHaveTextContent(/estimates, not a bill/i);
+
+    await user.click(info);
+    expect(info).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("budget-estimate-note")).not.toBeInTheDocument();
+  });
 });

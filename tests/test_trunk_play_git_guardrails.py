@@ -53,6 +53,25 @@ def test_allowed_tools_grant_read_only_git(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", _GUARDED_SKILLS)
+def test_allowed_tools_exclude_file_mutation(name: str) -> None:
+    """No in-place file-mutation tool is granted (#224).
+
+    These plays only read the codebase and post to GitHub — they must never write
+    a tracked file (the plan goes to an issue comment, not ``plan.md``). A granted
+    in-place editor (the ``Write``/``Edit`` tools, ``sed -i``, ``tee``) let an
+    errant agent dirty trunk with a tracked modification that ``reconcile_state``
+    cannot always attribute and clear.
+    """
+    head = _frontmatter(_template(name))
+    allowed_line = next((ln for ln in head.splitlines() if ln.startswith("allowed-tools:")), None)
+    assert allowed_line is not None, f"{name}: no allowed-tools line"
+    for vector in ("Write", "Edit", "sed:*", "tee:*"):
+        assert vector not in allowed_line, (
+            f"{name}: {vector} is a tracked-file write vector and must not be allow-listed"
+        )
+
+
+@pytest.mark.parametrize("name", _GUARDED_SKILLS)
 def test_prose_forbids_branch_mutation(name: str) -> None:
     """The body must explicitly forbid branch creation/switching in the main checkout."""
     text = _template(name)

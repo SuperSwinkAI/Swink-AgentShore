@@ -41,7 +41,7 @@ _COMPONENT_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 """
 
-_PROC_NAMES = ("AgentShore Desktop", "agentshore-desktop", "agentshore")
+_PROC_NAMES = ("AgentShore Desktop", "agentshore-desktop")
 _PROC_PATTERNS = ("agentshore.sidecar", "agentshore dashboard")
 
 

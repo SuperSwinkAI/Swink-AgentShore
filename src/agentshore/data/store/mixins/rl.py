@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.helpers import _RL_EXPERIENCE_SELECT
 from agentshore.data.store.rows import _row_to_checkpoint, _row_to_experience
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 class _RLMixin(_DataStoreBase):
     """Methods that operate on ``rl_experience`` and ``policy_checkpoints``."""
 
+    @_serialized
     async def record_experience(self, record: ExperienceRecord) -> int:
         """Insert a PPO experience row and return the auto-assigned experience_id."""
         return await self._insert(
@@ -38,6 +39,7 @@ class _RLMixin(_DataStoreBase):
             step_index=record.step_index,
         )
 
+    @_serialized
     async def save_checkpoint(self, record: CheckpointRecord) -> int:
         """Insert a policy checkpoint row and return the auto-assigned checkpoint_id."""
         return await self._insert(
@@ -49,6 +51,7 @@ class _RLMixin(_DataStoreBase):
             avg_reward=record.avg_reward,
         )
 
+    @_serialized
     async def load_latest_checkpoint(
         self, session_id: str | None = None
     ) -> CheckpointRecord | None:
@@ -92,25 +95,37 @@ class _RLMixin(_DataStoreBase):
         Filters by action_space_version; optionally also by config_hash.
         Rows whose state_vector blob length doesn't match are still yielded
         (the caller is responsible for schema validation).
+
+        Rows are fetched eagerly inside the connection lock and then yielded
+        from memory: an async generator that held the cursor open across the
+        caller's ``async for`` would keep a statement active on the shared
+        connection while another task tries to commit — the exact GH #219 race.
+        One session's replay set is already materialized into a PPO batch by the
+        caller, so buffering it here costs nothing extra.
         """
         params: tuple[object, ...] = (session_id, action_space_version)
         config_hash_clause = ""
         if config_hash is not None:
             config_hash_clause = "AND config_hash = ?"
             params = (*params, config_hash)
-        async with self._conn.execute(
-            f"""
-            {_RL_EXPERIENCE_SELECT}
-            WHERE session_id = ?
-              AND action_space_version = ?
-              {config_hash_clause}
-            ORDER BY step_index ASC
-            """,
-            params,
-        ) as cursor:
-            async for row in cursor:
-                yield _row_to_experience(row)
+        async with (
+            self._db_lock,
+            self._conn.execute(
+                f"""
+                {_RL_EXPERIENCE_SELECT}
+                WHERE session_id = ?
+                  AND action_space_version = ?
+                  {config_hash_clause}
+                ORDER BY step_index ASC
+                """,
+                params,
+            ) as cursor,
+        ):
+            rows = await cursor.fetchall()
+        for row in rows:
+            yield _row_to_experience(row)
 
+    @_serialized
     async def distinct_experience_session_ids(self, action_space_version: int) -> list[str]:
         """Return session IDs with at least one experience row at this version.
 

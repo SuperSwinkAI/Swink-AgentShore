@@ -60,6 +60,7 @@ from agentshore.sidecar.identities import (
     remove_trusted_source,
     update_identity,
 )
+from agentshore.sidecar.preferences import get_preferences, set_preferences
 from agentshore.sidecar.recents import (
     list_recents,
     recents_path,
@@ -994,6 +995,50 @@ def _dispatch_config_rpc(
     return _result(req_id, {})
 
 
+def _dispatch_preferences_rpc(
+    method: str,
+    raw_params: object,
+    *,
+    req_id: int | str | None,
+    is_notification: bool,
+    notify: Callable[[JsonRpcNotification], None] | None,
+    state: ServerState,
+) -> DispatchResult:
+    """Route ``preferences.{get,set}`` to the machine-global preferences file.
+
+    Unlike ``config.*`` these are project-independent (the file is user-global,
+    not in ``agentshore.yaml``), so no active project is required. ``set``
+    persists then, if a session is live, triggers a config reload so the change
+    (e.g. a disabled play) takes effect mid-session via the same atomic swap
+    SIGHUP uses.
+    """
+    if method == "preferences.get":
+        return _result(req_id, get_preferences())
+
+    if method != "preferences.set":
+        return _error(req_id, METHOD_NOT_FOUND, f"unknown method: {method}")
+
+    if raw_params is not None and not isinstance(raw_params, dict):
+        return _error(req_id, INVALID_PARAMS, "params must be an object")
+    params = raw_params or {}
+    from agentshore.preferences import PreferencesError
+
+    try:
+        view = set_preferences(params.get("disabled_plays"))
+    except PreferencesError as exc:
+        return _error(req_id, INVALID_PARAMS, str(exc))
+
+    orch = state.orchestrator
+    if orch is None:
+        return _result(req_id, view)
+
+    async def _run_reload() -> JsonRpcResponse:
+        await orch.reload_config()
+        return _result(req_id, view)
+
+    return _run_reload()
+
+
 def _dispatch_identities_rpc(
     method: str,
     raw_params: object,
@@ -1265,6 +1310,7 @@ HANDLERS: dict[str, Route] = {
 _ROUTE_GROUPS: tuple[tuple[str, Route], ...] = (
     ("identities.", Route(_dispatch_identities_rpc)),
     ("agents.", Route(_dispatch_agents_rpc)),
+    ("preferences.", Route(_dispatch_preferences_rpc)),
 )
 
 

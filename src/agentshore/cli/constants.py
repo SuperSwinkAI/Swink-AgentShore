@@ -24,8 +24,8 @@ _START_MODE_AGENT = RunMode.AGENT.value
 _BYPASS_FLAGS: dict[str, tuple[str, ...]] = {
     "claude_code": ("--dangerously-skip-permissions",),
     "codex": ("--dangerously-bypass-approvals-and-sandbox",),
-    "gemini": ("--approval-mode=yolo", "--skip-trust"),
     "grok": ("--permission-mode", "bypassPermissions"),
+    "antigravity": ("--dangerously-skip-permissions",),
 }
 
 # Binary→agent-key map sourced from the canonical registry so there is one

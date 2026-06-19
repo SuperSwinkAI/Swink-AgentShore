@@ -56,6 +56,16 @@ The agents/identities setup screen also shows a per-agent **backend auth** badge
 
 The app writes the project configuration to `agentshore.yaml` in the selected repository. You can later adjust the same project from either the desktop app or the CLI.
 
+## Menus And Updates
+
+The desktop app has a standard native menu bar:
+
+- **File** — Adjust Budget…, Stop Session, and Close Window for the running session.
+- **Help** — Documentation, Release Notes, and Report an Issue (open in your browser); a **Keyboard Shortcuts** cheat-sheet; **Open Log Folder** (reveals the active project's `.agentshore/logs`); and **Copy Diagnostics** (app version and platform, for bug reports).
+- **Preferences…** (Cmd+,) — a placeholder today; desktop preferences are coming.
+
+The app **checks for updates on launch** and only prompts you when a newer version exists; you can also check on demand via **Check for Updates…** (in the application menu on macOS, the Help menu elsewhere). Accepting an update downloads, installs, and restarts the app.
+
 ## Gatekeeper, Signing, And Notarization
 
 Release builds are Developer ID signed when the required certificates are available. Local builds may be ad-hoc signed or unsigned depending on your machine configuration, so macOS Gatekeeper prompts are expected for local-only artifacts.

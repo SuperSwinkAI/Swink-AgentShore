@@ -75,6 +75,11 @@ def _state():
 
 VALID_JSON = '{"success": true, "artifacts": []}'
 NO_JSON = "I did the work but forgot to emit the JSON trailer."
+# A JSON near-miss (#229): balanced object, but no top-level boolean ``success``
+# (mirrors the live agy design_audit failure where prose bucket names displaced it).
+NEAR_MISS = '{"artifacts": [{"type": "design_audit"}], "gap_filled": ["Distribution"]}'
+# A clean-exit empty no-op: agy's empty task envelope already flattened to "".
+NOOP = ""
 
 
 @pytest.mark.asyncio
@@ -99,7 +104,49 @@ async def test_retry_recovers_on_missing_json() -> None:
     assert ctx.manager.dispatch.await_count == 2
     second_call = ctx.manager.dispatch.call_args_list[1]
     assert second_call.kwargs["resume_session_id"] == "sess-abc123"
+    # The resume retry sends the short finalize nudge, NOT the full original prompt —
+    # the agent already holds its prior context in-session. See #223 / _JSON_RETRY_PROMPT.
+    from agentshore.plays.skill_backed.base import _JSON_RETRY_PROMPT
+
+    assert second_call.args[1] == _JSON_RETRY_PROMPT
     assert outcome.dollar_cost == pytest.approx(0.02)
+    # #232: the resume retry must NOT inherit a fresh-dispatch first-byte deadline
+    # (1800s for agy) — it carries a short one-off override so a silent resume hang
+    # fast-fails instead of riding 30 min.
+    from agentshore.plays.skill_backed.base import _JSON_RETRY_FIRST_BYTE_S
+
+    assert second_call.kwargs["first_byte_timeout_override"] == _JSON_RETRY_FIRST_BYTE_S
+
+
+@pytest.mark.asyncio
+async def test_missing_success_envelope_uses_targeted_nudge() -> None:
+    """#229: a near-miss (JSON present, no boolean ``success``) gets the defect-specific
+    nudge naming the missing field, not the generic 'emit the JSON block' prompt."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    first_result = _invocation(raw_output=NEAR_MISS, session_id="sess-nm")
+    retry_result = _invocation(raw_output=VALID_JSON, session_id="sess-nm")
+    ctx.manager.dispatch = AsyncMock(side_effect=[first_result, retry_result])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    from agentshore.plays.skill_backed.base import (
+        _JSON_RETRY_MISSING_SUCCESS_PROMPT,
+        _JSON_RETRY_PROMPT,
+    )
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    second_call = ctx.manager.dispatch.call_args_list[1]
+    assert second_call.args[1] == _JSON_RETRY_MISSING_SUCCESS_PROMPT
+    assert second_call.args[1] != _JSON_RETRY_PROMPT
 
 
 @pytest.mark.asyncio
@@ -172,3 +219,147 @@ async def test_retry_on_killed_exit_with_session() -> None:
     assert outcome.success is True
     assert ctx.manager.dispatch.await_count == 2
     assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == "sess-abc"
+
+
+def _state_with_agent(agent_type: AgentType, agent_id: str) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="test",
+        session_state=SessionState.RUNNING,
+        total_plays=5,
+        total_cost=0.5,
+        agents=[
+            AgentSnapshot(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                status=AgentStatus.IDLE,
+                context_size=0,
+                total_cost=0.0,
+                total_tokens=0,
+                tasks_completed=0,
+                tasks_failed=0,
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "agent_id", "session_id"),
+    [
+        (AgentType.CODEX, "codex-1", "thread_x"),
+        (AgentType.GROK, "grok-1", "grok-sess"),
+        (AgentType.ANTIGRAVITY, "agy-1", "conv-uuid-42"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_retry_recovers_for_non_claude_agents(
+    agent_type: AgentType, agent_id: str, session_id: str
+) -> None:
+    """The JSON retry now recovers for codex/grok/antigravity, not just claude.
+
+    The base flow re-dispatches with the agent's session id regardless of type;
+    the per-agent resume *argv* shape (codex ``exec resume``, grok ``-r``, agy
+    ``--conversation``) and agy's id resolution are asserted in test_cli_agent.py
+    / test_cli_antigravity.py.
+    """
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state_with_agent(agent_type, agent_id)
+    params = PlayParams(issue_number=42, agent_id=agent_id)
+
+    first_result = _invocation(raw_output=NO_JSON, session_id=session_id)
+    retry_result = _invocation(raw_output=VALID_JSON, session_id=session_id)
+    ctx.manager.dispatch = AsyncMock(side_effect=[first_result, retry_result])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == session_id
+
+
+# ---------------------------------------------------------------------------
+# No-op retry (clean-exit empty output) — desktop no-op resilience
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_recovers_on_second_attempt() -> None:
+    """A clean-exit empty no-op re-dispatches FRESH and recovers on output."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id="sess-x", exit_code=0)
+    recovered = _invocation(raw_output=VALID_JSON, session_id="sess-x", exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, recovered])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    # The no-op retry is FRESH — it must NOT pass resume_session_id (an empty agy
+    # session resumes empty; only a fresh turn can recover).
+    assert "resume_session_id" not in ctx.manager.dispatch.call_args_list[1].kwargs
+    # Recovered before the streak limit → no take_break trigger.
+    ctx.manager.mark_agent_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_fails_after_three_and_triggers_break() -> None:
+    """Three consecutive no-ops fail the play and route the agent to take_break."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id=None, exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, noop, noop])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    from agentshore.errors import ErrorClass, FailureKind
+
+    assert outcome.success is False
+    assert outcome.failure_kind == FailureKind.AGENT_ERROR
+    assert outcome.retry_requested is True
+    assert "no output" in (outcome.error or "")
+    # 1 initial + 2 fresh re-dispatches == the 3-in-a-row streak limit.
+    assert ctx.manager.dispatch.await_count == 3
+    # The agent is routed into the standard take_break via a recoverable NO_OP.
+    ctx.manager.mark_agent_error.assert_awaited_once()
+    assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
+
+
+@pytest.mark.asyncio
+async def test_noop_does_not_resume_even_with_session_id() -> None:
+    """A no-op never resumes — distinct from the output-but-no-JSON path."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id="sess-present", exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, noop, noop])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        await play.execute(state, params, ctx=ctx)
+
+    # Even though a session id is present, the no-op path re-dispatches fresh.
+    for call in ctx.manager.dispatch.call_args_list[1:]:
+        assert call.kwargs.get("resume_session_id") is None

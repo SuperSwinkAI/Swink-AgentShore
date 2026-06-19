@@ -49,7 +49,7 @@ Scope validation enforces issue-inflation limits after each skill-backed play; a
 
 Bootstrap is split into ordered, independently unit-testable `_phase_*` free functions (`phases.py`). Phase ordering is load-bearing: logging is set up first; the datastore must exist before the manager/executor; metrics must exist before the PPO selector; and the session row must be inserted before any FK-referencing write (skills install, GitHub cache, learnings load). The pipeline, in order: init datastore → reset session-scoped tables → init executor/manager/GitHub → init metrics → cleanup stale weights → init PPO selector → create session row → init worktree manager → session-start worktree sweep → clear stale beads in-progress → dirty-trunk baseline → git-safety sweep (default branch + main-repo HEAD) → install skills → fetch GitHub → ensure labels → load learnings → queue initial agent instantiation.
 
-`agentshore init` (separate from `start`) is the explicit setup command for config, skills, identities, and beads.
+`agentshore init` (separate from `start`) is the explicit setup command for config, identities, and beads. CLI `agentshore start` refreshes project skill templates automatically before dispatch so CLI and desktop startup use the same current bundled skills.
 
 ### Async Context Manager
 
@@ -70,6 +70,10 @@ Default operation is autonomous; the PPO policy drives all direction. Human feed
 Graceful stop uses **drain mode**: new work stops, running agents finish, and `END_AGENT` handles cleanup until shutdown can complete. **Hard stop** bypasses drain, cancels in-flight plays, and kills agents immediately. A shutdown-time **end-of-session report** can be requested; in embedded/desktop mode the report is surfaced in-app via a ready callback instead of opening a browser.
 
 An independent **loop-liveness watchdog** force-drains the session if the core-loop heartbeat goes stale — a hard freeze the idle/unanswered-pause backstops cannot catch. It is a no-op when `feedback.loop_liveness_timeout_seconds` is unset.
+
+An **optional graceful-drain watchdog** (#180) escalates a graceful drain to the hard stop once `feedback.graceful_drain_timeout_seconds` elapses with plays still in flight, so a stuck play can no longer hang `stop` for hours. It is **opt-in and defaults to `None` (unbounded)**: the design intent is that a drain always lets agents complete their work, and a wall-clock cap cannot distinguish a wedged drain from a healthy-but-slow one (e.g. a large fleet draining serially via `end_agent`), so a non-`None` default would hard-kill in-flight agent work mid-task. Set it only when a deployment specifically needs the backstop. The escalation calls `stop()` from inside the watchdog task; `stop()` must therefore **not** cancel its own running task (`_stop_graceful_drain_watchdog` is a no-op on the self-call path), and the teardown invariant is that **once `stop()` commits `stopped=True`, `do_stop()` always runs** — it is the only path that cancels in-flight agents, checkpoints the WAL, marks the session `stopped`, and sets `stop_done`.
+
+> **Drain-state recovery signature.** A session stuck in `DRAINING` with **no `shutdown_begin` log line** after a `graceful_drain_deadline_escalation` means teardown was aborted before `do_stop()`. The log fingerprint is `loop_terminating` followed by `cli_dispatch_done` events with **no trailing `play_completed`** and no `shutdown_*` steps — in-flight agents drain naturally but are never harvested or finalized, and any second `stop()` caller blocks forever on `stop_done`. The fixed teardown guarantees `do_stop()` runs even when a completion is being processed at the escalation instant.
 
 ## Loop Detection
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_learning
 from agentshore.utils import now_iso
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class _LearningsMixin(_DataStoreBase):
     """Methods that operate on the ``session_learnings`` table."""
 
+    @_serialized
     async def record_learning(self, record: SessionLearningRecord) -> int:
         """Insert a session-learning record and return its ``learning_id``."""
         return await self._insert(
@@ -29,6 +30,7 @@ class _LearningsMixin(_DataStoreBase):
             last_reinforced_at=record.last_reinforced_at,
         )
 
+    @_serialized
     async def reinforce_learning(self, learning_id: int) -> None:
         """Increment ``reinforcement_count`` and update ``last_reinforced_at``."""
         await self._conn.execute(
@@ -42,6 +44,7 @@ class _LearningsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def count_learnings(self, session_id: str) -> int:
         """Return the total count of session_learnings rows for *session_id*."""
         async with self._conn.execute(
@@ -51,6 +54,7 @@ class _LearningsMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
 
+    @_serialized
     async def list_learnings(
         self,
         session_id: str,

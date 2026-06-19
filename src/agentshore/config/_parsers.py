@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import TypedDict, cast, overload
+from typing import TYPE_CHECKING, TypedDict, cast, overload
+
+if TYPE_CHECKING:
+    # Runtime imports stay function-local to avoid the config→state→config.models
+    # cycle; this is for annotations only (deferred by `from __future__`).
+    from agentshore.state import AgentType
 
 from agentshore.config.models import (
     AgentConfig,
@@ -102,12 +107,9 @@ class _RawAgent(TypedDict, total=False):
     approved_models: list[object]
     model_tiers: _RawModelTiers
     max_context: _RawNumber
-    cost_per_1k_input: _RawNumber
-    cost_per_1k_cached_input: _RawNumber | None
-    cost_per_1k_cache_write_input: _RawNumber | None
-    cost_per_1k_output: _RawNumber
     timeout: _RawNumber | None
     stream_idle_timeout: _RawNumber
+    first_byte_timeout_seconds: _RawNumber | None
     max_output_size: _RawNumber
     line_limit_bytes: _RawNumber
     extra_flags: list[object]
@@ -348,17 +350,18 @@ def _agent_default(name: str, key: str, fallback: None) -> float | int | None: .
 
 
 def _agent_default(name: str, key: str, fallback: float | int | None) -> float | int | None:
-    from agentshore.agents.pricing import AGENT_PRICING
+    """Per-agent-type default for non-priced agent fields (currently max_context).
 
-    pricing = AGENT_PRICING.get(name)
-    if pricing is None:
+    Sourced from the bundled price book's ``agent_defaults`` so the one place
+    that carries per-agent model metadata is ``pricing.yaml``.
+    """
+    from agentshore.agents.pricing import bundled_pricebook
+
+    entry = bundled_pricebook().agent_defaults.get(name)
+    if entry is None:
         return fallback
-    value = getattr(pricing, key, fallback)
+    value = getattr(entry, key, fallback)
     return fallback if value is None else value
-
-
-def _optional_float(value: float | int | str | None) -> float | None:
-    return None if value is None else float(value)
 
 
 def _parse_project(raw: _RawProject) -> ProjectConfig:
@@ -403,6 +406,7 @@ def _parse_agent(
     name: str, raw: _RawAgent, *, legacy_max_default: int | None = None
 ) -> AgentConfig:
     timeout_raw = raw.get("timeout")
+    first_byte_raw = raw.get("first_byte_timeout_seconds")
     flags_raw = raw.get("extra_flags", ())
     extra_flags = tuple(str(f) for f in flags_raw) if isinstance(flags_raw, list) else ()
     models_raw = raw.get("approved_models", ())
@@ -425,26 +429,9 @@ def _parse_agent(
         approved_models=approved_models,
         model_tiers=model_tiers,
         max_context=int(raw.get("max_context", _agent_default(name, "max_context", 200_000))),
-        cost_per_1k_input=float(
-            raw.get("cost_per_1k_input", _agent_default(name, "cost_per_1k_input", 0.003))
-        ),
-        cost_per_1k_cached_input=_optional_float(
-            raw.get(
-                "cost_per_1k_cached_input",
-                _agent_default(name, "cost_per_1k_cached_input", None),
-            )
-        ),
-        cost_per_1k_cache_write_input=_optional_float(
-            raw.get(
-                "cost_per_1k_cache_write_input",
-                _agent_default(name, "cost_per_1k_cache_write_input", None),
-            )
-        ),
-        cost_per_1k_output=float(
-            raw.get("cost_per_1k_output", _agent_default(name, "cost_per_1k_output", 0.015))
-        ),
         timeout=int(timeout_raw) if timeout_raw is not None else None,
         stream_idle_timeout=int(raw.get("stream_idle_timeout", 1800)),
+        first_byte_timeout_seconds=(int(first_byte_raw) if first_byte_raw is not None else None),
         max_output_size=int(raw.get("max_output_size", 10_000_000)),
         line_limit_bytes=int(raw.get("line_limit_bytes", 4_194_304)),
         extra_flags=extra_flags,
@@ -616,7 +603,59 @@ def _parse_trusted_ids(raw: _RawTrustedIds) -> TrustedIdsConfig:
     )
 
 
-_API_AGENT_PREFIX = "api_"
+def _resolve_agent_type(agent_cfg: AgentConfig, agent_name: str) -> AgentType | None:
+    """Resolve an agent entry to its built-in ``AgentType``, or ``None``.
+
+    Prefers the binary→type registry (so a custom key like ``my_claude`` with
+    ``binary: claude`` resolves), then falls back to the key itself (so a custom
+    binary path like ``binary: /opt/bin/agy`` still validates when the key is
+    a canonical type). ``None`` means the entry maps to no supported CLI agent.
+    """
+    from agentshore.agents.registry import BINARY_TO_AGENT_TYPE
+    from agentshore.state import AgentType
+
+    resolved = BINARY_TO_AGENT_TYPE.get(agent_cfg.binary) if agent_cfg.binary else None
+    if resolved is not None:
+        return resolved
+    try:
+        return AgentType(agent_name)
+    except ValueError:
+        return None
+
+
+def _strip_unsupported_agents(agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+    """Drop agent entries that map to no supported CLI agent type, with a warning.
+
+    AgentShore only runs the built-in CLI agents; an entry whose key is not an
+    ``AgentType`` and whose ``binary`` does not resolve to one (a typo'd key, or
+    a retired concept such as a deprecated provider left in an older config) never
+    instantiates downstream. Rather than fail the entire load — which wedges an
+    otherwise valid session over a single stale block — such entries are dropped
+    and a warning is emitted, leaving the supported agents intact.
+    """
+    from agentshore.state import AgentType
+
+    kept: dict[str, AgentConfig] = {}
+    dropped: list[str] = []
+    for agent_name, agent_cfg in agents.items():
+        if _resolve_agent_type(agent_cfg, agent_name) is None:
+            dropped.append(agent_name)
+            continue
+        kept[agent_name] = agent_cfg
+
+    if dropped:
+        valid = ", ".join(t.value for t in AgentType)
+        names = ", ".join(repr(n) for n in dropped)
+        plural = len(dropped) > 1
+        warnings.warn(
+            f"Ignoring unsupported agent {'entries' if plural else 'entry'} {names}: "
+            f"not a built-in CLI agent ({valid}). "
+            f"{'They were' if plural else 'It was'} dropped from the loaded config; "
+            f"rename the key to a supported agent or set its 'binary' to a recognised "
+            f"CLI to enable it.",
+            stacklevel=2,
+        )
+    return kept
 
 
 def _validate_agent_identities(
@@ -628,17 +667,45 @@ def _validate_agent_identities(
         ident = agent_cfg.identity
         if ident is None:
             continue
-        if agent_name.startswith(_API_AGENT_PREFIX):
-            raise ConfigError(
-                f"agents.{agent_name}.identity is not supported for API-only "
-                "agents (gh is never invoked); remove the field"
-            )
         if ident not in identities:
             known = ", ".join(sorted(identities)) or "<none>"
             raise ConfigError(
                 f"agents.{agent_name}.identity={ident!r} references an unknown "
                 f"identity. Known identities: {known}"
             )
+
+
+def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
+    """Reject ``reasoning_effort`` on agent types whose CLI has no effort flag.
+
+    Top-level ``reasoning_effort`` and per-tier ``reasoning_effort`` entries are
+    both checked.
+    """
+    from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
+
+    for agent_name, agent_cfg in agents.items():
+        # Unsupported agents are already stripped by _strip_unsupported_agents, so
+        # this resolves for every remaining entry; the guard is belt-and-suspenders.
+        resolved = _resolve_agent_type(agent_cfg, agent_name)
+        if resolved is None:
+            continue
+        if REASONING_EFFORTS.get(resolved):
+            # This agent type supports effort — nothing to reject.
+            continue
+
+        # Agent type has an empty effort vocabulary (e.g. Antigravity).
+        if agent_cfg.reasoning_effort:
+            raise ConfigError(
+                f"agents.{agent_name}.reasoning_effort is not supported for "
+                f"{resolved.value} (the CLI has no effort flag); remove the field"
+            )
+        for tier, tier_cfg in agent_cfg.model_tiers.items():
+            if tier_cfg.reasoning_effort:
+                raise ConfigError(
+                    f"agents.{agent_name}.model_tiers.{tier}.reasoning_effort is not "
+                    f"supported for {resolved.value} (the CLI has no effort flag); "
+                    "remove the field"
+                )
 
 
 def _clamp_tier_max(value: object) -> int:
@@ -688,8 +755,7 @@ def _apply_legacy_default_tiers(
     Fill in every default tier the user didn't explicitly configure, carrying
     the migrated ``max`` so the per-(type, tier) ceiling survives the upgrade.
 
-    Unknown agent types (no built-in defaults — e.g. ``api_*`` or custom keys)
-    are returned unchanged.
+    Agent types with no built-in defaults are returned unchanged.
     """
     import dataclasses
 
@@ -925,7 +991,7 @@ def _parse_feedback(raw: _RawFeedback) -> FeedbackConfig:
         on_ambiguous_intake=raw.get("on_ambiguous_intake", True),
         unanswered_timeout_seconds=raw.get("unanswered_timeout_seconds", 120.0),
         loop_liveness_timeout_seconds=raw.get("loop_liveness_timeout_seconds", 600.0),
-        graceful_drain_timeout_seconds=raw.get("graceful_drain_timeout_seconds", 300.0),
+        graceful_drain_timeout_seconds=raw.get("graceful_drain_timeout_seconds", None),
     )
 
 
@@ -1088,6 +1154,8 @@ def _parse_play_timeouts(raw: object) -> dict[str, int]:
 
 
 def _build_config(data: _RawConfig) -> RuntimeConfig:
+    from agentshore.agents.pricing import load_pricebook
+
     # Migration: legacy agent_spawn block → per-tier max
     legacy_max_default: int | None = None
     agent_spawn_raw = data.get("agent_spawn")
@@ -1105,9 +1173,11 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
 
     agents_raw = cast("_RawAgents", dict(data.get("agents", {}) or {}))
     agents, fresh_start, prefs = _parse_agents(agents_raw, legacy_max_default=legacy_max_default)
+    agents = _strip_unsupported_agents(agents)
     identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
     trusted_ids_raw = data.get("trusted_ids", {})
     _validate_agent_identities(agents, identities)
+    _validate_agent_reasoning_efforts(agents)
 
     mode_raw = data.get("mode", RunMode.SOLO.value)
     try:
@@ -1125,6 +1195,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         trusted_ids=_parse_trusted_ids(trusted_ids_raw if trusted_ids_raw is not None else {}),
         identities=identities,
         agents=agents,
+        pricebook=load_pricebook(),
         play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
         bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
         fresh_start=fresh_start,
@@ -1143,7 +1214,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         learnings=_parse_learnings(data.get("learnings", {}) or {}),
         skills=_parse_skills(data.get("skills", {}) or {}),
         worktrees=_parse_worktrees(data.get("worktrees", {}) or {}),
-        agent_timeout=int(data.get("agent_timeout", 3600)),
+        agent_timeout=int(data.get("agent_timeout", 10800)),
         play_timeouts=_parse_play_timeouts(data.get("play_timeouts")),
         mode=mode,
         socket=data.get("socket"),

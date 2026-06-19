@@ -8,7 +8,6 @@ from pathlib import Path
 
 from agentshore import command
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER, default_model_tiers_for
-from agentshore.agents.pricing import pricing_yaml_lines
 from agentshore.agents.registry import BINARY_TO_AGENT_KEY
 from agentshore.errors import OrchestratorError
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
@@ -163,9 +162,10 @@ def _render_agent_block(agent_key: str, binary: str) -> str:
 
     Single source for the per-agent skeleton emitted by the on-disk config
     template generators: model tiers come from
-    :func:`agentshore.agents.model_tiers.default_model_tiers_for` and pricing
-    from :data:`agentshore.agents.pricing.AGENT_PRICING`, so the agent/model/
-    pricing structure cannot drift between call sites. ``agent_key`` is the
+    :func:`agentshore.agents.model_tiers.default_model_tiers_for` so the
+    agent/model structure cannot drift between call sites. Token pricing is no
+    longer emitted per-agent — it lives in the external ``pricing.yaml`` table
+    (see :func:`agentshore.agents.pricing.load_pricebook`). ``agent_key`` is the
     canonical config key (e.g. ``claude_code``); ``binary`` is the executable
     name written to the ``binary:`` field.
     """
@@ -190,9 +190,6 @@ def _render_agent_block(agent_key: str, binary: str) -> str:
                     model_lines += f"        model: {tier_cfg.model}\n"
                 if tier_cfg.reasoning_effort:
                     model_lines += f"        reasoning_effort: {tier_cfg.reasoning_effort}\n"
-    pricing_lines = "\n".join(pricing_yaml_lines(agent_key))
-    if pricing_lines:
-        model_lines += f"{pricing_lines}\n"
     return f"  {agent_key}:\n    enabled: true\n    binary: {binary}\n{model_lines}"
 
 

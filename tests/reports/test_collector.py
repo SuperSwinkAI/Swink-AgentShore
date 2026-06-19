@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import pytest_asyncio
 
 from agentshore.beads import EpicStatus, ProjectGraph
+from agentshore.core.concurrency_log import CONCURRENCY_FILENAME, RECORD_VERSION
 from agentshore.data.store import (
     AgentRecord,
     DataStore,
@@ -16,6 +19,7 @@ from agentshore.data.store import (
     TrajectorySnapshotRecord,
 )
 from agentshore.reports.collector import ReportDataCollector
+from agentshore.session_path import session_dir
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -37,6 +41,7 @@ async def _seed_session(
     store: DataStore,
     *,
     session_id: str = SID,
+    project_path: str = "/tmp/proj",
     started_at: str = NOW,
     ended_at: str | None = "2026-04-27T01:00:00+00:00",
     total_cost: float = 5.0,
@@ -46,7 +51,7 @@ async def _seed_session(
     await store.create_session(
         SessionRecord(
             session_id=session_id,
-            project_path="/tmp/proj",
+            project_path=project_path,
             started_at=started_at,
             ended_at=ended_at,
             status="completed",
@@ -342,6 +347,101 @@ async def test_collect_end_session_report_includes_control_rejection_counts(stor
             "count": 2,
         }
     ]
+
+
+async def test_collect_end_session_report_includes_fleet_concurrency(
+    store,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project_path = tmp_path / "proj"
+    project_path.mkdir()
+    (project_path / "agentshore.yaml").write_text(
+        """
+agents:
+  claude_code:
+    enabled: true
+    model_tiers:
+      large:
+        enabled: true
+        max: 2
+  codex:
+    enabled: true
+    model_tiers:
+      medium:
+        enabled: true
+        max: 5
+""",
+        encoding="utf-8",
+    )
+    await _seed_session(store, project_path=str(project_path))
+    monkeypatch.setattr("agentshore.session_path._SESSIONS_DIR", tmp_path / "sessions")
+    log_path = session_dir(project_path) / CONCURRENCY_FILENAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "v": RECORD_VERSION,
+                        "session_id": SID,
+                        "seq": 1,
+                        "ts": "2026-06-18T00:01:00+00:00",
+                        "play_type": "issue_pickup",
+                        "completed_agent_type": "claude_code",
+                        "completed_model_tier": "large",
+                        "completed_error_class": None,
+                        "busy_total": 1,
+                        "busy_by_type": {"claude_code": 1},
+                        "busy_by_type_tier": {"claude_code/large": 1},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "v": RECORD_VERSION,
+                        "session_id": SID,
+                        "seq": 2,
+                        "ts": "2026-06-18T00:02:00+00:00",
+                        "play_type": "issue_pickup",
+                        "completed_agent_type": "claude_code",
+                        "completed_model_tier": "large",
+                        "completed_error_class": "rate_limit",
+                        "busy_total": 3,
+                        "busy_by_type": {"claude_code": 2, "codex": 1},
+                        "busy_by_type_tier": {"claude_code/large": 2, "codex/medium": 1},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = await ReportDataCollector(store).collect_end_session_report(SID)
+
+    assert report["fleet_concurrency"] is not None
+    assert report["fleet_concurrency"]["sample_count"] == 2
+    assert report["fleet_concurrency"]["peak_busy"] == 3
+    assert report["fleet_concurrency"]["peak_by_harness_tier"] == [
+        {"label": "claude_code/large", "peak_busy": 2, "config_max": 2},
+        {"label": "codex/medium", "peak_busy": 1, "config_max": 5},
+    ]
+    assert report["fleet_concurrency"]["rate_limit_samples"][0]["busy_total"] == 3
+
+
+async def test_collect_end_session_report_without_fleet_concurrency_log_degrades(
+    store,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    await _seed_session(store)
+    await _seed_play(store)
+    monkeypatch.setattr("agentshore.session_path._SESSIONS_DIR", tmp_path / "sessions")
+
+    report = await ReportDataCollector(store).collect_end_session_report(SID)
+
+    assert report["fleet_concurrency"] is None
+    assert report["overview"]["session_id"] == SID
 
 
 # ---------------------------------------------------------------------------

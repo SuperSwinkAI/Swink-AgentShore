@@ -14,19 +14,22 @@ from unittest.mock import MagicMock
 import pytest
 
 from agentshore.agents.cli_agent import (
+    _PARSERS,
     _classify_error,
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
-    _extract_text_from_gemini_jsonl,
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
+    _read_output,
     _StderrSniffer,
     _watch_stderr_auth,
     build_argv,
+    build_resume_argv,
     dispatch_cli,
 )
 from agentshore.agents.handle import AgentHandle
+from agentshore.agents.pricing import AgentPricing, PricingQuote
 from agentshore.config import AgentConfig
 from agentshore.errors import (
     AgentOutputInvalid,
@@ -36,6 +39,27 @@ from agentshore.errors import (
 )
 from agentshore.result_parser import parse_skill_result
 from agentshore.state import AgentStatus, AgentType
+
+
+def _price_quote(
+    *,
+    cost_per_1k_input: float,
+    cost_per_1k_output: float,
+    cost_per_1k_cached_input: float | None = None,
+    cost_per_1k_cache_write_input: float | None = None,
+) -> PricingQuote:
+    """Resolved pricing for a single dispatch (replaces per-AgentConfig rates)."""
+    return PricingQuote(
+        pricing=AgentPricing(
+            max_context=200000,
+            cost_per_1k_input=cost_per_1k_input,
+            cost_per_1k_cached_input=cost_per_1k_cached_input,
+            cost_per_1k_cache_write_input=cost_per_1k_cache_write_input,
+            cost_per_1k_output=cost_per_1k_output,
+        ),
+        cache_read_multiplier=0.1,
+        cache_write_multiplier=1.25,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -227,37 +251,6 @@ def _claude_cached_json_lines() -> list[bytes]:
     ]
 
 
-def _gemini_json_lines() -> list[bytes]:
-    result = {
-        "schema_version": 1,
-        "success": True,
-        "artifacts": [],
-        "issues_created": [],
-        "requested_mutations": [],
-        "metrics": {},
-        "error": None,
-    }
-    content = f"```json\n{json.dumps(result)}\n```"
-    return [
-        b'{"type":"init","session_id":"gemini-session","model":"gemini-3-flash-preview"}\n',
-        b'{"type":"message","role":"assistant","message":{"content":"ignored chunk"}}\n',
-        json.dumps(
-            {
-                "type": "result",
-                "response": content,
-                "stats": {
-                    "usageMetadata": {
-                        "promptTokenCount": 42,
-                        "candidatesTokenCount": 13,
-                        "cachedContentTokenCount": 7,
-                    }
-                },
-            }
-        ).encode()
-        + b"\n",
-    ]
-
-
 def _grok_json_lines() -> list[bytes]:
     result = {
         "schema_version": 1,
@@ -301,6 +294,22 @@ def test_build_argv_claude_code_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
+def test_build_argv_claude_code_reasoning_effort() -> None:
+    """``--effort`` flag is emitted for claude when reasoning_effort is set."""
+    argv = build_argv(
+        AgentType.CLAUDE_CODE,
+        "do the thing",
+        binary="claude",
+        model="sonnet",
+        reasoning_effort="high",
+    )
+
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "high"
+    # --effort must appear before extra_flags / prompt.
+    assert argv[-1] == "do the thing"
+
+
 def test_build_argv_codex_shape() -> None:
     argv = build_argv(AgentType.CODEX, "do the thing", binary="codex", project_dir="/work")
     assert argv[0] == "codex"
@@ -315,25 +324,6 @@ def test_build_argv_codex_shape() -> None:
     assert argv[-1] == "do the thing"
 
 
-def test_build_argv_gemini_shape() -> None:
-    argv = build_argv(
-        AgentType.GEMINI,
-        "do the thing",
-        binary="gemini",
-        model="gemini-3-flash-preview",
-    )
-
-    assert argv[0] == "gemini"
-    assert "--output-format" in argv
-    assert "stream-json" in argv
-    assert "--approval-mode=yolo" in argv
-    assert "--skip-trust" in argv
-    assert "--model" in argv
-    assert "gemini-3-flash-preview" in argv
-    assert "-p" in argv
-    assert argv[-1] == "do the thing"
-
-
 def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     """Windows: the prompt rides stdin to dodge the cmd.exe command-line limit,
     so the (possibly huge) prompt text must never appear as an argv element."""
@@ -342,14 +332,13 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     codex = build_argv(
         AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
     )
-    gemini = build_argv(AgentType.GEMINI, huge, binary="gemini", prompt_on_stdin=True)
     # Grok has no stdin prompt mode, so the dispatch layer hands it a prompt-file
     # path instead (issue #160); that is what keeps the prompt out of argv.
     grok = build_argv(
         AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
     )
 
-    for argv in (claude, codex, gemini, grok):
+    for argv in (claude, codex, grok):
         assert huge not in argv
 
     # claude -p with no prompt arg reads stdin (last token stays a flag/value).
@@ -357,8 +346,6 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     assert claude[-1] != huge
     # codex exec reads the prompt from stdin when handed "-".
     assert codex[-1] == "-"
-    # gemini stays headless via an empty -p while the prompt arrives on stdin.
-    assert gemini[-2:] == ["-p", ""]
     # grok reads the prompt from a file (no stdin mode; empty -p errors).
     assert grok[-2:] == ["--prompt-file", "/tmp/p.txt"]
 
@@ -406,19 +393,230 @@ def test_build_argv_grok_shape() -> None:
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
+        # Ephemeral single-turn dispatches: cross-session memory is meaningless
+        # and slow, and plan mode adds an unwanted planning round.
+        "--no-memory",
+        "--no-plan",
         "--cwd",
         "/worktree",
         "--output-format",
         "streaming-json",
         "-m",
         "grok-build",
-        "--reasoning-effort",
+        "--effort",
         "medium",
         "--permission-mode",
         "bypassPermissions",
         "-p",
         "do the thing",
     ]
+
+
+def test_build_argv_antigravity_shape() -> None:
+    """``agy`` argv: plain-text passthrough — no ``--output-format``, no effort flag.
+
+    The YOLO default supplies ``--dangerously-skip-permissions``; the model is the
+    display-name string with the reasoning effort baked in, so there is no
+    separate ``--effort`` flag and no JSON stream-format flag.
+    """
+    argv = build_argv(
+        AgentType.ANTIGRAVITY,
+        "do the thing",
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+    )
+
+    assert argv == [
+        "agy",
+        "--model",
+        "Gemini 3.5 Flash (Low)",
+        "--add-dir",
+        "/wt",
+        "--print-timeout",
+        "50m0s",
+        "--dangerously-skip-permissions",
+        "-p",
+        "do the thing",
+    ]
+    assert "--output-format" not in argv
+
+
+def test_build_argv_antigravity_prompt_always_in_argv_never_stdin() -> None:
+    """``agy`` has no stdin prompt mode — the real prompt must always ride ``-p``.
+
+    Even when ``prompt_on_stdin`` is set (the Windows arg-length path the other
+    CLIs use), antigravity keeps the verbatim prompt as the trailing ``-p`` value
+    and never emits an empty ``-p``/``-`` placeholder. The dispatch layer relies
+    on this to keep stdin closed for antigravity (it would otherwise block on a
+    pipe the child never drains).
+    """
+    huge = "x" * 20000
+    argv = build_argv(
+        AgentType.ANTIGRAVITY,
+        huge,
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+        prompt_on_stdin=True,
+    )
+    assert argv[-2:] == ["-p", huge]
+    assert "" not in argv
+    assert "-" not in argv
+
+
+async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> None:
+    """``agy`` has no ``_PARSERS`` entry, so plain-text stdout is returned verbatim.
+
+    The embedded JSON result block survives untouched (no JSONL extraction), and
+    ``parse_skill_result`` can still pull ``success=True`` out of the raw text.
+    """
+    # No parser for antigravity → the read loop takes the raw passthrough branch.
+    assert AgentType.ANTIGRAVITY not in _PARSERS
+
+    raw_text = 'Working on it...\nHere is the result: {"success": true, "summary": "ok"}\nDone.\n'
+    proc = _FakeProcess([raw_text.encode()])
+    out = await _read_output(
+        proc,  # type: ignore[arg-type]
+        AgentType.ANTIGRAVITY,
+        max_bytes=10_000_000,
+        line_limit=4_194_304,
+        agent_id="agy-1",
+    )
+
+    # Raw stdout is returned byte-for-byte; no token usage is parsed.
+    assert out.raw == raw_text
+    assert out.usage.tokens_in == 0
+    assert out.usage.tokens_out == 0
+    assert out.session_id is None
+
+    parsed = parse_skill_result(out.raw)
+    assert parsed.success is True
+
+
+async def test_read_output_emits_cli_first_byte_once_with_elapsed() -> None:
+    """First stdout byte emits exactly one ``cli_first_byte`` with a TTFB (#212)."""
+    import time
+
+    import structlog
+
+    from agentshore.agents.cli_agent import _StdoutActivity
+
+    activity = _StdoutActivity(
+        last_stdout_at=time.monotonic(), dispatch_start=time.monotonic() - 0.05
+    )
+    proc = _FakeProcess(_codex_json_lines())  # multiple stdout lines
+    with structlog.testing.capture_logs() as logs:
+        await _read_output(
+            proc,  # type: ignore[arg-type]
+            AgentType.CODEX,
+            max_bytes=10_000_000,
+            line_limit=4_194_304,
+            agent_id="codex-1",
+            stdout_activity=activity,
+        )
+
+    first_byte = [e for e in logs if e.get("event") == "cli_first_byte"]
+    assert len(first_byte) == 1  # only the first byte, not every line
+    evt = first_byte[0]
+    assert evt["agent_id"] == "codex-1"
+    assert evt["agent_type"] == str(AgentType.CODEX)
+    assert evt["elapsed_ms"] >= 0
+    assert activity.first_byte_at is not None
+
+
+async def test_read_output_no_first_byte_event_without_dispatch_context() -> None:
+    """No ``cli_first_byte`` when the activity carries no dispatch_start (unit path)."""
+    import time
+
+    import structlog
+
+    from agentshore.agents.cli_agent import _StdoutActivity
+
+    activity = _StdoutActivity(last_stdout_at=time.monotonic())  # dispatch_start=0.0
+    proc = _FakeProcess(_codex_json_lines())
+    with structlog.testing.capture_logs() as logs:
+        await _read_output(
+            proc,  # type: ignore[arg-type]
+            AgentType.CODEX,
+            max_bytes=10_000_000,
+            line_limit=4_194_304,
+            agent_id="codex-1",
+            stdout_activity=activity,
+        )
+
+    assert not any(e.get("event") == "cli_first_byte" for e in logs)
+    assert activity.received_any is True  # mark() still flipped
+
+
+def test_antigravity_first_byte_deadline_is_1800s() -> None:
+    """agy emits no stdout until its async task completes (#217); the first-byte
+    watchdog stays generous (30 min) so long code-review tasks don't die as
+    spurious launch wedges."""
+    from agentshore.agents.cli_agent import _FIRST_BYTE_DEADLINE_BY_TYPE
+
+    assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.ANTIGRAVITY] == 1800.0
+
+
+def test_resolve_first_byte_deadline_per_dispatch_override() -> None:
+    """#232: a per-dispatch override wins over the per-type default and the config
+    field, is clamped to the wall-clock timeout, and ``None`` falls back to the
+    per-type default (agy stays 1800s on a fresh dispatch)."""
+    from agentshore.agents.cli_agent import _resolve_first_byte_deadline
+    from agentshore.config.models import AgentConfig
+
+    cfg = AgentConfig()
+
+    # No override → agy keeps its 1800s structural carve-out.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0) == 1800.0
+    # A short override beats the 1800s per-type default for this one dispatch.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0, 120.0) == 120.0
+    # The override still can't outlive the wall-clock timeout.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
+    # An explicit per-agent config override is itself overridden by the per-dispatch one.
+    cfg_override = AgentConfig(first_byte_timeout_seconds=900)
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0) == 120.0
+
+
+def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
+    """Plain streaming output (no task-status envelope) is returned unchanged."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = 'Thinking...\n{"success": true, "error": null}\n'
+    assert extract_output(raw) == raw
+
+
+def test_extract_output_antigravity_extracts_output_section() -> None:
+    """Task-status block: the content between Output: and Error: is returned."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = (
+        "[Task abc123/task-1 Status Update]\n"
+        "Status: COMPLETED\n"
+        "Exit Code: 0\n"
+        "Log Path: file:///some/path/task-1.log\n"
+        "Output:\n"
+        '{"success": true, "error": null}\n'
+        "Error: (none)\n"
+    )
+    result = extract_output(raw)
+    assert result == '{"success": true, "error": null}'
+
+
+def test_extract_output_antigravity_empty_output_normalised() -> None:
+    """(empty) output section is normalised to empty string, not the literal string."""
+    from agentshore.agents.cli_antigravity import extract_output
+
+    raw = (
+        "[Task abc123/task-2 Status Update]\n"
+        "Status: COMPLETED\n"
+        "Exit Code: 0\n"
+        "Log Path: file:///some/path/task-2.log\n"
+        "Output:\n"
+        "(empty)\n"
+        "Error: timed out waiting for response\n"
+    )
+    assert extract_output(raw) == ""
 
 
 @pytest.mark.parametrize(
@@ -553,6 +751,165 @@ def test_build_argv_codex_reasoning_effort() -> None:
     assert "gpt-5.5" in argv
     assert "-c" in argv
     assert 'model_reasoning_effort="xhigh"' in argv
+
+
+# ---------------------------------------------------------------------------
+# build_resume_argv — the narrow JSON-retry re-entry shape, per agent (desktop-dy2j)
+# ---------------------------------------------------------------------------
+
+
+def test_build_resume_argv_claude_shape() -> None:
+    argv = build_resume_argv(AgentType.CLAUDE_CODE, "emit the block", "sess-abc", binary="claude")
+    assert argv == [
+        "claude",
+        "--resume",
+        "sess-abc",
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "emit the block",
+    ]
+
+
+def test_build_resume_argv_codex_shape() -> None:
+    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json + -C."""
+    argv = build_resume_argv(
+        AgentType.CODEX, "emit the block", "thread_x", binary="codex", project_dir="/wt"
+    )
+    assert argv[:4] == ["codex", "exec", "resume", "thread_x"]
+    assert "--json" in argv
+    assert "-C" in argv and argv[argv.index("-C") + 1] == "/wt"
+    assert argv[-1] == "emit the block"
+
+
+def test_build_resume_argv_grok_shape() -> None:
+    """grok resumes via ``-r <id>`` and keeps --no-memory (resume != memory)."""
+    argv = build_resume_argv(
+        AgentType.GROK, "emit the block", "grok-sess", binary="grok", project_dir="/wt"
+    )
+    assert argv[:3] == ["grok", "-r", "grok-sess"]
+    assert "--no-memory" in argv
+    assert argv[-1] == "emit the block"
+
+
+def test_build_resume_argv_antigravity_shape() -> None:
+    """agy resumes via ``--conversation <id>`` and keeps --add-dir <cwd>."""
+    argv = build_resume_argv(
+        AgentType.ANTIGRAVITY,
+        "emit the block",
+        "conv-uuid",
+        binary="agy",
+        model="Gemini 3.5 Flash (Low)",
+        project_dir="/wt",
+    )
+    assert argv[:3] == ["agy", "--conversation", "conv-uuid"]
+    assert "--add-dir" in argv and argv[argv.index("--add-dir") + 1] == "/wt"
+    assert argv[-2:] == ["-p", "emit the block"]
+
+
+async def test_dispatch_cli_resume_injects_codex_exec_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resuming codex dispatch builds ``codex exec resume <id>`` (was claude-only)."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id="thread_x")
+
+    assert captured[0][:4] == ["codex", "exec", "resume", "thread_x"]
+    assert "--json" in captured[0]
+
+
+async def test_dispatch_cli_resume_injects_grok_dash_r(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resuming grok dispatch builds ``grok -r <id>`` and keeps --no-memory."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess(_grok_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
+    handle = _make_handle(agent_type=AgentType.GROK)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id="grok-sess")
+
+    assert captured[0][:3] == ["grok", "-r", "grok-sess"]
+    assert "--no-memory" in captured[0]
+
+
+async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """agy emits no id on stdout, so dispatch_cli resolves it from the on-disk
+    conversation cache keyed by the dispatch cwd — giving agy a resumable id."""
+    home = tmp_path / "home"
+    cache_dir = home / ".gemini" / "antigravity-cli" / "cache"
+    cache_dir.mkdir(parents=True)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (cache_dir / "last_conversations.json").write_text(
+        json.dumps({str(wt): "conv-uuid-42"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        # agy emits plain text (no parser → session_id starts None).
+        return _FakeProcess([b'```json\n{"success": true, "artifacts": []}\n```\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
+    handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=wt)
+
+    assert result.session_id == "conv-uuid-42"
+
+
+async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No cache entry for the cwd → session_id stays None → no retry (graceful)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess([b"some plain agy output without a block\n"])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
+    handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=tmp_path)
+
+    assert result.session_id is None
 
 
 def test_build_argv_codex_no_resume() -> None:
@@ -799,28 +1156,6 @@ async def test_dispatch_cli_success_codex_json(
     assert sr.success is True
 
 
-async def test_dispatch_cli_success_gemini_stream_json(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
-        return _FakeProcess(_gemini_json_lines())
-
-    monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
-    )
-    cfg = AgentConfig(enabled=True, binary="gemini", timeout=10)
-    handle = _make_handle(agent_type=AgentType.GEMINI)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
-
-    assert result.exit_code == 0
-    assert result.tokens_in == 42
-    assert result.tokens_out == 13
-    assert result.cached_tokens_in == 7
-    sr = parse_skill_result(result.raw_output)
-    assert sr.success is True
-
-
 async def test_dispatch_cli_success_grok_streaming_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -831,16 +1166,18 @@ async def test_dispatch_cli_success_grok_streaming_json(
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="grok",
-        timeout=10,
-        cost_per_1k_input=0.001,
-        cost_per_1k_cached_input=0.0002,
-        cost_per_1k_output=0.002,
-    )
+    cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
     handle = _make_handle(agent_type=AgentType.GROK)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(
+            cost_per_1k_input=0.001,
+            cost_per_1k_cached_input=0.0002,
+            cost_per_1k_output=0.002,
+        ),
+    )
 
     assert result.exit_code == 0
     assert result.tokens_in == 120
@@ -853,6 +1190,84 @@ async def test_dispatch_cli_success_grok_streaming_json(
     assert sr.success is True
 
 
+async def test_dispatch_cli_claude_prefers_vendor_total_cost_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude's authoritative ``total_cost_usd`` overrides token-derivation.
+
+    The pricing quote here would derive a far smaller figure from the tokens; the
+    vendor number (which accounts for the exact model + 1h ephemeral-cache tier)
+    must win, fixing the ~2x dashboard cost undercount.
+    """
+    lines = [
+        json.dumps(
+            {
+                "type": "result",
+                "session_id": "claude-cost",
+                "total_cost_usd": 0.063115,
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 200,
+                    "cache_read_input_tokens": 700,
+                    "output_tokens": 50,
+                },
+                "result": "ok",
+            }
+        ).encode()
+        + b"\n"
+    ]
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(lines)
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
+    )
+
+    # Token counts are still captured for stats/display...
+    assert result.tokens_in == 1000  # 100 + 700 cache-read + 200 cache-write
+    assert result.tokens_out == 50
+    # ...but the billed cost is the vendor figure, not the token derivation.
+    assert result.dollar_cost == pytest.approx(0.063115)
+
+
+async def test_dispatch_cli_claude_falls_back_to_token_cost_without_total_cost_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``total_cost_usd`` on the result event → token-derived cost as before."""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(_claude_cached_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
+    )
+
+    # uncached 100 @ .003 + cache-read 700 @ .0003 + cache-write 200 @ .00375 + out 50 @ .015
+    expected = (
+        (100 / 1000) * 0.003 + (700 / 1000) * 0.0003 + (200 / 1000) * 0.00375 + (50 / 1000) * 0.015
+    )
+    assert result.dollar_cost == pytest.approx(expected)
+
+
 async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_double_count_reasoning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -863,15 +1278,15 @@ async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_doubl
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="codex",
-        timeout=10,
-        cost_per_1k_input=0.003,
-        cost_per_1k_output=0.012,
-    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
     handle = _make_handle(agent_type=AgentType.CODEX)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    # No explicit cached rate → cache_read_multiplier (0.1) yields 0.0003.
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.012),
+    )
 
     assert result.tokens_in == 1000
     assert result.cached_tokens_in == 800
@@ -936,17 +1351,19 @@ async def test_dispatch_cli_claude_json_accounts_for_cache_read_and_write_tokens
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    cfg = AgentConfig(
-        enabled=True,
-        binary="claude",
-        timeout=10,
-        cost_per_1k_input=0.003,
-        cost_per_1k_cached_input=0.0003,
-        cost_per_1k_cache_write_input=0.00375,
-        cost_per_1k_output=0.015,
-    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
-    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    result = await dispatch_cli(
+        handle,
+        "prompt",
+        cfg=cfg,
+        pricing=_price_quote(
+            cost_per_1k_input=0.003,
+            cost_per_1k_cached_input=0.0003,
+            cost_per_1k_cache_write_input=0.00375,
+            cost_per_1k_output=0.015,
+        ),
+    )
 
     assert result.tokens_in == 1000
     assert result.cached_tokens_in == 700
@@ -988,38 +1405,6 @@ async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(AgentProcessError):
         await dispatch_cli(handle, "p", cfg=cfg, python_executable=sys.executable)
-
-
-async def test_dispatch_cli_gemini_model_not_found_is_concise(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stderr = (
-        b"YOLO mode is enabled. All tool calls will be automatically approved.\n"
-        b"Ripgrep is not available. Falling back to GrepTool.\n"
-        b"Error when talking to Gemini API Full report available at: /tmp/gemini.json "
-        b"ModelNotFoundError: Requested entity was not found.\n"
-    )
-    lines = [b'{"type":"message","role":"user","message":{"content":"PROMPT SHOULD NOT LEAK"}}\n']
-
-    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
-        return _FakeProcess(lines, returncode=1, stderr=stderr)
-
-    monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
-    )
-    cfg = AgentConfig(enabled=True, binary="gemini", model="gemini-3-pro", timeout=10)
-    handle = _make_handle(agent_type=AgentType.GEMINI)
-
-    with pytest.raises(AgentProcessError) as exc_info:
-        await dispatch_cli(handle, "prompt", cfg=cfg)
-
-    message = str(exc_info.value)
-    assert "[invalid_model]" in message
-    assert "gemini model 'gemini-3-pro' is not available" in message
-    assert "Full report: /tmp/gemini.json" in message
-    assert "YOLO mode" not in message
-    assert "PROMPT SHOULD NOT LEAK" not in message
 
 
 # ---------------------------------------------------------------------------
@@ -1390,7 +1775,7 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
 def test_resolve_executable_resolves_npm_shim_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """codex/claude/gemini are .cmd npm shims; CreateProcess only finds bare
+    """codex/claude are .cmd npm shims; CreateProcess only finds bare
     names ending in .exe, so resolve to the full .cmd path via shutil.which."""
     import shutil
     import sys
@@ -1780,6 +2165,24 @@ def test_stderr_sniffer_suppresses_transient_cache_renewal_eof() -> None:
     assert sniffer.auth_hit is False
 
 
+def test_stderr_sniffer_cache_renewal_eof_then_stdin_closed_trips_auth() -> None:
+    """#231: cache-renewal EOF is transient only until Codex's stdin write fails."""
+    sniffer = _StderrSniffer()
+    cache_line = (
+        "ERROR codex_models_manager::manager: failed to renew cache TTL: "
+        "EOF while parsing a value at line 1 column 0\n"
+    )
+    stdin_line = (
+        "Reading additional input from stdin... "
+        "ERROR codex_core::tools::router: error=write_stdin failed: stdin closed\n"
+    )
+
+    assert sniffer.feed(cache_line) is False
+    assert sniffer.auth_hit is False
+    assert sniffer.feed(stdin_line) is True
+    assert sniffer.auth_hit is True
+
+
 def test_stderr_sniffer_bare_cache_renewal_still_trips() -> None:
     """#190: a bare cache-renewal line (no EOF-parse suffix) is a genuine
     session-token expiry and must still flip auth_hit."""
@@ -1906,11 +2309,10 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
 
 
 def test_is_terminal_event_detects_each_agent_type() -> None:
-    """Claude/Gemini emit type:result; Codex emits turn.completed. CLI agents
+    """Claude emits type:result; Codex emits turn.completed. CLI agents
     must be recognized so the 60s post-response grace applies (not the 30-min
     stream_idle_timeout)."""
     assert _is_terminal_event(b'{"type":"result","result":"ok"}', AgentType.CLAUDE_CODE)
-    assert _is_terminal_event(b'{"type":"result","response":"ok"}', AgentType.GEMINI)
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
     )
@@ -1927,13 +2329,8 @@ def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
     # Mid-stream events are not terminal.
     assert not _is_terminal_event(b'{"type":"assistant","message":{}}', AgentType.CLAUDE_CODE)
     assert not _is_terminal_event(b'{"type":"item.completed","item":{}}', AgentType.CODEX)
-    # Codex's terminal type must not fire for Claude/Gemini and vice versa.
-    assert not _is_terminal_event(b'{"type":"turn.completed"}', AgentType.GEMINI)
+    # Codex's terminal type must not fire for Claude and vice versa.
     assert not _is_terminal_event(b'{"type":"result"}', AgentType.CODEX)
-    # Work product mentioning the word "result" is not a result event.
-    assert not _is_terminal_event(
-        b'{"type":"assistant","text":"the result is 42"}', AgentType.GEMINI
-    )
     # Non-JSON lines never raise.
     assert not _is_terminal_event(b"not json at all", AgentType.CLAUDE_CODE)
 
@@ -2006,17 +2403,6 @@ def test_extract_text_from_codex_jsonl_handles_whitespace_lines() -> None:
     assert text == "hello"
     assert session_id == "t-1"
     assert usage.tokens_in == 0
-
-
-def test_extract_text_from_gemini_jsonl_handles_whitespace_lines() -> None:
-    raw = (
-        '\n  {"type":"init","session_id":"g-1"}  \n'
-        '  {"type":"message","role":"assistant","message":{"content":"hi"}}  \n'
-    )
-    text, usage, session_id = _extract_text_from_gemini_jsonl(raw)
-    assert text == "hi"
-    assert session_id == "g-1"
-    assert usage.tokens_out == 0
 
 
 def test_extract_text_from_grok_jsonl_real_format_with_usage() -> None:

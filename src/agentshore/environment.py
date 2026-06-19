@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 
-AGENT_BINARIES = ("claude", "codex", "gemini", "grok", "grok-build")
+AGENT_BINARIES = ("claude", "codex", "grok", "grok-build", "agy")
 
 
 def resolve_executable(name: str) -> str | None:

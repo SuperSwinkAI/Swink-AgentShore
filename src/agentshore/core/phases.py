@@ -69,8 +69,8 @@ GITHUB_PR_FETCH_LIMIT = 50
 _AUTHOR_LABEL_COLORS: dict[str, str] = {
     "claude_code": "E07B39",
     "codex": "F4D44D",
-    "gemini": "4285F4",
     "grok": "14B8A6",
+    "antigravity": "4285F4",
 }
 _AUTHOR_LABEL_DEFAULT_COLOR = "cccccc"
 _AGENTSHORE_SYSTEM_LABELS: tuple[tuple[str, str], ...] = AGENTSHORE_WORKFLOW_LABELS
@@ -307,7 +307,9 @@ async def _phase_init_ppo_selector(
         # Wire the guarded RL experience recorder now that the PPO selector,
         # metrics, and policy/config versions are all final. The completion
         # path no-ops the RL tail when this stays None (non-PPO / headless).
+        from agentshore.core.concurrency_log import ConcurrencyLog
         from agentshore.core.experience_recorder import ExperienceRecorder
+        from agentshore.session_path import session_dir
 
         orch._experience_recorder = ExperienceRecorder(
             store=orch._store,
@@ -316,6 +318,7 @@ async def _phase_init_ppo_selector(
             cfg=cfg,
             host=orch,
             velocity=orch._velocity,
+            concurrency_log=ConcurrencyLog(session_dir(orch._repo_root), orch._session_id),
         )
 
         # Single autonomous-stop signal: drain after N consecutive ticks with no
@@ -1062,6 +1065,10 @@ def _phase_queue_agent_instantiation(
     All entries are queued with ``bypass_preconditions=True`` so the
     deterministic recipe is not stalled by the cooldown, warmup-floor, or
     first-play-completion gates that PPO selections still see.
+
+    The GROOM_BACKLOG step in either recipe is skipped entirely when the user
+    has disabled it via ``preferences.yaml`` — the bootstrap override bypasses
+    the action mask, so the preference must be honored at enqueue time.
     """
 
     def _enqueue_instantiate(
@@ -1085,6 +1092,18 @@ def _phase_queue_agent_instantiation(
         )
 
     def _enqueue_groom(*, wait_for_play_type: PlayType | None = None) -> None:
+        # GROOM_BACKLOG is user-disableable (preferences.yaml). The bootstrap
+        # override bypasses preconditions AND the action mask, so the mask-level
+        # USER_DISABLED suppression does not reach it — honor the preference here
+        # or a disabled groom would still be force-run at cold start. Applies to
+        # both recipes: a play the user turned off must never be bootstrap-queued.
+        if PlayType.GROOM_BACKLOG.value in cfg.preferences.disabled_plays:
+            _logger.info(
+                "bootstrap_groom_skipped",
+                reason="user_disabled",
+                wait_for_play_type=wait_for_play_type.value if wait_for_play_type else None,
+            )
+            return
         orch._overrides.put_nowait(
             OverrideEntry(
                 play_type=PlayType.GROOM_BACKLOG,

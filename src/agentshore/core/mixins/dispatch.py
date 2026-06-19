@@ -499,6 +499,29 @@ class Dispatcher:
                 ids.add(wt_id)
         return ids
 
+    def _in_flight_worktree_paths(self) -> set[str]:
+        """Canonicalised on-disk paths backing currently-dispatched plays.
+
+        The path-keyed sibling of :meth:`_in_flight_worktree_ids`, added for
+        #203: the ``pickup-<N>`` directory is reused across attempts, so a
+        stale OLD-id worktree row can share an on-disk path with the LIVE
+        new-id row backing the dispatch. Id-keyed protection misses that alias
+        (the stale row's id isn't in the in-flight set), so the closed-PR / disk
+        reapers also skip any ``stale`` row whose canonical path matches one of
+        these. Paths are folded through ``_canon_path`` so the comparison is
+        separator/case-correct against DB-stored paths. ``TrunkAllocation`` (no
+        ``path``) and any non-path value are skipped.
+        """
+        from agentshore.agents.worktree.reaper import _canon_path
+
+        paths: set[str] = set()
+        for ctx in self._runtime.dispatch_ctx.values():
+            alloc = getattr(getattr(ctx, "params", None), "_runtime_allocation", None)
+            path = getattr(alloc, "path", None)
+            if path is not None:
+                paths.add(_canon_path(path))
+        return paths
+
     def register_worktree_allocation_failure(self, params: PlayParams) -> bool:
         """Tally a worktree-allocation failure per resource key; park on threshold.
 

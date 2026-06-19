@@ -1,0 +1,4 @@
+{"type":"session.started","metadata":{"sessionId":"019ecfe0-aaaa-bbbb-cccc-000000000001"}}
+{"type":"text","data":"Hello"}
+{"type":"text","data":" world"}
+{"type":"end","stopReason":"EndTurn","sessionId":"019ecfe0-aaaa-bbbb-cccc-000000000001","requestId":"req-1","usage":{"input_tokens":120,"output_tokens":45,"cached_input_tokens":10,"cache_creation_input_tokens":5}}

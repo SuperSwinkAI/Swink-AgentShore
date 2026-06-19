@@ -8,13 +8,12 @@ import json
 import os
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 from agentshore import subprocess_env
-from agentshore.agents import cli_grok
+from agentshore.agents import cli_antigravity, cli_grok
 from agentshore.agents._jsonl import (
-    _first_int,
     _iter_json_events,
     _max_usage,
     _usage_totals_from_dict,
@@ -22,6 +21,7 @@ from agentshore.agents._jsonl import (
 )
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
+from agentshore.agents.pricing import PricingQuote, default_quote
 from agentshore.errors import (
     AgentOutputInvalid,
     AgentProcessCrashed,
@@ -42,7 +42,11 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 
-_DEFAULT_TIMEOUT = 3600  # seconds — fallback when AgentConfig.timeout is None
+_DEFAULT_TIMEOUT = 10800  # seconds (3h) — max-runtime wall-clock backstop when
+# neither AgentConfig.timeout nor a resolved default_timeout is supplied. The
+# primary kill is the silence-based stream_idle watchdog (default 1800s); this
+# only bounds an agent that streams output for the full duration without
+# finishing. See AgentManager.dispatch / RuntimeConfig.agent_timeout.
 _SIGKILL_GRACE = 10  # seconds between SIGTERM and SIGKILL
 _LINE_DRIFT_WARN_BYTES = 1_048_576  # warn once if any single line exceeds 1MB
 _ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from skill+params
@@ -65,7 +69,7 @@ def _resolve_executable(argv: list[str]) -> list[str]:
 
     ``subprocess_env.resolve_tool`` is for known tools (git/gh); here we need
     the same PATHEXT-aware which() for arbitrary agent CLI names (claude.cmd,
-    codex.cmd, gemini.cmd) that are npm shims on Windows.
+    codex.cmd, agy.cmd) that are npm shims on Windows.
     """
     import os
     import shutil
@@ -206,6 +210,7 @@ _AUTH_STDOUT = (
 # expiry and keeps tripping via _AUTH_PATTERNS.
 _CACHE_RENEWAL_MARKERS = ("failed to renew cache ttl", "failed to refresh available models")
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+_STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
 
 def _is_transient_cache_blip(lowered: str) -> bool:
@@ -221,6 +226,13 @@ def _is_transient_cache_blip(lowered: str) -> bool:
     """
     return any(m in lowered for m in _CACHE_RENEWAL_MARKERS) and any(
         m in lowered for m in _PARSE_EOF_MARKERS
+    )
+
+
+def _is_cache_renewal_stdin_hang(lowered: str) -> bool:
+    """#231: True when the cache-renewal EOF blip has become a stdin hang."""
+    return _is_transient_cache_blip(lowered) and all(
+        m in lowered for m in _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS
     )
 
 
@@ -397,8 +409,8 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
         "--ignore-rules",
         "--dangerously-bypass-approvals-and-sandbox",
     ),
-    AgentType.GEMINI: ("--approval-mode=yolo", "--skip-trust"),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
+    AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
 }
 
 
@@ -411,16 +423,69 @@ class _ReadOutput:
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
-# Launch-to-first-byte deadline (#177). A healthy CLI agent emits its first JSON
-# stream event within seconds of launch; a wedged child (the intermittent codex
+# Launch-to-first-byte deadline (#177). A wedged child (the intermittent codex
 # rollout-thread / keychain race) produces *nothing* and otherwise rides the full
-# wall-clock ``timeout`` (default 3600s) before any watchdog fires — the existing
-# ``stream_idle_timeout`` (default 1800s) only catches first-byte silence at its
-# own, much larger, bound. This dedicated short deadline caps the blast radius of
-# a launch wedge to ~2 min so the orchestrator retries promptly. It only governs
-# the *first* byte; once any stdout arrives, ``_watch_stream_idle`` owns silence
-# detection. Recoverable like the other timeouts — the orchestrator re-picks.
-_FIRST_BYTE_DEADLINE_S: Final[float] = 120.0
+# wall-clock ``timeout`` (default 3h, configurable via ``agent_timeout``) before any
+# watchdog fires — the existing ``stream_idle_timeout`` (default 1800s) only catches
+# first-byte silence at its
+# own, much larger, bound. This dedicated deadline caps the blast radius of a
+# launch wedge so the orchestrator retries promptly. It only governs the *first*
+# byte; once any stdout arrives, ``_watch_stream_idle`` owns silence detection.
+# Recoverable like the other timeouts — the orchestrator re-picks.
+#
+# The bound is deliberately generous (#213). The original tight 120s cap was
+# calibrated to a fast-launch assumption that does not hold for reasoning models:
+# Grok (CLI 0.2.32) measures 30–70s to first byte with a variance tail past 90s,
+# and on heavy ``code_review`` prompts Grok (killed at its old 240s) went silent
+# past its window — the model/relay first-token latency, not local startup, dominates and
+# is irreducible via flags. The first-byte deadline's job is catching a *broken*
+# child that emits nothing, not bounding slow-but-healthy first-token latency
+# (the 3h wall-clock is the real hang backstop). So all streaming agents now
+# share one 600s deadline: it clears the measured first-token distribution with
+# wide margin while still turning a genuine launch wedge around in ~10 min rather
+# than the full hour. Trade-off (#177): a true codex rollout/keychain wedge now
+# rides to 600s before the fast-kill instead of 120s. An explicit per-agent
+# ``first_byte_timeout_seconds`` in config still overrides this for tuning.
+_FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
+
+# Per-agent-type override of the global first-byte deadline. Streaming agents
+# (codex, claude, grok) all use the global 600s above; the only override
+# is antigravity, which is structurally non-streaming.
+_FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
+    # agy uses an async task system and emits no stdout until the task completes
+    # (#217); first byte = task done, which can take up to ~30 min for a heavy
+    # coding task. The watchdog still fires for genuine hangs (process exits
+    # before emitting anything). This is a structural carve-out, NOT a slow-model
+    # tuning — collapsing it to the global
+    # 600s would kill healthy long-running agy tasks.
+    AgentType.ANTIGRAVITY: 1800.0,
+}
+
+
+def _resolve_first_byte_deadline(
+    agent_type: AgentType,
+    cfg: AgentConfig,
+    timeout: float,
+    per_dispatch_override: float | None = None,
+) -> float:
+    """Resolve the armed first-byte deadline for one dispatch.
+
+    Precedence: an explicit ``per_dispatch_override`` (a one-off short budget for
+    a single call, e.g. the no-JSON resume-retry, #232), then the per-agent
+    ``first_byte_timeout_seconds`` config override, then the per-agent-type
+    built-in default, then the global ``_FIRST_BYTE_DEADLINE_S``. Always clamped
+    to the wall-clock ``timeout`` so it never outlives the dispatch.
+    """
+    if per_dispatch_override is not None:
+        base = float(per_dispatch_override)
+    else:
+        override = cfg.first_byte_timeout_seconds
+        base = (
+            float(override)
+            if override is not None
+            else _FIRST_BYTE_DEADLINE_BY_TYPE.get(agent_type, _FIRST_BYTE_DEADLINE_S)
+        )
+    return min(base, timeout)
 
 
 @dataclass(slots=True)
@@ -428,10 +493,24 @@ class _StdoutActivity:
     last_stdout_at: float
     received_any: bool = False
     response_complete: bool = False
+    # Monotonic dispatch-start reference (set by ``_await_output_or_timeout`` from
+    # the pre-spawn ``t_start``) and the monotonic instant the first stdout byte
+    # arrived. Together they give an accurate time-to-first-byte for #212. Left at
+    # the 0.0 / None defaults when the activity is constructed without a dispatch
+    # context (e.g. focused unit tests of ``_read_output``), which suppresses the
+    # ``cli_first_byte`` emission below rather than logging a garbage elapsed.
+    dispatch_start: float = 0.0
+    first_byte_at: float | None = None
 
-    def mark(self) -> None:
-        self.last_stdout_at = time.monotonic()
+    def mark(self) -> bool:
+        """Record stdout activity; return True only on the very first byte."""
+        now = time.monotonic()
+        self.last_stdout_at = now
+        first = not self.received_any
         self.received_any = True
+        if first:
+            self.first_byte_at = now
+        return first
 
     def mark_response_complete(self) -> None:
         self.response_complete = True
@@ -476,8 +555,13 @@ class _StderrSniffer:
             hard_auth = any(p in lowered for p in _AUTH_PATTERNS if p not in _CACHE_RENEWAL_MARKERS)
             cache_auth = any(p in lowered for p in _CACHE_RENEWAL_MARKERS)
             # Cache-renewal-only signal is suppressed when it is the transient
-            # EOF-parse variant; a bare cache-renewal line still trips.
-            if hard_auth or (cache_auth and not _is_transient_cache_blip(lowered)):
+            # EOF-parse variant; a bare cache-renewal line still trips. #231:
+            # if the EOF shape is followed by Codex's stdin-closed write failure,
+            # the dispatch is unrecoverably hung and must fast-fail as auth.
+            cache_stdin_hang = _is_cache_renewal_stdin_hang(lowered)
+            if hard_auth or (
+                cache_auth and (not _is_transient_cache_blip(lowered) or cache_stdin_hang)
+            ):
                 self.auth_hit = True
                 return True
         return False
@@ -561,18 +645,19 @@ def build_argv(
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
-    Each dispatch spawns a fresh CLI session — see
-    `feedback_persistent_sessions` memory: ``--resume`` was buggy in
-    production (silent state-rot late in long sessions) and is no longer
-    used.
+    Each normal dispatch spawns a fresh CLI session — see
+    `feedback_persistent_sessions` memory: *general* ``--resume`` was buggy in
+    production (silent state-rot late in long sessions) and is not used here.
+    The one sanctioned exception is the narrow single-shot JSON-retry re-entry
+    (:func:`build_resume_argv` / desktop-dy2j), which resumes the immediately
+    prior session exactly once to recover an omitted result block.
 
     When *prompt_on_stdin* is set the prompt is delivered over the child's
     stdin instead of as an argv element — on Windows the agent CLIs resolve to
     npm ``.cmd`` shims, which expand a large prompt argument through cmd.exe and
     hit its ~8191-char command-line limit ("The command line is too long.").
     Each CLI is told to read the prompt from stdin: codex via the ``-`` prompt
-    placeholder, claude via ``-p`` with no prompt argument, gemini via an empty
-    ``-p`` (its ``--prompt`` value is appended to whatever arrives on stdin).
+    placeholder, claude via ``-p`` with no prompt argument.
     Grok is the exception — it has no stdin prompt mode, so the caller writes
     the prompt to a temp file and passes its path as *prompt_file*, which Grok
     reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
@@ -585,6 +670,8 @@ def build_argv(
         args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
         if model:
             args += ["--model", model]
+        if reasoning_effort:
+            args += ["--effort", reasoning_effort]
         args.extend(extra_flags)
         if context_path:
             args += ["--append-system-prompt", f"Context file: {context_path}"]
@@ -616,16 +703,6 @@ def build_argv(
         args.append("-" if prompt_on_stdin else prompt)
         return args
 
-    if agent_type == AgentType.GEMINI:
-        binary = binary or "gemini"
-        args = [binary, "--output-format", "stream-json"]
-        if model:
-            args += ["--model", model]
-        args.extend(extra_flags)
-        # Empty -p keeps headless mode while the real prompt arrives on stdin.
-        args += ["-p", "" if prompt_on_stdin else prompt]
-        return args
-
     if agent_type == AgentType.GROK:
         return cli_grok.build_argv(
             prompt=prompt,
@@ -638,7 +715,120 @@ def build_argv(
             prompt_file=prompt_file,
         )
 
+    if agent_type == AgentType.ANTIGRAVITY:
+        return cli_antigravity.build_argv(
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
+    raise ValueError(msg)
+
+
+# Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
+# holds a stable session id (claude/codex/grok parse it from stdout; agy
+# resolves it from its on-disk conversation cache). The narrow JSON-retry path
+# (desktop-dy2j) re-enters that one session to recover the omitted result block.
+_RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {
+        AgentType.CLAUDE_CODE,
+        AgentType.CODEX,
+        AgentType.GROK,
+        AgentType.ANTIGRAVITY,
+    }
+)
+
+
+def build_resume_argv(
+    agent_type: AgentType,
+    prompt: str,
+    resume_session_id: str,
+    *,
+    binary: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    extra_flags: tuple[str, ...] = (),
+    project_dir: str | None = None,
+    prompt_on_stdin: bool = False,
+    prompt_file: str | None = None,
+) -> list[str]:
+    """Return argv for a single JSON-retry RESUME dispatch (desktop-dy2j).
+
+    A narrow, single-shot re-entry of the *immediately prior* session to recover
+    the structured result block the agent omitted — NOT general long-session
+    resume (see ``feedback_persistent_sessions``). Each supported CLI exposes a
+    resume-by-id flag, and AgentShore holds a stable session id for each:
+    claude (``--resume``), codex (``exec resume``), grok (``-r``), antigravity
+    (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`).
+
+    Exported so tests can assert command shape without spawning a subprocess.
+    """
+    extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
+
+    if agent_type == AgentType.CLAUDE_CODE:
+        binary = binary or "claude"
+        argv = [
+            binary,
+            "--resume",
+            resume_session_id,
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+        ]
+        if not prompt_on_stdin:
+            argv.append(prompt)
+        return argv
+
+    if agent_type == AgentType.CODEX:
+        base = build_argv(
+            agent_type,
+            prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+        # base == [binary, "exec", "--json", ...]; turn it into the resume
+        # subcommand: [binary, "exec", "resume", <id>, "--json", ...].
+        return [base[0], "exec", "resume", resume_session_id, *base[2:]]
+
+    if agent_type == AgentType.GROK:
+        return cli_grok.build_resume_argv(
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    if agent_type == AgentType.ANTIGRAVITY:
+        return cli_antigravity.build_resume_argv(
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    msg = f"build_resume_argv: unsupported CLI agent type {agent_type!r}"
     raise ValueError(msg)
 
 
@@ -666,6 +856,36 @@ def _build_dispatch_argv(
     if python_executable is not None:
         # Test shim: invoke cfg.binary as a Python script.
         argv: list[str] = [python_executable, cfg.binary or ""]
+        # A resuming shim dispatch keeps the minimal claude-style --resume shape
+        # (the shim is a python mock, not a real CLI — only the flag's presence
+        # matters to the tests that exercise this path).
+        if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
+            argv = [
+                argv[0],
+                "--resume",
+                resume_session_id,
+                "-p",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+            ]
+            if not prompt_on_stdin:
+                argv.append(prompt)
+    elif resume_session_id is not None and handle.agent_type in _RESUMABLE_AGENT_TYPES:
+        # desktop-dy2j: narrow JSON-retry re-entry of the prior session so the
+        # agent emits the structured trailer it missed. Per-agent resume shape.
+        argv = build_resume_argv(
+            handle.agent_type,
+            prompt,
+            resume_session_id,
+            binary=cfg.binary,
+            model=handle.model or cfg.model,
+            reasoning_effort=handle.reasoning_effort or cfg.reasoning_effort,
+            extra_flags=cfg.extra_flags,
+            project_dir=str(effective_cwd),
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
     else:
         argv = build_argv(
             handle.agent_type,
@@ -678,23 +898,6 @@ def _build_dispatch_argv(
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
         )
-
-    # desktop-dy2j: narrow JSON-retry path injects --resume so the agent
-    # re-enters the same session and emits the structured trailer it missed.
-    if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
-        argv = [
-            argv[0],
-            "--resume",
-            resume_session_id,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-        ]
-        # On Windows the prompt rides stdin (see build_argv); elsewhere it is
-        # the trailing argv element.
-        if not prompt_on_stdin:
-            argv.append(prompt)
 
     prompt_bytes = len(prompt.encode("utf-8"))
 
@@ -721,6 +924,8 @@ async def _await_output_or_timeout(
     timeout: float,
     prompt_bytes: int,
     sniffer: _StderrSniffer,
+    dispatch_start: float,
+    first_byte_timeout_override: float | None = None,
 ) -> tuple[_ReadOutput, bool]:
     """Drive the read/idle/stderr-auth race and return ``(result, post_response_killed)``.
 
@@ -733,7 +938,9 @@ async def _await_output_or_timeout(
     is killed in well under a second rather than after the full idle window.
     """
     post_response_killed = False
-    stdout_activity = _StdoutActivity(last_stdout_at=time.monotonic())
+    stdout_activity = _StdoutActivity(
+        last_stdout_at=time.monotonic(), dispatch_start=dispatch_start
+    )
     read_task = asyncio.create_task(
         _read_output_guarded(
             proc,
@@ -781,7 +988,9 @@ async def _await_output_or_timeout(
     first_byte_task = asyncio.create_task(
         _watch_first_byte(
             stdout_activity,
-            deadline=min(_FIRST_BYTE_DEADLINE_S, timeout),
+            deadline=_resolve_first_byte_deadline(
+                handle.agent_type, cfg, timeout, first_byte_timeout_override
+            ),
             agent_id=handle.agent_id,
             agent_type=handle.agent_type.value,
             model_tier=handle.model_tier,
@@ -954,6 +1163,7 @@ async def dispatch_cli(
     prompt: str,
     *,
     cfg: AgentConfig,
+    pricing: PricingQuote | None = None,
     default_timeout: int = _DEFAULT_TIMEOUT,
     python_executable: str | None = None,
     identity_env: dict[str, str] | None = None,
@@ -961,6 +1171,7 @@ async def dispatch_cli(
     on_subprocess_exited: Callable[[int, int | None], Awaitable[None]] | None = None,
     cwd_override: Path | None = None,
     resume_session_id: str | None = None,
+    first_byte_timeout_override: float | None = None,
 ) -> AgentInvocationResult:
     """Invoke the agent CLI and return raw output + metadata.
 
@@ -972,6 +1183,11 @@ async def dispatch_cli(
         Pre-rendered skill prompt to pass to the agent.
     cfg:
         Per-agent configuration from ``RuntimeConfig.agents[name]``.
+    pricing:
+        Resolved per-model :class:`~agentshore.agents.pricing.PricingQuote` used
+        to price this dispatch's token usage. ``None`` (direct/test callers)
+        falls back to the bundled global-default quote; the manager always
+        resolves the live quote from ``RuntimeConfig.pricebook``.
     python_executable:
         If set, ``cfg.binary`` is treated as a Python script path invoked with
         this interpreter.  Used by tests to run ``mock_agent.py`` through the
@@ -986,9 +1202,16 @@ async def dispatch_cli(
         The handle is not mutated — concurrent dispatches against the same
         handle may each target a different worktree. ``AGENTSHORE_PROJECT_PATH``
         in ``identity_env`` continues to point at the main repo.
+    first_byte_timeout_override:
+        One-off launch-to-first-byte budget for this single dispatch, overriding
+        the per-agent/per-type defaults (still clamped to the wall-clock timeout).
+        Set on the no-JSON resume-retry (#232) so a re-emission can't inherit
+        agy's 1800s fresh-task deadline and hang. ``None`` = default resolution.
 
-    Each call spawns a fresh CLI session. ``--resume`` is intentionally not
-    supported: see ``feedback_persistent_sessions`` memory.
+    Each call spawns a fresh CLI session, except the narrow single-shot
+    JSON-retry path: when *resume_session_id* is set, the prior session is
+    re-entered once to recover an omitted result block (desktop-dy2j). General
+    long-session ``--resume`` remains banned — see ``feedback_persistent_sessions``.
     """
     timeout = cfg.timeout if cfg.timeout is not None else default_timeout
     stream_idle_timeout = float(cfg.stream_idle_timeout)
@@ -1052,18 +1275,28 @@ async def dispatch_cli(
     git_overlay = dict(identity)
     if token:
         git_overlay.update(subprocess_env.git_auth_config_overlay(token))
-    env = subprocess_env.hardened_env(git_overlay, for_git=True)
+    env = subprocess_env.hardened_env(
+        git_overlay,
+        for_git=True,
+        for_grok=(handle.agent_type == AgentType.GROK),
+        for_antigravity=(handle.agent_type == AgentType.ANTIGRAVITY),
+    )
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.
     argv = _resolve_executable(argv)
 
     # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
-    # limit (see build_argv); elsewhere stdin stays closed. Grok is the
-    # exception: it never reads the prompt from stdin (it's in --prompt-file),
-    # so we keep stdin closed for it — opening a PIPE and writing a prompt Grok
-    # never drains could block on a full pipe buffer.
-    prompt_on_stdin = _prompt_on_stdin(python_executable) and grok_prompt_file is None
+    # limit (see build_argv); elsewhere stdin stays closed. Two exceptions keep
+    # stdin closed because they never read the prompt from it: Grok (it's in
+    # --prompt-file) and Antigravity (``agy`` has no stdin mode — the prompt is
+    # always in ``-p``). Opening a PIPE and writing a prompt the child never
+    # drains could block on a full pipe buffer.
+    prompt_on_stdin = (
+        _prompt_on_stdin(python_executable)
+        and grok_prompt_file is None
+        and handle.agent_type != AgentType.ANTIGRAVITY
+    )
 
     # Backstop for the worktree-reclaim TOCTOU race (#176): the dispatch cwd is
     # an AgentShore-managed worktree that reconcile / collision-reclaim churn can
@@ -1124,6 +1357,8 @@ async def dispatch_cli(
             timeout=float(timeout),
             prompt_bytes=prompt_bytes,
             sniffer=stderr_sniffer,
+            dispatch_start=t_start,
+            first_byte_timeout_override=first_byte_timeout_override,
         )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).
@@ -1168,21 +1403,42 @@ async def dispatch_cli(
 
     duration_ms = int((time.monotonic() - t_start) * 1000)
 
+    # agy wraps actual output inside a task-status block; unwrap it so
+    # parse_skill_result sees the model's content, not the status envelope.
+    if handle.agent_type == AgentType.ANTIGRAVITY:
+        raw_output = cli_antigravity.extract_output(raw_output)
+        # agy reveals no session id on stdout (no parser), so resolve its
+        # conversation id from the on-disk cache keyed by this dispatch's cwd.
+        # This gives agy a resumable id for the narrow JSON-retry path
+        # (desktop-dy2j), exactly like the parsed agents. Best-effort: None on
+        # any miss, which simply means no retry — never fatal.
+        if _observed_session_id is None:
+            _observed_session_id = cli_antigravity.resolve_conversation_id(
+                effective_cwd, home=env.get("HOME")
+            )
+
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
         await _finalize_nonzero_exit(
             proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
         )
 
-    dollar_cost = estimate_cost(
-        usage.tokens_in,
-        usage.tokens_out,
-        cfg,
-        cached_tokens_in=usage.cached_tokens_in,
-        cache_write_tokens_in=usage.cache_write_tokens_in,
-    )
+    if usage.reported_cost > 0:
+        # Vendor-authoritative cost (Claude Code's total_cost_usd). See _UsageTotals.
+        dollar_cost = usage.reported_cost
+        cost_source = "vendor_reported"
+    else:
+        dollar_cost = estimate_cost(
+            usage.tokens_in,
+            usage.tokens_out,
+            pricing if pricing is not None else default_quote(),
+            cached_tokens_in=usage.cached_tokens_in,
+            cache_write_tokens_in=usage.cache_write_tokens_in,
+        )
+        cost_source = "token_derived"
     _logger.info(
         "cli_dispatch_done",
+        cost_source=cost_source,
         agent_id=handle.agent_id,
         duration_ms=duration_ms,
         tokens_in=usage.tokens_in,
@@ -1242,8 +1498,28 @@ async def _read_output(
 
     try:
         async for line in proc.stdout:
-            if stdout_activity is not None:
-                stdout_activity.mark()
+            # First stdout byte for this dispatch (#212). ``mark()`` runs on every
+            # line (short-circuit keeps it evaluated) but returns True only on the
+            # first; emitting here — at the transition, not at dispatch end — keeps
+            # the log event's position faithful to real first-byte time so live
+            # monitors can tell "slow to start" from "never started" and observe
+            # first-byte-deadline enforcement. ``dispatch_start`` is 0.0 only when no
+            # dispatch context was supplied (unit tests), so the guard suppresses a
+            # garbage elapsed there.
+            if (
+                stdout_activity is not None
+                and stdout_activity.mark()
+                and stdout_activity.dispatch_start
+                and stdout_activity.first_byte_at
+            ):
+                _logger.info(
+                    "cli_first_byte",
+                    agent_id=agent_id,
+                    agent_type=str(agent_type),
+                    elapsed_ms=int(
+                        (stdout_activity.first_byte_at - stdout_activity.dispatch_start) * 1000
+                    ),
+                )
             total_bytes += len(line)
             if total_bytes > max_bytes:
                 raise AgentOutputInvalid(
@@ -1425,13 +1701,11 @@ _NEVER_S: Final[float] = 365 * 24 * 3600.0
 # Detecting it lets the idle watcher apply the short _POST_RESPONSE_GRACE_S
 # (60s) instead of waiting the full stream_idle_timeout (default 1800s) for a
 # finished-but-unexited subprocess. Previously only Claude was wired up, so a
-# finished gemini/codex lingered up to 30 min each — stacking memory across
-# plays toward OOM (#21). Codex emits ``turn.completed``; Gemini and Claude
-# emit ``type: "result"``.
+# finished codex lingered up to 30 min — stacking memory across
+# plays toward OOM (#21). Codex emits ``turn.completed``; Claude emits ``type: "result"``.
 _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
-    AgentType.GEMINI: frozenset({"result"}),
     AgentType.GROK: frozenset({"end"}),
 }
 
@@ -1493,6 +1767,14 @@ def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
     if not isinstance(usage, dict):
         return current
     parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
+    # Claude Code stamps an authoritative ``total_cost_usd`` on the terminal
+    # ``result`` event. Prefer it over token-derivation: it bills the exact model
+    # and the 5m/1h ephemeral-cache tiers the static pricing table can't see, and
+    # was observed ~2x higher than the token-derived figure (dashboard undercount).
+    if event.get("type") == "result":
+        reported = event.get("total_cost_usd")
+        if isinstance(reported, int | float) and not isinstance(reported, bool) and reported > 0:
+            parsed = replace(parsed, reported_cost=float(reported))
     return _max_usage(current, parsed)
 
 
@@ -1542,44 +1824,6 @@ def _extract_text_from_codex_jsonl(raw: str) -> tuple[str, _UsageTotals, str | N
     return (messages[-1] if messages else raw), usage_totals, session_id
 
 
-def _extract_text_from_gemini_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
-    session_id: str | None = None
-    usage_totals = _UsageTotals()
-    messages: list[str] = []
-    final_response: str | None = None
-
-    for event in _iter_json_events(raw):
-        session_id = session_id or _extract_gemini_session_id(event)
-
-        event_type = event.get("type")
-        if event_type == "message":
-            role = event.get("role")
-            message = event.get("message")
-            if role is None and isinstance(message, dict):
-                role = message.get("role")
-            if isinstance(role, str) and role.lower() not in {"assistant", "model"}:
-                continue
-            text = _extract_text_value(event.get("message"))
-            if text is None:
-                text = _extract_text_value(event)
-            if text:
-                messages.append(text)
-            continue
-
-        if event_type == "result" or "response" in event:
-            text = _extract_text_value(event.get("response"))
-            if text is None:
-                text = _extract_text_value(event.get("result"))
-            if text:
-                final_response = text
-
-            stats = event.get("stats") or event.get("usage") or event.get("usageMetadata")
-            if isinstance(stats, dict):
-                usage_totals = _max_usage(usage_totals, _usage_totals_from_gemini_stats(stats))
-
-    return (final_response or "".join(messages) or raw), usage_totals, session_id
-
-
 def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse Grok CLI JSONL output.  Delegates to the narrow Grok parser."""
     return cli_grok.parse_grok_jsonl(raw)
@@ -1617,20 +1861,6 @@ def _parse_claude_output(raw: str) -> tuple[str, _UsageTotals, str | None]:
     return _extract_text_from_stream_json(raw), usage, _extract_session_id_from_jsonl(raw)
 
 
-def _extract_gemini_session_id(event: dict[str, object]) -> str | None:
-    for key in ("session_id", "sessionId", "thread_id", "id"):
-        value = event.get(key)
-        if isinstance(value, str) and value:
-            return value
-    metadata = event.get("metadata")
-    if isinstance(metadata, dict):
-        for key in ("session_id", "sessionId", "thread_id", "id"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return None
-
-
 def _extract_text_value(value: object) -> str | None:
     if isinstance(value, str):
         return value
@@ -1650,44 +1880,6 @@ def _extract_text_value(value: object) -> str | None:
         text_parts = [_extract_text_value(part) for part in value_parts]
         return "".join(part for part in text_parts if part)
     return None
-
-
-def _usage_totals_from_gemini_stats(stats: dict[str, object]) -> _UsageTotals:
-    usage = stats.get("usageMetadata")
-    if isinstance(usage, dict):
-        stats = usage
-
-    tokens_in = _first_int(
-        stats, "input_tokens", "prompt_tokens", "inputTokenCount", "promptTokenCount"
-    )
-    cached_tokens_in = _first_int(
-        stats, "cached_input_tokens", "cache_read_input_tokens", "cachedContentTokenCount"
-    )
-    tokens_out = _first_int(
-        stats, "output_tokens", "completion_tokens", "outputTokenCount", "candidatesTokenCount"
-    )
-
-    if tokens_in == 0 and tokens_out == 0:
-        nested = [
-            _usage_totals_from_gemini_stats(value)
-            for value in stats.values()
-            if isinstance(value, dict)
-        ]
-        if nested:
-            return _UsageTotals(
-                tokens_in=sum(item.tokens_in for item in nested),
-                tokens_out=sum(item.tokens_out for item in nested),
-                cached_tokens_in=sum(item.cached_tokens_in for item in nested),
-                cache_write_tokens_in=sum(item.cache_write_tokens_in for item in nested),
-                max_turn_input_tokens=max(item.max_turn_input_tokens for item in nested),
-            )
-
-    return _UsageTotals(
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cached_tokens_in=cached_tokens_in,
-        max_turn_input_tokens=tokens_in,
-    )
 
 
 class CliOutputFormat(Protocol):
@@ -1711,7 +1903,6 @@ class _FunctionFormat:
 _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
-    AgentType.GEMINI: _FunctionFormat(_extract_text_from_gemini_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
 }
 

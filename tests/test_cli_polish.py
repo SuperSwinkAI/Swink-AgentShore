@@ -83,6 +83,7 @@ def test_init_help_text() -> None:
     assert result.exit_code == 0
     assert "--force" in result.output
     assert "--install-skills" in result.output
+    assert "Deprecated" in result.output
     assert "--target-branch" in result.output
 
 
@@ -344,7 +345,7 @@ identities:
     runner = CliRunner()
     with (
         patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
-        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex", "gemini"]),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude", "codex"]),
         patch("agentshore.skills.install_skills", return_value=[]),
         patch("agentshore.cli.commands.init._run_beads_init"),
     ):
@@ -352,8 +353,8 @@ identities:
 
     assert result.exit_code == 0, result.output
     assert captured["force_run"] is True
-    assert captured["detected_agents"] == ["claude", "codex", "gemini"]
-    assert captured["agent_keys"] == ["claude_code", "codex", "gemini"]
+    assert captured["detected_agents"] == ["claude", "codex"]
+    assert captured["agent_keys"] == ["claude_code", "codex"]
     assert captured["config_path"] == repo / "agentshore.yaml"
 
 
@@ -415,9 +416,7 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     # Press Enter immediately → confirm & write.
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: "")
 
-    updated = _interactive_agent_select(
-        cfg, ["claude", "codex", "gemini"], config_path, force_run=True
-    )
+    updated = _interactive_agent_select(cfg, ["claude", "codex"], config_path, force_run=True)
 
     out = capsys.readouterr().out
     assert "AgentShore — Agent Setup" in out
@@ -426,11 +425,10 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     assert "[a]" in out  # first tier cell letter
     assert "[1]" in out  # first agent toggle number
     assert "toggle agent" in out and "confirm" in out
-    # All three detected agents appear and round-trip into config with binaries.
-    for label in ("claude", "codex", "gemini"):
+    # All detected agents appear and round-trip into config with binaries.
+    for label in ("claude", "codex"):
         assert label in out
     assert updated.agents["codex"].binary == "codex"
-    assert updated.agents["gemini"].binary == "gemini"
 
 
 def test_agent_setup_wizard_edit_tier_cell_sets_max(
@@ -481,16 +479,11 @@ agents:
   codex:
     enabled: true
     binary: codex
-  gemini:
-    enabled: false
-    binary: gemini
 """,
         encoding="utf-8",
     )
 
-    assert _agent_keys_from_yaml(config_path, detected_agents=["claude", "gemini"]) == [
-        "claude_code"
-    ]
+    assert _agent_keys_from_yaml(config_path, detected_agents=["claude"]) == ["claude_code"]
 
 
 def test_init_force_resets_database_files_only(tmp_path: Path) -> None:
@@ -553,14 +546,33 @@ def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) ->
 
     runner = CliRunner()
     with (
-        patch("agentshore.skills.install_skills", return_value=[]),
+        patch("agentshore.skills.install_skills", return_value=[]) as install_skills,
         patch("agentshore.cli.commands.init._run_beads_init"),
     ):
         result = runner.invoke(main, ["init", "--project", str(repo)])
 
     assert "agentshore init --force" in result.output
+    install_skills.assert_not_called()
     # Original file should be preserved
     assert (repo / "agentshore.yaml").read_text() == original
+
+
+def test_init_force_does_not_install_skills(tmp_path: Path) -> None:
+    repo = _make_git_repo(tmp_path)
+
+    runner = CliRunner()
+    with (
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.skills.install_skills", return_value=[]) as install_skills,
+        patch("agentshore.cli.commands.init._run_beads_init"),
+        patch("agentshore.cli.commands.init._interactive_agent_select"),
+        patch("agentshore.identity_wizard.run_identity_wizard"),
+    ):
+        result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
+
+    assert result.exit_code == 0
+    install_skills.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +590,7 @@ def test_init_install_skills_only(tmp_path: Path) -> None:
         result = runner.invoke(main, ["init", "--project", str(repo), "--install-skills"])
 
     assert result.exit_code == 0
+    assert "--install-skills is deprecated" in result.output
     # Config should NOT have been created
     assert not (repo / "agentshore.yaml").exists()
     # Skills should have been installed
@@ -596,6 +609,7 @@ def test_init_install_skills_force_passes_force(tmp_path: Path) -> None:
         )
 
     assert result.exit_code == 0
+    assert "--install-skills is deprecated" in result.output
     mock_install.assert_called_once_with(repo, force=True)
 
 

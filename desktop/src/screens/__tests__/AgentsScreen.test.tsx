@@ -124,7 +124,7 @@ describe("AgentsScreen", () => {
         },
       },
       {
-        type: "gemini",
+        type: "antigravity",
         enabled: false,
         identity: "review-bot",
         tier_models: {
@@ -213,7 +213,7 @@ describe("AgentsScreen", () => {
 
   it("surfaces supported runners that were checked but not detected", async () => {
     const adapter = makeAdapter(AGENTS, IDENTITIES, {
-      detected: ["claude_code", "codex", "gemini"],
+      detected: ["claude_code", "codex", "antigravity"],
     });
     renderScreen(adapter);
 
@@ -222,7 +222,7 @@ describe("AgentsScreen", () => {
     );
     expect(screen.queryByTestId("agent-unavailable-claude_code")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-unavailable-codex")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agent-unavailable-gemini")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-unavailable-antigravity")).not.toBeInTheDocument();
   });
 
   it("keeps detected-but-unconfigured scaffolding while showing unavailable runners", async () => {
@@ -233,8 +233,8 @@ describe("AgentsScreen", () => {
 
     expect(await screen.findByTestId("scaffold-grok")).toHaveTextContent("+ Grok CLI");
     expect(screen.queryByTestId("agent-unavailable-grok")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-unavailable-gemini")).toHaveTextContent(
-      "Gemini CLI — not detected",
+    expect(screen.getByTestId("agent-unavailable-antigravity")).toHaveTextContent(
+      "Antigravity — not detected",
     );
   });
 

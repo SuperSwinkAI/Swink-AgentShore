@@ -16,6 +16,7 @@ from agentshore.cli.commands.add_budget import add_budget
 from agentshore.cli.commands.dashboard import dashboard
 from agentshore.cli.commands.identity import identity
 from agentshore.cli.commands.init import init
+from agentshore.cli.commands.preferences import preferences
 from agentshore.cli.commands.reload_config import reload_config_cmd
 from agentshore.cli.commands.start import start
 from agentshore.cli.commands.stop import stop
@@ -41,6 +42,7 @@ main.add_command(trusted_ids)
 main.add_command(dashboard)
 main.add_command(stop)
 main.add_command(add_budget)
+main.add_command(preferences)
 main.add_command(reload_config_cmd)
 
 

@@ -18,6 +18,36 @@ import pytest
 from agentshore.sidecar.server import ServerState
 from agentshore.sidecar.session_lifecycle import run_session_start
 
+VALID_TIERED_CONFIG = """\
+project: {}
+identities:
+  alpha:
+    git_user_name: Alpha
+    git_user_email: alpha@example.com
+    gh_token_login: alpha
+  beta:
+    git_user_name: Beta
+    git_user_email: beta@example.com
+    gh_token_login: beta
+agents:
+  claude_code:
+    enabled: true
+    binary: agentshore-missing-claude
+    identity: alpha
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    binary: agentshore-missing-codex
+    identity: beta
+    model_tiers:
+      large:
+        enabled: true
+"""
+
 
 @pytest.mark.asyncio
 async def test_real_bridge_starts_for_valid_project(tmp_path: Path) -> None:
@@ -25,7 +55,7 @@ async def test_real_bridge_starts_for_valid_project(tmp_path: Path) -> None:
     boots an EmbeddedBridge that binds its WebSocket port."""
     project_path = tmp_path / "valid"
     project_path.mkdir()
-    (project_path / "agentshore.yaml").write_text("project: {}\n", encoding="utf-8")
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
     state = ServerState(active_project_path=str(project_path))
 

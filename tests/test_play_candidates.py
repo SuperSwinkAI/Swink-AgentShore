@@ -116,14 +116,14 @@ def _reviewer(
 def test_idle_can_review_excludes_circuit_broken_reviewer() -> None:
     """A dead reviewer (0 successes + timeout) is dropped from the review pool (#22).
 
-    Mirrors the live gemini-ETIMEDOUT case: a configured reviewer that produced
+    Mirrors the live grok-ETIMEDOUT case: a configured reviewer that produced
     0 successful calls and timed out must not be pinned for code_review.
     """
     from agentshore.plays.candidates import idle_can_review_agents
 
-    dead_gemini = _reviewer("g1", AgentType.GEMINI, tasks_completed=0, timeout_count=1)
+    dead_grok = _reviewer("g1", AgentType.GROK, tasks_completed=0, timeout_count=1)
     healthy_claude = _reviewer("c1", AgentType.CLAUDE_CODE, tasks_completed=2)
-    pool = idle_can_review_agents(_state(agents=[dead_gemini, healthy_claude]))
+    pool = idle_can_review_agents(_state(agents=[dead_grok, healthy_claude]))
     assert [a.agent_id for a in pool] == ["c1"]
 
 

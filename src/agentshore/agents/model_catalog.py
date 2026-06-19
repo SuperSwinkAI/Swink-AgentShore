@@ -38,40 +38,23 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "gpt-5.4-mini",
         "gpt-5.4-nano",
     ],
-    "gemini": [
-        # Gemini CLI aliases. Keep these first so the setup wizard can use
-        # CLI-maintained routing when a user prefers aliases over pinned IDs.
-        "auto",
-        "pro",
-        "flash",
-        "flash-lite",
-        # Current Gemini API text-generation IDs, newest first. Do not list
-        # deprecated IDs here: the Gemini 3 Pro Preview and Gemini 3.1
-        # Flash-Lite Preview endpoints have been shut down.
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "gemini-3.1-pro-preview",
-        "gemini-3.1-pro-preview-customtools",
-        "gemini-3-flash-preview",
-        "gemini-3-flash",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-    ],
     "grok": [
         "grok-build",
-        "grok-build-0.1",
-        "grok-4.3",
-        "grok-code-fast-1",
-        "grok-code-fast",
-        "grok-code-fast-1-0825",
+    ],
+    "antigravity": [
+        # Antigravity (binary ``agy``) exposes the Google models by display name;
+        # the reasoning effort is baked into the name, so there is no separate
+        # effort flag. No live-fetch branch — ``agy`` has no models endpoint.
+        "Gemini 3.5 Flash (Low)",
+        "Gemini 3.5 Flash (Medium)",
+        "Gemini 3.5 Flash (High)",
+        "Gemini 3.1 Pro (Low)",
+        "Gemini 3.1 Pro (High)",
     ],
 }
 
 _ANTHROPIC_PREFIXES = ("claude-",)
 _OPENAI_PREFIXES = ("gpt-",)
-_GEMINI_PREFIXES = ("gemini-",)
-_XAI_PREFIXES = ("grok-",)
 
 
 async def _fetch_live_models(
@@ -112,27 +95,6 @@ def _extract_data_model_ids(body: Mapping[str, object], *, prefixes: tuple[str, 
     ]
 
 
-def _extract_gemini_model_ids(body: Mapping[str, object]) -> list[str]:
-    models = body.get("models", [])
-    if not isinstance(models, list):
-        return []
-    result: list[str] = []
-    for model in models:
-        if not isinstance(model, dict):
-            continue
-        name = model.get("name")
-        if not isinstance(name, str):
-            continue
-        model_id = name.removeprefix("models/")
-        if not model_id.startswith(_GEMINI_PREFIXES):
-            continue
-        methods = model.get("supportedGenerationMethods")
-        if isinstance(methods, list) and "generateContent" not in methods:
-            continue
-        result.append(model_id)
-    return result
-
-
 async def _fetch_anthropic_models(*, timeout: float = 5.0) -> list[str]:
     """GET /v1/models from Anthropic. Logs and returns [] on any failure."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -161,34 +123,6 @@ async def _fetch_openai_models(*, timeout: float = 5.0) -> list[str]:
     )
 
 
-async def _fetch_gemini_models(*, timeout: float = 5.0) -> list[str]:
-    """GET /v1beta/models from Gemini API. Logs and returns [] on any failure."""
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        return []
-    return await _fetch_live_models(
-        "https://generativelanguage.googleapis.com/v1beta/models",
-        provider="gemini",
-        timeout=timeout,
-        params={"key": api_key},
-        extract=_extract_gemini_model_ids,
-    )
-
-
-async def _fetch_xai_models(*, timeout: float = 5.0) -> list[str]:
-    """GET /v1/models from xAI. Logs and returns [] on any failure."""
-    api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_CODE_XAI_API_KEY")
-    if not api_key:
-        return []
-    return await _fetch_live_models(
-        "https://api.x.ai/v1/models",
-        provider="xai",
-        timeout=timeout,
-        headers={"Authorization": f"Bearer {api_key}"},
-        extract=lambda body: _extract_data_model_ids(body, prefixes=_XAI_PREFIXES),
-    )
-
-
 async def models_for_agent_async(agent_key: str, *, timeout: float = 5.0) -> list[str]:
     """Return deduplicated model list: known first, then live extras.
 
@@ -203,11 +137,6 @@ async def models_for_agent_async(agent_key: str, *, timeout: float = 5.0) -> lis
         live = await _fetch_anthropic_models(timeout=timeout)
     elif agent_key == "codex":
         live = await _fetch_openai_models(timeout=timeout)
-    elif agent_key == "gemini":
-        live = await _fetch_gemini_models(timeout=timeout)
-    elif agent_key == "grok":
-        live = await _fetch_xai_models(timeout=timeout)
-
     return known + [m for m in live if m not in known_set]
 
 

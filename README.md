@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/SuperSwinkAI/Swink-AgentShore/actions/workflows/ci.yml/badge.svg)](https://github.com/SuperSwinkAI/Swink-AgentShore/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/agentshore)](https://pypi.org/project/agentshore/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
 
-**RL-based multi-agent coding orchestrator.** AgentShore™ runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, or Gemini agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
+**RL-based multi-agent coding orchestrator.** AgentShore™ runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, Grok, or Antigravity agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
 
 ## What it does
 
 - Picks up GitHub issues, implements them, opens PRs, reviews them, runs QA, and merges
 - Uses PPO (proximal policy optimization) to learn which plays to run and when
-- Coordinates multiple agents (Claude Code, Codex CLI, Gemini CLI) with different GitHub identities so code review is always done by a different agent than the one that wrote the code
+- Coordinates multiple agents (Claude Code, Codex CLI, Grok CLI, Antigravity CLI) with different GitHub identities so code review is always done by a different agent than the one that wrote the code
 - Keeps humans in the loop via the GitHub issue tracker — no AgentShore-specific approval UI needed
 
 ## Install
@@ -46,7 +46,7 @@ Both paths end in selecting a project, configuring agents and identities, and st
 
 - Python 3.12+
 - `gh` CLI authenticated (`gh auth login`)
-- One or more agent CLIs on PATH: `claude`, `codex`, `gemini`
+- One or more agent CLIs on PATH: `claude`, `codex`, `grok`, `agy` (Antigravity)
 - A GitHub repository with issues
 
 ## Configuration
@@ -66,7 +66,7 @@ The core loop: observe state → RL policy selects a play → execute play via a
 
 - **RL engine**: custom PPO in PyTorch, 22-action head (19 active plays + 3 reserved/masked, action-space version 13), 246-feature observation vector (observation version 13)
 - **Plays**: each play implements `preconditions()`, `execute()`, `estimated_cost()`; a mask prevents invalid plays from being selected
-- **Agents**: CLI agents (Claude Code, Codex, Gemini) run as async subprocesses; API agents use httpx
+- **Agents**: CLI agents (Claude Code, Codex, Grok, Antigravity) run as async subprocesses
 - **Three-layer graph**: BEADS is the canonical project graph (epics → stories → tasks), GitHub is the human conversation surface, and AgentShore's SQLite database holds session-scoped RL state
 - **Data**: single SQLite database per project (schema version 4, 22 tables), WAL mode, aiosqlite
 

@@ -30,6 +30,7 @@ from agentshore.config.models import (
     PlayPacingConfig,
     PolicyMode,
     PPOConfig,
+    PreferencesConfig,
     ProjectConfig,
     RewardConfig,
     RLConfig,
@@ -76,6 +77,7 @@ __all__ = [
     "PPOConfig",
     "PolicyMode",
     "PlayPacingConfig",
+    "PreferencesConfig",
     "ProjectConfig",
     "RewardConfig",
     "RLConfig",
@@ -139,10 +141,15 @@ agents:
       small:
         enabled: true
         model: haiku
+        reasoning_effort: low
       medium:
         enabled: true
         model: sonnet
-$PRICING_claude_code
+        reasoning_effort: medium
+      large:
+        enabled: true
+        model: opus
+        reasoning_effort: high
   codex:
     enabled: true
     binary: codex
@@ -157,22 +164,24 @@ $PRICING_claude_code
         enabled: true
         model: gpt-5.4
         reasoning_effort: medium
-$PRICING_codex
-  gemini:
+      large:
+        enabled: true
+        model: gpt-5.5
+        reasoning_effort: high
+  antigravity:
     enabled: true
-    binary: gemini
-    model: auto
+    binary: agy
+    model: "Gemini 3.5 Flash (High)"
     model_tiers:
       small:
         enabled: true
-        model: flash-lite
+        model: "Gemini 3.5 Flash (Low)"
       medium:
         enabled: true
-        model: auto
+        model: "Gemini 3.5 Flash (High)"
       large:
         enabled: true
-        model: pro
-$PRICING_gemini
+        model: "Gemini 3.1 Pro (High)"
   grok:
     enabled: true
     binary: grok
@@ -191,7 +200,6 @@ $PRICING_gemini
         enabled: true
         model: grok-build
         reasoning_effort: high
-$PRICING_grok
   fresh_start:
     max_plays_before_reset: 20
     context_threshold: 0.80
@@ -321,26 +329,18 @@ def render_config_yaml() -> str:
 
     Single named entry point for the on-disk default config used by
     ``load_config(None)``, :func:`generate_default_config`, and the desktop /
-    init paths. Per-agent pricing blocks are injected from the canonical
-    :data:`agentshore.agents.pricing.AGENT_PRICING` source so the defaults
-    cannot drift from the config parser; the CLI's minimal/parameterised
-    generator (:func:`agentshore.cli_helpers._generate_default_config`) shares
-    the same per-agent block renderer.
+    init paths. Token pricing is NOT emitted here — it lives in the external
+    ``pricing.yaml`` table (bundled default + global override); see
+    :func:`agentshore.agents.pricing.load_pricebook`.
 
     NOTE: this canonical template intentionally curates ``claude_code`` and
     ``codex`` down to ``small``/``medium`` tiers (no ``large``), which is why it
     is rendered from a curated string rather than blindly from
     ``default_model_tiers_for`` (that map also defines a ``large`` tier for both).
     """
-    from agentshore.agents.pricing import pricing_yaml_lines
-
-    text = _DEFAULT_YAML_TEMPLATE.replace(
+    return _DEFAULT_YAML_TEMPLATE.replace(
         "$STANDARD_PLAY_COOLDOWN_PLAYS", str(STANDARD_PLAY_COOLDOWN_PLAYS)
     )
-    for agent_key in ("claude_code", "codex", "gemini", "grok"):
-        block = "\n".join(pricing_yaml_lines(agent_key))
-        text = text.replace(f"$PRICING_{agent_key}", block)
-    return text
 
 
 def _build_default_yaml() -> str:
@@ -353,15 +353,35 @@ def _build_default_yaml() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _apply_global_preferences(cfg: RuntimeConfig) -> RuntimeConfig:
+    """Fold the machine-global ``preferences.yaml`` into *cfg*.
+
+    Read at every ``load_config`` (and therefore every reload) so a preference
+    change applies mid-session via the existing atomic config swap. The global
+    file is the sole source for these fields — they are deliberately not read
+    from ``agentshore.yaml``. A missing / malformed file yields defaults, so
+    config loading never depends on preference-file state.
+    """
+    from dataclasses import replace
+
+    from agentshore.preferences import load_preferences_data
+
+    data = load_preferences_data()
+    disabled = data.get("disabled_plays", ())
+    return replace(cfg, preferences=PreferencesConfig(disabled_plays=tuple(disabled)))
+
+
 def load_config(path: Path | None = None) -> RuntimeConfig:
     """Load configuration from a YAML file.
 
     If *path* is ``None`` or the file does not exist, returns the built-in
     default YAML parsed through the same validation and normalization path as
-    project config files.
+    project config files. The machine-global ``preferences.yaml`` is folded in
+    on top regardless of *path*, so a reload re-applies preference changes.
     """
     if path is None or not path.exists():
-        return _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
+        cfg = _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
+        return _apply_global_preferences(cfg)
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -376,7 +396,7 @@ def load_config(path: Path | None = None) -> RuntimeConfig:
     if not isinstance(data, dict):
         raise ConfigError(f"config root must be a mapping, got {type(data).__name__}")
 
-    return _build_config(cast("_RawConfig", data))
+    return _apply_global_preferences(_build_config(cast("_RawConfig", data)))
 
 
 def generate_default_config(project_path: Path) -> Path:

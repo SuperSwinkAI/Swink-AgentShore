@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_review_feedback_pattern
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _ReviewPatternsMixin(_DataStoreBase):
     """Methods that operate on the ``review_feedback_patterns`` table."""
 
+    @_serialized
     async def record_review_pattern(self, record: ReviewFeedbackPatternRecord) -> None:
         """Insert or accumulate a single review-feedback pattern row.
 
@@ -44,6 +45,7 @@ class _ReviewPatternsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def record_review_patterns(self, records: list[ReviewFeedbackPatternRecord]) -> None:
         """Bulk-insert review-feedback patterns in a single round-trip.
 
@@ -75,6 +77,7 @@ class _ReviewPatternsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def list_review_patterns(self, session_id: str) -> list[ReviewFeedbackPatternRecord]:
         """Return all review-feedback patterns for a session, ordered by frequency DESC."""
         cursor = await self._conn.execute(
@@ -90,6 +93,7 @@ class _ReviewPatternsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_review_feedback_pattern(row) for row in rows]
 
+    @_serialized
     async def mark_review_patterns_injected(
         self,
         session_id: str,

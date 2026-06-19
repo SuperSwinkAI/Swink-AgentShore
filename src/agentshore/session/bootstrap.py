@@ -210,6 +210,39 @@ def _load_config_with_overrides(
     return cfg, effective_policy_mode
 
 
+def require_startup_model_tier_coverage(cfg: RuntimeConfig) -> None:
+    """Fail fast when enabled agent config cannot cover all required tiers."""
+    from agentshore.agents.model_tiers import REQUIRED_MODEL_TIERS, missing_required_model_tiers
+
+    missing = missing_required_model_tiers(cfg.agents)
+    if not missing:
+        return
+
+    required = ", ".join(REQUIRED_MODEL_TIERS)
+    missing_text = ", ".join(missing)
+    click.echo(
+        "Error: missing required model tier coverage: "
+        f"{missing_text}.\n\n"
+        "AgentShore start requires at least one enabled, startable agent config "
+        f"for each model tier: {required}.\n"
+        "Configure agents.<type>.model_tiers in agentshore.yaml, or rerun agent "
+        "setup to generate tiered agent configuration.",
+        err=True,
+    )
+    raise SystemExit(1)
+
+
+def _install_startup_skills(repo_root: Path) -> None:
+    """Refresh project skill templates before a CLI-started session dispatches."""
+    from agentshore.skills import install_skills
+
+    try:
+        install_skills(repo_root, force=False)
+    except (OSError, ValueError) as exc:
+        click.echo(f"Error: failed to install skill templates: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
 def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     """Resolve everything ``agentshore start`` needs before dispatch.
 
@@ -268,8 +301,8 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
             "AgentShore needs at least one agent. Options:\n"
             "  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code\n"
             "  2. Install Codex CLI:    pip install codex-cli\n"
-            "  3. Install Gemini CLI:   npm install -g @google/gemini-cli\n"
-            "  4. Install Grok CLI:     npm install -g @xai-official/grok\n"
+            "  3. Install Grok CLI:     npm install -g @xai-official/grok\n"
+            "  4. Install Antigravity CLI (agy):  https://antigravity.google/product/antigravity-cli\n"
             "  5. Set an API key:       export ANTHROPIC_API_KEY=sk-ant-...\n"
             "                           export OPENAI_API_KEY=sk-...",
             err=True,
@@ -313,6 +346,9 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         policy_mode_override=opts.policy_mode_override,
         strict=opts.strict,
     )
+    require_startup_model_tier_coverage(cfg)
+    _install_startup_skills(repo_root)
+
     # The merged config is the source of truth for the effective budget shown in
     # the banner and propagated to detached subprocesses.
     effective_budget = cfg.budget.total if cfg.budget.enabled else None

@@ -18,7 +18,7 @@ import aiosqlite
 import structlog
 
 from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.helpers import _load_schema_sql
 from agentshore.data.store.mixins.agents import _AgentsMixin
 from agentshore.data.store.mixins.archive import _ArchiveMixin
@@ -172,6 +172,7 @@ class DataStore(
         await migrate_v2_to_v3(self._conn)
         await migrate_v3_to_v4(self._conn)
 
+    @_serialized
     async def wal_checkpoint(self) -> None:
         """Merge WAL frames into the main DB file (passive checkpoint)."""
         if self._db is not None:
@@ -179,6 +180,7 @@ class DataStore(
                 await self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
                 await self._db.commit()
 
+    @_serialized
     async def integrity_check(self) -> tuple[bool, list[str]]:
         """Run ``PRAGMA quick_check`` against the live connection.
 
@@ -197,6 +199,7 @@ class DataStore(
             return True, []
         return False, lines
 
+    @_serialized
     async def snapshot_to(self, dest: Path) -> None:
         """Write a fresh ``VACUUM INTO`` copy at *dest*.
 
@@ -234,6 +237,7 @@ class DataStore(
         }
     )
 
+    @_serialized
     async def reset_session_scoped_tables(self) -> None:
         """Truncate all session/repo-state tables at the start of a new session.
 
@@ -287,6 +291,7 @@ class DataStore(
         finally:
             await self._conn.execute("PRAGMA foreign_keys=ON")
 
+    @_serialized
     async def close(self) -> None:
         """Snapshot the live DB to a sibling file via the SQLite Online Backup
         API, atomically replace the main DB file with the snapshot, then close.

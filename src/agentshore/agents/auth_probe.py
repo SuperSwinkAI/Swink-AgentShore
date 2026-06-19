@@ -67,8 +67,8 @@ _PROBE_ARGV: dict[AgentType, tuple[str, ...]] = {
 _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
-    AgentType.GEMINI: "gemini",
     AgentType.GROK: "grok",
+    AgentType.ANTIGRAVITY: "agy",
 }
 
 # Output markers indicating the backend is NOT authenticated / the cached
@@ -199,10 +199,8 @@ def probe_cli_auth(
 def configured_cli_agent_types(cfg: RuntimeConfig) -> list[tuple[AgentType, AgentConfig]]:
     """Return (type, config) for each enabled, probeable CLI agent in *cfg*.
 
-    API agents (keys like ``api_gpt`` that don't resolve to an
-    :class:`AgentType`) and disabled agents are skipped. One entry per type —
-    a backend session token is shared across instances of a type, so probing it
-    once is sufficient.
+    Disabled agents are skipped. One entry per type — a backend session token is
+    shared across instances of a type, so probing it once is sufficient.
     """
     seen: set[AgentType] = set()
     out: list[tuple[AgentType, AgentConfig]] = []

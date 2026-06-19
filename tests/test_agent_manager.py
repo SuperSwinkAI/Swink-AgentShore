@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from agentshore.agents.manager import AgentManager
+from agentshore.agents.handle import AgentInvocationResult
+from agentshore.agents.manager import _PLACEHOLDER_COLD_START_COST, AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
 from agentshore.data.store import DataStore, SessionRecord
 from agentshore.errors import (
@@ -471,6 +472,138 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.consecutive_timeouts == 1
 
 
+async def test_grok_first_byte_launch_wedge_records_cooldown_not_permanent_suppression(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={"grok": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)}
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.GROK)
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            "agent 'grok-1' (grok/medium, prompt_bytes=10054) never produced first byte "
+            "within 120s (launch wedge)",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+    assert handle.timeout_count == 1
+    assert handle.consecutive_timeouts == 1
+    # #202: a launch wedge records a DECAYING cooldown, NOT the permanent
+    # auth-suppression set — the type must auto-recover after the cooldown.
+    assert mgr.wedge_cooldown_types == {"grok"}
+    assert mgr.last_auth_failed_types == set()
+
+
+async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_type(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={"grok": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)}
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.GROK)
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            "agent 'grok-1' (grok/medium) stopped producing stdout for 120s",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
+    assert mgr.last_auth_failed_types == set()
+    # A plain stream-idle timeout (no launch-wedge markers) is not a wedge.
+    assert mgr.wedge_cooldown_types == set()
+    # #233: but it does start a per-type stream-hang streak (one is not a cluster).
+    assert mgr._type_stream_hang_streak["grok"] == 1
+
+
+async def test_antigravity_stream_hang_cluster_trips_decaying_cooldown(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#233: a cluster of agy zero-stdout 1800s hangs benches the TYPE into the same
+    decaying wedge cooldown (NOT permanent auth suppression, and without lowering the
+    load-bearing 1800s first-byte deadline)."""
+    from agentshore.agents.manager import _STREAM_HANG_CLUSTER_LIMIT
+    from agentshore.config import CircuitBreakerConfig
+
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={
+                "antigravity": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)
+            },
+            # Decouple from the circuit breaker so consecutive timeouts don't trip it.
+            circuit_breaker=CircuitBreakerConfig(failures=_STREAM_HANG_CLUSTER_LIMIT + 5),
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.ANTIGRAVITY)
+    atype = AgentType.ANTIGRAVITY.value
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            f"agent {handle.agent_id!r} (antigravity/medium) never produced any stdout for 1800s",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    # Below the cluster limit: the streak builds but the type is not yet benched.
+    for _ in range(_STREAM_HANG_CLUSTER_LIMIT - 1):
+        with pytest.raises(PlayTimeoutError):
+            await mgr.dispatch(handle.agent_id, "prompt")
+    assert mgr.wedge_cooldown_types == set()
+    assert mgr._type_stream_hang_streak[atype] == _STREAM_HANG_CLUSTER_LIMIT - 1
+
+    # The cluster-limit-th hang benches the whole agy type.
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+    assert mgr.wedge_cooldown_types == {atype}
+    assert mgr.wedge_cooldown_reasons[atype] == "stream_hang_cluster"
+    # Decaying cooldown, NOT the permanent auth-suppression set.
+    assert mgr.last_auth_failed_types == set()
+    # Streak resets after tripping so the cooldown re-arms cleanly on recurrence.
+    assert mgr._type_stream_hang_streak[atype] == 0
+
+
+async def test_successful_dispatch_resets_type_stream_hang_streak(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#233: any productive dispatch of a type clears its stream-hang streak so a
+    recovered backend isn't benched on a stale count."""
+    monkeypatch.setenv("MOCK_AGENT_FORMAT", "stream_json")
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
+    mgr._type_stream_hang_streak[handle.agent_type.value] = 2
+
+    await mgr.dispatch(handle.agent_id, "do the work")
+
+    assert mgr._type_stream_hang_streak[handle.agent_type.value] == 0
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker integration
 # ---------------------------------------------------------------------------
@@ -803,3 +936,46 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     assert result is False
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+
+
+# ---------------------------------------------------------------------------
+# placeholder cost for no-usage agents (grok / antigravity)
+# ---------------------------------------------------------------------------
+
+
+def _invocation(dollar_cost: float) -> AgentInvocationResult:
+    return AgentInvocationResult(
+        raw_output="ok",
+        tokens_in=0,
+        tokens_out=0,
+        dollar_cost=dollar_cost,
+        duration_ms=1,
+        exit_code=0,
+    )
+
+
+def test_placeholder_cost_uses_cold_start_before_any_measured_play(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    # No measured play yet → no-usage dispatch ($0) is re-billed the cold-start cost.
+    out = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.ANTIGRAVITY)
+    assert out.dollar_cost == pytest.approx(_PLACEHOLDER_COLD_START_COST)
+
+
+def test_placeholder_cost_is_running_mean_of_measured_plays(
+    store: DataStore, tmp_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path)
+    # Two measured (usage-reporting) dispatches pass through unchanged and seed the mean.
+    a = mgr._apply_placeholder_cost(_invocation(1.00), agent_type=AgentType.CLAUDE_CODE)
+    b = mgr._apply_placeholder_cost(_invocation(3.00), agent_type=AgentType.CODEX)
+    assert a.dollar_cost == pytest.approx(1.00)
+    assert b.dollar_cost == pytest.approx(3.00)
+    # A no-usage grok dispatch is billed the mean of the two measured plays (= 2.00).
+    grok = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
+    assert grok.dollar_cost == pytest.approx(2.00)
+    # Placeholder plays must NOT pollute the measured mean: another no-usage play
+    # still sees 2.00, not a drifted value.
+    grok2 = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
+    assert grok2.dollar_cost == pytest.approx(2.00)

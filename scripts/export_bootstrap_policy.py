@@ -11,7 +11,7 @@ Source resolution (no machine-specific paths in the repo):
   1. ``--source PATH``
   2. ``$AGENTSHORE_SEED_SOURCE``
   3. the platform-resolved global canonical
-     (``GLOBAL_WEIGHTS_DIR / policy_v<POLICY_VERSION>.pt``)
+     (``GLOBAL_WEIGHTS_DIR / canonical_weights_filename()``)
 
 The source is validated through ``ActorCritic.load`` (which hard-fails on any
 action-space / policy / observation version drift) before it is written.
@@ -34,7 +34,8 @@ from pathlib import Path
 import torch
 
 from agentshore.paths import GLOBAL_WEIGHTS_DIR
-from agentshore.rl.action_space import POLICY_VERSION
+from agentshore.rl.checkpoint_store import canonical_weights_filename
+from agentshore.rl.config_head import POLICY_VERSION
 from agentshore.rl.policy import ActorCritic
 
 ENV_VAR = "AGENTSHORE_SEED_SOURCE"
@@ -48,7 +49,10 @@ DEST = (
 
 
 def _default_source() -> Path:
-    return GLOBAL_WEIGHTS_DIR / f"policy_v{POLICY_VERSION}.pt"
+    # The global canonical is tagged with all three compatibility versions
+    # (action-space / observation / policy); reuse the single source of truth so
+    # this never drifts from the checkpoint-store naming again.
+    return GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
 
 
 def _resolve_source(cli_source: Path | None) -> Path:

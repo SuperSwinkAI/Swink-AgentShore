@@ -39,6 +39,10 @@ async def test_render_prompt_with_issue_number(tmp_path: Path) -> None:
     assert "`.agentshore/context.json`" in result
     assert "Do not unset" in result or "Do not unset them" in result
     assert "gh api user --jq .login" in result
+    # The completion contract bookends the prompt: terminal reminder is the last thing
+    # the agent reads, after the skill body. See _COMPLETION_CONTRACT_TEMPLATE.
+    assert result.rstrip().endswith("including any PR you opened.")
+    assert "## Before you stop — required" in result
 
 
 async def test_render_prompt_with_pr_number(tmp_path: Path) -> None:

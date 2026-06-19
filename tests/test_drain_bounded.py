@@ -121,6 +121,74 @@ async def test_already_stopping_does_not_escalate(tmp_path: Path, monkeypatch: A
     orch._drain.stop.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_escalation_during_completion_processing_runs_teardown(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Escalation while a play completion is in-flight must still reach ``do_stop``.
+
+    Regression for the self-cancel wedge: the watchdog escalation calls
+    ``self.stop()`` from within the watchdog task itself, and ``stop()`` cancels
+    the bounded-drain watchdog as its first act. When a completion is being
+    processed (``completion_processing_count > 0``), ``stop()`` suspends on the
+    *unshielded* completion gate before reaching ``do_stop`` — and the queued
+    self-cancellation lands there, aborting teardown so the session wedges
+    half-stopped forever (in-flight never cancelled, ``stop_done`` never set).
+
+    With the fix, ``do_stop`` always runs: the watchdog no longer self-cancels,
+    and the gate await is wrapped so teardown runs even if it is cancelled.
+    """
+    from tests.orchestrator_factory import make_test_orchestrator
+
+    orch = make_test_orchestrator(
+        tmp_path, RuntimeConfig(feedback=FeedbackConfig(graceful_drain_timeout_seconds=0.02))
+    )
+    orch._session_id = "test-session"
+    monkeypatch.setattr(drain_mod, "_GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS", 0.01)
+
+    # Observe that real ``stop()`` reaches teardown without running the heavy
+    # ``stop_inner`` machinery: the bug aborts ``stop()`` *before* ``do_stop``.
+    do_stop_called = asyncio.Event()
+
+    async def _record_do_stop(_grace: float) -> None:
+        do_stop_called.set()
+        orch._runtime.stop_done.set()
+
+    orch._drain.do_stop = _record_do_stop  # type: ignore[method-assign]
+
+    # A play completion is mid-flight: force the completion gate so ``stop()``
+    # suspends there (idle cleared ⇒ a genuine yield where the self-cancel lands).
+    orch._runtime.completion_processing_count = 1
+    orch._runtime.completion_processing_idle.clear()
+
+    async def _never_finishes() -> None:
+        await asyncio.sleep(3600)
+
+    stuck = asyncio.create_task(_never_finishes())
+    orch._runtime.in_flight = {"play-1": stuck}
+
+    # The completion finishes shortly AFTER the deadline escalates (~0.02s), so
+    # ``stop()`` is genuinely suspended on the gate when the self-cancel fires.
+    async def _finish_completion() -> None:
+        await asyncio.sleep(0.1)
+        orch._runtime.completion_processing_count = 0
+        orch._runtime.completion_processing_idle.set()
+
+    finisher = asyncio.create_task(_finish_completion())
+
+    try:
+        await orch._drain.begin_drain("time_budget_reserve_reached")
+        # The buggy path aborts stop() before do_stop, so this wait times out.
+        await asyncio.wait_for(do_stop_called.wait(), timeout=2.0)
+    finally:
+        stuck.cancel()
+        finisher.cancel()
+        orch._drain._stop_graceful_drain_watchdog()
+
+    assert do_stop_called.is_set()
+    assert orch._runtime.stop_done.is_set()
+
+
 def test_start_is_idempotent(tmp_path: Path) -> None:
     """_start_graceful_drain_watchdog does not spawn a second live task."""
     orch = _make_orch(tmp_path, FeedbackConfig(graceful_drain_timeout_seconds=300.0))

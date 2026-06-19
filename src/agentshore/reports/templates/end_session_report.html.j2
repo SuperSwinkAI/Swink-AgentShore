@@ -174,6 +174,93 @@
             color: var(--fm-text-muted);
             font-size: 0.75rem;
         }
+        .table-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+        .subsection-title {
+            margin: 0 0 10px;
+            color: var(--fm-text-label);
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+        .timeline-card {
+            background: var(--color-fm-panel);
+            border: 1px solid var(--fm-border);
+            border-radius: 8px;
+            box-shadow: var(--fm-shadow);
+            padding: 16px 18px 18px;
+        }
+        .timeline-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        .timeline-caption {
+            color: var(--fm-text-muted);
+            font-size: 0.78rem;
+        }
+        .timeline-legend {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 10px;
+            color: var(--fm-text-muted);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .timeline-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .timeline-swatch {
+            width: 18px;
+            height: 8px;
+            border-radius: 999px;
+        }
+        .timeline-wrap {
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+        .timeline-chart {
+            display: block;
+            min-width: 920px;
+            width: 100%;
+            height: auto;
+        }
+        .timeline-axis,
+        .timeline-grid-line {
+            stroke: rgba(0,0,0,0.12);
+            stroke-width: 1;
+        }
+        .timeline-label {
+            fill: var(--fm-text-muted);
+            font-family: var(--font-mono);
+            font-size: 10px;
+        }
+        .timeline-area {
+            stroke-width: 1.75;
+        }
+        .timeline-line-total {
+            fill: none;
+            stroke: rgba(0,0,0,0.72);
+            stroke-width: 2.5;
+            stroke-linecap: round;
+        }
+        .timeline-note {
+            margin-top: 10px;
+            color: var(--fm-text-muted);
+            font-size: 0.78rem;
+        }
         .play-log {
             --log-surface: #f3f4f7;
             --log-panel: rgba(255,255,255,0.7);
@@ -496,9 +583,12 @@
             header { display: block; }
             .repo { text-align: left; margin-top: 12px; }
             .metrics { grid-template-columns: 1fr; }
+            .table-grid { grid-template-columns: 1fr; }
             table { font-size: 12px; }
             th, td { padding: 7px; }
             .play-log-top { display: block; }
+            .timeline-head { display: block; }
+            .timeline-legend { justify-content: flex-start; margin-top: 10px; }
             .play-log-stats { margin-top: 14px; flex-wrap: wrap; }
             .play-log-toolbar { display: block; }
             .play-log-legend { margin: 8px 0 0; flex-wrap: wrap; }
@@ -584,6 +674,157 @@
         {% endif %}
     </section>
 
+    {% if data.fleet_concurrency %}
+    <section>
+        <h2>Fleet Concurrency</h2>
+        <section class="metrics">
+            <div class="metric">
+                <div class="label">Peak Busy</div>
+                <div class="value">{{ data.fleet_concurrency.peak_busy }}</div>
+            </div>
+            <div class="metric">
+                <div class="label">Mean Busy</div>
+                <div class="value">{{ "%.2f" | format(data.fleet_concurrency.mean_busy) }}</div>
+            </div>
+            <div class="metric">
+                <div class="label">Samples</div>
+                <div class="value">{{ data.fleet_concurrency.sample_count }}</div>
+            </div>
+        </section>
+
+        <div class="table-grid">
+            <div>
+                <h3 class="subsection-title">Peak By Harness</h3>
+                {% if data.fleet_concurrency.peak_by_harness %}
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Harness</th>
+                        <th class="num">Peak Busy</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in data.fleet_concurrency.peak_by_harness %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="num">{{ row.peak_busy }}</td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="empty">No per-harness busy samples.</div>
+                {% endif %}
+            </div>
+            <div>
+                <h3 class="subsection-title">Peak By Harness Tier</h3>
+                {% if data.fleet_concurrency.peak_by_harness_tier %}
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Harness / Tier</th>
+                        <th class="num">Peak Busy</th>
+                        <th class="num">Config Max</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in data.fleet_concurrency.peak_by_harness_tier %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="num">{{ row.peak_busy }}</td>
+                        <td class="num">{{ row.config_max if row.config_max is not none else "" }}</td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="empty">No per-tier busy samples.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <section>
+            <h3 class="subsection-title">Busy Timeline</h3>
+            <div class="timeline-card">
+                <div class="timeline-head">
+                    <div>
+                        <div class="subsection-title">Stacked Busy Agents Over Session</div>
+                        <div class="timeline-caption">{{ data.fleet_concurrency.timeline.duration_label }}; peak busy {{ data.fleet_concurrency.peak_busy }}.</div>
+                    </div>
+                    <div class="timeline-legend">
+                        {% for harness in data.fleet_concurrency.timeline.harnesses %}
+                        <span class="timeline-legend-item">
+                            <span class="timeline-swatch" style="background: {{ harness.color }}"></span>{{ harness.display_label }}
+                        </span>
+                        {% endfor %}
+                        <span class="timeline-legend-item">
+                            <span class="timeline-swatch" style="background: rgba(0,0,0,0.72)"></span>Total busy
+                        </span>
+                    </div>
+                </div>
+                <div class="timeline-wrap">
+                    <svg class="timeline-chart" viewBox="0 0 {{ data.fleet_concurrency.timeline.width }} {{ data.fleet_concurrency.timeline.height }}" role="img" aria-label="Stacked busy-agent timeline by harness">
+                        {% for label in data.fleet_concurrency.timeline.y_axis_labels %}
+                        <line class="timeline-grid-line" x1="72" y1="{{ label.y - 4 }}" x2="940" y2="{{ label.y - 4 }}" />
+                        <text class="timeline-label" x="{{ label.x }}" y="{{ label.y }}">{{ label.label }}</text>
+                        {% endfor %}
+                        <line class="timeline-axis" x1="72" y1="296" x2="940" y2="296" />
+                        <line class="timeline-axis" x1="72" y1="52" x2="72" y2="296" />
+                        {% for label in data.fleet_concurrency.timeline.x_axis_labels %}
+                        <text class="timeline-label" x="{{ label.x }}" y="{{ label.y }}">{{ label.label }}</text>
+                        {% endfor %}
+                        {% for harness in data.fleet_concurrency.timeline.harnesses %}
+                        <polygon class="timeline-area" points="{{ harness.area_points }}" style="fill: {{ harness.fill }}; stroke: {{ harness.color }};" />
+                        {% endfor %}
+                        <polyline class="timeline-line-total" points="{{ data.fleet_concurrency.timeline.total_points }}" />
+                    </svg>
+                </div>
+                <div class="timeline-note">{{ data.fleet_concurrency.timeline.note }}</div>
+            </div>
+        </section>
+
+        {% if data.fleet_concurrency.rate_limit_samples %}
+        <section>
+            <h3 class="subsection-title">Rate-Limit Samples</h3>
+            <table>
+                <thead>
+                <tr>
+                    <th class="num">Seq</th>
+                    <th>Time</th>
+                    <th>Play</th>
+                    <th>Harness</th>
+                    <th class="num">Busy</th>
+                    <th>By Harness</th>
+                    <th>By Tier</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for row in data.fleet_concurrency.rate_limit_samples %}
+                <tr>
+                    <td class="num">{{ row.seq if row.seq is not none else "" }}</td>
+                    <td>{{ row.ts | dt_short if row.ts else "" }}</td>
+                    <td>{{ row.play_type or "" }}</td>
+                    <td>{{ row.completed_agent_type or "" }}{% if row.completed_model_tier %}/{{ row.completed_model_tier }}{% endif %}</td>
+                    <td class="num">{{ row.busy_total }}</td>
+                    <td>
+                        {%- for key, count in row.busy_by_type | dictsort -%}
+                        {{ key }}: {{ count }}{% if not loop.last %}, {% endif %}
+                        {%- endfor -%}
+                    </td>
+                    <td>
+                        {%- for key, count in row.busy_by_type_tier | dictsort -%}
+                        {{ key }}: {{ count }}{% if not loop.last %}, {% endif %}
+                        {%- endfor -%}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endif %}
+    </section>
+    {% endif %}
+
     {% if data.control_rejections %}
     <section>
         <h2>Control Rejections</h2>
@@ -611,7 +852,7 @@
     {% endif %}
 
     <section>
-        <h2>Issues Closed During Session</h2>
+        <h2>Issues Closed During Session ({{ data.closed_issues | length }})</h2>
         {% if data.closed_issues %}
         <table>
             <thead>

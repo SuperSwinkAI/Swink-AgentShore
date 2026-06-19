@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_human_feedback
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _FeedbackMixin(_DataStoreBase):
     """Methods that operate on the ``human_feedback`` table."""
 
+    @_serialized
     async def record_human_feedback(self, record: HumanFeedbackRecord) -> int:
         """Insert a human-feedback checkpoint row and return its ``feedback_id``."""
         return await self._insert(
@@ -26,6 +27,7 @@ class _FeedbackMixin(_DataStoreBase):
             created_at=record.created_at,
         )
 
+    @_serialized
     async def list_human_feedback(self, session_id: str) -> list[HumanFeedbackRecord]:
         """Return all human-feedback rows for *session_id*."""
         cursor = await self._conn.execute(
@@ -41,6 +43,7 @@ class _FeedbackMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_human_feedback(row) for row in rows]
 
+    @_serialized
     async def count_human_feedback(self, session_id: str) -> int:
         """Return the total count of human-feedback rows for *session_id*."""
         async with self._conn.execute(

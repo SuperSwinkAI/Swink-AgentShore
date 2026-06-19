@@ -7,9 +7,38 @@ from pathlib import Path
 
 import pytest
 
-from agentshore.agents.handle import AgentHandle, AgentInvocationResult, TaskRecord
+from agentshore.agents.handle import (
+    AgentHandle,
+    AgentInvocationResult,
+    TaskRecord,
+    is_noop_invocation,
+)
 from agentshore.errors import AgentProcessCrashed, AgentProcessError, AgentTimeout, PlayTimeoutError
 from agentshore.state import AgentStatus, AgentType, PlayType
+
+
+def _noop_probe(raw_output: str, exit_code: int) -> AgentInvocationResult:
+    return AgentInvocationResult(
+        raw_output=raw_output,
+        tokens_in=0,
+        tokens_out=0,
+        dollar_cost=0.0,
+        duration_ms=10,
+        exit_code=exit_code,
+    )
+
+
+def test_is_noop_invocation_true_for_clean_exit_empty_output() -> None:
+    assert is_noop_invocation(_noop_probe("", 0)) is True
+    assert is_noop_invocation(_noop_probe("   \n\t ", 0)) is True
+
+
+def test_is_noop_invocation_false_when_output_present_or_nonzero_exit() -> None:
+    # Has output → not a no-op (even if it lacks a JSON block).
+    assert is_noop_invocation(_noop_probe("did work", 0)) is False
+    # Empty but non-zero exit → a crash/kill handled elsewhere, not a no-op.
+    assert is_noop_invocation(_noop_probe("", 1)) is False
+
 
 # ---------------------------------------------------------------------------
 # AgentInvocationResult

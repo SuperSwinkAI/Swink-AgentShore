@@ -12,9 +12,24 @@ from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from agentshore.agents.pricing import PriceBook
+
 
 def _tuple(value: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return tuple(value)
+
+
+def _default_pricebook() -> PriceBook:
+    """Deterministic price-book default for a bare ``RuntimeConfig()``.
+
+    Uses the bundled (no global override) table so test/programmatic config
+    construction never depends on a developer's global pricing file. The
+    on-disk load path (``_build_config``) passes the full ``load_pricebook()``
+    so the global override + SIGHUP reload work for real sessions.
+    """
+    from agentshore.agents.pricing import bundled_pricebook
+
+    return bundled_pricebook()
 
 
 def _string_tuple_mapping(
@@ -156,13 +171,14 @@ class AgentConfig:
     approved_models: tuple[str, ...] = ()
     model_tiers: Mapping[str, ModelTierConfig] = field(default_factory=dict)
     max_context: int = 200000
-    cost_per_1k_input: float = 0.003
-    cost_per_1k_cached_input: float | None = None
-    cost_per_1k_cache_write_input: float | None = None
-    cost_per_1k_output: float = 0.015
     timeout: int | None = None
     # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
+    # Per-agent override for the launch-to-first-byte watchdog (#177/#204). When
+    # set, it overrides both the per-agent-type built-in default and the global
+    # ``_FIRST_BYTE_DEADLINE_S`` floor (still clamped to ``timeout``). ``None``
+    # falls back to the per-type default, then the global default.
+    first_byte_timeout_seconds: int | None = None
     max_output_size: int = 10_000_000
     # Per-line buffer size for asyncio.create_subprocess_exec. CLI agents emit
     # stream-json where a single result line can exceed asyncio's 64KB default
@@ -205,6 +221,25 @@ class BootstrapConfig:
     """
 
     cleanup_threshold: int = 50
+
+
+@dataclass(frozen=True)
+class PreferencesConfig:
+    """Machine-global user preferences, folded in from ``preferences.yaml``.
+
+    Sourced from the user-level global file (not ``agentshore.yaml``) at load
+    time, so a config reload re-reads it mid-session. ``disabled_plays`` holds
+    ``PlayType.value`` strings the user has turned off; only plays in
+    :data:`agentshore.preferences.USER_DISABLEABLE_PLAYS` are honored (the mask
+    re-checks the allowlist, so a hand-edited file cannot disable a critical
+    play). Not to be confused with :class:`AgentPreferencesConfig`, which is the
+    per-project play→agent affinity/exclusion map.
+    """
+
+    disabled_plays: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "disabled_plays", _tuple(self.disabled_plays))
 
 
 @dataclass(frozen=True)
@@ -388,18 +423,21 @@ class FeedbackConfig:
     # has stopped iterating entirely (e.g. a deadlock in the play-mutation
     # promotion path). None disables the watchdog.
     loop_liveness_timeout_seconds: float | None = 600.0
-    # Bounded graceful-drain deadline (#180). A graceful drain only dispatches
-    # ``end_agent`` and waits for in-flight plays to finish; an agent stuck in a
-    # multi-hour play (or a never-finalizing broken-worktree play) made
-    # ``agentshore stop`` hang ~1h until SIGINT because that wait was unbounded.
-    # When the graceful drain has not completed within this many seconds, an
-    # independent watchdog task — NOT on the loop's critical path — escalates to
-    # the bounded hard stop (cancels in-flight plays under the shutdown grace
-    # period) instead of waiting forever. Distinct from the timeouts above: those
-    # cover a loop that is wedged on a human or hard-frozen; this covers a loop
-    # that is healthily ticking through a drain whose in-flight work never
-    # finishes. None disables the deadline (unbounded graceful drain).
-    graceful_drain_timeout_seconds: float | None = 300.0
+    # Optional graceful-drain deadline (#180), OPT-IN — defaults to None
+    # (unbounded). A graceful drain only dispatches ``end_agent`` and waits for
+    # in-flight plays to finish; the core design intent is that a drain is
+    # unbounded so agents always complete their work before the session stops.
+    # When set to a positive value, an independent watchdog task — NOT on the
+    # loop's critical path — escalates to the bounded hard stop (cancels
+    # in-flight plays under the shutdown grace period) once that many seconds
+    # elapse with plays still in flight. This was added to reap a drain wedged on
+    # a single stuck in-flight play (a multi-hour play, or a never-finalizing
+    # broken-worktree play) that previously hung ``agentshore stop`` ~1h until
+    # SIGINT. It must stay opt-in: a wall-clock cap cannot distinguish a wedged
+    # drain from a healthy-but-slow one (e.g. a large fleet draining serially via
+    # ``end_agent``), so a non-None default hard-kills in-flight agent work
+    # mid-task. Leave None unless a deployment specifically needs the backstop.
+    graceful_drain_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -555,10 +593,17 @@ class RuntimeConfig:
     trusted_ids: TrustedIdsConfig = field(default_factory=TrustedIdsConfig)
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)
+    # Per-model token pricing, loaded from data/pricing.yaml (+ global override).
+    # SIGHUP reload rebuilds this from disk so price edits apply mid-session.
+    pricebook: PriceBook = field(default_factory=_default_pricebook)
     play_pacing: PlayPacingConfig = field(default_factory=PlayPacingConfig)
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)
     agent_preferences: AgentPreferencesConfig = field(default_factory=AgentPreferencesConfig)
+    # Machine-global user preferences (disabled non-critical plays, …) folded in
+    # from the global ``preferences.yaml`` at load time. NOT sourced from
+    # ``agentshore.yaml``; see ``agentshore.preferences``.
+    preferences: PreferencesConfig = field(default_factory=PreferencesConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
     data_integrity: DataIntegrityConfig = field(default_factory=DataIntegrityConfig)
@@ -573,11 +618,17 @@ class RuntimeConfig:
     learnings: LearningsConfig = field(default_factory=LearningsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
-    # Global fallback timeout for any agent dispatch (in seconds). When
-    # ``play_timeouts`` does not contain a per-play override, this is the
-    # cap that ``AgentManager.dispatch`` enforces (modulo per-agent
-    # ``AgentConfig.timeout``, which still takes priority if set).
-    agent_timeout: int = 1800
+    # Maximum agent runtime — the absolute wall-clock backstop for any single
+    # dispatch (in seconds), default 3h. This is NOT the primary timeout: a
+    # genuinely working agent that keeps streaming output runs until this cap;
+    # the primary kill is ``AgentConfig.stream_idle_timeout`` (silence, 30 min
+    # default), which resets on every stdout byte. This wall-clock only fires
+    # when an agent runs the full duration without finishing — its job is to
+    # bound a runaway that streams forever (e.g. a noise/poll loop making zero
+    # model calls, which defeats the byte-based idle watchdog). User-configurable
+    # via ``agent_timeout`` in agentshore.yaml; ``play_timeouts`` overrides it
+    # per play type, and per-agent ``AgentConfig.timeout`` still wins if set.
+    agent_timeout: int = 10800
     # Per-play-type timeout overrides (seconds). Resolved at dispatch time
     # via ``effective_play_timeout(play_type)``. Keys are
     # ``PlayType.value`` strings (e.g. ``"issue_pickup"``, ``"unblock_pr"``).

@@ -24,7 +24,7 @@ run right now?", not "should it?".
 
 ## Observation
 
-`OBSERVATION_DIM = 246`, `OBSERVATION_VERSION = 13`. The exact slot layout lives
+`OBSERVATION_DIM = 250`, `OBSERVATION_VERSION = 14`. The exact slot layout lives
 in `src/agentshore/rl/observation.py` and is summarized in
 [V1_CONTRACT.md](../V1_CONTRACT.md). The per-config block and config policy head
 share the deterministic index built by `build_config_index()`.
@@ -55,7 +55,7 @@ bumping `ACTION_SPACE_VERSION`, preserving learned weights.
 
 ## Policy Network
 
-`POLICY_VERSION = 5`. A shared-trunk MLP (`246 → 128 → 128`, ReLU), under ~120K
+`POLICY_VERSION = 5`. A shared-trunk MLP (`250 → 128 → 128`, ReLU), under ~120K
 parameters, CPU-only, with three heads:
 
 - **actor** — 22 play logits.

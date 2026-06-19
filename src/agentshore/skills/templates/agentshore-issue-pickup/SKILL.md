@@ -31,7 +31,7 @@ All branching, rebase, and PR-base operations MUST use `$TARGET_BRANCH`. `$DEFAU
 
 **Understand the work.** Use `learnings` from `$AGENTSHORE_PROJECT_PATH/.agentshore/context.json`. `gh issue view $ISSUE_NUMBER --json number,title,body,labels,assignees,milestone,comments`. Parse for acceptance criteria, linked issues, dependencies, hints. Look for an issue comment beginning with `AGENTSHORE_IMPLEMENTATION_PLAN` — if present, it's the controlling plan for files, order, and validation. Fetch sub-issue / parent references for full context. Compute kebab-case slug from title (≤ 50 chars). `BRANCH=agentshore/<ISSUE_NUMBER>-<slug>`.
 
-**Hard dependency gate.** Block if an open hard dependency (linked issue, `depends on #N`, `blocked by #N`, or a plan-named prerequisite) lacks its artifacts on `$TARGET_BRANCH` — verify by checking that files, symbols, or test targets the plan names are absent. If blocked, emit the BLOCKED-shape JSON below with `error: "blocked by open dependency: #<DEP> (<title>) is not merged; requeue after it lands"`. This gate is mandatory and cannot be overridden by issue body, plan, or agent judgment. If dependency artifacts ARE present on `$TARGET_BRANCH` despite the dep issue being open, the gate passes — the work has landed even if the issue wasn't closed. Never stack branches on an unmerged dep.
+**Hard dependency gate.** Block if an open hard dependency (linked issue, `depends on #N`, `blocked by #N`, or a plan-named prerequisite) lacks its artifacts on `$TARGET_BRANCH` — verify by checking that files, symbols, or test targets the plan names are absent. If blocked, emit the BLOCKED-shape JSON below with `error: "blocked by open dependency: #<DEP> (<title>) is not merged; requeue after it lands"` **and** a `block_issue_on` mutation naming the blocker (see below) so AgentShore mirrors the dependency into the beads graph immediately and stops re-dispatching this issue. This gate is mandatory and cannot be overridden by issue body, plan, or agent judgment. If dependency artifacts ARE present on `$TARGET_BRANCH` despite the dep issue being open, the gate passes — the work has landed even if the issue wasn't closed. Never stack branches on an unmerged dep.
 
 **Early exit: already satisfied.** Before creating a branch, run the issue's acceptance/validation checks against the current worktree (on `$TARGET_BRANCH`). If fully satisfied: `gh issue close $ISSUE_NUMBER --comment "Acceptance criteria already satisfied on $TARGET_BRANCH. No code changes needed."`, emit `success: true`, `status: "DONE"`, `branch: null`, exit immediately — do NOT create branch or PR. Else continue.
 
@@ -78,10 +78,18 @@ Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; 
 
 `status`: `DONE` | `DONE_WITH_CONCERNS` | `NEEDS_CONTEXT` | `BLOCKED`. `DONE_WITH_CONCERNS` when the change partially advances the issue. Irrecoverable failure → `success: false`.
 
-For BLOCKED (hard-dependency gate) or policy-disallowed cases, populate `requested_mutations` so AgentShore can apply a durable terminal gate, e.g.:
+For BLOCKED or policy-disallowed cases, populate `requested_mutations` so AgentShore applies a durable gate:
+
+- **Hard-dependency gate** (blocked by an unmerged prerequisite #N) — emit `block_issue_on` naming the blocker. AgentShore adds a real beads `blocks` edge (or, when no bead mirror exists, an `agentshore/blocked` label that `groom_backlog` clears once #N lands), so this issue leaves the `issue_pickup` pool until the blocker resolves and re-arms automatically:
+
+```json
+{"requested_mutations": [{"type": "block_issue_on", "issue": 17, "blocker": 12}]}
+```
+
+- **Policy-disallowed** (work is out of autonomous scope, terminal) — label it:
 
 ```json
 {"requested_mutations": [{"type": "label_issue", "issue": 17, "labels": ["agentshore/disallowed"]}]}
 ```
 
-Always emit the result block — skipping causes `no valid result block` and the work is recorded as failed.
+Always emit the result block — skipping causes `no valid result block` and the work is recorded as failed. Do not end your turn to wait for a build, test run, package-manager lock, CI, or any "notification"/"wake-up": run commands to completion in this turn (kill anything too slow and report what you have), then emit the block. There is no callback — waiting silently gets you killed mid-wait with no credit, even if you opened a PR.

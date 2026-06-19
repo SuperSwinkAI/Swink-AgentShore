@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_trajectory
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class _TrajectoryMixin(_DataStoreBase):
     """Methods that operate on the ``trajectory_snapshots`` table."""
 
+    @_serialized
     async def record_trajectory_snapshot(self, record: TrajectorySnapshotRecord) -> None:
         """Insert a trajectory snapshot."""
         await self._insert(
@@ -26,6 +27,7 @@ class _TrajectoryMixin(_DataStoreBase):
             created_at=record.created_at,
         )
 
+    @_serialized
     async def get_latest_trajectory(self, session_id: str) -> TrajectorySnapshotRecord | None:
         """Return the most recent trajectory snapshot for *session_id*, or None."""
         async with self._conn.execute(
@@ -43,6 +45,7 @@ class _TrajectoryMixin(_DataStoreBase):
             row = await cursor.fetchone()
             return _row_to_trajectory(row) if row else None
 
+    @_serialized
     async def list_trajectory_snapshots(self, session_id: str) -> list[TrajectorySnapshotRecord]:
         """Return all trajectory snapshots for a session, ordered by ``play_id`` ascending."""
         cursor = await self._conn.execute(

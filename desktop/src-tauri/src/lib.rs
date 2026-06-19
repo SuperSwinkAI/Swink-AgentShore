@@ -256,14 +256,14 @@ async fn jsonrpc_call(
     result
 }
 
-// DESIGN §1.4 — Recovery Screen actions. These commands trust the caller-
-// supplied path (the recovery screen plumbs it from the SidecarCrashedPayload
-// the supervisor emitted, never from a user-typed input).
-#[cfg_attr(test, allow(dead_code))]
-#[tauri::command]
-fn open_path_in_default_app(path: String) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err("path must not be empty".to_string());
+/// Hand a path or URL to the OS default handler — the browser for an https
+/// URL, Finder/Explorer for a folder. Shared by the
+/// `open_path_in_default_app` / `open_log_folder` commands and the Help-menu
+/// URL items (Documentation / Release Notes / Report an Issue). Spawns the
+/// platform opener detached; rejects an empty target.
+fn spawn_open(target: &str) -> Result<(), String> {
+    if target.trim().is_empty() {
+        return Err("target must not be empty".to_string());
     }
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
@@ -275,8 +275,67 @@ fn open_path_in_default_app(path: String) -> Result<(), String> {
         c.args(["/C", "start", ""]);
         c
     };
-    cmd.arg(&path);
+    cmd.arg(target);
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+// DESIGN §1.4 — Recovery Screen actions. These commands trust the caller-
+// supplied path (the recovery screen plumbs it from the SidecarCrashedPayload
+// the supervisor emitted, never from a user-typed input).
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn open_path_in_default_app(path: String) -> Result<(), String> {
+    spawn_open(&path)
+}
+
+/// Resolve the folder the Help > Open Log Folder item reveals. With a project
+/// path, AgentShore writes per-session NDJSON to ``<project>/.agentshore/logs``
+/// (the ``log_dir`` config default); without one — no project selected yet —
+/// fall back to the global AgentShore home ``~/.config/swink/agentshore``.
+/// Pure so the path logic is unit-testable; the caller creates and opens it.
+fn resolve_log_folder(project_path: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(project) = project_path {
+        let trimmed = project.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join(".agentshore").join("logs"));
+        }
+    }
+    home.map(|h| h.join(".config").join("swink").join("agentshore"))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn open_log_folder(project_path: Option<String>) -> Result<(), String> {
+    // HOME is the norm on macOS/Linux; USERPROFILE is the Windows fallback.
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let folder = resolve_log_folder(project_path.as_deref(), home.as_deref())
+        .ok_or_else(|| "could not resolve a log folder".to_string())?;
+    // Create it so the opener doesn't fail on a project that hasn't logged yet.
+    let _ = std::fs::create_dir_all(&folder);
+    spawn_open(&folder.to_string_lossy())
+}
+
+/// Diagnostics payload for the Help > Copy Diagnostics item. Assembled in Rust
+/// (which owns the bundle version + build target) and emitted to the React
+/// shell, which renders it in a copyable dialog.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Diagnostics {
+    app: String,
+    version: String,
+    os: String,
+    arch: String,
+}
+
+fn collect_diagnostics(version: &str) -> Diagnostics {
+    Diagnostics {
+        app: "AgentShore".to_string(),
+        version: version.to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+    }
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -359,7 +418,7 @@ fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, o
 }
 
 /// Tear down agent subprocesses and the Python sidecar before the shell exits.
-/// Order matters: kill the AGENT subprocesses (Claude / Codex / Gemini CLIs and
+/// Order matters: kill the AGENT subprocesses (Claude / Codex / Antigravity CLIs and
 /// anything they spawned) FIRST. If we drop the supervisor before killing the
 /// agents, the sidecar's tracked-PID map disappears and the agent subprocesses
 /// are reparented to launchd, burning API tokens silently (desktop-ieql).
@@ -574,13 +633,29 @@ fn resolve_bundled_sidecar_path(command: &Path) -> std::io::Result<PathBuf> {
     Ok(command_path)
 }
 
+// External Help-menu destinations, opened in the default browser via the OS
+// opener (see [`spawn_open`]). The repo is the canonical source for docs,
+// release notes (the same tag the updater reads), and issue intake.
+#[cfg(not(test))]
+const HELP_DOCS_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore#readme";
+#[cfg(not(test))]
+const HELP_RELEASES_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore/releases";
+#[cfg(not(test))]
+const HELP_ISSUES_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore/issues/new";
+
 /// Build the app menu and wire menu events to React via Tauri events.
 ///
-/// File > Stop Session emits `menu:stop_session`; React's session-dashboard
-/// listener calls the `session.stop` JSON-RPC drain. The item is always
-/// enabled — React decides what to do if a session isn't running (no-op
-/// rather than show a dialog: cheaper to ignore than to gate from Rust,
-/// which would need IPC to keep enabled-state synced with session state).
+/// Custom items emit a `menu:<id>` Tauri event that a React listener picks up
+/// (e.g. File > Stop Session → `menu:stop_session` → `session.stop` drain).
+/// Items stay enabled — React decides what to do based on current state
+/// (no-op rather than show a dialog: cheaper than keeping Rust enabled-state
+/// synced over IPC).
+///
+/// Follows the macOS HIG application-menu convention: the leading "AgentShore"
+/// app menu holds About, Preferences (Cmd+,), Services, the Hide / Hide Others /
+/// Show All group, and Quit; Adjust Budget / Stop Session / Close Window live in
+/// File. Windows/Linux have no app menu, so Preferences lives in File. Check for
+/// Updates is hidden everywhere until the updater is provisioned.
 #[cfg(not(test))]
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let stop_session = MenuItemBuilder::with_id("stop_session", "Stop Session")
@@ -591,15 +666,14 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .accelerator("CmdOrCtrl+B")
         .build(app)?;
 
-    let file = SubmenuBuilder::new(app, "File")
-        .item(&adjust_budget)
-        .item(&stop_session)
-        .separator()
-        .item(&PredefinedMenuItem::close_window(
-            app,
-            Some("Close Window"),
-        )?)
-        .build()?;
+    // Preferences lives in the macOS App menu and the non-macOS File menu.
+    let preferences = MenuItemBuilder::with_id("preferences", "Preferences…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    // Check for Updates is hidden until the updater is provisioned (a real
+    // signing keypair + a published `latest.json` release manifest). The React
+    // update machinery and the `menu:check_updates` handler stay in place, so
+    // re-adding this item to the menu is all that's needed to re-enable it.
 
     let edit = SubmenuBuilder::new(app, "Edit")
         .item(&PredefinedMenuItem::undo(app, None)?)
@@ -611,20 +685,85 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .item(&PredefinedMenuItem::select_all(app, None)?)
         .build()?;
 
-    let view = SubmenuBuilder::new(app, "View")
-        .item(&PredefinedMenuItem::fullscreen(app, None)?)
-        .build()?;
-
     let window = SubmenuBuilder::new(app, "Window")
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::maximize(app, None)?)
         .build()?;
 
+    let documentation =
+        MenuItemBuilder::with_id("help_documentation", "Documentation").build(app)?;
+    let release_notes =
+        MenuItemBuilder::with_id("help_release_notes", "Release Notes").build(app)?;
+    let report_issue =
+        MenuItemBuilder::with_id("help_report_issue", "Report an Issue").build(app)?;
+    let keyboard_shortcuts =
+        MenuItemBuilder::with_id("help_keyboard_shortcuts", "Keyboard Shortcuts").build(app)?;
+    let open_logs = MenuItemBuilder::with_id("help_open_logs", "Open Log Folder").build(app)?;
+    let copy_diagnostics =
+        MenuItemBuilder::with_id("help_copy_diagnostics", "Copy Diagnostics").build(app)?;
+
     let mut menu = MenuBuilder::new(app);
-    // The leading App menu (About / Hide / Quit) is auto-supplied by
-    // macOS as long as we don't pre-populate it. Tauri 2 wires the
-    // standard items into the app submenu when set_menu is called.
-    menu = menu.item(&file).item(&edit).item(&view).item(&window);
+
+    // macOS: the leading application menu (HIG convention). Building it
+    // explicitly replaces the menu macOS would auto-supply, so we re-add the
+    // standard About / Services / Hide / Show All / Quit items in their
+    // conventional positions. Preferences (Cmd+,) belongs here too.
+    #[cfg(target_os = "macos")]
+    {
+        let app_menu = SubmenuBuilder::new(app, "AgentShore")
+            .item(&PredefinedMenuItem::about(app, None, None)?)
+            .separator()
+            .item(&preferences)
+            .separator()
+            .item(&PredefinedMenuItem::services(app, None)?)
+            .separator()
+            .item(&PredefinedMenuItem::hide(app, None)?)
+            .item(&PredefinedMenuItem::hide_others(app, None)?)
+            .item(&PredefinedMenuItem::show_all(app, None)?)
+            .separator()
+            .item(&PredefinedMenuItem::quit(app, None)?)
+            .build()?;
+        menu = menu.item(&app_menu);
+    }
+
+    // File holds the session/window commands. Preferences lives here only on
+    // Windows/Linux (no app menu there); on macOS it's in the app menu above.
+    #[allow(unused_mut)]
+    let mut file_builder = SubmenuBuilder::new(app, "File")
+        .item(&adjust_budget)
+        .item(&stop_session);
+    #[cfg(not(target_os = "macos"))]
+    {
+        file_builder = file_builder.separator().item(&preferences);
+    }
+    let file = file_builder
+        .separator()
+        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+        .build()?;
+
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&PredefinedMenuItem::fullscreen(app, None)?)
+        .build()?;
+
+    // Help: documentation / support links plus the diagnostics helpers. Check
+    // for Updates is intentionally omitted until the updater is provisioned.
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&documentation)
+        .item(&release_notes)
+        .item(&report_issue)
+        .separator()
+        .item(&keyboard_shortcuts)
+        .separator()
+        .item(&open_logs)
+        .item(&copy_diagnostics)
+        .build()?;
+
+    menu = menu
+        .item(&file)
+        .item(&edit)
+        .item(&view)
+        .item(&window)
+        .item(&help);
     menu.build()
 }
 
@@ -653,18 +792,49 @@ pub fn run() {
         .manage(activity::ActivityHolder::new())
         .manage(QuitConfirmed::default())
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "stop_session" {
-                // React's SessionDashboardScreen listens for this event
-                // and dispatches the session.stop drain. Emitting here
-                // unconditionally — React decides what to do based on
-                // current session state. No-op outside a session.
-                let _ = app.emit("menu:stop_session", ());
-            } else if event.id().as_ref() == "adjust_budget" {
-                // React's SessionDashboardScreen listens for this event
-                // and opens the live Adjust Budget dialog (session.get_budget
-                // / session.set_budget). Emitting unconditionally — React
-                // decides what to do based on current session state.
-                let _ = app.emit("menu:adjust_budget", ());
+            // Custom items fan out to React via `menu:<id>` events (the
+            // session-scoped ones are handled by SessionDashboardScreen, the
+            // app-global ones by the AppMenu controller). The three Help
+            // URL items and Copy Diagnostics are handled inline in Rust —
+            // no React round-trip needed.
+            match event.id().as_ref() {
+                // React's SessionDashboardScreen drives these against the
+                // running session; emitted unconditionally (no-op outside one).
+                "stop_session" => {
+                    let _ = app.emit("menu:stop_session", ());
+                }
+                "adjust_budget" => {
+                    let _ = app.emit("menu:adjust_budget", ());
+                }
+                "preferences" => {
+                    let _ = app.emit("menu:preferences", ());
+                }
+                "check_updates" => {
+                    let _ = app.emit("menu:check_updates", ());
+                }
+                "help_keyboard_shortcuts" => {
+                    let _ = app.emit("menu:keyboard_shortcuts", ());
+                }
+                // React resolves the active project path then invokes
+                // open_log_folder (it knows the selected project; Rust here
+                // does not).
+                "help_open_logs" => {
+                    let _ = app.emit("menu:open_logs", ());
+                }
+                "help_copy_diagnostics" => {
+                    let diag = collect_diagnostics(&app.package_info().version.to_string());
+                    let _ = app.emit("menu:copy_diagnostics", diag);
+                }
+                "help_documentation" => {
+                    let _ = spawn_open(HELP_DOCS_URL);
+                }
+                "help_release_notes" => {
+                    let _ = spawn_open(HELP_RELEASES_URL);
+                }
+                "help_report_issue" => {
+                    let _ = spawn_open(HELP_ISSUES_URL);
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -725,6 +895,7 @@ pub fn run() {
             read_text_file,
             jsonrpc_call,
             open_path_in_default_app,
+            open_log_folder,
             restart_sidecar,
             quit_app,
             tracked_agent_pids,
@@ -793,8 +964,12 @@ pub fn run() {}
 
 #[cfg(test)]
 mod tests {
-    use super::{default_window_rect, read_text_file_impl, resolve_bundled_sidecar_path, UiState};
+    use super::{
+        collect_diagnostics, default_window_rect, read_text_file_impl, resolve_bundled_sidecar_path,
+        resolve_log_folder, UiState,
+    };
     use std::io::Write;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn default_window_rect_is_90_percent_centered_on_origin_monitor() {
@@ -884,6 +1059,41 @@ mod tests {
         let _ = std::fs::remove_file(&missing);
         let result = read_text_file_impl(missing);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_log_folder_prefers_project_logs_dir() {
+        let folder = resolve_log_folder(Some("/tmp/proj"), Some(Path::new("/home/u")))
+            .expect("project path resolves a folder");
+        assert_eq!(folder, PathBuf::from("/tmp/proj/.agentshore/logs"));
+    }
+
+    #[test]
+    fn resolve_log_folder_falls_back_to_global_home_when_no_project() {
+        let folder = resolve_log_folder(None, Some(Path::new("/home/u")))
+            .expect("home resolves the global folder");
+        assert_eq!(folder, PathBuf::from("/home/u/.config/swink/agentshore"));
+    }
+
+    #[test]
+    fn resolve_log_folder_treats_blank_project_as_unset() {
+        let folder = resolve_log_folder(Some("   "), Some(Path::new("/home/u")))
+            .expect("blank project falls through to home");
+        assert_eq!(folder, PathBuf::from("/home/u/.config/swink/agentshore"));
+    }
+
+    #[test]
+    fn resolve_log_folder_returns_none_without_project_or_home() {
+        assert!(resolve_log_folder(None, None).is_none());
+    }
+
+    #[test]
+    fn collect_diagnostics_captures_version_and_build_target() {
+        let diag = collect_diagnostics("1.2.3");
+        assert_eq!(diag.app, "AgentShore");
+        assert_eq!(diag.version, "1.2.3");
+        assert_eq!(diag.os, std::env::consts::OS);
+        assert_eq!(diag.arch, std::env::consts::ARCH);
     }
 
     #[test]

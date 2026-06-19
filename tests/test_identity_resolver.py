@@ -313,7 +313,7 @@ def test_unknown_identity_at_dispatch_returns_empty_authorship() -> None:
 def test_isolated_gh_config_dir_when_unspecified(tmp_path, monkeypatch) -> None:
     """Identity without an explicit gh_config_dir gets an isolated empty one.
 
-    Regression for #316: a codex/claude/gemini subprocess that scrubs GH_TOKEN
+    Regression for #316: a codex/claude subprocess that scrubs GH_TOKEN
     from its env will fall back to gh's hosts.yml. If we leave the parent's
     GH_CONFIG_DIR in place that means falling back to the user's default
     account — silent identity impersonation. The fix forces gh to either use

@@ -32,6 +32,13 @@ PLANNED_LABELS: frozenset[str] = frozenset({"agentshore/planned", "agentshore/ha
 DISALLOWED_LABEL = "agentshore/disallowed"
 MANUAL_REQUIRED_LABEL = "agentshore/manual-required"
 
+# Transient dependency gate: an issue is blocked by an unresolved prerequisite.
+# Applied by issue_pickup (via a ``block_issue_on`` mutation) when no bead mirror
+# exists to carry a real ``blocks`` edge, and cleared by groom_backlog once every
+# referenced dependency closes. Sticky — it does NOT auto-clear, so groom owns
+# removal (see agentshore-groom-backlog/SKILL.md).
+BLOCKED_LABEL = "agentshore/blocked"
+
 # Applied to an issue the planner could not turn into an implementation plan
 # (too ambiguous / too large / needs a human to decompose). Stops
 # write_implementation_plan — and every other implementation-style play — from
@@ -49,7 +56,7 @@ AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
     (MANUAL_REQUIRED_LABEL, "fbca04"),
     (NEEDS_HUMAN_LABEL, "b60205"),
     ("agentshore/approved", "2ea44f"),
-    ("agentshore/blocked", "d73a4a"),
+    (BLOCKED_LABEL, "d73a4a"),
     ("agentshore/review", "0366d6"),
     ("agentshore/qa", "d876e3"),
     ("agentshore/slop", "c27ba0"),
@@ -72,7 +79,7 @@ AGENTSHORE_WORKFLOW_LABELS: tuple[tuple[str, str], ...] = (
 # plays. ``agentshore/blocked`` is a broad legacy/manual gate; ``agentshore/disallowed``
 # is the terminal policy-out-of-scope gate.
 ISSUE_PICKUP_SKIP_LABELS: frozenset[str] = frozenset(
-    {"agentshore/blocked", DISALLOWED_LABEL, "agentshore/needs-refinement", NEEDS_HUMAN_LABEL}
+    {BLOCKED_LABEL, DISALLOWED_LABEL, "agentshore/needs-refinement", NEEDS_HUMAN_LABEL}
 )
 
 # Priority labels map to numeric ranks where lower = more urgent. The store's

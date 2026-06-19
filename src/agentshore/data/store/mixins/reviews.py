@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.rows import _row_to_review_queue
 from agentshore.utils import now_iso
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class _ReviewsMixin(_DataStoreBase):
     """Methods that operate on the ``review_queue`` table."""
 
+    @_serialized
     async def enqueue_review(self, record: ReviewQueueRecord) -> int:
         """Insert a pending review into the queue (idempotent per PR+session).
 
@@ -41,6 +42,7 @@ class _ReviewsMixin(_DataStoreBase):
                 return 0
             return cursor.lastrowid or 0
 
+    @_serialized
     async def list_pending_reviews(self, session_id: str) -> list[ReviewQueueRecord]:
         """Return all pending reviews for a session, ordered by enqueue time."""
         cursor = await self._conn.execute(
@@ -56,6 +58,7 @@ class _ReviewsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_review_queue(row) for row in rows]
 
+    @_serialized
     async def claim_review(self, queue_id: int, agent_id: str) -> bool:
         """Atomically transition a pending review to 'claimed'.
 
@@ -72,6 +75,7 @@ class _ReviewsMixin(_DataStoreBase):
             await self._conn.commit()
             return cursor.rowcount == 1
 
+    @_serialized
     async def claim_pending_review_for_pr(
         self, session_id: str, pr_number: int, agent_id: str
     ) -> ReviewQueueRecord | None:
@@ -124,6 +128,7 @@ class _ReviewsMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def complete_review(self, queue_id: int) -> None:
         """Mark a claimed review as done."""
         await self._conn.execute(
@@ -136,6 +141,7 @@ class _ReviewsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def complete_reviews_for_pr(self, session_id: str, pr_number: int) -> None:
         """Mark all pending/claimed review rows for a PR done."""
         await self._conn.execute(

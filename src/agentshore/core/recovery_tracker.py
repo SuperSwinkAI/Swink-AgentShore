@@ -21,6 +21,7 @@ class RecoveryTracker:
         self._break_recovery_failures: dict[str, int] = {}
         self._rate_limit_recovery_enqueued: set[str] = set()
         self._unknown_error_recovery_enqueued: set[str] = set()
+        self._noop_recovery_enqueued: set[str] = set()
 
     # ------------------------------------------------------------------
     # Rate-limit-recovery latch
@@ -47,6 +48,19 @@ class RecoveryTracker:
 
     def clear_unknown_error_enqueued(self, agent_id: str) -> None:
         self._unknown_error_recovery_enqueued.discard(agent_id)
+
+    # ------------------------------------------------------------------
+    # No-op-recovery latch (clean-exit empty no-op → standard take_break)
+    # ------------------------------------------------------------------
+
+    def is_noop_enqueued(self, agent_id: str) -> bool:
+        return agent_id in self._noop_recovery_enqueued
+
+    def mark_noop_enqueued(self, agent_id: str) -> None:
+        self._noop_recovery_enqueued.add(agent_id)
+
+    def clear_noop_enqueued(self, agent_id: str) -> None:
+        self._noop_recovery_enqueued.discard(agent_id)
 
     # ------------------------------------------------------------------
     # take_break consecutive-failure counter

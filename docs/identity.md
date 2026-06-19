@@ -1,7 +1,7 @@
 # Per-Agent GitHub Identities
 
-AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Gemini, and
-future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
+AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Grok,
+Antigravity, and future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
 commits, and reviews to the agent that produced them, and — more importantly —
 lets GitHub enforce "review by someone other than the author" at the platform
 layer. AgentShore's Code Review play already refuses to let an agent review its
@@ -66,7 +66,7 @@ Basic-auth header derived from that agent's token (the same mechanism
 authenticates **as its own identity** — `claude_code` pushes as its login,
 `codex` as its login — with no shared-token bleed. Without this hardening an
 HTTPS credential prompt has no TTY to answer and the agent hangs to the
-wall-clock timeout instead of failing fast (the cause of the codex 3600s
+wall-clock timeout instead of failing fast (the cause of the codex wall-clock
 `issue_pickup` hang).
 
 The **shared worktree fetch** is the one git op with no owning agent — it runs
@@ -161,6 +161,22 @@ for the remainder of the session, since a new backend token would require a new
 session to pick up. This prevents a single expired token from burning every
 subsequent play to the timeout.
 
+Grok has one additional runtime backstop: if the CLI process starts but never
+emits a first stdout byte before the launch-wedge watchdog fires, AgentShore
+keeps the dispatch classified as `timeout_stream_idle` but suppresses the Grok
+agent type for the rest of the session through the same candidate-mask path.
+The first-byte deadline is **600s for all streaming agents** (#213): direct
+measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
+30–70s — far slower than the other CLIs, and dominated by model/relay latency
+rather than local startup — and on heavy `code_review` prompts Grok (at the
+old 240s grok cap) went silent past its window. Reasoning models legitimately think before the first token, so the
+deadline only catches a *broken* child that emits nothing; the 3h wall-clock
+backstops genuine hangs. To trim that latency Grok is still dispatched with
+`--no-memory --no-plan` (ephemeral single-turn dispatches gain nothing from
+cross-session memory or plan mode, and both add latency). Antigravity (`agy`) is
+the one exception at 1800s — it is structurally non-streaming and emits no stdout
+until its async task completes.
+
 ## Windows SSH agent setup
 
 AgentShore uses SSH-signed commits for merge-play provenance. On Windows,
@@ -186,6 +202,6 @@ authorship report the problem clearly; they do not fail silently.
 
 ## Constraint: one identity per agent type
 
-Each agent type (claude_code, codex, gemini) binds to exactly one GitHub
-identity. Multi-instance pools with a different identity per instance are a
+Each agent type (claude_code, codex, grok, antigravity) binds to exactly one
+GitHub identity. Multi-instance pools with a different identity per instance are a
 future enhancement.

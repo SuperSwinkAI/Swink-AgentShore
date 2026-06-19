@@ -309,6 +309,16 @@ select:focus-visible {
   padding: 5px 30px 5px 10px;
 }
 
+/* Read-only model cell (grok is hard-pinned to grok-build — no picker). Keeps
+   the field box so it lines up with the real selects, but reads as static. */
+.desktop-select--readonly {
+  display: inline-flex;
+  align-items: center;
+  background: var(--fm-hover);
+  color: var(--muted);
+  cursor: default;
+}
+
 .desktop-screen-header {
   margin-bottom: 24px;
 }
@@ -521,7 +531,6 @@ select:focus-visible {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  margin-right: 12px;
   cursor: pointer;
   user-select: none;
 }
@@ -561,15 +570,55 @@ select:focus-visible {
 
 .tier-plan-row {
   display: grid;
-  grid-template-columns: 120px minmax(220px, 1fr) minmax(220px, 1.2fr);
   gap: 12px;
-  align-items: center;
   border: 1px solid var(--fm-border-subtle);
   background: var(--fm-card);
-  padding: 12px;
+  padding: 14px 16px;
 }
 
-.tier-plan-row small {
+.tier-plan-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tier-plan-row__title {
+  color: var(--fm-text-label);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Model + reasoning effort sit side-by-side, with Max agents pinned to a
+   narrow trailing column. Effort is absent for runners without an effort
+   flag, so flex lets Model reclaim the freed width. */
+.tier-plan-row__fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.tier-plan-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.tier-plan-field--max {
+  flex: 0 0 96px;
+}
+
+.tier-plan-field .desktop-select,
+.tier-plan-field input {
+  width: 100%;
+}
+
+.tier-plan-row__hint {
   color: var(--muted);
 }
 
@@ -1005,9 +1054,13 @@ select:focus-visible {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 
-  .tier-plan-row,
   .id-row {
     grid-template-columns: 1fr;
+  }
+
+  /* Narrow viewport: stack the tier fields so Max agents isn't squeezed. */
+  .tier-plan-field--max {
+    flex-basis: 100%;
   }
 
   .fm-starting__header {

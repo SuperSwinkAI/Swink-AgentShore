@@ -97,7 +97,7 @@ def test_preconditions_block_duplicate_break_for_agent_already_cooling():
         agents=[
             AgentSnapshot(
                 agent_id="err1",
-                agent_type=AgentType.GEMINI,
+                agent_type=AgentType.GROK,
                 status=AgentStatus.ERROR,
                 context_size=0,
                 total_cost=0.0,

@@ -208,6 +208,54 @@ def collect_active_worktree_paths(
         return []
 
 
+def collect_recent_worktree_paths(
+    project_path: Path,
+    *,
+    db_path: Path | None = None,
+    session_id: str | None = None,
+    now: datetime | None = None,
+    min_age_hours: float = 3.0,
+) -> list[str]:
+    """Return live worktree paths created inside the minimum prune age.
+
+    Prune consumes this as a hard protection list. Malformed timestamps are
+    treated as protected because a worktree must be proven old enough before
+    the prune play is allowed to apply its other stale checks.
+    """
+    db_path = db_path or project_db_path(project_path)
+    if not db_path.exists():
+        return []
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    cutoff_epoch = now.timestamp() - (min_age_hours * 60 * 60)
+    sql = (
+        "SELECT worktree_path, created_at FROM worktrees "
+        "WHERE status IN ('active', 'reaping', 'stale')"
+    )
+    params: tuple[str, ...] = ()
+    if session_id:
+        sql += " AND session_id = ?"
+        params = (session_id,)
+    sql += " ORDER BY worktree_id ASC"
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.DatabaseError, OSError) as exc:
+        _logger.warning("recent_worktree_paths_query_failed", error=str(exc))
+        return []
+
+    protected: list[str] = []
+    for path, created_at in rows:
+        created_epoch = _iso_to_epoch(str(created_at) if created_at is not None else None)
+        if created_epoch is None or created_epoch >= cutoff_epoch:
+            protected.append(str(path))
+    return protected
+
+
 def collect_recent_failed_plays(
     project_path: Path,
     *,
@@ -310,7 +358,16 @@ def build_recent_wedge_signals(
     for entry in collect_dirty_trunk_paths(project_path):
         record = asdict(entry)
         owned = False
-        if entry.status == "??" and "/" not in entry.path and entry.mtime_utc:
+        # A dirty path whose mtime is at/after a live trunk-scoped play's start is
+        # in-flight work of that play, not a wedge — reconcile_state must leave it
+        # alone (#162/#224). Untracked (``??``) entries are restricted to depth-1
+        # root scratch files (the only untracked debris a trunk play leaves);
+        # tracked modifications (``M/A/D/R``…) may be nested anywhere, so they are
+        # not path-restricted. Without this, tracked in-flight edits always read as
+        # unowned and reconcile_state mis-classifies them as an ambiguous wedge.
+        is_root_untracked = entry.status == "??" and "/" not in entry.path
+        is_tracked = entry.status != "??"
+        if (is_tracked or is_root_untracked) and entry.mtime_utc:
             mtime = _iso_to_epoch(entry.mtime_utc)
             owned = mtime is not None and any(start <= mtime for start in active_trunk_starts)
         record["owned_by_active_play"] = owned

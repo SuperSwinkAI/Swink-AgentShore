@@ -154,8 +154,8 @@ async def test_on_play_started_appends_take_break_trigger() -> None:
     provider = IpcStateProvider(writer)
     params = PlayParams(
         extras={
-            "trigger_agent_id": "gemini-1",
-            "trigger_agent_type": "gemini",
+            "trigger_agent_id": "grok-1",
+            "trigger_agent_type": "grok",
             "trigger_error_class": "rate_limit",
         }
     )
@@ -167,8 +167,8 @@ async def test_on_play_started_appends_take_break_trigger() -> None:
     assert msg["payload"]["status"] == "started"
     assert msg["payload"]["play_type"] == "take_break"
     assert msg["payload"]["agent_id"] is None
-    assert msg["payload"]["trigger_agent_id"] == "gemini-1"
-    assert msg["payload"]["trigger_agent_type"] == "gemini"
+    assert msg["payload"]["trigger_agent_id"] == "grok-1"
+    assert msg["payload"]["trigger_agent_type"] == "grok"
     assert msg["payload"]["trigger_error_class"] == "rate_limit"
 
 

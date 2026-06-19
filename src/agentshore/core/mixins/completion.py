@@ -78,6 +78,10 @@ _RATE_LIMIT_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClas
 _UNKNOWN_ERROR_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
     {ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK}
 )
+# A clean-exit empty no-op rides its own recovery branch so the take_break it
+# triggers is distinctly labelled (agent_noop_break_enqueued) and never confused
+# with a real quota/rate-limit in telemetry (desktop no-op resilience).
+_NOOP_RECOVERY_ERROR_CLASSES: frozenset[ErrorClass] = frozenset({ErrorClass.NO_OP})
 
 # Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an
 # agent — it needs a human maintainer or CI/infra change. Matching any marks the
@@ -1100,6 +1104,7 @@ class CompletionProcessor:
         if final_status != AgentStatus.ERROR:
             self._recovery.clear_rate_limit_enqueued(agent_id)
             self._recovery.clear_unknown_error_enqueued(agent_id)
+            self._recovery.clear_noop_enqueued(agent_id)
             return
         handle = self._manager.handles.get(agent_id)
         if handle is None:
@@ -1116,6 +1121,11 @@ class CompletionProcessor:
             event = "unknown_error_recovery_enqueued"
             already = self._recovery.is_unknown_error_enqueued(agent_id)
             mark = self._recovery.mark_unknown_error_enqueued
+        elif error_class in _NOOP_RECOVERY_ERROR_CLASSES:
+            kind = OverrideKind.NOOP_RECOVERY
+            event = "agent_noop_break_enqueued"
+            already = self._recovery.is_noop_enqueued(agent_id)
+            mark = self._recovery.mark_noop_enqueued
         else:
             # Not a recovery-eligible class (auth, invalid_model, crash_*,
             # timeout*) — leave it for the END_AGENT path, no take_break.
@@ -1156,6 +1166,7 @@ class CompletionProcessor:
         # (the break could have been triggered by either path).
         self._recovery.clear_rate_limit_enqueued(agent_id)
         self._recovery.clear_unknown_error_enqueued(agent_id)
+        self._recovery.clear_noop_enqueued(agent_id)
         if outcome.success:
             self._recovery.clear_break_failures(agent_id)
             return
@@ -1545,6 +1556,8 @@ class CompletionProcessor:
         """
         if self._runtime.worktrees is None:
             return
+        from agentshore.agents.worktree.reaper import _canon_path
+
         protected = {
             wt_id
             for ctx in self._runtime.dispatch_ctx.values()
@@ -1557,10 +1570,27 @@ class CompletionProcessor:
                 int,
             )
         }
+        # Path-keyed protection for the #203 dup-path alias: a stale OLD-id row
+        # can share the ``pickup-<N>`` directory with the LIVE new-id row, and
+        # id-keyed protection alone would let the TTL reaper remove that live
+        # directory. ``path`` is canonicalised to match DB-stored paths.
+        protected_paths = {
+            _canon_path(path)
+            for ctx in self._runtime.dispatch_ctx.values()
+            if (
+                path := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "path",
+                    None,
+                )
+            )
+            is not None
+        }
         try:
             report = await self._runtime.worktrees.reap_closed_prs(
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
                 protected_ids=protected,
+                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
@@ -1586,6 +1616,8 @@ class CompletionProcessor:
         target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
         if target_mb <= 0:
             return
+        from agentshore.agents.worktree.reaper import _canon_path
+
         protected = {
             wt_id
             for ctx in self._runtime.dispatch_ctx.values()
@@ -1598,10 +1630,24 @@ class CompletionProcessor:
                 int,
             )
         }
+        # Mirror the closed-PR sweep's path-keyed protection (#203 dup-path alias).
+        protected_paths = {
+            _canon_path(path)
+            for ctx in self._runtime.dispatch_ctx.values()
+            if (
+                path := getattr(
+                    getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
+                    "path",
+                    None,
+                )
+            )
+            is not None
+        }
         try:
             report = await self._runtime.worktrees.reap_for_disk_pressure(
                 target_free_mb=target_mb,
                 protected_ids=protected,
+                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))

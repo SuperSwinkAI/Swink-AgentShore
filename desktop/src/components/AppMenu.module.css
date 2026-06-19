@@ -1,0 +1,297 @@
+/* Shared app-menu dialog chrome — mirrors AdjustBudgetDialog.module.css so the
+   Help / Preferences / Update surfaces match the existing modal look. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.dialog {
+  background: var(--fm-panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.25);
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 24px;
+}
+
+.header {
+  margin-bottom: 16px;
+}
+
+.header h2 {
+  margin: 0 0 4px 0;
+  font-size: 20px;
+}
+
+.header p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+  max-width: 60ch;
+}
+
+.body {
+  display: grid;
+  gap: 12px;
+}
+
+/* Keyboard-shortcut rows: label on the left, accelerator chip on the right. */
+.shortcutList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.shortcutRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.shortcutRow:last-child {
+  border-bottom: none;
+}
+
+.shortcutLabel {
+  font-size: 14px;
+}
+
+.shortcutKeys {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--muted, #374151);
+  background: var(--fm-bg, #f3f4f6);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.diagnostics {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: var(--fm-bg, #f3f4f6);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.notes {
+  font-size: 13px;
+  color: var(--muted, #374151);
+  background: var(--fm-bg, #f3f4f6);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.copied {
+  font-size: 13px;
+  color: var(--accent, #2563eb);
+  margin: 8px 0 0 0;
+}
+
+.placeholder {
+  font-size: 14px;
+  color: var(--muted, #6b7280);
+}
+
+/* Preferences: one checkbox row per disableable play. */
+.playList {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.playRow {
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.playRow:last-child {
+  border-bottom: none;
+}
+
+/* Toggle + name + state chip on the left, info button flush right. */
+.playRowMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.playToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* Sliding toggle: a visually-hidden checkbox drives a styled track + thumb so
+   the control stays a real, focusable, testable <input type="checkbox">. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 38px;
+  height: 22px;
+}
+
+.switch input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.switchTrack {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border, #cbd5e1);
+  transition: background 0.15s ease;
+  pointer-events: none;
+}
+
+.switchTrack::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.switch input[type="checkbox"]:checked + .switchTrack {
+  background: var(--accent, #2563eb);
+}
+
+.switch input[type="checkbox"]:checked + .switchTrack::before {
+  transform: translateX(16px);
+}
+
+.switch input[type="checkbox"]:focus-visible + .switchTrack {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+}
+
+/* Play name takes the remaining width so the state chip sits flush right. */
+.playName {
+  flex: 1;
+}
+
+/* Circular "i" disclosure button revealing the play's description inline. */
+.infoButton {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, #ffffff);
+  color: var(--muted, #6b7280);
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.infoButton:hover,
+.infoButton[aria-expanded="true"] {
+  color: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+}
+
+/* Description sits under the row, indented past the toggle. */
+.playDescription {
+  margin: 0 0 10px 48px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted, #6b7280);
+  max-width: 60ch;
+}
+
+.playStateOn,
+.playStateOff {
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.playStateOn {
+  color: var(--accent, #2563eb);
+  background: var(--fm-bg, #eff6ff);
+}
+
+.playStateOff {
+  color: var(--muted, #6b7280);
+  background: var(--fm-bg, #f3f4f6);
+}
+
+.error {
+  font-size: 13px;
+  color: var(--danger, #dc2626);
+  margin: 12px 0 0 0;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, #ffffff);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #ffffff;
+}

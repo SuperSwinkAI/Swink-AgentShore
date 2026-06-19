@@ -75,7 +75,7 @@ The policy consumes a fixed-size float32 vector built by `encode_observation` in
 `src/agentshore/rl/observation.py`. The layout is locked; changing any slot bumps
 `OBSERVATION_VERSION`.
 
-`{"observation_version": 13, "observation_dim": 246}`
+`{"observation_version": 14, "observation_dim": 250}`
 
 | Slots | Block | Contents |
 |---:|---|---|
@@ -94,13 +94,13 @@ The policy consumes a fixed-size float32 vector built by `encode_observation` in
 | 68-70 | learnings | count, avg-confidence, injection-rate |
 | 71 | churn | issue churn rate over last 10 plays |
 | 72-167 | per-config | 32 configs × (idle, busy, success-rate) zero-padded |
-| 168-171 | pr-author | open + awaiting-review per claude_code/codex authorship |
-| 172-173 | velocity / busy | rolling velocity + normalized busy-agent count |
-| 174-176 | pr-readiness | unreviewed-fraction, mergeable-fraction, in-flight-issues |
-| 177 | skip-rate | clean confirm/claim re-pick rate (diagnostic, no action) |
-| 178 | pr-pressure | open-prs / saturation, clamped [0, 1] |
-| 179-244 | specialization | 3 tiers × 22 plays success rates (0.5 default) |
-| 245 | version marker | stable per-version constant (1.0) |
+| 168-175 | pr-author | open + awaiting-review per CLI provider, curated order claude_code/codex/grok/antigravity |
+| 176-177 | velocity / busy | rolling velocity + normalized busy-agent count |
+| 178-180 | pr-readiness | unreviewed-fraction, mergeable-fraction, in-flight-issues |
+| 181 | skip-rate | clean confirm/claim re-pick rate (diagnostic, no action) |
+| 182 | pr-pressure | open-prs / saturation, clamped [0, 1] |
+| 183-248 | specialization | 3 tiers × 22 plays success rates (0.5 default) |
+| 249 | version marker | stable per-version constant (1.0) |
 
 Tier order is `(small, medium, large)` across the tier-fleet and specialization
 blocks. The specialization block auto-sizes with the action space (3 × 22 = 66

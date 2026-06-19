@@ -45,6 +45,12 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _skip_startup_tier_guard_for_mocked_config() -> None:
+    with patch("agentshore.session.bootstrap.require_startup_model_tier_coverage"):
+        yield
+
+
 def _make_git_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with agentshore.yaml."""
     (tmp_path / ".git").mkdir()
@@ -127,12 +133,14 @@ def test_agent_mode_auto_selects_socket(
         patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
+        patch("agentshore.skills.install_skills", return_value=[]) as install_skills,
         patch("agentshore.cli.commands.start.uuid.uuid4", return_value="session-visible"),
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
     ):
         result = runner.invoke(main, ["start", "--project", str(repo), "--mode", "agent"])
 
     assert result.exit_code == 0, result.output
+    install_skills.assert_called_once_with(repo, force=False)
     assert "Session ID     : session-visible" in result.output
     assert "Policy mode    : learning (PPO learning on)" in result.output
     assert "Deterministic" not in result.output
@@ -144,6 +152,30 @@ def test_agent_mode_auto_selects_socket(
         assert "IPC            : tcp://127.0.0.1:" in result.output
     else:
         assert f"Socket         : {sp.session_socket_path(repo)}" in result.output
+    assert not sp.session_pid_path(repo).exists()
+
+
+def test_start_fails_when_skill_install_fails(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_git_repo(tmp_path)
+    cfg = _mock_cfg()
+    monkeypatch.setattr(sp, "_SESSIONS_DIR", tmp_path / "sessions")
+
+    with (
+        patch("agentshore.cli_helpers._find_repo_root", return_value=repo),
+        patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
+        patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
+        patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
+        patch("agentshore.config.load_config", return_value=cfg),
+        patch("dataclasses.replace", return_value=cfg),
+        patch("agentshore.skills.install_skills", side_effect=OSError("permission denied")),
+        patch("asyncio.run", side_effect=AssertionError("orchestrator should not start")),
+    ):
+        result = runner.invoke(main, ["start", "--project", str(repo), "--mode", "agent"])
+
+    assert result.exit_code != 0
+    assert "failed to install skill templates: permission denied" in result.stderr
     assert not sp.session_pid_path(repo).exists()
 
 

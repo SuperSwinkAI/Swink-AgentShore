@@ -98,8 +98,6 @@ def test_apply_config_bias_prefers_by_tier_not_provider():
     config_index = (
         ("claude_code", "medium"),
         ("codex", "medium"),
-        ("gemini", "medium"),
-        ("gemini", "large"),
         ("codex", "small"),
     )
     p = ActorCritic(num_configs=len(config_index))
@@ -109,9 +107,7 @@ def test_apply_config_bias_prefers_by_tier_not_provider():
     with torch.no_grad():
         logits = p.forward_config(obs).squeeze(0)
     assert logits[0].item() == pytest.approx(logits[1].item())
-    assert logits[1].item() == pytest.approx(logits[2].item())
-    assert logits[2].item() > logits[3].item()
-    assert logits[3].item() > logits[4].item()
+    assert logits[1].item() > logits[2].item()
 
 
 def test_apply_config_bias_size_mismatch_raises():

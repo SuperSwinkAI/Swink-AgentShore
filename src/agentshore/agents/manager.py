@@ -7,12 +7,13 @@ import contextlib
 import os
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agentshore.agents.circuit_breaker import CircuitBreaker
 from agentshore.agents.cli_agent import dispatch_cli
-from agentshore.agents.handle import AgentHandle, AgentInvocationResult
+from agentshore.agents.handle import AgentHandle, AgentInvocationResult, is_noop_invocation
 from agentshore.agents.identity import (
     IdentityResolutionError,
     resolve_identity_env,
@@ -42,6 +43,46 @@ if TYPE_CHECKING:
     from agentshore.data.store import DataStore
 
 _logger = get_logger(__name__)
+
+# Cold-start placeholder cost for a no-usage agent (grok/antigravity) that
+# completes before any measured (usage-reporting) dispatch has, so there is no
+# running mean yet. Matches snapshots.COLD_START_COST_ESTIMATE / MIN_COST_PER_PLAY
+# (kept as a local literal to avoid an agents→core import edge).
+_PLACEHOLDER_COLD_START_COST: float = 0.05
+
+_GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
+    "never produced first byte",
+    "launch wedge",
+)
+
+# A Grok first-byte launch wedge burns the first-byte deadline (600s, see
+# cli_agent._FIRST_BYTE_DEADLINE_S) without producing output, but —
+# unlike a backend-auth failure — it is transient. Rather than permanently
+# disabling the agent type for the session (the old grow-only behavior, #196),
+# a wedge records a bounded cooldown so the type auto-recovers after this many
+# selector ticks (#202). No config field: this is a fixed backstop, not a
+# tunable, and keeping it module-local avoids a config-schema dependency.
+_GROK_WEDGE_COOLDOWN_TICKS = 20
+
+# Consecutive zero-stdout stream-idle timeouts for one agent TYPE before the type
+# is benched into the same decaying wedge cooldown (#233). In practice only
+# antigravity hits this: its async task system emits no stdout until the task
+# completes, so a hung dispatch is indistinguishable from a slow one mid-flight and
+# rides the full (load-bearing) 1800s first-byte deadline — codex/grok/claude stream
+# within seconds, so a single hang there is noise, not a cluster. A streak gate (not
+# a single hang) avoids benching a type for one unlucky timeout. Reuses the Grok
+# wedge cooldown horizon so the type auto-recovers rather than being disabled for the
+# session.
+_STREAM_HANG_CLUSTER_LIMIT = 3
+
+
+def _is_grok_launch_wedge_timeout(handle: AgentHandle, exc: BaseException) -> bool:
+    if handle.agent_type != AgentType.GROK:
+        return False
+    if handle.last_error_class != ErrorClass.TIMEOUT_STREAM_IDLE:
+        return False
+    message = str(exc).lower()
+    return all(marker in message for marker in _GROK_LAUNCH_WEDGE_MARKERS)
 
 
 class AgentManager:
@@ -90,20 +131,49 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
-        # Agent-type values (e.g. "codex") whose backend auth failed this
-        # session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
-        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error). The
-        # manager holds no reference to ``SessionRuntime``; the state-builder
-        # mixin drains this into ``_runtime.auth_suppressed_agent_types`` each
-        # snapshot so the candidate analyzer can mask the whole type. Grow-only
-        # for the session — one auth failure suppresses every dispatch of that
-        # type (a fresh token would require a new session). #zeke auth-hang.
+        # Agent-type values (e.g. "codex") whose backend should be suppressed for
+        # this session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
+        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error), plus
+        # Grok first-byte launch wedges where repeated dispatch burns the 600s
+        # first-byte deadline without making progress. The manager holds no
+        # reference to ``SessionRuntime``;
+        # the state-builder mixin drains this into
+        # ``_runtime.auth_suppressed_agent_types`` each snapshot so the candidate
+        # analyzer can mask the whole type. Grow-only for the session. #zeke
+        # auth-hang / #196.
         self.last_auth_failed_types: set[str] = set()
+        # Agent-type values whose backend hit a *transient* launch wedge (Grok
+        # first-byte timeout) this session. Distinct from the permanent
+        # ``last_auth_failed_types`` above: the state-builder mixin drains this
+        # into a DECAYING per-tick cooldown so the type auto-recovers rather than
+        # being disabled for the whole session (#202). Membership here only marks
+        # "a wedge was recorded since the last snapshot" — the actual expiry is
+        # tracked tick-relative in the runtime, not here.
+        self.wedge_cooldown_types: set[str] = set()
+        # Reason tag per type currently in ``wedge_cooldown_types`` ("launch_wedge"
+        # for a Grok first-byte wedge, "stream_hang_cluster" for an agy hang cluster,
+        # #233). Read by the state-builder drain only to label the cooldown event;
+        # has no effect on the decay itself.
+        self.wedge_cooldown_reasons: dict[str, str] = {}
+        # Consecutive zero-stdout stream-idle timeouts per agent TYPE (reset on any
+        # successful dispatch of that type). Trips ``wedge_cooldown_types`` at
+        # ``_STREAM_HANG_CLUSTER_LIMIT`` (#233). Distinct from per-agent
+        # ``AgentHandle.consecutive_timeouts``, which benches one instance.
+        self._type_stream_hang_streak: dict[str, int] = {}
         # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
         # read by _selection.py to bias away from branch-exposed agents.
         self.branch_exposure: dict[str, str] = {}  # branch → agent_id
         self._on_subprocess_spawned = on_subprocess_spawned
         self._on_subprocess_exited = on_subprocess_exited
+
+        # Placeholder-cost accounting for no-usage agents. Grok (live binary) and
+        # Antigravity emit no token-usage block, so their parsed dollar_cost is
+        # $0 — billing those plays at zero dragged the session total (budget +
+        # reward) far below reality. Instead we charge them the running mean
+        # measured cost-per-play of the agents that DO report usage. These two
+        # running totals accumulate only *measured* (non-zero-cost) dispatches.
+        self._measured_cost_total: float = 0.0
+        self._measured_play_count: int = 0
 
         # Safety net for desktop-ieql: if the sidecar process dies for any
         # reason (signal, crash, lost stdio pipe) without the Tauri
@@ -263,6 +333,7 @@ class AgentManager:
         play_type: str | None = None,
         cwd_override: Path | None = None,
         resume_session_id: str | None = None,
+        first_byte_timeout_override: float | None = None,
     ) -> AgentInvocationResult:
         """Route *prompt* to the agent's adapter and return the raw result.
 
@@ -343,6 +414,7 @@ class AgentManager:
                 handle,
                 prompt,
                 cfg=agent_cfg,
+                pricing=self._cfg.pricebook.quote(handle.agent_type.value, handle.model),
                 default_timeout=effective_timeout,
                 python_executable=self._python_executable,
                 identity_env=identity_env,
@@ -350,6 +422,7 @@ class AgentManager:
                 on_subprocess_exited=on_exited,
                 cwd_override=cwd_override,
                 resume_session_id=resume_session_id,
+                first_byte_timeout_override=first_byte_timeout_override,
             )
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()
@@ -369,9 +442,28 @@ class AgentManager:
                 # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
                 # lands here rather than in the generic-error branch below. Treat
                 # it as a session-wide agent-type auth failure so PPO can't keep
-                # re-selecting a dead backend.
+                # re-selecting a dead backend. A Grok launch wedge is transient,
+                # so it records a bounded COOLDOWN instead of the permanent auth
+                # suppression (#202).
                 if handle.last_error_class == ErrorClass.AUTH:
                     self.last_auth_failed_types.add(handle.agent_type.value)
+                elif _is_grok_launch_wedge_timeout(handle, exc):
+                    self.wedge_cooldown_types.add(handle.agent_type.value)
+                    self.wedge_cooldown_reasons[handle.agent_type.value] = "launch_wedge"
+                elif handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE:
+                    # #233: a zero-stdout stream-idle hang that isn't a Grok launch
+                    # wedge. Track a per-TYPE streak; a cluster (in practice agy,
+                    # which can't be probed for liveness mid-task) benches the whole
+                    # type into the same decaying cooldown so the fleet routes around
+                    # it and it auto-recovers. The load-bearing 1800s agy first-byte
+                    # deadline is deliberately NOT lowered (cli_agent #217 carve-out).
+                    atype = handle.agent_type.value
+                    streak = self._type_stream_hang_streak.get(atype, 0) + 1
+                    self._type_stream_hang_streak[atype] = streak
+                    if streak >= _STREAM_HANG_CLUSTER_LIMIT:
+                        self.wedge_cooldown_types.add(atype)
+                        self.wedge_cooldown_reasons[atype] = "stream_hang_cluster"
+                        self._type_stream_hang_streak[atype] = 0
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)
@@ -418,6 +510,16 @@ class AgentManager:
 
         cb.record_success()
         handle.consecutive_timeouts = 0
+        # #233: any productive dispatch of this type clears its stream-hang cluster
+        # signal so a recovered backend isn't benched on stale streak count.
+        self._type_stream_hang_streak[handle.agent_type.value] = 0
+        # A clean-exit empty no-op (agy empty task envelope) reaches this success
+        # path — the process didn't crash or time out, it just produced nothing.
+        # Count it for agent-health telemetry; the bounded no-op retry +
+        # take_break trigger live in skill_backed/base.py.
+        if is_noop_invocation(result):
+            handle.noop_count += 1
+        result = self._apply_placeholder_cost(result, agent_type=handle.agent_type)
         handle.accumulate(
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,
@@ -433,6 +535,37 @@ class AgentManager:
         await self._store.increment_agent_tasks(agent_id, completed=1)
 
         return result
+
+    def _apply_placeholder_cost(
+        self, result: AgentInvocationResult, *, agent_type: AgentType
+    ) -> AgentInvocationResult:
+        """Bill no-usage agents the running mean measured cost-per-play.
+
+        Grok and Antigravity emit no token-usage block, so the adapter returns a
+        parsed cost of $0; charging them nothing drags the session total far
+        below reality. A dispatch that reported real usage (``dollar_cost > 0``)
+        feeds the running mean and passes through unchanged. A dispatch that
+        reported nothing is re-billed at that mean (or a cold-start default until
+        the first measured play completes). Keyed on the *absence of measured
+        cost*, not the agent type, so a future Grok/agy build that starts
+        reporting usage bills its real cost automatically.
+        """
+        if result.dollar_cost > 0:
+            self._measured_cost_total += result.dollar_cost
+            self._measured_play_count += 1
+            return result
+        placeholder = (
+            self._measured_cost_total / self._measured_play_count
+            if self._measured_play_count > 0
+            else _PLACEHOLDER_COLD_START_COST
+        )
+        _logger.info(
+            "dispatch_cost_placeholder",
+            agent_type=agent_type.value,
+            placeholder_cost=placeholder,
+            measured_plays=self._measured_play_count,
+        )
+        return replace(result, dollar_cost=placeholder)
 
     def active_play_agent_ids(self) -> frozenset[str]:
         """Return the set of agent IDs that currently have an active in-flight play.

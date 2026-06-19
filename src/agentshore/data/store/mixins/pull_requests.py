@@ -7,7 +7,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from agentshore.data.store.base import _DataStoreBase
+from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.helpers import (
     _PR_SELECT,
     _PULL_REQUEST_UPSERT_SQL,
@@ -35,11 +35,13 @@ class _PullRequestsMixin(_DataStoreBase):
             commit: bool = True,
         ) -> None: ...
 
+    @_serialized
     async def record_pull_request(self, pr: PullRequestRecord) -> None:
         """Upsert a PR record, preserving existing authorship when metadata refreshes."""
         await self._conn.execute(_PULL_REQUEST_UPSERT_SQL, _pull_request_upsert_row(pr))
         await self._conn.commit()
 
+    @_serialized
     async def cache_pull_requests(
         self, session_id: str, pull_requests: list[PullRequestRecord]
     ) -> None:
@@ -62,6 +64,7 @@ class _PullRequestsMixin(_DataStoreBase):
         await self._conn.executemany(_PULL_REQUEST_UPSERT_SQL, rows)
         await self._conn.commit()
 
+    @_serialized
     async def update_pr_last_reviewed_sha(
         self,
         pr_number: int,
@@ -94,6 +97,7 @@ class _PullRequestsMixin(_DataStoreBase):
             )
         await self._conn.commit()
 
+    @_serialized
     async def add_pull_request_labels(
         self,
         session_id: str,
@@ -117,6 +121,7 @@ class _PullRequestsMixin(_DataStoreBase):
         )
         await self._conn.commit()
 
+    @_serialized
     async def mark_pr_merged(
         self,
         pr_number: int,
@@ -164,6 +169,7 @@ class _PullRequestsMixin(_DataStoreBase):
             await self._conn.rollback()
             raise
 
+    @_serialized
     async def get_pr_author(self, pr_number: int, session_id: str) -> str | None:
         """Return the agent_id that authored *pr_number*, or None if unknown."""
         async with self._conn.execute(
@@ -173,6 +179,7 @@ class _PullRequestsMixin(_DataStoreBase):
             row = await cursor.fetchone()
             return row["author_agent_id"] if row else None
 
+    @_serialized
     async def get_pr_author_type(self, pr_number: int, session_id: str) -> str | None:
         """Return the agent_type ("claude_code", "codex", ...) that authored *pr_number*.
 
@@ -188,6 +195,7 @@ class _PullRequestsMixin(_DataStoreBase):
             row = await cursor.fetchone()
             return row["author_agent_type"] if row else None
 
+    @_serialized
     async def get_pr_github_author(self, pr_number: int, session_id: str) -> str | None:
         """Return the GitHub login that authored *pr_number*, or None if unknown.
 
@@ -202,6 +210,7 @@ class _PullRequestsMixin(_DataStoreBase):
             row = await cursor.fetchone()
             return row["github_author"] if row else None
 
+    @_serialized
     async def get_pull_request(self, session_id: str, pr_number: int) -> PullRequestRecord | None:
         """Return one cached PR by number for this session."""
         async with self._conn.execute(
@@ -211,6 +220,7 @@ class _PullRequestsMixin(_DataStoreBase):
             row = await cursor.fetchone()
         return _row_to_pull_request(row) if row is not None else None
 
+    @_serialized
     async def list_open_pull_requests(self, session_id: str) -> list[PullRequestRecord]:
         """Return all open/review-blocked PRs for a session."""
         cursor = await self._conn.execute(
@@ -227,6 +237,7 @@ class _PullRequestsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_pull_request(row) for row in rows]
 
+    @_serialized
     async def list_active_pull_requests(self, session_id: str) -> list[PullRequestRecord]:
         """Return PRs still relevant to the active session environment."""
         cursor = await self._conn.execute(
@@ -244,6 +255,7 @@ class _PullRequestsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_pull_request(row) for row in rows]
 
+    @_serialized
     async def list_recently_merged_pull_requests(
         self, session_id: str, *, hours: int = 24
     ) -> list[PullRequestRecord]:
@@ -268,6 +280,7 @@ class _PullRequestsMixin(_DataStoreBase):
         rows = await cursor.fetchall()
         return [_row_to_pull_request(row) for row in rows]
 
+    @_serialized
     async def list_approved_pull_requests(self, session_id: str) -> list[PullRequestRecord]:
         """Return all approved (ready-to-merge) PRs for a session, oldest first.
 

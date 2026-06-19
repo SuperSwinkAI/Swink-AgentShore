@@ -2,14 +2,75 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+import functools
+from typing import TYPE_CHECKING, Any, cast
 
 from agentshore.errors import DatabaseError
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     import aiosqlite
+
+
+class _ReentrantConnectionLock:
+    """Task-reentrant async lock serializing access to the shared connection.
+
+    AgentShore runs one process-wide ``aiosqlite.Connection``. Under concurrent
+    asyncio tasks (the dispatched play plus the agent-manager monitor tasks) a
+    ``COMMIT`` issued by one task can land while another task still holds an open
+    cursor on the same connection, which SQLite rejects with ``cannot commit
+    transaction - SQL statements in progress`` (GH #219). Serializing every
+    connection-touching :class:`DataStore` method behind this lock closes that
+    race — only one logical DB operation touches the connection at a time, so a
+    commit can never coincide with a foreign open statement.
+
+    Re-entrant *per task* because DataStore methods compose (a pull-request
+    write calls ``supersede_work_claims(commit=False)`` before its own commit);
+    the owning task must re-acquire without deadlocking. A different task always
+    blocks until the owner fully releases.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task[object] | None = None
+        self._depth = 0
+
+    async def __aenter__(self) -> None:
+        task = asyncio.current_task()
+        if task is not None and self._owner is task:
+            self._depth += 1
+            return
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+
+def _serialized[F: Callable[..., Awaitable[Any]]](method: F) -> F:
+    """Hold the connection lock for the full duration of a DataStore coroutine.
+
+    Applied to every method that touches ``self._conn``/``self._db`` (or composes
+    other such methods) so concurrent tasks can't interleave a commit into
+    another task's open cursor. See :class:`_ReentrantConnectionLock` (GH #219).
+
+    The type parameter is bound to a coroutine method so the decorator preserves
+    each method's real parameters/return type for callers.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._db_lock:
+            return await method(self, *args, **kwargs)
+
+    return cast("F", wrapper)
 
 
 _ACTIVE_WORK_CLAIM_STATUSES = frozenset({"queued", "claimed", "running", "retrying"})
@@ -52,12 +113,29 @@ class _DataStoreBase:
         self._db = None
 
     @property
+    def _db_lock(self) -> _ReentrantConnectionLock:
+        """Per-instance lock serializing connection access (GH #219).
+
+        Lazily created on first use so instances built via ``DataStore.__new__``
+        (some tests bypass ``initialize()`` that way) still get a lock without an
+        ``__init__`` run. One lock per store instance — i.e. per shared
+        connection. Creation is await-free, so the single-threaded event loop
+        can't race two creations.
+        """
+        lock = self.__dict__.get("_db_lock_obj")
+        if lock is None:
+            lock = _ReentrantConnectionLock()
+            self.__dict__["_db_lock_obj"] = lock
+        return lock
+
+    @property
     def _conn(self) -> aiosqlite.Connection:
         if self._db is None:
             msg = "DataStore is not initialized — call initialize() first"
             raise RuntimeError(msg)
         return self._db
 
+    @_serialized
     async def _insert(self, table: str, **cols: object) -> int:
         """Insert one row from keyword columns and return its ``lastrowid``.
 

@@ -15,6 +15,7 @@ from agentshore.github.trust import trusted_issue_author_logins
 from agentshore.rl.action_space import ACTION_SPACE_VERSION
 from agentshore.state import (
     INTERNAL_PLAY_TYPES,
+    BudgetSnapshot,
     OrchestratorState,
     PendingReviewSnapshot,
     PlayType,
@@ -174,6 +175,12 @@ class StateBuilder:
         # Per-agent consecutive-idle-tick counter for stale claim release. Owned
         # here (only read inside release_claims_for_prolonged_idle_agents).
         self._idle_agent_claim_ticks: dict[str, int] = {}
+        # Last (total_plays, total_cost) seen by assemble_state, cached so the
+        # budget-countdown heartbeat (current_budget_snapshot) can recompute the
+        # remaining-time figure from a fresh monotonic clock without a DB read.
+        # None until the first full state assembly. GH: dashboard time-budget
+        # heartbeat.
+        self._last_budget_inputs: tuple[int, float] | None = None
 
     # ------------------------------------------------------------------
 
@@ -325,6 +332,17 @@ class StateBuilder:
                 play_count=play_count,
             )
 
+    def _in_flight_claim_group_ids(self) -> set[str]:
+        """Claim groups backing currently-dispatched plays — never release these."""
+        ids: set[str] = set()
+        for ctx in self._runtime.dispatch_ctx.values():
+            claim_group_id = getattr(getattr(ctx, "params", None), "extras", {}).get(
+                "claim_group_id"
+            )
+            if isinstance(claim_group_id, str) and claim_group_id:
+                ids.add(claim_group_id)
+        return ids
+
     async def release_claims_for_prolonged_idle_agents(self, state: OrchestratorState) -> None:
         """Release active claims owned by agents that have stayed idle for several ticks."""
         from agentshore.state import AgentStatus
@@ -345,8 +363,26 @@ class StateBuilder:
             return
 
         claims = await find_method(self._session_id, idle_ids)
+        protected_claim_group_ids = self._in_flight_claim_group_ids()
+        # #205: a claim group parked in ``retrying`` has no live dispatch (the
+        # retry is queued in the override channel and re-runs start_work_claim_group
+        # on its next dispatch), so without this it would look idle-owned and get
+        # released out from under the pending retry — surfacing as "work claim
+        # inactive". Protect those groups too.
+        list_retrying = getattr(self._store, "list_retrying_claim_group_ids", None)
+        if callable(list_retrying):
+            retrying_group_ids = await list_retrying(self._session_id)
+            if retrying_group_ids:
+                protected_claim_group_ids = protected_claim_group_ids | retrying_group_ids
+        releasable_claims = [
+            claim
+            for claim in claims
+            if getattr(claim, "claim_group_id", None) not in protected_claim_group_ids
+        ]
         claim_agent_ids = {
-            claim.agent_id for claim in claims if getattr(claim, "agent_id", None) in idle_ids
+            claim.agent_id
+            for claim in releasable_claims
+            if getattr(claim, "agent_id", None) in idle_ids
         }
         for agent_id in list(self._idle_agent_claim_ticks):
             if agent_id not in claim_agent_ids:
@@ -362,7 +398,14 @@ class StateBuilder:
         if not release_agent_ids:
             return
 
-        released_count = await release_method(self._session_id, release_agent_ids)
+        if protected_claim_group_ids:
+            released_count = await release_method(
+                self._session_id,
+                release_agent_ids,
+                exclude_claim_group_ids=protected_claim_group_ids,
+            )
+        else:
+            released_count = await release_method(self._session_id, release_agent_ids)
         for agent_id in release_agent_ids:
             self._idle_agent_claim_ticks.pop(agent_id, None)
         if released_count:
@@ -442,6 +485,88 @@ class StateBuilder:
                 kept.append(pr)
         return kept, hidden
 
+    def _drain_wedge_cooldowns(self) -> frozenset[str]:
+        """Seed/decay transient launch-wedge cooldowns; return the active set.
+
+        Mirror of the permanent auth-suppression drain, but DECAYING: a wedge the
+        manager recorded since the last snapshot seeds an expiry tick
+        (``current_tick + _GROK_WEDGE_COOLDOWN_TICKS``), and any entry whose
+        expiry has passed is dropped so the type auto-recovers (#202). Pure
+        dict/set ops, no I/O. ``last_play_id`` is the monotonic per-play tick
+        counter (0 before the first play). ``getattr`` tolerates a stub manager
+        without the attribute.
+        """
+        from agentshore.agents.manager import _GROK_WEDGE_COOLDOWN_TICKS
+
+        current_tick = self._runtime.last_play_id or 0
+        cooldown_until = self._runtime.wedge_cooldown_until
+
+        manager_wedged: set[str] = getattr(self._manager, "wedge_cooldown_types", set())
+        newly_wedged = sorted(set(manager_wedged) - set(cooldown_until))
+        for agent_type in newly_wedged:
+            cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
+        if newly_wedged:
+            # Reason tag per type (#233): "launch_wedge" (Grok first-byte) vs
+            # "stream_hang_cluster" (agy zero-stdout cluster). Collapse to a single
+            # label when uniform, else "mixed". ``getattr`` tolerates a stub manager.
+            reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
+            reasons = {reasons_map.get(t, "launch_wedge") for t in newly_wedged}
+            reason = reasons.pop() if len(reasons) == 1 else "mixed"
+            _logger.warning(
+                "agent_type_wedge_cooldown",
+                session_id=self._session_id,
+                agent_types=newly_wedged,
+                reason=reason,
+                cooldown_ticks=_GROK_WEDGE_COOLDOWN_TICKS,
+                expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
+            )
+
+        # Drop expired entries so the type becomes eligible again. An entry is
+        # active while the current tick has not yet reached its expiry tick.
+        expired = [
+            agent_type for agent_type, expiry in cooldown_until.items() if current_tick >= expiry
+        ]
+        for agent_type in expired:
+            del cooldown_until[agent_type]
+        if expired:
+            _logger.info(
+                "agent_type_wedge_cooldown_expired",
+                session_id=self._session_id,
+                agent_types=sorted(expired),
+                current_tick=current_tick,
+            )
+
+        return frozenset(cooldown_until)
+
+    def current_budget_snapshot(self) -> BudgetSnapshot | None:
+        """Re-derive the budget snapshot from cached inputs + a fresh clock.
+
+        Used by the loop's budget-countdown heartbeat so the dashboard's
+        remaining-time figure keeps ticking during quiet stretches without a DB
+        read. Returns ``None`` until the first full state assembly has cached the
+        dollar inputs, or when no time cap is configured (nothing to count down).
+        Only the time fields move between calls — the dollar figures are the
+        last-assembled values, which is correct because spend only changes on a
+        dispatch/completion, both of which already push a full state update.
+        """
+        inputs = self._last_budget_inputs
+        if inputs is None:
+            return None
+        budget_cfg = self._host.effective_budget_caps()
+        if not budget_cfg.time_enabled:
+            return None
+        total_plays, total_cost = inputs
+        loop_started_at = self._runtime.loop_started_at
+        elapsed_minutes = (
+            (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
+        )
+        return self._snapshots.build_budget_snapshot(
+            total_plays,
+            total_cost,
+            budget_cfg=budget_cfg,
+            elapsed_minutes=elapsed_minutes,
+        )
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 
@@ -465,6 +590,7 @@ class StateBuilder:
                 agent_types=sorted(newly_auth_suppressed),
                 reason="backend_auth_failed",
             )
+        wedge_cooldown_types = self._drain_wedge_cooldowns()
         cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
@@ -520,6 +646,9 @@ class StateBuilder:
             budget_cfg=self._host.effective_budget_caps(),
             elapsed_minutes=elapsed_minutes,
         )
+        # Cache the dollar inputs so the budget heartbeat can re-derive the
+        # remaining-time countdown from a fresh clock without re-reading the DB.
+        self._last_budget_inputs = (total_plays, total_cost)
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)
 
@@ -577,6 +706,7 @@ class StateBuilder:
             ),
             parked_resource_keys=frozenset(self._runtime.parked_resource_keys),
             auth_suppressed_agent_types=frozenset(self._runtime.auth_suppressed_agent_types),
+            wedge_cooldown_agent_types=wedge_cooldown_types,
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,
             last_play_success_by_type=last_play_success_by_type,

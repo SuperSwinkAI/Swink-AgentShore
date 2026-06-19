@@ -22,6 +22,7 @@ class OverrideKind(StrEnum):
     MASK_REQUEUE = "mask_requeue"
     RATE_LIMIT_RECOVERY = "rate_limit_recovery"
     UNKNOWN_ERROR_RECOVERY = "unknown_error_recovery"
+    NOOP_RECOVERY = "noop_recovery"
 
 
 @dataclass(frozen=True, slots=True)

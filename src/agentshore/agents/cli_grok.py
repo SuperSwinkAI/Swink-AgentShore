@@ -22,11 +22,18 @@ Usage keys emitted by the Grok CLI use both the standard Anthropic aliases
 (``prompt_tokens``/``completion_tokens``).  Both are handled here so that
 usage accounting is correct without widening the shared ``_usage_totals_from_dict``
 helper used by Claude/Codex.
+
+Model selection is hard-pinned: the only accepted model is ``grok-build``.
+Any configured model that is not already ``grok-build`` is collapsed to it with
+a warning so the override is visible in logs (issue #204, task 4).
+The effort flag for the Grok CLI is ``--effort`` (NOT ``--reasoning-effort``).
 """
 
 from __future__ import annotations
 
 import shutil
+
+import structlog
 
 from agentshore.agents._jsonl import (
     _first_int,
@@ -36,12 +43,7 @@ from agentshore.agents._jsonl import (
     _UsageTotals,
 )
 
-_GROK_CLI_MODEL_ALIASES: dict[str, str] = {
-    "grok-build-0.1": "grok-build",
-    "grok-code-fast-1": "grok-build",
-    "grok-code-fast": "grok-build",
-    "grok-code-fast-1-0825": "grok-build",
-}
+_logger = structlog.get_logger(__name__)
 
 
 def default_binary() -> str:
@@ -54,8 +56,20 @@ def default_binary() -> str:
 
 
 def cli_model(model: str) -> str:
-    """Return the model id accepted by the installed Grok CLI."""
-    return _GROK_CLI_MODEL_ALIASES.get(model, model)
+    """Return the model id accepted by the installed Grok CLI.
+
+    The Grok CLI is hard-pinned to ``grok-build``. Any input that is not
+    already ``grok-build`` is collapsed to it with a warning so the override
+    is visible in logs (issue #204, task 4).
+    """
+    if model != "grok-build":
+        _logger.warning(
+            "grok_model_alias_override",
+            configured_model=model,
+            resolved_model="grok-build",
+            reason="configured model is not accepted by the installed Grok CLI",
+        )
+    return "grok-build"
 
 
 def build_argv(
@@ -71,7 +85,7 @@ def build_argv(
 ) -> list[str]:
     """Return argv for one non-interactive Grok CLI invocation.
 
-    Unlike claude/codex/gemini, the Grok CLI has **no stdin prompt mode**: its
+    Unlike claude/codex, the Grok CLI has **no stdin prompt mode**: its
     ``-p/--single`` flag validates that the prompt value is non-empty before
     reading anything, so the empty ``-p ""`` headless shape the other CLIs use
     on Windows fails immediately with ``Error: --single: prompt is empty``
@@ -81,20 +95,31 @@ def build_argv(
     the prompt is passed directly via ``-p`` — never as an empty string.
     """
     resolved_binary = binary or default_binary()
-    resolved_model = cli_model(model) if model else None
+    # Model is always hard-pinned to grok-build; warn if the caller passed
+    # something else (cli_model handles the warning and collapse).
+    resolved_model = cli_model(model) if model else "grok-build"
     args = [
         resolved_binary,
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
+        # AgentShore dispatches are ephemeral and single-turn (a fresh worktree
+        # per task), so the Grok CLI's cross-session memory is meaningless and
+        # risks state bleed between unrelated dispatches; it also measurably
+        # raised time-to-first-byte (~50s with memory vs ~35s without). Plan
+        # mode likewise adds a planning round the orchestrator does not want —
+        # plays expect direct execution. Both are dropped to keep Grok's
+        # time-to-first-byte well inside the 600s first-byte budget (#213). Web
+        # search is left enabled.
+        "--no-memory",
+        "--no-plan",
     ]
     if project_dir:
         args += ["--cwd", project_dir]
     args += ["--output-format", "streaming-json"]
-    if resolved_model:
-        args += ["-m", resolved_model]
+    args += ["-m", resolved_model]
     if reasoning_effort:
-        args += ["--reasoning-effort", reasoning_effort]
+        args += ["--effort", reasoning_effort]
     args.extend(extra_flags)
     if prompt_file is not None:
         args += ["--prompt-file", prompt_file]
@@ -103,19 +128,63 @@ def build_argv(
     return args
 
 
+def build_resume_argv(
+    *,
+    resume_session_id: str,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None = None,
+) -> list[str]:
+    """Return argv for a Grok JSON-retry RESUME dispatch (``-r <id>``).
+
+    Mirrors :func:`build_argv` but injects ``-r <session_id>`` so Grok re-enters
+    the prior session and emits the result block it omitted. ``--no-memory`` is
+    retained from :func:`build_argv`: session resume re-enters a persisted
+    transcript and is independent of Grok's cross-session *memory* feature.
+    Narrow single-shot use only (desktop-dy2j).
+    """
+    argv = build_argv(
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+    )
+    # argv[0] is the binary; inject -r <id> directly after it.
+    return [argv[0], "-r", resume_session_id, *argv[1:]]
+
+
 def _grok_usage_from_dict(usage: dict[str, object]) -> _UsageTotals:
     """Extract usage totals from a Grok CLI usage dict.
 
-    Handles standard Anthropic keys (``input_tokens``, ``output_tokens``,
-    ``cached_input_tokens``) as well as Grok-native aliases
-    (``prompt_tokens``, ``completion_tokens``).
+    Tolerant of every shape observed or plausibly emitted across Grok CLI
+    versions, because the live binary (0.2.32) emits **no** usage block at all
+    in either ``streaming-json`` or ``json`` output (verified directly — the
+    terminal ``end``/``json`` event carries only ``stopReason``/``sessionId``/
+    ``requestId``), so this parser is written to capture usage *if* a future
+    version (or a different model/relay path) supplies it. Recognised shapes:
+
+    - standard Anthropic keys: ``input_tokens``/``output_tokens``,
+      ``cached_input_tokens``/``cache_read_input_tokens``,
+      ``cache_creation_input_tokens``, ``reasoning_output_tokens``;
+    - Grok/OpenAI-native aliases: ``prompt_tokens``/``completion_tokens``;
+    - flat top-level aliases: ``tokens_in``/``tokens_out`` (and
+      ``input``/``output``).
     """
-    input_tokens = _first_int(usage, "input_tokens", "prompt_tokens")
+    input_tokens = _first_int(usage, "input_tokens", "prompt_tokens", "tokens_in", "input")
     cache_read_tokens = _safe_int(usage.get("cached_input_tokens")) + _safe_int(
         usage.get("cache_read_input_tokens")
     )
     cache_write_tokens = _first_int(usage, "cache_creation_input_tokens")
-    output_tokens = _first_int(usage, "output_tokens", "completion_tokens")
+    output_tokens = _first_int(usage, "output_tokens", "completion_tokens", "tokens_out", "output")
     reasoning_tokens = _first_int(usage, "reasoning_output_tokens")
 
     tokens_out = output_tokens if output_tokens > 0 else reasoning_tokens
@@ -126,6 +195,29 @@ def _grok_usage_from_dict(usage: dict[str, object]) -> _UsageTotals:
         cache_write_tokens_in=cache_write_tokens,
         max_turn_input_tokens=input_tokens,
     )
+
+
+def _grok_usage_block(event: dict[str, object]) -> dict[str, object] | None:
+    """Find a usage dict on a Grok terminal event, tolerant of nesting.
+
+    Grok may carry usage at the top level (``usage``) or — across relay/version
+    shapes — nested one level under ``result``/``message``/``response``/``turn``.
+    Also accepts a flat ``tokens_in``/``tokens_out`` pair promoted onto the event
+    itself. Returns ``None`` when no usage-bearing keys are present (the live
+    0.2.32 case).
+    """
+    direct = event.get("usage")
+    if isinstance(direct, dict):
+        return direct
+    for parent_key in ("result", "message", "response", "turn"):
+        parent = event.get(parent_key)
+        if isinstance(parent, dict):
+            nested = parent.get("usage")
+            if isinstance(nested, dict):
+                return nested
+    if "tokens_in" in event or "tokens_out" in event:
+        return event
+    return None
 
 
 def _grok_session_id(event: dict[str, object]) -> str | None:
@@ -182,8 +274,10 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
         if event_type == "end":
             # Terminal event - extract usage and session ID (may be here).
-            usage_raw = event.get("usage")
-            if isinstance(usage_raw, dict):
+            # NOTE: grok 0.2.32 emits NO usage on ``end`` (verified); this stays
+            # for forward-compat / relay shapes that do.
+            usage_raw = _grok_usage_block(event)
+            if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             # session_id was already updated above via _grok_session_id(event).
             continue
@@ -203,8 +297,8 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
                 content = message_field.get("content")
                 if isinstance(content, str):
                     terminal_text = content
-            usage_raw = event.get("usage")
-            if isinstance(usage_raw, dict):
+            usage_raw = _grok_usage_block(event)
+            if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             continue
 
