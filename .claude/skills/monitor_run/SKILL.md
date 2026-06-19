@@ -2,7 +2,7 @@
 name: monitor_run
 description: >-
   Monitor an already-running AgentShore session in a given project directory.
-  Check in every 20 minutes, surface errors and inefficiencies, file new bugs
+  Check in every 30 minutes, surface errors and inefficiencies, file new bugs
   to GitHub as you go, auto-stop the session if it goes idle for two
   consecutive check-ins, and summarize the run when it ends. Does NOT start a
   session — it attaches to one the user already started.
@@ -31,11 +31,15 @@ stop`. Argument: the project directory, e.g. `/monitor_run
 ```
 DIR             = <the directory argument>            # project being monitored
 LOG_DIR         = $DIR/.agentshore/logs               # NDJSON logs live here
-CHECKIN_SECONDS = 1200    # 20 minutes between check-ins
+CHECKIN_SECONDS = 1800    # 30 minutes between check-ins
 STALE_AGE_S     = 300     # newest log line older than this + no process => exited
 SNAPSHOT        = <this skill dir>/snapshot.py         # human-readable readout
 PROGRESS        = <this skill dir>/progress.py         # machine-readable counters
 STATE_FILE      = <os-temp-dir>/agentshore-monitor-<sanitized-DIR>.json
+AGENTSHORE_REPO = <the AgentShore source repository — NOT $DIR>
+                  # Found via: python3 -c "import agentshore, pathlib; print(pathlib.Path(agentshore.__file__).parents[2])"
+                  # This is the orchestrator codebase whose recent commits you analyze for
+                  # regressions. It is entirely separate from the project being monitored.
 ```
 
 Resolve `<this skill dir>` to the directory holding this `SKILL.md`.
@@ -48,7 +52,7 @@ the project tree so the monitored project is never touched).
 
 Each invocation runs **one check-in cycle** and then schedules the next with
 `ScheduleWakeup(delaySeconds=CHECKIN_SECONDS)`, passing the same `/monitor_run
-<DIR>` prompt back so the loop re-enters in 20 minutes. All cross-check-in
+<DIR>` prompt back so the loop re-enters in 30 minutes. All cross-check-in
 state (previous counters, idle streak, issues already filed) lives in
 `STATE_FILE`, so each wakeup resumes cleanly even after a context summary. When
 the session exits or you auto-stop it, **do not** schedule another wakeup —
@@ -67,22 +71,24 @@ print the summary and finish.
 3. Load `STATE_FILE` if it exists. First run (no state file) → initialise:
    `checkin_count=0, prev_ok_plays=null, prev_loop_detected=0,
    idle_streak=0, filed_issues=[]`. Record `started_at` from `date +%s`.
-4. **Always check the last 24 hours of commits on the current branch and integration branch
-   for the AgentShore project for key watch items.
-   ** Recently changed code is the most likely thing to regress, so
-   this scopes what to watch for in Step 4. Run:
+4. **Derive watch items from the AgentShore repo's recent commits** — these are the
+   orchestrator code changes most likely to regress during the live session.
+   **Do not run this against `$DIR` (the monitored project).** Run it against
+   `$AGENTSHORE_REPO` (the AgentShore source tree):
    ```bash
-   git -C "$DIR" log --since="24 hours ago" --oneline --no-merges
+   git -C "$AGENTSHORE_REPO" log --since="24 hours ago" --oneline --no-merges
    ```
-   Read the subjects (and `git -C "$DIR" show --stat <sha>` for anything
+   Read the subjects (and `git -C "$AGENTSHORE_REPO" show --stat <sha>` for anything
    ambiguous) and derive a short list of **watch items** — subsystems, plays,
-   agent types, or fixes touched in the last day that a live run could exercise
-   and break. Persist this list in `STATE_FILE` as `watch_items` so every
-   subsequent wakeup reuses it without re-deriving (re-run the `git log` only on
-   the first check-in; on resumes, reload `watch_items` from state). Surface the
-   list once in the first check-in header (`Watching: <items>`) and weight Step 4
-   errors/inefficiencies that touch these areas as higher-priority — file them
-   per Step 6 even when borderline, citing the commit that introduced the risk.
+   agent types, or fixes in AgentShore touched in the last day that a live run
+   could exercise and break. These are regression candidates in the orchestrator
+   itself, not features of the project being worked on. Persist this list in
+   `STATE_FILE` as `watch_items` so every subsequent wakeup reuses it without
+   re-deriving (re-run the `git log` only on the first check-in; on resumes,
+   reload `watch_items` from state). Surface the list once in the first check-in
+   header (`Watching: <items>`) and weight Step 4 errors/inefficiencies that touch
+   these areas as higher-priority — file them per Step 6 even when borderline,
+   citing the commit that introduced the risk.
 
 ## Step 1 — Locate the live log
 
@@ -118,15 +124,21 @@ The session has **exited** if any of these hold:
 
 - `progress.ended == true` (a terminal `session_ended` / `shutdown_complete` /
   `drain_complete` / `session_shutdown` event is in the log), **or**
-- No matching process is running **and** the log has gone stale:
+- The log has gone stale **and** no CLI process is running. Check both:
   ```bash
   pgrep -fa "agentshore start"   # look for one whose cmdline points at $DIR
   ```
-  If no `agentshore start` process corresponds to `$DIR` **and**
-  `progress.last_event_age_s > STALE_AGE_S`, treat it as exited.
+  **Important:** `pgrep -fa "agentshore start"` only finds CLI-launched sessions.
+  Sessions started from the desktop app will NOT appear here — they run as a
+  child of the GUI process, not as a bare `agentshore start` command. The absence
+  of a matching process therefore does NOT imply the session has exited.
+  Use this rule: if `progress.last_event_age_s > STALE_AGE_S`, treat it as
+  exited regardless of the pgrep result. If the log is fresh (small
+  `last_event_age_s`), the session is running even if pgrep finds nothing.
 
-A live process with a fresh log (`last_event_age_s` small) is **running** even
-if it's mid-play. If exited → go to **Step 7 (Summary)** and do not reschedule.
+A fresh log (`last_event_age_s` small) is the primary liveness signal — the
+process check is only a confirming signal when the log is already stale. If
+exited → go to **Step 7 (Summary)** and do not reschedule.
 
 ## Step 4 — Errors and inefficiencies
 
@@ -187,7 +199,7 @@ the baseline).
   stopped (idle for two check-ins; cite the counters). Then go to **Step 7**
   and do not reschedule.
 
-> Idle for two check-ins ≈ ~40 minutes of no *successful* plays. This is the
+> Idle for two check-ins ≈ ~60 minutes of no *successful* plays. This is the
 > documented orchestrator-wedge remedy (an unattended wedged session burns API
 > spend; see the loop-detection auto-stop intent, issue #9).
 
@@ -226,7 +238,7 @@ For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
 
 - **Session still running and not auto-stopped** → schedule the next cycle and
   finish the turn:
-  `ScheduleWakeup(delaySeconds=1200, prompt="/monitor_run <DIR>", reason="next AgentShore monitor check-in")`.
+  `ScheduleWakeup(delaySeconds=1800, prompt="/monitor_run <DIR>", reason="next AgentShore monitor check-in")`.
 - **Session exited (Step 3) or auto-stopped (Step 5)** → do not reschedule.
   Print the **Run Summary**, then delete `STATE_FILE` (`rm -f STATE_FILE`).
 
