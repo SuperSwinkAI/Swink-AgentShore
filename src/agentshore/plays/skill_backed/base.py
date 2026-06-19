@@ -680,9 +680,7 @@ class SkillBackedPlay(Play, ABC):
                 # 1800s fresh-task first-byte deadline; fast-fail instead.
                 # #236: manage_task handoffs require completing real work, not just
                 # re-printing — let them inherit the full per-agent-type deadline.
-                first_byte_timeout_override=(
-                    None if is_manage_task else _JSON_RETRY_FIRST_BYTE_S
-                ),
+                first_byte_timeout_override=(None if is_manage_task else _JSON_RETRY_FIRST_BYTE_S),
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(
