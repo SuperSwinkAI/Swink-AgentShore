@@ -67,6 +67,21 @@ print the summary and finish.
 3. Load `STATE_FILE` if it exists. First run (no state file) → initialise:
    `checkin_count=0, prev_ok_plays=null, prev_loop_detected=0,
    idle_streak=0, filed_issues=[]`. Record `started_at` from `date +%s`.
+4. **Always check the last 24 hours of commits on the current branch for key
+   watch items.** Recently changed code is the most likely thing to regress, so
+   this scopes what to watch for in Step 4. Run:
+   ```bash
+   git -C "$DIR" log --since="24 hours ago" --oneline --no-merges
+   ```
+   Read the subjects (and `git -C "$DIR" show --stat <sha>` for anything
+   ambiguous) and derive a short list of **watch items** — subsystems, plays,
+   agent types, or fixes touched in the last day that a live run could exercise
+   and break. Persist this list in `STATE_FILE` as `watch_items` so every
+   subsequent wakeup reuses it without re-deriving (re-run the `git log` only on
+   the first check-in; on resumes, reload `watch_items` from state). Surface the
+   list once in the first check-in header (`Watching: <items>`) and weight Step 4
+   errors/inefficiencies that touch these areas as higher-priority — file them
+   per Step 6 even when borderline, citing the commit that introduced the risk.
 
 ## Step 1 — Locate the live log
 
@@ -114,7 +129,10 @@ if it's mid-play. If exited → go to **Step 7 (Summary)** and do not reschedule
 
 ## Step 4 — Errors and inefficiencies
 
-Compute deltas vs the previous check-in (`prev_*` from `STATE_FILE`):
+Compute deltas vs the previous check-in (`prev_*` from `STATE_FILE`). Keep the
+`watch_items` from Step 0 in mind throughout: any error or inefficiency that
+touches a recently-changed subsystem/play/agent is a regression suspect — lower
+your filing threshold for those and name the implicated commit.
 
 **Errors** — investigate when any of these are present or rose since last time:
 `error_lines > 0`, `traceback_lines > 0`, `asyncio_unretrieved > 0`. Read the
@@ -203,7 +221,7 @@ For each genuine AgentShore bug or inefficiency from Step 4, file it to GitHub
 
 **Always** write `STATE_FILE` with updated counters before finishing:
 `checkin_count+1`, `prev_ok_plays`, `prev_loop_detected`, `idle_streak`,
-`filed_issues`.
+`filed_issues`, `watch_items`.
 
 - **Session still running and not auto-stopped** → schedule the next cycle and
   finish the turn:
