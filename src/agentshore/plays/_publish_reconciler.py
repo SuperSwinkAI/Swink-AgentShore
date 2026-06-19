@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from agentshore.agents.identity import IdentityResolutionError, resolve_identity_env
 from agentshore.command import CommandTimeoutError, run_command
+from agentshore.error_markers import PUBLISH_AUTH_MARKERS as _AUTH_ERROR_MARKERS
 from agentshore.errors import PreconditionFailed
 from agentshore.logging import get_logger
 from agentshore.state import PlayOutcome, PlayType
@@ -36,19 +37,11 @@ _logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Error markers
 # ---------------------------------------------------------------------------
+# ``_AUTH_ERROR_MARKERS`` (the narrow publish-failure-recovery auth view) is
+# imported above from the single ``error_markers`` registry as
+# ``PUBLISH_AUTH_MARKERS``; ``executor``'s failure inferer also imports it from
+# here, so the name is kept.
 
-_AUTH_ERROR_MARKERS = (
-    "bad credentials",
-    "http 401",
-    "401 unauthorized",
-    "http 403",
-    "403 forbidden",
-    "irrecoverable github access failure",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-)
 _PR_PUBLISH_ERROR_MARKERS = (
     "pull request",
     "pr creation",

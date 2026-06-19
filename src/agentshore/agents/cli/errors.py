@@ -9,169 +9,96 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agentshore.error_markers import (
+    CACHE_RENEWAL_MARKERS as _CACHE_RENEWAL_MARKERS,
+)
+from agentshore.error_markers import (
+    CODEX_ROLLOUT_MARKERS as _CODEX_ROLLOUT_PATTERNS,
+)
+from agentshore.error_markers import (
+    ENOSPC_MARKERS as _ENOSPC_PATTERNS,
+)
+from agentshore.error_markers import (
+    INVALID_MODEL_STDERR_PATTERNS as _INVALID_MODEL_PATTERNS,
+)
+from agentshore.error_markers import (
+    INVALID_MODEL_STDOUT_MARKERS as _INVALID_MODEL_STDOUT,
+)
+from agentshore.error_markers import (
+    OOM_MARKERS as _OOM_PATTERNS,
+)
+from agentshore.error_markers import (
+    RATE_LIMIT_STDERR_PATTERNS as _RATE_LIMIT_PATTERNS,
+)
+from agentshore.error_markers import (
+    RATE_LIMIT_STDOUT_MARKERS as _RATE_LIMIT_STDOUT,
+)
+from agentshore.error_markers import (
+    STDERR_AUTH_PATTERNS as _AUTH_PATTERNS,
+)
+from agentshore.error_markers import (
+    STDOUT_AUTH_MARKERS as _AUTH_STDOUT,
+)
+from agentshore.error_markers import (
+    TIMEOUT_STDERR_PATTERNS as _TIMEOUT_PATTERNS,
+)
+from agentshore.error_markers import (
+    TIMEOUT_STDOUT_MARKERS as _TIMEOUT_STDOUT,
+)
+from agentshore.error_markers import (
+    TRANSIENT_NETWORK_MARKERS as _TRANSIENT_NETWORK_PATTERNS,
+)
 from agentshore.errors import ErrorClass
 
 if TYPE_CHECKING:
     from agentshore.state import AgentType
 
-# ---------------------------------------------------------------------------
-# Stderr / stdout marker tables
-# ---------------------------------------------------------------------------
+# Explicit re-export surface (mypy strict ``implicit_reexport=False``): the
+# marker names imported-and-aliased from ``error_markers`` above, plus the local
+# classifiers, are pulled by ``agents/cli/watchdogs.py`` and the ``cli_agent``
+# shim from this module, so they must be declared exported here.
+__all__ = [
+    "_AUTH_PATTERNS",
+    "_AUTH_STDOUT",
+    "_CACHE_RENEWAL_MARKERS",
+    "_CODEX_ROLLOUT_PATTERNS",
+    "_ENOSPC_PATTERNS",
+    "_INVALID_MODEL_PATTERNS",
+    "_INVALID_MODEL_STDOUT",
+    "_OOM_PATTERNS",
+    "_PARSE_EOF_MARKERS",
+    "_RATE_LIMIT_PATTERNS",
+    "_RATE_LIMIT_STDOUT",
+    "_STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS",
+    "_TIMEOUT_PATTERNS",
+    "_TIMEOUT_STDOUT",
+    "_TRANSIENT_NETWORK_PATTERNS",
+    "_classify_error",
+    "_clean_stderr",
+    "_extract_cli_report_path",
+    "_is_cache_renewal_stdin_hang",
+    "_is_transient_cache_blip",
+    "_process_error_detail",
+]
 
-# YOLO permission flags applied by default per agent type. AgentShore is an
-# autonomous orchestrator — agents can't pause for human approval on each
-# `gh` call, so we bypass the per-tool permission gates the CLIs ship with.
-# The user can opt out by explicitly setting any non-empty extra_flags in
-# agentshore.yaml; that signals "I'm managing flags myself."
-# Each category carries two pattern sets (#19). The *stderr* set is the full
-# list: a CLI's own stderr is pure diagnostics, so matching anything there is
-# safe. The *stdout-safe* set is the subset of high-precision phrases that
-# effectively never appear in legitimate agent output. For a CLI **coding**
-# agent, stdout is the work PRODUCT — code, diffs, tool output, model
-# reasoning — and genuine quota/auth signals from `gh`/`git` tools are embedded
-# there too (tool_result JSONL), so we cannot ignore stdout entirely. But the
-# generic tokens ("429", "403", "forbidden", "timeout", "overloaded",
-# "capacity", "model not found", ...) routinely occur in code an agent edits;
-# matching those in stdout misclassified ordinary task failures as
-# rate_limit/auth, corrupting the RL reward signal, firing spurious take_break
-# recovery, and (for auth/invalid_model) tearing down a working agent. So the
-# stdout-safe sets drop every generic token and keep only distinctive phrases.
-_RATE_LIMIT_PATTERNS = (
-    "rate limit",
-    "rate_limit",
-    "429",
-    "too many requests",
-    "overloaded",
-    "capacity",
-    "retry after",
-    "throttl",
-)
-_RATE_LIMIT_STDOUT = (
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "retry after",
-    "hit your session limit",
-)
-_AUTH_PATTERNS = (
-    "unauthorized",
-    "401",
-    "authentication",
-    "invalid api key",
-    "bad credentials",
-    "forbidden",
-    "403",
-    "irrecoverable github access failure",
-    "github connector returned 404",
-    "connector repo 404",
-    "could not resolve to a repository with the name",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "not found/could not resolve repository",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-    "lacks access to repository",
-    "cannot access repository metadata",
-    # Codex backend-session TTL-expiry signatures (#zeke auth-hang): when the
-    # ChatGPT-backed session token expires mid-run the Codex CLI prints these to
-    # stderr then hangs reading stdin instead of exiting non-zero. stderr-only —
-    # deliberately NOT mirrored into _AUTH_STDOUT so they never match an agent's
-    # own work product.
-    "failed to renew cache ttl",
-    "failed to refresh available models",
-)
-# Drops the short generic tokens ("401"/"403"/"unauthorized"/"forbidden"/
-# "authentication") that appear in code; keeps the distinctive gh/git access
-# strings an agent echoes from a real `gh` tool failure.
-_AUTH_STDOUT = (
-    "invalid api key",
-    "bad credentials",
-    "irrecoverable github access failure",
-    "github connector returned 404",
-    "connector repo 404",
-    "could not resolve to a repository with the name",
-    "could not resolve to a repository",
-    "repository/pr is not accessible",
-    "not found/could not resolve repository",
-    "repository is not resolvable to this token",
-    "not resolvable to this token/session",
-    "lacks access to repository",
-    "cannot access repository metadata",
-)
-# #190: cache-renewal markers within _AUTH_PATTERNS that the Codex CLI also
-# prints during a *transient* model-cache TTL blip (not a real auth rejection).
-# When one of these coincides with an EOF-parse marker (below) on the same
-# stderr tail it is the transient EOF-renewal shape, NOT a session-token expiry,
-# and must NOT abort an in-flight dispatch (observed 415s of work killed). A
-# bare cache-renewal line with no parse-EOF suffix is still a genuine token
-# expiry and keeps tripping via _AUTH_PATTERNS.
-_CACHE_RENEWAL_MARKERS = ("failed to renew cache ttl", "failed to refresh available models")
+# ---------------------------------------------------------------------------
+# Marker tables
+# ---------------------------------------------------------------------------
+#
+# The auth/rate-limit/timeout/etc. vocabularies now live in the single
+# ``error_markers`` registry (PLAN-error-cooldown-unification.md Phase 1) and
+# are imported above under the module-private names the CLI classifier and the
+# stderr watchdog reference, so those callers — and the ``cli_agent`` re-export
+# shim — keep resolving them unchanged. Each carries two views: the *stderr* set
+# is the full list (a CLI's own stderr is pure diagnostics, safe to match
+# broadly); the *stdout-safe* subset keeps only high-precision phrases that
+# never appear in legitimate agent work product (#19).
+#
+# These two remain CLI-transport local — they detect the shape of a Codex
+# cache-renewal EOF/stdin-hang blip, not an error *class*, so they have no place
+# in the shared error-class registry.
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
-
-
-_TIMEOUT_PATTERNS = ("timeout", "timed out", "deadline exceeded", "context deadline")
-# All timeout tokens are common in source code/test names — none are safe to
-# match against the work product.
-_TIMEOUT_STDOUT: tuple[str, ...] = ()
-_INVALID_MODEL_PATTERNS = (
-    "modelnotfounderror",
-    "model not found",
-    "requested entity was not found",
-    "not found for api version",
-    "not found or is not supported",
-    "not supported when using codex with a chatgpt account",
-    "invalid_request_error",
-)
-# Keep only the distinctive Codex CLI phrasings it prints to stdout; drop the
-# generic "model not found"/"requested entity..."/"invalid_request_error" that
-# can appear in code an agent writes (invalid_model triggers agent teardown).
-_INVALID_MODEL_STDOUT = (
-    "not found or is not supported",
-    "not supported when using codex with a chatgpt account",
-)
-# Codex CLI internal error: its rollout-recording layer references a session
-# thread id it can't find on disk. desktop-yxlj observed one occurrence in
-# 4600+ plays. The error is permanent for the current codex process but a
-# fresh `codex exec` lands a new thread id, so spawning again recovers.
-# Pulling this out of the "unknown" bucket gives operators a queryable signal
-# for recurrence rate and lets the existing take_break recovery path fire
-# under a typed name instead of the generic catch-all.
-_CODEX_ROLLOUT_PATTERNS = ("failed to record rollout items",)
-# Out-of-memory signatures. An OS OOM kill usually arrives as SIGKILL (rc -9)
-# with little/no agent output, but some runtimes log a signature too. Matching
-# either routes the exit to ``crash_oom`` (#7) so it is NOT treated as a
-# rate-limit.
-_OOM_PATTERNS = (
-    "out of memory",
-    "oomkilled",
-    "enomem",
-    "cannot allocate memory",
-    "memory exhausted",
-)
-# Host disk exhaustion surfaced by the agent subprocess (a build writing into a
-# full worktree, git, npm, cargo, etc.). An environment condition, not the
-# agent's fault — pulling it out of "unknown" lets operators see the real cause
-# instead of blaming a code/test failure (#180). Distinctive enough to match in
-# either stream.
-_ENOSPC_PATTERNS = (
-    "no space left on device",
-    "enospc",
-    "errno 28",
-    "disk quota exceeded",
-)
-# Transient network/socket failures. claude_code has been observed to exit with
-# "API Error: The socket connection was closed unexpectedly" falling into the
-# generic "unknown" bucket (#23). These are distinctive enough to match
-# in either stream and are genuinely transient (a retry/take_break recovers), so
-# pulling them out of "unknown" gives operators an accurate signal instead of a
-# catch-all while keeping the same recovery treatment.
-_TRANSIENT_NETWORK_PATTERNS = (
-    "socket connection was closed unexpectedly",
-    "connection reset by peer",
-    "econnreset",
-    "socket hang up",
-)
 
 # ---------------------------------------------------------------------------
 # Classification predicates

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agentshore import subprocess_env
+from agentshore.error_markers import PROBE_NOT_AUTHED_MARKERS as _NOT_AUTHED_MARKERS
 from agentshore.state import CLI_AGENT_TYPES, AgentType
 
 if TYPE_CHECKING:
@@ -72,20 +73,11 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
 }
 
 # Output markers indicating the backend is NOT authenticated / the cached
-# session is dead. Matched case-insensitively against stdout+stderr. Includes
-# the Codex TTL-expiry signatures so the same vocabulary that classifies a
-# mid-run hang (ErrorClass.AUTH) also classifies a pre-launch probe.
-_NOT_AUTHED_MARKERS: tuple[str, ...] = (
-    "not logged in",
-    "not authenticated",
-    "logged out",
-    "no credentials",
-    "please run",
-    "run `codex login`",
-    "run 'codex login'",
-    "failed to renew cache ttl",
-    "failed to refresh available models",
-)
+# session is dead (matched case-insensitively against stdout+stderr) live in the
+# single ``error_markers`` registry as ``PROBE_NOT_AUTHED_MARKERS``, imported
+# above. They include the Codex TTL-expiry signatures so the same vocabulary
+# that classifies a mid-run hang (ErrorClass.AUTH) also classifies this
+# pre-launch probe.
 
 
 @dataclass(frozen=True)

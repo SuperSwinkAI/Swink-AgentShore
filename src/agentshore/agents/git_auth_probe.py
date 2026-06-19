@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agentshore import command, subprocess_env
+from agentshore.error_markers import GIT_AUTH_FAILED_MARKERS as _AUTH_FAILED_MARKERS
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
@@ -61,20 +62,8 @@ _BLOCKING_STATUSES = frozenset({GIT_AUTH_FAILED})
 DEFAULT_PROBE_TIMEOUT_S = 15.0
 
 # Output markers indicating the remote rejected our credentials (vs. a network
-# blip). Matched case-insensitively against stdout+stderr.
-_AUTH_FAILED_MARKERS: tuple[str, ...] = (
-    "authentication failed",
-    "invalid username or password",
-    "could not read username",
-    "could not read password",
-    "permission denied",
-    "access denied",
-    "403 forbidden",
-    "401 unauthorized",
-    "remote: invalid credentials",
-    "fatal: could not read from remote repository",
-    "terminal prompts disabled",
-)
+# blip), matched case-insensitively against stdout+stderr, live in the single
+# ``error_markers`` registry as ``GIT_AUTH_FAILED_MARKERS``, imported above.
 
 
 @dataclass(frozen=True)

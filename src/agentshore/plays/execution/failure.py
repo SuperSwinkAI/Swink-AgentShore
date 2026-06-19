@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.plays._publish_reconciler import _AUTH_ERROR_MARKERS
+from agentshore.error_markers import PUBLISH_AUTH_MARKERS as _AUTH_ERROR_MARKERS
 
 if TYPE_CHECKING:
     from agentshore.state import PlayOutcome
