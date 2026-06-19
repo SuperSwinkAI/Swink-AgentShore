@@ -558,6 +558,26 @@ def test_antigravity_first_byte_deadline_is_1800s() -> None:
     assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.ANTIGRAVITY] == 1800.0
 
 
+def test_resolve_first_byte_deadline_per_dispatch_override() -> None:
+    """#232: a per-dispatch override wins over the per-type default and the config
+    field, is clamped to the wall-clock timeout, and ``None`` falls back to the
+    per-type default (agy stays 1800s on a fresh dispatch)."""
+    from agentshore.agents.cli_agent import _resolve_first_byte_deadline
+    from agentshore.config.models import AgentConfig
+
+    cfg = AgentConfig()
+
+    # No override → agy keeps its 1800s structural carve-out.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0) == 1800.0
+    # A short override beats the 1800s per-type default for this one dispatch.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0, 120.0) == 120.0
+    # The override still can't outlive the wall-clock timeout.
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
+    # An explicit per-agent config override is itself overridden by the per-dispatch one.
+    cfg_override = AgentConfig(first_byte_timeout_seconds=900)
+    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0) == 120.0
+
+
 def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
     """Plain streaming output (no task-status envelope) is returned unchanged."""
     from agentshore.agents.cli_antigravity import extract_output

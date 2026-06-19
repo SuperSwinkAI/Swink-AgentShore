@@ -103,6 +103,24 @@ def test_drain_tolerates_manager_without_attribute() -> None:
     assert builder._drain_wedge_cooldowns() == frozenset()
 
 
+def test_drain_seeds_cooldown_for_agy_stream_hang_cluster() -> None:
+    """#233: an agy stream-hang cluster feeds the SAME decaying cooldown set as a
+    Grok launch wedge (with its own reason tag), so it auto-recovers identically."""
+    runtime = SessionRuntime()
+    runtime.last_play_id = 5
+    manager = SimpleNamespace(
+        wedge_cooldown_types={"antigravity"},
+        wedge_cooldown_reasons={"antigravity": "stream_hang_cluster"},
+    )
+    builder = _fake_builder(manager, runtime)
+
+    active = builder._drain_wedge_cooldowns()
+    assert active == frozenset({"antigravity"})
+    assert runtime.wedge_cooldown_until["antigravity"] == 5 + _GROK_WEDGE_COOLDOWN_TICKS
+    # Decaying cooldown only — never the permanent auth-suppression set.
+    assert runtime.auth_suppressed_agent_types == set()
+
+
 # ---------------------------------------------------------------------------
 # Candidate masking (decaying)
 # ---------------------------------------------------------------------------

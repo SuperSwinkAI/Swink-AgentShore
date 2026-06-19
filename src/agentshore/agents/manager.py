@@ -64,6 +64,17 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
 # tunable, and keeping it module-local avoids a config-schema dependency.
 _GROK_WEDGE_COOLDOWN_TICKS = 20
 
+# Consecutive zero-stdout stream-idle timeouts for one agent TYPE before the type
+# is benched into the same decaying wedge cooldown (#233). In practice only
+# antigravity hits this: its async task system emits no stdout until the task
+# completes, so a hung dispatch is indistinguishable from a slow one mid-flight and
+# rides the full (load-bearing) 1800s first-byte deadline — codex/grok/claude stream
+# within seconds, so a single hang there is noise, not a cluster. A streak gate (not
+# a single hang) avoids benching a type for one unlucky timeout. Reuses the Grok
+# wedge cooldown horizon so the type auto-recovers rather than being disabled for the
+# session.
+_STREAM_HANG_CLUSTER_LIMIT = 3
+
 
 def _is_grok_launch_wedge_timeout(handle: AgentHandle, exc: BaseException) -> bool:
     if handle.agent_type != AgentType.GROK:
@@ -139,6 +150,16 @@ class AgentManager:
         # "a wedge was recorded since the last snapshot" — the actual expiry is
         # tracked tick-relative in the runtime, not here.
         self.wedge_cooldown_types: set[str] = set()
+        # Reason tag per type currently in ``wedge_cooldown_types`` ("launch_wedge"
+        # for a Grok first-byte wedge, "stream_hang_cluster" for an agy hang cluster,
+        # #233). Read by the state-builder drain only to label the cooldown event;
+        # has no effect on the decay itself.
+        self.wedge_cooldown_reasons: dict[str, str] = {}
+        # Consecutive zero-stdout stream-idle timeouts per agent TYPE (reset on any
+        # successful dispatch of that type). Trips ``wedge_cooldown_types`` at
+        # ``_STREAM_HANG_CLUSTER_LIMIT`` (#233). Distinct from per-agent
+        # ``AgentHandle.consecutive_timeouts``, which benches one instance.
+        self._type_stream_hang_streak: dict[str, int] = {}
         # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
         # read by _selection.py to bias away from branch-exposed agents.
         self.branch_exposure: dict[str, str] = {}  # branch → agent_id
@@ -312,6 +333,7 @@ class AgentManager:
         play_type: str | None = None,
         cwd_override: Path | None = None,
         resume_session_id: str | None = None,
+        first_byte_timeout_override: float | None = None,
     ) -> AgentInvocationResult:
         """Route *prompt* to the agent's adapter and return the raw result.
 
@@ -400,6 +422,7 @@ class AgentManager:
                 on_subprocess_exited=on_exited,
                 cwd_override=cwd_override,
                 resume_session_id=resume_session_id,
+                first_byte_timeout_override=first_byte_timeout_override,
             )
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()
@@ -426,6 +449,21 @@ class AgentManager:
                     self.last_auth_failed_types.add(handle.agent_type.value)
                 elif _is_grok_launch_wedge_timeout(handle, exc):
                     self.wedge_cooldown_types.add(handle.agent_type.value)
+                    self.wedge_cooldown_reasons[handle.agent_type.value] = "launch_wedge"
+                elif handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE:
+                    # #233: a zero-stdout stream-idle hang that isn't a Grok launch
+                    # wedge. Track a per-TYPE streak; a cluster (in practice agy,
+                    # which can't be probed for liveness mid-task) benches the whole
+                    # type into the same decaying cooldown so the fleet routes around
+                    # it and it auto-recovers. The load-bearing 1800s agy first-byte
+                    # deadline is deliberately NOT lowered (cli_agent #217 carve-out).
+                    atype = handle.agent_type.value
+                    streak = self._type_stream_hang_streak.get(atype, 0) + 1
+                    self._type_stream_hang_streak[atype] = streak
+                    if streak >= _STREAM_HANG_CLUSTER_LIMIT:
+                        self.wedge_cooldown_types.add(atype)
+                        self.wedge_cooldown_reasons[atype] = "stream_hang_cluster"
+                        self._type_stream_hang_streak[atype] = 0
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
                 handle.transition_to(AgentStatus.IDLE)
@@ -472,6 +510,9 @@ class AgentManager:
 
         cb.record_success()
         handle.consecutive_timeouts = 0
+        # #233: any productive dispatch of this type clears its stream-hang cluster
+        # signal so a recovered backend isn't benched on stale streak count.
+        self._type_stream_hang_streak[handle.agent_type.value] = 0
         # A clean-exit empty no-op (agy empty task envelope) reaches this success
         # path — the process didn't crash or time out, it just produced nothing.
         # Count it for agent-health telemetry; the bounded no-op retry +

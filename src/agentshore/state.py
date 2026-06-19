@@ -319,6 +319,12 @@ class SkillResult:
     tests_passed: bool | None = None
     verification_evidence: list[JsonObject] = field(default_factory=list)
     review_patterns: list[JsonObject] = field(default_factory=list)
+    # Parse-failure discriminator (#229): True when the output DID contain a
+    # balanced JSON object but it lacked a top-level boolean ``success`` (a
+    # near-miss), as opposed to no JSON at all. Lets the skill-backed retry pick
+    # a defect-specific nudge instead of the generic "emit the JSON block" prompt.
+    # Only meaningful when ``success`` is False.
+    missing_success_envelope: bool = False
 
 
 @dataclass(frozen=True, slots=True)

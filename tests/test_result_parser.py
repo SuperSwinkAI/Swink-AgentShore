@@ -81,6 +81,37 @@ def test_parse_reports_empty_agent_output() -> None:
     assert "agent produced no output" in result.error
 
 
+def test_parse_reports_missing_success_envelope_distinctly() -> None:
+    """#229: a balanced JSON object that lacks a top-level boolean ``success`` is a
+    near-miss, reported distinctly from a true no-JSON failure (and flagged so the
+    resume-retry can pick a defect-specific nudge), while keeping the shared prefix
+    the base.py retry trigger keys on.
+    """
+    # A structurally-complete JSON object (mirrors the live agy design_audit
+    # near-miss: prose bucket names serialized in place of the schema keys), but
+    # with no top-level boolean ``success``.
+    output = '{"artifacts": [{"type": "design_audit"}], "gap_filled": ["Distribution"]}'
+    result = parse_skill_result(output)
+
+    assert result.success is False
+    assert result.missing_success_envelope is True
+    assert result.error is not None
+    # Shared prefix preserved so the JSON-retry trigger still fires.
+    assert "no valid result block" in result.error
+    # Distinct wording naming the actual defect.
+    assert "no top-level boolean 'success' field" in result.error
+
+
+def test_parse_no_json_at_all_is_not_flagged_missing_success() -> None:
+    """Prose / no-JSON output must NOT set the missing-success flag (it's the
+    generic no-JSON case, which keeps the original nudge)."""
+    result = parse_skill_result("I did the work but forgot the JSON trailer entirely.")
+
+    assert result.success is False
+    assert result.missing_success_envelope is False
+    assert "no valid result block" in (result.error or "")
+
+
 def test_parse_reports_long_output_with_no_json() -> None:
     """desktop-zzt regression: agents that emit a lot of text without the
     JSON result block produce a 'tail:' diagnostic so the operator can see

@@ -506,11 +506,17 @@ class StateBuilder:
         for agent_type in newly_wedged:
             cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
         if newly_wedged:
+            # Reason tag per type (#233): "launch_wedge" (Grok first-byte) vs
+            # "stream_hang_cluster" (agy zero-stdout cluster). Collapse to a single
+            # label when uniform, else "mixed". ``getattr`` tolerates a stub manager.
+            reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
+            reasons = {reasons_map.get(t, "launch_wedge") for t in newly_wedged}
+            reason = reasons.pop() if len(reasons) == 1 else "mixed"
             _logger.warning(
                 "agent_type_wedge_cooldown",
                 session_id=self._session_id,
                 agent_types=newly_wedged,
-                reason="launch_wedge",
+                reason=reason,
                 cooldown_ticks=_GROK_WEDGE_COOLDOWN_TICKS,
                 expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
             )

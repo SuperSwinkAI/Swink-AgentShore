@@ -46,6 +46,25 @@ _JSON_RETRY_PROMPT = (
     "you already did, matching the schema in your instructions."
 )
 
+# Defect-specific variant (#229): used when the agent DID emit a JSON object but it
+# lacked the required top-level boolean ``success`` (the near-miss case flagged by
+# ``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more
+# of these than the generic nudge, which the agent answers by re-emitting the same shape.
+_JSON_RETRY_MISSING_SUCCESS_PROMPT = (
+    "Your previous turn emitted a JSON result block, but it is missing the required "
+    "top-level boolean `success` field. Do not redo or repeat any work. Re-emit the exact "
+    'same JSON for what you already did, adding a top-level "success": true (or false). '
+    "Do not invent other keys. Output only that one fenced JSON block."
+)
+
+# First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
+# the agent to re-print a result block it already computed, so it should start streaming
+# within seconds. Without an override it inherits the per-agent-type default — 1800s for
+# antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
+# into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
+# and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
+_JSON_RETRY_FIRST_BYTE_S = 120.0
+
 # Maximum consecutive clean-exit empty no-op dispatches before the play is failed
 # and the agent is routed into a standard take_break. The first dispatch counts as
 # attempt 1, so this bounds the play at 1 initial + 2 fresh re-dispatches. Each
@@ -627,20 +646,32 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
+            # #229: when the failure is a near-miss (JSON present but no top-level
+            # boolean ``success``), name the exact defect; otherwise use the generic
+            # "emit the JSON block" nudge.
+            retry_prompt = (
+                _JSON_RETRY_MISSING_SUCCESS_PROMPT
+                if skill_result.missing_success_envelope
+                else _JSON_RETRY_PROMPT
+            )
             _logger.info(
                 "agent_json_retry",
                 agent_id=agent_id,
                 play_type=self.play_type.value,
                 session_id=invocation.session_id,
                 original_output_length=len(invocation.raw_output),
+                missing_success_envelope=skill_result.missing_success_envelope,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
-                _JSON_RETRY_PROMPT,
+                retry_prompt,
                 capability=self.capability,
                 play_type=self.play_type.value,
                 cwd_override=dispatch_cwd,
                 resume_session_id=invocation.session_id,
+                # #232: a re-emission should stream promptly — don't inherit agy's
+                # 1800s fresh-task first-byte deadline; fast-fail instead.
+                first_byte_timeout_override=_JSON_RETRY_FIRST_BYTE_S,
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(
