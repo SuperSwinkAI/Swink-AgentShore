@@ -665,6 +665,52 @@ def test_register_release_protected_set_contract(
     assert wm._protected_ids() == set()
 
 
+async def test_finalize_after_dispatch_releases_inflight_mark(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """register_dispatch → finalize_after_dispatch brackets the in-flight mark:
+    finalize clears it so the worktree is reapable once the play completes."""
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.state import PlayOutcome, PlayType
+
+    wt_id, wt_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="pr-branch",
+        pre_branch_key=None,
+        dir_name="pr-wt",
+        status="active",
+        last_used_at=(datetime.now(UTC)).isoformat(),
+    )
+    wm = _make_manager(store, main_repo, worktree_root)
+    alloc = WorktreeAllocation(
+        worktree_id=wt_id,
+        path=wt_path,
+        branch_name="pr-branch",
+        pre_branch_key=None,
+        play_type=PlayType.CODE_REVIEW,
+        scope="pr",
+    )
+    wm.register_dispatch(alloc)
+    assert wm._protected_ids() == {wt_id}
+
+    outcome = PlayOutcome(
+        play_type=PlayType.CODE_REVIEW,
+        agent_id=None,
+        success=True,
+        partial=False,
+        duration_seconds=0.0,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+    )
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=outcome)
+    assert wm._protected_ids() == set()
+
+
 # ---------------------------------------------------------------------------
 # reap_git_orphans + sweep two-phase reconciliation
 # ---------------------------------------------------------------------------
