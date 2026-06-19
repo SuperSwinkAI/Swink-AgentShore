@@ -1,30 +1,16 @@
-"""Line-framed JSON-RPC 2.0 server over stdin/stdout.
+"""Stdio serve loop and synchronous entry points.
 
-Implements the lifecycle surface defined in ``docs/design/desktop/DESIGN.md``
-§5.1. Covers ``app.handshake``, the ``project.*`` family (``select``,
-``inspect``, ``branches``, ``set_target_branch``, ``deselect``), and the
-``recents.*`` methods (§4.2: ``list``, ``touch``, ``remove``).
-Every other method returns ``-32601 MethodNotFound``.
+``_serve_async`` / ``serve`` / ``run`` live here.  Everything that touches
+``stdin`` / ``stdout`` is in this module; the routing and protocol layers are
+in :mod:`.router` and :mod:`.protocol`.
 
-Stdin/stdout carry JSON-RPC; logs go to stderr (§2.2). The loop exits on
-EOF, matching Tauri sidecar lifecycle (§1.2: "Sidecar death == orchestrator
-death").
-
-A single stdio serve loop (:func:`_serve_async`) backs both the async path
-and the synchronous :func:`serve` / :func:`run` entry points. It reads stdin
-on a daemon thread so other asyncio tasks (notably the embedded
-:class:`agentshore.sidecar.EmbeddedBridge` per §1.2 and §2.3, booted by
-``session.start``) run concurrently in the same loop, carries the
-request-cancellation machinery (``$/cancelRequest``), and fires the
-``sidecar.health`` heartbeat (§5.1) so the shell can detect a stalled sidecar.
-
-Implementation note: the actual dispatch logic lives in
-``agentshore.sidecar.rpc.*``; this module is the public surface and the home
-of the names that tests monkeypatch (``_serve_async``, ``_reader_loop``,
-``EOF_IN_FLIGHT_GRACE_SECONDS``, ``EOF_TEARDOWN_DEADLINE_SECONDS``,
-``ServerState``, ``METHOD_HANDLERS``, ``recents_path``).  Those names must
-be globals here so that ``monkeypatch.setattr("agentshore.sidecar.server.X",
-...)`` is visible to the callers that reference them by module-global lookup.
+Monkeypatch note: ``_reader_loop``, ``_serve_async``, ``EOF_IN_FLIGHT_GRACE_SECONDS``,
+``EOF_TEARDOWN_DEADLINE_SECONDS``, and ``ServerState`` are all referenced by
+tests that patch them on ``agentshore.sidecar.server``.  The thin re-export
+shim in ``server.py`` re-exports all of them so patches land on that module
+object; the serve loop then calls them as ``server``-module globals so the
+patches are seen.  This module owns the *definitions*; ``server.py`` owns the
+*patchable names*.
 """
 
 from __future__ import annotations
@@ -39,195 +25,23 @@ import time
 from typing import IO, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable
+
+    from agentshore.sidecar.rpc.protocol import MethodHandler
 
 from agentshore.ipc.wire import frame
 from agentshore.platform_compat import ensure_windows_event_loop_policy, force_utf8_stdio
-from agentshore.sidecar.recents import (
-    recents_path,
-)
-
-# ---------------------------------------------------------------------------
-# Recents dispatch — wrapper lives here so server.recents_path is the lookup
-# ---------------------------------------------------------------------------
-from agentshore.sidecar.rpc.handlers.recents import (  # noqa: E402
-    _dispatch_recents_rpc as _dispatch_recents_rpc_impl,
-)
-
-# ---------------------------------------------------------------------------
-# Re-exports from rpc sub-package — public surface of this module
-# ---------------------------------------------------------------------------
-# Error codes (all of them — tests import several)
-# Protocol types, factories, helpers
-from agentshore.sidecar.rpc.protocol import (  # noqa: F401 — re-exported public surface
-    _PROJECT_NO_ACTIVE_REMAP,  # noqa: F401 — re-exported public surface
-    ERR_NO_ACTIVE_PROJECT,
-    ERR_SESSION_ACTIVE,
+from agentshore.sidecar.rpc.protocol import (
     INTERNAL_ERROR,
-    INVALID_PARAMS,
-    INVALID_REQUEST,
-    METHOD_NOT_FOUND,
     PARSE_ERROR,
     REQUEST_CANCELLED,
-    DispatchResult,
-    JsonRpcError,  # noqa: F401 — re-exported public surface
     JsonRpcNotification,
     JsonRpcResponse,
-    MethodHandler,
-    RouteHandler,  # noqa: F401 — re-exported public surface
     ServerState,
-    SessionContext,  # noqa: F401 — re-exported public surface
-    _as_dict,  # noqa: F401 — re-exported public surface
     _error,
-    _ParamError,  # noqa: F401 — re-exported public surface
-    _require_str_params,  # noqa: F401 — re-exported public surface
-    _result,  # noqa: F401 — re-exported public surface
-    notification,  # noqa: F401 — re-exported; also named as param below
 )
-
-# Router — HANDLERS table and routing helpers
-from agentshore.sidecar.rpc.router import (
-    _ROUTE_GROUPS,  # noqa: F401 — re-exported public surface
-    HANDLERS,
-    Route,
-    _resolve_route,  # noqa: F401 — re-exported public surface
-)
-from agentshore.sidecar.rpc.router import handle_request as _handle_request_impl
-
-# Progress notification builders and phase constants
-from agentshore.sidecar.rpc.router_helpers import (
-    SESSION_START_PHASES,  # noqa: F401 — re-exported public surface
-    SESSION_STOP_DRAIN_PHASES,  # noqa: F401 — re-exported public surface
-    build_esr_ready_notification,  # noqa: F401 — re-exported public surface
-    build_session_completed_notification,  # noqa: F401 — re-exported public surface
-    build_sidecar_health_notification,
-)
-
-# ---------------------------------------------------------------------------
-# Explicit re-export surface — required by mypy strict (implicit_reexport=False)
-# ---------------------------------------------------------------------------
-# Every name that any src consumer or sidecar test imports from this module
-# must appear here; omissions cause "does not explicitly export attribute X".
-__all__ = [
-    # Error codes
-    "ERR_NO_ACTIVE_PROJECT",
-    "ERR_SESSION_ACTIVE",
-    "INTERNAL_ERROR",
-    "INVALID_PARAMS",
-    "INVALID_REQUEST",
-    "METHOD_NOT_FOUND",
-    "PARSE_ERROR",
-    "REQUEST_CANCELLED",
-    # Wire types
-    "DispatchResult",
-    "JsonRpcError",
-    "JsonRpcNotification",
-    "JsonRpcResponse",
-    "MethodHandler",
-    "RouteHandler",
-    "SessionContext",
-    "ServerState",
-    # Protocol helpers
-    "_ParamError",
-    "_PROJECT_NO_ACTIVE_REMAP",
-    "_as_dict",
-    "_error",
-    "_require_str_params",
-    "_result",
-    "notification",
-    # Router
-    "HANDLERS",
-    "Route",
-    "_ROUTE_GROUPS",
-    "_resolve_route",
-    # Notification builders
-    "SESSION_START_PHASES",
-    "SESSION_STOP_DRAIN_PHASES",
-    "build_esr_ready_notification",
-    "build_session_completed_notification",
-    "build_sidecar_health_notification",
-    # Serve-loop (defined in this module)
-    "DEFAULT_HEALTH_INTERVAL_SECONDS",
-    "EOF_IN_FLIGHT_GRACE_SECONDS",
-    "EOF_TEARDOWN_DEADLINE_SECONDS",
-    "METHOD_HANDLERS",
-    "_cancel_request_id",
-    "_reader_loop",
-    "_serve_async",
-    "handle_request",
-    "serve",
-    "run",
-    # recents (defined/re-exported in this module)
-    "recents_path",
-]
-
-
-def _dispatch_recents_rpc(
-    method: str,
-    raw_params: object,
-    *,
-    req_id: int | str | None,
-    is_notification: bool,
-    notify: Callable[[JsonRpcNotification], None] | None,
-    state: ServerState,
-) -> DispatchResult:
-    """Route ``recents.*`` methods.
-
-    Wraps :func:`agentshore.sidecar.rpc.handlers.recents._dispatch_recents_rpc`
-    and passes ``recents_path`` from *this* module so that
-    ``monkeypatch.setattr("agentshore.sidecar.server.recents_path", ...)``
-    is observed at call time (the free-name lookup in server module globals
-    finds the patched value).
-    """
-    return _dispatch_recents_rpc_impl(
-        method,
-        raw_params,
-        req_id=req_id,
-        is_notification=is_notification,
-        notify=notify,
-        state=state,
-        recents_path_fn=recents_path,
-    )
-
-
-# Wire the recents wrapper into the HANDLERS dispatch table imported from router.
-HANDLERS["recents.list"] = Route(_dispatch_recents_rpc)
-HANDLERS["recents.touch"] = Route(_dispatch_recents_rpc)
-HANDLERS["recents.remove"] = Route(_dispatch_recents_rpc)
-
-# ---------------------------------------------------------------------------
-# Custom method handler table (module-level so tests can monkeypatch it)
-# ---------------------------------------------------------------------------
-
-# Empty by default — ``app.handshake`` is dispatched explicitly below. Tests
-# inject ad-hoc methods (e.g. ``test.slow``) to exercise dispatch and cancel.
-METHOD_HANDLERS: dict[str, MethodHandler] = {}
-
-
-# ---------------------------------------------------------------------------
-# Public handle_request wrapper — passes METHOD_HANDLERS so patches are seen
-# ---------------------------------------------------------------------------
-
-
-def handle_request(
-    payload: object,
-    notify: Callable[[JsonRpcNotification], None] | None = None,
-    *,
-    state: ServerState | None = None,
-) -> DispatchResult:
-    """Dispatch a single parsed request payload.
-
-    Returns ``None`` for notifications (no ``id``); per JSON-RPC 2.0 these
-    receive no response. Methods that need async work (e.g. ``session.stop``
-    or the ``archive.*`` family) return an awaitable that yields the final
-    response — the calling stdio loops await before serialising.
-    """
-    return _handle_request_impl(payload, notify, state=state, method_handlers=METHOD_HANDLERS)
-
-
-# ---------------------------------------------------------------------------
-# Serve-loop constants (kept here so monkeypatch.setattr("...server.X") works)
-# ---------------------------------------------------------------------------
+from agentshore.sidecar.rpc.router import handle_request as _handle_request
+from agentshore.sidecar.rpc.router_helpers import build_sidecar_health_notification
 
 DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
 """Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
@@ -248,12 +62,6 @@ stdin EOF means the desktop shell exited or the pipe broke; "sidecar death ==
 orchestrator death" (DESIGN §1.2) only holds if the serve loop is guaranteed
 to return promptly after EOF, so every post-EOF wait is bounded (#155).
 """
-
-
-# ---------------------------------------------------------------------------
-# Serve-loop implementation (kept here so monkeypatch works for constants /
-# ServerState / _reader_loop)
-# ---------------------------------------------------------------------------
 
 
 def _cancel_request_id(payload: object) -> int | str | None:
@@ -285,6 +93,7 @@ async def _serve_async(
     stdout: IO[str],
     *,
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS,
+    method_handlers: dict[str, MethodHandler] | None = None,
 ) -> None:
     """Read line-framed JSON-RPC from ``stdin``, write responses to ``stdout``.
 
@@ -350,8 +159,8 @@ async def _serve_async(
         stdout.write(frame(obj))
         stdout.flush()
 
-    def _write_notification(notif: JsonRpcNotification) -> None:
-        _emit(notif)
+    def _write_notification(notification: JsonRpcNotification) -> None:
+        _emit(notification)
 
     async def _health_emitter() -> None:
         while True:
@@ -387,6 +196,8 @@ async def _serve_async(
     health_task: asyncio.Task[None] | None = None
     if health_interval_seconds > 0:
         health_task = asyncio.create_task(_health_emitter())
+
+    _mh = method_handlers if method_handlers is not None else {}
 
     while True:
         line = await queue.get()
@@ -426,7 +237,9 @@ async def _serve_async(
         # error and convert it to an INTERNAL_ERROR response so the loop
         # survives and the caller sees a real failure.
         try:
-            response = handle_request(payload_obj, notify=_write_notification, state=state)
+            response = _handle_request(
+                payload_obj, notify=_write_notification, state=state, method_handlers=_mh
+            )
         except Exception as exc:  # noqa: BLE001 — last-resort guard
             req_id_for_err: int | str | None = None
             if isinstance(payload_obj, dict):
