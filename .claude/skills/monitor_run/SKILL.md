@@ -67,8 +67,9 @@ print the summary and finish.
 3. Load `STATE_FILE` if it exists. First run (no state file) → initialise:
    `checkin_count=0, prev_ok_plays=null, prev_loop_detected=0,
    idle_streak=0, filed_issues=[]`. Record `started_at` from `date +%s`.
-4. **Always check the last 24 hours of commits on the current branch for key
-   watch items.** Recently changed code is the most likely thing to regress, so
+4. **Always check the last 24 hours of commits on the current branch and integration branch
+   for the AgentShore project for key watch items.
+   ** Recently changed code is the most likely thing to regress, so
    this scopes what to watch for in Step 4. Run:
    ```bash
    git -C "$DIR" log --since="24 hours ago" --oneline --no-merges
