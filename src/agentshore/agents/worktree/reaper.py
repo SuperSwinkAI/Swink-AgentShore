@@ -291,6 +291,7 @@ async def reap_for_closed_prs(
     session_id: str,
     main_repo: Path,
     ttl_seconds: int,
+    protected_ids: set[int] | None = None,
     protected_paths: set[str] | None = None,
 ) -> ReapReport:
     """Remove ``stale`` rows older than ``ttl_seconds`` in the current session.
@@ -299,22 +300,36 @@ async def reap_for_closed_prs(
     merged or closed (so the next finalize can downgrade it). After
     ``ttl_seconds`` of inactivity, the disk + row are cleaned up.
 
-    ``protected_paths`` (canonicalised via :func:`_canon_path`) carries the
-    on-disk paths of live dispatches. Any ``stale`` row whose canonical path
-    matches one is skipped EVEN IF its ``worktree_id`` differs from the live
-    row's — the ``pickup-<N>`` directory is reused across attempts, so a stale
-    OLD-id row can share a path with the LIVE new-id row mid-play; reaping it
-    would ``git worktree remove --force`` the live directory (#203).
+    ``protected_ids`` are the ``worktree_id``s of live dispatches — a PR can
+    close while its worktree is mid-play, and reclaiming it out from under the
+    running play is the "worktree reclaimed mid-play" failure (#189). They are
+    never reaped. ``protected_paths`` (canonicalised via :func:`_canon_path`)
+    adds the dup-path-alias defense: any ``stale`` row whose canonical path
+    matches a live path is skipped EVEN IF its ``worktree_id`` differs — the
+    ``pickup-<N>`` directory is reused across attempts, so a stale OLD-id row
+    can share a path with the LIVE new-id row mid-play; reaping it would
+    ``git worktree remove --force`` the live directory (#203). Mirrors
+    :func:`reap_for_disk_pressure`'s id+path protection so the manager need not
+    fork this loop.
     """
     if ttl_seconds < 0:
         msg = f"ttl_seconds must be >= 0, got {ttl_seconds}"
         raise ValueError(msg)
-    protected = protected_paths or set()
+    protected = protected_ids or set()
+    protected_path_set = protected_paths or set()
     cutoff = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
     stale = await list_stale(store, session_id=session_id, before_iso=cutoff.isoformat())
     report = ReapReport()
     for row in stale:
-        if _canon_path(row.worktree_path) in protected:
+        if row.worktree_id in protected:
+            log.info(
+                "worktree_closed_pr_reap_skipped_in_flight",
+                worktree_id=row.worktree_id,
+                branch=row.branch_name,
+                reason="id_in_flight",
+            )
+            continue
+        if _canon_path(row.worktree_path) in protected_path_set:
             log.info(
                 "worktree_closed_pr_reap_skipped_in_flight",
                 worktree_id=row.worktree_id,

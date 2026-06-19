@@ -184,7 +184,9 @@ async def test_manager_reap_closed_prs_skips_dup_path_alias(
     yet ``protected_paths`` does — the manager must skip it anyway.
     """
     from agentshore.agents.worktree import WorktreeManager
+    from agentshore.agents.worktree.manager import WorktreeAllocation
     from agentshore.config import RuntimeConfig
+    from agentshore.state import PlayType
 
     target = worktree_root / "pickup-7"
     _git("worktree", "add", "-b", "pickup-7-wt", str(target), "HEAD", cwd=main_repo)
@@ -206,12 +208,19 @@ async def test_manager_reap_closed_prs_skips_dup_path_alias(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    # A LIVE new-id dispatch shares this path; only the path protects it.
-    report = await wm.reap_closed_prs(
-        ttl_seconds=3600,
-        protected_ids={9999},  # arbitrary live id, NOT the stale row
-        protected_paths={_canon_path(target)},
+    # A LIVE new-id dispatch (id 9999) shares this path; registering it protects
+    # the stale old-id row at the same path by its canonical path alone (#203).
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=9999,
+            path=target,
+            branch_name=None,
+            pre_branch_key="pickup-7-live",
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        )
     )
+    report = await wm.reap_closed_prs(ttl_seconds=3600)
 
     assert report.total == 0
     row = await lookup_by_id(store, worktree_id=stale_old_id)

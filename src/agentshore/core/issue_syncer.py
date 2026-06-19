@@ -12,7 +12,6 @@ import aiosqlite
 from agentshore.core.helpers import _logger
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
     from agentshore.core.session_runtime import SessionRuntime
@@ -47,65 +46,6 @@ _ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
     "already CLOSED",
     "already closed",
 )
-
-
-# ---------------------------------------------------------------------------
-# Helper: protected worktree IDs / paths from live dispatch contexts
-# ---------------------------------------------------------------------------
-
-
-def protected_worktree_ids(
-    dispatch_ctx: Mapping[str, object],
-) -> set[int]:
-    """Return the set of in-flight worktree IDs extracted from ``dispatch_ctx``.
-
-    Reads the protected worktree IDs via the deep
-    ``ctx.params._runtime_allocation.worktree_id`` getattr chain used by both
-    sweep methods. Centralising the read here means the lifecycle plan's later
-    swap (to ``WorktreeManager.register_dispatch``) is a one-line change.
-    """
-    return {
-        wt_id
-        for ctx in dispatch_ctx.values()
-        if isinstance(
-            wt_id := getattr(
-                getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                "worktree_id",
-                None,
-            ),
-            int,
-        )
-    }
-
-
-def protected_worktree_paths(
-    dispatch_ctx: Mapping[str, object],
-    *,
-    canon_path_fn: object,
-) -> set[str]:
-    """Return the set of in-flight worktree *paths* from ``dispatch_ctx``.
-
-    Mirrors ``protected_worktree_ids`` for the path-keyed alias protection
-    (#203): a stale old-id row can share a ``pickup-<N>`` directory with the
-    live new-id row; id-keyed protection alone would let the reaper remove
-    the live directory. ``canon_path_fn`` is passed in (typically
-    ``reaper._canon_path``) to avoid importing it at module level.
-    """
-    import operator as _op  # noqa: PLC0415
-
-    _canon = canon_path_fn if callable(canon_path_fn) else _op.methodcaller("__str__")
-    return {
-        _canon(path)
-        for ctx in dispatch_ctx.values()
-        if (
-            path := getattr(
-                getattr(getattr(ctx, "params", None), "_runtime_allocation", None),
-                "path",
-                None,
-            )
-        )
-        is not None
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -359,17 +299,9 @@ class IssueSyncer:
         """
         if self._runtime.worktrees is None:
             return
-        from agentshore.agents.worktree.reaper import _canon_path  # noqa: PLC0415
-
-        protected = protected_worktree_ids(self._runtime.dispatch_ctx)
-        protected_paths = protected_worktree_paths(
-            self._runtime.dispatch_ctx, canon_path_fn=_canon_path
-        )
         try:
             report = await self._runtime.worktrees.reap_closed_prs(
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
-                protected_ids=protected,
-                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_pr_ttl_reap_failed", error=str(exc))
@@ -395,18 +327,9 @@ class IssueSyncer:
         target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
         if target_mb <= 0:
             return
-        from agentshore.agents.worktree.reaper import _canon_path  # noqa: PLC0415
-
-        protected = protected_worktree_ids(self._runtime.dispatch_ctx)
-        # Mirror the closed-PR sweep's path-keyed protection (#203 dup-path alias).
-        protected_paths = protected_worktree_paths(
-            self._runtime.dispatch_ctx, canon_path_fn=_canon_path
-        )
         try:
             report = await self._runtime.worktrees.reap_for_disk_pressure(
                 target_free_mb=target_mb,
-                protected_ids=protected,
-                protected_paths=protected_paths,
             )
         except (OSError, aiosqlite.Error, ValueError) as exc:
             _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))
