@@ -57,16 +57,19 @@ _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Do not invent other keys. Output only that one fenced JSON block."
 )
 
-# #236: agy-specific variant for when the agent ended its turn by delegating to its
-# internal manage_task async tool instead of completing the work. Unlike the generic nudge
-# (which says "don't redo work"), the work was never finished — the agent must re-run it
-# synchronously without manage_task. Resume context gives it the full history of what it
-# was trying to do; the nudge redirects execution style, not scope.
+# #236: agy-specific variant for when the agent ended its turn by deferring work to an
+# async/background task (the manage_task tool, a backgrounded command, or just "pause and
+# wait for it to finish") instead of completing the work. Unlike the generic nudge (which
+# says "don't redo work"), the work was never finished — the agent must re-run it
+# synchronously. Resume context gives it the full history of what it was trying to do; the
+# nudge redirects execution style, not scope.
 _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
-    "Your previous turn ended by delegating a command to manage_task instead of running "
-    "it to completion. Do not use manage_task. Re-run the remaining work in this turn "
-    "synchronously — wait for each command to finish before proceeding — then emit the "
-    "fenced JSON result block. Do not end this turn until the JSON block is emitted."
+    "Your previous turn ended by deferring a command to an async or background task and "
+    "waiting on it, instead of running it to completion. Do not use manage_task, do not "
+    "background commands, and do not pause to wait for a task to finish. Re-run the "
+    "remaining work in this turn synchronously — wait for each command to finish before "
+    "proceeding — then emit the fenced JSON result block. Do not end this turn until the "
+    "JSON block is emitted."
 )
 
 # First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
@@ -75,7 +78,7 @@ _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
 # antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
 # into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
 # and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
-# Not applied for manage_task handoffs (#236) — those require completing real work.
+# Not applied for async/background handoffs (#236) — those require completing real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
 
 # Maximum consecutive clean-exit empty no-op dispatches before the play is failed
@@ -649,12 +652,13 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
-            # #236: agy manage_task handoff — agent delegated work async instead of
-            # completing it; the work is unfinished so we cannot ask for re-emission.
+            # #236: agy async/background handoff — agent deferred work to an async
+            # task and ended the turn waiting on it instead of completing it; the
+            # work is unfinished so we cannot ask for re-emission.
             # #229: near-miss — JSON present but no top-level boolean ``success``.
             # Otherwise: generic "emit the JSON block" nudge.
-            is_manage_task = cli_antigravity.is_manage_task_handoff(invocation.raw_output)
-            if is_manage_task:
+            is_async_handoff = cli_antigravity.is_async_handoff(invocation.raw_output)
+            if is_async_handoff:
                 retry_prompt = _JSON_RETRY_ASYNC_HANDOFF_PROMPT
             elif skill_result.missing_success_envelope:
                 retry_prompt = _JSON_RETRY_MISSING_SUCCESS_PROMPT
@@ -667,7 +671,7 @@ class SkillBackedPlay(Play, ABC):
                 session_id=invocation.session_id,
                 original_output_length=len(invocation.raw_output),
                 missing_success_envelope=skill_result.missing_success_envelope,
-                manage_task_handoff=is_manage_task,
+                async_handoff=is_async_handoff,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
@@ -678,9 +682,11 @@ class SkillBackedPlay(Play, ABC):
                 resume_session_id=invocation.session_id,
                 # #232: a re-emission should stream promptly — don't inherit agy's
                 # 1800s fresh-task first-byte deadline; fast-fail instead.
-                # #236: manage_task handoffs require completing real work, not just
-                # re-printing — let them inherit the full per-agent-type deadline.
-                first_byte_timeout_override=(None if is_manage_task else _JSON_RETRY_FIRST_BYTE_S),
+                # #236: async/background handoffs require completing real work, not
+                # just re-printing — let them inherit the full per-agent-type deadline.
+                first_byte_timeout_override=(
+                    None if is_async_handoff else _JSON_RETRY_FIRST_BYTE_S
+                ),
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(

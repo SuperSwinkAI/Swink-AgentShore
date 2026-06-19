@@ -104,13 +104,33 @@ def extract_output(raw: str) -> str:
     return "" if content == "(empty)" else content
 
 
-_MANAGE_TASK_HANDOFF_MARKER = "manage_task status"
+# #236: agy ends its turn by deferring real work to an async/background task and
+# "waiting" for it, instead of running it to completion and emitting a JSON result
+# block. The first observed variant delegated to the internal ``manage_task`` tool
+# ("Obtaining command output... manage_task status <id>"); a later variant phrased
+# the same behaviour with no ``manage_task`` token at all ("I will pause calling
+# tools and wait for the cargo clippy background task to finish"). Match the
+# *behaviour* (turn ended waiting on deferred work), not one literal tool name.
+# Safe to keep liberal: this only runs when no JSON result block was produced, so
+# the work is already incomplete — a false positive merely uses the (correct)
+# "re-run synchronously" nudge instead of the generic one.
+_ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
+    "manage_task",
+    "pause calling tools",
+    "background task to finish",
+    "wait for the background task",
+    "obtaining command output",
+    "wait for notification",
+    "wait for the task notification",
+)
 
 
-def is_manage_task_handoff(raw: str) -> bool:
-    """Return True when agy ended its turn by delegating to an async manage_task
-    operation instead of completing work and emitting a JSON result block."""
-    return _MANAGE_TASK_HANDOFF_MARKER in raw
+def is_async_handoff(raw: str) -> bool:
+    """Return True when agy ended its turn by deferring work to an async/background
+    task and waiting on it, instead of completing the work and emitting a JSON
+    result block (#236)."""
+    lowered = raw.lower()
+    return any(marker in lowered for marker in _ASYNC_HANDOFF_MARKERS)
 
 
 def build_resume_argv(
