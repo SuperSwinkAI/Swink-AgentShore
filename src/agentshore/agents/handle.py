@@ -156,6 +156,20 @@ class AgentInvocationResult:
     session_id: str | None = None
 
 
+def is_noop_invocation(result: AgentInvocationResult) -> bool:
+    """True when a dispatch was a clean-exit empty no-op.
+
+    The agent process exited 0 (no crash, no kill) yet produced no usable
+    output at all — ``raw_output`` is empty after the adapter's own unwrapping
+    (e.g. agy's ``(empty)`` task envelope is already flattened to ``""`` by
+    ``cli_antigravity.extract_output`` before the result reaches here). This is
+    the agy empty-no-op signature; codex/grok empty output arrives with a
+    non-zero exit or a kill and so never matches. The single shared definition
+    used by both the manager (telemetry) and the no-op retry (skill_backed/base).
+    """
+    return result.exit_code == 0 and not result.raw_output.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class TaskRecord:
     """Record of one dispatched task appended to an AgentHandle's history."""
@@ -208,6 +222,12 @@ class AgentHandle:
     # for the full stream-idle window again (#161). Benching on this counter
     # bounds the storm without disabling the self-heal play itself.
     consecutive_timeouts: int = 0
+    # Cumulative count of clean-exit empty no-op dispatches this agent returned
+    # (see is_noop_invocation). Telemetry/agent-health only — never reset — so a
+    # session report can show an agent's no-op rate instead of those dispatches
+    # showing up only as silent play failures. The consecutive-no-op streak that
+    # triggers a take_break is bounded by the in-play retry loop, not this field.
+    noop_count: int = 0
     github_identity: str | None = None
     # Identity env overlay resolved once at instantiate() and reused by every
     # dispatch — never re-resolved per play. Empty when the agent has no bound
@@ -282,4 +302,5 @@ class AgentHandle:
                 self.current_play_type.value if self.current_play_type is not None else None
             ),
             "current_play_id": self.current_play_id,
+            "noop_count": self.noop_count,
         }

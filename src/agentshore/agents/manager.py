@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from agentshore.agents.circuit_breaker import CircuitBreaker
 from agentshore.agents.cli_agent import dispatch_cli
-from agentshore.agents.handle import AgentHandle, AgentInvocationResult
+from agentshore.agents.handle import AgentHandle, AgentInvocationResult, is_noop_invocation
 from agentshore.agents.identity import (
     IdentityResolutionError,
     resolve_identity_env,
@@ -472,6 +472,12 @@ class AgentManager:
 
         cb.record_success()
         handle.consecutive_timeouts = 0
+        # A clean-exit empty no-op (agy empty task envelope) reaches this success
+        # path — the process didn't crash or time out, it just produced nothing.
+        # Count it for agent-health telemetry; the bounded no-op retry +
+        # take_break trigger live in skill_backed/base.py.
+        if is_noop_invocation(result):
+            handle.noop_count += 1
         result = self._apply_placeholder_cost(result, agent_type=handle.agent_type)
         handle.accumulate(
             tokens_in=result.tokens_in,

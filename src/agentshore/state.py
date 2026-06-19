@@ -142,7 +142,15 @@ class AgentStatus(enum.Enum):
 # "transient_network" (socket close / connection reset, #23) is recoverable —
 # it is a precise carve-out of the old "unknown" bucket, which was recoverable.
 RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
-    {ErrorClass.RATE_LIMIT, ErrorClass.UNKNOWN, ErrorClass.TRANSIENT_NETWORK}
+    {
+        ErrorClass.RATE_LIMIT,
+        ErrorClass.UNKNOWN,
+        ErrorClass.TRANSIENT_NETWORK,
+        # A clean-exit empty no-op (agy returns an empty task envelope) is
+        # recoverable: 3-in-a-row routes the agent into a standard take_break,
+        # exactly like a transient quota/throttle (desktop no-op resilience).
+        ErrorClass.NO_OP,
+    }
 )
 
 # Per-agent circuit breaker (#22): an agent that has produced ZERO successful

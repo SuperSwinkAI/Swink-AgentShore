@@ -75,6 +75,8 @@ def _state():
 
 VALID_JSON = '{"success": true, "artifacts": []}'
 NO_JSON = "I did the work but forgot to emit the JSON trailer."
+# A clean-exit empty no-op: agy's empty task envelope already flattened to "".
+NOOP = ""
 
 
 @pytest.mark.asyncio
@@ -237,3 +239,87 @@ async def test_retry_recovers_for_non_claude_agents(
     assert outcome.success is True
     assert ctx.manager.dispatch.await_count == 2
     assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == session_id
+
+
+# ---------------------------------------------------------------------------
+# No-op retry (clean-exit empty output) — desktop no-op resilience
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_recovers_on_second_attempt() -> None:
+    """A clean-exit empty no-op re-dispatches FRESH and recovers on output."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id="sess-x", exit_code=0)
+    recovered = _invocation(raw_output=VALID_JSON, session_id="sess-x", exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, recovered])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    # The no-op retry is FRESH — it must NOT pass resume_session_id (an empty agy
+    # session resumes empty; only a fresh turn can recover).
+    assert "resume_session_id" not in ctx.manager.dispatch.call_args_list[1].kwargs
+    # Recovered before the streak limit → no take_break trigger.
+    ctx.manager.mark_agent_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_fails_after_three_and_triggers_break() -> None:
+    """Three consecutive no-ops fail the play and route the agent to take_break."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id=None, exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, noop, noop])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    from agentshore.errors import ErrorClass, FailureKind
+
+    assert outcome.success is False
+    assert outcome.failure_kind == FailureKind.AGENT_ERROR
+    assert outcome.retry_requested is True
+    assert "no output" in (outcome.error or "")
+    # 1 initial + 2 fresh re-dispatches == the 3-in-a-row streak limit.
+    assert ctx.manager.dispatch.await_count == 3
+    # The agent is routed into the standard take_break via a recoverable NO_OP.
+    ctx.manager.mark_agent_error.assert_awaited_once()
+    assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
+
+
+@pytest.mark.asyncio
+async def test_noop_does_not_resume_even_with_session_id() -> None:
+    """A no-op never resumes — distinct from the output-but-no-JSON path."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    noop = _invocation(raw_output=NOOP, session_id="sess-present", exit_code=0)
+    ctx.manager.dispatch = AsyncMock(side_effect=[noop, noop, noop])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        await play.execute(state, params, ctx=ctx)
+
+    # Even though a session id is present, the no-op path re-dispatches fresh.
+    for call in ctx.manager.dispatch.call_args_list[1:]:
+        assert call.kwargs.get("resume_session_id") is None

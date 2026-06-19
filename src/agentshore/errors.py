@@ -106,6 +106,14 @@ class ErrorClass(StrEnum):
     TIMEOUT_POST_RESPONSE = "timeout_post_response"
     TIMEOUT_STREAM_IDLE = "timeout_stream_idle"
     OUTPUT_INVALID = "output_invalid"
+    # A clean-exit empty no-op: the agent's process exited 0 but produced no
+    # output at all (no JSON result block, no text). Antigravity (`agy`) does
+    # this non-deterministically — it returns an empty task envelope (5–14 s,
+    # 0 tokens, 0 turns) instead of doing the work. Recoverable and treated like
+    # a transient quota/throttle: 3 consecutive no-ops route the agent into the
+    # standard take_break (desktop no-op resilience). Kept distinct from UNKNOWN
+    # so no-ops are separable from genuine unknown errors in telemetry.
+    NO_OP = "no_op"
     UNKNOWN = "unknown"
 
 

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.agents.handle import is_noop_invocation
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
 from agentshore.plays.dispatch import (
@@ -44,6 +45,14 @@ _JSON_RETRY_PROMPT = (
     "Do not redo or repeat any work. Output only the fenced JSON result block for what "
     "you already did, matching the schema in your instructions."
 )
+
+# Maximum consecutive clean-exit empty no-op dispatches before the play is failed
+# and the agent is routed into a standard take_break. The first dispatch counts as
+# attempt 1, so this bounds the play at 1 initial + 2 fresh re-dispatches. Each
+# re-dispatch is FRESH (no --resume): an empty agy session resumes empty (verified
+# live), so resuming a no-op is useless — only a fresh turn can recover. These 3
+# attempts ARE the "3 no-ops in a row" that trip the break (desktop no-op resilience).
+_NOOP_STREAK_LIMIT = 3
 
 
 def _worktree_cwd_override(params: PlayParams) -> Path | None:
@@ -511,6 +520,78 @@ class SkillBackedPlay(Play, ABC):
             play_type=self.play_type.value,
             cwd_override=dispatch_cwd,
         )
+
+        # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
+        # task envelope — exit 0, no output) is a transient agy/backend flake, not
+        # real work. Re-dispatch FRESH (no --resume; an empty session resumes empty)
+        # up to _NOOP_STREAK_LIMIT times. Any attempt that produces output recovers
+        # the play; _NOOP_STREAK_LIMIT consecutive no-ops is treated like a quota
+        # limit — the agent takes a standard break and the play fails for re-pick.
+        if is_noop_invocation(invocation):
+            attempt = 1
+            _logger.info(
+                "agent_noop",
+                agent_id=agent_id,
+                play_type=self.play_type.value,
+                attempt=attempt,
+                duration_ms=invocation.duration_ms,
+            )
+            while is_noop_invocation(invocation) and attempt < _NOOP_STREAK_LIMIT:
+                # Same worktree-reclaim TOCTOU window the json-retry guards below.
+                if dispatch_cwd is not None and not dispatch_cwd.exists():
+                    return PlayOutcome.failed(
+                        self.play_type,
+                        error=(
+                            f"worktree reclaimed before no-op retry: {dispatch_cwd} "
+                            "no longer exists"
+                        ),
+                        agent_id=agent_id,
+                        retry_requested=True,
+                        failure_kind=FailureKind.AGENT_ERROR,
+                    )
+                retry_invocation = await ctx.manager.dispatch(
+                    agent_id,
+                    prompt,
+                    capability=self.capability,
+                    play_type=self.play_type.value,
+                    cwd_override=dispatch_cwd,
+                )
+                invocation = _merge_invocation_costs(invocation, retry_invocation)
+                attempt += 1
+                if is_noop_invocation(invocation):
+                    _logger.info(
+                        "agent_noop",
+                        agent_id=agent_id,
+                        play_type=self.play_type.value,
+                        attempt=attempt,
+                        duration_ms=retry_invocation.duration_ms,
+                    )
+            recovered = not is_noop_invocation(invocation)
+            _logger.info(
+                "agent_noop_retry_outcome",
+                agent_id=agent_id,
+                play_type=self.play_type.value,
+                recovered=recovered,
+                attempts=attempt,
+            )
+            if not recovered:
+                # _NOOP_STREAK_LIMIT in a row: route the agent into the standard
+                # take_break via a recoverable NO_OP error, then fail for re-pick.
+                await ctx.manager.mark_agent_error(
+                    agent_id,
+                    ErrorClass.NO_OP,
+                    f"agent produced no output on {attempt} consecutive dispatches (no-op)",
+                )
+                return PlayOutcome.failed(
+                    self.play_type,
+                    error=(
+                        "no valid result block found in agent output (agent produced no "
+                        f"output on {attempt} consecutive dispatches)"
+                    ),
+                    agent_id=agent_id,
+                    retry_requested=True,
+                    failure_kind=FailureKind.AGENT_ERROR,
+                )
 
         # Parse the raw result block emitted by the skill
         skill_result = parse_skill_result(invocation.raw_output)
