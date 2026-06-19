@@ -295,8 +295,9 @@ export class AgentShoreStateManager {
   }
 
   private handleStateUpdate(msg: StateUpdate): void {
-    this.latestState = msg;
-    const currentAgents = new Map(msg.agents.map((a) => [a.agent_id, a]));
+    const merged = this.mergeStateUpdate(msg);
+    this.latestState = merged;
+    const currentAgents = new Map(merged.agents.map((a) => [a.agent_id, a]));
 
     // Spawn new agents
     for (const [id, agent] of currentAgents) {
@@ -389,6 +390,66 @@ export class AgentShoreStateManager {
     }
 
     this.previousAgents = currentAgents;
+  }
+
+  private mergeStateUpdate(msg: StateUpdate): StateUpdate {
+    const previous = this.latestState;
+    if (!previous) return msg;
+
+    let preservedActivePlay = false;
+    let changed = false;
+    const agents = msg.agents.map((agent) => {
+      if (agent.current_play) return agent;
+      if (agent.status === "terminated" || agent.status === "error") return agent;
+
+      if (msg.active_play?.agent_id === agent.agent_id) {
+        changed = true;
+        return {
+          ...agent,
+          status: "busy" as AgentStatus,
+          current_play: msg.active_play,
+        };
+      }
+
+      const previousPlay = this.previousInFlightPlayForAgent(previous, agent.agent_id);
+      if (msg.active_play === null && previousPlay) {
+        preservedActivePlay = true;
+        changed = true;
+        return {
+          ...agent,
+          status: "busy" as AgentStatus,
+          current_play: previousPlay,
+        };
+      }
+
+      return agent;
+    });
+
+    if (!preservedActivePlay) {
+      return changed ? { ...msg, agents } : msg;
+    }
+
+    return {
+      ...msg,
+      active_play: previous.active_play,
+      agents,
+    };
+  }
+
+  private previousInFlightPlayForAgent(
+    previous: StateUpdate,
+    agentId: string,
+  ): ActivePlay | null {
+    const active = previous.active_play;
+    if (!active || active.agent_id !== agentId) return null;
+
+    const agent = previous.agents.find((candidate) => candidate.agent_id === agentId);
+    const currentPlay = agent?.current_play;
+    if (!currentPlay) return null;
+
+    return samePlay(active, { ...currentPlay, agent_id: agentId })
+      ? currentPlay
+      : null;
   }
 
   cleanupDespawned(): void {
