@@ -17,6 +17,8 @@ Audit the project's design/spec corpus for concrete requirements that lack imple
 - `represented_open` — an open GH issue and an open beads task already track it.
 - `gap_filled` — this play created or linked the open GH issue and open beads task.
 
+`verified_done` / `represented_open` / `gap_filled` are **reasoning categories for your own bookkeeping — they are NOT JSON keys.** Never emit them in the result block. The only valid output keys are the ones in the fenced schema at the end of this file (`success`, `artifacts[].gaps_found`, `gap_issue_numbers`, `issues_created`, `issues_linked`, `error`, …).
+
 Closed issues, closed beads tasks, or PR titles are not proof of done. If any concrete requirement remains untracked without implementation evidence, return `success: false`.
 
 **There is no "found but unfiled" state.** Every concrete requirement you keep is exactly one of the three buckets above — never a bare gap with no tracker. `Later:` / deferred / phase-2 items are **not** an escape hatch: if shipped → `verified_done`; if already tracked → `represented_open`; if a genuine unmet requirement → you **must** file the tracker now (`gap_filled`). Deferral and sizing are `agentshore-refine-tasks` / `agentshore-groom-backlog`'s job — never a reason to skip filing. A requirement that fails the friction gates below is **dropped entirely** (not counted in any bucket and not in `gaps_found`).
@@ -86,3 +88,5 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
 ```
 
 On any failed GH/beads mutation set `success: false`, name the failed requirement in `error`, and keep successfully created issue/task numbers in the result.
+
+**Emit exactly one fenced JSON block matching the schema above. It MUST have a top-level boolean `success`. Do not invent keys; do not put `gap_filled` / `verified_done` / `represented_open` (or any other bucket name) in the JSON. Output nothing after the closing fence.**

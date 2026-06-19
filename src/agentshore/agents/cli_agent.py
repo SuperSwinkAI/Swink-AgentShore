@@ -454,19 +454,29 @@ _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
 }
 
 
-def _resolve_first_byte_deadline(agent_type: AgentType, cfg: AgentConfig, timeout: float) -> float:
+def _resolve_first_byte_deadline(
+    agent_type: AgentType,
+    cfg: AgentConfig,
+    timeout: float,
+    per_dispatch_override: float | None = None,
+) -> float:
     """Resolve the armed first-byte deadline for one dispatch.
 
-    Precedence: explicit per-agent ``first_byte_timeout_seconds`` override, then
-    the per-agent-type built-in default, then the global ``_FIRST_BYTE_DEADLINE_S``.
-    Always clamped to the wall-clock ``timeout`` so it never outlives the dispatch.
+    Precedence: an explicit ``per_dispatch_override`` (a one-off short budget for
+    a single call, e.g. the no-JSON resume-retry, #232), then the per-agent
+    ``first_byte_timeout_seconds`` config override, then the per-agent-type
+    built-in default, then the global ``_FIRST_BYTE_DEADLINE_S``. Always clamped
+    to the wall-clock ``timeout`` so it never outlives the dispatch.
     """
-    override = cfg.first_byte_timeout_seconds
-    base = (
-        float(override)
-        if override is not None
-        else _FIRST_BYTE_DEADLINE_BY_TYPE.get(agent_type, _FIRST_BYTE_DEADLINE_S)
-    )
+    if per_dispatch_override is not None:
+        base = float(per_dispatch_override)
+    else:
+        override = cfg.first_byte_timeout_seconds
+        base = (
+            float(override)
+            if override is not None
+            else _FIRST_BYTE_DEADLINE_BY_TYPE.get(agent_type, _FIRST_BYTE_DEADLINE_S)
+        )
     return min(base, timeout)
 
 
@@ -902,6 +912,7 @@ async def _await_output_or_timeout(
     prompt_bytes: int,
     sniffer: _StderrSniffer,
     dispatch_start: float,
+    first_byte_timeout_override: float | None = None,
 ) -> tuple[_ReadOutput, bool]:
     """Drive the read/idle/stderr-auth race and return ``(result, post_response_killed)``.
 
@@ -964,7 +975,9 @@ async def _await_output_or_timeout(
     first_byte_task = asyncio.create_task(
         _watch_first_byte(
             stdout_activity,
-            deadline=_resolve_first_byte_deadline(handle.agent_type, cfg, timeout),
+            deadline=_resolve_first_byte_deadline(
+                handle.agent_type, cfg, timeout, first_byte_timeout_override
+            ),
             agent_id=handle.agent_id,
             agent_type=handle.agent_type.value,
             model_tier=handle.model_tier,
@@ -1145,6 +1158,7 @@ async def dispatch_cli(
     on_subprocess_exited: Callable[[int, int | None], Awaitable[None]] | None = None,
     cwd_override: Path | None = None,
     resume_session_id: str | None = None,
+    first_byte_timeout_override: float | None = None,
 ) -> AgentInvocationResult:
     """Invoke the agent CLI and return raw output + metadata.
 
@@ -1175,6 +1189,11 @@ async def dispatch_cli(
         The handle is not mutated — concurrent dispatches against the same
         handle may each target a different worktree. ``AGENTSHORE_PROJECT_PATH``
         in ``identity_env`` continues to point at the main repo.
+    first_byte_timeout_override:
+        One-off launch-to-first-byte budget for this single dispatch, overriding
+        the per-agent/per-type defaults (still clamped to the wall-clock timeout).
+        Set on the no-JSON resume-retry (#232) so a re-emission can't inherit
+        agy's 1800s fresh-task deadline and hang. ``None`` = default resolution.
 
     Each call spawns a fresh CLI session, except the narrow single-shot
     JSON-retry path: when *resume_session_id* is set, the prior session is
@@ -1326,6 +1345,7 @@ async def dispatch_cli(
             prompt_bytes=prompt_bytes,
             sniffer=stderr_sniffer,
             dispatch_start=t_start,
+            first_byte_timeout_override=first_byte_timeout_override,
         )
         # Retained for the narrow JSON-retry path (desktop-dy2j). General
         # --resume dispatch is still banned (see feedback_persistent_sessions).

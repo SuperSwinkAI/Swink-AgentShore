@@ -75,6 +75,9 @@ def _state():
 
 VALID_JSON = '{"success": true, "artifacts": []}'
 NO_JSON = "I did the work but forgot to emit the JSON trailer."
+# A JSON near-miss (#229): balanced object, but no top-level boolean ``success``
+# (mirrors the live agy design_audit failure where prose bucket names displaced it).
+NEAR_MISS = '{"artifacts": [{"type": "design_audit"}], "gap_filled": ["Distribution"]}'
 # A clean-exit empty no-op: agy's empty task envelope already flattened to "".
 NOOP = ""
 
@@ -107,6 +110,43 @@ async def test_retry_recovers_on_missing_json() -> None:
 
     assert second_call.args[1] == _JSON_RETRY_PROMPT
     assert outcome.dollar_cost == pytest.approx(0.02)
+    # #232: the resume retry must NOT inherit a fresh-dispatch first-byte deadline
+    # (1800s for agy) — it carries a short one-off override so a silent resume hang
+    # fast-fails instead of riding 30 min.
+    from agentshore.plays.skill_backed.base import _JSON_RETRY_FIRST_BYTE_S
+
+    assert second_call.kwargs["first_byte_timeout_override"] == _JSON_RETRY_FIRST_BYTE_S
+
+
+@pytest.mark.asyncio
+async def test_missing_success_envelope_uses_targeted_nudge() -> None:
+    """#229: a near-miss (JSON present, no boolean ``success``) gets the defect-specific
+    nudge naming the missing field, not the generic 'emit the JSON block' prompt."""
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    first_result = _invocation(raw_output=NEAR_MISS, session_id="sess-nm")
+    retry_result = _invocation(raw_output=VALID_JSON, session_id="sess-nm")
+    ctx.manager.dispatch = AsyncMock(side_effect=[first_result, retry_result])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    from agentshore.plays.skill_backed.base import (
+        _JSON_RETRY_MISSING_SUCCESS_PROMPT,
+        _JSON_RETRY_PROMPT,
+    )
+
+    assert outcome.success is True
+    assert ctx.manager.dispatch.await_count == 2
+    second_call = ctx.manager.dispatch.call_args_list[1]
+    assert second_call.args[1] == _JSON_RETRY_MISSING_SUCCESS_PROMPT
+    assert second_call.args[1] != _JSON_RETRY_PROMPT
 
 
 @pytest.mark.asyncio

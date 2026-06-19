@@ -126,6 +126,29 @@ def _candidate_result_objects(text: str) -> Iterator[JsonObject]:
             yield obj
 
 
+def _has_balanced_json_object(text: str) -> bool:
+    """Return True if *text* contains at least one parseable JSON object.
+
+    Used only on the failure path (no valid candidate found), so any object this
+    finds necessarily lacked a top-level boolean ``success`` — the signal that
+    distinguishes a JSON near-miss (object present, envelope malformed) from a
+    true no-JSON failure (prose / empty). See #229.
+    """
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        raw_json = _extract_json_object(text, idx)
+        if raw_json is None:
+            continue
+        try:
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            continue
+        if _json_object(data) is not None:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -161,6 +184,21 @@ def parse_skill_result(output: str) -> SkillResult:
         tail = output[-200:] if output else ""
         # Collapse whitespace runs so the tail fits on one log line.
         tail_one_line = " ".join(tail.split())
+        # #229: a balanced JSON object that lacked a top-level boolean ``success``
+        # is a near-miss, not a no-JSON failure. Distinguish it so operators (and
+        # the resume-retry nudge) can name the actual defect. The prefix stays
+        # "no valid result block found in agent output (...)" so the base.py retry
+        # trigger keys on it unchanged.
+        if _has_balanced_json_object(cleaned):
+            detail = (
+                f"agent produced {output_length} chars with a JSON object but no "
+                f"top-level boolean 'success' field; tail: {tail_one_line!r}"
+            )
+            return SkillResult(
+                success=False,
+                error=f"no valid result block found in agent output ({detail})",
+                missing_success_envelope=True,
+            )
         if output_length == 0:
             detail = "agent produced no output"
         elif output_length < 100:

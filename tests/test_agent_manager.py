@@ -535,6 +535,73 @@ async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_t
     assert mgr.last_auth_failed_types == set()
     # A plain stream-idle timeout (no launch-wedge markers) is not a wedge.
     assert mgr.wedge_cooldown_types == set()
+    # #233: but it does start a per-type stream-hang streak (one is not a cluster).
+    assert mgr._type_stream_hang_streak["grok"] == 1
+
+
+async def test_antigravity_stream_hang_cluster_trips_decaying_cooldown(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#233: a cluster of agy zero-stdout 1800s hangs benches the TYPE into the same
+    decaying wedge cooldown (NOT permanent auth suppression, and without lowering the
+    load-bearing 1800s first-byte deadline)."""
+    from agentshore.agents.manager import _STREAM_HANG_CLUSTER_LIMIT
+    from agentshore.config import CircuitBreakerConfig
+
+    mgr = AgentManager(
+        session_id=SESSION_ID,
+        store=store,
+        cfg=RuntimeConfig(
+            agents={
+                "antigravity": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)
+            },
+            # Decouple from the circuit breaker so consecutive timeouts don't trip it.
+            circuit_breaker=CircuitBreakerConfig(failures=_STREAM_HANG_CLUSTER_LIMIT + 5),
+        ),
+        working_dir=tmp_path,
+        python_executable=sys.executable,
+    )
+    handle = await mgr.instantiate(AgentType.ANTIGRAVITY)
+    atype = AgentType.ANTIGRAVITY.value
+    dispatch_cli = AsyncMock(
+        side_effect=PlayTimeoutError(
+            f"agent {handle.agent_id!r} (antigravity/medium) never produced any stdout for 1800s",
+            error_class=ErrorClass.TIMEOUT_STREAM_IDLE,
+        )
+    )
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    # Below the cluster limit: the streak builds but the type is not yet benched.
+    for _ in range(_STREAM_HANG_CLUSTER_LIMIT - 1):
+        with pytest.raises(PlayTimeoutError):
+            await mgr.dispatch(handle.agent_id, "prompt")
+    assert mgr.wedge_cooldown_types == set()
+    assert mgr._type_stream_hang_streak[atype] == _STREAM_HANG_CLUSTER_LIMIT - 1
+
+    # The cluster-limit-th hang benches the whole agy type.
+    with pytest.raises(PlayTimeoutError):
+        await mgr.dispatch(handle.agent_id, "prompt")
+    assert mgr.wedge_cooldown_types == {atype}
+    assert mgr.wedge_cooldown_reasons[atype] == "stream_hang_cluster"
+    # Decaying cooldown, NOT the permanent auth-suppression set.
+    assert mgr.last_auth_failed_types == set()
+    # Streak resets after tripping so the cooldown re-arms cleanly on recurrence.
+    assert mgr._type_stream_hang_streak[atype] == 0
+
+
+async def test_successful_dispatch_resets_type_stream_hang_streak(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#233: any productive dispatch of a type clears its stream-hang streak so a
+    recovered backend isn't benched on a stale count."""
+    monkeypatch.setenv("MOCK_AGENT_FORMAT", "stream_json")
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
+    mgr._type_stream_hang_streak[handle.agent_type.value] = 2
+
+    await mgr.dispatch(handle.agent_id, "do the work")
+
+    assert mgr._type_stream_hang_streak[handle.agent_type.value] == 0
 
 
 # ---------------------------------------------------------------------------
