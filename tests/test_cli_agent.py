@@ -2145,6 +2145,24 @@ def test_stderr_sniffer_suppresses_transient_cache_renewal_eof() -> None:
     assert sniffer.auth_hit is False
 
 
+def test_stderr_sniffer_cache_renewal_eof_then_stdin_closed_trips_auth() -> None:
+    """#231: cache-renewal EOF is transient only until Codex's stdin write fails."""
+    sniffer = _StderrSniffer()
+    cache_line = (
+        "ERROR codex_models_manager::manager: failed to renew cache TTL: "
+        "EOF while parsing a value at line 1 column 0\n"
+    )
+    stdin_line = (
+        "Reading additional input from stdin... "
+        "ERROR codex_core::tools::router: error=write_stdin failed: stdin closed\n"
+    )
+
+    assert sniffer.feed(cache_line) is False
+    assert sniffer.auth_hit is False
+    assert sniffer.feed(stdin_line) is True
+    assert sniffer.auth_hit is True
+
+
 def test_stderr_sniffer_bare_cache_renewal_still_trips() -> None:
     """#190: a bare cache-renewal line (no EOF-parse suffix) is a genuine
     session-token expiry and must still flip auth_hit."""

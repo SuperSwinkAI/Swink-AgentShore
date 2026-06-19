@@ -325,6 +325,29 @@ async def test_timeout_increments_skip_streak_as_non_rearmable() -> None:
     assert play._skip_rearmable[101] is False
 
 
+@pytest.mark.asyncio
+async def test_agent_crash_increments_skip_streak_as_non_rearmable() -> None:
+    """#231: a -9-style agent crash feeds the same non-rearmable issue cooldown."""
+    from agentshore.errors import AgentProcessCrashed
+    from agentshore.plays.base import PlayParams
+
+    play = IssuePickupPlay()
+    params = PlayParams(issue_number=101)
+    state = _make_state([_make_issue(101)], total_plays=5)
+    ctx = object()
+
+    with patch(
+        "agentshore.plays.skill_backed.base.SkillBackedPlay.execute",
+        new=AsyncMock(side_effect=AgentProcessCrashed("agent exited with code -9")),
+    ):
+        for _ in range(_SKIP_CIRCUIT_THRESHOLD):
+            with pytest.raises(AgentProcessCrashed):
+                await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
+
+    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip_rearmable[101] is False
+
+
 def test_timeout_cooldown_does_not_rearm_on_ready_bead() -> None:
     """#222: a timeout cooldown rides out its full window even when the bead is ready.
 
