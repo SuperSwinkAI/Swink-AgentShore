@@ -25,25 +25,10 @@ def test_failure_category_matches_persisted_play_categories() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    ("recoverable", "recovery_action"),
-    [
-        (None, None),
-        (False, "surface to human"),
-    ],
-)
-def test_orchestrator_error_overrides_are_instance_scoped(
-    recoverable: bool | None,
-    recovery_action: str | None,
-) -> None:
-    exc = OrchestratorError(
-        "failed",
-        recoverable=recoverable,
-        recovery_action=recovery_action,
-    )
+def test_orchestrator_error_carries_message_and_error_type() -> None:
+    exc = OrchestratorError("failed")
     assert exc.message == "failed"
-    assert exc.recoverable is (True if recoverable is None else recoverable)
-    assert exc.recovery_action == (recovery_action or "none")
+    assert exc.error_type == "agentshore_error"
 
 
 def test_play_timeout_error_preserves_error_class() -> None:
