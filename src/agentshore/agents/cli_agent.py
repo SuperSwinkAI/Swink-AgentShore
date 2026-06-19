@@ -210,6 +210,7 @@ _AUTH_STDOUT = (
 # expiry and keeps tripping via _AUTH_PATTERNS.
 _CACHE_RENEWAL_MARKERS = ("failed to renew cache ttl", "failed to refresh available models")
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+_STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
 
 def _is_transient_cache_blip(lowered: str) -> bool:
@@ -225,6 +226,13 @@ def _is_transient_cache_blip(lowered: str) -> bool:
     """
     return any(m in lowered for m in _CACHE_RENEWAL_MARKERS) and any(
         m in lowered for m in _PARSE_EOF_MARKERS
+    )
+
+
+def _is_cache_renewal_stdin_hang(lowered: str) -> bool:
+    """#231: True when the cache-renewal EOF blip has become a stdin hang."""
+    return _is_transient_cache_blip(lowered) and all(
+        m in lowered for m in _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS
     )
 
 
@@ -537,8 +545,13 @@ class _StderrSniffer:
             hard_auth = any(p in lowered for p in _AUTH_PATTERNS if p not in _CACHE_RENEWAL_MARKERS)
             cache_auth = any(p in lowered for p in _CACHE_RENEWAL_MARKERS)
             # Cache-renewal-only signal is suppressed when it is the transient
-            # EOF-parse variant; a bare cache-renewal line still trips.
-            if hard_auth or (cache_auth and not _is_transient_cache_blip(lowered)):
+            # EOF-parse variant; a bare cache-renewal line still trips. #231:
+            # if the EOF shape is followed by Codex's stdin-closed write failure,
+            # the dispatch is unrecoverably hung and must fast-fail as auth.
+            cache_stdin_hang = _is_cache_renewal_stdin_hang(lowered)
+            if hard_auth or (
+                cache_auth and (not _is_transient_cache_blip(lowered) or cache_stdin_hang)
+            ):
                 self.auth_hit = True
                 return True
         return False
