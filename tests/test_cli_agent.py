@@ -1991,6 +1991,19 @@ def test_classify_error_github_repo_access_as_auth() -> None:
     )
 
 
+def test_classify_error_repository_not_found_on_stderr_is_auth() -> None:
+    # Phase 4: stderr auth detection now uses the canonical AUTH_MARKERS superset,
+    # so the GitHub-table spelling "repository not found" (absent from the old
+    # cli-stderr table) classifies as AUTH on stderr.
+    assert _classify_error(1, "fatal: repository not found", "") is ErrorClass.AUTH
+
+
+def test_classify_error_repository_not_found_on_stdout_only_is_not_auth() -> None:
+    # stdout stays on the narrow high-precision subset: the same phrase in an
+    # agent's work product must NOT classify as auth.
+    assert _classify_error(1, "", "fatal: repository not found") is not ErrorClass.AUTH
+
+
 @pytest.mark.parametrize(
     "stderr",
     [

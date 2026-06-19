@@ -10,6 +10,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.error_markers import (
+    AUTH_MARKERS,
+)
+from agentshore.error_markers import (
     CACHE_RENEWAL_MARKERS as _CACHE_RENEWAL_MARKERS,
 )
 from agentshore.error_markers import (
@@ -156,7 +159,12 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
 
     if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
         return ErrorClass.RATE_LIMIT
-    if hit(_AUTH_PATTERNS, _AUTH_STDOUT):
+    # stderr matches the broad canonical AUTH_MARKERS superset (Phase 4: all auth
+    # spellings share one table — adds the phrased "http 401/403" / GitHub-table
+    # strings, on top of the bare 401/403/forbidden tokens already present). stdout
+    # stays on the narrow high-precision subset so an agent's work product (code it
+    # edits mentioning 401/403/forbidden) is never misclassified (#19).
+    if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT):
         return ErrorClass.AUTH
     if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
         return ErrorClass.TIMEOUT

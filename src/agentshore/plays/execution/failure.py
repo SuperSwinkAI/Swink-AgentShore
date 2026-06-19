@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentshore.error_markers import PUBLISH_AUTH_MARKERS as _AUTH_ERROR_MARKERS
+from agentshore.error_markers import AUTH_MARKERS
 
 if TYPE_CHECKING:
     from agentshore.state import PlayOutcome
@@ -20,7 +20,12 @@ def _infer_failure_category(outcome: PlayOutcome) -> str:
     if outcome.failure_kind is not None:
         return str(outcome.failure_kind.to_category())
     error = (outcome.error or "").lower()
-    if any(marker in error for marker in _AUTH_ERROR_MARKERS) or "auth" in error:
+    # Auth detection routes through the single canonical AUTH_MARKERS superset
+    # (Phase 4): closes the old miss of GitHub-table spellings ("repository not
+    # found", "http 401/403", …) that the narrow publish subset lacked, and drops
+    # the previous bare ``"auth" in error`` fallback that false-matched
+    # "author"/"authorization"/"authored by".
+    if any(marker in error for marker in AUTH_MARKERS):
         return "agent_error"
     if error.startswith(("test", "ci", "pytest", "lint")):
         return "test_failure"
