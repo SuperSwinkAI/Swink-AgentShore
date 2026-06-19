@@ -116,6 +116,23 @@ class ErrorClass(StrEnum):
     NO_OP = "no_op"
     UNKNOWN = "unknown"
 
+    @classmethod
+    def coerce(cls, value: object) -> ErrorClass:
+        """Coerce an arbitrary value to an ``ErrorClass``, collapsing unknowns.
+
+        Accepts an existing :class:`ErrorClass` (returned as-is) or a string that
+        names a member; anything else — an unrecognised string, ``None``, or a
+        non-string — becomes :attr:`UNKNOWN` rather than persisting an
+        unclassified value to ``last_error_class``. This is the single home for
+        the manager-boundary guard that previously inlined
+        ``ErrorClass(x) if x in ErrorClass._value2member_map_ else UNKNOWN``.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str) and value in cls._value2member_map_:
+            return cls(value)
+        return cls.UNKNOWN
+
 
 def is_disk_full(exc: BaseException) -> bool:
     """True if *exc* (or its cause/context chain) is an ENOSPC ``OSError``.

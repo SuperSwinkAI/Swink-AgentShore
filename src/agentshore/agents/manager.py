@@ -433,11 +433,7 @@ class AgentManager:
                 # a bare AgentTimeout has no attribute, so the default applies.
                 # Coerce to ErrorClass, collapsing any unexpected value to
                 # UNKNOWN rather than persisting an unclassified string.
-                handle.last_error_class = (
-                    ErrorClass(raw_error_class)
-                    if raw_error_class in ErrorClass._value2member_map_
-                    else ErrorClass.UNKNOWN
-                )
+                handle.last_error_class = ErrorClass.coerce(raw_error_class)
                 # The stderr auth-sniffer surfaces a backend session-token expiry
                 # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
                 # lands here rather than in the generic-error branch below. Treat
@@ -697,11 +693,7 @@ class AgentManager:
         handle = self._get_handle(agent_id)
         cb = self._circuit_breakers[agent_id]
         cb.record_failure()
-        coerced = (
-            ErrorClass(error_class)
-            if error_class in ErrorClass._value2member_map_
-            else ErrorClass.UNKNOWN
-        )
+        coerced = ErrorClass.coerce(error_class)
         error_class = coerced
         handle.last_error_class = coerced
         if coerced == ErrorClass.AUTH:
