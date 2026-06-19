@@ -108,8 +108,8 @@ def test_under_threshold_skip_does_not_mask() -> None:
         play._record_skip(101, total_plays=0)
 
     # Streak holds below threshold; not yet on cooldown; precondition still passes.
-    assert play._skip_streaks.get(101) == _SKIP_CIRCUIT_THRESHOLD - 1
-    assert 101 not in play._skip_until
+    assert play._skip.streak(101) == _SKIP_CIRCUIT_THRESHOLD - 1
+    assert play._skip.armed_until(101) is None
     assert play.preconditions(state) == []
 
 
@@ -126,8 +126,8 @@ def test_threshold_skip_blacklists_issue() -> None:
     for _ in range(_SKIP_CIRCUIT_THRESHOLD):
         play._record_skip(101, total_plays=5)
 
-    assert play._skip_streaks.get(101) is None  # streak cleared on cooldown set
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.streak(101) == 0  # streak cleared on cooldown set
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
     reasons = play.preconditions(state)
     assert any("no open issues eligible" in r.text for r in reasons)
@@ -147,7 +147,7 @@ def test_other_issues_still_eligible_during_cooldown() -> None:
 
 
 def test_cooldown_expires_after_configured_plays() -> None:
-    """Once total_plays advances past `_skip_until[N]`, the cooldown clears."""
+    """Once total_plays advances past the armed-until tick, the cooldown clears."""
     play = IssuePickupPlay()
     issues = [_make_issue(101)]
 
@@ -158,7 +158,7 @@ def test_cooldown_expires_after_configured_plays() -> None:
     state_at_expiry = _make_state(issues, total_plays=5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS)
     reasons = play.preconditions(state_at_expiry)
     assert reasons == []
-    assert 101 not in play._skip_until
+    assert play._skip.armed_until(101) is None
 
 
 def test_cooldown_rearms_immediately_when_blocker_clears() -> None:
@@ -174,7 +174,7 @@ def test_cooldown_rearms_immediately_when_blocker_clears() -> None:
     # Trip the cooldown for #101.
     for _ in range(_SKIP_CIRCUIT_THRESHOLD):
         play._record_skip(101, total_plays=5)
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
     # Still well inside the cooldown window, but the bead is now ready.
     graph = ProjectGraph(tasks=[_ready_task(101)], tasks_ready=1, tasks_total=1)
@@ -184,8 +184,8 @@ def test_cooldown_rearms_immediately_when_blocker_clears() -> None:
 
     # Re-armed: no mask, and both trackers cleared for #101.
     assert reasons == []
-    assert 101 not in play._skip_until
-    assert 101 not in play._skip_streaks
+    assert play._skip.armed_until(101) is None
+    assert play._skip.streak(101) == 0
 
 
 def test_cooldown_holds_when_blocker_persists() -> None:
@@ -203,7 +203,7 @@ def test_cooldown_holds_when_blocker_persists() -> None:
     reasons = play.preconditions(state)
 
     assert any("no open issues eligible" in r.text for r in reasons)
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
 
 def test_rearm_only_clears_ready_issue_not_others() -> None:
@@ -226,8 +226,8 @@ def test_rearm_only_clears_ready_issue_not_others() -> None:
 
     play.preconditions(state)
 
-    assert 101 not in play._skip_until
-    assert play._skip_until[202] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) is None
+    assert play._skip.armed_until(202) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
 
 def test_streak_resets_when_issue_closes() -> None:
@@ -235,14 +235,14 @@ def test_streak_resets_when_issue_closes() -> None:
     play = IssuePickupPlay()
     play._record_skip(101, total_plays=0)
     play._record_skip(101, total_plays=0)
-    assert play._skip_streaks.get(101) == 2
+    assert play._skip.streak(101) == 2
 
     # Issue 101 is no longer open (e.g. closed via PR merge).
     state = _make_state([_make_issue(202)], total_plays=0)
     play.preconditions(state)
 
-    assert 101 not in play._skip_streaks
-    assert 101 not in play._skip_until
+    assert play._skip.streak(101) == 0
+    assert play._skip.armed_until(101) is None
 
 
 def _failed_outcome(issue_number: int) -> PlayOutcome:
@@ -296,8 +296,8 @@ async def test_execution_failure_increments_skip_streak() -> None:
         for _ in range(_SKIP_CIRCUIT_THRESHOLD):
             await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
 
-    assert 101 in play._skip_until
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) is not None
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
 
 @pytest.mark.asyncio
@@ -321,7 +321,7 @@ async def test_timeout_increments_skip_streak_as_non_rearmable() -> None:
             with pytest.raises(AgentTimeout):
                 await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
 
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
     assert play._skip_rearmable[101] is False
 
 
@@ -344,7 +344,7 @@ async def test_agent_crash_increments_skip_streak_as_non_rearmable() -> None:
             with pytest.raises(AgentProcessCrashed):
                 await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
 
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
     assert play._skip_rearmable[101] is False
 
 
@@ -361,7 +361,7 @@ def test_timeout_cooldown_does_not_rearm_on_ready_bead() -> None:
 
     for _ in range(_SKIP_CIRCUIT_THRESHOLD):
         play._record_skip(101, total_plays=5, rearmable=False)
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
     # Bead is ready — a rearmable (dependency-block) cooldown would clear here,
     # but this timeout cooldown must hold.
@@ -371,7 +371,7 @@ def test_timeout_cooldown_does_not_rearm_on_ready_bead() -> None:
     reasons = play.preconditions(state)
 
     assert any("no open issues eligible" in r.text for r in reasons)
-    assert play._skip_until[101] == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+    assert play._skip.armed_until(101) == 5 + _SKIP_CIRCUIT_COOLDOWN_PLAYS
 
 
 @pytest.mark.asyncio
@@ -384,7 +384,7 @@ async def test_execution_success_clears_skip_streak_and_cooldown() -> None:
     play._record_skip(101, total_plays=5)
     play._record_skip(101, total_plays=5)
     play._record_skip(101, total_plays=5)
-    assert 101 in play._skip_until
+    assert play._skip.armed_until(101) is not None
 
     params = PlayParams(issue_number=101)
     state = _make_state([_make_issue(101)], total_plays=10)
@@ -396,8 +396,8 @@ async def test_execution_success_clears_skip_streak_and_cooldown() -> None:
     ):
         await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
 
-    assert 101 not in play._skip_streaks
-    assert 101 not in play._skip_until
+    assert play._skip.streak(101) == 0
+    assert play._skip.armed_until(101) is None
 
 
 @pytest.mark.asyncio
@@ -431,5 +431,5 @@ async def test_skipped_outcome_does_not_change_streak() -> None:
         await play.execute(state, params, ctx=ctx)  # type: ignore[arg-type]
 
     # Streak unchanged at 1; cooldown not tripped.
-    assert play._skip_streaks.get(101) == 1
-    assert 101 not in play._skip_until
+    assert play._skip.streak(101) == 1
+    assert play._skip.armed_until(101) is None

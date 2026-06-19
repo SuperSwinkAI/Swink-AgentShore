@@ -608,7 +608,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
     # Pretend the dispatch-mixin recorded two skips before this attempt.
     play._record_skip(265, total_plays=10)
     play._record_skip(265, total_plays=10)
-    assert play._skip_streaks.get(265) == 2
+    assert play._skip.streak(265) == 2
 
     async def _super_execute(*args: object, **kwargs: object) -> Any:
         return PlayOutcome(
@@ -633,7 +633,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
     assert outcome.success
     # Streak must be cleared on a real dispatch so the cooldown counter
     # doesn't carry stale skips across successful runs.
-    assert 265 not in play._skip_streaks
+    assert play._skip.streak(265) == 0
 
 
 # ---------------------------------------------------------------------------

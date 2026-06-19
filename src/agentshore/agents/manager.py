@@ -62,6 +62,12 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
 # a wedge records a bounded cooldown so the type auto-recovers after this many
 # selector ticks (#202). No config field: this is a fixed backstop, not a
 # tunable, and keeping it module-local avoids a config-schema dependency.
+#
+# CLOCK: this horizon is measured in ``last_play_id`` ticks (cooldown.Clock.TICKS),
+# decayed in core/mixins/state.py:_drain_wedge_cooldowns. It is deliberately NOT
+# the same clock as the like-valued issue-pickup skip cooldown
+# (_SKIP_CIRCUIT_COOLDOWN_PLAYS, measured in state.total_plays / Clock.PLAYS) — the
+# shared literal ``20`` is a coincidence, not a relationship. Do not merge them.
 _GROK_WEDGE_COOLDOWN_TICKS = 20
 
 # Consecutive zero-stdout stream-idle timeouts for one agent TYPE before the type

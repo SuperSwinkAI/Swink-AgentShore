@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from agentshore.cooldown import Clock, Cooldown, CooldownSpec
 from agentshore.errors import AgentProcessCrashed, AgentTimeout
 from agentshore.github.labels import ISSUE_PICKUP_SKIP_LABELS
 from agentshore.plays.candidates import MAX_OPEN_PRS
@@ -75,15 +76,24 @@ class IssuePickupPlay(SkillBackedPlay):
 
     def __init__(self) -> None:
         super().__init__()
-        # issue_number → consecutive policy-skip count since last successful dispatch
-        self._skip_streaks: dict[int, int] = {}
-        # issue_number → state.total_plays count at which the issue becomes
-        # eligible again. Set once `_skip_streaks` crosses the threshold.
-        self._skip_until: dict[int, int] = {}
+        # Per-issue failure→cooldown circuit on the PLAYS clock: after
+        # ``_SKIP_CIRCUIT_THRESHOLD`` consecutive failures an issue is benched for
+        # ``_SKIP_CIRCUIT_COOLDOWN_PLAYS`` of ``state.total_plays``. The explicit
+        # ``Clock.PLAYS`` is what keeps this from being confused with the
+        # like-valued grok-wedge cooldown, which counts ``last_play_id`` ticks.
+        self._skip: Cooldown[int] = Cooldown(
+            CooldownSpec(
+                threshold=_SKIP_CIRCUIT_THRESHOLD,
+                cooldown=_SKIP_CIRCUIT_COOLDOWN_PLAYS,
+                clock=Clock.PLAYS,
+            )
+        )
         # issue_number → whether the cooldown re-arms the moment the bead is
         # ready again. True for dependency-block failures (bead readiness is the
         # relevant signal); False for timeout / agent-crash failures, where
         # readiness is irrelevant and re-arming would defeat the cooldown (#222).
+        # Held only for issues currently on cooldown (reconciled in
+        # ``_issues_on_cooldown``).
         self._skip_rearmable: dict[int, bool] = {}
 
     @property
@@ -100,10 +110,12 @@ class IssuePickupPlay(SkillBackedPlay):
 
     def _purge_closed_issues(self, open_numbers: set[int]) -> None:
         """Drop skip-tracking entries for issues that are no longer open."""
-        for tracker in (self._skip_streaks, self._skip_until, self._skip_rearmable):
-            for issue_number in list(tracker):
-                if issue_number not in open_numbers:
-                    del tracker[issue_number]
+        for issue_number in self._skip.tracked_keys():
+            if issue_number not in open_numbers:
+                self._skip.clear(issue_number)
+        for issue_number in list(self._skip_rearmable):
+            if issue_number not in open_numbers:
+                del self._skip_rearmable[issue_number]
 
     def _rearm_ready_issues(self, state: OrchestratorState) -> None:
         """Clear the cooldown for any on-cooldown issue whose bead is now ready.
@@ -118,32 +130,33 @@ class IssuePickupPlay(SkillBackedPlay):
         each ``GraphTask`` carries ``ready`` (``status == OPEN and not
         blocked_by``) and its GH ``issue_number`` — so this needs no extra
         async beads call. An issue that is on cooldown but whose bead is now
-        ready is dropped from ``_skip_until`` and has its streak reset.
+        ready is dropped from the cooldown (streak + armed window cleared).
         """
         graph = state.graph
-        if graph is None or not self._skip_until:
+        on_cooldown = self._skip.armed_keys(now=state.total_plays)
+        if graph is None or not on_cooldown:
             return
         ready_issue_numbers = {
             task.issue_number
             for task in graph.tasks
             if task.ready and task.issue_number is not None
         }
-        for issue_number in ready_issue_numbers & set(self._skip_until):
+        for issue_number in ready_issue_numbers & on_cooldown:
             if not self._skip_rearmable.get(issue_number, True):
                 # Timeout/crash cooldown: bead-readiness never blocked it, so a
                 # ready bead must not clear it — let it ride out the window (#222).
                 continue
-            del self._skip_until[issue_number]
-            self._skip_streaks.pop(issue_number, None)
+            self._skip.clear(issue_number)
             self._skip_rearmable.pop(issue_number, None)
 
     def _issues_on_cooldown(self, total_plays: int) -> set[int]:
         """Return the set of issue_numbers still inside their skip cooldown."""
-        expired = [n for n, until in self._skip_until.items() if total_plays >= until]
-        for n in expired:
-            del self._skip_until[n]
-            self._skip_rearmable.pop(n, None)
-        return set(self._skip_until.keys())
+        on_cooldown = self._skip.armed_keys(now=total_plays)
+        # Keep the rearmability sidecar aligned with the live cooldown set — drop
+        # tags for issues whose window has just expired (pruned by armed_keys).
+        for issue_number in set(self._skip_rearmable) - on_cooldown:
+            del self._skip_rearmable[issue_number]
+        return on_cooldown
 
     def _record_skip(self, issue_number: int, total_plays: int, *, rearmable: bool = True) -> None:
         """Increment the per-issue skip streak, escalating to a cooldown at the threshold.
@@ -153,15 +166,12 @@ class IssuePickupPlay(SkillBackedPlay):
         typically a body-declared dependency block) or a ``AgentTimeout`` /
         ``AgentProcessCrashed`` raised past the accounting block
         (``rearmable=False`` — bead-readiness is irrelevant to a timeout, so the
-        cooldown must not re-arm on it, #222). Resets the streak counter once
-        the cooldown fires and records the cooldown's rearmability.
+        cooldown must not re-arm on it, #222). The ``Cooldown`` resets the streak
+        counter once the cooldown fires; record the cooldown's rearmability when
+        it trips.
         """
-        streak = self._skip_streaks.get(issue_number, 0) + 1
-        self._skip_streaks[issue_number] = streak
-        if streak >= _SKIP_CIRCUIT_THRESHOLD:
-            self._skip_until[issue_number] = total_plays + _SKIP_CIRCUIT_COOLDOWN_PLAYS
+        if self._skip.record_failure(issue_number, now=total_plays) == 0:
             self._skip_rearmable[issue_number] = rearmable
-            del self._skip_streaks[issue_number]
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         issues: list[MaskReason] = []
@@ -262,8 +272,7 @@ class IssuePickupPlay(SkillBackedPlay):
             raise
         if params.issue_number is not None and not outcome.skipped:
             if outcome.success:
-                self._skip_streaks.pop(params.issue_number, None)
-                self._skip_until.pop(params.issue_number, None)
+                self._skip.clear(params.issue_number)
                 self._skip_rearmable.pop(params.issue_number, None)
             else:
                 self._record_skip(params.issue_number, state.total_plays, rearmable=True)
