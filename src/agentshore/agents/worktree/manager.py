@@ -265,6 +265,25 @@ class WorktreeManager:
     def _protected_paths(self) -> set[str]:
         return set(self._inflight.values())
 
+    def _reclaimable_collision_predicate(self, path: Path) -> bool:
+        """``safe_to_force_remove`` predicate handed to the allocator collision-retry.
+
+        A colliding ``pickup-*`` worktree is a reclaimable crashed-session orphan
+        ONLY when it is not a live in-flight dispatch. The branch-collision retry
+        (``_add_worktree_with_collision_retry``) force-removes the worktree git
+        names as the collision holder; when two dispatches contend for the same
+        ``pickup-<issue>`` branch (e.g. a claim-lost repick of the same issue),
+        that holder can be a *running* agent's checkout. Force-removing it deletes
+        the cwd out from under the agent — the #238 "worktree reclaimed mid-play"
+        failure. Refusing protected paths here makes the collision bubble as a
+        normal allocation failure (→ the contending dispatch backs off / repicks)
+        instead of clobbering the live one. The name-prefix check still gates
+        genuine crashed-session orphans (not in ``_inflight``).
+        """
+        if _canon_path(path) in self._protected_paths():
+            return False
+        return _is_reclaimable_collision(path)
+
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
         lock_key = f"{scope}:{key}"
@@ -705,7 +724,7 @@ class WorktreeManager:
                     base_ref=base_ref,
                     fetch=True,
                     fetch_env_overlay=self._fetch_auth_overlay(),
-                    safe_to_force_remove=_is_reclaimable_collision,
+                    safe_to_force_remove=self._reclaimable_collision_predicate,
                 )
             except WorktreeAllocationFailed as exc:
                 # Existing-row reuse failed (disk gone, target dirty, etc).
@@ -748,7 +767,7 @@ class WorktreeManager:
             base_ref=base_ref,
             fetch=True,
             fetch_env_overlay=self._fetch_auth_overlay(),
-            safe_to_force_remove=_is_reclaimable_collision,
+            safe_to_force_remove=self._reclaimable_collision_predicate,
         )
         await self._verify_worktree_registered(allocate, scope=scope)
         try:

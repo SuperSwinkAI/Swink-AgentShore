@@ -665,6 +665,41 @@ def test_register_release_protected_set_contract(
     assert wm._protected_ids() == set()
 
 
+def test_reclaimable_collision_predicate_refuses_protected_inflight_path(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The allocator collision-retry must never force-remove a live in-flight
+    worktree (#238 'worktree reclaimed mid-play').
+
+    When two dispatches contend for the same ``pickup-<issue>`` branch (e.g. a
+    claim-lost repick of the same issue), the second ``git worktree add -B`` hits
+    a branch collision and the retry force-removes the worktree git names as the
+    collision holder. If that holder is a *running* agent's checkout, deleting it
+    yanks the cwd out from under the agent. The predicate that gates the
+    force-remove must therefore return False for any path registered in-flight —
+    making the collision bubble as a normal allocation failure (→ the contending
+    dispatch backs off / repicks) instead of clobbering the live one.
+    """
+    wm = _make_manager(store, main_repo, worktree_root)
+    pickup = worktree_root / "pickup-238"
+
+    # Unregistered crashed-session pickup orphan → reclaimable (force-removable).
+    assert wm._reclaimable_collision_predicate(pickup) is True
+
+    # Registered in-flight → protected; must NOT be force-removed (the #238 guard).
+    wm.register_dispatch(_alloc(238, pickup))
+    assert wm._reclaimable_collision_predicate(pickup) is False
+    # Canonicalisation: a non-normalised spelling of the same path stays protected.
+    assert wm._reclaimable_collision_predicate(worktree_root / "." / "pickup-238") is False
+
+    # Released → reclaimable again once the dispatch finishes.
+    wm.release_dispatch(_alloc(238, pickup))
+    assert wm._reclaimable_collision_predicate(pickup) is True
+
+    # A non-``pickup-`` path is never reclaimable, registered or not.
+    assert wm._reclaimable_collision_predicate(worktree_root / "pr-12") is False
+
+
 async def test_finalize_after_dispatch_releases_inflight_mark(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
