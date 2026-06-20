@@ -27,7 +27,7 @@ from agentshore.errors import (
     IssueInflationDetected,
     PreconditionFailed,
 )
-from agentshore.github.labels import BLOCKED_LABEL, DISALLOWED_LABEL
+from agentshore.github.labels import BLOCKED_LABEL, DISALLOWED_LABEL, blocked_by_marker
 from agentshore.logging import get_logger
 from agentshore.plays._publish_reconciler import (
     IssuePickupPublishReconciler,
@@ -1163,14 +1163,18 @@ class PlayExecutor:
         state: OrchestratorState,
         idempotency_key: str,
     ) -> str:
-        """Persist a body-declared dependency the issue_pickup agent discovered.
+        """Persist a dependency the issue_pickup agent discovered.
 
         Primary: add a real beads ``blocks`` edge (blocked → blocker) so the
         existing candidate mask + ``DependenciesResolvedGate`` drop the issue
         from the pool and ``_rearm_ready_issues`` restores it the tick the
         blocker bead closes — no reaper needed. Fallback: stamp
-        ``agentshore/blocked`` (groom_backlog clears it once the blocker lands)
-        when either issue lacks a bead mirror or the beads write fails.
+        ``agentshore/blocked`` when either issue lacks a bead mirror or the beads
+        write fails, **and post a ``blocked_by_marker`` comment naming the
+        blocker** so groom_backlog can later evidence-clear the label. The label
+        alone carries no ``#N``; without the marker the gate is untraceable and
+        groom can never clear it — the bug behind a backlog of permanently
+        sticky ``agentshore/blocked`` issues (#241).
 
         Closes the timing gap where issue_pickup discovers a dependency at
         execute time but waits for the next groom_backlog pass to mirror it,
@@ -1197,8 +1201,16 @@ class PlayExecutor:
             and await add_blocking_dependency(self._project_path, blocked_bead, blocker_bead)
         ):
             return "beads_edge"
-        # No bead mirror (or the beads write failed) → durable label gate.
+        # No bead mirror (or the beads write failed) → durable label gate. Pair
+        # the (blocker-number-less) label with a marker comment so groom_backlog
+        # can trace the gate to #blocker and evidence-clear it once that closes.
         if await self._apply_issue_labels(blocked_issue, [BLOCKED_LABEL], idempotency_key):
+            if self._github is not None:
+                await self._github.comment_issue(
+                    blocked_issue,
+                    blocked_by_marker(blocker_issue),
+                    f"{idempotency_key}:blocked-by-marker",
+                )
             return "label_fallback"
         return "unpersisted"
 

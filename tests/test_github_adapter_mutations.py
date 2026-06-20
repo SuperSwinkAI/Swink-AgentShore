@@ -190,6 +190,47 @@ async def test_label_issue_dedups_when_mutation_already_recorded(
 
 
 # ---------------------------------------------------------------------------
+# comment_issue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_comment_issue_runs_issue_comment(tmp_path: Path) -> None:
+    adapter, _ = _make_adapter(tmp_path)
+
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "https://github.com/o/r/issues/7#c1", "")
+        ok = await adapter.comment_issue(
+            issue_number=7,
+            body="<!-- agentshore:blocked-by #12 -->",
+            idempotency_key="cm-1",
+        )
+
+    assert ok is True
+    rest = list(run_gh.call_args.args[0])
+    assert rest[0:3] == ["issue", "comment", "7"]
+    body_idx = rest.index("--body")
+    assert rest[body_idx + 1] == "<!-- agentshore:blocked-by #12 -->"
+
+
+@pytest.mark.asyncio
+async def test_comment_issue_returns_false_on_empty_body(tmp_path: Path) -> None:
+    adapter, _ = _make_adapter(tmp_path)
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        ok = await adapter.comment_issue(issue_number=7, body="", idempotency_key="cm-empty")
+    assert ok is False
+    run_gh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_comment_issue_returns_false_when_unavailable(tmp_path: Path) -> None:
+    adapter, _ = _make_adapter(tmp_path)
+    adapter._available = False
+    ok = await adapter.comment_issue(issue_number=1, body="hi", idempotency_key="cm-na")
+    assert ok is False
+
+
+# ---------------------------------------------------------------------------
 # close_issue
 # ---------------------------------------------------------------------------
 

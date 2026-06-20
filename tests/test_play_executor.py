@@ -1820,10 +1820,13 @@ async def test_block_issue_on_adds_beads_edge() -> None:
 
 @pytest.mark.asyncio
 async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
-    """No beads graph → stamp ``agentshore/blocked`` so the issue leaves the pool."""
+    """No beads graph → stamp ``agentshore/blocked`` AND post a blocked-by marker
+    comment naming the blocker, so groom_backlog can later evidence-clear the
+    otherwise-untraceable label (#241)."""
     state = _make_state()  # graph is None
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
+    github.comment_issue = AsyncMock(return_value=True)
     github.fetch_pull_request_by_number = AsyncMock(return_value=None)
 
     with patch(
@@ -1835,6 +1838,10 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     mock_add.assert_not_awaited()
     github.label_issue.assert_awaited_once()
     assert github.label_issue.await_args.args[0:2] == (17, ["agentshore/blocked"])
+    # The marker comment must name the blocker (#12) on the blocked issue (17).
+    github.comment_issue.assert_awaited_once()
+    assert github.comment_issue.await_args.args[0] == 17
+    assert github.comment_issue.await_args.args[1] == "<!-- agentshore:blocked-by #12 -->"
     rec = store.record_external_mutation.await_args.args[0]
     assert rec.status == "label_fallback"
 

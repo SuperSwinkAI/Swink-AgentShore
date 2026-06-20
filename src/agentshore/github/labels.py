@@ -39,6 +39,22 @@ MANUAL_REQUIRED_LABEL = "agentshore/manual-required"
 # removal (see agentshore-groom-backlog/SKILL.md).
 BLOCKED_LABEL = "agentshore/blocked"
 
+# Machine-readable trace AgentShore posts as a comment when it stamps
+# ``BLOCKED_LABEL`` via the label fallback. The label alone carries no blocker
+# number, so without this marker ``groom_backlog`` has no way to know which issue
+# the gate is waiting on and can never evidence-clear it. groom parses the blocker
+# ``#N`` out of this marker (in addition to body ``blocked by #N`` / ``depends on
+# #N`` declarations and beads ``blocked_by`` edges). Full rendered form:
+#   <!-- agentshore:blocked-by #<N> -->
+# (an HTML comment, so it stays invisible in the rendered GitHub issue thread).
+BLOCKED_BY_MARKER_TOKEN = "agentshore:blocked-by"
+
+
+def blocked_by_marker(blocker_issue: int) -> str:
+    """Return the comment body groom parses to learn an opaque label's blocker."""
+    return f"<!-- {BLOCKED_BY_MARKER_TOKEN} #{blocker_issue} -->"
+
+
 # Applied to an issue the planner could not turn into an implementation plan
 # (too ambiguous / too large / needs a human to decompose). Stops
 # write_implementation_plan — and every other implementation-style play — from
