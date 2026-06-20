@@ -338,7 +338,9 @@ def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:
     A GH ``blocked`` / ``agentshore/blocked`` label does not auto-clear when its
     blocker closes, so the issue stays out of the issue_pickup pool forever. Groom
     is the periodic sweep that reconciles the (already self-healed) beads state to
-    the sticky GH label — but only on concrete evidence, never an opaque block.
+    the sticky GH label — tracing the blocker from the body, beads edges, or the
+    marker comment, then either evidence-clearing it or sweeping an untraceable
+    agentshore/blocked gate (#241).
     """
     text = (_TEMPLATE_ROOT / "agentshore-groom-backlog" / "SKILL.md").read_text(encoding="utf-8")
 
@@ -346,8 +348,11 @@ def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:
     assert "blocks_cleared" in text
     assert "--remove-label" in text
     assert "agentshore/blocked" in text
-    # Evidence-gated: requires an identifiable, fully-resolved dependency.
-    assert "identifiable dependency" in text
+    # Blocker tracing pulls from all three sources, not just the body (#241).
+    assert "depends_on_id" in text  # beads-edge source
+    assert "agentshore:blocked-by" in text  # marker-comment source
+    # Untraceable agentshore/blocked gates are swept; the result is reported.
+    assert "blocks_swept" in text
     # Opaque/manual blocks and human-review gates must be left alone.
     assert "needs-human-review" in text
 

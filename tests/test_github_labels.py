@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from agentshore.github.labels import (
     AGENTSHORE_WORKFLOW_LABELS,
+    BLOCKED_BY_MARKER_TOKEN,
+    BLOCKED_LABEL,
     BUG_LABELS,
     DEBUG_TRIGGER_LABELS,
     FAILURE_LABELS,
@@ -17,6 +19,7 @@ from agentshore.github.labels import (
     PLANNED_LABELS,
     PRIORITY_SCORES,
     ROOT_CAUSE_FOUND_LABEL,
+    blocked_by_marker,
 )
 
 
@@ -90,3 +93,19 @@ def test_label_collections_have_expected_types() -> None:
 def test_bug_labels_are_subset_of_failure_labels() -> None:
     """Bug issues should re-trigger the failure-handling branch in resolver.py."""
     assert BUG_LABELS <= FAILURE_LABELS
+
+
+def test_blocked_by_marker_round_trips_blocker_number() -> None:
+    # The marker is an HTML comment carrying the token + blocker #N. groom parses
+    # the #N back out of this exact string, so its shape is a contract (#241).
+    marker = blocked_by_marker(12)
+    assert marker == "<!-- agentshore:blocked-by #12 -->"
+    assert BLOCKED_BY_MARKER_TOKEN in marker
+    assert marker.startswith("<!--") and marker.endswith("-->")
+
+
+def test_blocked_label_is_agentshore_namespaced() -> None:
+    # groom's stale-gate sweep is scoped to the agentshore/ namespace; the plain
+    # `blocked` label (possibly human-set) is never swept.
+    assert BLOCKED_LABEL == "agentshore/blocked"
+    assert BLOCKED_LABEL.startswith("agentshore/")

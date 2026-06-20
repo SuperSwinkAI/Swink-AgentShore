@@ -45,7 +45,19 @@ Keep the human-facing GitHub backlog correct first. These are GH-surface edits (
 
 Any other conflicting state label combination → record in `conflicting_labels_skipped` as `{"issue": N, "conflict": ["label-a", "label-b"]}` and skip that issue for this run (do not guess a resolution, do not add to `verification_failures`). Cap 20 per run; record extras in `conflicting_labels_skipped_deferred` as `{"issue": N}`.
 
-**Remove resolved blocked labels.** A GH issue's `blocked` / `agentshore/blocked` label is sticky — it does **not** auto-clear when the blocker resolves, so the issue silently stays out of the `issue_pickup` pool forever even though nothing blocks it. For each open GH issue carrying `blocked` or `agentshore/blocked`, read its `blocked by #N` / `depends on #N` declarations **from the body in the GH list already fetched** (no bd calls). Remove the label **only** when there is ≥ 1 identifiable dependency **AND every** referenced `#N` is `CLOSED` (decidable from the open/closed GH lists in hand): `gh issue edit <N> --remove-label "<the blocking label actually present>"` (remove whichever of `blocked` / `agentshore/blocked` the issue carries — removing an absent label errors), then `gh issue comment <N> --body "Unblocked by groom-backlog: all blocking dependencies resolved (<#N…>)."`. **Leave the label in place** when no dependency can be identified (an opaque/manual block — a human gate we cannot reason about), any referenced blocker is still open, or the issue also carries `needs-human-review`. **Cap 15 per run** (oldest issue number first). Record each removal in `blocks_cleared` as `{"issue": N, "resolved_deps": [...]}`; record any beyond the cap in `blocks_clear_deferred` as `{"issue": N}`.
+**Remove resolved blocked labels.** A GH issue's `blocked` / `agentshore/blocked` label is sticky — it does **not** auto-clear when the blocker resolves, so the issue silently stays out of the `issue_pickup` pool forever even though nothing blocks it. For each open GH issue carrying `blocked` or `agentshore/blocked`:
+
+1. **Trace its blocker(s)** from every source you already hold or can cheaply read:
+   - **Body** (`gh` list already fetched): `blocked by #N` / `depends on #N` declarations.
+   - **beads edges** (Pre-flight snapshot, no per-bead calls): the issue's own bead (`external_ref="gh-<this>"`) `.dependencies[].depends_on_id`; map each `depends_on_id` bead back to its `external_ref` `gh-<M>` — that `#M` is a blocker. beads edges self-heal on close, so an *open* edge here means a live blocker.
+   - **Marker comment** (only when steps above found nothing, and only for issues carrying `agentshore/blocked`): `gh issue view <N> --json comments` and scan for `<!-- agentshore:blocked-by #M -->`. AgentShore posts this when it stamps `agentshore/blocked` without a bead mirror; the `#M` is the blocker. (Targeted per-issue `gh` read — fine to interleave; never a `bd` call.)
+
+2. **Decide** (each `#M` is decidable `OPEN`/`CLOSED` from the open/closed GH lists in hand):
+   - **Any traced blocker still `OPEN`** → leave the label (genuinely blocked).
+   - **≥ 1 traced blocker AND every one `CLOSED`** → remove it: `gh issue edit <N> --remove-label "<the blocking label actually present>"` (remove whichever of `blocked` / `agentshore/blocked` the issue carries — removing an absent label errors), then `gh issue comment <N> --body "Unblocked by groom-backlog: all blocking dependencies resolved (<#M…>)."`. Record in `blocks_cleared` as `{"issue": N, "resolved_deps": [...]}`. **Cap 15 per run** (oldest number first); extras → `blocks_clear_deferred` as `{"issue": N}`.
+   - **No blocker traceable from any source** → this depends on the label:
+     - **`agentshore/blocked`** (AgentShore-namespaced — it only ever comes from a `block_issue_on` gate whose blocker is now untraceable, i.e. lost/stale) **and the issue does not carry `needs-human-review`** → **sweep it**: `gh issue edit <N> --remove-label "agentshore/blocked"`, then `gh issue comment <N> --body "Unblocked by groom-backlog: agentshore/blocked carried no traceable dependency (no body declaration, beads edge, or marker) — clearing the stale gate. Re-block via issue_pickup if a real dependency remains."`. Record in `blocks_swept` as `{"issue": N}`. **Cap 15 per run** (oldest number first); extras → `blocks_swept_deferred` as `{"issue": N}`.
+     - **plain `blocked`** (may be a human-set gate, not AgentShore's) **or `needs-human-review` present** → leave the label untouched (do not guess at a human's intent).
 
 **Flag oversized issues for refinement** (do not decompose — `refine_tasks` does that). Flag if ≥ 2 of these fire:
 1. Body > 4000 chars.
@@ -90,7 +102,7 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 
 ---
 
-**Verify.** Re-fetch `bd list --all --json --limit 0` and `gh issue list --state open --limit 200`. Check each invariant. Confirm every issue in `blocks_cleared` no longer carries `blocked` / `agentshore/blocked`; confirm `agentshore/needs-refinement` applied to every flagged issue; confirm every `trackers_closed` parent reports `CLOSED`; confirm every `epics_closed` returns `bd show … status: closed`; confirm every `beads_closed_stale` / `issues_closed_stale` is closed. Confirm `dependency_edges_deferred` + `blocks_clear_deferred` hold whatever the per-run caps deferred (no silent truncation). Derive `epics_after`. Snapshot `open_work_after` counts (`gh issue list --state open --limit 200`, `gh pr list --state open --limit 50`). Any failure → `verification_failures`, then `success: false`.
+**Verify.** Re-fetch `bd list --all --json --limit 0` and `gh issue list --state open --limit 200`. Check each invariant. Confirm every issue in `blocks_cleared` and `blocks_swept` no longer carries the label that was removed; confirm `agentshore/needs-refinement` applied to every flagged issue; confirm every `trackers_closed` parent reports `CLOSED`; confirm every `epics_closed` returns `bd show … status: closed`; confirm every `beads_closed_stale` / `issues_closed_stale` is closed. Confirm `dependency_edges_deferred` + `blocks_clear_deferred` + `blocks_swept_deferred` hold whatever the per-run caps deferred (no silent truncation). Derive `epics_after`. Snapshot `open_work_after` counts (`gh issue list --state open --limit 200`, `gh pr list --state open --limit 50`). Any failure → `verification_failures`, then `success: false`.
 
 **Forbidden mutations:**
 - Never touch `.github/workflows/**` or any CI config.
@@ -108,6 +120,9 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "issues_created": [],
   "issues_flagged_for_refinement": [],
   "blocks_cleared": [],
+  "blocks_clear_deferred": [],
+  "blocks_swept": [],
+  "blocks_swept_deferred": [],
   "conflicting_labels_resolved": [],
   "conflicting_labels_deferred": [],
   "conflicting_labels_skipped": [],
