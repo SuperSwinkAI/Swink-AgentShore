@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agentshore.agents import cli_antigravity
 
 
@@ -110,6 +112,26 @@ def test_is_async_handoff_false_for_completed_work() -> None:
     # A normal terminal turn that emitted a result block must not be misclassified.
     raw = '```json\n{"success": true, "summary": "opened PR #42"}\n```'
     assert cli_antigravity.is_async_handoff(raw) is False
+
+
+# #242: real-world tails the ORIGINAL markers all missed (0/16 detected). Each must
+# now classify as an async handoff so the play gets the synchronous re-run nudge.
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "it will complete in the background and we will be notified upon its completion. "
+        "I will now wait for the background build to finish.",
+        "I am waiting for the background task running `bash scripts/test.sh` to complete.",
+        "I've started the build script in the background. I will wait for it to finish.",
+        "I will wait for it to complete. Let's wait for the task to complete.",
+        "I will now pause and wait for the system to notify me when it is done.",
+        "Since it was automatically sent to the background by the system, I will stop "
+        "calling tools and wait for the system to notify me when it finishes.",
+        "I have started the tests in the background. I will wait for them to complete.",
+    ],
+)
+def test_is_async_handoff_detects_real_242_phrasings(tail: str) -> None:
+    assert cli_antigravity.is_async_handoff(tail) is True
 
 
 # --- ensure_low_verbosity_setting --------------------------------------------

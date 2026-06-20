@@ -21,7 +21,7 @@ from agentshore.plays.dispatch import (
     write_play_context,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.state import PlayOutcome, PlayType, SkillResult
+from agentshore.state import AgentType, PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -71,6 +71,32 @@ _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "proceeding — then emit the fenced JSON result block. Do not end this turn until the "
     "JSON block is emitted."
 )
+
+# #242: agy's runtime auto-backgrounds commands it judges long-running and then ends the
+# ``-p`` turn narrating that it is "waiting for the background task" — producing prose, no
+# JSON. The shared discipline preamble already says "run in the foreground", but agy needs
+# this named, emphatic, recency-positioned directive appended to the INITIAL dispatch to
+# comply (verified across Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8 with; the residual
+# leak is caught by ``cli_antigravity.is_async_handoff`` → the retry nudge above). Applied up
+# front so the handoff is *prevented*, not merely retried. agy-only: the other CLIs do not
+# auto-background, so this noise is scoped to ANTIGRAVITY dispatches.
+_ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
+    "\n\n## Antigravity: run every command synchronously\n\n"
+    "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
+    "long it takes. Do NOT send commands to the background, do NOT use a task or "
+    "manage_task tool, and do NOT pause to 'wait for a background task to finish' or "
+    "'wait for a notification' — there is no scheduler that will wake you up. Do NOT end "
+    "your turn until every command has returned and you have emitted the fenced JSON "
+    "result block."
+)
+
+
+def _with_antigravity_sync_directive(prompt: str, agent_type: AgentType | None) -> str:
+    """Append the agy synchronous-execution directive for ANTIGRAVITY dispatches only."""
+    if agent_type == AgentType.ANTIGRAVITY:
+        return prompt + _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE
+    return prompt
+
 
 # First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
 # the agent to re-print a result block it already computed, so it should start streaming
@@ -337,9 +363,11 @@ class SkillBackedPlay(Play, ABC):
                 _logger.warning("learnings_injection_failed", error=str(exc))
 
         assigned_identity: str | None = None
+        dispatch_agent_type: AgentType | None = None
         for agent in state.agents:
             if agent.agent_id == agent_id:
                 assigned_identity = agent.github_identity
+                dispatch_agent_type = agent.agent_type
                 break
 
         review_patterns: list[dict[str, object]] = []
@@ -435,6 +463,9 @@ class SkillBackedPlay(Play, ABC):
                 context_path=context_relative_path,
                 dispatch_cwd=dispatch_cwd,
             )
+            # agy auto-backgrounds long commands and ends the turn waiting (#242);
+            # append the synchronous-execution directive to its INITIAL prompt.
+            prompt = _with_antigravity_sync_directive(prompt, dispatch_agent_type)
 
         claim_group_id_raw = params.extras.get("claim_group_id")
         if isinstance(claim_group_id_raw, str) and claim_group_id_raw:

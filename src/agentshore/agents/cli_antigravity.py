@@ -120,11 +120,28 @@ def extract_output(raw: str) -> str:
 _ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
     "manage_task",
     "pause calling tools",
+    "stop calling tools",
     "background task to finish",
     "wait for the background task",
     "obtaining command output",
     "wait for notification",
     "wait for the task notification",
+    # #242: real-world phrasings the original markers missed (16/16 undetected),
+    # observed across Gemini 3.5 Flash + 3.1 Pro when agy auto-backgrounds a build/
+    # test command and ends the turn waiting. Liberal by design — this runs only on
+    # the no-JSON failure path, so a false positive merely picks the (correct)
+    # "re-run synchronously" nudge.
+    "in the background",
+    "to the background",
+    "for the background",
+    "wait for it to finish",
+    "wait for it to complete",
+    "wait for them to complete",
+    "wait for the task to complete",
+    "wait for the system to notify",
+    "notify me when",
+    "we will be notified",
+    "notified upon its completion",
 )
 
 
