@@ -265,6 +265,26 @@ class WorktreeManager:
     def _protected_paths(self) -> set[str]:
         return set(self._inflight.values())
 
+    async def _live_alias_paths(self) -> set[str]:
+        """Canon paths of every ``active``/``reaping`` row in this session.
+
+        DB-truth complement to the in-memory ``_inflight`` path set for the
+        closed-PR TTL reaper. The reaper removes a ``stale`` row *by path*; the
+        uniquifier only diverts a fresh allocation when an **active** row holds
+        the canonical ``pickup-<N>`` path, so a row that has since gone
+        ``stale`` can still share a directory with a live re-dispatch on the
+        same path. ``_inflight`` is supposed to hold that path back, but it
+        depends on ``register_dispatch`` having run and stayed live — a single
+        gap reaps the live checkout out from under the agent (#243; the
+        in-flight skip never fired across a long production run). Reading the
+        live rows straight from the DB removes that dependency: any stale row
+        aliasing a live directory is skipped regardless of registry state.
+        """
+        from agentshore.agents.worktree.registry import list_active  # noqa: PLC0415
+
+        rows = await list_active(self._store, session_id=self._session_id)
+        return {_canon_path(r.worktree_path) for r in rows}
+
     def _reclaimable_collision_predicate(self, path: Path) -> bool:
         """``safe_to_force_remove`` predicate handed to the allocator collision-retry.
 
@@ -572,15 +592,20 @@ class WorktreeManager:
         reclaiming it out from under the running play is the "worktree
         reclaimed mid-play" failure (#189); the path set additionally holds
         back the #203 dup-path alias (a stale old-id row sharing the live
-        path). Both are passed to the shared ``reap_for_closed_prs`` loop.
+        path). The protected paths are unioned with ``_live_alias_paths`` —
+        DB truth for every active/reaping row — so a stale row aliasing a live
+        ``pickup-<N>`` directory is skipped even when the in-memory in-flight
+        registry missed it (#243). Both are passed to the shared
+        ``reap_for_closed_prs`` loop.
         """
+        protected_paths = self._protected_paths() | await self._live_alias_paths()
         report = await reap_for_closed_prs(
             self._store,
             session_id=self._session_id,
             main_repo=self._main_repo,
             ttl_seconds=ttl_seconds,
             protected_ids=self._protected_ids(),
-            protected_paths=self._protected_paths(),
+            protected_paths=protected_paths,
         )
         await self._prune_locks()
         return report

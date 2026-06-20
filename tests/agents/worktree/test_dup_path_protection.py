@@ -228,6 +228,63 @@ async def test_manager_reap_closed_prs_skips_dup_path_alias(
     assert target.exists()
 
 
+async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """Stale alias of a LIVE *DB* row is held back even with an empty registry (#243).
+
+    This is the production failure that the ``register_dispatch`` path-guard
+    missed: the in-flight registry is empty (no ``register_dispatch`` call),
+    yet an ``active`` row holds the canonical ``pickup-<N>`` path while a
+    ``stale`` old-id row aliases the same directory. The reaper removes by
+    path, so reaping the stale row force-removes the live checkout. The
+    DB-truth ``_live_alias_paths`` defense must skip it from the active row
+    alone — independent of the in-memory ``_inflight`` set.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    target = worktree_root / "pickup-82"
+    _git("worktree", "add", "-b", "pickup-82-wt", str(target), "HEAD", cwd=main_repo)
+
+    old_ts = (datetime.now(UTC) - timedelta(hours=4)).isoformat()
+    # Stale OLD-id row at the shared path (a prior attempt whose PR closed).
+    stale_old_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-82-old",
+        worktree_path=str(target),
+        status="stale",
+        last_used_at=old_ts,
+    )
+    # LIVE new-id row sharing the same directory — active, but NOT registered
+    # in the in-flight registry (the exact #243 gap).
+    await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-82-live",
+        worktree_path=str(target),
+        status="active",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    # No register_dispatch — _inflight is empty; protection must come from DB truth.
+    assert wm._protected_paths() == set()
+
+    report = await wm.reap_closed_prs(ttl_seconds=3600)
+
+    assert report.total == 0
+    row = await lookup_by_id(store, worktree_id=stale_old_id)
+    assert row is not None and row.status == "stale"
+    assert target.exists(), "live active directory must not be removed"
+
+
 # --- per-attempt unique paths ------------------------------------------------
 
 
