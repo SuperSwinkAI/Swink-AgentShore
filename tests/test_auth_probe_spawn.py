@@ -103,8 +103,68 @@ def test_probe_missing_binary_is_error(tmp_path: Path) -> None:
 
 
 def test_probe_unprobeable_agent_type_never_spawns() -> None:
-    # Only CODEX has a probe argv; everything else short-circuits to UNPROBEABLE
-    # without resolving or spawning a binary.
+    # CLAUDE_CODE/GROK have no probe argv and aren't actively probed → UNPROBEABLE
+    # without resolving or spawning a binary. (agy IS actively probed; see below.)
     result = probe_cli_auth(AgentType.CLAUDE_CODE, binary="/nonexistent/claude")
     assert result.status == "unprobeable"
     assert result.ok
+
+
+# --- antigravity (agy) active probe ------------------------------------------
+#
+# agy has no status verb and, when logged out, HANGS in -p mode instead of
+# erroring — so it gets an active liveness probe where a *timeout* is EXPIRED
+# (launch-gating), unlike codex where a timeout is a non-blocking hiccup.
+
+
+def _make_fake_agy(tmp_path: Path, *, body: str) -> str:
+    script = tmp_path / "fake-agy"
+    script.write_text(f"#!{sys.executable}\nimport sys, time\n{body}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_agy_probe_ok(tmp_path: Path) -> None:
+    binary = _make_fake_agy(tmp_path, body="print('OK'); sys.exit(0)")
+    result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary)
+    assert result.status == AUTH_OK
+    assert result.ok
+
+
+def test_agy_probe_timeout_is_expired_not_timeout(tmp_path: Path) -> None:
+    # The defining difference from codex: an agy that hangs (logged-out re-login)
+    # classifies EXPIRED and gates the launch — not the non-blocking TIMEOUT.
+    binary = _make_fake_agy(tmp_path, body="time.sleep(30)")
+    started = time.monotonic()
+    result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary, timeout=0.5)
+    elapsed = time.monotonic() - started
+    assert result.status == AUTH_EXPIRED
+    assert result.blocks_launch
+    assert elapsed < 10.0, f"probe blocked for {elapsed:.1f}s instead of tree-killing"
+    assert "no response" in result.detail.lower()
+
+
+def test_agy_probe_not_authed_marker_is_expired(tmp_path: Path) -> None:
+    # Even on a clean exit, a not-logged-in marker on stderr is launch-gating.
+    binary = _make_fake_agy(
+        tmp_path,
+        body="sys.stderr.write('You are not logged into Antigravity.\\n'); sys.exit(0)",
+    )
+    result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary)
+    assert result.status == AUTH_EXPIRED
+    assert result.blocks_launch
+
+
+def test_agy_probe_empty_output_is_nonblocking_error(tmp_path: Path) -> None:
+    # Clean exit but no output (rare agy no-op): auth isn't disproven → surfaced
+    # as a non-blocking error, never gates the launch.
+    binary = _make_fake_agy(tmp_path, body="sys.exit(0)")
+    result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary)
+    assert result.status == AUTH_ERROR
+    assert not result.blocks_launch
+
+
+def test_agy_probe_missing_binary_is_error(tmp_path: Path) -> None:
+    result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=str(tmp_path / "does-not-exist"))
+    assert result.status == AUTH_ERROR
+    assert not result.blocks_launch

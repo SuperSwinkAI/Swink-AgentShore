@@ -17,10 +17,12 @@ setup screen provably means the launch gate will pass:
 * the desktop ``session.start`` gate (a phase in ``sidecar/session_lifecycle``),
 * the desktop agents/identities setup screen (``agents.check_auth`` RPC).
 
-The probe is intentionally conservative: only agent types with a reliable,
-non-mutating auth-status command are probed; everything else returns
-``UNPROBEABLE`` and never blocks a launch, so this can never introduce a
-false-negative startup failure.
+The probe is intentionally conservative: agent types with a reliable,
+non-mutating auth-status command (codex) are probed via that command; agy is
+probed actively (it has no status verb and, when logged out, *hangs* in ``-p``
+mode rather than erroring — so a probe timeout is its authoritative logged-out
+signal); everything else returns ``UNPROBEABLE`` and never blocks a launch, so
+this can never introduce a false-negative startup failure.
 """
 
 from __future__ import annotations
@@ -72,6 +74,21 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.ANTIGRAVITY: "agy",
 }
 
+# agy has no non-mutating status verb, and — unlike the other CLIs — when its
+# Antigravity OAuth session is dead it does NOT error-and-exit in non-interactive
+# ``-p`` mode. It drops into an interactive re-login prompt and HANGS with zero
+# output until killed (observed: 24 min, the full first-byte watchdog). So for
+# agy a probe that reaches its timeout is the authoritative "logged out" signal,
+# not a transient hiccup. We actively probe with a trivial prompt the live
+# backend answers in ~3-10s; a healthy agy returns well under the ceiling, a
+# wedged one runs to it and is classified EXPIRED (launch-gating).
+_ANTIGRAVITY_PROBE_PROMPT = "Reply with the single word OK and nothing else."
+
+# Generous so a cold agy (language-server + model spin-up) never false-trips:
+# healthy probes return in seconds, so this ceiling is only reached by a
+# genuinely wedged (logged-out) agy.
+ANTIGRAVITY_PROBE_TIMEOUT_S = 45.0
+
 # Output markers indicating the backend is NOT authenticated / the cached
 # session is dead (matched case-insensitively against stdout+stderr) live in the
 # single ``error_markers`` registry as ``PROBE_NOT_AUTHED_MARKERS``, imported
@@ -121,6 +138,14 @@ def probe_cli_auth(
     an :class:`AuthProbeResult`. Blocking in nature (uses ``subprocess.run``);
     async callers should wrap it in ``asyncio.to_thread``.
     """
+    if agent_type == AgentType.ANTIGRAVITY:
+        # agy needs an active liveness probe (no status verb; logged-out = hang)
+        # with a longer ceiling than the generic status-command default. Honor an
+        # explicitly-passed timeout (tests force a tiny one); otherwise use the
+        # agy ceiling so a cold-but-healthy agy never false-trips.
+        agy_timeout = ANTIGRAVITY_PROBE_TIMEOUT_S if timeout == DEFAULT_PROBE_TIMEOUT_S else timeout
+        return _probe_antigravity_auth(env, binary=binary, timeout=agy_timeout)
+
     argv_tail = _PROBE_ARGV.get(agent_type)
     if argv_tail is None:
         return AuthProbeResult(
@@ -186,6 +211,84 @@ def probe_cli_auth(
             else f"auth probe exited {proc.returncode}",
         )
     return AuthProbeResult(agent_type, AUTH_OK, "authenticated")
+
+
+def _probe_antigravity_auth(
+    env: dict[str, str] | None,
+    *,
+    binary: str | None,
+    timeout: float,
+) -> AuthProbeResult:
+    """Active liveness probe for agy's Antigravity OAuth session.
+
+    Runs a trivial ``agy -p`` prompt under hardened (headless) env and a hard
+    subprocess ceiling. A response classifies OK; a not-authed marker or a
+    *timeout* (agy's logged-out interactive-relogin hang) classifies EXPIRED,
+    which gates the launch. Mirrors the spawn-hardening of :func:`probe_cli_auth`
+    (DEVNULL stdin, tree-kill on timeout, no-window creationflags).
+    """
+    at = AgentType.ANTIGRAVITY
+    exe = binary or _DEFAULT_BINARY[at]
+    resolved = shutil.which(exe)
+    if resolved is None:
+        return AuthProbeResult(at, AUTH_ERROR, f"{exe!r} not found on PATH")
+
+    # Wind agy's own internal task wait down just under our hard ceiling so the
+    # process is already tearing itself down as communicate(timeout=) fires.
+    inner_s = max(5, int(timeout) - 5)
+    argv = [resolved, "--print-timeout", f"{inner_s}s", "-p", _ANTIGRAVITY_PROBE_PROMPT]
+    # Hardened, headless env (CI/NO_COLOR/TERM=dumb) matching the dispatch path so
+    # the probe exercises the same conditions a real agy run sees.
+    full_env = subprocess_env.hardened_env(overlay=env or {}, for_antigravity=True)
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=full_env,
+            creationflags=subprocess_env.no_window_creationflags(),
+        )
+    except OSError as exc:
+        return AuthProbeResult(at, AUTH_ERROR, str(exc)[:200])
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if proc.pid is not None:
+            subprocess_env.kill_tree_sync(proc.pid)
+        proc.kill()
+        proc.communicate()
+        return AuthProbeResult(
+            at,
+            AUTH_EXPIRED,
+            f"agy produced no response within {timeout:g}s — its Antigravity OAuth "
+            "session is expired (in -p mode it hangs on an interactive re-login). "
+            "Re-authenticate by launching the Antigravity app or running `agy` once "
+            "interactively.",
+        )
+
+    stdout = stdout or ""
+    stderr = stderr or ""
+    combined = f"{stdout}\n{stderr}".lower()
+    if any(marker in combined for marker in _NOT_AUTHED_MARKERS):
+        detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
+        return AuthProbeResult(at, AUTH_EXPIRED, detail or "Antigravity session not authenticated")
+    if proc.returncode == 0 and stdout.strip():
+        return AuthProbeResult(at, AUTH_OK, "authenticated")
+    if proc.returncode != 0:
+        detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
+        return AuthProbeResult(
+            at,
+            AUTH_ERROR,
+            f"agy auth probe exited {proc.returncode}: {detail}"
+            if detail
+            else f"agy auth probe exited {proc.returncode}",
+        )
+    # Clean exit but empty output: a rare agy no-op. Auth itself isn't disproven,
+    # so surface it as a non-blocking error rather than gating the launch.
+    return AuthProbeResult(at, AUTH_ERROR, "agy returned empty output (auth inconclusive)")
 
 
 def configured_cli_agent_types(cfg: RuntimeConfig) -> list[tuple[AgentType, AgentConfig]]:

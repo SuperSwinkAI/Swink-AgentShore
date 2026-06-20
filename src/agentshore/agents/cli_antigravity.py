@@ -33,6 +33,9 @@ _CONVERSATIONS_CACHE_RELPATH = (
     "last_conversations.json",
 )
 
+# agy's global CLI settings file (theme, model, verbosity, …). Relative to HOME.
+_SETTINGS_RELPATH = (".gemini", "antigravity-cli", "settings.json")
+
 
 def build_argv(
     *,
@@ -191,3 +194,50 @@ def resolve_conversation_id(cwd: Path | str, *, home: str | None) -> str | None:
         return None
     value = data.get(str(cwd))
     return value if isinstance(value, str) and value else None
+
+
+def ensure_low_verbosity_setting(*, home: str | None = None) -> bool:
+    """Set ``verbosity: "low"`` in agy's global settings, preserving other keys.
+
+    agy has no native JSON/structured-output mode and no per-invocation verbosity
+    flag — ``verbosity`` lives only in ``<home>/.gemini/antigravity-cli/
+    settings.json``. ``low`` trims the prose agy emits around its fenced JSON
+    result block (often to *zero* preamble), which lowers token cost and the odds
+    the result parser latches onto a stray example object. AgentShore drives agy
+    via the same global CLI config, so provisioning sets this once at ``init``.
+
+    Idempotent and conservative:
+
+    * Respects an existing ``verbosity`` value (never overwrites a user choice).
+    * Preserves every other key (``colorScheme``, ``model``, …).
+    * Creates the file/dirs if absent; tolerates a missing or malformed file by
+      starting from an empty settings object.
+
+    Returns ``True`` when the file was (re)written, ``False`` when it was already
+    set or the write failed. Never raises.
+    """
+    base = home or os.environ.get("HOME") or str(Path.home())
+    settings_path = Path(base, *_SETTINGS_RELPATH)
+
+    data: dict[str, object] = {}
+    try:
+        with settings_path.open(encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, ValueError):
+        # Missing / unreadable / malformed → start from an empty object.
+        data = {}
+
+    if "verbosity" in data:
+        return False  # respect the user's existing choice
+
+    data["verbosity"] = "low"
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        with settings_path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+    except OSError:
+        return False
+    return True

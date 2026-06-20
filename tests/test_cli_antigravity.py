@@ -110,3 +110,46 @@ def test_is_async_handoff_false_for_completed_work() -> None:
     # A normal terminal turn that emitted a result block must not be misclassified.
     raw = '```json\n{"success": true, "summary": "opened PR #42"}\n```'
     assert cli_antigravity.is_async_handoff(raw) is False
+
+
+# --- ensure_low_verbosity_setting --------------------------------------------
+
+
+def _settings_path(home: Path) -> Path:
+    return home / ".gemini" / "antigravity-cli" / "settings.json"
+
+
+def test_ensure_low_verbosity_writes_when_absent(tmp_path: Path) -> None:
+    # No settings file yet → creates dirs + file with verbosity: low.
+    assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is True
+    data = json.loads(_settings_path(tmp_path).read_text())
+    assert data == {"verbosity": "low"}
+
+
+def test_ensure_low_verbosity_preserves_existing_keys(tmp_path: Path) -> None:
+    path = _settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"colorScheme": "dark", "model": "Gemini 3.1 Pro (High)"}))
+    assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is True
+    data = json.loads(path.read_text())
+    assert data["verbosity"] == "low"
+    assert data["colorScheme"] == "dark"
+    assert data["model"] == "Gemini 3.1 Pro (High)"
+
+
+def test_ensure_low_verbosity_respects_existing_value(tmp_path: Path) -> None:
+    # A user who set verbosity explicitly must not be overwritten.
+    path = _settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"verbosity": "high"}))
+    assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is False
+    assert json.loads(path.read_text())["verbosity"] == "high"
+
+
+def test_ensure_low_verbosity_tolerates_malformed_file(tmp_path: Path) -> None:
+    # Malformed JSON → start from an empty object, still write the setting.
+    path = _settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is True
+    assert json.loads(path.read_text()) == {"verbosity": "low"}

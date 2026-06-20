@@ -310,6 +310,17 @@ def init(
         refresh_availability()
         _init_agents = cli_helpers._detect_agents()
 
+        # -- 3a0. Antigravity (agy) settings provisioning -----------------
+        # agy has no per-invocation verbosity flag; ``verbosity: low`` lives only
+        # in its global settings.json and trims the prose around its fenced JSON
+        # result block (cheaper, cleaner to parse). Set once here, respecting any
+        # existing user value.
+        if "agy" in _init_agents:
+            from agentshore.agents.cli_antigravity import ensure_low_verbosity_setting
+
+            if ensure_low_verbosity_setting():
+                click.echo("Set Antigravity (agy) verbosity to 'low' for cleaner JSON output")
+
         # -- 3a. Agent / tier / model wizard ------------------------------
         try:
             _init_cfg = _load_config_for_agent_setup(config_yaml)
