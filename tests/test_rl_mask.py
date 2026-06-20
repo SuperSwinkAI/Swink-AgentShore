@@ -938,8 +938,10 @@ def test_reverse_failsafe_dead_end_controls_can_be_opened():
 
     mask = compute_reverse_failsafe_mask(state, allow_control_plays=True)
 
+    # Both dead-end controls open on the failsafe path: END_SESSION no longer
+    # carries terminal-readiness preconditions there (#240) — the PPO decides.
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
-    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+    assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
 def _error_agent_snapshot(agent_id: str, error_class: ErrorClass | None):
@@ -976,13 +978,21 @@ def test_end_agent_stays_masked_for_recoverable_error_agent():
     assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
 
-def test_reverse_failsafe_end_session_requires_recent_terminal_evidence():
+def test_reverse_failsafe_end_session_ignores_terminal_preconditions():
+    """The failsafe drops END_SESSION's terminal-readiness preconditions (#240).
+
+    Once the session is wedged the escape hatch must offer END_SESSION to the
+    PPO unconditionally — including when QA evidence is stale/absent. ``run_qa``
+    is user-disableable, so requiring recent successful QA could block the hatch
+    forever. RUN_QA here is far outside the terminal window (and never recorded
+    a success), which the old precondition would have used to mask END_SESSION.
+    """
     from agentshore.state import AgentType
 
     state = _state(
         open_issues=[_issue_snapshot(234)],
         agents=[_agent_snapshot("codex-1", AgentType.CODEX)],
-        plays_since_last_play_type={PlayType.RUN_QA: 49},
+        plays_since_last_play_type={PlayType.RUN_QA: 200},
     )
 
     from agentshore.rl.mask import compute_reverse_failsafe_mask
@@ -2227,6 +2237,38 @@ def test_reverse_failsafe_overlay_is_structural_superset_of_base_mask():
     for i in range(NUM_ACTIONS):
         if base[i]:
             assert overlay[i], f"overlay zeroed base-mask bit {i}"
+
+
+def test_reverse_failsafe_keeps_user_disabled_play_masked():
+    """A user-disabled play must stay masked through the failsafe overlay (#240).
+
+    Regression: the failsafe lifts everything not explicitly hard-masked, so a
+    USER_DISABLEABLE play the user turned off (e.g. CLEANUP) leaked back in via
+    the selector's inline ``compute_reverse_failsafe_mask`` path, which does not
+    re-run the builder's user-disabled stage. The function now honors the
+    preference itself so both call sites are safe.
+    """
+    import numpy as np
+
+    from agentshore.config.models import PreferencesConfig, RuntimeConfig
+    from agentshore.rl.mask import compute_reverse_failsafe_mask
+    from agentshore.state import AgentType
+
+    cfg = RuntimeConfig(preferences=PreferencesConfig(disabled_plays=("cleanup",)))
+    state = _state(
+        open_issues=[_issue_snapshot(234)],
+        agents=[_agent_snapshot("codex-1", AgentType.CODEX)],
+    )
+    # Base mask with CLEANUP masked (as the builder's user-disabled stage would).
+    base = np.zeros(NUM_ACTIONS, dtype=bool)
+
+    overlay = compute_reverse_failsafe_mask(state, cfg=cfg, base_mask=base)
+
+    assert not overlay[PLAY_TO_INDEX[PlayType.CLEANUP]], (
+        "reverse failsafe resurrected a user-disabled play"
+    )
+    # Other fallback work plays are still lifted — the disable is surgical.
+    assert overlay[PLAY_TO_INDEX[PlayType.PRUNE]]
 
 
 def test_reverse_failsafe_overlay_without_base_mask_falls_back_to_v0_14_4():
