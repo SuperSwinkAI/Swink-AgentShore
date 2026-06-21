@@ -192,6 +192,21 @@ class PPOSelector:
         # case); only an explicit incompatibility sets this.
         self._reload_rejected: bool = False
 
+    def update_orchestrator_cfg(self, cfg: RuntimeConfig) -> None:
+        """Adopt a reloaded ``RuntimeConfig`` mid-session.
+
+        The selector captures the orchestrator config at construction and reads
+        it on every ``select()`` to build the action mask — including the
+        hard-mask for plays the user has disabled via Preferences. A SIGHUP /
+        desktop-triggered reload swaps ``SessionRuntime.cfg`` but does not
+        re-create the selector, so without this refresh the selector would keep
+        masking against the bootstrap config and a play disabled mid-session
+        would stay selectable until the session restarts. The RL sub-config
+        (``cfg.rl``) is deliberately not reloadable; only the orchestrator-config
+        reference the mask path reads is refreshed here.
+        """
+        self._orchestrator_cfg = cfg
+
     # ------------------------------------------------------------------
     # PlaySelector protocol
     # ------------------------------------------------------------------

@@ -1199,3 +1199,34 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
         if call.args and call.args[0] == "ppo_selector.confirm_repick"
     ]
     assert confirm_repicks, "confirm_repick must be logged for a live-drift re-pick"
+
+
+# ---------------------------------------------------------------------------
+# update_orchestrator_cfg — mid-session preference reload
+# ---------------------------------------------------------------------------
+
+
+def test_update_orchestrator_cfg_applies_disabled_play_to_mask() -> None:
+    """A play disabled mid-session reaches the selector's action-mask cfg.
+
+    Regression: the selector captured ``orchestrator_cfg`` once at construction
+    and never refreshed it on reload, so the user-disabled hard-mask was built
+    from the bootstrap config. A play turned off mid-session via Preferences
+    stayed selectable until the session restarted (run_qa ran ~8 min after being
+    disabled). ``update_orchestrator_cfg`` must swap the reference the mask reads.
+    """
+    from dataclasses import replace
+
+    from agentshore.config import RuntimeConfig
+    from agentshore.config.models import PreferencesConfig
+    from agentshore.rl.mask import _resolve_user_disabled_plays
+
+    sel = _build_selector()
+
+    enabled = RuntimeConfig()
+    sel.update_orchestrator_cfg(enabled)
+    assert PlayType.RUN_QA not in _resolve_user_disabled_plays(sel._orchestrator_cfg)
+
+    disabled = replace(enabled, preferences=PreferencesConfig(disabled_plays=("run_qa",)))
+    sel.update_orchestrator_cfg(disabled)
+    assert PlayType.RUN_QA in _resolve_user_disabled_plays(sel._orchestrator_cfg)

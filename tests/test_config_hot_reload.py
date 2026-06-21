@@ -200,3 +200,37 @@ async def test_reload_config_rejects_budget_below_floor(tmp_path: Path) -> None:
 
         assert orch._cfg is original_cfg
         assert orch._cfg.budget.total == 20.0
+
+
+@pytest.mark.asyncio
+async def test_reload_refreshes_live_ppo_selector_cfg(tmp_path: Path) -> None:
+    """A reload pushes the swapped config into the live PPO selector.
+
+    Regression: the selector builds its action mask from an ``orchestrator_cfg``
+    captured at construction and is not re-created on reload. Without refreshing
+    that reference, a play disabled mid-session via Preferences stayed selectable
+    until the session restarted (run_qa ran ~8 min after being disabled).
+    """
+    from unittest.mock import MagicMock
+
+    from agentshore.rl.selector import PPOSelector
+
+    config_path = tmp_path / "agentshore.yaml"
+    _write_config(config_path, {"budget": {"enabled": True, "total": 20.0}})
+
+    orch = await Orchestrator.bootstrap(
+        cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
+    )
+    async with orch:
+        # spec=PPOSelector so isinstance(selector, _ppo_selector_cls()) holds.
+        selector = MagicMock(spec=PPOSelector)
+        orch._selector = selector
+
+        _write_config(config_path, {"budget": {"enabled": True, "total": 25.0}})
+        await orch._lifecycle.reload_config()
+
+        selector.update_orchestrator_cfg.assert_called_once_with(orch._cfg)
+        assert orch._cfg.budget.total == 25.0
+
+        # Restore so the mock is not exercised during orchestrator shutdown.
+        orch._selector = None
