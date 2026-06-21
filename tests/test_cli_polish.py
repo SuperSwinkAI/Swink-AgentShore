@@ -651,6 +651,9 @@ def test_init_creates_gitignore_when_missing(tmp_path: Path) -> None:
     assert ".agentshore/" in contents
     assert ".agents/" in contents
     assert ".beads/" in contents
+    # The canonical owned-paths list is the single source of truth with the
+    # start-time git-safety sweep — agentshore.yaml must be covered too (#594).
+    assert "agentshore.yaml" in contents
     assert "Created" in result.output and ".gitignore" in result.output
 
 
@@ -675,8 +678,12 @@ def test_init_appends_to_existing_gitignore(tmp_path: Path) -> None:
 
 
 def test_init_idempotent_when_agentshore_already_ignored(tmp_path: Path) -> None:
+    from agentshore.core.git_safety import AGENTSHORE_OWNED_ROOT_PATHS
+
     repo = _make_git_repo(tmp_path)
-    (repo / ".gitignore").write_text("*.pyc\n.agentshore/\n.agents/\n.beads/\n")
+    # Seed the full canonical owned-paths list so init is a true no-op.
+    seeded = "*.pyc\n" + "".join(f"{entry}\n" for entry in AGENTSHORE_OWNED_ROOT_PATHS)
+    (repo / ".gitignore").write_text(seeded)
     original = (repo / ".gitignore").read_text()
 
     runner = CliRunner()

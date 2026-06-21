@@ -90,8 +90,17 @@ _WEDGED_IDLE_STOP_TICKS = 12
 # is masked into a corner (e.g. the only open PRs are all manual-required, so no
 # work play is selectable and END_SESSION is gated), a fully-idle fleet must not
 # poll forever. Wall-clock rather than tick-count because idle_backoff makes the
-# tick spacing vary. Reset to None on any dispatch / busy agent.
+# tick spacing vary. The clock measures *productive* idle: lifecycle-only churn
+# (INSTANTIATE_AGENT <-> END_AGENT) does not reset it, so a session that only
+# cycles agents with no dispatchable work still reaches the deadline (#166).
 _FLEET_IDLE_END_SESSION_SECONDS: float = 1200.0
+
+# Pure fleet-management plays. In-flight/dispatch of these does NOT count as
+# productive activity for the fleet-idle backstop — a session that only churns
+# them is idle for end-session purposes.
+_LIFECYCLE_PLAY_TYPES: frozenset[PlayType] = frozenset(
+    {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
+)
 
 # Cadence for the budget-countdown heartbeat: a budget-only frame the loop emits
 # so the dashboard's remaining-time figure keeps ticking down during quiet
@@ -615,9 +624,14 @@ class LoopRunner:
         # stamps _natural_exit_reason so run_until_idle fires session.completed
         # and the normal teardown (end_agent per agent, checkpoint, beads clear),
         # unlike a bare loop-break which would strand the process at 0 CPU.
-        fleet_fully_idle = not self._runtime.in_flight and not any(
-            a.status is AgentStatus.BUSY for a in state.agents
-        )
+        # "Productively idle" = no work play in flight. A BUSY agent only ever
+        # reflects an in-flight dispatch (state.in_flight_plays mirrors the
+        # dispatch_ctx of not-done dispatches), so lifecycle-only churn — and the
+        # transient BUSY it produces — is treated as idle here. This is what lets
+        # the deadline accumulate through an INSTANTIATE_AGENT <-> END_AGENT
+        # limit cycle instead of being reset every ~40s (#166).
+        productive_in_flight = any(pt not in _LIFECYCLE_PLAY_TYPES for pt in state.in_flight_plays)
+        fleet_fully_idle = not productive_in_flight
         if fleet_fully_idle:
             if self._fleet_idle_since is None:
                 self._fleet_idle_since = time.monotonic()
@@ -1202,7 +1216,12 @@ class LoopRunner:
             self._fleet_idle_persistent_active = False
         self._runtime.idle_streak = 0
         self._wedged_idle_ticks = 0
-        self._fleet_idle_since = None
+        # Only a *productive* selection resets the fleet-idle deadline. A
+        # lifecycle-only pick (INSTANTIATE_AGENT / END_AGENT) must not, or an
+        # instantiate<->end limit cycle would pin the clock at zero forever and
+        # the backstop would never fire (#166).
+        if selection[0] not in _LIFECYCLE_PLAY_TYPES:
+            self._fleet_idle_since = None
 
         play_type, params = selection
 

@@ -11,10 +11,19 @@ import subprocess
 from pathlib import Path
 
 from agentshore.core.git_safety import (
+    AGENTSHORE_OWNED_ROOT_PATHS,
     commit_gitignore_if_dirty,
     ensure_gitignore_entries,
     untrack_ignored_entries,
 )
+
+
+def test_canonical_owned_paths_cover_required_startup_entries() -> None:
+    """Both startup consumers (CLI ``init`` and the desktop/start git-safety
+    sweep) gitignore the canonical owned-paths list, so the four AgentShore
+    artifacts that must never be committed have to live in it."""
+    required = {".agentshore/", ".agents/", ".beads/", "agentshore.yaml"}
+    assert required.issubset(set(AGENTSHORE_OWNED_ROOT_PATHS))
 
 
 def _git(repo: Path, *args: str) -> str:
