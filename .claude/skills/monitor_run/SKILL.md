@@ -37,6 +37,7 @@ PROGRESS        = <this skill dir>/progress.py
 STATE_FILE      = <os-temp-dir>/agentshore-monitor-<sanitized-DIR>.json
 AGENTSHORE_REPO = <the AgentShore source repo — NOT $DIR>
                   # python3 -c "import agentshore, pathlib; print(pathlib.Path(agentshore.__file__).parents[2])"
+WATCH_FILE      = $AGENTSHORE_REPO/tmp/watch_items.md   # persistent, human-editable cross-session watch items
 ```
 
 `<this skill dir>` = directory holding this `SKILL.md`. `<os-temp-dir>` = `$TMPDIR` / `/tmp`
@@ -72,6 +73,12 @@ and finish.
    Derive a short list of subsystems, plays, agent types, or fixes touched in the last
    day that a live session could exercise and break. Persist as `watch_items`. Surface
    once in the first check-in header (`Watching: <items>`).
+5. **Load persistent watch items** from `WATCH_FILE` if it exists (`cat "$WATCH_FILE"`).
+   These are cross-session patterns previously dispositioned as "watch, don't file yet",
+   each with an **escalation trigger**. Merge them with the commit-derived items from
+   step 4. On every check-in, evaluate the current log against each entry's escalation
+   trigger: if a trigger is met, file/comment per Step 6 and remove the entry from
+   `WATCH_FILE`. Surface any persistent-watch matches in the check-in findings.
 
 ## Step 1 — Locate the live log
 
@@ -182,6 +189,14 @@ gh issue create --repo SuperSwinkAI/Swink-AgentShore --label bug \
 ```
 
 Record the issue number in `filed_issues` and report it in the check-in (`filed #NN — <title>`).
+
+**Watch, don't file (yet).** Some findings aren't ready to file — self-healed transients,
+single occurrences adjacent to a known-sensitive area, or patterns whose materiality is
+unproven. Instead of filing, append them to `WATCH_FILE` using the format documented at
+the top of that file (title, first-seen, symptom, why-watch, **escalation trigger**,
+evidence). The escalation trigger is mandatory: it's the condition a later check-in
+checks (Step 0.5) to graduate the watch item into a filed issue. Report watch-only
+dispositions in the check-in (`watch — <title>`).
 
 ## Step 7 — Persist state and schedule (or summarize)
 
