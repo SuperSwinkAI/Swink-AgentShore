@@ -66,6 +66,25 @@ def test_list_agents_projects_canonical_shape(tmp_path: Path) -> None:
     assert codex["tier_models"]["large"] == {}
 
 
+def test_list_agents_drops_unsupported_agent_types(tmp_path: Path) -> None:
+    # A stale config may still carry a retired agent block (e.g. ``gemini``).
+    # list_agents reads raw YAML, so it must apply the same supported-type
+    # allow-list as configure_agent and never surface the ghost row.
+    _write_config(
+        tmp_path / "agentshore.yaml",
+        {
+            "agents": {
+                "claude_code": {"enabled": True},
+                "gemini": {"enabled": True, "model_tiers": {"small": {"model": "gemini-3-pro"}}},
+            }
+        },
+    )
+
+    rows = list_agents(tmp_path)
+
+    assert [row["type"] for row in rows] == ["claude_code"]
+
+
 def test_list_agents_returns_empty_when_block_missing(tmp_path: Path) -> None:
     _write_config(tmp_path / "agentshore.yaml", {"budget": {"enabled": True, "total": 20.0}})
     assert list_agents(tmp_path) == []
