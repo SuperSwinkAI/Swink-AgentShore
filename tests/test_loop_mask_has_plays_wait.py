@@ -207,17 +207,23 @@ async def test_fleet_idle_past_limit_ends_session_via_drain(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock, tmp_path: Path) -> None:
-    """A busy agent means the fleet is not idle — the end-session clock resets to
-    None and the drain never fires, even if the prior idle stretch was long."""
+    """A busy agent running a *work* play means the fleet is productively active —
+    the end-session clock resets to None and the drain never fires, even if the
+    prior idle stretch was long. (Lifecycle-only churn does NOT reset it; that is
+    covered in the drained-idle self-terminate suite, #166.)"""
     import time as _time
     from types import SimpleNamespace
 
     from agentshore.core.mixins import loop as loop_mod
-    from agentshore.state import AgentStatus
+    from agentshore.state import AgentStatus, PlayType
 
     orch = _orch(tmp_path)
     busy = SimpleNamespace(status=AgentStatus.BUSY)
-    state = _StateStub(action_mask=(True, False), agents=(busy,))
+    state = _StateStub(
+        action_mask=(True, False),
+        agents=(busy,),
+        in_flight_plays=(PlayType.ISSUE_PICKUP,),
+    )
     orch._loop._fleet_idle_since = _time.monotonic() - (
         loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
     )
@@ -238,6 +244,51 @@ async def test_busy_agent_resets_fleet_idle_clock(info_calls: MagicMock, tmp_pat
     stop_mock.assert_not_awaited()
     assert orch._loop._fleet_idle_since is None
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_only_in_flight_does_not_reset_fleet_idle_clock(
+    info_calls: MagicMock, tmp_path: Path
+) -> None:
+    """#166: a fleet whose only in-flight play is lifecycle (END_AGENT) — and the
+    BUSY agent it produces — is productively idle. The end-session clock keeps
+    accumulating, so the drain still fires past the deadline instead of being
+    reset by the instantiate<->end churn."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from agentshore.core.mixins import loop as loop_mod
+    from agentshore.state import AgentStatus, PlayType
+
+    orch = _orch(tmp_path)
+    busy = SimpleNamespace(status=AgentStatus.BUSY)
+    state = _StateStub(
+        action_mask=(False, False),
+        agents=(busy,),
+        in_flight_plays=(PlayType.END_AGENT,),
+    )
+    orch._loop._fleet_idle_since = _time.monotonic() - (
+        loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
+    )
+
+    with (
+        patch(
+            "agentshore.plays.candidates.build_candidate_plan",
+            return_value=_candidate_plan_stub(has_remaining_work=False),
+        ),
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+            state, reason="unchanged_digest"
+        )
+
+    stop_mock.assert_awaited_once()
+    args, kwargs = stop_mock.call_args
+    assert args[0] == "fleet_idle_timeout"
+    assert kwargs.get("fire_natural_exit") is True
+    assert result is False
 
 
 @pytest.mark.asyncio

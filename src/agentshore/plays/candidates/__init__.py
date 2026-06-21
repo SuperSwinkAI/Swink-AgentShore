@@ -137,6 +137,11 @@ class WorkAvailability:
     # without a human even below the cap).
     manual_required_open_pr_count: int
     pr_queue_human_blocked: bool
+    # True when any dispatchable work exists (issue/PR/backlog-sync/groom). The
+    # lifecycle-churn breaker reads this to decide whether spawning a new agent
+    # could accomplish anything — distinct from terminal_no_work, which also
+    # requires fresh terminal audits and no in-flight plays.
+    has_actionable_work: bool
     terminal_no_work: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -673,6 +678,7 @@ class PlayCandidateAnalyzer:
             actionable_pr_work_count=len(actionable_pr_numbers),
             manual_required_open_pr_count=manual_required_open_pr_count,
             pr_queue_human_blocked=pr_queue_human_blocked,
+            has_actionable_work=has_actionable_work,
             terminal_no_work=terminal_no_work,
         )
         return PlayCandidatePlan(

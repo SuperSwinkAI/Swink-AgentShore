@@ -88,6 +88,13 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
     }
 )
 
+# Pure fleet-management plays. A mask whose only selectable entries are these
+# represents "no real work available" — the auto reverse-failsafe must keep
+# counting idle ticks instead of resetting, or lifecycle-only churn would pin
+# the counter below threshold and the END_SESSION escape hatch would never open
+# (#166).
+_LIFECYCLE_PLAY_TYPES = frozenset({PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT})
+
 
 _CAPACITY_WAIT_SOURCES = frozenset({MaskSource.ELIGIBILITY, MaskSource.CONFIG, MaskSource.SPAWN})
 
@@ -528,7 +535,14 @@ class PPOSelector:
         all_agents_idle = bool(active_agents) and all(
             agent.status == AgentStatus.IDLE for agent in active_agents
         )
-        if mask.any() or not all_agents_idle:
+        # A mask that only leaves lifecycle plays (INSTANTIATE_AGENT / END_AGENT)
+        # selectable still means "no dispatchable work" — keep counting so the
+        # failsafe can arm and lift END_SESSION even while a reap slips through.
+        has_real_play = any(
+            bool(mask[i]) and INDEX_TO_PLAY[i] not in _LIFECYCLE_PLAY_TYPES
+            for i in range(NUM_ACTIONS)
+        )
+        if has_real_play or not all_agents_idle:
             self._no_available_play_ticks = 0
             return False
 

@@ -404,6 +404,37 @@ def test_select_auto_reverse_failsafe_after_idle_all_masked_ticks():
     assert params.extras["reverse_failsafe_bypassed_preconditions"] is True
 
 
+def test_auto_reverse_failsafe_counts_lifecycle_only_mask_as_no_work():
+    """#166: a mask leaving only lifecycle plays (END_AGENT here) selectable still
+    means 'no dispatchable work' — the failsafe counter must accumulate so it can
+    arm and lift END_SESSION, instead of resetting every time a reap slips
+    through."""
+    sel = _build_selector(all_preconds=False, resolver_params=PlayParams(issue_number=234))
+    state = _state(open_issues=[_issue()], agents=[_agent()])  # all agents idle
+    mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True  # only a lifecycle play selectable
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is True  # tick 3 → arms
+
+
+def test_auto_reverse_failsafe_resets_on_real_selectable_play():
+    """A genuinely selectable work play resets the idle counter (the failsafe must
+    not arm while real work is dispatchable)."""
+    sel = _build_selector(all_preconds=False, resolver_params=PlayParams(issue_number=234))
+    state = _state(open_issues=[_issue()], agents=[_agent()])
+    lifecycle_mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    lifecycle_mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True
+    work_mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    work_mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]] = True
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, work_mask) is False  # resets to 0
+    # Counter restarted: a single lifecycle tick is well below threshold.
+    assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
+
+
 def test_select_auto_reverse_failsafe_opens_dead_end_controls():
     sel = _build_selector(
         all_preconds=False,
