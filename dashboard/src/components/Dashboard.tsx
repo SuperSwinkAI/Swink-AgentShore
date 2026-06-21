@@ -59,7 +59,7 @@ import { TopBarHud, notifyTopBarHud } from "./TopBarHud";
 import { dashboardLogger } from "../logger";
 import { AgentShoreStateManager } from "../state";
 import type { ResolvedTheme, ThemeMode } from "../theme";
-import type { AgentShoreMessage } from "../types";
+import type { AgentShoreMessage, SessionState } from "../types";
 import { WebSocketClient, type ConnectionState, type DashboardTransport } from "../ws";
 
 /**
@@ -109,6 +109,14 @@ export interface DashboardProps {
    * remains a valid earlier fast-path; this is the always-arrives backstop.
    */
   onFirstStateUpdate?: () => void;
+  /**
+   * Fires on EVERY ``state_update`` frame that carries a ``session_state``,
+   * with the latest session lifecycle phase. The desktop uses this to lock
+   * the File > Adjust Budget control once the session is draining /
+   * shutting_down — an absolute cap OVERRIDE silently no-ops past drain, so
+   * the control is disabled rather than letting it fail silently (#244).
+   */
+  onSessionStateChange?: (state: SessionState) => void;
 }
 
 export function Dashboard({
@@ -119,6 +127,7 @@ export function Dashboard({
   themeMode,
   onFirstAgentInstantiated,
   onFirstStateUpdate,
+  onSessionStateChange,
 }: DashboardProps): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>("office");
   const stateManagerRef = useRef<AgentShoreStateManager | null>(null);
@@ -204,6 +213,10 @@ export function Dashboard({
             firstStateUpdateFiredRef.current = true;
             onFirstStateUpdate?.();
           }
+          // Surface the session lifecycle phase on every frame so the desktop
+          // can lock the Adjust Budget control once draining/shutting_down
+          // (the absolute cap OVERRIDE silently no-ops past drain — #244).
+          onSessionStateChange?.(msg.session_state);
           break;
         case "budget_update":
           // Budget-countdown heartbeat: refresh only the budget bar. Routed

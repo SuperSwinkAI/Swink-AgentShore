@@ -89,6 +89,38 @@ describe("AdjustBudgetDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("shows the locked banner and disables Apply when locked (#244)", async () => {
+    getBudgetMock.mockResolvedValueOnce({ budget: APPLIED_CAPPED });
+    render(<AdjustBudgetDialog onClose={() => {}} locked />);
+
+    const banner = await screen.findByTestId("adjust-budget-locked");
+    expect(banner).toHaveTextContent("winding down");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(screen.getByTestId("adjust-budget-submit")).toBeDisabled();
+  });
+
+  it("makes the OVERRIDE/absolute semantic explicit in the copy", async () => {
+    getBudgetMock.mockResolvedValueOnce({ budget: APPLIED_CAPPED });
+    render(<AdjustBudgetDialog onClose={() => {}} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("budget-slider")).toBeInTheDocument(),
+    );
+    // Header sub-copy frames this as setting (not adding to) the caps.
+    expect(screen.getByText(/Set this running session's caps/)).toBeInTheDocument();
+    // Each slider panel's aria-label reads "Set … cap to…" — assert via the
+    // testId'd inputs (the time panel is unlimited/aria-hidden here, so a
+    // role query would miss it).
+    expect(screen.getByTestId("budget-slider")).toHaveAttribute(
+      "aria-label",
+      "Set dollar cap to…",
+    );
+    expect(screen.getByTestId("budget-time-slider")).toHaveAttribute(
+      "aria-label",
+      "Set time cap to…",
+    );
+  });
+
   it("closes without calling setBudgetLive on cancel", async () => {
     getBudgetMock.mockResolvedValueOnce({ budget: APPLIED_CAPPED });
     const onClose = vi.fn();

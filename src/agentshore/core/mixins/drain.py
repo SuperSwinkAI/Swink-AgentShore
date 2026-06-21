@@ -320,7 +320,15 @@ class DrainController:
         (or reverses) the drain when a raised cap moves the session back outside
         its reserve. Persists to ``agentshore.yaml`` when *persist* so caps
         survive restart.
+
+        Rejected once the session is winding down: an absolute cap OVERRIDE
+        while draining/stopping silently no-ops (the loop only dispatches
+        ``end_agent`` past drain), so fail loudly instead. The additive
+        ``add_budget`` (CLI) is the deliberate escape hatch that can raise a
+        cap to reverse a budget-reserve drain, and stays unguarded.
         """
+        if self._runtime.draining or self._runtime.stop_requested:
+            raise OrchestratorError("session is winding down; budget cannot be adjusted")
         self._validate_dollar(dollars_enabled, dollars)
         self._validate_time(time_enabled, time_minutes)
         self._runtime.budget_override_enabled = dollars_enabled

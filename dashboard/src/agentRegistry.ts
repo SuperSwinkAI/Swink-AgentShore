@@ -47,6 +47,12 @@ export interface AgentRegistryEntry {
    * (e.g. API-only agents added in the future).
    */
   spriteUrls: AgentSpriteUrls | null;
+  /**
+   * Marks the agent type as experimental/unreliable.  When true the UI may
+   * surface a "BETA" badge so operators know the runner is not yet first-class
+   * in reliability.  Omitted/false for stable agent types.
+   */
+  beta?: boolean;
 }
 
 /**
@@ -90,6 +96,7 @@ export const AGENT_REGISTRY = {
     label: "Antigravity",
     colorFill: "#4285F4",
     colorLabel: "A",
+    beta: true,
     spriteUrls: {
       small: antigravitySmallSpriteUrl,
       medium: antigravityMediumSpriteUrl,

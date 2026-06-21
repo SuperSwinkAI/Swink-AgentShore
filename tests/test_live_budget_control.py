@@ -260,18 +260,20 @@ async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_raising_time_cap_reverses_drain(tmp_path: Path) -> None:
-    orch = make_test_orchestrator(tmp_path)
+    # The additive ``add_budget`` (CLI escape hatch) is the path that can reverse
+    # a budget/time reserve drain; the absolute ``set_budget`` is hard-rejected
+    # while draining (see test_set_budget_rejected_while_draining).
+    cfg = RuntimeConfig(budget=BudgetConfig(time_enabled=True, time_total_minutes=60))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
     orch._config_path = None
     # Session is draining because the 1h time reserve was reached.
     orch._draining = True
     orch._drain_initialized = True
     orch._drain_reason = "time_budget_reserve_reached"
     orch._end_session_report_requested = True
-    # After raising to 4h with only ~45m elapsed, the reserve is no longer hit.
+    # After extending to 4h with only ~45m elapsed, the reserve is no longer hit.
     _mock_state(orch, _snap(time_enabled=True, time_total=240, time_elapsed=45))
-    applied = await orch.set_budget(
-        dollars_enabled=False, dollars=None, time_enabled=True, time_minutes=240, persist=False
-    )
+    applied = await orch.add_budget(delta_minutes=180, persist=False)
     assert applied["resumed"] is True
     assert orch._draining is False
     assert orch._drain_reason is None
@@ -281,15 +283,67 @@ async def test_raising_time_cap_reverses_drain(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_raising_cap_while_still_in_reserve_does_not_reverse(tmp_path: Path) -> None:
-    orch = make_test_orchestrator(tmp_path)
+    cfg = RuntimeConfig(budget=BudgetConfig(time_enabled=True, time_total_minutes=60))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
     orch._config_path = None
     orch._draining = True
     orch._drain_initialized = True
     orch._drain_reason = "time_budget_reserve_reached"
     # Still within the 20-min reserve even after the bump (55m elapsed of 60m).
     _mock_state(orch, _snap(time_enabled=True, time_total=60, time_elapsed=55))
-    applied = await orch.set_budget(
-        dollars_enabled=False, dollars=None, time_enabled=True, time_minutes=60, persist=False
-    )
+    applied = await orch.add_budget(delta_minutes=1, persist=False)
     assert applied["resumed"] is False
     assert orch._draining is True
+
+
+@pytest.mark.asyncio
+async def test_set_budget_rejected_while_draining(tmp_path: Path) -> None:
+    # The desktop "Adjust Budget" dialog is an absolute OVERRIDE; once the
+    # session is winding down it silently no-ops (the loop only dispatches
+    # end_agent past drain), so set_budget is hard-rejected and the override
+    # caps are left untouched (#244).
+    orch = make_test_orchestrator(tmp_path)
+    orch._config_path = None
+    orch._draining = True
+    before_enabled = orch._budget_override_enabled
+    before_total = orch._budget_override_total
+    with pytest.raises(OrchestratorError, match="winding down"):
+        await orch.set_budget(
+            dollars_enabled=True,
+            dollars=300.0,
+            time_enabled=False,
+            time_minutes=None,
+            persist=False,
+        )
+    # No override mutated on rejection.
+    assert orch._budget_override_enabled == before_enabled
+    assert orch._budget_override_total == before_total
+
+
+@pytest.mark.asyncio
+async def test_set_budget_rejected_while_stop_requested(tmp_path: Path) -> None:
+    orch = make_test_orchestrator(tmp_path)
+    orch._config_path = None
+    orch._stop_requested = True
+    with pytest.raises(OrchestratorError, match="winding down"):
+        await orch.set_budget(
+            dollars_enabled=True,
+            dollars=300.0,
+            time_enabled=False,
+            time_minutes=None,
+            persist=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_add_budget_not_blocked_by_drain(tmp_path: Path) -> None:
+    # add_budget is the intended escape hatch — it must still work while
+    # draining (it's how a reserve drain gets reversed).
+    cfg = RuntimeConfig(budget=BudgetConfig(enabled=True, total=50.0))
+    orch = make_test_orchestrator(tmp_path, cfg=cfg)
+    orch._config_path = None
+    orch._draining = True
+    orch._drain_reason = "budget_reserve_reached"
+    _mock_state(orch, _snap(total=100.0, spent=10.0))
+    await orch.add_budget(delta_usd=50.0, persist=False)
+    assert orch._budget_override_total == 100.0

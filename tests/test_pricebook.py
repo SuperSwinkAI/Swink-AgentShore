@@ -56,6 +56,26 @@ def test_resolve_prefers_per_model_entry() -> None:
     assert sonnet.cost_per_1k_output == 0.015
 
 
+def test_resolve_prefers_per_model_entry_for_opus() -> None:
+    pb = load_pricebook()
+    opus = pb.resolve("claude_code", "opus")
+    # Per-model entry, not the claude_code agent-default fallback.
+    assert opus is pb.models["opus"]
+    assert opus is not pb.agent_defaults["claude_code"]
+    assert opus.cost_per_1k_input == 0.015
+    assert opus.cost_per_1k_output == 0.075
+
+
+def test_resolve_prefers_per_model_entry_for_gpt_5_5() -> None:
+    pb = load_pricebook()
+    gpt = pb.resolve("codex", "gpt-5.5")
+    # Per-model entry, not the codex agent-default fallback.
+    assert gpt is pb.models["gpt-5.5"]
+    assert gpt is not pb.agent_defaults["codex"]
+    assert gpt.cost_per_1k_input == 0.0035
+    assert gpt.cost_per_1k_output == 0.028
+
+
 def test_resolve_falls_back_to_agent_default_for_unlisted_model() -> None:
     pb = load_pricebook()
     # A real Anthropic model id not enumerated in `models:` → agent default.

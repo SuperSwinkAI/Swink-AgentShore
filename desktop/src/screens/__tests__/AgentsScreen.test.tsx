@@ -145,6 +145,38 @@ describe("AgentsScreen", () => {
     expect(within(total).getByText("Total 13")).toBeInTheDocument();
   });
 
+  it("renders a BETA badge only on the Antigravity row", async () => {
+    const agents: AgentRow[] = [
+      ...AGENTS,
+      {
+        type: "grok",
+        enabled: false,
+        identity: null,
+        tier_models: {
+          medium: { enabled: true, model: "grok-code-fast" },
+        },
+      },
+      {
+        type: "antigravity",
+        enabled: false,
+        identity: null,
+        tier_models: {
+          medium: { enabled: true, model: "gemini-3-pro" },
+        },
+      },
+    ];
+    const adapter = makeAdapter(agents, IDENTITIES);
+    renderScreen(adapter);
+
+    const antigravityRow = await screen.findByTestId("agent-row-antigravity");
+    expect(within(antigravityRow).getByTestId("agent-beta-badge")).toHaveTextContent(/beta/i);
+
+    for (const stableType of ["claude_code", "codex", "grok"]) {
+      const row = screen.getByTestId(`agent-row-${stableType}`);
+      expect(within(row).queryByTestId("agent-beta-badge")).not.toBeInTheDocument();
+    }
+  });
+
   it("calls configureAgent({enabled}) when the toggle is clicked", async () => {
     const adapter = makeAdapter(AGENTS, IDENTITIES);
     renderScreen(adapter);
