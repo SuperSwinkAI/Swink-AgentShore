@@ -87,7 +87,7 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     monkeypatch.setattr(setup, "_ensure_node", record_node)
     monkeypatch.setattr(setup, "_install_cli", record_cli)
     monkeypatch.setattr(setup, "_verify_pinned_version", record_verify_version)
-    monkeypatch.setattr(setup, "_harden_windows_daemon_spawn", record_harden)
+    monkeypatch.setattr(setup, "harden_installed_cli", record_harden)
     monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
 
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
@@ -364,7 +364,7 @@ def test_patch_text_for_windows_hide_refuses_unknown_layout() -> None:
     assert setup._patch_text_for_windows_hide("function spawn() { /* different */ }") is None
 
 
-async def test_harden_windows_daemon_spawn_noop_off_windows(
+async def test_harden_installed_cli_noop_off_windows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "linux")
@@ -374,10 +374,10 @@ async def test_harden_windows_daemon_spawn_noop_off_windows(
 
     monkeypatch.setattr(setup, "_run", fail_run)
     # Must return without resolving or patching anything.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
 
-async def test_harden_windows_daemon_spawn_patches_installed_source(
+async def test_harden_installed_cli_patches_installed_source(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -392,16 +392,16 @@ async def test_harden_windows_daemon_spawn_patches_installed_source(
 
     monkeypatch.setattr(setup, "_run", fake_run)
 
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
     patched = cli_src.read_text(encoding="utf-8")
     assert "windowsHide: true," in patched
     # Re-running is idempotent — no second flag.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
     assert cli_src.read_text(encoding="utf-8").count("windowsHide: true,") == 1
 
 
-async def test_harden_windows_daemon_spawn_warns_when_source_missing(
+async def test_harden_installed_cli_warns_when_source_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -412,7 +412,7 @@ async def test_harden_windows_daemon_spawn_warns_when_source_missing(
 
     monkeypatch.setattr(setup, "_run", fake_run)
     # Best-effort: a missing source must not raise.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
 
 async def test_verify_pinned_version_accepts_matching_pin(

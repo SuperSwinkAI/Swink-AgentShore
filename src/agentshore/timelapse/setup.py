@@ -393,8 +393,8 @@ async def _resolve_installed_cli_source(cwd: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-async def _harden_windows_daemon_spawn(cwd: Path) -> None:
-    """Patch the pinned CLI so its capture daemon spawns without a console (#158).
+async def harden_installed_cli(cwd: Path) -> None:
+    """Patch the installed CLI so its capture daemon spawns without a console (#158).
 
     ``timelapse-capture start`` is a launcher: it spawns a long-lived *detached*
     node capture daemon. On Windows, Node spawns a ``detached: true`` child via
@@ -402,11 +402,18 @@ async def _harden_windows_daemon_spawn(cwd: Path) -> None:
     console app a fresh, empty console window for the life of the session. The
     daemon is a grandchild of AgentShore's own ``CREATE_NO_WINDOW`` spawn, and
     that flag does not propagate across the detach, so we cannot suppress the
-    window from the parent side. Patch the pinned, installed source in place to
-    add ``windowsHide: true`` to the daemon spawn.
+    window from the parent side. Patch the installed source in place to add
+    ``windowsHide: true`` to the daemon spawn.
+
+    Called both at install time *and* on every capture start (see
+    ``agentshore.timelapse.start_capture``): an install predating this patch — or
+    one the user has not re-run since — would otherwise keep the empty window
+    forever, because the desktop only re-offers the installer when the feature is
+    not yet marked installed. Re-running here repairs such installs before the
+    daemon spawns. The patch is idempotent (a no-op on already-patched source).
 
     Best-effort and Windows-only: the empty window is cosmetic, so a missing
-    anchor or an unwritable global install must warn, never fail the install.
+    anchor or an unwritable global install must warn, never raise.
 
     This is a stopgap for upstream Open-Agent-Tools/timelapse-capture#408 — once
     a fixed release ships, bump ``_CLI_VERSION`` and delete this patch step.
@@ -447,7 +454,7 @@ async def _install_timelapse_steps(work_dir: Path) -> None:
     await _ensure_node(work_dir)
     await _install_cli(work_dir)
     await _verify_pinned_version(work_dir)
-    await _harden_windows_daemon_spawn(work_dir)
+    await harden_installed_cli(work_dir)
     await _verify_doctor(work_dir)
 
 

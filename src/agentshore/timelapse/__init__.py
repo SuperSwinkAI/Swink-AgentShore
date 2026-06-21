@@ -88,6 +88,15 @@ async def start_capture(dashboard_url: str, runs_cwd: Path) -> TimelapseRun:
             "'Timelapse capture' setup option or set AGENTSHORE_TIMELAPSE_BIN"
         )
     runs_cwd.mkdir(parents=True, exist_ok=True)
+    # Repair installs that predate the windowsHide hardening (or that the user
+    # has not re-run since): the desktop only re-offers the installer when the
+    # feature is not yet marked installed, so an old install would otherwise keep
+    # spawning a visible empty console window for its detached daemon forever
+    # (#158). Re-apply the idempotent, best-effort patch before the daemon spawns.
+    # No-op on non-Windows / already-patched sources; never raises.
+    from agentshore.timelapse.setup import harden_installed_cli
+
+    await harden_installed_cli(runs_cwd)
     try:
         result = await run_command(
             binary,
