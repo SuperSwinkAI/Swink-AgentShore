@@ -27,6 +27,7 @@ fn run() -> ProvisionResult<()> {
         "sidecar" => run_sidecar(args),
         "cli" => run_cli(args),
         "timelapse" => run_timelapse(args),
+        "timelapse-update" => run_timelapse_update(args),
         _ => Err(usage()),
     }
 }
@@ -34,7 +35,8 @@ fn run() -> ProvisionResult<()> {
 fn usage() -> ProvisionError {
     ProvisionError::new(
         INVALID_ARGS,
-        "usage: agentshore-provisioner <sidecar|cli|timelapse> [--wheel PATH] [--uv PATH]",
+        "usage: agentshore-provisioner <sidecar|cli|timelapse|timelapse-update> \
+         [--wheel PATH] [--uv PATH]",
     )
 }
 
@@ -224,5 +226,32 @@ fn run_timelapse(_args: Vec<OsString>) -> ProvisionResult<()> {
         &logger,
     )?;
     logger.line("==> Installed Timelapse Capture");
+    Ok(())
+}
+
+fn run_timelapse_update(_args: Vec<OsString>) -> ProvisionResult<()> {
+    // Runs on every install (the optional "timelapse" component is opt-in, so a
+    // previously-installed CLI would otherwise never be upgraded). It compares
+    // the installed version to the expected pin and upgrades in place when they
+    // differ; it is a no-op when timelapse-capture is not installed at all.
+    let logger = Logger::open("Updating-Timelapse-Capture")?;
+    logger.line("==> Updating Timelapse Capture (if installed)");
+    let python = managed_venv_python_path();
+    validate_file(&python, "managed venv python").map_err(|err| {
+        ProvisionError::new(
+            TIMELAPSE_FAILURE,
+            format!("managed venv missing: {}", err.message),
+        )
+    })?;
+    let code = "import asyncio, sys\nfrom agentshore.timelapse.setup import update_timelapse_if_installed\nresult = asyncio.run(update_timelapse_if_installed())\nprint(result.message)\nsys.exit(0 if result.success else 1)\n";
+    run_required(
+        "timelapse update",
+        TIMELAPSE_FAILURE,
+        &python,
+        &[os("-c"), os(code)],
+        TIMELAPSE_TIMEOUT,
+        &logger,
+    )?;
+    logger.line("==> Timelapse Capture up to date");
     Ok(())
 }

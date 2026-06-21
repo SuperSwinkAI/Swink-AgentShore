@@ -43,6 +43,10 @@ _logger = structlog.get_logger(__name__)
 _CLI_NAME = "timelapse-capture"
 _CLI_VERSION = "0.5.0"
 _CLI_PACKAGE = f"{_CLI_NAME}@{_CLI_VERSION}"
+
+#: Public alias of the pinned version for callers that compare an installed CLI
+#: against the expected pin (e.g. the installer's update-if-installed step).
+EXPECTED_CLI_VERSION = _CLI_VERSION
 _MIN_NODE_MAJOR = 24
 _WINGET_NODE_ID = "OpenJS.NodeJS"
 _WINGET_FFMPEG_ID = "Gyan.FFmpeg"
@@ -441,7 +445,45 @@ async def harden_installed_cli(cwd: Path) -> None:
     _logger.info("timelapse_windows_hide_patched", path=str(cli_path))
 
 
+async def installed_cli_version(cwd: Path) -> str | None:
+    """Return the installed ``timelapse-capture`` version, or None if absent.
+
+    Best-effort: returns None when the binary is not on PATH or ``--version``
+    fails, so callers can treat None as "needs install".
+    """
+    binary = resolve_timelapse_binary()
+    if binary is None:
+        return None
+    try:
+        result = await _run([binary, "--version"], cwd=cwd, timeout=15.0)
+    except TimelapseError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 async def _install_timelapse_steps(work_dir: Path) -> None:
+    # Compare the installed CLI against the expected pin first. When it already
+    # matches, skip the heavy ffmpeg/node/npm provisioning and just re-assert
+    # the Windows hardening + toolchain health. When it is missing or stale, run
+    # the full install — ``npm install -g <pin>`` upgrades a stale global in
+    # place. This is what makes a re-run (e.g. the installer's update step) cheap
+    # when current and a real upgrade when the installed version has drifted.
+    current = await installed_cli_version(work_dir)
+    if current == _CLI_VERSION:
+        _logger.info("timelapse_already_current", version=current)
+        await harden_installed_cli(work_dir)
+        try:
+            await _verify_doctor(work_dir)
+            return
+        except TimelapseError as exc:
+            # Pinned version present but an unhealthy toolchain (e.g. ffmpeg was
+            # removed): fall through to a full (re)install to repair it.
+            _logger.warning("timelapse_current_but_unhealthy", error=str(exc))
+    elif current is not None:
+        _logger.info("timelapse_version_drift", installed=current, expected=_CLI_VERSION)
+
     if sys.platform == "darwin":
         await _ensure_ffmpeg(work_dir)
     elif sys.platform.startswith("win"):
@@ -492,3 +534,22 @@ async def install_timelapse(cwd: Path | None = None) -> InstallResult:
         return InstallResult(success=False, message=str(exc))
     _logger.info("timelapse_install_ok")
     return InstallResult(success=True, message="Timelapse capture installed and verified.")
+
+
+async def update_timelapse_if_installed(cwd: Path | None = None) -> InstallResult:
+    """Bring an *existing* timelapse-capture install up to the expected pin.
+
+    The installer runs this on every install so a previously-installed CLI is
+    kept current without the user re-selecting the optional Timelapse component.
+    It is a no-op when the CLI is not installed (a fresh install is an explicit,
+    opt-in action via :func:`install_timelapse`) and when the installed version
+    already matches the pin; when the installed version has drifted from the
+    pin, it upgrades in place. Best-effort: never raises — step failures surface
+    as a failed :class:`InstallResult`.
+    """
+    if resolve_timelapse_binary() is None:
+        _logger.info("timelapse_update_skipped", reason="not_installed")
+        return InstallResult(
+            success=True, message="timelapse-capture is not installed; nothing to update."
+        )
+    return await install_timelapse(cwd)

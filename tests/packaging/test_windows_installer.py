@@ -45,6 +45,26 @@ def test_windows_inno_template_calls_compiled_provisioner() -> None:
     assert "powershell.exe" not in template
 
 
+def test_windows_inno_template_updates_existing_timelapse_on_every_install() -> None:
+    # Timelapse is opt-in, so a previously-installed CLI would otherwise never be
+    # upgraded by a later install. The else-branch must always run the
+    # update-if-installed step (a no-op when the CLI is absent).
+    template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
+
+    assert "RunProvisionerStep('Updating Timelapse Capture', 'timelapse-update'" in template
+    # The fresh-install (opt-in) path and the always-run update path are mutually
+    # exclusive branches of the same component check.
+    assert "if WizardIsComponentSelected('timelapse') then" in template
+
+
+def test_windows_provisioner_exposes_timelapse_update_command() -> None:
+    source = _provisioner_source()
+
+    assert '"timelapse-update" => run_timelapse_update(args)' in source
+    assert "update_timelapse_if_installed" in source
+    assert "timelapse|timelapse-update" in source
+
+
 def test_windows_inno_template_keeps_optional_failures_non_blocking() -> None:
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 

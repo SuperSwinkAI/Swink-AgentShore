@@ -184,6 +184,17 @@ begin
       begin
         { Optional step already surfaced a warning. }
       end;
+    end
+    else
+    begin
+      { Timelapse is opt-in, so a previously-installed CLI would otherwise never
+        be upgraded by a later install. Always run the update step: it compares
+        the installed version to the expected pin and upgrades in place when
+        they differ, and is a no-op when timelapse-capture is not installed. }
+      if not RunProvisionerStep('Updating Timelapse Capture', 'timelapse-update', False, False, True, True) then
+      begin
+        { Optional step already surfaced a warning. }
+      end;
     end;
 
     if WizardIsComponentSelected('cli') then
