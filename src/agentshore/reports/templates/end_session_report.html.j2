@@ -868,7 +868,7 @@
             <tr>
                 <td class="num">#{{ issue.issue_number }}</td>
                 <td>{{ issue.title }}</td>
-                <td>{{ issue.closed_at or "" }}</td>
+                <td>{{ (issue.closed_at | dt_short) or "" }}</td>
                 <td class="labels">{{ issue.labels | join(", ") }}</td>
             </tr>
             {% endfor %}
