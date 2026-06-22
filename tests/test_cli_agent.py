@@ -880,6 +880,10 @@ async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    # Pin the plain-pipe spawn so this session-id-resolution test exercises the
+    # create_subprocess_exec mock identically on every platform (on Windows agy
+    # would otherwise route through the ConPTY path).
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1
@@ -903,6 +907,8 @@ async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
         "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    # Pin the plain-pipe spawn (see sibling test) so this is platform-independent.
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1

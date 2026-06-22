@@ -175,3 +175,49 @@ def test_ensure_low_verbosity_tolerates_malformed_file(tmp_path: Path) -> None:
     path.write_text("{not json")
     assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is True
     assert json.loads(path.read_text()) == {"verbosity": "low"}
+
+
+# --- strip_ansi (ConPTY terminal-escape cleanup) -----------------------------
+
+
+def test_strip_ansi_removes_agy_conpty_prelude() -> None:
+    # The exact prelude observed from agy under a ConPTY before its real output:
+    # window-title stack, Device-Attributes query, focus reporting, win32 input.
+    raw = "\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hPONG"
+    assert cli_antigravity.strip_ansi(raw) == "PONG"
+
+
+def test_strip_ansi_strips_colour_and_cursor_codes() -> None:
+    raw = "\x1b[2J\x1b[H\x1b[31mhello\x1b[0m world"
+    assert cli_antigravity.strip_ansi(raw) == "hello world"
+
+
+def test_strip_ansi_strips_osc_title_sequence() -> None:
+    raw = "\x1b]0;some title\x07done"
+    assert cli_antigravity.strip_ansi(raw) == "done"
+
+
+def test_strip_ansi_normalises_crlf_and_lone_cr() -> None:
+    assert cli_antigravity.strip_ansi("a\r\nb\rc\n") == "a\nb\nc\n"
+
+
+def test_strip_ansi_is_noop_on_clean_text() -> None:
+    clean = '```json\n{"success": true}\n```'
+    assert cli_antigravity.strip_ansi(clean) == clean
+
+
+def test_extract_output_strips_ansi_then_unwraps_task_block() -> None:
+    # A ConPTY stream wraps the real output in a task-status block AND carries a
+    # terminal prelude: extract_output must clean escapes first, then unwrap.
+    raw = (
+        "\x1b[1t\x1b[c\x1b[?9001h[Task abc/task-1 Status Update]\r\n"
+        "Status: COMPLETED\r\n"
+        "Exit Code: 0\r\n"
+        "Output:\r\n"
+        '```json\r\n{"success": true}\r\n```\r\n'
+        "Error: (none)\r\n"
+    )
+    result = cli_antigravity.extract_output(raw)
+    assert "\x1b" not in result
+    assert "\r" not in result
+    assert result == '```json\n{"success": true}\n```'

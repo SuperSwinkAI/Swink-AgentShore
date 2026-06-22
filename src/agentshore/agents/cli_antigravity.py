@@ -22,7 +22,38 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+
+# Terminal-control escape sequences. Under a ConPTY (the Windows spawn path —
+# see ``agents/cli/conpty.py``) ``agy`` emits a terminal prelude before its real
+# output, e.g. ``ESC[1t ESC[c ESC[?1004h ESC[?9001h`` (window-title stack,
+# Device-Attributes query, focus reporting, win32 input mode) plus cursor/colour
+# codes interleaved through the stream. These must be stripped before the result
+# parser sees the text. Covers CSI (``ESC[ … final``), OSC (``ESC] … BEL/ST``),
+# and the short two-byte ``ESC<char>`` forms.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_ANSI_2BYTE_RE = re.compile(r"\x1b[@-Z\\-_]")
+# Residual C0 control bytes to drop after escape removal (keep \n and \t).
+_C0_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove terminal-control escape sequences and normalise line endings.
+
+    Strips CSI/OSC/two-byte ANSI escapes, converts CRLF/lone-CR to LF, and drops
+    leftover C0 control bytes (other than ``\\n``/``\\t``). No-op for text with no
+    escapes, so it is safe to run unconditionally on every agy result (POSIX
+    output, which has no PTY prelude, passes through unchanged apart from CRLF
+    normalisation).
+    """
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _ANSI_2BYTE_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _C0_CTRL_RE.sub("", text)
+
 
 # agy persists a {<abs cwd>: <conversation-uuid>} map here, keyed by the
 # directory it ran in. Relative to the agy process's HOME.
@@ -92,7 +123,13 @@ def extract_output(raw: str) -> str:
     the wrapper. When the block is absent (streaming mode), returns *raw* unchanged.
     ``(empty)`` output is normalised to an empty string so the caller gets a
     clean ``no valid result block`` error rather than trying to parse "(empty)".
+
+    Always strips terminal-control escapes first (:func:`strip_ansi`): under the
+    Windows ConPTY spawn path agy's stdout carries a terminal prelude and
+    interleaved cursor/colour codes that would otherwise corrupt both the
+    task-block detection here and the downstream JSON result parse.
     """
+    raw = strip_ansi(raw)
     if "[Task " not in raw or "Status Update]" not in raw:
         return raw
 

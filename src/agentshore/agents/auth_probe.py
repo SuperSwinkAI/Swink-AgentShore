@@ -19,10 +19,13 @@ setup screen provably means the launch gate will pass:
 
 The probe is intentionally conservative: agent types with a reliable,
 non-mutating auth-status command (codex) are probed via that command; agy is
-probed actively (it has no status verb and, when logged out, *hangs* in ``-p``
-mode rather than erroring — so a probe timeout is its authoritative logged-out
-signal); everything else returns ``UNPROBEABLE`` and never blocks a launch, so
-this can never introduce a false-negative startup failure.
+probed actively (it has no status verb). On Windows the agy probe must run under
+a ConPTY (see ``agents/cli/conpty.py``): in ``-p`` mode agy blocks on a terminal
+Device-Attributes query until the terminal replies, so over plain pipes it hangs
+*regardless of auth* — which would make this probe a false-negative that gates
+the agent off for everyone. Under the ConPTY agy proceeds, and a probe timeout
+*then* means the authoritative logged-out hang (its interactive re-login). Every
+other type returns ``UNPROBEABLE`` and never blocks a launch.
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agentshore import subprocess_env
+from agentshore.agents import cli_antigravity
+from agentshore.agents.cli import conpty
 from agentshore.error_markers import PROBE_NOT_AUTHED_MARKERS as _NOT_AUTHED_MARKERS
 from agentshore.state import CLI_AGENT_TYPES, AgentType
 
@@ -234,32 +239,60 @@ def _probe_antigravity_auth(
         return AuthProbeResult(at, AUTH_ERROR, f"{exe!r} not found on PATH")
 
     # Wind agy's own internal task wait down just under our hard ceiling so the
-    # process is already tearing itself down as communicate(timeout=) fires.
+    # process is already tearing itself down as the outer timeout fires.
     inner_s = max(5, int(timeout) - 5)
-    argv = [resolved, "--print-timeout", f"{inner_s}s", "-p", _ANTIGRAVITY_PROBE_PROMPT]
+    # ``--dangerously-skip-permissions`` matches the dispatch invocation and
+    # auto-approves agy's permission/trust prompts so neither path stalls on one.
+    argv = [
+        resolved,
+        "--print-timeout",
+        f"{inner_s}s",
+        "--dangerously-skip-permissions",
+        "-p",
+        _ANTIGRAVITY_PROBE_PROMPT,
+    ]
     # Hardened, headless env (CI/NO_COLOR/TERM=dumb) matching the dispatch path so
     # the probe exercises the same conditions a real agy run sees.
     full_env = subprocess_env.hardened_env(overlay=env or {}, for_antigravity=True)
-    try:
-        proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            env=full_env,
-            creationflags=subprocess_env.no_window_creationflags(),
-        )
-    except OSError as exc:
-        return AuthProbeResult(at, AUTH_ERROR, str(exc)[:200])
 
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if proc.pid is not None:
-            subprocess_env.kill_tree_sync(proc.pid)
-        proc.kill()
-        proc.communicate()
+    returncode: int | None
+    timed_out = False
+    if conpty.should_use_conpty(at):
+        # Windows: agy must run under a ConPTY or it hangs on its terminal
+        # Device-Attributes query *regardless of auth*, which would make this
+        # probe a false-negative that gates the agent off for everyone.
+        try:
+            raw_stdout, returncode, timed_out = conpty.run_sync(argv, env=full_env, timeout=timeout)
+        except OSError as exc:
+            return AuthProbeResult(at, AUTH_ERROR, str(exc)[:200])
+        stdout = cli_antigravity.strip_ansi(raw_stdout)
+        stderr = ""  # ConPTY merges stderr into the single stream
+    else:
+        try:
+            proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                env=full_env,
+                creationflags=subprocess_env.no_window_creationflags(),
+            )
+        except OSError as exc:
+            return AuthProbeResult(at, AUTH_ERROR, str(exc)[:200])
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            stdout, stderr = out or "", err or ""
+        except subprocess.TimeoutExpired:
+            if proc.pid is not None:
+                subprocess_env.kill_tree_sync(proc.pid)
+            proc.kill()
+            proc.communicate()
+            timed_out = True
+            stdout, stderr = "", ""
+        returncode = proc.returncode
+
+    if timed_out:
         return AuthProbeResult(
             at,
             AUTH_EXPIRED,
@@ -269,22 +302,20 @@ def _probe_antigravity_auth(
             "interactively.",
         )
 
-    stdout = stdout or ""
-    stderr = stderr or ""
     combined = f"{stdout}\n{stderr}".lower()
     if any(marker in combined for marker in _NOT_AUTHED_MARKERS):
         detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
         return AuthProbeResult(at, AUTH_EXPIRED, detail or "Antigravity session not authenticated")
-    if proc.returncode == 0 and stdout.strip():
+    if returncode in (0, None) and stdout.strip():
         return AuthProbeResult(at, AUTH_OK, "authenticated")
-    if proc.returncode != 0:
+    if returncode not in (0, None):
         detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
         return AuthProbeResult(
             at,
             AUTH_ERROR,
-            f"agy auth probe exited {proc.returncode}: {detail}"
+            f"agy auth probe exited {returncode}: {detail}"
             if detail
-            else f"agy auth probe exited {proc.returncode}",
+            else f"agy auth probe exited {returncode}",
         )
     # Clean exit but empty output: a rare agy no-op. Auth itself isn't disproven,
     # so surface it as a non-blocking error rather than gating the launch.
