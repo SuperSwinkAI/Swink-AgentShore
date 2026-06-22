@@ -5,42 +5,66 @@ from __future__ import annotations
 import contextlib
 import json
 import random
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
-from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS
 from agentshore.beads import BeadStatus, ready_tasks
 from agentshore.github.labels import (
-    BUG_LABELS,
     DEBUG_TRIGGER_LABELS,
     DISALLOWED_LABEL,
     ISSUE_PICKUP_SKIP_LABELS,
     MANUAL_REQUIRED_LABEL,
     NEEDS_HUMAN_LABEL,
     PLANNED_LABELS,
-    PRIORITY_SCORES,
     ROOT_CAUSE_FOUND_LABEL,
 )
-from agentshore.github.pr_links import canonical_issue_numbers, issue_numbers_for_pr
+from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.identity_names import canonical_identity_name, same_identity
 from agentshore.logging import get_logger
 from agentshore.play_rules import (
     DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS,
-    SEED_PROJECT_COOLDOWN_PLAYS,
     TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
     needs_review,
 )
 from agentshore.plays.base import PlayParams
-from agentshore.pr_state import blocked_reasons
+
+# Sub-module imports — predicates and freshness are leaf modules
+from agentshore.plays.candidates.freshness import (
+    design_audit_is_fresh,
+    qa_ran_within_terminal_window,
+    seed_audit_is_fresh,
+    terminal_audits_are_fresh,
+)
+from agentshore.plays.candidates.predicates import (
+    _NO_PRIORITY_SORT_KEY,
+    _SIZE_RANK,
+    _TRUNK_RESOURCE_KEY,
+    _bool_or_none,
+    _candidate_auth_suppressed_type,
+    _candidate_resolved_agent_type,
+    _candidate_wedge_cooldown_type,
+    _labels,
+    _pr_blocked_reasons,
+    _string_or_none,
+    active_resource_keys,
+    issue_pickup_sort_key,
+    issue_resource_keys,
+    pr_merge_ready,
+    pr_resource_keys,
+    pr_resource_keys_for_pr,
+    pr_review_needed,
+    pr_reviewable,
+    pr_unblockable,
+    resource_conflict_reason,
+)
 from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
@@ -51,11 +75,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Synthetic resource key for trunk-scoped plays. Must match the constant
-# in ``agentshore.plays.resolver`` — kept duplicated to avoid a circular
-# import (resolver imports candidates already).
-_TRUNK_RESOURCE_KEY = "trunk:main_repo"
-
 # Backpressure: once the open-PR queue reaches this many PRs, ``issue_pickup`` is
 # masked so the policy clears review/merge work before opening more PRs. Shared
 # single source of truth — ``issue_pickup`` imports it for the mask, and
@@ -65,14 +84,6 @@ _TRUNK_RESOURCE_KEY = "trunk:main_repo"
 # progress); it also fires below the cap when every open PR is manual-required
 # and no other actionable work remains.
 MAX_OPEN_PRS = 10
-
-_SIZE_RANK: dict[str, int] = {
-    "size/S": 0,
-    "size/M": 1,
-    "size/L": 2,
-    "size/XL": 3,
-}
-_NO_PRIORITY_SORT_KEY = 999
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +137,11 @@ class WorkAvailability:
     # without a human even below the cap).
     manual_required_open_pr_count: int
     pr_queue_human_blocked: bool
+    # True when any dispatchable work exists (issue/PR/backlog-sync/groom). The
+    # lifecycle-churn breaker reads this to decide whether spawning a new agent
+    # could accomplish anything — distinct from terminal_no_work, which also
+    # requires fresh terminal audits and no in-flight plays.
+    has_actionable_work: bool
     terminal_no_work: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -143,291 +159,6 @@ class PlayCandidatePlan:
 
     def candidates_for(self, play_type: PlayType) -> tuple[PlayCandidate, ...]:
         return self.candidates_by_play_type.get(play_type, ())
-
-
-def pr_resource_keys(
-    pr_number: int,
-    issue_number: int | None = None,
-    linked_issue_numbers: object = (),
-) -> tuple[str, ...]:
-    keys = [f"pr:{pr_number}"]
-    raw_links: tuple[object, ...]
-    if linked_issue_numbers is None:
-        raw_links = ()
-    elif isinstance(linked_issue_numbers, str):
-        raw_links = (linked_issue_numbers,)
-    elif isinstance(linked_issue_numbers, Iterable):
-        raw_links = tuple(linked_issue_numbers)
-    else:
-        raw_links = (linked_issue_numbers,)
-    for linked_issue_number in canonical_issue_numbers((issue_number, *raw_links)):
-        keys.append(f"issue:{linked_issue_number}")
-    return tuple(keys)
-
-
-def pr_resource_keys_for_pr(pr: object) -> tuple[str, ...]:
-    pr_number = getattr(pr, "pr_number", None)
-    if isinstance(pr_number, bool) or not isinstance(pr_number, int):
-        return ()
-    return pr_resource_keys(
-        pr_number,
-        getattr(pr, "issue_number", None),
-        issue_numbers_for_pr(pr),
-    )
-
-
-def issue_resource_keys(issue_number: int) -> tuple[str, ...]:
-    return (f"issue:{issue_number}",)
-
-
-def active_resource_keys(state: OrchestratorState) -> frozenset[str]:
-    """Return canonical resource keys currently owned by in-flight work."""
-
-    keys: set[str] = set()
-    pr_to_issues = {
-        pr.pr_number: issue_numbers_for_pr(pr)
-        for pr in state.pull_requests
-        if issue_numbers_for_pr(pr)
-    }
-    issue_to_prs: dict[int, set[int]] = {}
-    for pr in state.pull_requests:
-        for issue_number in issue_numbers_for_pr(pr):
-            issue_to_prs.setdefault(issue_number, set()).add(pr.pr_number)
-
-    def add_issue(issue_number: int | None) -> None:
-        if issue_number is None:
-            return
-        keys.add(f"issue:{issue_number}")
-        for pr_number in issue_to_prs.get(issue_number, ()):
-            keys.add(f"pr:{pr_number}")
-
-    def add_pr(pr_number: int | None) -> None:
-        if pr_number is None:
-            return
-        keys.add(f"pr:{pr_number}")
-        for issue_number in pr_to_issues.get(pr_number, ()):
-            add_issue(issue_number)
-
-    for issue_number in state.in_flight_issues:
-        add_issue(issue_number)
-
-    active_play = state.active_play
-    if active_play is not None:
-        add_issue(active_play.issue_number)
-        add_pr(active_play.pr_number)
-
-    for agent in state.agents:
-        if agent.current_play_type is None:
-            continue
-        add_issue(agent.current_play_issue_number)
-        add_pr(agent.current_play_pr_number)
-        # Only trunk-*mutating* plays mark trunk busy. A running read-only
-        # trunk play (run_qa, design_audit, …) must not mask merge_pr (#17).
-        if agent.current_play_type in TRUNK_MUTATING_PLAYS:
-            keys.add(_TRUNK_RESOURCE_KEY)
-
-    # in_flight_plays carries play types that lack agent context (e.g. a
-    # play dispatched before the agent snapshot updates). Still need to
-    # honor their trunk lock — but again only for trunk-mutating plays.
-    for play_type in state.in_flight_plays:
-        if play_type in TRUNK_MUTATING_PLAYS:
-            keys.add(_TRUNK_RESOURCE_KEY)
-            break
-
-    return frozenset(keys)
-
-
-def resource_conflict_reason(
-    resource_keys: tuple[str, ...],
-    active_keys: frozenset[str],
-) -> str | None:
-    """Return a stable blocked reason when a candidate overlaps active work."""
-
-    conflicts = sorted(set(resource_keys) & set(active_keys))
-    if not conflicts:
-        return None
-    return f"resource already in flight: {', '.join(conflicts)}"
-
-
-def _candidate_resolved_agent_type(
-    candidate: PlayCandidate,
-    agent_id_to_type: dict[str, str],
-) -> str | None:
-    """Resolve the agent-type value a candidate would run on, or ``None``.
-
-    A candidate names its agent type either directly via
-    ``params.target_agent_type`` (an instantiate_agent's created type, or a
-    type-pinned dispatch) or indirectly via the concrete agent it targets
-    (``params.target_agent_id``, mapped through *agent_id_to_type*). Candidates
-    with neither (issue/PR plays whose runner the resolver picks later) return
-    ``None`` and are never auth-suppressed at this layer.
-    """
-    params = candidate.params
-    if params.target_agent_type:
-        return params.target_agent_type
-    if params.target_agent_id is not None:
-        return agent_id_to_type.get(params.target_agent_id)
-    return None
-
-
-def _candidate_auth_suppressed_type(
-    candidate: PlayCandidate,
-    auth_suppressed: frozenset[str],
-    agent_id_to_type: dict[str, str],
-) -> str | None:
-    """Return the suppressed agent-type value if this candidate is masked, else None."""
-    if not auth_suppressed:
-        return None
-    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
-    if resolved is not None and resolved in auth_suppressed:
-        return resolved
-    return None
-
-
-def _candidate_wedge_cooldown_type(
-    candidate: PlayCandidate,
-    wedge_cooldown: frozenset[str],
-    agent_id_to_type: dict[str, str],
-) -> str | None:
-    """Return the cooled-down agent-type value if this candidate is masked, else None.
-
-    Sibling of ``_candidate_auth_suppressed_type`` for the DECAYING launch-wedge
-    cooldown (#202): the cooldown set already contains only active (non-expired)
-    types, so auto-unmask happens for free once the state-builder drops the
-    expired entry.
-    """
-    if not wedge_cooldown:
-        return None
-    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
-    if resolved is not None and resolved in wedge_cooldown:
-        return resolved
-    return None
-
-
-def issue_pickup_sort_key(issue: IssueSnapshot) -> tuple[int, int, int, int]:
-    """Sort tuple: bug first, then priority, size, and issue number."""
-
-    is_bug = 0 if any(lbl in BUG_LABELS for lbl in issue.labels) else 1
-    if issue.priority is not None:
-        priority = issue.priority
-    else:
-        priority = next(
-            (PRIORITY_SCORES[lbl] for lbl in issue.labels if lbl in PRIORITY_SCORES),
-            _NO_PRIORITY_SORT_KEY,
-        )
-    size = next(
-        (_SIZE_RANK[lbl] for lbl in issue.labels if lbl in _SIZE_RANK),
-        _NO_PRIORITY_SORT_KEY,
-    )
-    return (is_bug, priority, size, issue.issue_number)
-
-
-def _pr_blocked_reasons(pr: object, *, labels: list[str] | None = None) -> list[str]:
-    """Gather the eight PR fields once and return the canonical blocked reasons.
-
-    Shared by :func:`pr_merge_ready` and :func:`pr_unblockable` so the two
-    predicates can never disagree on the underlying field reads. ``labels`` may
-    be passed when the caller has already computed them to avoid a second
-    ``_labels(pr)`` traversal.
-    """
-    return blocked_reasons(
-        state=str(getattr(pr, "state", "")),
-        labels=_labels(pr) if labels is None else labels,
-        review_decision=_string_or_none(getattr(pr, "review_decision", None)),
-        status_check_summary=_string_or_none(getattr(pr, "status_check_summary", None)),
-        is_draft=_bool_or_none(getattr(pr, "is_draft", None)),
-        mergeable=getattr(pr, "mergeable", None),
-    )
-
-
-def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
-    """Return True for the one canonical merge-pr readiness predicate.
-
-    A PR is merge-ready only when GitHub reports it mergeable, an approval
-    signal is present (GitHub APPROVED or an AgentShore code-review PASS at the
-    current head_sha), and no blocking reason (changes_requested, blocked
-    label, ci_failed, manual_required, merge_conflicts) is in effect. The
-    blocking check shares :func:`_pr_blocked_reasons` with
-    :func:`pr_unblockable` so the two predicates can never simultaneously be
-    true for the same PR — without this, a stale AgentShore PASS verdict can
-    keep a PR in the merge_ready set even after a human reviewer adds
-    CHANGES_REQUESTED or a ``blocked`` label.
-
-    When ``target_branch`` is provided, a PR whose ``base_ref`` is known and
-    does NOT match it is refused — a deterministic backstop so ``merge_pr`` can
-    never merge a PR opened against the wrong base (e.g. ``main`` instead of the
-    configured ``integration``), independent of whether the authoring/merging
-    agent honored the skill's base step. The create-side auto-correction
-    (executor ``_wire_deferrals``) retargets such PRs to the target, after which
-    they re-qualify here.
-    """
-
-    reasons = _pr_blocked_reasons(pr)
-    if reasons and reasons != ["draft"]:
-        return False
-
-    base_ref = getattr(pr, "base_ref", None)
-    if isinstance(base_ref, str) and base_ref.startswith("agentshore/"):
-        return False
-    # Deterministic base gate: refuse to merge a PR whose known base is not the
-    # configured target branch. Pairs with the create-side auto-correction.
-    if target_branch and isinstance(base_ref, str) and base_ref and base_ref != target_branch:
-        return False
-
-    review_decision = getattr(pr, "review_decision", None)
-    last_review_status = getattr(pr, "last_review_status", None)
-    last_reviewed_sha = getattr(pr, "last_reviewed_sha", None)
-    head_sha = getattr(pr, "head_sha", None)
-    # The AgentShore PASS-at-head branch is the autonomous approval path (no
-    # human reviewer). It must never override a live human CHANGES_REQUESTED —
-    # _pr_blocked_reasons already returns early on that, but guard explicitly so
-    # the invariant is local and can't regress if the gate above changes (#344).
-    return bool(
-        getattr(pr, "mergeable", None) == "MERGEABLE"
-        and review_decision != "CHANGES_REQUESTED"
-        and (
-            review_decision == "APPROVED"
-            or (
-                last_review_status == "PASS"
-                and last_reviewed_sha is not None
-                and head_sha is not None
-                and last_reviewed_sha == head_sha
-            )
-        )
-    )
-
-
-def pr_review_needed(pr: object) -> bool:
-    return bool(not getattr(pr, "is_draft", False) and needs_review(pr))
-
-
-def pr_reviewable(pr: object) -> bool:
-    """code_review is actionable only when the PR needs review AND is not parked
-    for human intervention.
-
-    Like :func:`pr_unblockable` and :func:`pr_merge_ready` (which exclude
-    ``MANUAL_REQUIRED_LABEL`` via ``_pr_blocked_reasons``), this excludes a
-    manual-required PR, so all three actionable-PR predicates agree: a
-    manual-required PR is never agent-actionable. Without this, an unreviewed
-    manual-required PR leaks into the reviewable set, keeping
-    ``has_actionable_work`` (and thus ``terminal_no_work``) wrong and pinning
-    END_SESSION masked forever.
-    """
-    if MANUAL_REQUIRED_LABEL in _labels(pr):
-        return False
-    return pr_review_needed(pr)
-
-
-def pr_unblockable(pr: object) -> bool:
-    labels = _labels(pr)
-    if MANUAL_REQUIRED_LABEL in labels:
-        return False
-    if getattr(pr, "blocked", False):
-        return True
-    if getattr(pr, "mergeable", None) == "CONFLICTING":
-        return True
-    reasons = _pr_blocked_reasons(pr, labels=labels)
-    return bool(reasons and reasons != ["draft"])
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +678,7 @@ class PlayCandidateAnalyzer:
             actionable_pr_work_count=len(actionable_pr_numbers),
             manual_required_open_pr_count=manual_required_open_pr_count,
             pr_queue_human_blocked=pr_queue_human_blocked,
+            has_actionable_work=has_actionable_work,
             terminal_no_work=terminal_no_work,
         )
         return PlayCandidatePlan(
@@ -955,66 +687,6 @@ class PlayCandidateAnalyzer:
             work_availability=availability,
             has_remaining_work=has_remaining_work,
         )
-
-
-# ---------------------------------------------------------------------------
-# State-only audit-freshness predicates
-#
-# These read only ``state`` (cooldown counters), so they are genuine
-# module-level functions rather than analyzer methods — callers on the hot
-# RL mask path (``rl/mask.py``) must not allocate a full ``PlayCandidateAnalyzer``
-# (which eagerly computes issue/PR sets) just to read one counter.
-# ---------------------------------------------------------------------------
-
-
-def seed_audit_is_fresh(state: OrchestratorState) -> bool:
-    """Return True when a successful seed audit is still inside cooldown."""
-    if state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is not True:
-        return False
-    plays_since = state.plays_since_last_play_type.get(PlayType.SEED_PROJECT)
-    return plays_since is not None and plays_since < SEED_PROJECT_COOLDOWN_PLAYS
-
-
-def design_audit_is_fresh(
-    state: OrchestratorState, *, window: int = DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS
-) -> bool:
-    """Return True when a successful design audit is still inside the requested window."""
-    if state.last_play_success_by_type.get(PlayType.DESIGN_AUDIT) is not True:
-        return False
-    plays_since = state.plays_since_last_play_type.get(PlayType.DESIGN_AUDIT)
-    return plays_since is not None and plays_since < window
-
-
-def terminal_audits_are_fresh(state: OrchestratorState) -> bool:
-    """Return True when the audit posture justifies a clean shutdown.
-
-    Two paths into True:
-      - Seeded sessions: BOTH seed_project AND design_audit recent
-        (the original gate — preserves end_session evidence for the
-        normal lifecycle where SEED_PROJECT runs at bootstrap).
-      - Open-start sessions: SEED_PROJECT was never run in this
-        session at all, so only design_audit recency is required.
-        Without this fallback the failsafe is structurally unreachable
-        in open-start mode (observed 2026-05-28 session 08a948ed:
-        150 plays, $43 spent, end_session permanently masked because
-        no seed audit ever fired).
-    """
-    if not design_audit_is_fresh(state, window=TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS):
-        return False
-    seed_ever_succeeded = state.last_play_success_by_type.get(PlayType.SEED_PROJECT) is True
-    if not seed_ever_succeeded:
-        return True
-    return seed_audit_is_fresh(state)
-
-
-def qa_ran_within_terminal_window(
-    state: OrchestratorState, *, window: int = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
-) -> bool:
-    """Return True when successful RUN_QA is recent enough to end a no-work session."""
-    if state.last_play_success_by_type.get(PlayType.RUN_QA) is not True:
-        return False
-    plays_since = state.plays_since_last_play_type.get(PlayType.RUN_QA)
-    return plays_since is not None and plays_since < window
 
 
 def build_candidate_plan(state: OrchestratorState) -> PlayCandidatePlan:
@@ -1388,19 +1060,6 @@ def _issue_candidate(play_type: PlayType, issue: IssueSnapshot, *, source: str) 
     )
 
 
-def _labels(pr: object) -> list[str]:
-    labels = getattr(pr, "labels", [])
-    return labels if isinstance(labels, list) else []
-
-
-def _string_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _bool_or_none(value: object) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
 def _task_status_is(task: object, status: BeadStatus) -> bool:
     value = getattr(task, "status", None)
     return value == status or str(value) == status.value
@@ -1497,3 +1156,59 @@ def _pr_play_candidates[PRT](
 
 def _already_reviewed_prs(state: OrchestratorState) -> set[int]:
     return {pr.pr_number for pr in state.pull_requests if not needs_review(pr)}
+
+
+# ---------------------------------------------------------------------------
+# Re-export everything from sub-modules so agentshore.plays.candidates
+# remains the single stable import surface for all consumers.
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    # Data classes
+    "PlayCandidate",
+    "WorkAvailability",
+    "PlayCandidatePlan",
+    # Core classes and builders
+    "PlayCandidateAnalyzer",
+    "PlayCandidateService",
+    "build_candidate_plan",
+    # Module constants
+    "MAX_OPEN_PRS",
+    # Reviewer/tail helpers
+    "idle_can_review_agents",
+    "pick_reviewer_for_pr",
+    "in_progress_issue_numbers",
+    # Private helpers (consumed by tests)
+    "_eligible_pr_candidates",
+    "_pr_play_candidates",
+    "_in_flight_prs",
+    "_already_reviewed_prs",
+    "_issue_candidate",
+    "_labels",
+    "_string_or_none",
+    "_bool_or_none",
+    "_task_status_is",
+    # From predicates
+    "pr_resource_keys",
+    "pr_resource_keys_for_pr",
+    "issue_resource_keys",
+    "active_resource_keys",
+    "resource_conflict_reason",
+    "issue_pickup_sort_key",
+    "pr_merge_ready",
+    "pr_review_needed",
+    "pr_reviewable",
+    "pr_unblockable",
+    "_pr_blocked_reasons",
+    "_candidate_resolved_agent_type",
+    "_candidate_auth_suppressed_type",
+    "_candidate_wedge_cooldown_type",
+    "_TRUNK_RESOURCE_KEY",
+    "_SIZE_RANK",
+    "_NO_PRIORITY_SORT_KEY",
+    # From freshness
+    "seed_audit_is_fresh",
+    "design_audit_is_fresh",
+    "terminal_audits_are_fresh",
+    "qa_ran_within_terminal_window",
+]

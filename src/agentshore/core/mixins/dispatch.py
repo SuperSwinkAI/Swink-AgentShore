@@ -133,13 +133,23 @@ class Dispatcher:
 
     # ------------------------------------------------------------------
 
-    async def revalidate_end_session_before_dispatch(self) -> bool:
+    async def revalidate_end_session_before_dispatch(self, *, failsafe: bool = False) -> bool:
         """Refresh external work state before allowing an END_SESSION play.
 
         END_SESSION is a terminal lifecycle play. Before dispatching it, force
         a fresh GitHub/cache snapshot and rebuild the candidate plan so a stale
         no-work state cannot shut down the session while newly-created QA or
         audit follow-up issues are available.
+
+        When ``failsafe`` is True the END_SESSION arrived via the reverse-failsafe
+        deadlock-breaker (every agent idle, every other play masked for N ticks).
+        In that wedged state the revalidation blocks only on genuinely dispatchable
+        work — open workable issues or actionable PRs — and treats beads bookkeeping
+        (``backlog_sync_work`` / ``ready_tasks``) as non-blocking, since no play in
+        the current fleet state can act on it. The normal path keeps the strict
+        ``has_remaining_work`` check; its eligibility gate already masks END_SESSION
+        whenever ready tasks remain, so this looser rule cannot end a healthy session
+        early.
         """
 
         from agentshore.plays.candidates import build_candidate_plan
@@ -162,14 +172,21 @@ class Dispatcher:
         )
         fresh_state = await self._state_builder.build_state()
         candidate_plan = build_candidate_plan(fresh_state)
-        if not candidate_plan.has_remaining_work:
+        availability = candidate_plan.work_availability
+        if failsafe:
+            dispatchable_work = (
+                availability.workable_issue_count > 0 or availability.actionable_pr_work_count > 0
+            )
+            if not dispatchable_work:
+                return True
+        elif not candidate_plan.has_remaining_work:
             return True
 
-        availability = candidate_plan.work_availability
         self._runtime.last_selection_digest = None
         _logger.warning(
             "end_session_revalidation_blocked",
             session_id=self._session_id,
+            failsafe=failsafe,
             tracked_issues=availability.tracked_issue_count,
             github_open_issues=availability.github_open_issue_count,
             workable_issues=availability.workable_issue_count,
@@ -484,44 +501,6 @@ class Dispatcher:
             revalidation_window_seconds=revalidation_window_seconds,
         )
 
-    def _in_flight_worktree_ids(self) -> set[int]:
-        """Worktree IDs backing currently-dispatched plays — never reap these.
-
-        Derived from each in-flight dispatch's ``params._runtime_allocation``.
-        ``TrunkAllocation`` (no ``worktree_id``) and any non-int id are skipped,
-        so this is safe to call regardless of allocation kind.
-        """
-        ids: set[int] = set()
-        for ctx in self._runtime.dispatch_ctx.values():
-            alloc = getattr(getattr(ctx, "params", None), "_runtime_allocation", None)
-            wt_id = getattr(alloc, "worktree_id", None)
-            if isinstance(wt_id, int):
-                ids.add(wt_id)
-        return ids
-
-    def _in_flight_worktree_paths(self) -> set[str]:
-        """Canonicalised on-disk paths backing currently-dispatched plays.
-
-        The path-keyed sibling of :meth:`_in_flight_worktree_ids`, added for
-        #203: the ``pickup-<N>`` directory is reused across attempts, so a
-        stale OLD-id worktree row can share an on-disk path with the LIVE
-        new-id row backing the dispatch. Id-keyed protection misses that alias
-        (the stale row's id isn't in the in-flight set), so the closed-PR / disk
-        reapers also skip any ``stale`` row whose canonical path matches one of
-        these. Paths are folded through ``_canon_path`` so the comparison is
-        separator/case-correct against DB-stored paths. ``TrunkAllocation`` (no
-        ``path``) and any non-path value are skipped.
-        """
-        from agentshore.agents.worktree.reaper import _canon_path
-
-        paths: set[str] = set()
-        for ctx in self._runtime.dispatch_ctx.values():
-            alloc = getattr(getattr(ctx, "params", None), "_runtime_allocation", None)
-            path = getattr(alloc, "path", None)
-            if path is not None:
-                paths.add(_canon_path(path))
-        return paths
-
     def register_worktree_allocation_failure(self, params: PlayParams) -> bool:
         """Tally a worktree-allocation failure per resource key; park on threshold.
 
@@ -712,10 +691,7 @@ class Dispatcher:
             if floor_mb > 0:
                 free_mb = worktree_mgr.free_disk_mb()
                 if free_mb < floor_mb:
-                    await worktree_mgr.reap_for_disk_pressure(
-                        target_free_mb=floor_mb,
-                        protected_ids=self._in_flight_worktree_ids(),
-                    )
+                    await worktree_mgr.reap_for_disk_pressure(target_free_mb=floor_mb)
                     free_mb = worktree_mgr.free_disk_mb()
                 if free_mb < floor_mb:
                     _logger.warning(
@@ -754,7 +730,6 @@ class Dispatcher:
                     )
                     await worktree_mgr.reap_for_disk_pressure(
                         target_free_mb=max(self._runtime.cfg.worktrees.min_free_disk_mb, 1),
-                        protected_ids=self._in_flight_worktree_ids(),
                     )
                     await self.drop_selected_play_before_dispatch(
                         play_type,
@@ -838,6 +813,11 @@ class Dispatcher:
                 path=str(allocation.path),
             )
         else:
+            # Mark the worktree in-flight BEFORE the play task is created, so a
+            # concurrent reap can never reclaim it mid-play. The manager owns the
+            # protected set from here; finalize_after_dispatch releases it.
+            if worktree_mgr is not None:
+                worktree_mgr.register_dispatch(allocation)
             _logger.info(
                 "worktree_allocated",
                 session_id=self._session_id,

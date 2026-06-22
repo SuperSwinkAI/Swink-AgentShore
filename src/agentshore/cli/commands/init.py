@@ -20,6 +20,7 @@ from agentshore.cli.identity_helpers import (
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _PROJECT_DIR
 from agentshore.config.models import AgentConfig
 from agentshore.config.yaml_io import ruamel_set_nested
+from agentshore.core.git_safety import AGENTSHORE_OWNED_ROOT_PATHS
 from agentshore.errors import OrchestratorError
 
 
@@ -240,7 +241,10 @@ def init(
         if (project_path / ".git").exists():
             gitignore = project_path / ".gitignore"
             existed = gitignore.exists()
-            for _entry in (".agentshore/", ".agents/", ".beads/"):
+            # Single source of truth with the start-time git-safety sweep so the
+            # two consumers can't drift — covers .agentshore/, .agents/, .beads/,
+            # agentshore.yaml, timelapse-runs/ and the *_refs.txt artifacts (#594).
+            for _entry in AGENTSHORE_OWNED_ROOT_PATHS:
                 if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                     verb = "Added" if existed else "Created"
                     click.echo(f"{verb} {_entry} to {gitignore}")
@@ -310,6 +314,17 @@ def init(
         refresh_availability()
         _init_agents = cli_helpers._detect_agents()
 
+        # -- 3a0. Antigravity (agy) settings provisioning -----------------
+        # agy has no per-invocation verbosity flag; ``verbosity: low`` lives only
+        # in its global settings.json and trims the prose around its fenced JSON
+        # result block (cheaper, cleaner to parse). Set once here, respecting any
+        # existing user value.
+        if "agy" in _init_agents:
+            from agentshore.agents.cli_antigravity import ensure_low_verbosity_setting
+
+            if ensure_low_verbosity_setting():
+                click.echo("Set Antigravity (agy) verbosity to 'low' for cleaner JSON output")
+
         # -- 3a. Agent / tier / model wizard ------------------------------
         try:
             _init_cfg = _load_config_for_agent_setup(config_yaml)
@@ -349,7 +364,10 @@ def init(
     if (project_path / ".git").exists():
         gitignore = project_path / ".gitignore"
         existed = gitignore.exists()
-        for _entry in (".agentshore/", ".agents/", ".beads/"):
+        # Single source of truth with the start-time git-safety sweep so the two
+        # consumers can't drift — covers .agentshore/, .agents/, .beads/,
+        # agentshore.yaml, timelapse-runs/ and the *_refs.txt artifacts (#594).
+        for _entry in AGENTSHORE_OWNED_ROOT_PATHS:
             if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                 verb = "Added" if existed else "Created"
                 click.echo(f"{verb} {_entry} to {gitignore}")

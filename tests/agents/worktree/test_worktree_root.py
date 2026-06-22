@@ -65,7 +65,7 @@ def test_parse_worktrees_accepts_root_and_ttl():
 def test_parse_worktrees_defaults():
     cfg = _parse_worktrees({})
     assert cfg.root is None
-    assert cfg.reap_ttl_seconds == 3600
+    assert cfg.reap_ttl_seconds == 10800
 
 
 def test_parse_worktrees_rejects_blank_root():

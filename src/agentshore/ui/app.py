@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sqlite3
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -14,8 +12,6 @@ from textual.message import Message
 from textual.widgets import Static
 
 from agentshore.config.models import PolicyMode
-from agentshore.state import PlayType
-from agentshore.ui.play_labels import play_short_label
 
 _logger = structlog.get_logger()
 
@@ -25,7 +21,7 @@ if TYPE_CHECKING:
     from agentshore.config import RuntimeConfig
     from agentshore.core import Orchestrator
     from agentshore.plays.base import PlayParams
-    from agentshore.state import AgentStatus, AgentType, OrchestratorState, PlayOutcome
+    from agentshore.state import AgentStatus, AgentType, OrchestratorState, PlayOutcome, PlayType
     from agentshore.ui.screens.startup import SessionStartupScreen
 
 
@@ -59,8 +55,6 @@ class OrchestratorApp(App[None]):
         ("g", "show_goals", "Epics"),
         ("d", "show_agent_detail", "Agent Detail"),
         ("i", "show_issues", "Issues"),
-        ("p", "toggle_pause", "Pause/Resume"),
-        ("l", "show_learnings", "Learnings"),
     ]
 
     # ---- Messages (provider -> app) ----
@@ -323,20 +317,6 @@ class OrchestratorApp(App[None]):
 
     # ---- Action implementations ----
 
-    async def action_toggle_pause(self) -> None:
-        if self._orch is None:
-            return
-        from agentshore.state import SessionState
-
-        if self._latest_state and self._latest_state.session_state == SessionState.DRAINING:
-            return
-        if self._paused:
-            self._paused = False
-            await self._orch.resume()
-        else:
-            self._paused = True
-            await self._orch.pause("user_request")
-
     async def action_drain_session(self) -> None:
         if self._orch is None:
             self.exit()
@@ -398,64 +378,3 @@ class OrchestratorApp(App[None]):
         from agentshore.ui.screens.issues import IssueWorkQueueScreen
 
         self.push_screen(IssueWorkQueueScreen(self._latest_state))
-
-    async def action_show_learnings(self) -> None:
-        """Show session learnings in a simple modal."""
-        if self._orch is None:
-            self.notify("No active session.")
-            return
-        try:
-            from agentshore.learnings import load
-
-            learnings_path = self._orch._repo_root / ".agentshore" / "learnings.json"
-            entries = await asyncio.to_thread(load, learnings_path)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            _logger.warning("ui_learnings_load_failed", error=str(exc))
-            self.notify("Unable to load learnings.")
-            return
-        if not entries:
-            self.notify("No learnings recorded.")
-            return
-
-        top = sorted(entries, key=lambda e: (-e.confidence, e.id))[:20]
-
-        play_type_by_id: dict[int, str] = {}
-        try:
-            plays = await self._orch._store.get_play_history(self._orch._session_id)
-            play_type_by_id = {r.play_id: r.play_type for r in plays if r.play_id is not None}
-        except (OSError, sqlite3.Error) as exc:
-            _logger.warning("ui_learnings_play_history_failed", error=str(exc))
-
-        header = f"  {'#':>2}  {'Pattern':<32}  {'Conf.':>5}  {'Category':<9}  {'Source':<10}"
-        separator = "─" * len(header)
-        lines = [header, separator]
-        for i, e in enumerate(top, start=1):
-            play_type_str = (
-                play_type_by_id.get(e.source_play_id) if e.source_play_id is not None else None
-            )
-            if play_type_str is not None:
-                try:
-                    source = f"{play_short_label(PlayType(play_type_str))} #{e.source_play_id}"
-                except ValueError:
-                    source = f"#{e.source_play_id}"
-            else:
-                source = "—"
-            row = (
-                f"  {i:>2}  {e.pattern:<32.32}  {e.confidence:>5.2f}"
-                f"  {e.category:<9.9}  {source:<10.10}"
-            )
-            lines.append(row)
-
-        text = "Session Learnings\n" + "\n".join(lines)
-        from textual.containers import Vertical
-        from textual.screen import ModalScreen
-        from textual.widgets import Static as ModalStatic
-
-        class LearningsModal(ModalScreen[None]):
-            BINDINGS = [("escape", "dismiss", "Close")]
-
-            def compose(self) -> ComposeResult:
-                with Vertical():
-                    yield ModalStatic(text)
-
-        self.push_screen(LearningsModal())

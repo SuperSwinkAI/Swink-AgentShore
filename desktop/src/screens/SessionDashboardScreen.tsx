@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { Dashboard } from "@agentshore/dashboard";
+import { Dashboard, type SessionState } from "@agentshore/dashboard";
 
 import { AdjustBudgetDialog } from "../components/AdjustBudgetDialog";
 import { SessionContext } from "../services/sessionContext";
@@ -37,10 +37,28 @@ export function SessionDashboardScreen() {
   // We open a modal that reads/writes the running session's budget over the
   // live session.get_budget / session.set_budget RPCs (issue #43).
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
+  // Latest session lifecycle phase, fed by the Dashboard on every state_update.
+  // Once draining / shutting_down the absolute "Adjust Budget" override silently
+  // no-ops (the loop only dispatches end_agent past drain), so we lock the
+  // control rather than letting it fail silently (#244).
+  const [sessionState, setSessionState] = useState<SessionState | undefined>();
+  const budgetLocked =
+    sessionState === "draining" || sessionState === "shutting_down";
+  // Read the latest locked value inside the menu listener (registered once) so a
+  // stale closure doesn't open the dialog after drain begins — mirrors the
+  // stoppingRef pattern below.
+  const budgetLockedRef = useRef(false);
+  budgetLockedRef.current = budgetLocked;
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
     let cancelled = false;
     void listen("menu:adjust_budget", () => {
+      if (budgetLockedRef.current) {
+        console.info(
+          "[agentshore-desktop] Adjust Budget ignored — session is winding down",
+        );
+        return;
+      }
       setBudgetDialogOpen(true);
     })
       .then((fn) => {
@@ -101,9 +119,13 @@ export function SessionDashboardScreen() {
         // spawns an agent — issue #10).
         onFirstAgentInstantiated={() => setSessionStarting(false)}
         onFirstStateUpdate={() => setSessionStarting(false)}
+        onSessionStateChange={setSessionState}
       />
       {budgetDialogOpen && (
-        <AdjustBudgetDialog onClose={() => setBudgetDialogOpen(false)} />
+        <AdjustBudgetDialog
+          onClose={() => setBudgetDialogOpen(false)}
+          locked={budgetLocked}
+        />
       )}
     </>
   );

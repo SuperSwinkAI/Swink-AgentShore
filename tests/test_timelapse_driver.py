@@ -14,6 +14,7 @@ import pytest
 
 from agentshore import timelapse
 from agentshore.command import CommandResult
+from agentshore.timelapse import setup as timelapse_setup
 
 
 def _result(
@@ -26,6 +27,13 @@ def _result(
 def _force_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     # Pretend the CLI is installed so resolve_timelapse_binary() returns a path.
     monkeypatch.setattr(timelapse, "resolve_timelapse_binary", lambda: "timelapse-capture")
+
+    # start_capture re-applies the Windows daemon-spawn hardening; stub it so the
+    # driver tests never shell out to a real ``npm root -g`` on Windows.
+    async def _noop_harden(cwd: object) -> None:
+        return None
+
+    monkeypatch.setattr(timelapse_setup, "harden_installed_cli", _noop_harden)
 
 
 async def test_start_capture_parses_alias_and_run_dir(
@@ -51,6 +59,29 @@ async def test_start_capture_parses_alias_and_run_dir(
     assert "--out" not in captured["args"]
     assert "start" in captured["args"]
     assert captured["cwd"] == tmp_path
+
+
+async def test_start_capture_hardens_before_spawning_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The windowsHide patch must land before the ``start`` command spawns the
+    # detached daemon, otherwise the empty console window appears for this run.
+    order: list[str] = []
+
+    async def record_harden(cwd: object) -> None:
+        order.append("harden")
+
+    async def fake_run(*args: str, **kwargs: object) -> CommandResult:
+        order.append("start")
+        payload = {"alias": "swift-otter-042", "runDir": str(tmp_path / "x")}
+        return _result(args, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(timelapse_setup, "harden_installed_cli", record_harden)
+    monkeypatch.setattr(timelapse, "run_command", fake_run)
+
+    await timelapse.start_capture("http://localhost:9400/", tmp_path)
+
+    assert order == ["harden", "start"]
 
 
 async def test_start_capture_raises_on_missing_alias(

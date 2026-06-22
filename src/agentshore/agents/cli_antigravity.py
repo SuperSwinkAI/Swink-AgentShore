@@ -22,7 +22,38 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+
+# Terminal-control escape sequences. Under a ConPTY (the Windows spawn path —
+# see ``agents/cli/conpty.py``) ``agy`` emits a terminal prelude before its real
+# output, e.g. ``ESC[1t ESC[c ESC[?1004h ESC[?9001h`` (window-title stack,
+# Device-Attributes query, focus reporting, win32 input mode) plus cursor/colour
+# codes interleaved through the stream. These must be stripped before the result
+# parser sees the text. Covers CSI (``ESC[ … final``), OSC (``ESC] … BEL/ST``),
+# and the short two-byte ``ESC<char>`` forms.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_ANSI_2BYTE_RE = re.compile(r"\x1b[@-Z\\-_]")
+# Residual C0 control bytes to drop after escape removal (keep \n and \t).
+_C0_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove terminal-control escape sequences and normalise line endings.
+
+    Strips CSI/OSC/two-byte ANSI escapes, converts CRLF/lone-CR to LF, and drops
+    leftover C0 control bytes (other than ``\\n``/``\\t``). No-op for text with no
+    escapes, so it is safe to run unconditionally on every agy result (POSIX
+    output, which has no PTY prelude, passes through unchanged apart from CRLF
+    normalisation).
+    """
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _ANSI_2BYTE_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _C0_CTRL_RE.sub("", text)
+
 
 # agy persists a {<abs cwd>: <conversation-uuid>} map here, keyed by the
 # directory it ran in. Relative to the agy process's HOME.
@@ -32,6 +63,9 @@ _CONVERSATIONS_CACHE_RELPATH = (
     "cache",
     "last_conversations.json",
 )
+
+# agy's global CLI settings file (theme, model, verbosity, …). Relative to HOME.
+_SETTINGS_RELPATH = (".gemini", "antigravity-cli", "settings.json")
 
 
 def build_argv(
@@ -89,7 +123,13 @@ def extract_output(raw: str) -> str:
     the wrapper. When the block is absent (streaming mode), returns *raw* unchanged.
     ``(empty)`` output is normalised to an empty string so the caller gets a
     clean ``no valid result block`` error rather than trying to parse "(empty)".
+
+    Always strips terminal-control escapes first (:func:`strip_ansi`): under the
+    Windows ConPTY spawn path agy's stdout carries a terminal prelude and
+    interleaved cursor/colour codes that would otherwise corrupt both the
+    task-block detection here and the downstream JSON result parse.
     """
+    raw = strip_ansi(raw)
     if "[Task " not in raw or "Status Update]" not in raw:
         return raw
 
@@ -102,6 +142,52 @@ def extract_output(raw: str) -> str:
     end = raw.find(error_marker, content_start)
     content = raw[content_start:end].strip() if end != -1 else raw[content_start:].strip()
     return "" if content == "(empty)" else content
+
+
+# #236: agy ends its turn by deferring real work to an async/background task and
+# "waiting" for it, instead of running it to completion and emitting a JSON result
+# block. The first observed variant delegated to the internal ``manage_task`` tool
+# ("Obtaining command output... manage_task status <id>"); a later variant phrased
+# the same behaviour with no ``manage_task`` token at all ("I will pause calling
+# tools and wait for the cargo clippy background task to finish"). Match the
+# *behaviour* (turn ended waiting on deferred work), not one literal tool name.
+# Safe to keep liberal: this only runs when no JSON result block was produced, so
+# the work is already incomplete — a false positive merely uses the (correct)
+# "re-run synchronously" nudge instead of the generic one.
+_ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
+    "manage_task",
+    "pause calling tools",
+    "stop calling tools",
+    "background task to finish",
+    "wait for the background task",
+    "obtaining command output",
+    "wait for notification",
+    "wait for the task notification",
+    # #242: real-world phrasings the original markers missed (16/16 undetected),
+    # observed across Gemini 3.5 Flash + 3.1 Pro when agy auto-backgrounds a build/
+    # test command and ends the turn waiting. Liberal by design — this runs only on
+    # the no-JSON failure path, so a false positive merely picks the (correct)
+    # "re-run synchronously" nudge.
+    "in the background",
+    "to the background",
+    "for the background",
+    "wait for it to finish",
+    "wait for it to complete",
+    "wait for them to complete",
+    "wait for the task to complete",
+    "wait for the system to notify",
+    "notify me when",
+    "we will be notified",
+    "notified upon its completion",
+)
+
+
+def is_async_handoff(raw: str) -> bool:
+    """Return True when agy ended its turn by deferring work to an async/background
+    task and waiting on it, instead of completing the work and emitting a JSON
+    result block (#236)."""
+    lowered = raw.lower()
+    return any(marker in lowered for marker in _ASYNC_HANDOFF_MARKERS)
 
 
 def build_resume_argv(
@@ -162,3 +248,50 @@ def resolve_conversation_id(cwd: Path | str, *, home: str | None) -> str | None:
         return None
     value = data.get(str(cwd))
     return value if isinstance(value, str) and value else None
+
+
+def ensure_low_verbosity_setting(*, home: str | None = None) -> bool:
+    """Set ``verbosity: "low"`` in agy's global settings, preserving other keys.
+
+    agy has no native JSON/structured-output mode and no per-invocation verbosity
+    flag — ``verbosity`` lives only in ``<home>/.gemini/antigravity-cli/
+    settings.json``. ``low`` trims the prose agy emits around its fenced JSON
+    result block (often to *zero* preamble), which lowers token cost and the odds
+    the result parser latches onto a stray example object. AgentShore drives agy
+    via the same global CLI config, so provisioning sets this once at ``init``.
+
+    Idempotent and conservative:
+
+    * Respects an existing ``verbosity`` value (never overwrites a user choice).
+    * Preserves every other key (``colorScheme``, ``model``, …).
+    * Creates the file/dirs if absent; tolerates a missing or malformed file by
+      starting from an empty settings object.
+
+    Returns ``True`` when the file was (re)written, ``False`` when it was already
+    set or the write failed. Never raises.
+    """
+    base = home or os.environ.get("HOME") or str(Path.home())
+    settings_path = Path(base, *_SETTINGS_RELPATH)
+
+    data: dict[str, object] = {}
+    try:
+        with settings_path.open(encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, ValueError):
+        # Missing / unreadable / malformed → start from an empty object.
+        data = {}
+
+    if "verbosity" in data:
+        return False  # respect the user's existing choice
+
+    data["verbosity"] = "low"
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        with settings_path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+    except OSError:
+        return False
+    return True

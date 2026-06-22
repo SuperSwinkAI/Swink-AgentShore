@@ -89,7 +89,7 @@ def _identity_defaults_from_yaml(config_path: Path) -> dict[str, str]:
     """
     import yaml
 
-    from agentshore.agents.identity import configured_github_login_from_fields
+    from agentshore.agents.identity import configured_github_login_from_yaml_fields
     from agentshore.identity_names import canonical_identity_name
 
     try:
@@ -119,12 +119,7 @@ def _identity_defaults_from_yaml(config_path: Path) -> dict[str, str]:
         )
         if not isinstance(identity, dict):
             continue
-        login = configured_github_login_from_fields(
-            ident_name=canonical_identity_name(str(identity_name)),
-            gh_token_login=str_or_none(identity.get("gh_token_login")),
-            gh_token_env=str_or_none(identity.get("gh_token_env")),
-            gh_token_keychain=str_or_none(identity.get("gh_token_keychain")),
-        )
+        login = configured_github_login_from_yaml_fields(str(identity_name), identity)
         if login:
             defaults[agent_key] = login
     return defaults
@@ -150,7 +145,7 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
     """
     import yaml
 
-    from agentshore.agents.identity import configured_github_login_from_fields
+    from agentshore.agents.identity import configured_github_login_from_yaml_fields
     from agentshore.identity_names import canonical_identity_name, canonical_keychain_service
     from agentshore.identity_wizard import IdentityBinding
 
@@ -167,12 +162,7 @@ def _existing_identities_from_yaml(config_path: Path) -> dict[str, IdentityBindi
     for ident_key, ident in identities.items():
         if not isinstance(ident, dict):
             continue
-        login = configured_github_login_from_fields(
-            ident_name=canonical_identity_name(str(ident_key)),
-            gh_token_login=str_or_none(ident.get("gh_token_login")),
-            gh_token_env=str_or_none(ident.get("gh_token_env")),
-            gh_token_keychain=str_or_none(ident.get("gh_token_keychain")),
-        )
+        login = configured_github_login_from_yaml_fields(str(ident_key), ident)
         if not login:
             continue
         default_email = f"{login}@users.noreply.github.com"

@@ -82,12 +82,16 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     async def record_doctor(cwd: object) -> None:
         calls.append("doctor")
 
+    async def no_existing_install(cwd: object) -> str | None:
+        return None
+
+    monkeypatch.setattr(setup, "installed_cli_version", no_existing_install)
     monkeypatch.setattr(setup, "_ensure_ffmpeg", fail_ffmpeg)
     monkeypatch.setattr(setup, "_ensure_windows_ffmpeg", record_windows_ffmpeg)
     monkeypatch.setattr(setup, "_ensure_node", record_node)
     monkeypatch.setattr(setup, "_install_cli", record_cli)
     monkeypatch.setattr(setup, "_verify_pinned_version", record_verify_version)
-    monkeypatch.setattr(setup, "_harden_windows_daemon_spawn", record_harden)
+    monkeypatch.setattr(setup, "harden_installed_cli", record_harden)
     monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
 
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
@@ -96,6 +100,138 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     # The pin must be verified before the toolchain doctor runs, and the
     # Windows daemon-spawn hardening must run against the just-installed pin.
     assert calls == ["ffmpeg", "node", "cli", "verify_version", "harden", "doctor"]
+
+
+async def test_install_steps_skip_heavy_work_when_already_current(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # When the installed CLI already matches the pin, the install must skip the
+    # ffmpeg/node/npm provisioning and only re-assert hardening + health.
+    calls: list[str] = []
+
+    async def current_version(cwd: object) -> str | None:
+        return setup.EXPECTED_CLI_VERSION
+
+    async def fail_cli(cwd: object) -> None:
+        raise AssertionError("must not reinstall the CLI when already current")
+
+    async def fail_node(cwd: object) -> None:
+        raise AssertionError("must not provision Node when already current")
+
+    async def record_harden(cwd: object) -> None:
+        calls.append("harden")
+
+    async def record_doctor(cwd: object) -> None:
+        calls.append("doctor")
+
+    monkeypatch.setattr(setup, "installed_cli_version", current_version)
+    monkeypatch.setattr(setup, "_install_cli", fail_cli)
+    monkeypatch.setattr(setup, "_ensure_node", fail_node)
+    monkeypatch.setattr(setup, "harden_installed_cli", record_harden)
+    monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
+
+    result = await setup.install_timelapse(tmp_path)
+
+    assert result.success is True
+    assert calls == ["harden", "doctor"]
+
+
+async def test_install_steps_upgrade_when_version_drifts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A stale installed version must trigger the full install/upgrade path.
+    calls: list[str] = []
+
+    async def stale_version(cwd: object) -> str | None:
+        return "0.3.1"
+
+    async def record_ffmpeg(cwd: object) -> None:
+        calls.append("ffmpeg")
+
+    async def record_node(cwd: object) -> None:
+        calls.append("node")
+
+    async def record_cli(cwd: object) -> None:
+        calls.append("cli")
+
+    async def record_verify(cwd: object) -> None:
+        calls.append("verify_version")
+
+    async def record_harden(cwd: object) -> None:
+        calls.append("harden")
+
+    async def record_doctor(cwd: object) -> None:
+        calls.append("doctor")
+
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    monkeypatch.setattr(setup, "installed_cli_version", stale_version)
+    monkeypatch.setattr(setup, "_ensure_windows_ffmpeg", record_ffmpeg)
+    monkeypatch.setattr(setup, "_ensure_node", record_node)
+    monkeypatch.setattr(setup, "_install_cli", record_cli)
+    monkeypatch.setattr(setup, "_verify_pinned_version", record_verify)
+    monkeypatch.setattr(setup, "harden_installed_cli", record_harden)
+    monkeypatch.setattr(setup, "_verify_doctor", record_doctor)
+
+    result = await setup.install_timelapse(tmp_path)
+
+    assert result.success is True
+    assert calls == ["ffmpeg", "node", "cli", "verify_version", "harden", "doctor"]
+
+
+async def test_update_timelapse_if_installed_noop_when_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: None)
+
+    async def fail_install(cwd: object = None) -> setup.InstallResult:
+        raise AssertionError("must not run a fresh install when CLI is absent")
+
+    monkeypatch.setattr(setup, "install_timelapse", fail_install)
+
+    result = await setup.update_timelapse_if_installed(tmp_path)
+
+    assert result.success is True
+    assert "not installed" in result.message
+
+
+async def test_update_timelapse_if_installed_delegates_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: "timelapse-capture")
+    seen: dict[str, object] = {}
+
+    async def fake_install(cwd: object = None) -> setup.InstallResult:
+        seen["cwd"] = cwd
+        return setup.InstallResult(success=True, message="upgraded")
+
+    monkeypatch.setattr(setup, "install_timelapse", fake_install)
+
+    result = await setup.update_timelapse_if_installed(tmp_path)
+
+    assert result.success is True
+    assert result.message == "upgraded"
+    assert seen["cwd"] == tmp_path
+
+
+async def test_installed_cli_version_returns_none_when_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: None)
+    assert await setup.installed_cli_version(tmp_path) is None
+
+
+async def test_installed_cli_version_parses_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(setup, "resolve_timelapse_binary", lambda: "timelapse-capture")
+
+    async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
+        assert cmd == ["timelapse-capture", "--version"]
+        return setup.CommandResult(args=tuple(cmd), returncode=0, stdout="0.3.1\n", stderr="")
+
+    monkeypatch.setattr(setup, "_run", fake_run)
+
+    assert await setup.installed_cli_version(tmp_path) == "0.3.1"
 
 
 async def test_ensure_windows_node_reports_missing_winget(
@@ -364,7 +500,7 @@ def test_patch_text_for_windows_hide_refuses_unknown_layout() -> None:
     assert setup._patch_text_for_windows_hide("function spawn() { /* different */ }") is None
 
 
-async def test_harden_windows_daemon_spawn_noop_off_windows(
+async def test_harden_installed_cli_noop_off_windows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "linux")
@@ -374,10 +510,10 @@ async def test_harden_windows_daemon_spawn_noop_off_windows(
 
     monkeypatch.setattr(setup, "_run", fail_run)
     # Must return without resolving or patching anything.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
 
-async def test_harden_windows_daemon_spawn_patches_installed_source(
+async def test_harden_installed_cli_patches_installed_source(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -392,16 +528,16 @@ async def test_harden_windows_daemon_spawn_patches_installed_source(
 
     monkeypatch.setattr(setup, "_run", fake_run)
 
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
     patched = cli_src.read_text(encoding="utf-8")
     assert "windowsHide: true," in patched
     # Re-running is idempotent — no second flag.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
     assert cli_src.read_text(encoding="utf-8").count("windowsHide: true,") == 1
 
 
-async def test_harden_windows_daemon_spawn_warns_when_source_missing(
+async def test_harden_installed_cli_warns_when_source_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "win32")
@@ -412,7 +548,7 @@ async def test_harden_windows_daemon_spawn_warns_when_source_missing(
 
     monkeypatch.setattr(setup, "_run", fake_run)
     # Best-effort: a missing source must not raise.
-    await setup._harden_windows_daemon_spawn(tmp_path)
+    await setup.harden_installed_cli(tmp_path)
 
 
 async def test_verify_pinned_version_accepts_matching_pin(

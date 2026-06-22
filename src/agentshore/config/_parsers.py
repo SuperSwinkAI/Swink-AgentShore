@@ -1059,7 +1059,7 @@ def _parse_skills(raw: _RawSkills) -> SkillsConfig:
 
 
 def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
-    ttl = raw.get("reap_ttl_seconds", 3600)
+    ttl = raw.get("reap_ttl_seconds", 10800)
     if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl < 0:
         raise ConfigError(f"worktrees.reap_ttl_seconds must be a non-negative integer, got {ttl!r}")
     root = raw.get("root")

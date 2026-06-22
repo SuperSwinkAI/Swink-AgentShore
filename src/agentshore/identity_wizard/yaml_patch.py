@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 import click
 import yaml
 
-from agentshore.config.coerce import str_or_none
 from agentshore.identity_names import (
     canonical_identity_name,
     canonical_keychain_service,
@@ -77,7 +76,7 @@ def _identity_to_yaml_dict(b: IdentityBinding) -> dict[str, str]:
 def _agent_bound_identity_logins(data: dict[object, object]) -> list[str]:
     """Return configured GitHub logins for CLI-agent identities in YAML data."""
 
-    from agentshore.agents.identity import configured_github_login_from_fields
+    from agentshore.agents.identity import configured_github_login_from_yaml_fields
 
     raw_agents = data.get("agents") or {}
     raw_identities = data.get("identities") or {}
@@ -105,12 +104,7 @@ def _agent_bound_identity_logins(data: dict[object, object]) -> list[str]:
         if not isinstance(ident, dict):
             continue
 
-        login = configured_github_login_from_fields(
-            ident_name=canonical_identity,
-            gh_token_login=str_or_none(ident.get("gh_token_login")),
-            gh_token_env=str_or_none(ident.get("gh_token_env")),
-            gh_token_keychain=str_or_none(ident.get("gh_token_keychain")),
-        )
+        login = configured_github_login_from_yaml_fields(canonical_identity, ident)
         if not login or not is_valid_github_login(login) or login in seen:
             continue
         logins.append(login)

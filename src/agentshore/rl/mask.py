@@ -19,7 +19,6 @@ from agentshore.plays.candidates import (
     WorkAvailability,
     build_candidate_plan,
     qa_ran_within_terminal_window,
-    terminal_audits_are_fresh,
 )
 from agentshore.preferences import USER_DISABLEABLE_PLAYS
 from agentshore.rl.action_space import NUM_ACTIONS, RESERVED_PLAYS, V1_ACTION_ORDER
@@ -237,22 +236,12 @@ def compute_terminal_no_work_decision(
     return None
 
 
-def _lifecycle_churn_active(state: OrchestratorState) -> bool:
-    """True when the session is oscillating on lifecycle plays with no work (#163).
+def _work_tail_stale(state: OrchestratorState) -> bool:
+    """True once the most-recently-run work play is stale (>= the threshold).
 
-    Fires only when ALL hold, so it cannot suppress legitimate fleet growth:
-      0. NOT terminal-no-work (a terminal final-QA spawn is legitimate).
-      1. an IDLE agent exists — with no idle capacity INSTANTIATE_AGENT may
-         legitimately grow the fleet, so that is not churn.
-      2. a work play has run at least once — else this is cold-start bootstrap,
-         where a burst of INSTANTIATE_AGENT is correct.
-      3. the most-recently-run work play is now stale (>= the threshold) — the
-         recent tail is lifecycle / no-op churn rather than progress.
+    False during cold-start bootstrap (no work play has run yet), where a burst
+    of INSTANTIATE_AGENT is correct.
     """
-    if build_candidate_plan(state).work_availability.terminal_no_work:
-        return False
-    if not any(a.status == AgentStatus.IDLE for a in state.agents):
-        return False
     since = [
         state.plays_since_last_play_type[pt]
         for pt in _WORK_PLAY_TYPES
@@ -263,6 +252,53 @@ def _lifecycle_churn_active(state: OrchestratorState) -> bool:
     return min(since) >= _LIFECYCLE_CHURN_THRESHOLD
 
 
+def _lifecycle_churn_active(
+    state: OrchestratorState, *, availability: WorkAvailability | None = None
+) -> bool:
+    """True when the session is oscillating on lifecycle plays with no work (#163).
+
+    Fires only when ALL hold, so it cannot suppress legitimate fleet growth:
+      0. NOT terminal-no-work (a terminal final-QA spawn is legitimate).
+      1. an IDLE agent exists — with no idle capacity INSTANTIATE_AGENT may
+         legitimately grow the fleet, so that is not churn.
+      2. a work play has run at least once — else this is cold-start bootstrap.
+      3. the most-recently-run work play is now stale (>= the threshold) — the
+         recent tail is lifecycle / no-op churn rather than progress.
+
+    Gates the END_AGENT side of the breaker (reaping-churn needs idle capacity to
+    reap). The INSTANTIATE_AGENT side additionally uses ``_growth_pointless_no_work``
+    so reaping the last idle agent cannot re-open the spawn play (#166).
+    """
+    availability = availability or build_candidate_plan(state).work_availability
+    if availability.terminal_no_work:
+        return False
+    if not any(a.status == AgentStatus.IDLE for a in state.agents):
+        return False
+    return _work_tail_stale(state)
+
+
+def _growth_pointless_no_work(
+    state: OrchestratorState, *, availability: WorkAvailability | None = None
+) -> bool:
+    """True when spawning another agent cannot accomplish anything (#166).
+
+    A superset of ``_lifecycle_churn_active`` that drops the idle-agent
+    requirement: it holds even with NO idle agent present, so after END_AGENT
+    reaps the last idle agent the breaker keeps INSTANTIATE_AGENT masked instead
+    of re-opening it — this is what stops the reap -> respawn limit cycle that
+    kept the fleet-idle backstop and reverse-failsafe accumulators pinned at
+    zero. Fires only post-bootstrap (work has run, now stale), with no
+    dispatchable issue/PR/backlog/groom work, and not during a terminal final-QA
+    spawn — so it cannot suppress legitimate fleet growth.
+    """
+    availability = availability or build_candidate_plan(state).work_availability
+    if availability.terminal_no_work:
+        return False
+    if availability.has_actionable_work:
+        return False
+    return _work_tail_stale(state)
+
+
 def reverse_failsafe_should_unmask(state: OrchestratorState) -> bool:
     """Return True when the all-masked escape hatch should expose fallback plays."""
     if state.session_state != SessionState.RUNNING:
@@ -271,6 +307,27 @@ def reverse_failsafe_should_unmask(state: OrchestratorState) -> bool:
     has_terminal_dead_end = build_candidate_plan(state).work_availability.terminal_no_work
     has_idle_agent = any(agent.status == AgentStatus.IDLE for agent in state.agents)
     return (has_open_issue or has_terminal_dead_end) and has_idle_agent
+
+
+def _resolve_user_disabled_plays(cfg: RuntimeConfig | None) -> frozenset[PlayType]:
+    """User-disabled plays from global Preferences, allowlist-guarded.
+
+    Re-checks :data:`USER_DISABLEABLE_PLAYS` so a hand-edited preferences file
+    can never disable a delivery/lifecycle/self-heal play even if it names one.
+    Shared by :meth:`ActionMaskBuilder._user_disabled_plays` and the reverse
+    failsafe so an explicit user choice is honored on every path (#240).
+    """
+    if cfg is None:
+        return frozenset()
+    disabled: set[PlayType] = set()
+    for value in cfg.preferences.disabled_plays:
+        try:
+            pt = PlayType(value)
+        except ValueError:
+            continue
+        if pt in USER_DISABLEABLE_PLAYS and pt in V1_ACTION_ORDER:
+            disabled.add(pt)
+    return frozenset(disabled)
 
 
 def compute_reverse_failsafe_mask(
@@ -289,18 +346,16 @@ def compute_reverse_failsafe_mask(
     for play_type in hard_masks:
         if play_type in V1_ACTION_ORDER:
             lifted[V1_ACTION_ORDER.index(play_type)] = False
-    if allow_control_plays and PlayType.END_SESSION in V1_ACTION_ORDER:
-        has_in_flight = bool(state.in_flight_plays) or any(
-            agent.status == AgentStatus.BUSY for agent in state.agents
-        )
-        availability = build_candidate_plan(state).work_availability
-        if (
-            has_in_flight
-            or not terminal_audits_are_fresh(state)
-            or not qa_ran_within_terminal_window(state, window=_TERMINAL_QA_RECENT_WINDOW)
-            or availability.ready_task_count > 0
-        ):
-            lifted[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
+    # END_SESSION carries no terminal-readiness preconditions on the failsafe
+    # path (#240). The terminal-evidence guards (in-flight work, fresh audits,
+    # recent QA, ready-task count) exist for the *normal* path, where ending the
+    # session is a deliberate policy choice that should wait for clean evidence.
+    # The failsafe only fires once the session is demonstrably wedged — N idle
+    # ticks, every agent idle, every other action masked — at which point those
+    # guards keep END_SESSION masked precisely when a clean handoff is needed
+    # (ready tasks that are all un-dispatchable being the exact stuck state).
+    # So when control plays are allowed, END_SESSION stays lifted and the PPO
+    # decides whether to terminate.
 
     if PlayType.INSTANTIATE_AGENT in V1_ACTION_ORDER:
         # Don't grow the fleet via the failsafe when idle capacity already exists
@@ -324,9 +379,16 @@ def compute_reverse_failsafe_mask(
     # Overlay invariant: any action enabled by the base mask stays enabled.
     # This is what makes the semantics structural rather than replacement —
     # reverse failsafe can ADD opportunities, never REMOVE them.
-    if base_mask is not None:
-        return lifted | base_mask
-    return lifted
+    result = lifted | base_mask if base_mask is not None else lifted
+
+    # User-disabled plays are the one exception to the additive invariant: an
+    # explicit user choice must survive the failsafe (#240). The selector runs
+    # its own failsafe via this function and does NOT re-run the builder's
+    # _stage_user_disabled, so enforce it here at the source — both call sites
+    # (ActionMaskBuilder.build and PlaySelector.select) are then safe.
+    for pt in _resolve_user_disabled_plays(cfg):
+        result[V1_ACTION_ORDER.index(pt)] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -396,18 +458,8 @@ class ActionMaskBuilder:
         file can never disable a delivery/lifecycle/self-heal play even if it
         names one. Cached per build.
         """
-        if self._user_disabled is not None:
-            return self._user_disabled
-        disabled: set[PlayType] = set()
-        if self._cfg is not None:
-            for value in self._cfg.preferences.disabled_plays:
-                try:
-                    pt = PlayType(value)
-                except ValueError:
-                    continue
-                if pt in USER_DISABLEABLE_PLAYS and pt in V1_ACTION_ORDER:
-                    disabled.add(pt)
-        self._user_disabled = frozenset(disabled)
+        if self._user_disabled is None:
+            self._user_disabled = _resolve_user_disabled_plays(self._cfg)
         return self._user_disabled
 
     def _stage_user_disabled(self) -> None:
@@ -442,18 +494,25 @@ class ActionMaskBuilder:
                 self._mask[V1_ACTION_ORDER.index(pt)] = False
 
     def _stage_lifecycle_churn_breaker(self) -> None:
-        """Mask lifecycle plays when the session is churning them with no work (#163).
+        """Mask lifecycle plays when the session is churning them with no work (#163/#166).
 
         Stops the INSTANTIATE_AGENT <-> END_AGENT oscillation that burns budget
-        once work becomes undispatchable. END_AGENT stays available when an agent
-        genuinely needs reaping (wedged / terminal error) so a stuck agent can
-        still be retired. Pure option-removal; an all-masked result idles safely
-        in the selector.
+        once work becomes undispatchable. INSTANTIATE_AGENT is masked whenever
+        spawning is pointless (no dispatchable work) — even with no idle agent —
+        so reaping the last idle agent cannot re-open the spawn play and restart
+        the limit cycle (#166); this lets the fleet settle into a genuinely
+        all-masked tick so the selector's reverse-failsafe and the loop's
+        fleet-idle backstop can accumulate. END_AGENT stays available when an
+        agent genuinely needs reaping (wedged / terminal error) so a stuck agent
+        can still be retired. Pure option-removal; an all-masked result idles
+        safely in the selector.
         """
-        if not _lifecycle_churn_active(self._state):
-            return
-        self._mask[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
-        if not _agent_needs_reaping(self._state):
+        availability = self._candidate_plan.work_availability
+        churn = _lifecycle_churn_active(self._state, availability=availability)
+        pointless = _growth_pointless_no_work(self._state, availability=availability)
+        if churn or pointless:
+            self._mask[V1_ACTION_ORDER.index(PlayType.INSTANTIATE_AGENT)] = False
+        if churn and not _agent_needs_reaping(self._state):
             self._mask[V1_ACTION_ORDER.index(PlayType.END_AGENT)] = False
 
     def _stage_reserved_slots(self) -> None:
@@ -567,6 +626,7 @@ class ActionMaskBuilder:
         """
         mask = self.build(apply_reverse_failsafe=apply_reverse_failsafe)
         state = self._state
+        availability = self._candidate_plan.work_availability
         verdicts = self._eligibility_report().verdicts
 
         reasons: dict[PlayType, MaskReason] = {}
@@ -607,7 +667,10 @@ class ActionMaskBuilder:
 
             # Lifecycle-churn breaker (B-type overlay): a lifecycle play masked to
             # stop instantiate<->end_agent churn while no work is dispatchable.
-            if pt in _LIFECYCLE_PLAY_TYPES and _lifecycle_churn_active(state):
+            if pt in _LIFECYCLE_PLAY_TYPES and (
+                _lifecycle_churn_active(state, availability=availability)
+                or _growth_pointless_no_work(state, availability=availability)
+            ):
                 reasons[pt] = MaskReason(
                     text=(
                         "lifecycle-churn breaker: only lifecycle plays selectable with no "

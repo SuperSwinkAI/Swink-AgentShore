@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type JSX, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { AGENT_TYPES, agentLabel } from "@agentshore/dashboard";
+import { AGENT_REGISTRY, AGENT_TYPES, agentLabel } from "@agentshore/dashboard";
 import {
   configureAgent,
   detectAgents,
@@ -307,7 +307,16 @@ export function AgentsScreen({
                   data-testid={`agent-row-${row.type}`}
                 >
                   <div className={styles.rowMain}>
-                    <span className={styles.rowLabel}>{agentLabel(row.type)}</span>
+                    <span className={styles.rowLabel}>
+                      {agentLabel(row.type)}
+                      {(AGENT_REGISTRY as Record<string, { beta?: boolean } | undefined>)[
+                        row.type
+                      ]?.beta && (
+                        <span className={styles.betaBadge} data-testid="agent-beta-badge">
+                          Beta
+                        </span>
+                      )}
+                    </span>
                     <span className={styles.rowMeta}>{tierSummary(row)}</span>
                   </div>
 

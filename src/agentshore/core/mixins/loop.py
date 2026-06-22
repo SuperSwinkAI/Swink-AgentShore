@@ -90,8 +90,27 @@ _WEDGED_IDLE_STOP_TICKS = 12
 # is masked into a corner (e.g. the only open PRs are all manual-required, so no
 # work play is selectable and END_SESSION is gated), a fully-idle fleet must not
 # poll forever. Wall-clock rather than tick-count because idle_backoff makes the
-# tick spacing vary. Reset to None on any dispatch / busy agent.
+# tick spacing vary. The clock measures *productive* idle: lifecycle-only churn
+# (INSTANTIATE_AGENT <-> END_AGENT) does not reset it, so a session that only
+# cycles agents with no dispatchable work still reaches the deadline (#166).
 _FLEET_IDLE_END_SESSION_SECONDS: float = 1200.0
+
+# Consecutive failsafe END_SESSION attempts that may be vetoed by the
+# revalidation gate before the loop forces a clean autonomous drain. The
+# reverse-failsafe (PPO) gets first crack at ending a wedged session; if its
+# END_SESSION is blocked this many times in a row the deterministic backstop
+# fires. At the ~90s failsafe cadence this is ~12 minutes of grace — inside the
+# 20-minute time-budget reserve, so a bookkeeping-wedged session drains in
+# minutes instead of running until the budget cutoff (#255). Honours the
+# "PPO drives, deterministic code only backstops" invariant.
+_END_SESSION_REVALIDATION_WEDGE_LIMIT = 8
+
+# Pure fleet-management plays. In-flight/dispatch of these does NOT count as
+# productive activity for the fleet-idle backstop — a session that only churns
+# them is idle for end-session purposes.
+_LIFECYCLE_PLAY_TYPES: frozenset[PlayType] = frozenset(
+    {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
+)
 
 # Cadence for the budget-countdown heartbeat: a budget-only frame the loop emits
 # so the dashboard's remaining-time figure keeps ticking down during quiet
@@ -210,6 +229,11 @@ class LoopRunner:
         self._last_loop_iteration_at: float = float("inf")
         # Per-tick guard circuit-breaker counter (see _MAX_CONSECUTIVE_TICK_FAILURES).
         self._tick_failure_streak: int = 0
+        # Consecutive failsafe END_SESSION attempts vetoed by the revalidation
+        # gate (see _END_SESSION_REVALIDATION_WEDGE_LIMIT). Drives the force-drain
+        # backstop for the bookkeeping-wedge in _resolve_tick; reset on any
+        # dispatch (#255).
+        self._end_session_revalidation_blocks: int = 0
         # Monotonic timestamp of the last budget-countdown heartbeat emit. 0.0
         # until the first one fires (so the first eligible tick emits promptly).
         self._last_budget_heartbeat_at: float = 0.0
@@ -615,9 +639,14 @@ class LoopRunner:
         # stamps _natural_exit_reason so run_until_idle fires session.completed
         # and the normal teardown (end_agent per agent, checkpoint, beads clear),
         # unlike a bare loop-break which would strand the process at 0 CPU.
-        fleet_fully_idle = not self._runtime.in_flight and not any(
-            a.status is AgentStatus.BUSY for a in state.agents
-        )
+        # "Productively idle" = no work play in flight. A BUSY agent only ever
+        # reflects an in-flight dispatch (state.in_flight_plays mirrors the
+        # dispatch_ctx of not-done dispatches), so lifecycle-only churn — and the
+        # transient BUSY it produces — is treated as idle here. This is what lets
+        # the deadline accumulate through an INSTANTIATE_AGENT <-> END_AGENT
+        # limit cycle instead of being reset every ~40s (#166).
+        productive_in_flight = any(pt not in _LIFECYCLE_PLAY_TYPES for pt in state.in_flight_plays)
+        fleet_fully_idle = not productive_in_flight
         if fleet_fully_idle:
             if self._fleet_idle_since is None:
                 self._fleet_idle_since = time.monotonic()
@@ -1185,25 +1214,12 @@ class LoopRunner:
                 emit_skipped=True,
             )
 
-        # Selector picked a play — reset the streak so the next idle window
-        # starts at the 1s backoff floor. If we were inside a fleet-idle
-        # persistent window (desktop-85ex), emit the exit transition once
-        # before clearing the flag — this is the second of the two
-        # bookend events the memory project_loop_detector_warning_storm
-        # mandates we preserve, instead of re-emitting per tick.
-        if self._fleet_idle_persistent_active:
-            _logger.info(
-                "fleet_idle_persistent",
-                session_id=self._session_id,
-                idle_streak=self._runtime.idle_streak,
-                threshold=self._runtime.cfg.rl.loop_detection.fleet_idle_threshold,
-                transition="exited",
-            )
-            self._fleet_idle_persistent_active = False
-        self._runtime.idle_streak = 0
-        self._wedged_idle_ticks = 0
-        self._fleet_idle_since = None
-
+        # Selector picked a play. Defer the idle-streak / fleet-idle resets until
+        # we know the play will *actually* dispatch (below). A reverse-failsafe
+        # END_SESSION that the revalidation gate vetoes must NOT reset the streak —
+        # otherwise every blocked attempt re-pins idle_streak at ~1, the fleet-idle
+        # escalation never accumulates, and only the 20-minute time budget can end a
+        # bookkeeping-wedged session (#255).
         play_type, params = selection
 
         if (
@@ -1221,14 +1237,55 @@ class LoopRunner:
                 if self._runtime.in_flight:
                     return WaitInFlight("waiting_for_in_flight_resource")
                 return Break()
-        end_session_blocked = (
-            play_type == PlayType.END_SESSION
-            and not await self._dispatcher.revalidate_end_session_before_dispatch()
-        )
-        if end_session_blocked:
-            if isinstance(self._runtime.selector, _ppo_selector_cls()):
-                self._runtime.selector.consume_pending()
-            return Continue()
+
+        if play_type == PlayType.END_SESSION:
+            failsafe = params.extras.get("reverse_failsafe") is True
+            if not await self._dispatcher.revalidate_end_session_before_dispatch(failsafe=failsafe):
+                if isinstance(self._runtime.selector, _ppo_selector_cls()):
+                    self._runtime.selector.consume_pending()
+                # A failsafe END_SESSION is the PPO trying to break a wedge. If the
+                # gate vetoes it this many times in a row the session is wedged on
+                # un-dispatchable bookkeeping; force a clean drain rather than poll
+                # until the time budget (#255).
+                if failsafe:
+                    self._end_session_revalidation_blocks += 1
+                    if (
+                        self._end_session_revalidation_blocks
+                        >= _END_SESSION_REVALIDATION_WEDGE_LIMIT
+                    ):
+                        _logger.warning(
+                            "end_session_revalidation_wedged",
+                            session_id=self._session_id,
+                            blocks=self._end_session_revalidation_blocks,
+                            limit=_END_SESSION_REVALIDATION_WEDGE_LIMIT,
+                        )
+                        await self.initiate_autonomous_stop(
+                            "end_session_revalidation_wedged", fire_natural_exit=True
+                        )
+                return Continue()
+
+        # Dispatching for real — reset the idle bookkeeping now. If we were inside a
+        # fleet-idle persistent window (desktop-85ex), emit the exit transition once
+        # before clearing the flag — the second of the two bookend events the memory
+        # project_loop_detector_warning_storm mandates we preserve.
+        if self._fleet_idle_persistent_active:
+            _logger.info(
+                "fleet_idle_persistent",
+                session_id=self._session_id,
+                idle_streak=self._runtime.idle_streak,
+                threshold=self._runtime.cfg.rl.loop_detection.fleet_idle_threshold,
+                transition="exited",
+            )
+            self._fleet_idle_persistent_active = False
+        self._runtime.idle_streak = 0
+        self._wedged_idle_ticks = 0
+        self._end_session_revalidation_blocks = 0
+        # Only a *productive* selection resets the fleet-idle deadline. A
+        # lifecycle-only pick (INSTANTIATE_AGENT / END_AGENT) must not, or an
+        # instantiate<->end limit cycle would pin the clock at zero forever and
+        # the backstop would never fire (#166).
+        if play_type not in _LIFECYCLE_PLAY_TYPES:
+            self._fleet_idle_since = None
         return Dispatch(play_type, params, state)
 
     def _resolve_idle_tick(

@@ -1,6 +1,7 @@
 import type {
   AgentSnapshot,
   AgentShoreMessage,
+  AgentType,
   GraphTask,
   PullRequestSnapshot,
   StateUpdate,
@@ -86,7 +87,7 @@ export class DemoTransport implements DashboardTransport {
         issue_number: 47,
         started_at: BASE_TIME,
       });
-      this.onMessage?.({
+      const activeState: StateUpdate = {
         ...state,
         active_play: activePlay,
         agents: state.agents.map((agent) =>
@@ -104,7 +105,9 @@ export class DemoTransport implements DashboardTransport {
               }
             : agent,
         ),
-      });
+      };
+      this.onMessage?.(activeState);
+      this.emitConcurrencyHistory(activeState);
       this.onMessage?.({
         type: "play_event",
         status: "started",
@@ -204,8 +207,80 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "stress") {
-      this.onMessage?.(this.stressState());
+      const stressState = this.stressState();
+      this.onMessage?.(stressState);
+      this.emitConcurrencyHistory(stressState);
     }
+  }
+
+  private emitConcurrencyHistory(state: StateUpdate): void {
+    const now = Date.now();
+    const offsetsMinutes = [19, 13, 7, 2];
+    offsetsMinutes.forEach((offsetMinutes, index) => {
+      this.onMessage?.({
+        ...state,
+        timestamp: new Date(now - offsetMinutes * 60 * 1000).toISOString(),
+        agents: this.demoConcurrencyAgents(state.agents, index),
+      });
+    });
+  }
+
+  private demoConcurrencyAgents(
+    agents: AgentSnapshot[],
+    step: number,
+  ): AgentSnapshot[] {
+    const busyByType: ReadonlySet<AgentType> = [
+      new Set<AgentType>(["claude_code"]),
+      new Set<AgentType>(["claude_code", "codex"]),
+      new Set<AgentType>(["claude_code", "codex", "grok"]),
+      new Set<AgentType>(["codex", "grok", "antigravity"]),
+    ][step] ?? new Set<AgentType>();
+    const seenTypes = new Set<AgentType>(agents.map((agent) => agent.agent_type));
+    const extraAgents: AgentSnapshot[] = [
+      {
+        agent_id: "agent-grok",
+        agent_type: "grok",
+        display_name: "Grok: Patch Scout",
+        model_tier: "medium",
+        status: "idle",
+        context_size: 7200,
+        total_cost: 0.12,
+        total_tokens: 33000,
+        tasks_completed: 1,
+        tasks_failed: 0,
+        current_play: null,
+      },
+      {
+        agent_id: "agent-antigravity",
+        agent_type: "antigravity",
+        display_name: "Antigravity: Review Pilot",
+        model_tier: "small",
+        status: "idle",
+        context_size: 6200,
+        total_cost: 0.09,
+        total_tokens: 27000,
+        tasks_completed: 1,
+        tasks_failed: 1,
+        current_play: null,
+      },
+    ];
+    const extras = extraAgents.filter((agent) => !seenTypes.has(agent.agent_type));
+
+    return [...agents, ...extras].map((agent) => {
+      const busy = busyByType.has(agent.agent_type);
+      return {
+        ...agent,
+        status: busy ? "busy" : "idle",
+        current_play: busy
+          ? agent.current_play ??
+            makeActivePlay({
+              play_type: "issue_pickup",
+              agent_id: agent.agent_id,
+              started_at: BASE_TIME,
+            })
+          : null,
+      };
+    });
   }
 
   private stressState(): StateUpdate {

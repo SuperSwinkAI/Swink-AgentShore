@@ -228,20 +228,6 @@ def _build_timeline(
     peak_busy = max((record["busy_total"] for record in records), default=0)
     y_max = max(1, ceil(peak_busy / 5) * 5)
 
-    bottoms: dict[str, list[tuple[float, float]]] = {label: [] for label in harnesses}
-    tops: dict[str, list[tuple[float, float]]] = {label: [] for label in harnesses}
-    total_points: list[tuple[float, float]] = []
-
-    for index, record in enumerate(samples):
-        x = _timeline_x(index, len(samples))
-        cumulative = 0
-        counts = record["busy_by_type"]
-        for harness in harnesses:
-            bottoms[harness].append((x, _timeline_y(cumulative, y_max)))
-            cumulative += counts.get(harness, 0)
-            tops[harness].append((x, _timeline_y(cumulative, y_max)))
-        total_points.append((x, _timeline_y(record["busy_total"], y_max)))
-
     parsed_start = _parse_ts(records[0]["ts"])
     parsed_end = _parse_ts(records[-1]["ts"])
     duration_seconds = (
@@ -249,6 +235,31 @@ def _build_timeline(
         if parsed_start is not None and parsed_end is not None
         else None
     )
+    # True time axis: place each sample at its real elapsed offset so idle
+    # stretches render as flat gaps. Fall back to even ordinal spacing only when
+    # there is no usable span (single sample / unparseable timestamps).
+    use_time_axis = (
+        parsed_start is not None and duration_seconds is not None and duration_seconds > 0
+    )
+
+    bottoms: dict[str, list[tuple[float, float]]] = {label: [] for label in harnesses}
+    tops: dict[str, list[tuple[float, float]]] = {label: [] for label in harnesses}
+    total_points: list[tuple[float, float]] = []
+
+    for index, record in enumerate(samples):
+        if use_time_axis and parsed_start is not None and duration_seconds is not None:
+            sample_ts = _parse_ts(record["ts"])
+            elapsed = (sample_ts - parsed_start).total_seconds() if sample_ts is not None else 0.0
+            x = _timeline_x(elapsed, duration_seconds)
+        else:
+            x = _ordinal_x(index, len(samples))
+        cumulative = 0
+        counts = record["busy_by_type"]
+        for harness in harnesses:
+            bottoms[harness].append((x, _timeline_y(cumulative, y_max)))
+            cumulative += counts.get(harness, 0)
+            tops[harness].append((x, _timeline_y(cumulative, y_max)))
+        total_points.append((x, _timeline_y(record["busy_total"], y_max)))
 
     timeline_harnesses: list[FleetConcurrencyTimelineHarnessEntry] = []
     for index, harness in enumerate(harnesses):
@@ -288,7 +299,20 @@ def _downsample_timeline_records(records: list[dict[str, Any]]) -> list[dict[str
     return result
 
 
-def _timeline_x(index: int, total: int) -> float:
+def _timeline_x(elapsed_seconds: float, span_seconds: float) -> float:
+    """Map a sample's real elapsed offset to an x coordinate on the time axis.
+
+    Positioning by wall-clock (not ordinal index) is what makes an idle stretch
+    render as a flat gap instead of being smeared across the full width.
+    """
+    if span_seconds <= 0:
+        return _TIMELINE_LEFT
+    fraction = min(1.0, max(0.0, elapsed_seconds / span_seconds))
+    return _TIMELINE_LEFT + ((_TIMELINE_RIGHT - _TIMELINE_LEFT) * fraction)
+
+
+def _ordinal_x(index: int, total: int) -> float:
+    """Even ordinal spacing — fallback when there is no usable time span."""
     if total <= 1:
         return _TIMELINE_LEFT
     return _TIMELINE_LEFT + ((_TIMELINE_RIGHT - _TIMELINE_LEFT) * index / (total - 1))
@@ -333,7 +357,8 @@ def _x_axis_labels(
         x = _TIMELINE_LEFT + ((_TIMELINE_RIGHT - _TIMELINE_LEFT) * fraction) - 18.0
         if parsed_start is not None and parsed_end is not None and duration_seconds is not None:
             ts = parsed_start + (parsed_end - parsed_start) * fraction
-            label = _format_axis_timestamp(ts, duration_seconds)
+            # parsed_start/end are tz-aware (UTC); render in the viewer's local tz.
+            label = _format_axis_timestamp(ts.astimezone(), duration_seconds)
         else:
             sample_index = round((len(records) - 1) * fraction)
             label = f"#{sample_index + 1}"

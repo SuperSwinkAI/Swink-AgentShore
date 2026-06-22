@@ -1895,3 +1895,27 @@ async def test_merge_pr_execute_does_not_mark_merged_on_skill_failure() -> None:
 
     assert outcome.success is False
     ctx.store.mark_pr_merged.assert_not_awaited()
+
+
+# --- agy synchronous-execution directive (#242) ------------------------------
+
+
+def test_antigravity_sync_directive_appended_only_for_agy() -> None:
+    """The agy auto-background directive is appended for ANTIGRAVITY only."""
+    from agentshore.plays.skill_backed.base import (
+        _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE,
+        _with_antigravity_sync_directive,
+    )
+
+    base_prompt = "## Skill body\n\n...result block..."
+
+    agy = _with_antigravity_sync_directive(base_prompt, AgentType.ANTIGRAVITY)
+    assert agy.endswith(_ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE)
+    assert agy.startswith(base_prompt)
+    # The directive must name the failure mechanism so agy stops backgrounding.
+    assert "manage_task" in agy
+    assert "FOREGROUND" in agy
+
+    # Other agent types (and an unresolved type) are untouched.
+    for other in (AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GROK, None):
+        assert _with_antigravity_sync_directive(base_prompt, other) == base_prompt

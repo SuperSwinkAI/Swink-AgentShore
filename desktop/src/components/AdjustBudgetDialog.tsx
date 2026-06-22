@@ -32,10 +32,18 @@ import styles from "./AdjustBudgetDialog.module.css";
 export interface AdjustBudgetDialogProps {
   /** Close the dialog (cancel or after a successful apply). */
   onClose: () => void;
+  /**
+   * The session is winding down (draining / shutting_down). This is an
+   * absolute cap OVERRIDE, which silently no-ops past drain, so when locked we
+   * surface a banner and disable Apply rather than letting the RPC fail
+   * silently (#244).
+   */
+  locked?: boolean;
 }
 
 export function AdjustBudgetDialog({
   onClose,
+  locked = false,
 }: AdjustBudgetDialogProps): JSX.Element {
   const [selection, setSelection] = useState<BudgetSelection | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -132,10 +140,21 @@ export function AdjustBudgetDialog({
         <header className={styles.header}>
           <h2>Adjust Budget</h2>
           <p>
-            Re-cap this running session. New plays stop near each cap; agents
-            already working finish so their work is not wasted.
+            Set this running session's caps. These values replace the current
+            caps outright (they are not added on top). New plays stop near each
+            cap; agents already working finish so their work is not wasted.
           </p>
         </header>
+
+        {locked && (
+          <p
+            className={styles.error}
+            role="alert"
+            data-testid="adjust-budget-locked"
+          >
+            Session is winding down — budget can't be changed.
+          </p>
+        )}
 
         {loadError !== null && (
           <p
@@ -150,7 +169,7 @@ export function AdjustBudgetDialog({
         {selection !== null && (
           <div className={styles.body}>
             <CapSliderPanel
-              label="Dollar budget selection"
+              label="Set dollar cap to…"
               radioName="adjust-budget-mode"
               min={BUDGET_MIN_USD}
               max={BUDGET_MAX_USD}
@@ -163,7 +182,7 @@ export function AdjustBudgetDialog({
               testId="budget"
             />
             <CapSliderPanel
-              label="Time budget selection"
+              label="Set time cap to…"
               radioName="adjust-budget-time-mode"
               min={TIME_MIN_MINUTES}
               max={TIME_MAX_MINUTES}
@@ -203,7 +222,7 @@ export function AdjustBudgetDialog({
             onClick={() => {
               void onSubmit();
             }}
-            disabled={saving || selection === null}
+            disabled={saving || selection === null || locked}
             data-testid="adjust-budget-submit"
           >
             {saving ? "Applying…" : "Apply"}

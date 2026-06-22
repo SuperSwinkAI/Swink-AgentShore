@@ -500,8 +500,11 @@ class WorktreeConfig:
 
     # Seconds a row stays in ``status='stale'`` before the GitHub-poll
     # tick reaps the on-disk worktree and transitions the row to
-    # ``reaped``. Default 1h matches the plan's PR-close grace period.
-    reap_ttl_seconds: int = 3600
+    # ``reaped``. Default 3h matches the prune play's worktree min-age
+    # floor (``wedge_signals.collect_recent_worktree_paths``); a shorter
+    # window let the reaper free a ``pickup-<N>`` dir that a long
+    # re-dispatch was still using on the same path (#243).
+    reap_ttl_seconds: int = 10800
 
     # Base directory for AgentShore-managed worktrees. ``None`` (default) keeps
     # them project-local under ``<repo>/.agentshore/worktrees/`` (gitignored,

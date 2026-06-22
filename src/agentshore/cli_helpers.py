@@ -39,7 +39,6 @@ def _find_repo_root(start: Path) -> Path:
         if parent == current:
             raise OrchestratorError(
                 "No git repository found.  Run `agentshore start` from inside a git repo.",
-                recoverable=False,
             )
         current = parent
 
@@ -50,12 +49,10 @@ def _detect_gh_remote(cwd: Path | None = None) -> dict[str, str]:
     if result.tool_missing:
         raise OrchestratorError(
             "`gh` CLI not found on PATH.  Install the GitHub CLI.",
-            recoverable=False,
         )
     if result.returncode != 0:
         raise OrchestratorError(
             f"Failed to detect GitHub remote: {result.stderr or result.stdout}",
-            recoverable=False,
         )
     try:
         parsed = json.loads(result.stdout)
@@ -65,7 +62,6 @@ def _detect_gh_remote(cwd: Path | None = None) -> dict[str, str]:
     except (json.JSONDecodeError, RuntimeError) as exc:
         raise OrchestratorError(
             f"Failed to detect GitHub remote: {exc}",
-            recoverable=False,
         ) from exc
 
 

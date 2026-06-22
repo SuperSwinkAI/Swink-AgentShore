@@ -404,6 +404,37 @@ def test_select_auto_reverse_failsafe_after_idle_all_masked_ticks():
     assert params.extras["reverse_failsafe_bypassed_preconditions"] is True
 
 
+def test_auto_reverse_failsafe_counts_lifecycle_only_mask_as_no_work():
+    """#166: a mask leaving only lifecycle plays (END_AGENT here) selectable still
+    means 'no dispatchable work' — the failsafe counter must accumulate so it can
+    arm and lift END_SESSION, instead of resetting every time a reap slips
+    through."""
+    sel = _build_selector(all_preconds=False, resolver_params=PlayParams(issue_number=234))
+    state = _state(open_issues=[_issue()], agents=[_agent()])  # all agents idle
+    mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True  # only a lifecycle play selectable
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is True  # tick 3 → arms
+
+
+def test_auto_reverse_failsafe_resets_on_real_selectable_play():
+    """A genuinely selectable work play resets the idle counter (the failsafe must
+    not arm while real work is dispatchable)."""
+    sel = _build_selector(all_preconds=False, resolver_params=PlayParams(issue_number=234))
+    state = _state(open_issues=[_issue()], agents=[_agent()])
+    lifecycle_mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    lifecycle_mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True
+    work_mask = np.zeros(NUM_ACTIONS, dtype=bool)
+    work_mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]] = True
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, work_mask) is False  # resets to 0
+    # Counter restarted: a single lifecycle tick is well below threshold.
+    assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
+
+
 def test_select_auto_reverse_failsafe_opens_dead_end_controls():
     sel = _build_selector(
         all_preconds=False,
@@ -479,6 +510,112 @@ def test_auto_failsafe_counter_resets_when_an_agent_is_busy():
     sel = _build_selector(all_preconds=False)
     sel._no_available_play_ticks = 2  # primed
     state = _state(open_issues=[_issue()], agents=[busy_agent])
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._no_available_play_ticks == 0
+
+
+def _agent_with(agent_id: str, status, *, current_play_type=None):
+    from agentshore.state import AgentSnapshot, AgentType
+
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CODEX,
+        status=status,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        current_play_type=current_play_type,
+    )
+
+
+def test_auto_failsafe_counter_advances_when_only_agent_is_error():
+    """An ERROR agent is stuck, not working — it must not pin the counter at zero.
+
+    A transient API failure (e.g. 529 Overloaded) can leave an agent ERROR while
+    the rest of the fleet idles with all work masked. Counting ERROR as busy kept
+    the failsafe permanently disarmed, so END_SESSION never lifted and the session
+    could not wind down.
+    """
+    import numpy as np
+
+    from agentshore.state import AgentStatus
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[_agent_with("codex-1", AgentStatus.ERROR)],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_advances_when_agents_idle_and_error_mixed():
+    """A mix of IDLE + ERROR agents is still a quiescent fleet (no real work)."""
+    import numpy as np
+
+    from agentshore.state import AgentStatus
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("idle-1", AgentStatus.IDLE),
+            _agent_with("error-1", AgentStatus.ERROR),
+        ],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_advances_when_busy_agent_is_on_a_break():
+    """An agent BUSY inside TAKE_BREAK is sleeping, not progressing work."""
+    import numpy as np
+
+    from agentshore.state import AgentStatus, PlayType
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("codex-1", AgentStatus.BUSY, current_play_type=PlayType.TAKE_BREAK),
+        ],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_resets_when_busy_agent_does_real_work():
+    """A BUSY agent on a non-break play is genuine progress — reset and wait.
+
+    Guards the boundary of the ERROR/break carve-out: a real in-flight play must
+    still block the failsafe even when another agent is ERROR.
+    """
+    import numpy as np
+
+    from agentshore.state import AgentStatus, PlayType
+
+    sel = _build_selector(all_preconds=False)
+    sel._no_available_play_ticks = 2  # primed
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("worker-1", AgentStatus.BUSY, current_play_type=PlayType.ISSUE_PICKUP),
+            _agent_with("error-1", AgentStatus.ERROR),
+        ],
+    )
     fully_masked = np.zeros(22, dtype=bool)
 
     assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
@@ -1199,3 +1336,34 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
         if call.args and call.args[0] == "ppo_selector.confirm_repick"
     ]
     assert confirm_repicks, "confirm_repick must be logged for a live-drift re-pick"
+
+
+# ---------------------------------------------------------------------------
+# update_orchestrator_cfg — mid-session preference reload
+# ---------------------------------------------------------------------------
+
+
+def test_update_orchestrator_cfg_applies_disabled_play_to_mask() -> None:
+    """A play disabled mid-session reaches the selector's action-mask cfg.
+
+    Regression: the selector captured ``orchestrator_cfg`` once at construction
+    and never refreshed it on reload, so the user-disabled hard-mask was built
+    from the bootstrap config. A play turned off mid-session via Preferences
+    stayed selectable until the session restarted (run_qa ran ~8 min after being
+    disabled). ``update_orchestrator_cfg`` must swap the reference the mask reads.
+    """
+    from dataclasses import replace
+
+    from agentshore.config import RuntimeConfig
+    from agentshore.config.models import PreferencesConfig
+    from agentshore.rl.mask import _resolve_user_disabled_plays
+
+    sel = _build_selector()
+
+    enabled = RuntimeConfig()
+    sel.update_orchestrator_cfg(enabled)
+    assert PlayType.RUN_QA not in _resolve_user_disabled_plays(sel._orchestrator_cfg)
+
+    disabled = replace(enabled, preferences=PreferencesConfig(disabled_plays=("run_qa",)))
+    sel.update_orchestrator_cfg(disabled)
+    assert PlayType.RUN_QA in _resolve_user_disabled_plays(sel._orchestrator_cfg)

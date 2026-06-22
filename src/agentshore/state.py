@@ -146,6 +146,14 @@ RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
         ErrorClass.RATE_LIMIT,
         ErrorClass.UNKNOWN,
         ErrorClass.TRANSIENT_NETWORK,
+        # codex_rollout (the Codex CLI losing its on-disk rollout thread id) is
+        # recoverable: a fresh `codex exec` lands a new thread id. The completion
+        # path already enqueues an UNKNOWN_ERROR_RECOVERY take_break for it
+        # (recovery_tracker._RECOVERY_OVERRIDE_KIND), but this eligibility set used
+        # to omit it — so resolver/eligibility treated a codex_rollout agent as
+        # terminal while completion tried to recover it. Adding it here reconciles
+        # the two; the drift guard in tests/test_recovery_routing keeps them aligned.
+        ErrorClass.CODEX_ROLLOUT,
         # A clean-exit empty no-op (agy returns an empty task envelope) is
         # recoverable: 3-in-a-row routes the agent into a standard take_break,
         # exactly like a transient quota/throttle (desktop no-op resilience).

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
+from agentshore.agents import cli_antigravity
 from agentshore.agents.handle import is_noop_invocation
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS, ErrorClass, FailureKind
 from agentshore.plays.base import Play
@@ -21,8 +21,7 @@ from agentshore.plays.dispatch import (
     write_play_context,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
-from agentshore.state import AgentStatus, PlayOutcome, PlayType, SkillResult
+from agentshore.state import AgentType, PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,7 +30,8 @@ if TYPE_CHECKING:
     from agentshore.agents.handle import AgentInvocationResult
     from agentshore.plays.base import PlayExecutionContext, PlayParams
     from agentshore.plays.skill_backed.gates import Gate
-    from agentshore.state import AgentSnapshot, OrchestratorState
+    from agentshore.rl.mask_reason import MaskReason
+    from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
 
@@ -57,12 +57,54 @@ _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Do not invent other keys. Output only that one fenced JSON block."
 )
 
+# #236: agy-specific variant for when the agent ended its turn by deferring work to an
+# async/background task (the manage_task tool, a backgrounded command, or just "pause and
+# wait for it to finish") instead of completing the work. Unlike the generic nudge (which
+# says "don't redo work"), the work was never finished — the agent must re-run it
+# synchronously. Resume context gives it the full history of what it was trying to do; the
+# nudge redirects execution style, not scope.
+_JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
+    "Your previous turn ended by deferring a command to an async or background task and "
+    "waiting on it, instead of running it to completion. Do not use manage_task, do not "
+    "background commands, and do not pause to wait for a task to finish. Re-run the "
+    "remaining work in this turn synchronously — wait for each command to finish before "
+    "proceeding — then emit the fenced JSON result block. Do not end this turn until the "
+    "JSON block is emitted."
+)
+
+# #242: agy's runtime auto-backgrounds commands it judges long-running and then ends the
+# ``-p`` turn narrating that it is "waiting for the background task" — producing prose, no
+# JSON. The shared discipline preamble already says "run in the foreground", but agy needs
+# this named, emphatic, recency-positioned directive appended to the INITIAL dispatch to
+# comply (verified across Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8 with; the residual
+# leak is caught by ``cli_antigravity.is_async_handoff`` → the retry nudge above). Applied up
+# front so the handoff is *prevented*, not merely retried. agy-only: the other CLIs do not
+# auto-background, so this noise is scoped to ANTIGRAVITY dispatches.
+_ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
+    "\n\n## Antigravity: run every command synchronously\n\n"
+    "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
+    "long it takes. Do NOT send commands to the background, do NOT use a task or "
+    "manage_task tool, and do NOT pause to 'wait for a background task to finish' or "
+    "'wait for a notification' — there is no scheduler that will wake you up. Do NOT end "
+    "your turn until every command has returned and you have emitted the fenced JSON "
+    "result block."
+)
+
+
+def _with_antigravity_sync_directive(prompt: str, agent_type: AgentType | None) -> str:
+    """Append the agy synchronous-execution directive for ANTIGRAVITY dispatches only."""
+    if agent_type == AgentType.ANTIGRAVITY:
+        return prompt + _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE
+    return prompt
+
+
 # First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
 # the agent to re-print a result block it already computed, so it should start streaming
 # within seconds. Without an override it inherits the per-agent-type default — 1800s for
 # antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
 # into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
 # and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
+# Not applied for async/background handoffs (#236) — those require completing real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
 
 # Maximum consecutive clean-exit empty no-op dispatches before the play is failed
@@ -199,31 +241,21 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability."""
+        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
+
+        Delegates to :class:`CapabilityGate` so the precondition-override helper
+        and the gate apply the *same* filter — including the circuit-breaker
+        exclusion (#22). A hand-rolled copy here previously omitted the
+        circuit-broken check, so issue_pickup / groom_backlog could be deemed
+        eligible on an agent the breaker had marked dead.
+        """
+        from agentshore.plays.skill_backed.gates import CapabilityGate  # noqa: PLC0415
+
         cap_key = self.capability
         if cap_key is None:
             return []
-        rate_limited: set[str] = {
-            a.agent_type.value
-            for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
-        }
-        capable: list[AgentSnapshot] = [
-            a
-            for a in state.agents
-            if a.status == AgentStatus.IDLE
-            and a.agent_type.value not in rate_limited
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-        if not capable:
-            return [
-                MaskReason(
-                    text=f"no IDLE agent with {cap_key} capability",
-                    classification=MaskClassification.TRANSIENT,
-                    source=MaskSource.ELIGIBILITY,
-                )
-            ]
-        return []
+        reason = CapabilityGate(cap_key)(state)
+        return [reason] if reason is not None else []
 
     def _is_trunk_scoped_dispatch(self, dispatch_cwd: Path | None, project_path: Path) -> bool:
         """True when this play dispatches into the main checkout and is a trunk type.
@@ -331,9 +363,11 @@ class SkillBackedPlay(Play, ABC):
                 _logger.warning("learnings_injection_failed", error=str(exc))
 
         assigned_identity: str | None = None
+        dispatch_agent_type: AgentType | None = None
         for agent in state.agents:
             if agent.agent_id == agent_id:
                 assigned_identity = agent.github_identity
+                dispatch_agent_type = agent.agent_type
                 break
 
         review_patterns: list[dict[str, object]] = []
@@ -429,6 +463,9 @@ class SkillBackedPlay(Play, ABC):
                 context_path=context_relative_path,
                 dispatch_cwd=dispatch_cwd,
             )
+            # agy auto-backgrounds long commands and ends the turn waiting (#242);
+            # append the synchronous-execution directive to its INITIAL prompt.
+            prompt = _with_antigravity_sync_directive(prompt, dispatch_agent_type)
 
         claim_group_id_raw = params.extras.get("claim_group_id")
         if isinstance(claim_group_id_raw, str) and claim_group_id_raw:
@@ -646,14 +683,18 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
-            # #229: when the failure is a near-miss (JSON present but no top-level
-            # boolean ``success``), name the exact defect; otherwise use the generic
-            # "emit the JSON block" nudge.
-            retry_prompt = (
-                _JSON_RETRY_MISSING_SUCCESS_PROMPT
-                if skill_result.missing_success_envelope
-                else _JSON_RETRY_PROMPT
-            )
+            # #236: agy async/background handoff — agent deferred work to an async
+            # task and ended the turn waiting on it instead of completing it; the
+            # work is unfinished so we cannot ask for re-emission.
+            # #229: near-miss — JSON present but no top-level boolean ``success``.
+            # Otherwise: generic "emit the JSON block" nudge.
+            is_async_handoff = cli_antigravity.is_async_handoff(invocation.raw_output)
+            if is_async_handoff:
+                retry_prompt = _JSON_RETRY_ASYNC_HANDOFF_PROMPT
+            elif skill_result.missing_success_envelope:
+                retry_prompt = _JSON_RETRY_MISSING_SUCCESS_PROMPT
+            else:
+                retry_prompt = _JSON_RETRY_PROMPT
             _logger.info(
                 "agent_json_retry",
                 agent_id=agent_id,
@@ -661,6 +702,7 @@ class SkillBackedPlay(Play, ABC):
                 session_id=invocation.session_id,
                 original_output_length=len(invocation.raw_output),
                 missing_success_envelope=skill_result.missing_success_envelope,
+                async_handoff=is_async_handoff,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
@@ -671,7 +713,11 @@ class SkillBackedPlay(Play, ABC):
                 resume_session_id=invocation.session_id,
                 # #232: a re-emission should stream promptly — don't inherit agy's
                 # 1800s fresh-task first-byte deadline; fast-fail instead.
-                first_byte_timeout_override=_JSON_RETRY_FIRST_BYTE_S,
+                # #236: async/background handoffs require completing real work, not
+                # just re-printing — let them inherit the full per-agent-type deadline.
+                first_byte_timeout_override=(
+                    None if is_async_handoff else _JSON_RETRY_FIRST_BYTE_S
+                ),
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(
@@ -799,5 +845,11 @@ def _merge_invocation_costs(
 
 
 def _looks_like_auth_failure(error: str | None) -> bool:
+    # Skill error strings are work-product-adjacent free text, so this stays on
+    # the high-precision GITHUB_AUTH_ERROR_MARKERS view (phrased forms like
+    # "http 403", not the bare "403"/"forbidden" tokens in the broad AUTH_MARKERS
+    # superset) to avoid false positives — the same precision rationale as the
+    # stdout-vs-stderr split. The view is pinned ⊆ AUTH_MARKERS in
+    # tests/test_error_markers.py.
     text = (error or "").lower()
     return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)

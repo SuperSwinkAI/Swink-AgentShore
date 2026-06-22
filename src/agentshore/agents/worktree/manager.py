@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
@@ -47,7 +46,6 @@ from agentshore.agents.worktree.allocator import (
 from agentshore.agents.worktree.reaper import (
     ReapReport,
     _canon_path,
-    _reap_one,
     free_disk_mb,
     reap_for_closed_prs,
     reap_for_disk_pressure,
@@ -57,7 +55,6 @@ from agentshore.agents.worktree.registry import (
     WorktreeAllocationConflict,
     WorktreeRow,
     insert_worktree,
-    list_stale,
     lookup_by_branch,
     lookup_by_prebranch_key,
     mark_status,
@@ -233,6 +230,96 @@ class WorktreeManager:
         # the entry; once the count crosses the cap the row is dropped to
         # ``stale`` instead of kept warm (#180).
         self._pr_failure_counts: dict[int, int] = {}
+        # worktree_id → canonical on-disk path for every dispatch currently in
+        # flight. The manager is the SOLE owner of "is this worktree live?":
+        # reap paths read this internally (``_protected_ids``/``_protected_paths``),
+        # so no caller can reap without protection. Storing BOTH id and path holds
+        # back the #203 dup-path alias (a stale old-id row sharing the live path).
+        # Replaces the silently-failing ``getattr(ctx.params._runtime_allocation…)``
+        # chains that reconstructed this set at every reap site.
+        self._inflight: dict[int, str] = {}
+
+    # ------------------------------------------------------------------
+    # In-flight dispatch registry (single owner of the reap-protection invariant)
+    # ------------------------------------------------------------------
+
+    def register_dispatch(self, allocation: WorktreeAllocation) -> None:
+        """Mark a worktree in-flight for the duration of a dispatch.
+
+        Called by the dispatcher immediately after ``allocate_for_dispatch``
+        returns a ``WorktreeAllocation`` (``TrunkAllocation`` is a no-op — no
+        row, nothing to protect). Stores the id and the canonical path so reaps
+        skip both the live row and any stale row aliasing its path (#203).
+        """
+        self._inflight[allocation.worktree_id] = _canon_path(allocation.path)
+
+    def release_dispatch(self, allocation: WorktreeAllocation) -> None:
+        """Clear the in-flight mark. Folded into ``finalize_after_dispatch``; a
+        leaked entry only ever *over*-protects (never under-protects), so the
+        backstop release at the completion-pop path is belt-and-suspenders."""
+        self._inflight.pop(allocation.worktree_id, None)
+
+    def _protected_ids(self) -> set[int]:
+        return set(self._inflight)
+
+    def _protected_paths(self) -> set[str]:
+        return set(self._inflight.values())
+
+    async def _live_alias_paths(self) -> set[str]:
+        """Canon paths of every ``active``/``reaping`` row in this session.
+
+        DB-truth complement to the in-memory ``_inflight`` path set for the
+        closed-PR TTL reaper. The reaper removes a ``stale`` row *by path*; the
+        uniquifier only diverts a fresh allocation when an **active** row holds
+        the canonical ``pickup-<N>`` path, so a row that has since gone
+        ``stale`` can still share a directory with a live re-dispatch on the
+        same path. ``_inflight`` is supposed to hold that path back, but it
+        depends on ``register_dispatch`` having run and stayed live — a single
+        gap reaps the live checkout out from under the agent (#243; the
+        in-flight skip never fired across a long production run). Reading the
+        live rows straight from the DB removes that dependency: any stale row
+        aliasing a live directory is skipped regardless of registry state.
+        """
+        from agentshore.agents.worktree.registry import list_active  # noqa: PLC0415
+
+        rows = await list_active(self._store, session_id=self._session_id)
+        return {_canon_path(r.worktree_path) for r in rows}
+
+    def _build_reclaimable_collision_predicate(
+        self, live_alias_paths: set[str]
+    ) -> Callable[[Path], bool]:
+        """Build the ``safe_to_force_remove`` predicate for one allocate call.
+
+        A colliding ``pickup-*`` worktree is a reclaimable crashed-session orphan
+        ONLY when it is not a live in-flight dispatch. The branch-collision retry
+        (``_add_worktree_with_collision_retry``) force-removes the worktree git
+        names as the collision holder; when two dispatches contend for the same
+        ``pickup-<issue>`` branch (e.g. a claim-lost repick of the same issue),
+        that holder can be a *running* agent's checkout. Force-removing it deletes
+        the cwd out from under the agent — the #238 "worktree reclaimed mid-play"
+        failure. Refusing protected paths here makes the collision bubble as a
+        normal allocation failure (→ the contending dispatch backs off / repicks)
+        instead of clobbering the live one.
+
+        The protected set is the union of the in-memory in-flight registry
+        (``_protected_paths``) and ``live_alias_paths`` — a DB-truth snapshot of
+        every ``active``/``reaping`` row's canonical path, taken just before the
+        allocate. The in-memory registry can miss a live dispatch whose
+        ``register_dispatch`` never landed or was cleared early (#243), which left
+        the #238 collision guard defeatable: the recurrence in #250 force-removed a
+        live ``pickup-<N>`` whose path was absent from ``_inflight``. Unioning the
+        DB snapshot closes that gap — a path backing any live row in this session
+        is never a reclaimable orphan, regardless of registry state. The
+        name-prefix check still gates genuine crashed-session orphans.
+        """
+        protected = self._protected_paths() | live_alias_paths
+
+        def _predicate(path: Path) -> bool:
+            if _canon_path(path) in protected:
+                return False
+            return _is_reclaimable_collision(path)
+
+        return _predicate
 
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
@@ -369,6 +456,10 @@ class WorktreeManager:
         ``pickup-<N>`` worktree that ``reconcile_state`` can't clear and that
         accumulates disk across short sessions (#33).
         """
+        # The dispatch is finalizing — clear its in-flight protection mark. The
+        # row transitions below (touch / rekey / stale) set its terminal
+        # disposition; from here it is eligible for reaping like any other row.
+        self.release_dispatch(allocation)
         if allocation.scope == "pr":
             wt_id = allocation.worktree_id
             if play_outcome.success:
@@ -509,117 +600,43 @@ class WorktreeManager:
         await asyncio.to_thread(shutil.rmtree, legacy, ignore_errors=True)
         log.info("worktree_legacy_orphan_dir_removed", path=str(legacy))
 
-    async def reap_closed_prs(
-        self,
-        *,
-        ttl_seconds: int,
-        protected_ids: set[int] | None = None,
-        protected_paths: set[str] | None = None,
-    ) -> ReapReport:
+    async def reap_closed_prs(self, *, ttl_seconds: int) -> ReapReport:
         """Reap ``stale`` rows older than ``ttl_seconds`` in this session.
 
-        Worktrees with a live dispatch (``protected_ids``) are never reaped —
-        a PR can close while its worktree is mid-play, and reclaiming it out
-        from under the running play is the same "worktree reclaimed mid-play"
-        failure the disk governor's ``protected_ids`` already guards against
-        (#189).
-
-        ``protected_paths`` adds defense-in-depth for the alias class behind
-        #203: the ``pickup-<N>`` directory is reused across attempts, so a
-        stale OLD-id row can share an on-disk path with the LIVE new-id row
-        backing the dispatch. Id-keyed protection misses that — the stale row's
-        id isn't in ``protected_ids`` — so any ``stale`` row whose canonical
-        path matches a protected path is also held back, even when its id
-        differs. When neither set is populated this delegates straight to
-        ``reap_for_closed_prs``; otherwise the protected rows are held back and
-        only the rest are reaped via the same ENOSPC-safe ``_reap_one`` path.
+        In-flight worktrees are held back from the manager-owned registry
+        (``_protected_ids``/``_protected_paths``) so a caller cannot reap
+        without protection. A PR can close while its worktree is mid-play, and
+        reclaiming it out from under the running play is the "worktree
+        reclaimed mid-play" failure (#189); the path set additionally holds
+        back the #203 dup-path alias (a stale old-id row sharing the live
+        path). The protected paths are unioned with ``_live_alias_paths`` —
+        DB truth for every active/reaping row — so a stale row aliasing a live
+        ``pickup-<N>`` directory is skipped even when the in-memory in-flight
+        registry missed it (#243). Both are passed to the shared
+        ``reap_for_closed_prs`` loop.
         """
-        protected = protected_ids or set()
-        protected_paths = protected_paths or set()
-        if not protected and not protected_paths:
-            report = await reap_for_closed_prs(
-                self._store,
-                session_id=self._session_id,
-                main_repo=self._main_repo,
-                ttl_seconds=ttl_seconds,
-            )
-        else:
-            report = await self._reap_closed_prs_protected(
-                ttl_seconds=ttl_seconds,
-                protected=protected,
-                protected_paths=protected_paths,
-            )
-        await self._prune_locks()
-        return report
-
-    async def _reap_closed_prs_protected(
-        self,
-        *,
-        ttl_seconds: int,
-        protected: set[int],
-        protected_paths: set[str],
-    ) -> ReapReport:
-        """``reap_for_closed_prs`` with in-flight worktrees held back (#189, #203).
-
-        Mirrors ``reap_for_closed_prs`` exactly — same TTL cutoff, same
-        ``list_stale`` scan, same ``_reap_one`` per row — but skips any row
-        whose ``worktree_id`` is in ``protected`` (a live dispatch) OR whose
-        canonical path is in ``protected_paths`` (a live dispatch sharing the
-        path under a different id — the #203 alias). Either case emits the
-        ``worktree_closed_pr_reap_skipped_in_flight`` marker so the held rows
-        are observable.
-        """
-        if ttl_seconds < 0:
-            msg = f"ttl_seconds must be >= 0, got {ttl_seconds}"
-            raise ValueError(msg)
-        cutoff = datetime.now(UTC) - timedelta(seconds=ttl_seconds)
-        stale = await list_stale(
-            self._store, session_id=self._session_id, before_iso=cutoff.isoformat()
+        protected_paths = self._protected_paths() | await self._live_alias_paths()
+        report = await reap_for_closed_prs(
+            self._store,
+            session_id=self._session_id,
+            main_repo=self._main_repo,
+            ttl_seconds=ttl_seconds,
+            protected_ids=self._protected_ids(),
+            protected_paths=protected_paths,
         )
-        report = ReapReport()
-        for row in stale:
-            if row.worktree_id in protected:
-                log.info(
-                    "worktree_closed_pr_reap_skipped_in_flight",
-                    worktree_id=row.worktree_id,
-                    branch=row.branch_name,
-                    reason="id_in_flight",
-                )
-                continue
-            if _canon_path(row.worktree_path) in protected_paths:
-                log.info(
-                    "worktree_closed_pr_reap_skipped_in_flight",
-                    worktree_id=row.worktree_id,
-                    branch=row.branch_name,
-                    path=row.worktree_path,
-                    reason="path_in_flight",
-                )
-                continue
-            await _reap_one(
-                self._store,
-                row=row,
-                main_repo=self._main_repo,
-                reason="closed_pr_ttl",
-                report=report,
-            )
+        await self._prune_locks()
         return report
 
     def free_disk_mb(self) -> int:
         """Free space (MiB) on the filesystem backing the worktree root."""
         return free_disk_mb(self._worktree_root)
 
-    async def reap_for_disk_pressure(
-        self,
-        *,
-        target_free_mb: int,
-        protected_ids: set[int] | None = None,
-        protected_paths: set[str] | None = None,
-    ) -> ReapReport:
+    async def reap_for_disk_pressure(self, *, target_free_mb: int) -> ReapReport:
         """Reap idle worktrees LRU until free disk reaches ``target_free_mb``.
 
-        The build-agnostic disk governor (#180). Worktrees with a live dispatch
-        (``protected_ids`` or, for the #203 dup-path alias, ``protected_paths``)
-        are never reaped.
+        The build-agnostic disk governor (#180). In-flight worktrees are held
+        back from the manager-owned registry (by id, and by path for the #203
+        dup-path alias) so a caller cannot reap without protection.
         """
         report = await reap_for_disk_pressure(
             self._store,
@@ -627,8 +644,8 @@ class WorktreeManager:
             main_repo=self._main_repo,
             worktree_root=self._worktree_root,
             target_free_mb=target_free_mb,
-            protected_ids=protected_ids,
-            protected_paths=protected_paths,
+            protected_ids=self._protected_ids(),
+            protected_paths=self._protected_paths(),
         )
         if report.total:
             await self._prune_locks()
@@ -749,7 +766,9 @@ class WorktreeManager:
                     base_ref=base_ref,
                     fetch=True,
                     fetch_env_overlay=self._fetch_auth_overlay(),
-                    safe_to_force_remove=_is_reclaimable_collision,
+                    safe_to_force_remove=self._build_reclaimable_collision_predicate(
+                        await self._live_alias_paths()
+                    ),
                 )
             except WorktreeAllocationFailed as exc:
                 # Existing-row reuse failed (disk gone, target dirty, etc).
@@ -792,7 +811,9 @@ class WorktreeManager:
             base_ref=base_ref,
             fetch=True,
             fetch_env_overlay=self._fetch_auth_overlay(),
-            safe_to_force_remove=_is_reclaimable_collision,
+            safe_to_force_remove=self._build_reclaimable_collision_predicate(
+                await self._live_alias_paths()
+            ),
         )
         await self._verify_worktree_registered(allocate, scope=scope)
         try:

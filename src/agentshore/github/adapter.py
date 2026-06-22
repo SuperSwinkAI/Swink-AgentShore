@@ -443,6 +443,22 @@ class GitHubAdapter:
         result = await self._run_mutation(pre_key, "label_issue", str(issue_number), cmd)
         return result is not None
 
+    async def comment_issue(
+        self,
+        issue_number: int,
+        body: str,
+        idempotency_key: str,
+    ) -> bool:
+        if not self._available or not body:
+            return False
+        pre_key = f"comment_issue:{idempotency_key}"
+        if await self._mutation_exists(pre_key):
+            return True
+        await self._record_mutation(pre_key, "comment_issue", str(issue_number), "pending")
+        cmd = ["issue", "comment", str(issue_number), "--body", body]
+        result = await self._run_mutation(pre_key, "comment_issue", str(issue_number), cmd)
+        return result is not None
+
     async def close_issue(
         self,
         issue_number: int,

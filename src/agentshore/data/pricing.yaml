@@ -59,6 +59,12 @@ agent_defaults:
 # provider pricing pages as they diverge.
 models:
   # ── claude_code (Anthropic) ────────────────────────────────────────────────
+  opus:
+    max_context: 200000
+    cost_per_1k_input: 0.015
+    cost_per_1k_cached_input: 0.0015
+    cost_per_1k_cache_write_input: 0.01875
+    cost_per_1k_output: 0.075
   sonnet:
     max_context: 200000
     cost_per_1k_input: 0.003
@@ -72,6 +78,11 @@ models:
     cost_per_1k_cache_write_input: 0.00125
     cost_per_1k_output: 0.005
   # ── codex (OpenAI) ─────────────────────────────────────────────────────────
+  gpt-5.5:
+    max_context: 400000
+    cost_per_1k_input: 0.0035
+    cost_per_1k_cached_input: 0.00035
+    cost_per_1k_output: 0.028
   gpt-5.4:
     max_context: 400000
     cost_per_1k_input: 0.00175

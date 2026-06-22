@@ -168,16 +168,6 @@ def test_play_timeout_error_is_catchable_as_agent_timeout() -> None:
         raise PlayTimeoutError("play timed out after 30s")
 
 
-def test_agent_process_error_is_recoverable() -> None:
-    err = AgentProcessError("crashed")
-    assert err.recoverable is True
-
-
-def test_play_timeout_error_is_recoverable() -> None:
-    err = PlayTimeoutError("timeout")
-    assert err.recoverable is True
-
-
 # ---------------------------------------------------------------------------
 # capabilities registry
 # ---------------------------------------------------------------------------

@@ -1,12 +1,19 @@
 """Single source of truth for the AgentShore version.
 
 `pyproject.toml [project].version` is **canonical**. Every other file that
-carries the version — the Tauri config, both Cargo manifests, and both
-`package.json` files — is a *mirror* and must equal it. The build spine calls
-`check()` early and refuses to build on drift; `write()` propagates a bump from
-the canonical file to every mirror. A pytest guard
-(`tests/packaging/test_version_consistency.py`) enforces the same invariant on
-every test run, so drift fails CI even without a desktop build.
+carries the version — the Tauri config, both Cargo manifests, both
+`package.json` files, and the resolved entries in the desktop `Cargo.lock` — is
+a *mirror* and must equal it. The build spine calls `check()` early and refuses
+to build on drift; `write()` propagates a bump from the canonical file to every
+mirror. A pytest guard (`tests/packaging/test_version_consistency.py`) enforces
+the same invariant on every test run, so drift fails CI even without a desktop
+build.
+
+The `Cargo.lock` entries matter beyond tidiness: the signed Tauri build runs
+`cargo build --locked`, which hard-fails ("cannot update the lock file because
+--locked was passed") if a bumped `Cargo.toml [package].version` no longer
+matches its resolved `[[package]]` version in the lock. Keeping the lock in sync
+here is what lets a version bump be followed directly by a build.
 """
 
 from __future__ import annotations
@@ -28,6 +35,12 @@ MIRRORS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("dashboard/package.json", "json", ("version",)),
 )
 
+# Cargo.lock is not a simple one-version-line mirror: it carries a `version`
+# field for *every* resolved crate. Only the local workspace members track the
+# project version, and each must match canonical or `cargo build --locked` fails.
+CARGO_LOCK = "desktop/src-tauri/Cargo.lock"
+CARGO_LOCK_PACKAGES: tuple[str, ...] = ("agentshore-desktop", "agentshore-provisioner")
+
 # Targeted, formatting-preserving replacements for `write()`. Anchored at line
 # start: in Cargo.toml the bare `version = "..."` is the [package] field, while
 # dependency versions are inline (`{ version = "..." }`) or indented, so the
@@ -36,6 +49,19 @@ _VERSION_LINE: dict[str, re.Pattern[str]] = {
     "json": re.compile(r'^(?P<pre>\s*"version"\s*:\s*")[^"]*(?P<post>")', re.MULTILINE),
     "toml": re.compile(r'^(?P<pre>version\s*=\s*")[^"]*(?P<post>")', re.MULTILINE),
 }
+
+
+def _cargo_lock_pattern(pkg: str) -> re.Pattern[str]:
+    """Match the `version = "..."` line of one local crate's `[[package]]` block.
+
+    Cargo writes each block as a column-0 `name = "<pkg>"` immediately followed
+    by `version = "..."`, so anchoring on the name line uniquely targets that
+    crate's version among the many `version` lines in the lock.
+    """
+    return re.compile(
+        rf'(?P<pre>^name = "{re.escape(pkg)}"\nversion = ")(?P<ver>[^"]*)(?P<post>")',
+        re.MULTILINE,
+    )
 
 
 def repo_root() -> Path:
@@ -75,11 +101,37 @@ def mirror_versions(root: Path | None = None) -> dict[str, str]:
     return {rel: _read_version(root, rel, kind, keys) for rel, kind, keys in MIRRORS}
 
 
+def cargo_lock_versions(root: Path | None = None) -> dict[str, str]:
+    """Return ``{crate_name: resolved_version}`` for each local workspace crate.
+
+    Reads via ``tomllib`` (the lock is valid TOML) so detection is robust; the
+    formatting-preserving rewrite in ``write()`` uses the regex instead.
+    """
+    root = root or repo_root()
+    parsed = tomllib.loads((root / CARGO_LOCK).read_text(encoding="utf-8"))
+    packages = parsed.get("package", []) if isinstance(parsed, dict) else []
+    found = {
+        p["name"]: p["version"]
+        for p in packages
+        if isinstance(p, dict) and p.get("name") in CARGO_LOCK_PACKAGES and "version" in p
+    }
+    missing = [pkg for pkg in CARGO_LOCK_PACKAGES if pkg not in found]
+    if missing:
+        raise RuntimeError(f"{CARGO_LOCK}: workspace crate(s) not found in lock: {missing}")
+    return found
+
+
 def find_drift(root: Path | None = None) -> list[tuple[str, str]]:
     """Return ``[(mirror_path, its_version)]`` for every mirror != canonical."""
     root = root or repo_root()
     canonical = read_canonical(root)
-    return [(rel, v) for rel, v in mirror_versions(root).items() if v != canonical]
+    drift = [(rel, v) for rel, v in mirror_versions(root).items() if v != canonical]
+    drift += [
+        (f"{CARGO_LOCK} ({pkg})", v)
+        for pkg, v in cargo_lock_versions(root).items()
+        if v != canonical
+    ]
+    return drift
 
 
 def write(root: Path | None = None) -> list[str]:
@@ -100,7 +152,29 @@ def write(root: Path | None = None) -> list[str]:
         if new_text != text:
             path.write_text(new_text, encoding="utf-8")
             changed.append(rel)
+    if _write_cargo_lock(root, canonical):
+        changed.append(CARGO_LOCK)
     return changed
+
+
+def _write_cargo_lock(root: Path, canonical: str) -> bool:
+    """Rewrite each local crate's resolved version in Cargo.lock. Returns True if changed."""
+    path = root / CARGO_LOCK
+    text = path.read_text(encoding="utf-8")
+    new_text = text
+    for pkg in CARGO_LOCK_PACKAGES:
+        new_text, count = _cargo_lock_pattern(pkg).subn(
+            rf"\g<pre>{canonical}\g<post>", new_text, count=1
+        )
+        if count != 1:
+            raise RuntimeError(
+                f"{CARGO_LOCK}: expected exactly one [[package]] version line for "
+                f"{pkg!r}, matched {count}"
+            )
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+        return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:

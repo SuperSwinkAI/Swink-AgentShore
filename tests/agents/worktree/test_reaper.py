@@ -11,8 +11,14 @@ from __future__ import annotations
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from agentshore.agents.worktree.manager import WorktreeAllocation, WorktreeManager
 
 from agentshore.agents.worktree.reaper import (
     reap_for_closed_prs,
@@ -473,7 +479,9 @@ async def test_manager_reap_closed_prs_skips_in_flight_protected(
     row in the same sweep.
     """
     from agentshore.agents.worktree import WorktreeManager
+    from agentshore.agents.worktree.manager import WorktreeAllocation
     from agentshore.config import RuntimeConfig
+    from agentshore.state import PlayType
 
     old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     protected_id, protected_path = await _seed_worktree_row(
@@ -506,7 +514,18 @@ async def test_manager_reap_closed_prs_skips_in_flight_protected(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    report = await wm.reap_closed_prs(ttl_seconds=3600, protected_ids={protected_id})
+    # A live dispatch holds the worktree in-flight via the manager registry.
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=protected_id,
+            path=protected_path,
+            branch_name="in-flight-pr",
+            pre_branch_key=None,
+            play_type=PlayType.CODE_REVIEW,
+            scope="pr",
+        )
+    )
+    report = await wm.reap_closed_prs(ttl_seconds=3600)
 
     # Only the unprotected stale row is reaped.
     assert report.total == 1
@@ -552,12 +571,187 @@ async def test_manager_reap_closed_prs_empty_protected_reaps_all(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    report = await wm.reap_closed_prs(ttl_seconds=3600, protected_ids=set())
+    report = await wm.reap_closed_prs(ttl_seconds=3600)  # nothing registered in-flight
     assert report.total == 1
     assert report.removed[0].worktree_id == stale_id
     row = await lookup_by_id(store, worktree_id=stale_id)
     assert row is not None and row.status == "reaped"
     assert not stale_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# In-flight registry contract — the single owner of reap protection
+# (register_dispatch / release_dispatch; #189, #203)
+# ---------------------------------------------------------------------------
+
+
+def _alloc(worktree_id: int, path: Path) -> WorktreeAllocation:
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.state import PlayType
+
+    return WorktreeAllocation(
+        worktree_id=worktree_id,
+        path=path,
+        branch_name=None,
+        pre_branch_key=None,
+        play_type=PlayType.ISSUE_PICKUP,
+        scope="branch_creating",
+    )
+
+
+def _make_manager(store: DataStore, main_repo: Path, worktree_root: Path) -> WorktreeManager:
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    return WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+
+
+async def test_registered_dispatch_survives_reap_until_released(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The headline guarantee: a registered worktree is never reaped mid-play,
+    and IS reaped once released — across both the closed-PR and disk-pressure
+    reapers, which now read the manager-owned registry internally (#189)."""
+    old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    wt_id, wt_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="live-branch",
+        pre_branch_key=None,
+        dir_name="live",
+        status="stale",
+        last_used_at=old_ts,
+    )
+    wm = _make_manager(store, main_repo, worktree_root)
+
+    wm.register_dispatch(_alloc(wt_id, wt_path))
+    # Both reapers (now zero-arg-protection) must hold the live worktree back.
+    assert (await wm.reap_closed_prs(ttl_seconds=0)).total == 0
+    assert (await wm.reap_for_disk_pressure(target_free_mb=10**9)).total == 0
+    held = await lookup_by_id(store, worktree_id=wt_id)
+    assert held is not None and held.status == "stale"
+    assert wt_path.exists()
+
+    # Released → eligible again.
+    wm.release_dispatch(_alloc(wt_id, wt_path))
+    report = await wm.reap_closed_prs(ttl_seconds=0)
+    assert report.total == 1 and report.removed[0].worktree_id == wt_id
+    reaped = await lookup_by_id(store, worktree_id=wt_id)
+    assert reaped is not None and reaped.status == "reaped"
+    assert not wt_path.exists()
+
+
+def test_register_release_protected_set_contract(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """register stores id+canonical-path; release clears; release is idempotent."""
+    from agentshore.agents.worktree.reaper import _canon_path
+
+    wm = _make_manager(store, main_repo, worktree_root)
+    path = worktree_root / "wt-42"
+    wm.register_dispatch(_alloc(42, path))
+    assert wm._protected_ids() == {42}
+    assert wm._protected_paths() == {_canon_path(path)}
+    wm.release_dispatch(_alloc(42, path))
+    assert wm._protected_ids() == set()
+    # Idempotent: releasing an unknown allocation never raises.
+    wm.release_dispatch(_alloc(999, path))
+    assert wm._protected_ids() == set()
+
+
+def test_reclaimable_collision_predicate_refuses_protected_inflight_path(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The allocator collision-retry must never force-remove a live in-flight
+    worktree (#238 'worktree reclaimed mid-play').
+
+    When two dispatches contend for the same ``pickup-<issue>`` branch (e.g. a
+    claim-lost repick of the same issue), the second ``git worktree add -B`` hits
+    a branch collision and the retry force-removes the worktree git names as the
+    collision holder. If that holder is a *running* agent's checkout, deleting it
+    yanks the cwd out from under the agent. The predicate that gates the
+    force-remove must therefore return False for any path registered in-flight —
+    making the collision bubble as a normal allocation failure (→ the contending
+    dispatch backs off / repicks) instead of clobbering the live one.
+    """
+    wm = _make_manager(store, main_repo, worktree_root)
+    pickup = worktree_root / "pickup-238"
+
+    # The predicate is built per allocate from the current registry plus a
+    # DB-truth live-alias snapshot (#250). This test seeds no DB rows, so the
+    # snapshot is empty and protection comes solely from the in-flight registry.
+    def _predicate() -> Callable[[Path], bool]:
+        return wm._build_reclaimable_collision_predicate(set())
+
+    # Unregistered crashed-session pickup orphan → reclaimable (force-removable).
+    assert _predicate()(pickup) is True
+
+    # Registered in-flight → protected; must NOT be force-removed (the #238 guard).
+    wm.register_dispatch(_alloc(238, pickup))
+    assert _predicate()(pickup) is False
+    # Canonicalisation: a non-normalised spelling of the same path stays protected.
+    assert _predicate()(worktree_root / "." / "pickup-238") is False
+
+    # Released → reclaimable again once the dispatch finishes.
+    wm.release_dispatch(_alloc(238, pickup))
+    assert _predicate()(pickup) is True
+
+    # A non-``pickup-`` path is never reclaimable, registered or not.
+    assert _predicate()(worktree_root / "pr-12") is False
+
+
+async def test_finalize_after_dispatch_releases_inflight_mark(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """register_dispatch → finalize_after_dispatch brackets the in-flight mark:
+    finalize clears it so the worktree is reapable once the play completes."""
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.state import PlayOutcome, PlayType
+
+    wt_id, wt_path = await _seed_worktree_row(
+        store,
+        main_repo,
+        worktree_root,
+        session_id="sess-1",
+        branch_name="pr-branch",
+        pre_branch_key=None,
+        dir_name="pr-wt",
+        status="active",
+        last_used_at=(datetime.now(UTC)).isoformat(),
+    )
+    wm = _make_manager(store, main_repo, worktree_root)
+    alloc = WorktreeAllocation(
+        worktree_id=wt_id,
+        path=wt_path,
+        branch_name="pr-branch",
+        pre_branch_key=None,
+        play_type=PlayType.CODE_REVIEW,
+        scope="pr",
+    )
+    wm.register_dispatch(alloc)
+    assert wm._protected_ids() == {wt_id}
+
+    outcome = PlayOutcome(
+        play_type=PlayType.CODE_REVIEW,
+        agent_id=None,
+        success=True,
+        partial=False,
+        duration_seconds=0.0,
+        token_cost=0,
+        dollar_cost=0.0,
+        artifacts=[],
+        alignment_delta=0.0,
+    )
+    await wm.finalize_after_dispatch(alloc, result=None, play_outcome=outcome)
+    assert wm._protected_ids() == set()
 
 
 # ---------------------------------------------------------------------------

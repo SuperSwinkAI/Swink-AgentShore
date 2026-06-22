@@ -234,6 +234,13 @@ class LifecycleController:
             _logger.warning("config_non_reloadable_fields_changed", fields=warned)
 
         self._runtime.cfg = new_cfg
+        # The PPO selector captures the orchestrator config at construction and
+        # builds its action mask from it (including the user-disabled-play
+        # hard-mask). It is not re-created on reload, so refresh its reference
+        # here or a play disabled mid-session via Preferences would stay
+        # selectable until the session restarts.
+        if isinstance(self._runtime.selector, _ppo_selector_cls()):
+            self._runtime.selector.update_orchestrator_cfg(new_cfg)
         # desktop-kqo5: SIGHUP-triggered reload also refreshes the cached
         # default branch in case the operator pointed origin/HEAD at a new
         # branch (e.g. main -> develop) between sessions.

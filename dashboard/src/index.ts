@@ -85,3 +85,5 @@ export type { KanbanInternalState } from "./components/KanbanStage";
 
 export { createDemoTransport, DemoTransport } from "./demoTransport";
 export type { DemoScenario } from "./demoTransport";
+
+export type { SessionState } from "./types";
