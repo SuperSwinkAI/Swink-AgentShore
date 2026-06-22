@@ -133,13 +133,23 @@ class Dispatcher:
 
     # ------------------------------------------------------------------
 
-    async def revalidate_end_session_before_dispatch(self) -> bool:
+    async def revalidate_end_session_before_dispatch(self, *, failsafe: bool = False) -> bool:
         """Refresh external work state before allowing an END_SESSION play.
 
         END_SESSION is a terminal lifecycle play. Before dispatching it, force
         a fresh GitHub/cache snapshot and rebuild the candidate plan so a stale
         no-work state cannot shut down the session while newly-created QA or
         audit follow-up issues are available.
+
+        When ``failsafe`` is True the END_SESSION arrived via the reverse-failsafe
+        deadlock-breaker (every agent idle, every other play masked for N ticks).
+        In that wedged state the revalidation blocks only on genuinely dispatchable
+        work — open workable issues or actionable PRs — and treats beads bookkeeping
+        (``backlog_sync_work`` / ``ready_tasks``) as non-blocking, since no play in
+        the current fleet state can act on it. The normal path keeps the strict
+        ``has_remaining_work`` check; its eligibility gate already masks END_SESSION
+        whenever ready tasks remain, so this looser rule cannot end a healthy session
+        early.
         """
 
         from agentshore.plays.candidates import build_candidate_plan
@@ -162,14 +172,21 @@ class Dispatcher:
         )
         fresh_state = await self._state_builder.build_state()
         candidate_plan = build_candidate_plan(fresh_state)
-        if not candidate_plan.has_remaining_work:
+        availability = candidate_plan.work_availability
+        if failsafe:
+            dispatchable_work = (
+                availability.workable_issue_count > 0 or availability.actionable_pr_work_count > 0
+            )
+            if not dispatchable_work:
+                return True
+        elif not candidate_plan.has_remaining_work:
             return True
 
-        availability = candidate_plan.work_availability
         self._runtime.last_selection_digest = None
         _logger.warning(
             "end_session_revalidation_blocked",
             session_id=self._session_id,
+            failsafe=failsafe,
             tracked_issues=availability.tracked_issue_count,
             github_open_issues=availability.github_open_issue_count,
             workable_issues=availability.workable_issue_count,

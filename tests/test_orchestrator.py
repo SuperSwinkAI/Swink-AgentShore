@@ -609,6 +609,161 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
     assert orch._last_selection_digest is None
 
 
+def _wedge_candidate_plan() -> SimpleNamespace:
+    """A candidate plan for the bookkeeping-wedge: there IS remaining work
+    (``has_remaining_work=True``) but none of it is dispatchable — no workable
+    issues, no actionable PRs, only un-syncable beads ready-tasks. This is the
+    exact #255 state where the normal gate blocks forever but the failsafe gate
+    must allow END_SESSION.
+    """
+    availability = SimpleNamespace(
+        tracked_issue_count=3,
+        github_open_issue_count=0,
+        workable_issue_count=0,
+        implementation_eligible_count=0,
+        planning_eligible_count=0,
+        ready_task_count=3,
+        backlog_sync_work_count=1,
+        actionable_pr_work_count=0,
+        beads_blocks_issue_pickup=False,
+    )
+    return SimpleNamespace(has_remaining_work=True, work_availability=availability)
+
+
+@pytest.mark.asyncio
+async def test_end_session_failsafe_allowed_on_bookkeeping_only_work(
+    tmp_path: Path,
+) -> None:
+    """#255: a reverse-failsafe END_SESSION must be allowed when the only
+    remaining work is un-dispatchable beads bookkeeping (no workable issues, no
+    actionable PRs). The normal path still blocks on the same state, so the
+    looser rule is scoped to the deadlock-breaker only.
+    """
+    selector = FixedPlanSelector([])
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    async with orch:
+        with (
+            patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_no_work()),
+            ),
+            patch(
+                "agentshore.plays.candidates.build_candidate_plan",
+                return_value=_wedge_candidate_plan(),
+            ),
+        ):
+            failsafe_allowed = await orch._dispatcher.revalidate_end_session_before_dispatch(
+                failsafe=True
+            )
+            normal_allowed = await orch._dispatcher.revalidate_end_session_before_dispatch(
+                failsafe=False
+            )
+
+    assert failsafe_allowed is True
+    assert normal_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_end_session_force_drain_after_repeated_revalidation_blocks(
+    tmp_path: Path,
+) -> None:
+    """#255: if the reverse-failsafe END_SESSION is vetoed by revalidation
+    ``_END_SESSION_REVALIDATION_WEDGE_LIMIT`` times in a row, the deterministic
+    backstop forces a clean autonomous drain instead of polling until the time
+    budget cutoff.
+    """
+    from agentshore.core.mixins import loop as loop_mod
+
+    selector = MagicMock()
+    selector.consume_repick_count = MagicMock(return_value=0)
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+
+    # Every selection is a failsafe END_SESSION (stamped by the reverse-failsafe).
+    selector.select = AsyncMock(
+        return_value=(PlayType.END_SESSION, PlayParams(extras={"reverse_failsafe": True}))
+    )
+
+    # The real gate clears the selection digest on a block so the next tick
+    # re-runs the selector; mirror that so the loop keeps re-attempting (the
+    # whole point of the wedge) rather than idling on an unchanged digest.
+    async def _block(*, failsafe: bool = False) -> bool:
+        orch._last_selection_digest = None
+        return False
+
+    stop_reasons: list[str] = []
+
+    async def _record_stop(reason: str, **_kwargs: object) -> None:
+        stop_reasons.append(reason)
+        orch.request_stop("test_complete")
+
+    async with orch:
+        orch._last_refresh_time = time.monotonic()
+        with (
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                # Work + an idle agent → should_terminate stays False so the loop
+                # keeps ticking, exactly like the live bookkeeping wedge.
+                new=AsyncMock(return_value=_idle_state_with_issue()),
+            ),
+            patch.object(
+                orch._dispatcher,
+                "revalidate_end_session_before_dispatch",
+                new=AsyncMock(side_effect=_block),
+            ) as revalidate,
+            patch.object(
+                orch._loop, "initiate_autonomous_stop", new=AsyncMock(side_effect=_record_stop)
+            ),
+            patch.object(orch._dispatcher, "dispatch_play", new=AsyncMock()) as dispatch,
+        ):
+            await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
+
+    assert stop_reasons == ["end_session_revalidation_wedged"]
+    assert revalidate.await_count == loop_mod._END_SESSION_REVALIDATION_WEDGE_LIMIT
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_blocked_failsafe_end_session_preserves_idle_streak(tmp_path: Path) -> None:
+    """#255 Bug B: a selected-but-blocked END_SESSION must NOT reset idle_streak.
+
+    Resetting it on selection (before the revalidation veto) pinned the streak at
+    ~1 forever, so the fleet-idle-persistent escalation never accumulated and only
+    the time budget could end a wedged session. A blocked tick returns Continue()
+    and leaves the streak intact.
+    """
+    selector = MagicMock()
+    selector.consume_repick_count = MagicMock(return_value=0)
+    orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
+    selector.select = AsyncMock(
+        return_value=(PlayType.END_SESSION, PlayParams(extras={"reverse_failsafe": True}))
+    )
+
+    async with orch:
+        orch._runtime.pause_event.set()
+        orch._last_refresh_time = time.monotonic()
+        orch._runtime.idle_streak = 5
+        with (
+            patch.object(
+                orch._state_builder,
+                "build_state",
+                new=AsyncMock(return_value=_idle_state_with_issue()),
+            ),
+            patch.object(
+                orch._dispatcher,
+                "revalidate_end_session_before_dispatch",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            action = await orch._loop._resolve_tick()
+
+    assert type(action).__name__ == "Continue"
+    assert orch._runtime.idle_streak == 5
+
+
 @pytest.mark.asyncio
 async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path) -> None:
     selector = MagicMock()
