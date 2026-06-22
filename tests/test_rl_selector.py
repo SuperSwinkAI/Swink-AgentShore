@@ -516,6 +516,112 @@ def test_auto_failsafe_counter_resets_when_an_agent_is_busy():
     assert sel._no_available_play_ticks == 0
 
 
+def _agent_with(agent_id: str, status, *, current_play_type=None):
+    from agentshore.state import AgentSnapshot, AgentType
+
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CODEX,
+        status=status,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        current_play_type=current_play_type,
+    )
+
+
+def test_auto_failsafe_counter_advances_when_only_agent_is_error():
+    """An ERROR agent is stuck, not working — it must not pin the counter at zero.
+
+    A transient API failure (e.g. 529 Overloaded) can leave an agent ERROR while
+    the rest of the fleet idles with all work masked. Counting ERROR as busy kept
+    the failsafe permanently disarmed, so END_SESSION never lifted and the session
+    could not wind down.
+    """
+    import numpy as np
+
+    from agentshore.state import AgentStatus
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[_agent_with("codex-1", AgentStatus.ERROR)],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_advances_when_agents_idle_and_error_mixed():
+    """A mix of IDLE + ERROR agents is still a quiescent fleet (no real work)."""
+    import numpy as np
+
+    from agentshore.state import AgentStatus
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("idle-1", AgentStatus.IDLE),
+            _agent_with("error-1", AgentStatus.ERROR),
+        ],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_advances_when_busy_agent_is_on_a_break():
+    """An agent BUSY inside TAKE_BREAK is sleeping, not progressing work."""
+    import numpy as np
+
+    from agentshore.state import AgentStatus, PlayType
+
+    sel = _build_selector(all_preconds=False)
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("codex-1", AgentStatus.BUSY, current_play_type=PlayType.TAKE_BREAK),
+        ],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+
+
+def test_auto_failsafe_counter_resets_when_busy_agent_does_real_work():
+    """A BUSY agent on a non-break play is genuine progress — reset and wait.
+
+    Guards the boundary of the ERROR/break carve-out: a real in-flight play must
+    still block the failsafe even when another agent is ERROR.
+    """
+    import numpy as np
+
+    from agentshore.state import AgentStatus, PlayType
+
+    sel = _build_selector(all_preconds=False)
+    sel._no_available_play_ticks = 2  # primed
+    state = _state(
+        open_issues=[_issue()],
+        agents=[
+            _agent_with("worker-1", AgentStatus.BUSY, current_play_type=PlayType.ISSUE_PICKUP),
+            _agent_with("error-1", AgentStatus.ERROR),
+        ],
+    )
+    fully_masked = np.zeros(22, dtype=bool)
+
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._no_available_play_ticks == 0
+
+
 def test_select_reverse_failsafe_bypasses_policy_backpressure_when_enabled():
     sel = _build_selector(
         all_preconds=False,
