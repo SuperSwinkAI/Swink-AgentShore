@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from agentshore import command
+from agentshore.core import git_safety
 from agentshore.core.git_safety import RestoreResult, restore_default_branch
 
 
@@ -229,6 +231,55 @@ def test_restore_surfaces_stderr_on_genuine_failure(tmp_path: Path) -> None:
     assert result.stderr is not None
     assert result.stderr  # non-empty git error text
     assert len(result.stderr) <= 500
+
+
+def test_restore_treats_nonzero_checkout_already_on_default_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#273: a non-zero ``git checkout main`` that leaves HEAD on main is success.
+
+    Git's benign ``Already on '<branch>'`` message — or a failing post-checkout
+    hook — can make ``git checkout main`` exit non-zero even though the repo is
+    correctly on the default branch (the exact state restore aims for). The old
+    code trusted the returncode alone and returned ``ok=False``, firing an
+    ERROR-level ``main_repo_auto_restore_failed`` and latching a spurious
+    trunk-dispatch pause. The restore must trust the observed HEAD instead.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-b", "main", str(repo)], tmp_path)
+    _git(["config", "user.email", "t@e.com"], repo)
+    _git(["config", "user.name", "T"], repo)
+    _git(["config", "commit.gpgsign", "false"], repo)
+    (repo / "x").write_text("x\n")
+    _git(["add", "x"], repo)
+    _git(["commit", "-m", "x"], repo)
+    # The repo is genuinely on main; only the checkout *command* is made to fail.
+
+    real_run_git = git_safety._run_git
+
+    def fake_run_git(args: list[str], cwd: Path, *, timeout: float = 10.0):
+        if args[:1] == ["checkout"]:
+            return command.CommandResult(
+                args=("git", *args),
+                returncode=1,
+                stdout="",
+                stderr="Already on 'main'",
+                status=command.CommandStatus.NONZERO,
+            )
+        return real_run_git(args, cwd, timeout=timeout)
+
+    monkeypatch.setattr(git_safety, "_run_git", fake_run_git)
+
+    result = restore_default_branch(repo, "main")
+    assert result.ok is True
+    assert result.stderr is None
+    # HEAD is still on the default branch — the recovery ladder never had to run.
+    head = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=str(repo), capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "refs/heads/main"
 
 
 def test_restore_result_is_truthy_on_success() -> None:
