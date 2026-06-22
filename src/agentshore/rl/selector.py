@@ -519,8 +519,18 @@ class PPOSelector:
         for 20+ minutes (calibrate_alignment stall, observed 2026-05-28) while
         every other action is masked and every agent is IDLE. The previous
         guard kept the failsafe permanently disabled in exactly that scenario.
-        ``all_agents_idle`` still gates premature firing during healthy
+        ``fleet_quiescent`` still gates premature firing during healthy
         short-lived all-masked windows where some agent is doing real work.
+
+        An agent only counts as "doing real work" when it is BUSY on a
+        *dispatchable* play. IDLE agents have nothing to do; an ERROR agent is
+        stuck (its own recovery never produces forward progress); and an agent
+        sleeping in TAKE_BREAK is quiescent by definition. Treating ERROR / break
+        agents as busy used to pin the counter at zero forever the moment one
+        agent wedged in ERROR — so the failsafe never armed and END_SESSION never
+        lifted. Observed on Windows: a transient ``API Error: 529 Overloaded``
+        left a Claude agent in ERROR while the rest of the fleet idled with all
+        work masked, and the session could not wind itself down.
         """
 
         threshold = self._cfg.reverse_failsafe_after_idle_ticks
@@ -532,8 +542,9 @@ class PPOSelector:
             for agent in state.agents
             if agent.status in (AgentStatus.IDLE, AgentStatus.BUSY, AgentStatus.ERROR)
         ]
-        all_agents_idle = bool(active_agents) and all(
-            agent.status == AgentStatus.IDLE for agent in active_agents
+        fleet_quiescent = bool(active_agents) and not any(
+            agent.status == AgentStatus.BUSY and agent.current_play_type != PlayType.TAKE_BREAK
+            for agent in active_agents
         )
         # A mask that only leaves lifecycle plays (INSTANTIATE_AGENT / END_AGENT)
         # selectable still means "no dispatchable work" — keep counting so the
@@ -542,7 +553,7 @@ class PPOSelector:
             bool(mask[i]) and INDEX_TO_PLAY[i] not in _LIFECYCLE_PLAY_TYPES
             for i in range(NUM_ACTIONS)
         )
-        if has_real_play or not all_agents_idle:
+        if has_real_play or not fleet_quiescent:
             self._no_available_play_ticks = 0
             return False
 
