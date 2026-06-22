@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agentshore.agents.worktree.manager import WorktreeAllocation, WorktreeManager
 
 from agentshore.agents.worktree.reaper import (
@@ -683,21 +685,27 @@ def test_reclaimable_collision_predicate_refuses_protected_inflight_path(
     wm = _make_manager(store, main_repo, worktree_root)
     pickup = worktree_root / "pickup-238"
 
+    # The predicate is built per allocate from the current registry plus a
+    # DB-truth live-alias snapshot (#250). This test seeds no DB rows, so the
+    # snapshot is empty and protection comes solely from the in-flight registry.
+    def _predicate() -> Callable[[Path], bool]:
+        return wm._build_reclaimable_collision_predicate(set())
+
     # Unregistered crashed-session pickup orphan → reclaimable (force-removable).
-    assert wm._reclaimable_collision_predicate(pickup) is True
+    assert _predicate()(pickup) is True
 
     # Registered in-flight → protected; must NOT be force-removed (the #238 guard).
     wm.register_dispatch(_alloc(238, pickup))
-    assert wm._reclaimable_collision_predicate(pickup) is False
+    assert _predicate()(pickup) is False
     # Canonicalisation: a non-normalised spelling of the same path stays protected.
-    assert wm._reclaimable_collision_predicate(worktree_root / "." / "pickup-238") is False
+    assert _predicate()(worktree_root / "." / "pickup-238") is False
 
     # Released → reclaimable again once the dispatch finishes.
     wm.release_dispatch(_alloc(238, pickup))
-    assert wm._reclaimable_collision_predicate(pickup) is True
+    assert _predicate()(pickup) is True
 
     # A non-``pickup-`` path is never reclaimable, registered or not.
-    assert wm._reclaimable_collision_predicate(worktree_root / "pr-12") is False
+    assert _predicate()(worktree_root / "pr-12") is False
 
 
 async def test_finalize_after_dispatch_releases_inflight_mark(

@@ -285,8 +285,10 @@ class WorktreeManager:
         rows = await list_active(self._store, session_id=self._session_id)
         return {_canon_path(r.worktree_path) for r in rows}
 
-    def _reclaimable_collision_predicate(self, path: Path) -> bool:
-        """``safe_to_force_remove`` predicate handed to the allocator collision-retry.
+    def _build_reclaimable_collision_predicate(
+        self, live_alias_paths: set[str]
+    ) -> Callable[[Path], bool]:
+        """Build the ``safe_to_force_remove`` predicate for one allocate call.
 
         A colliding ``pickup-*`` worktree is a reclaimable crashed-session orphan
         ONLY when it is not a live in-flight dispatch. The branch-collision retry
@@ -297,12 +299,27 @@ class WorktreeManager:
         the cwd out from under the agent — the #238 "worktree reclaimed mid-play"
         failure. Refusing protected paths here makes the collision bubble as a
         normal allocation failure (→ the contending dispatch backs off / repicks)
-        instead of clobbering the live one. The name-prefix check still gates
-        genuine crashed-session orphans (not in ``_inflight``).
+        instead of clobbering the live one.
+
+        The protected set is the union of the in-memory in-flight registry
+        (``_protected_paths``) and ``live_alias_paths`` — a DB-truth snapshot of
+        every ``active``/``reaping`` row's canonical path, taken just before the
+        allocate. The in-memory registry can miss a live dispatch whose
+        ``register_dispatch`` never landed or was cleared early (#243), which left
+        the #238 collision guard defeatable: the recurrence in #250 force-removed a
+        live ``pickup-<N>`` whose path was absent from ``_inflight``. Unioning the
+        DB snapshot closes that gap — a path backing any live row in this session
+        is never a reclaimable orphan, regardless of registry state. The
+        name-prefix check still gates genuine crashed-session orphans.
         """
-        if _canon_path(path) in self._protected_paths():
-            return False
-        return _is_reclaimable_collision(path)
+        protected = self._protected_paths() | live_alias_paths
+
+        def _predicate(path: Path) -> bool:
+            if _canon_path(path) in protected:
+                return False
+            return _is_reclaimable_collision(path)
+
+        return _predicate
 
     async def _get_alloc_lock(self, scope: str, key: str) -> asyncio.Lock:
         """Return the lock for ``(scope, key)``, creating it on first use."""
@@ -749,7 +766,9 @@ class WorktreeManager:
                     base_ref=base_ref,
                     fetch=True,
                     fetch_env_overlay=self._fetch_auth_overlay(),
-                    safe_to_force_remove=self._reclaimable_collision_predicate,
+                    safe_to_force_remove=self._build_reclaimable_collision_predicate(
+                        await self._live_alias_paths()
+                    ),
                 )
             except WorktreeAllocationFailed as exc:
                 # Existing-row reuse failed (disk gone, target dirty, etc).
@@ -792,7 +811,9 @@ class WorktreeManager:
             base_ref=base_ref,
             fetch=True,
             fetch_env_overlay=self._fetch_auth_overlay(),
-            safe_to_force_remove=self._reclaimable_collision_predicate,
+            safe_to_force_remove=self._build_reclaimable_collision_predicate(
+                await self._live_alias_paths()
+            ),
         )
         await self._verify_worktree_registered(allocate, scope=scope)
         try:
