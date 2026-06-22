@@ -285,6 +285,114 @@ async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
     assert target.exists(), "live active directory must not be removed"
 
 
+# --- collision force-remove: live-DB-row protection (#250) -------------------
+
+
+async def test_collision_predicate_protects_live_db_row_without_registry(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The collision force-remove guard protects a live worktree from DB truth alone (#250).
+
+    The #238 guard checked only the in-memory ``_inflight`` registry, which can
+    miss a live dispatch (#243). The #250 recurrence force-removed a *running*
+    ``pickup-<N>`` checkout whose path was absent from ``_inflight`` during a
+    claim-lost repick branch collision — yielding "worktree reclaimed mid-play".
+    The predicate must refuse to reclaim any path backing a live ``active`` /
+    ``reaping`` DB row, independent of registry state.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    target = worktree_root / "pickup-1264"
+    _git("worktree", "add", "-b", "pickup-1264-wt", str(target), "HEAD", cwd=main_repo)
+
+    # LIVE active row at the canonical path — but NOT registered in the in-flight
+    # registry (the exact #243 gap that left #238 defeatable).
+    await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-1264-live",
+        worktree_path=str(target),
+        status="active",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    assert wm._protected_paths() == set(), "in-memory registry must be empty for this case"
+
+    predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
+
+    # ``pickup-1264`` matches the reclaimable name prefix, but it backs a live
+    # DB row → must NOT be force-removable.
+    assert predicate(target) is False
+
+
+async def test_collision_predicate_allows_genuine_orphan(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A crashed-session ``pickup-`` orphan with no live row is still reclaimable.
+
+    The DB-truth backstop must not over-protect: a path with neither a live row
+    nor a registry entry is a genuine orphan and stays force-removable so the
+    collision retry can clear it.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    orphan = worktree_root / "pickup-555"  # no DB row, no registry entry
+
+    predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
+
+    assert predicate(orphan) is True
+
+
+async def test_collision_predicate_protects_in_flight_registry_path(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The in-memory ``_inflight`` protection still holds (the #238 path)."""
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.config import RuntimeConfig
+    from agentshore.state import PlayType
+
+    target = worktree_root / "pickup-77"
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=4242,
+            path=target,
+            branch_name=None,
+            pre_branch_key="pickup-77",
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        )
+    )
+
+    # No DB row this time — protection comes solely from the in-flight registry.
+    predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
+
+    assert predicate(target) is False
+
+
 # --- per-attempt unique paths ------------------------------------------------
 
 
