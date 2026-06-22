@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.resources
 import webbrowser
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import jinja2
@@ -42,10 +43,22 @@ class ReportGenerator:
 
     @staticmethod
     def _format_dt_short(value: str | None) -> str:
-        """Truncate an ISO datetime string to minute precision: 2026-06-15T17:52."""
+        """Localize an ISO datetime to the viewer's tz, minute precision: 2026-06-15 17:52.
+
+        Stored timestamps are UTC; the report is a static file generated and read
+        on the same machine, so rendering in the machine-local tz at generation
+        time gives the viewer local wall-clock without any browser JS. Falls back
+        to the raw minute-truncated string if the value isn't parseable ISO.
+        """
         if not value:
             return value or ""
-        return value[:16]
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value[:16]
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()  # no-arg astimezone() -> machine-local tz
+        return parsed.strftime("%Y-%m-%d %H:%M")
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
