@@ -1758,7 +1758,8 @@ def test_mask_allows_code_review_when_other_type_available():
     )
     cfg = _make_cfg_with_prefs()
     state = _state(
-        agents=[_agent_snapshot("r", AgentType.CLAUDE_CODE, "medium")],
+        # code_review is large-only (#254).
+        agents=[_agent_snapshot("r", AgentType.CLAUDE_CODE, "large")],
         pending_review_queue=[pending],
     )
     mask = compute_agent_eligibility_mask(state, build_default_registry(), cfg=cfg)
@@ -1814,7 +1815,8 @@ def test_code_review_unmasked_for_unreviewed_open_pr():
 
     cfg = _make_cfg_with_prefs()
     state = _state(
-        agents=[_agent_snapshot("r", AgentType.CODEX, "medium", github_identity="reviewer")],
+        # code_review is large-only (#254).
+        agents=[_agent_snapshot("r", AgentType.CODEX, "large", github_identity="reviewer")],
         pull_requests=[_pr_snapshot(1, github_author="author")],
     )
     mask = compute_action_mask(state, build_default_registry(), cfg=cfg)
@@ -1855,7 +1857,8 @@ def test_code_review_unmasked_null_author_label():
     )
     cfg = _make_cfg_with_prefs()
     state = _state(
-        agents=[_agent_snapshot("r", AgentType.CODEX, "medium")],
+        # code_review is large-only (#254).
+        agents=[_agent_snapshot("r", AgentType.CODEX, "large")],
         pending_review_queue=[pending],
     )
     mask = compute_agent_eligibility_mask(state, build_default_registry(), cfg=cfg)

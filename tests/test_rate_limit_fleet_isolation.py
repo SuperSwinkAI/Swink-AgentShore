@@ -103,8 +103,9 @@ def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> N
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
-        _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE),
-        _agent(agent_id="cx-1", agent_type=AgentType.CODEX),
+        # code_review is large-only (#254); the healthy reviewers must be large.
+        _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE, model_tier="large"),
+        _agent(agent_id="cx-1", agent_type=AgentType.CODEX, model_tier="large"),
     ]
     pr = PullRequestSnapshot(
         pr_number=1,

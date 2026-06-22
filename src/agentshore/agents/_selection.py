@@ -57,8 +57,10 @@ _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 #     restructures local work, or interprets test failures. Small is too
 #     risky for downstream cost.
 #   - Heavyweight strategic / validation (large only): seed/design audits,
-#     final QA, and global calibration where medium's judgement isn't trusted
-#     to set or certify the trajectory.
+#     final QA, code review, plan authoring, and global calibration where
+#     medium's judgement isn't trusted to set or certify the trajectory, and
+#     the agentic turn is long enough that fast/medium models overrun a harness's
+#     reliable turn-completion envelope (#254).
 # Medium is the universal fallback for the first three bands.
 _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
     PlayType.CLEANUP: frozenset({"small", "medium", "large"}),
@@ -66,8 +68,17 @@ _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
     # Medium ∪ large — coding & strategic
     PlayType.ISSUE_PICKUP: frozenset({"medium", "large"}),
     PlayType.UNBLOCK_PR: frozenset({"large", "medium"}),
-    PlayType.CODE_REVIEW: frozenset({"medium", "large"}),
     PlayType.REFINE_TASK_BREAKDOWN: frozenset({"medium", "large"}),
+    # Large only — code_review is AgentShore's heaviest analytical play (full-diff
+    # intake → multi-axis correctness/safety/spec/security analysis → GH review
+    # submission → JSON envelope), on par with run_qa / write_implementation_plan
+    # which are already large-only. A fast/medium model overruns the harness's
+    # reliable turn-completion envelope on this play (#254: medium Gemini-Flash
+    # produced clean-exit empty no-ops — zero stdout, no first byte — exclusively
+    # on code_review while succeeding on every simpler play). This is a tier
+    # capability floor, NOT a per-harness rule: every provider's large tier
+    # qualifies and improves toward parity there.
+    PlayType.CODE_REVIEW: frozenset({"large"}),
     PlayType.RUN_QA: frozenset({"large"}),
     PlayType.WRITE_IMPLEMENTATION_PLAN: frozenset({"large"}),
     PlayType.SYSTEMATIC_DEBUGGING: frozenset({"medium", "large"}),

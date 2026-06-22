@@ -109,7 +109,8 @@ def _reviewer(
         tasks_completed=tasks_completed,
         tasks_failed=tasks_failed,
         timeout_count=timeout_count,
-        model_tier="medium",
+        # code_review is large-only (#254); reviewers must be large tier.
+        model_tier="large",
     )
 
 
