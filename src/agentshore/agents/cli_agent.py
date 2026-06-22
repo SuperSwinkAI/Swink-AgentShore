@@ -19,10 +19,11 @@ import contextlib
 import os
 import signal
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agentshore import subprocess_env
 from agentshore.agents import cli_antigravity
+from agentshore.agents.cli import conpty
 from agentshore.agents.cli.argv import (
     _DEFAULT_YOLO_FLAGS,
     _RESUMABLE_AGENT_TYPES,
@@ -874,18 +875,36 @@ async def dispatch_cli(
     if not os.path.isdir(effective_cwd):
         raise AgentProcessCrashed(f"dispatch cwd (worktree) no longer exists: {effective_cwd}")
 
+    # Antigravity (``agy``) on Windows must run under a ConPTY: in ``-p`` mode it
+    # writes a terminal Device-Attributes query and blocks for the reply before
+    # emitting anything, so over plain pipes it deadlocks at zero bytes (every
+    # dispatch no-ops). The ConPTY answers the query and agy proceeds. The
+    # adapter quacks like ``asyncio.subprocess.Process`` for the read/kill path;
+    # ``cast`` keeps the rest of the dispatch typing unchanged. Inert off-Windows
+    # and for every other agent (see ``conpty.should_use_conpty``). The test shim
+    # (``python_executable``) runs a Python mock with no terminal dependency, so
+    # it always takes the plain-pipe path.
+    use_conpty = python_executable is None and conpty.should_use_conpty(handle.agent_type)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(effective_cwd),
-            limit=cfg.line_limit_bytes,
-            start_new_session=True,
-            creationflags=subprocess_env.no_window_creationflags(),
-            env=env,
-        )
+        if use_conpty:
+            proc = cast(
+                "asyncio.subprocess.Process",
+                await conpty.spawn(
+                    argv, cwd=str(effective_cwd), env=env, limit=cfg.line_limit_bytes
+                ),
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE if prompt_on_stdin else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(effective_cwd),
+                limit=cfg.line_limit_bytes,
+                start_new_session=True,
+                creationflags=subprocess_env.no_window_creationflags(),
+                env=env,
+            )
     except NotADirectoryError as exc:
         # cwd path exists but is a file, not a directory — same recoverable class
         # as the missing-cwd race above.

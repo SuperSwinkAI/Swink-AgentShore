@@ -43,6 +43,10 @@ dependencies = [
     "beaupy>=3.12.0",
     "platformdirs>=4.10.0",
     "packaging>=25.0",
+    # Windows-only: ConPTY pseudo-terminal for spawning the Antigravity CLI
+    # (``agy``), which blocks on a terminal Device-Attributes query over plain
+    # pipes. See ``agents/cli/conpty.py``.
+    "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
@@ -150,6 +154,11 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = "beaupy"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Windows-only pseudo-terminal backend; ships no py.typed marker / stubs.
+module = "winpty"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
