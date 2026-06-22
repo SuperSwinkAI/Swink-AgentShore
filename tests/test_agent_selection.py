@@ -347,17 +347,29 @@ def test_tier_filter_only_small_idle_for_coding_play_raises() -> None:
         select_agent_for(PlayType.ISSUE_PICKUP, _handles(small_only))
 
 
-def test_cleanup_runs_on_large_when_only_large_idle() -> None:
-    """Cleanup is the bootstrap first-play when the backlog is large
-    (open_issues > cleanup_threshold). At that moment only the bootstrap's
-    large agent has spawned; the medium agent comes 7s later. The previous
-    {small, medium} tier filter caused skip:staffing on every fresh
-    example-project session (seen 2026-05-22, sessions d03099c1, ba7cdf72,
-    dc2960e3) because the only idle agent was tier-ineligible. The current
-    {small, medium, large} band lets bootstrap-cleanup run as designed."""
+def test_cleanup_blocks_large_tier() -> None:
+    """Cleanup is cheap mechanical housekeeping (small ∪ medium); large is
+    excluded as overkill, mirroring merge_pr/prune.
+
+    Cleanup is no longer a bootstrap first-play — the cold start spawns the full
+    enabled fleet, so small/medium agents are present immediately and the old
+    large-only bootstrap carve-out (skip:staffing on a large-only fleet, seen
+    2026-05-22) no longer applies. A large-only fleet now has no eligible cleanup
+    agent."""
     large_only = _make_handle("large-only", model_tier="large")
-    result = select_agent_for(PlayType.CLEANUP, _handles(large_only))
-    assert result.agent_id == "large-only"
+    with pytest.raises(AntiConfirmationViolation, match="tier-eligibility"):
+        select_agent_for(PlayType.CLEANUP, _handles(large_only))
+
+
+def test_prune_blocks_large_tier() -> None:
+    """Prune is mechanical branch/trunk housekeeping (small ∪ medium); large is
+    excluded as overkill. A large-only fleet has no eligible prune agent."""
+    large_only = _make_handle("large-only", model_tier="large")
+    with pytest.raises(AntiConfirmationViolation, match="tier-eligibility"):
+        select_agent_for(PlayType.PRUNE, _handles(large_only))
+
+    medium = _make_handle("medium-1", model_tier="medium")
+    assert select_agent_for(PlayType.PRUNE, _handles(medium)).agent_id == "medium-1"
 
 
 def test_merge_pr_blocks_large_tier() -> None:

@@ -1044,12 +1044,15 @@ def _phase_queue_agent_instantiation(
          (same trunk-exclusivity gate as the medium spawn, #569).
 
     **Open recipe** — no seed input *and* the graph already has epics (a project
-    being resumed): a minimal cold-start backstop plus a grooming pass:
-      1. INSTANTIATE_AGENT — single large-tier agent (#11). The mask zeroes
-         INSTANTIATE_AGENT for a zero-agent / no-work / non-terminal fleet, so
-         one forced spawn breaks the catch-22; the PPO owns all subsequent
-         fleet growth.
-      2. GROOM_BACKLOG — once the agent is online, reconcile the beads↔GitHub
+    being resumed): spawn the full enabled fleet ("full open") plus a grooming
+    pass:
+      1. INSTANTIATE_AGENT — one per enabled ``(agent_type, tier)`` (#11). The
+         mask zeroes INSTANTIATE_AGENT for a zero-agent / no-work / non-terminal
+         fleet, so the forced spawns break the catch-22. No large-only pin: the
+         config is the fleet definition and the whole of it comes up from cold so
+         cheaper tiers (which own the mechanical plays) are present immediately;
+         the PPO owns all subsequent fleet composition.
+      2. GROOM_BACKLOG — once the fleet is online, reconcile the beads↔GitHub
          graph (sync untracked GH issues, clear resolved blocks) so the PPO
          starts from a clean backlog. Queued directly behind INSTANTIATE_AGENT
          with **no** ``wait_for`` gate — exactly like SEED_PROJECT in the seed
@@ -1135,34 +1138,63 @@ def _phase_queue_agent_instantiation(
                 return agent_type
         return None
 
+    def _enqueue_full_fleet() -> int:
+        """Queue one INSTANTIATE_AGENT override per enabled ``(agent_type, tier)``.
+
+        The open recipe has no seed / first-play to serialize trunk access
+        around, so the whole configured fleet spawns from cold and the PPO
+        drives against a fully-staffed start ("full open"). The config *is* the
+        fleet definition — every enabled tier the user configured comes up.
+        Returns the number of overrides queued.
+        """
+        count = 0
+        for agent_key, agent_cfg in cfg.agents.items():
+            try:
+                agent_type = AgentType(agent_key)
+            except ValueError:
+                continue
+            if (
+                agent_cfg is None
+                or isinstance(agent_cfg, dict)
+                or not getattr(agent_cfg, "enabled", False)
+            ):
+                continue
+            for tier in enabled_model_tiers(agent_type, agent_cfg):
+                _enqueue_instantiate(agent_type, tier)
+                count += 1
+        return count
+
     if seed_path is None and graph_has_epics:
-        # Open-start cold-start backstop (#11): queue exactly one large-tier
-        # INSTANTIATE_AGENT override so the loop always spawns the first agent
-        # from cold. The previous no-op design assumed the action mask left
-        # INSTANTIATE_AGENT valid for a zero-agent fleet, but mask.py masks it
-        # precisely in the "no agents + no remaining work + not terminal" state
-        # (see ``_stage_instantiate_config``) — against a quiet repo that yields
-        # an empty action set and a permanent idle deadlock. One forced spawn
-        # (bypass_preconditions, mirroring the seeded branch) breaks the
-        # catch-22; the PPO still owns all subsequent fleet growth and
-        # composition. This is a single-agent backstop, not the full
-        # large+medium recipe the seeded path uses.
-        large_agent_type = _first_enabled_for_tier("large")
+        # Open-start "full open" (#11): spawn the FULL enabled fleet from cold.
+        # mask.py zeroes INSTANTIATE_AGENT in the "no agents + no remaining work
+        # + not terminal" state (see ``_stage_instantiate_config``), so against a
+        # quiet repo a zero-agent fleet yields an empty action set and a permanent
+        # idle deadlock. The forced bootstrap overrides (bypass_preconditions +
+        # OverrideKind.BOOTSTRAP) break that catch-22 — but instead of pinning the
+        # first agent to a single large-tier backstop, every enabled (agent_type,
+        # tier) is queued so cheaper tiers (which now own the mechanical plays
+        # cleanup/prune/merge_pr) are present immediately and the PPO owns all
+        # composition from there. No first-play in this recipe touches trunk (the
+        # only deterministic step is groom, a beads↔GitHub reconcile), so the #569
+        # trunk-exclusivity gating the seed recipe needs does not apply — the
+        # whole fleet comes up in parallel.
+        spawned = _enqueue_full_fleet()
         _logger.info(
             "bootstrap_open_start",
-            reason="no_seed_input",
+            reason="no_seed_full_open",
             open_issues_count=open_issues_count,
-            large_agent_type=large_agent_type.value if large_agent_type is not None else None,
+            agents_spawned=spawned,
         )
-        if large_agent_type is not None:
-            _enqueue_instantiate(large_agent_type, "large")
-            # Groom the backlog once the cold-start agent is online so the
-            # beads↔GitHub graph is reconciled (untracked GH issues synced,
-            # resolved blocks cleared) before the PPO takes over. NO wait_for
-            # gate: as the first agent-consumer, groom must claim the agent by
-            # queue position (mirroring SEED_PROJECT in the seed recipe). A gate
-            # here yields a None override tick while the agent is idle, letting
-            # PPO free-select onto it first and starving groom (staffing skip).
+        if spawned:
+            # Groom the backlog once the fleet is online so the beads↔GitHub
+            # graph is reconciled (untracked GH issues synced, resolved blocks
+            # cleared) before the PPO takes over. NO wait_for gate: as the first
+            # agent-consumer, groom must claim an agent by queue position
+            # (mirroring SEED_PROJECT in the seed recipe). A gate here yields a
+            # None override tick while agents are idle, letting PPO free-select
+            # onto one first and starving groom (staffing skip). The fleet's
+            # INSTANTIATE_AGENT overrides all drain ahead of groom, so PPO never
+            # gets a turn until groom has dequeued.
             _enqueue_groom()
         return
 

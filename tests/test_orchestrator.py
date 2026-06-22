@@ -1577,15 +1577,18 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
-def test_bootstrap_open_start_queues_instantiate_then_groom_without_seed() -> None:
-    """#11: without a seed, open-start queues one large-tier INSTANTIATE_AGENT
-    cold-start backstop followed by a GROOM_BACKLOG pass.
+def test_bootstrap_open_start_spawns_full_fleet_then_groom_without_seed() -> None:
+    """#11 "full open": without a seed, open-start spawns the FULL enabled fleet
+    (one INSTANTIATE_AGENT per enabled (agent_type, tier)) followed by a
+    GROOM_BACKLOG pass.
 
     The mask zeroes INSTANTIATE_AGENT for a zero-agent / no-remaining-work /
-    non-terminal fleet, so the prior no-op design deadlocked at 0 agents. One
-    forced spawn breaks the catch-22; groom then reconciles the beads↔GitHub
-    graph before PPO takes over. PPO still owns all subsequent fleet growth (no
-    medium spawn, no SEED_PROJECT).
+    non-terminal fleet, so the prior no-op design deadlocked at 0 agents. The
+    forced spawns break the catch-22 — and instead of a single large-tier pin,
+    the whole configured fleet comes up so cheaper tiers (which own the
+    mechanical plays) are present immediately; groom then reconciles the
+    beads↔GitHub graph before PPO takes over. PPO owns all fleet composition
+    after that (no SEED_PROJECT in this recipe).
     """
     cfg = _bootstrap_cfg()
     orch = _make_mock_orch()
@@ -1597,25 +1600,30 @@ def test_bootstrap_open_start_queues_instantiate_then_groom_without_seed() -> No
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    assert len(entries) == 2
-    assert [e.play_type for e in entries] == [
-        PlayType.INSTANTIATE_AGENT,
-        PlayType.GROOM_BACKLOG,
+    # claude_code + codex, each at every default tier (medium, small, large in
+    # enabled_model_tiers / MODEL_TIER_PRIORITY order), then groom.
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
+        PlayType.GROOM_BACKLOG
     ]
-    assert entries[0].params == PlayParams(
-        target_agent_type=AgentType.CLAUDE_CODE.value,
-        target_model_tier="large",
-        bypass_preconditions=True,
-    )
-    assert entries[0].kind is OverrideKind.BOOTSTRAP
+    spawned = [(e.params.target_agent_type, e.params.target_model_tier) for e in entries[:6]]
+    assert spawned == [
+        (AgentType.CLAUDE_CODE.value, "medium"),
+        (AgentType.CLAUDE_CODE.value, "small"),
+        (AgentType.CLAUDE_CODE.value, "large"),
+        (AgentType.CODEX.value, "medium"),
+        (AgentType.CODEX.value, "small"),
+        (AgentType.CODEX.value, "large"),
+    ]
+    assert all(e.kind is OverrideKind.BOOTSTRAP for e in entries)
+    assert all(e.params.bypass_preconditions for e in entries[:6])
     # Groom bypasses the warmup floor / beads gate so it runs immediately at
-    # bootstrap. As the first (and only) agent-consumer it carries NO wait_for
-    # gate — it claims the agent by queue position (mirroring SEED_PROJECT in
-    # the seed recipe) so PPO can't free-select onto the idle agent on a None
-    # override tick and starve groom of staffing.
-    assert entries[1].params == PlayParams(bypass_preconditions=True)
-    assert entries[1].kind is OverrideKind.BOOTSTRAP
-    assert entries[1].wait_for_play_type is None
+    # bootstrap. As the first agent-consumer it carries NO wait_for gate — it
+    # claims an agent by queue position (mirroring SEED_PROJECT in the seed
+    # recipe) so PPO can't free-select onto an idle agent on a None override
+    # tick and starve groom of staffing. The 6 instantiate overrides all drain
+    # ahead of groom, so PPO never gets a turn until groom has dequeued.
+    assert entries[6].params == PlayParams(bypass_preconditions=True)
+    assert entries[6].wait_for_play_type is None
 
 
 def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
@@ -1656,7 +1664,7 @@ def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
     The bootstrap override bypasses preconditions AND the action mask, so the
     mask-level USER_DISABLED suppression never reaches it — the recipe honors
     the preference at enqueue time instead. Open-start then queues only the
-    cold-start INSTANTIATE_AGENT and hands straight to the PPO.
+    full-fleet INSTANTIATE_AGENT spawns and hands straight to the PPO.
     """
     cfg = _bootstrap_cfg(disabled_plays=(PlayType.GROOM_BACKLOG.value,))
     orch = _make_mock_orch()
@@ -1668,7 +1676,8 @@ def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT]
+    # Full enabled fleet (claude + codex × 3 tiers), no groom.
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6
 
 
 def test_bootstrap_seed_recipe_skips_groom_when_user_disabled(tmp_path: Path) -> None:
@@ -1692,7 +1701,7 @@ def test_bootstrap_seed_recipe_skips_groom_when_user_disabled(tmp_path: Path) ->
 
 
 def test_bootstrap_open_start_ignores_backlog_size() -> None:
-    """Open-start queues the same instantiate→groom recipe regardless of backlog
+    """Open-start queues the same full-fleet→groom recipe regardless of backlog
     size — no backlog-driven forced fleet either way."""
     cfg = _bootstrap_cfg(cleanup_threshold=50)
     orch = _make_mock_orch()
@@ -1704,8 +1713,7 @@ def test_bootstrap_open_start_ignores_backlog_size() -> None:
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    assert [e.play_type for e in entries] == [
-        PlayType.INSTANTIATE_AGENT,
-        PlayType.GROOM_BACKLOG,
+    # Full enabled fleet (claude + codex × 3 tiers), then groom.
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
+        PlayType.GROOM_BACKLOG
     ]
-    assert entries[0].params.target_model_tier == "large"

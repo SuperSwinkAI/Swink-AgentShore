@@ -45,14 +45,12 @@ _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 
 # Per-play tier eligibility. Plays not listed here accept any tier.
 # Three bands:
-#   - Cheap mechanical work (small ∪ medium): browser checks and
-#     merging already-approved PRs.
-#   - Universal (small ∪ medium ∪ large): cleanup — it's the bootstrap
-#     first-play when the backlog is large, and at that moment only the
-#     large agent has spawned. Excluding large here used to cause the
-#     bootstrap-cleanup to get skip:staffing'd on every fresh open-stocks-
-#     mcp session (seen 2026-05-22). Per the broad-bands philosophy let
-#     PPO learn tier affinity rather than pre-committing.
+#   - Cheap mechanical work (small ∪ medium): browser checks, merging
+#     already-approved PRs, and trunk/branch housekeeping (cleanup, prune).
+#     Large is deliberately excluded — these are mechanical and large is
+#     overkill; the cold start spawns the full enabled fleet (no large-only
+#     bootstrap pin), so a small/medium agent is available even at the
+#     bootstrap cleanup first-play.
 #   - Coding & strategic work (medium ∪ large): anything that writes code,
 #     restructures local work, or interprets test failures. Small is too
 #     risky for downstream cost.
@@ -61,9 +59,10 @@ _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 #     medium's judgement isn't trusted to set or certify the trajectory, and
 #     the agentic turn is long enough that fast/medium models overrun a harness's
 #     reliable turn-completion envelope (#254).
-# Medium is the universal fallback for the first three bands.
+# Medium is the universal fallback for the first two bands.
 _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
-    PlayType.CLEANUP: frozenset({"small", "medium", "large"}),
+    PlayType.CLEANUP: frozenset({"small", "medium"}),
+    PlayType.PRUNE: frozenset({"small", "medium"}),
     PlayType.MERGE_PR: frozenset({"small", "medium"}),
     # Medium ∪ large — coding & strategic
     PlayType.ISSUE_PICKUP: frozenset({"medium", "large"}),
