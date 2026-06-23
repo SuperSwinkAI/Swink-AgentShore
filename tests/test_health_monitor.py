@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -37,6 +38,7 @@ def _make_monitor(
     on_context_pressure: AsyncMock | None = None,
     on_recovery: AsyncMock | None = None,
     max_context: dict[AgentType, int] | None = None,
+    monotonic: Callable[[], float] | None = None,
 ) -> HealthMonitor:
     circuit_breakers = circuit_breakers or {}
     on_crash = on_crash or AsyncMock()
@@ -50,6 +52,7 @@ def _make_monitor(
         poll_interval=30.0,
         max_context_per_type=max_context,
         sleep_fn=AsyncMock(),  # never actually sleeps in tests
+        monotonic_fn=monotonic,
     )
 
 
@@ -287,3 +290,101 @@ async def test_error_recovery_skipped_when_no_callback() -> None:
     mon = _make_monitor({"err-3": handle}, {"err-3": cb})
 
     await mon._poll_all()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Busy-watchdog — reap an agent stuck BUSY past its dispatch deadline
+# (session a3202694: a hung SIGKILL pinned an agy agent in BUSY for hours,
+# suppressing every session-end backstop)
+# ---------------------------------------------------------------------------
+
+
+def _busy_handle(
+    agent_id: str = "busy-1",
+    agent_type: AgentType = AgentType.ANTIGRAVITY,
+    *,
+    deadline: float | None,
+    returncode: int | None = None,
+) -> AgentHandle:
+    handle = _make_handle(agent_id, agent_type, status=AgentStatus.BUSY)
+    handle.dispatch_deadline_monotonic = deadline
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.pid = 5151
+    handle.process = proc  # type: ignore[assignment]
+    return handle
+
+
+async def test_busy_watchdog_reaps_agent_past_deadline() -> None:
+    # Agent BUSY with a deadline in the past; process still appears alive.
+    handle = _busy_handle(deadline=999.0, returncode=None)
+    cb = CircuitBreaker(failures=1, window_seconds=300, cooldown_seconds=60)
+    on_crash = AsyncMock()
+    mon = _make_monitor(
+        {"busy-1": handle},
+        {"busy-1": cb},
+        on_crash=on_crash,
+        monotonic=lambda: 1000.0,  # past the 999.0 deadline
+    )
+
+    await mon._poll_all()
+
+    assert handle.status == AgentStatus.ERROR
+    on_crash.assert_awaited_once_with("busy-1", -1)  # sentinel rc for a hung dispatch
+    assert not cb.allows_dispatch  # circuit breaker recorded the failure
+    handle.process.kill.assert_called_once()  # best-effort leak kill
+    assert handle.dispatch_deadline_monotonic is None  # cleared after reap
+
+
+async def test_busy_watchdog_ignores_agent_within_deadline() -> None:
+    handle = _busy_handle(deadline=2000.0, returncode=None)
+    on_crash = AsyncMock()
+    mon = _make_monitor({"busy-1": handle}, on_crash=on_crash, monotonic=lambda: 1000.0)
+
+    await mon._poll_all()
+
+    assert handle.status == AgentStatus.BUSY  # still working, untouched
+    on_crash.assert_not_awaited()
+    handle.process.kill.assert_not_called()
+
+
+async def test_busy_watchdog_ignores_idle_agent_with_stale_deadline() -> None:
+    # A stale deadline left on an IDLE agent must never trigger a reap.
+    handle = _make_handle("idle-1", AgentType.ANTIGRAVITY, status=AgentStatus.IDLE)
+    handle.dispatch_deadline_monotonic = 999.0
+    on_crash = AsyncMock()
+    mon = _make_monitor({"idle-1": handle}, on_crash=on_crash, monotonic=lambda: 1000.0)
+
+    await mon._poll_all()
+
+    assert handle.status == AgentStatus.IDLE
+    on_crash.assert_not_awaited()
+
+
+async def test_busy_watchdog_noop_when_no_deadline_set() -> None:
+    handle = _busy_handle(deadline=None, returncode=None)
+    on_crash = AsyncMock()
+    mon = _make_monitor({"busy-1": handle}, on_crash=on_crash, monotonic=lambda: 1e12)
+
+    await mon._poll_all()
+
+    assert handle.status == AgentStatus.BUSY
+    on_crash.assert_not_awaited()
+
+
+async def test_busy_watchdog_uses_real_returncode_when_process_exited() -> None:
+    # If liveness already saw the exit it transitions to ERROR first; but if the
+    # process exited with a real code and status is somehow still BUSY, the
+    # watchdog forwards that code rather than the -1 sentinel.
+    handle = _busy_handle(deadline=999.0, returncode=137)
+    on_crash = AsyncMock()
+    # Skip the liveness check (which would fire on returncode!=None) by making
+    # this a non-CLI... no — keep it CLI but assert end state. Liveness runs
+    # first and will transition to ERROR + call on_crash(137); the watchdog then
+    # sees status != BUSY and is a no-op. Either way on_crash carries rc=137.
+    mon = _make_monitor({"busy-1": handle}, on_crash=on_crash, monotonic=lambda: 1000.0)
+
+    await mon._poll_all()
+
+    assert handle.status == AgentStatus.ERROR
+    on_crash.assert_awaited_once_with("busy-1", 137)

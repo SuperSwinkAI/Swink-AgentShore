@@ -1,7 +1,7 @@
 {
   "name": "agentshore-desktop",
   "private": true,
-  "version": "0.6.8",
+  "version": "0.6.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,20 +18,20 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.11.0",
+    "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.1",
     "@tauri-apps/plugin-updater": "2.10.1",
     "@agentshore/dashboard": "*",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "react-router-dom": "7.17.0"
+    "react-router-dom": "7.18.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.2",
+    "@tauri-apps/cli": "2.11.3",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
-    "@types/node": "25.9.2",
+    "@types/node": "26.0.0",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",

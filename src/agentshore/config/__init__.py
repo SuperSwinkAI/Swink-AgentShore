@@ -175,7 +175,7 @@ agents:
     model_tiers:
       small:
         enabled: true
-        model: "Gemini 3.5 Flash (Low)"
+        model: "GPT-OSS 120B (Medium)"
       medium:
         enabled: true
         model: "Gemini 3.5 Flash (High)"

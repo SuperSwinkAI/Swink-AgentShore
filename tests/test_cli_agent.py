@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import structlog
 
 from agentshore.agents.cli_agent import (
     _PARSERS,
@@ -27,6 +28,7 @@ from agentshore.agents.cli_agent import (
     build_argv,
     build_resume_argv,
     dispatch_cli,
+    is_post_response_hook_failure,
 )
 from agentshore.agents.handle import AgentHandle
 from agentshore.agents.pricing import AgentPricing, PricingQuote
@@ -1120,6 +1122,86 @@ async def test_dispatch_cli_never_resumes(
     for argv in captured:
         assert "--resume" not in argv
         assert "resume" not in argv  # Codex codepath would emit `exec resume`
+
+
+# ---------------------------------------------------------------------------
+# #253 — SessionEnd-hook teardown failure must not discard completed work
+# ---------------------------------------------------------------------------
+
+_SESSION_END_HOOK_STDERR = (
+    'SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" '
+    "SessionEnd] failed: Hook cancelled\n"
+    "SessionEnd hook [${CLAUDE_PLUGIN_ROOT}/scripts/session-end.sh] failed: Hook cancelled\n"
+)
+
+
+def test_is_post_response_hook_failure_recognizes_session_end_only_stderr() -> None:
+    assert is_post_response_hook_failure(_SESSION_END_HOOK_STDERR) is True
+
+
+def test_is_post_response_hook_failure_false_on_empty_stderr() -> None:
+    assert is_post_response_hook_failure("") is False
+    assert is_post_response_hook_failure("   \n   ") is False
+
+
+def test_is_post_response_hook_failure_false_when_real_error_present() -> None:
+    """A non-hook stderr line means a genuine failure — never recover that."""
+    mixed = _SESSION_END_HOOK_STDERR + "Error: connection reset by peer\n"
+    assert is_post_response_hook_failure(mixed) is False
+
+
+async def test_dispatch_cli_recovers_session_end_hook_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#253: a non-zero exit caused *only* by a SessionEnd-hook failure is not
+    fatal. The model's response (with its result block) is already on stdout, so
+    dispatch surfaces it as a clean result instead of raising AgentProcessError
+    and discarding minutes of completed issue_pickup work as error_class=unknown.
+    """
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(
+            _claude_json_lines(),
+            returncode=1,
+            stderr=_SESSION_END_HOOK_STDERR.encode(),
+        )
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    # Exit normalised to 0 (teardown-only failure) and the result block survived.
+    assert result.exit_code == 0
+    assert parse_skill_result(result.raw_output).success is True
+
+
+async def test_dispatch_cli_real_nonzero_exit_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero exit with non-hook stderr is a genuine failure and still raises,
+    even though the agent happened to emit a result block first."""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(
+            _claude_json_lines(),
+            returncode=1,
+            stderr=b"Error: connection reset by peer\n",
+        )
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+
+    with pytest.raises(AgentProcessError):
+        await dispatch_cli(handle, "prompt", cfg=cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -2880,3 +2962,62 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
     await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
 
     assert armed == {"first_byte", "stream_idle"}
+
+
+# ---------------------------------------------------------------------------
+# _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
+# ---------------------------------------------------------------------------
+
+
+async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SIGKILL that never reaps the group must not hang the dispatch forever.
+
+    Regression for session a3202694: the POSIX branch did an unbounded
+    ``await proc.wait()`` after SIGKILL. When the kill failed to reap (escaped
+    grandchild / child-watcher never delivers exit), ``_kill_process`` hung, the
+    dispatch coroutine never re-raised, and the agent was pinned in BUSY for
+    hours. The reap is now bounded; the function must return and log the leak.
+    """
+    import signal
+
+    import agentshore.agents.cli_agent as ca
+
+    class _HangingProc:
+        def __init__(self) -> None:
+            self.pid = 9999
+            self.returncode: int | None = None
+            self.wait_calls = 0
+
+        async def wait(self) -> int:
+            # Never reaps — every wait() blocks until cancelled by wait_for.
+            self.wait_calls += 1
+            await asyncio.Event().wait()
+            return 0  # pragma: no cover
+
+    proc = _HangingProc()
+    killpg_signals: list[int] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            # finally-block liveness probe: report the group as already gone so
+            # the survivor-ps path is skipped in the test.
+            raise ProcessLookupError
+        killpg_signals.append(sig)
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.05)
+
+    with structlog.testing.capture_logs() as captured:
+        # The whole point: this must complete. If the unbounded wait regressed,
+        # the outer wait_for raises TimeoutError and the test fails.
+        await asyncio.wait_for(ca._kill_process(proc, "agy-stuck"), timeout=3.0)  # type: ignore[arg-type]
+
+    events = {e.get("event") for e in captured}
+    assert "sending_sigkill" in events
+    assert "subprocess_unreaped_after_sigkill" in events
+    assert signal.SIGKILL in killpg_signals
+    # Both the SIGTERM-grace wait and the bounded post-SIGKILL wait ran.
+    assert proc.wait_calls >= 2

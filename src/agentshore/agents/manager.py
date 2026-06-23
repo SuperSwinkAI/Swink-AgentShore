@@ -81,6 +81,15 @@ _GROK_WEDGE_COOLDOWN_TICKS = 20
 # session.
 _STREAM_HANG_CLUSTER_LIMIT = 3
 
+# Slack added to a dispatch's effective wall-clock timeout to compute the
+# HealthMonitor busy-watchdog deadline (handle.dispatch_deadline_monotonic). It
+# must comfortably exceed the worst-case teardown after the wall-clock timeout
+# fires: SIGTERM → _SIGKILL_GRACE → SIGKILL → bounded reap (_SIGKILL_GRACE) →
+# survivor probe. 120s is generous against ~20s of real grace, so the watchdog
+# never reaps a dispatch whose timeout/kill machinery is working — only one
+# where it hung (cli_agent._kill_process wedge, session a3202694).
+_BUSY_WATCHDOG_MARGIN_S = 120.0
+
 
 def _is_grok_launch_wedge_timeout(handle: AgentHandle, exc: BaseException) -> bool:
     if handle.agent_type != AgentType.GROK:
@@ -375,6 +384,14 @@ class AgentManager:
             else self._cfg.effective_play_timeout(play_type)
         )
         dispatch_started_at = time.perf_counter()
+        # Stamp the busy-watchdog deadline before flipping to BUSY: the latest
+        # monotonic time by which this dispatch must have finished (wall-clock
+        # timeout + teardown slack). The HealthMonitor reaps the agent if it is
+        # still BUSY past this — the backstop for a hung timeout/kill that would
+        # otherwise pin the agent in BUSY forever (selector fleet_quiescent wedge).
+        handle.dispatch_deadline_monotonic = (
+            time.monotonic() + float(effective_timeout) + _BUSY_WATCHDOG_MARGIN_S
+        )
         handle.transition_to(AgentStatus.BUSY)
 
         # desktop-31h2: Increment cumulative dispatch counter before invoking

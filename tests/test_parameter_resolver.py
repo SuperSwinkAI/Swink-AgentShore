@@ -833,7 +833,8 @@ async def test_resolve_code_review_returns_oldest_pending() -> None:
         blocked_reasons=[],
     )
     state = _make_state(
-        agents=[_make_snapshot("a-codex", agent_type=AgentType.CODEX, model_tier="medium")],
+        # code_review is large-only (#254).
+        agents=[_make_snapshot("a-codex", agent_type=AgentType.CODEX, model_tier="large")],
         pull_requests=[pr_snap],
     )
     result = await resolver.resolve(PlayType.CODE_REVIEW, state)
@@ -885,13 +886,13 @@ async def test_resolve_code_review_picks_pr_with_cross_identity_reviewer() -> No
             _make_snapshot(
                 "a-claude",
                 agent_type=AgentType.CLAUDE_CODE,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_a",
             ),
             _make_snapshot(
                 "a-codex",
                 agent_type=AgentType.CODEX,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_b",
             ),
         ],
@@ -1023,7 +1024,7 @@ async def test_resolve_code_review_unknown_author_accepts_any_reviewer() -> None
             _make_snapshot(
                 "a-claude",
                 agent_type=AgentType.CLAUDE_CODE,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_a",
             )
         ],
@@ -1059,7 +1060,7 @@ async def test_resolve_code_review_falls_back_to_github_when_queue_empty() -> No
                 _make_snapshot(
                     "r",
                     agent_type=AgentType.CODEX,
-                    model_tier="medium",
+                    model_tier="large",
                     github_identity="reviewer",
                 )
             ]
@@ -1112,7 +1113,7 @@ async def test_resolve_code_review_uses_state_pull_requests_when_queue_empty() -
             _make_snapshot(
                 "a-codex",
                 agent_type=AgentType.CODEX,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_x",
             )
         ],
@@ -2046,7 +2047,7 @@ async def test_resolve_timing_under_100ms() -> None:
 async def test_resolve_code_review_skips_when_only_small_tier_idle() -> None:
     """A pending review is skipped when the only idle reviewer is small-tier.
 
-    Tier eligibility (medium ∪ large for code_review) still applies; small-tier
+    Tier eligibility (large-only for code_review — #254) still applies; small-tier
     agents never become candidates regardless of identity.
     """
     from unittest.mock import patch
@@ -2084,13 +2085,18 @@ async def test_resolve_code_review_skips_when_only_small_tier_idle() -> None:
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
 
-    # No medium/large reviewer is idle; small-tier never qualifies for code_review.
+    # No large reviewer is idle; small-tier never qualifies for code_review.
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_resolve_code_review_uses_medium_cross_identity_reviewer() -> None:
-    """A medium-tier reviewer with a different identity is the chosen target."""
+async def test_resolve_code_review_uses_large_cross_identity_reviewer() -> None:
+    """A large-tier reviewer with a different identity is the chosen target.
+
+    code_review is large-only (#254), so the reviewers are large tier; the
+    same-identity-as-PR-author agent is still eliminated by anti-confirmation,
+    leaving the cross-identity large reviewer.
+    """
     from agentshore.data.models import ReviewQueueRecord
 
     store = AsyncMock()
@@ -2130,13 +2136,13 @@ async def test_resolve_code_review_uses_medium_cross_identity_reviewer() -> None
             _make_snapshot(
                 "a-claude",
                 agent_type=AgentType.CLAUDE_CODE,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_a",
             ),
             _make_snapshot(
-                "a-codex-med",
+                "a-codex-lg",
                 agent_type=AgentType.CODEX,
-                model_tier="medium",
+                model_tier="large",
                 github_identity="user_b",
             ),
         ],
@@ -2149,7 +2155,7 @@ async def test_resolve_code_review_uses_medium_cross_identity_reviewer() -> None
     result = await resolver.resolve(PlayType.CODE_REVIEW, state)
     assert result is not None
     assert result.pr_number == 88
-    assert result.target_agent_id == "a-codex-med"
+    assert result.target_agent_id == "a-codex-lg"
 
 
 # ---------------------------------------------------------------------------

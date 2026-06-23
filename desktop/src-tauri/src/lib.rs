@@ -38,6 +38,14 @@ struct UiState {
     theme: String,
     last_selected_tab: String,
     window: Option<WindowState>,
+    // First-run welcome carousel. `#[serde(default)]` is load-bearing: an
+    // existing `ui-state.json` predates this field, and without the default
+    // `read_ui_state`'s `from_value(..).unwrap_or_default()` would fail to
+    // deserialize and silently reset theme / tab / window. Defaulting to
+    // `false` means existing users see the carousel once on the release that
+    // ships it (absent flag == not seen).
+    #[serde(default)]
+    onboarding_completed: bool,
 }
 
 impl Default for UiState {
@@ -46,6 +54,7 @@ impl Default for UiState {
             theme: "system".to_string(),
             last_selected_tab: "home".to_string(),
             window: None,
+            onboarding_completed: false,
         }
     }
 }
@@ -173,6 +182,17 @@ fn set_ui_theme(app: AppHandle, theme: String) -> Result<UiState, String> {
     }
     let next = with_ui_state(&app, |state| {
         state.theme = trimmed.to_string();
+        state.clone()
+    })?;
+    persist_ui_state(&app, &next)?;
+    Ok(next)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn set_onboarding_completed(app: AppHandle, completed: bool) -> Result<UiState, String> {
+    let next = with_ui_state(&app, |state| {
+        state.onboarding_completed = completed;
         state.clone()
     })?;
     persist_ui_state(&app, &next)?;
@@ -690,6 +710,7 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
         .item(&PredefinedMenuItem::maximize(app, None)?)
         .build()?;
 
+    let welcome_tour = MenuItemBuilder::with_id("help_welcome_tour", "Welcome Tour").build(app)?;
     let documentation =
         MenuItemBuilder::with_id("help_documentation", "Documentation").build(app)?;
     let release_notes =
@@ -748,6 +769,8 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     // Help: documentation / support links plus the diagnostics helpers. Check
     // for Updates is intentionally omitted until the updater is provisioned.
     let help = SubmenuBuilder::new(app, "Help")
+        .item(&welcome_tour)
+        .separator()
         .item(&documentation)
         .item(&release_notes)
         .item(&report_issue)
@@ -811,6 +834,9 @@ pub fn run() {
                 }
                 "check_updates" => {
                     let _ = app.emit("menu:check_updates", ());
+                }
+                "help_welcome_tour" => {
+                    let _ = app.emit("menu:welcome_tour", ());
                 }
                 "help_keyboard_shortcuts" => {
                     let _ = app.emit("menu:keyboard_shortcuts", ());
@@ -891,6 +917,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_ui_state,
             set_ui_theme,
+            set_onboarding_completed,
             set_last_selected_tab,
             read_text_file,
             jsonrpc_call,
@@ -1032,12 +1059,36 @@ mod tests {
         assert_eq!(state.theme, "system");
         assert_eq!(state.last_selected_tab, "home");
         assert!(state.window.is_none());
+        assert!(!state.onboarding_completed);
     }
 
     #[test]
     fn ui_state_deserialize_invalid_payload_falls_back_to_default() {
         let parsed = serde_json::from_str::<UiState>("{\"theme\":123}");
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn ui_state_legacy_blob_without_onboarding_field_preserves_other_settings() {
+        // A `ui-state.json` written before `onboarding_completed` existed must
+        // still deserialize (via `#[serde(default)]`) rather than wiping the
+        // user's theme / tab / window through the `unwrap_or_default()` path.
+        let legacy = "{\"theme\":\"dark\",\"lastSelectedTab\":\"stats\",\"window\":null}";
+        let parsed = serde_json::from_str::<UiState>(legacy).expect("legacy blob deserializes");
+        assert_eq!(parsed.theme, "dark");
+        assert_eq!(parsed.last_selected_tab, "stats");
+        assert!(!parsed.onboarding_completed);
+    }
+
+    #[test]
+    fn ui_state_round_trips_onboarding_completed() {
+        let state = UiState {
+            onboarding_completed: true,
+            ..UiState::default()
+        };
+        let json = serde_json::to_string(&state).expect("serialize");
+        let parsed = serde_json::from_str::<UiState>(&json).expect("deserialize");
+        assert!(parsed.onboarding_completed);
     }
 
     #[test]

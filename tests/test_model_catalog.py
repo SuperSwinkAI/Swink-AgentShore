@@ -43,11 +43,13 @@ def test_models_for_agent_in_running_loop_skips_live_fetch() -> None:
     async_models.assert_not_called()
 
 
-def test_claude_catalog_includes_fable_as_opt_in_after_opus() -> None:
+def test_claude_catalog_excludes_unavailable_fable() -> None:
+    # Fable 5 is gated behind fable-mythos-access and reported unavailable by
+    # the claude CLI; it must not be selectable until generally available.
     claude_models = KNOWN_MODELS["claude_code"]
 
-    assert "claude-fable-5" in claude_models
-    assert claude_models.index("claude-opus-4-8") < claude_models.index("claude-fable-5")
+    assert "claude-fable-5" not in claude_models
+    assert "claude-opus-4-8" in claude_models
 
 
 def test_known_models_first_in_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,6 +111,25 @@ def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     result = models_for_agent("grok")
     # Only the hard-pinned entry; no live extras possible.
     assert result == ["grok-build"]
+
+
+def test_antigravity_known_models_include_non_google_backends() -> None:
+    # agy (validated against `agy models`, agy 1.0.10) exposes non-Google
+    # backends alongside Gemini; all three must be selectable.
+    antigravity = KNOWN_MODELS["antigravity"]
+    assert "Claude Sonnet 4.6 (Thinking)" in antigravity
+    assert "Claude Opus 4.6 (Thinking)" in antigravity
+    assert "GPT-OSS 120B (Medium)" in antigravity
+    # Gemini options remain available too.
+    assert "Gemini 3.1 Pro (High)" in antigravity
+
+
+def test_antigravity_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # agy has no httpx model endpoint; the list is the hand-maintained mirror.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    result = models_for_agent("antigravity")
+    assert result == KNOWN_MODELS["antigravity"]
 
 
 # ---------------------------------------------------------------------------

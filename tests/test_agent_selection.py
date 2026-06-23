@@ -105,8 +105,9 @@ def test_circuit_broken_agent_still_selected_when_only_option() -> None:
 
 
 def test_code_review_excludes_pr_author_by_github_identity() -> None:
-    author = _make_handle("author", github_identity="alice")
-    reviewer = _make_handle("reviewer", github_identity="bob")
+    # code_review is large-only (#254); these identity tests use large reviewers.
+    author = _make_handle("author", model_tier="large", github_identity="alice")
+    reviewer = _make_handle("reviewer", model_tier="large", github_identity="bob")
 
     result = select_agent_for(
         PlayType.CODE_REVIEW,
@@ -117,8 +118,8 @@ def test_code_review_excludes_pr_author_by_github_identity() -> None:
 
 
 def test_code_review_identity_filter_is_case_insensitive() -> None:
-    author = _make_handle("author", github_identity="bot-user")
-    reviewer = _make_handle("reviewer", github_identity="example-user")
+    author = _make_handle("author", model_tier="large", github_identity="bot-user")
+    reviewer = _make_handle("reviewer", model_tier="large", github_identity="example-user")
 
     result = select_agent_for(
         PlayType.CODE_REVIEW,
@@ -129,7 +130,7 @@ def test_code_review_identity_filter_is_case_insensitive() -> None:
 
 
 def test_code_review_no_pr_github_author_does_not_filter() -> None:
-    author = _make_handle("author", github_identity="alice")
+    author = _make_handle("author", model_tier="large", github_identity="alice")
 
     # Without pr_github_author, no anti-confirmation filter applies
     result = select_agent_for(
@@ -150,8 +151,8 @@ def test_code_review_all_blocked_raises() -> None:
 
 
 def test_code_review_different_identity_not_blocked() -> None:
-    author = _make_handle("author", github_identity="alice")
-    reviewer = _make_handle("reviewer", github_identity="bob")
+    author = _make_handle("author", model_tier="large", github_identity="alice")
+    reviewer = _make_handle("reviewer", model_tier="large", github_identity="bob")
 
     # pr_github_author matches alice; reviewer (bob) should survive
     result = select_agent_for(
@@ -164,7 +165,7 @@ def test_code_review_different_identity_not_blocked() -> None:
 
 def test_code_review_agent_without_github_identity_not_blocked() -> None:
     # Agents with no github_identity resolved should not match any author
-    no_id = _make_handle("no-id", github_identity=None)
+    no_id = _make_handle("no-id", model_tier="large", github_identity=None)
     result = select_agent_for(
         PlayType.CODE_REVIEW,
         _handles(no_id),
@@ -250,8 +251,8 @@ def test_all_excluded_raises() -> None:
 
 
 def test_type_affinity_promotes_preferred_type() -> None:
-    grok = _make_handle("g1", AgentType.GROK)
-    claude = _make_handle("c1", AgentType.CLAUDE_CODE)
+    grok = _make_handle("g1", AgentType.GROK, model_tier="large")
+    claude = _make_handle("c1", AgentType.CLAUDE_CODE, model_tier="large")
     prefs = AgentPreferencesConfig(affinity={"code_review": "grok"})
 
     result = select_agent_for(
@@ -300,8 +301,10 @@ def test_least_busy_agent_preferred() -> None:
 
 def test_anti_confirmation_overrides_type_affinity() -> None:
     """Even if the author's type is preferred, they must still be excluded."""
-    author = _make_handle("author", AgentType.CLAUDE_CODE, github_identity="alice")
-    fallback = _make_handle("fallback", AgentType.CODEX, github_identity="bob")
+    author = _make_handle(
+        "author", AgentType.CLAUDE_CODE, model_tier="large", github_identity="alice"
+    )
+    fallback = _make_handle("fallback", AgentType.CODEX, model_tier="large", github_identity="bob")
     prefs = AgentPreferencesConfig(affinity={"code_review": "claude_code"})
 
     result = select_agent_for(
@@ -344,17 +347,29 @@ def test_tier_filter_only_small_idle_for_coding_play_raises() -> None:
         select_agent_for(PlayType.ISSUE_PICKUP, _handles(small_only))
 
 
-def test_cleanup_runs_on_large_when_only_large_idle() -> None:
-    """Cleanup is the bootstrap first-play when the backlog is large
-    (open_issues > cleanup_threshold). At that moment only the bootstrap's
-    large agent has spawned; the medium agent comes 7s later. The previous
-    {small, medium} tier filter caused skip:staffing on every fresh
-    example-project session (seen 2026-05-22, sessions d03099c1, ba7cdf72,
-    dc2960e3) because the only idle agent was tier-ineligible. The current
-    {small, medium, large} band lets bootstrap-cleanup run as designed."""
+def test_cleanup_blocks_large_tier() -> None:
+    """Cleanup is cheap mechanical housekeeping (small ∪ medium); large is
+    excluded as overkill, mirroring merge_pr/prune.
+
+    Cleanup is no longer a bootstrap first-play — the cold start spawns the full
+    enabled fleet, so small/medium agents are present immediately and the old
+    large-only bootstrap carve-out (skip:staffing on a large-only fleet, seen
+    2026-05-22) no longer applies. A large-only fleet now has no eligible cleanup
+    agent."""
     large_only = _make_handle("large-only", model_tier="large")
-    result = select_agent_for(PlayType.CLEANUP, _handles(large_only))
-    assert result.agent_id == "large-only"
+    with pytest.raises(AntiConfirmationViolation, match="tier-eligibility"):
+        select_agent_for(PlayType.CLEANUP, _handles(large_only))
+
+
+def test_prune_blocks_large_tier() -> None:
+    """Prune is mechanical branch/trunk housekeeping (small ∪ medium); large is
+    excluded as overkill. A large-only fleet has no eligible prune agent."""
+    large_only = _make_handle("large-only", model_tier="large")
+    with pytest.raises(AntiConfirmationViolation, match="tier-eligibility"):
+        select_agent_for(PlayType.PRUNE, _handles(large_only))
+
+    medium = _make_handle("medium-1", model_tier="medium")
+    assert select_agent_for(PlayType.PRUNE, _handles(medium)).agent_id == "medium-1"
 
 
 def test_merge_pr_blocks_large_tier() -> None:
@@ -397,7 +412,7 @@ def test_issue_pickup_branch_affinity_can_override_tier_cost() -> None:
 
 
 def test_tier_filter_medium_runs_small_band() -> None:
-    """Medium is valid for medium/large plays like CODE_REVIEW but not write_plan (large-only)."""
+    """Medium is valid for medium/large plays like ISSUE_PICKUP but not write_plan (large-only)."""
     medium = _make_handle("medium-1", model_tier="medium")
     large = _make_handle("large-1", model_tier="large")
 
@@ -411,7 +426,9 @@ def test_tier_filter_unknown_tier_treated_as_medium() -> None:
     """Agents with model_tier=None are treated as medium (DEFAULT_MODEL_TIER)."""
     no_tier = _make_handle("notier", model_tier=None)
 
-    coding = select_agent_for(PlayType.CODE_REVIEW, _handles(no_tier))
+    # ISSUE_PICKUP is medium ∪ large, so a None-tier (=medium) agent qualifies;
+    # this exercises the default-tier coercion. (CODE_REVIEW is large-only — #254.)
+    coding = select_agent_for(PlayType.ISSUE_PICKUP, _handles(no_tier))
     cheap = select_agent_for(PlayType.CLEANUP, _handles(no_tier))
     assert coding.agent_id == "notier"
     assert cheap.agent_id == "notier"
@@ -435,6 +452,26 @@ def test_tier_filter_requires_large_for_design_audit() -> None:
     assert result.agent_id == "large-1"
 
 
+def test_tier_filter_requires_large_for_code_review() -> None:
+    """#254: code_review is large-only. A medium agent never qualifies; large is picked.
+
+    code_review is AgentShore's heaviest analytical play; a fast/medium model
+    overruns the harness's reliable turn-completion envelope (medium Gemini-Flash
+    produced clean-exit empty no-ops exclusively on code_review). This is a tier
+    capability floor, not a per-harness rule.
+    """
+    medium = _make_handle("medium-1", model_tier="medium", tasks=0)
+    large = _make_handle("large-1", model_tier="large", tasks=10)
+
+    # Even though the medium agent is idle and cheaper, only large qualifies.
+    result = select_agent_for(PlayType.CODE_REVIEW, _handles(medium, large))
+    assert result.agent_id == "large-1"
+
+    # With no large agent available, code_review has no eligible reviewer at all.
+    with pytest.raises(AntiConfirmationViolation):
+        select_agent_for(PlayType.CODE_REVIEW, _handles(medium))
+
+
 # ---------------------------------------------------------------------------
 # Per-rule elimination logging
 # ---------------------------------------------------------------------------
@@ -449,12 +486,15 @@ def test_blocked_logs_per_rule(
     one candidate:
       - "author"   → PR author (anti-confirmation)
       - "excluded" → CODEX type listed in preferences.exclude
-      - "small"    → small tier (CODE_REVIEW requires medium/large)
+      - "small"    → small tier (CODE_REVIEW is large-only — #254)
+
+    ``author``/``excluded`` are large tier so they survive the tier filter and
+    are eliminated by their intended rules; ``small`` is the tier-eliminated one.
     """
     author = _make_handle(
-        "author", AgentType.CLAUDE_CODE, model_tier="medium", github_identity="alice"
+        "author", AgentType.CLAUDE_CODE, model_tier="large", github_identity="alice"
     )
-    excluded = _make_handle("excluded", AgentType.CODEX, model_tier="medium", github_identity="bob")
+    excluded = _make_handle("excluded", AgentType.CODEX, model_tier="large", github_identity="bob")
     small = _make_handle(
         "small", AgentType.CLAUDE_CODE, model_tier="small", github_identity="carol"
     )

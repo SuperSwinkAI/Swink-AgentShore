@@ -1,0 +1,158 @@
+/* Welcome carousel chrome — mirrors AppMenu.module.css's overlay/dialog/button
+   look so the first-run flow matches the rest of the app, and tracks the theme
+   variables in styles.css (light / dark / system). */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 24px;
+}
+
+.dialog {
+  position: relative;
+  background: var(--fm-panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.25);
+  width: min(520px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 28px 28px 24px;
+  color: var(--color-fm-text, #1f2940);
+}
+
+.close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #6b7280);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--fm-hover, rgba(15, 23, 42, 0.06));
+  color: var(--color-fm-text, #1f2940);
+}
+
+.slide {
+  text-align: center;
+  min-height: 220px;
+}
+
+.icon {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+
+.title {
+  margin: 0 0 12px 0;
+  font-size: 22px;
+}
+
+.body {
+  text-align: left;
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.body p {
+  margin: 0 0 10px 0;
+}
+
+.body ul {
+  margin: 0 0 10px 0;
+  padding-left: 20px;
+}
+
+.body li {
+  margin-bottom: 6px;
+}
+
+.body strong {
+  color: var(--color-fm-text, #1f2940);
+}
+
+.recommended {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--success-bg, rgba(15, 138, 108, 0.1));
+}
+
+.dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 20px 0 4px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--border, #d1d5db);
+  cursor: pointer;
+}
+
+.dotActive {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dontShow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+}
+
+.button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, #ffffff);
+  color: var(--color-fm-text, #1f2940);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #ffffff;
+}

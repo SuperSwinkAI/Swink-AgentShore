@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
+import pytest
 
 from agentshore.config.models import PolicyMode
 from agentshore.plays.base import PlayParams
@@ -903,6 +905,39 @@ def test_load_factory(tmp_path: Path):
         )
     )
     assert isinstance(sel, PPOSelector)
+
+
+def test_load_runs_torch_load_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#247: the multi-second ActorCritic.load (torch.load) must run via
+    asyncio.to_thread so the TUI startup checklist keeps repainting instead of
+    freezing on a partial frame while the policy loads."""
+    policy = ActorCritic()
+    weights = tmp_path / "policy.pt"
+    policy.save(weights)
+
+    threaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recording_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        threaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
+
+    sel = asyncio.run(
+        PPOSelector.load(
+            weights_path=weights,
+            resolver=_mock_resolver(),
+            registry=_mock_registry(),
+            metrics=_mock_metrics(),
+            cfg=_make_cfg(),
+        )
+    )
+    assert isinstance(sel, PPOSelector)
+    # ActorCritic.load was scheduled on a worker thread, not run on the loop.
+    assert "load" in threaded
 
 
 # ---------------------------------------------------------------------------

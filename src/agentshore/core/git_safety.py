@@ -215,11 +215,29 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResul
     checkout/reset may have to walk the index.
     """
     last_stderr: str | None = None
+    default_ref = f"refs/heads/{default_branch}"
+
+    def _settled_on_default() -> bool:
+        """True once HEAD is on ``default_branch`` with no in-progress merge.
+
+        The restore target is an end state, not a command exit code. A
+        ``git checkout`` can exit non-zero while HEAD is correctly on the
+        default branch — git prints the benign ``Already on '<branch>'`` and a
+        failing post-checkout hook propagates a non-zero status even though the
+        switch itself succeeded (#273). Trust the observed HEAD so a clean
+        already-on-trunk repo is never misclassified as a restore failure.
+        """
+        return (
+            current_head_ref(repo_root) == default_ref
+            and not (repo_root / ".git" / "MERGE_HEAD").exists()
+        )
 
     def _checkout() -> bool:
         nonlocal last_stderr
         result = _run_git(["checkout", default_branch], repo_root, timeout=30.0)
         if result.returncode == 0:
+            return True
+        if _settled_on_default():
             return True
         stderr = result.stderr.strip()
         last_stderr = stderr[:_RESTORE_STDERR_MAX] if stderr else None

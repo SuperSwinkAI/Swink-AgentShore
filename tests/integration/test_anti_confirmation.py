@@ -40,8 +40,11 @@ class _FakeHandle:
 
 def test_code_review_excludes_pr_author() -> None:
     """select_agent_for never assigns the PR author as reviewer (identity-based)."""
-    alice = _FakeHandle("alice", AgentType.CLAUDE_CODE, github_identity="alice-login")
-    bob = _FakeHandle("bob", AgentType.CODEX, github_identity="bob-login")
+    # code_review is large-only (#254); reviewers are large tier.
+    alice = _FakeHandle(
+        "alice", AgentType.CLAUDE_CODE, model_tier="large", github_identity="alice-login"
+    )
+    bob = _FakeHandle("bob", AgentType.CODEX, model_tier="large", github_identity="bob-login")
     handles = {"alice": alice, "bob": bob}  # type: ignore[dict-item]
 
     selected = select_agent_for(
@@ -92,8 +95,11 @@ def test_anti_confirmation_raises_when_all_blocked() -> None:
 def test_code_review_unblock_pr_stamp_does_not_block_different_identity() -> None:
     """An unblock_pr that ran on behalf of 'bob' should not block 'bob' from
     reviewing a PR authored by 'alice'. Only alice's identity is excluded."""
-    alice = _FakeHandle("alice", AgentType.CLAUDE_CODE, github_identity="alice-login")
-    bob = _FakeHandle("bob", AgentType.CODEX, github_identity="bob-login")
+    # code_review is large-only (#254); reviewers are large tier.
+    alice = _FakeHandle(
+        "alice", AgentType.CLAUDE_CODE, model_tier="large", github_identity="alice-login"
+    )
+    bob = _FakeHandle("bob", AgentType.CODEX, model_tier="large", github_identity="bob-login")
     handles = {"alice": alice, "bob": bob}  # type: ignore[dict-item]
 
     # Simulates: GH author is alice; codex (bob) did an unblock_pr on this PR.
