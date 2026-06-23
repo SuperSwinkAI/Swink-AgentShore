@@ -684,7 +684,21 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
         _logger.warning("sending_sigkill", agent_id=agent_id)
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGKILL)
-        await proc.wait()
+        # Bound the post-SIGKILL reap. An unbounded ``await proc.wait()`` here
+        # hangs the entire dispatch coroutine forever when SIGKILL fails to
+        # reap the group (an escaped grandchild still holding the group, or the
+        # asyncio child-watcher never delivering exit). The hung coroutine never
+        # re-raises, so ``manager.dispatch`` never catches the timeout and the
+        # agent is pinned in BUSY indefinitely — which in turn suppresses every
+        # session-end backstop (selector ``fleet_quiescent``). Observed
+        # 2026-06-23, session a3202694: an agy first-byte timeout SIGKILL hung
+        # for 2h+ and only the time-budget reserve could end the session. Give
+        # up after the grace window and fall through to the survivor probe; a
+        # truly-unreapable process becomes a logged OS leak, never a wedge.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=float(_SIGKILL_GRACE))
+        except TimeoutError:
+            _logger.warning("subprocess_unreaped_after_sigkill", agent_id=agent_id, pid=proc.pid)
     finally:
         try:
             os.killpg(pgid, 0)
