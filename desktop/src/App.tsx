@@ -77,6 +77,7 @@ import { StartScreen, type StartSelection } from "./screens/StartScreen";
 import { TargetBranchScreen } from "./screens/TargetBranchScreen";
 import { StartingProgressRoute } from "./StartingProgressRoute";
 import { AppMenu } from "./components/AppMenu";
+import { WelcomeCarousel } from "./components/WelcomeCarousel";
 import { listen } from "@tauri-apps/api/event";
 
 type UiState = {
@@ -88,6 +89,7 @@ type UiState = {
     width: number;
     height: number;
   } | null;
+  onboardingCompleted: boolean;
 };
 
 type Tier = "small" | "medium" | "large";
@@ -949,6 +951,12 @@ export function App() {
   const [quickStartError, setQuickStartError] = useState<
     { message: string; step: SetupScreen } | null
   >(null);
+  // First-run welcome carousel. `onboardingSeen` mirrors the persisted
+  // `onboarding_completed` flag (Tauri store); `welcomeOpen` is the live
+  // visibility. They diverge on replay (Help ▸ Welcome Tour opens it without
+  // touching the flag) and on early-close (hidden but not yet seen).
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [onboardingSeen, setOnboardingSeen] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
   const { setEsr, setLastProjectPath, setSessionStarting } = useContext(SessionContext);
@@ -963,6 +971,10 @@ export function App() {
         }
         setTheme(normalizeTheme(uiState.theme));
         setSetup(loadStoredSetup());
+        // First launch (flag absent/false) → show the welcome carousel over
+        // ChooseProjectScreen. The "Don't show again" checkbox mirrors the flag.
+        setOnboardingSeen(uiState.onboardingCompleted);
+        setWelcomeOpen(!uiState.onboardingCompleted);
         // Intentionally no auto-navigate based on uiState.lastSelectedTab.
         // Every route except "/" assumes a project handle has been
         // established via ChooseProjectScreen's select() RPC; restoring
@@ -977,6 +989,48 @@ export function App() {
       cancelled = true;
     };
   }, [navigate]);
+
+  // Replay: Help ▸ Welcome Tour re-opens the carousel without mutating the
+  // persisted flag (only the carousel's own checkbox / reaching-the-end does).
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void listen("menu:welcome_tour", () => {
+      if (!cancelled) {
+        setWelcomeOpen(true);
+      }
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Persist the welcome flag. `markWelcomeSeen` is fired when the user reaches
+  // the last slide; it only writes on the false→true transition so reaching the
+  // end repeatedly doesn't spam IPC. `setWelcomeSeen` backs the checkbox, which
+  // can flip the flag either way (unchecking on replay resumes auto-show).
+  const markWelcomeSeen = useCallback(() => {
+    setOnboardingSeen((prev) => {
+      if (!prev) {
+        void invoke("set_onboarding_completed", { completed: true }).catch(
+          () => undefined,
+        );
+      }
+      return true;
+    });
+  }, []);
+  const setWelcomeSeen = useCallback((next: boolean) => {
+    setOnboardingSeen(next);
+    void invoke("set_onboarding_completed", { completed: next }).catch(
+      () => undefined,
+    );
+  }, []);
 
   useEffect(() => {
     const applyResolvedTheme = () => {
@@ -1236,6 +1290,13 @@ export function App() {
     <div className={`desktop-shell ${chromeHidden ? "desktop-shell--immersive" : ""}`}>
       <SessionStartingOverlay />
       <AppMenu />
+      <WelcomeCarousel
+        open={welcomeOpen}
+        seen={onboardingSeen}
+        onSeen={markWelcomeSeen}
+        onSeenChange={setWelcomeSeen}
+        onClose={() => setWelcomeOpen(false)}
+      />
       {!chromeHidden && (
         <nav className="desktop-nav">
           <div className="desktop-nav__brand">
