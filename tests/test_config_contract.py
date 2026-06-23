@@ -41,7 +41,7 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["codex"].binary == "codex"
     assert config.agents["grok"].binary == "grok"
     assert config.agents["antigravity"].binary == "agy"
-    assert config.agents["antigravity"].model_tiers["small"].model == "Gemini 3.5 Flash (Low)"
+    assert config.agents["antigravity"].model_tiers["small"].model == "GPT-OSS 120B (Medium)"
     assert config.agents["claude_code"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["claude_code"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["claude_code"].model_tiers["large"].reasoning_effort == "high"

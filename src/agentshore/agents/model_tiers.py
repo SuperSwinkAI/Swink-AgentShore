@@ -40,7 +40,8 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
     AgentType.ANTIGRAVITY: {
         # Reasoning effort is baked into the model display-name, so no
         # reasoning_effort is set (mirrors gemini — REASONING_EFFORTS is empty).
-        "small": ModelTierConfig(model="Gemini 3.5 Flash (Low)"),
+        # Small tier uses the open-weight GPT-OSS 120B backend agy exposes.
+        "small": ModelTierConfig(model="GPT-OSS 120B (Medium)"),
         "medium": ModelTierConfig(model="Gemini 3.5 Flash (High)"),
         "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),
     },

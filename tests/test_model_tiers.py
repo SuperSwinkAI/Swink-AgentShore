@@ -61,6 +61,20 @@ def test_default_model_tiers_for_grok() -> None:
     assert tiers["large"].reasoning_effort == "high"
 
 
+def test_default_model_tiers_for_antigravity() -> None:
+    tiers = default_model_tiers_for(AgentType.ANTIGRAVITY)
+
+    assert set(tiers) == {"small", "medium", "large"}
+    # Small tier runs on the open-weight GPT-OSS 120B backend agy exposes.
+    assert tiers["small"].model == "GPT-OSS 120B (Medium)"
+    assert tiers["medium"].model == "Gemini 3.5 Flash (High)"
+    assert tiers["large"].model == "Gemini 3.1 Pro (High)"
+    # Effort is baked into the display-name, so no separate effort flag.
+    assert tiers["small"].reasoning_effort is None
+    assert tiers["medium"].reasoning_effort is None
+    assert tiers["large"].reasoning_effort is None
+
+
 def test_enabled_model_tiers_respects_agent_config() -> None:
     cfg = AgentConfig(
         model_tiers={
