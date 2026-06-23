@@ -27,6 +27,7 @@ from agentshore.agents.cli_agent import (
     build_argv,
     build_resume_argv,
     dispatch_cli,
+    is_post_response_hook_failure,
 )
 from agentshore.agents.handle import AgentHandle
 from agentshore.agents.pricing import AgentPricing, PricingQuote
@@ -1120,6 +1121,86 @@ async def test_dispatch_cli_never_resumes(
     for argv in captured:
         assert "--resume" not in argv
         assert "resume" not in argv  # Codex codepath would emit `exec resume`
+
+
+# ---------------------------------------------------------------------------
+# #253 — SessionEnd-hook teardown failure must not discard completed work
+# ---------------------------------------------------------------------------
+
+_SESSION_END_HOOK_STDERR = (
+    'SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" '
+    "SessionEnd] failed: Hook cancelled\n"
+    "SessionEnd hook [${CLAUDE_PLUGIN_ROOT}/scripts/session-end.sh] failed: Hook cancelled\n"
+)
+
+
+def test_is_post_response_hook_failure_recognizes_session_end_only_stderr() -> None:
+    assert is_post_response_hook_failure(_SESSION_END_HOOK_STDERR) is True
+
+
+def test_is_post_response_hook_failure_false_on_empty_stderr() -> None:
+    assert is_post_response_hook_failure("") is False
+    assert is_post_response_hook_failure("   \n   ") is False
+
+
+def test_is_post_response_hook_failure_false_when_real_error_present() -> None:
+    """A non-hook stderr line means a genuine failure — never recover that."""
+    mixed = _SESSION_END_HOOK_STDERR + "Error: connection reset by peer\n"
+    assert is_post_response_hook_failure(mixed) is False
+
+
+async def test_dispatch_cli_recovers_session_end_hook_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#253: a non-zero exit caused *only* by a SessionEnd-hook failure is not
+    fatal. The model's response (with its result block) is already on stdout, so
+    dispatch surfaces it as a clean result instead of raising AgentProcessError
+    and discarding minutes of completed issue_pickup work as error_class=unknown.
+    """
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(
+            _claude_json_lines(),
+            returncode=1,
+            stderr=_SESSION_END_HOOK_STDERR.encode(),
+        )
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    # Exit normalised to 0 (teardown-only failure) and the result block survived.
+    assert result.exit_code == 0
+    assert parse_skill_result(result.raw_output).success is True
+
+
+async def test_dispatch_cli_real_nonzero_exit_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero exit with non-hook stderr is a genuine failure and still raises,
+    even though the agent happened to emit a result block first."""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(
+            _claude_json_lines(),
+            returncode=1,
+            stderr=b"Error: connection reset by peer\n",
+        )
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+
+    with pytest.raises(AgentProcessError):
+        await dispatch_cli(handle, "prompt", cfg=cfg)
 
 
 # ---------------------------------------------------------------------------

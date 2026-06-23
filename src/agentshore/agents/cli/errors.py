@@ -191,6 +191,33 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     return ErrorClass.UNKNOWN
 
 
+#: Substring marking a Claude Code SessionEnd-hook line in stderr. SessionEnd
+#: hooks run at teardown — strictly AFTER the model's final response is printed
+#: to stdout in headless ``claude -p`` — so a non-zero exit caused solely by a
+#: hook failure/cancellation does not invalidate the already-emitted response.
+_SESSION_END_HOOK_MARKER = "sessionend hook"
+
+
+def is_post_response_hook_failure(stderr: str) -> bool:
+    """True when a non-zero exit is attributable *only* to SessionEnd hook failures.
+
+    Claude Code runs ``SessionEnd`` hooks at teardown, after the model's final
+    response (including its JSON result block) has already been written to
+    stdout. When such a hook fails or is cancelled the CLI exits non-zero even
+    though the dispatch's actual work completed — discarding it as
+    ``error_class=unknown`` burns minutes of finished work and a dispatch (#253).
+
+    Recognise the case conservatively: every non-empty stderr line must be a
+    SessionEnd-hook line. Any other stderr content (a real crash, auth error,
+    tool failure) leaves a non-hook line and falls through to normal failure
+    classification, so this never masks a genuine error.
+    """
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(_SESSION_END_HOOK_MARKER in line.lower() for line in lines)
+
+
 def _process_error_detail(
     *,
     agent_type: AgentType,

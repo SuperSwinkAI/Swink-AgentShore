@@ -56,6 +56,7 @@ from agentshore.agents.cli.errors import (
     _is_cache_renewal_stdin_hang,
     _is_transient_cache_blip,
     _process_error_detail,
+    is_post_response_hook_failure,
 )
 from agentshore.agents.cli.parsing import (
     _PARSERS,
@@ -579,11 +580,14 @@ async def _finalize_nonzero_exit(
     rc: int,
     raw_output: str,
     sniffer: _StderrSniffer | None = None,
-) -> None:
-    """Read stderr, classify the error, log, and raise ``AgentProcessError``.
+) -> bool:
+    """Read stderr, classify, and either recover or raise ``AgentProcessError``.
 
-    Always raises — the ``-> NoReturn`` annotation lets mypy verify callers
-    need not handle a return value.
+    Returns ``True`` when the non-zero exit is a teardown-only SessionEnd-hook
+    failure with output already on stdout (#253) — the response completed, so
+    the caller should surface the captured output as a successful dispatch
+    instead of discarding finished work. Otherwise classifies the failure and
+    raises ``AgentProcessError`` (the common case).
 
     The live stderr sniffer has already drained ``proc.stderr`` for this
     dispatch, so prefer its captured text; only fall back to re-reading the pipe
@@ -601,6 +605,19 @@ async def _finalize_nonzero_exit(
                 agent_id=handle.agent_id,
                 error=str(exc),
             )
+    # A SessionEnd-hook failure runs after the model's response (with its result
+    # block) is already on stdout, so a non-zero exit caused solely by it does
+    # not invalidate the dispatch (#253). Surface the completed output and let
+    # the normal result-parse path judge it rather than burning the work.
+    if raw_output.strip() and is_post_response_hook_failure(stderr_text):
+        _logger.warning(
+            "cli_agent_post_response_hook_failure",
+            agent_id=handle.agent_id,
+            exit_code=rc,
+            stderr_tail=stderr_text[:500],
+            output_length=len(raw_output),
+        )
+        return True
     error_class = _classify_error(rc, stderr_text, raw_output)
     handle.last_error_class = error_class
     _logger.warning(
@@ -1002,9 +1019,15 @@ async def dispatch_cli(
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
-        await _finalize_nonzero_exit(
+        recovered = await _finalize_nonzero_exit(
             proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
         )
+        if recovered:
+            # Teardown-only SessionEnd-hook failure (#253): the model's response
+            # is already on stdout. Normalise the exit so the dispatch flows
+            # through the success path and the result block parses, instead of
+            # discarding finished work as error_class=unknown.
+            rc = 0
 
     if usage.reported_cost > 0:
         # Vendor-authoritative cost (Claude Code's total_cost_usd). See _UsageTotals.
@@ -1070,6 +1093,7 @@ __all__ = [
     "_INVALID_MODEL_STDOUT",
     "_is_cache_renewal_stdin_hang",
     "_is_transient_cache_blip",
+    "is_post_response_hook_failure",
     "_OOM_PATTERNS",
     "_PARSE_EOF_MARKERS",
     "_process_error_detail",
