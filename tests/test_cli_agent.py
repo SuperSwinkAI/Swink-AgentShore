@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import structlog
 
 from agentshore.agents.cli_agent import (
     _PARSERS,
@@ -2961,3 +2962,62 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
     await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
 
     assert armed == {"first_byte", "stream_idle"}
+
+
+# ---------------------------------------------------------------------------
+# _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
+# ---------------------------------------------------------------------------
+
+
+async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SIGKILL that never reaps the group must not hang the dispatch forever.
+
+    Regression for session a3202694: the POSIX branch did an unbounded
+    ``await proc.wait()`` after SIGKILL. When the kill failed to reap (escaped
+    grandchild / child-watcher never delivers exit), ``_kill_process`` hung, the
+    dispatch coroutine never re-raised, and the agent was pinned in BUSY for
+    hours. The reap is now bounded; the function must return and log the leak.
+    """
+    import signal
+
+    import agentshore.agents.cli_agent as ca
+
+    class _HangingProc:
+        def __init__(self) -> None:
+            self.pid = 9999
+            self.returncode: int | None = None
+            self.wait_calls = 0
+
+        async def wait(self) -> int:
+            # Never reaps — every wait() blocks until cancelled by wait_for.
+            self.wait_calls += 1
+            await asyncio.Event().wait()
+            return 0  # pragma: no cover
+
+    proc = _HangingProc()
+    killpg_signals: list[int] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            # finally-block liveness probe: report the group as already gone so
+            # the survivor-ps path is skipped in the test.
+            raise ProcessLookupError
+        killpg_signals.append(sig)
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.05)
+
+    with structlog.testing.capture_logs() as captured:
+        # The whole point: this must complete. If the unbounded wait regressed,
+        # the outer wait_for raises TimeoutError and the test fails.
+        await asyncio.wait_for(ca._kill_process(proc, "agy-stuck"), timeout=3.0)  # type: ignore[arg-type]
+
+    events = {e.get("event") for e in captured}
+    assert "sending_sigkill" in events
+    assert "subprocess_unreaped_after_sigkill" in events
+    assert signal.SIGKILL in killpg_signals
+    # Both the SIGTERM-grace wait and the bounded post-SIGKILL wait ran.
+    assert proc.wait_calls >= 2

@@ -472,6 +472,40 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.consecutive_timeouts == 1
 
 
+async def test_dispatch_stamps_busy_watchdog_deadline(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``dispatch`` stamps a future busy-watchdog deadline before going BUSY.
+
+    The HealthMonitor reads ``dispatch_deadline_monotonic`` to reap an agent
+    whose dispatch hung in BUSY (session a3202694). Verify it is set, in the
+    future, and observable from inside the dispatch (i.e. while the agent is
+    BUSY), not just after completion.
+    """
+    import time as _time
+
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    assert handle.dispatch_deadline_monotonic is None  # nothing stamped yet
+
+    captured: dict[str, float | None] = {}
+
+    async def _capture(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["deadline"] = handle.dispatch_deadline_monotonic
+        captured["status_is_busy"] = handle.status == AgentStatus.BUSY
+        raise AgentTimeout("timed out")
+
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", _capture)
+    before = _time.monotonic()
+    with pytest.raises(AgentTimeout):
+        await mgr.dispatch(handle.agent_id, "prompt")
+
+    assert captured["status_is_busy"] is True
+    assert captured["deadline"] is not None
+    # Deadline is the effective timeout + margin into the future, never the past.
+    assert captured["deadline"] > before
+
+
 async def test_grok_first_byte_launch_wedge_records_cooldown_not_permanent_suppression(
     store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

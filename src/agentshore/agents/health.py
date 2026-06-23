@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from typing import TYPE_CHECKING
 
 from agentshore.logging import get_logger
@@ -58,6 +60,7 @@ class HealthMonitor:
         poll_interval: float = 30.0,
         max_context_per_type: dict[AgentType, int] | None = None,
         sleep_fn: Callable[[float], Awaitable[None]] | None = None,
+        monotonic_fn: Callable[[], float] | None = None,
     ) -> None:
         self._handles = handles
         self._circuit_breakers = circuit_breakers
@@ -67,6 +70,7 @@ class HealthMonitor:
         self._poll_interval = poll_interval
         self._max_context_per_type: dict[AgentType, int] = max_context_per_type or {}
         self._sleep = sleep_fn or asyncio.sleep
+        self._monotonic = monotonic_fn or time.monotonic
         self._task: asyncio.Task[None] | None = None
 
     # -------------------------------------------------------------------------
@@ -107,6 +111,7 @@ class HealthMonitor:
             if handle.status == AgentStatus.TERMINATED:
                 continue
             await self._check_liveness(agent_id, handle)
+            await self._check_busy_watchdog(agent_id, handle)
             if handle.status == AgentStatus.ERROR:
                 await self._check_error_recovery(agent_id, handle)
             await self._check_context_pressure(agent_id, handle)
@@ -131,6 +136,56 @@ class HealthMonitor:
                 cb.record_failure()
             handle.transition_to(AgentStatus.ERROR)
             await self._on_crash(agent_id, rc)
+
+    async def _check_busy_watchdog(self, agent_id: str, handle: AgentHandle) -> None:
+        """Reap an agent stuck BUSY past its dispatch deadline.
+
+        Normally a dispatch's own timeouts (first-byte / stream-idle / wall-
+        clock) fire and ``manager.dispatch`` transitions the agent out of BUSY.
+        But if that machinery hangs — e.g. a SIGKILL that never reaps the
+        process group leaves ``_kill_process`` blocked — the agent is pinned in
+        BUSY forever. A single permanently-BUSY agent suppresses *every* session-
+        end backstop (the selector treats it as doing real work, so the reverse-
+        failsafe never arms and END_SESSION never lifts), so the session can only
+        be ended by the time-budget reserve hours later (session a3202694).
+
+        This is the deterministic catch-all: once an agent is BUSY past
+        ``dispatch_deadline_monotonic`` (effective wall-clock timeout + teardown
+        slack), force it to ERROR so the fleet can wind down, regardless of *why*
+        the dispatch hung. ``_check_liveness`` runs first, so a cleanly-exited
+        process is already handled; this only catches the hung case where the
+        process is still (apparently) alive but the dispatch coroutine is wedged.
+        """
+        if handle.agent_type not in CLI_AGENT_TYPES:
+            return
+        if handle.status != AgentStatus.BUSY:
+            return
+        deadline = handle.dispatch_deadline_monotonic
+        if deadline is None or self._monotonic() <= deadline:
+            return
+        process = handle.process
+        pid = process.pid if process is not None else None
+        _logger.error(
+            "agent_busy_watchdog_reaped",
+            agent_id=agent_id,
+            pid=pid,
+            current_play_type=(
+                handle.current_play_type.value if handle.current_play_type is not None else None
+            ),
+        )
+        # Best-effort kill of the leaked subprocess. The dispatch's own
+        # _kill_process is the primary reaper (and is now bounded); this is a
+        # belt-and-suspenders SIGKILL for any path where it never ran.
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                process.kill()
+        cb = self._circuit_breakers.get(agent_id)
+        if cb is not None:
+            cb.record_failure()
+        handle.dispatch_deadline_monotonic = None
+        handle.transition_to(AgentStatus.ERROR)
+        rc = process.returncode if process is not None and process.returncode is not None else -1
+        await self._on_crash(agent_id, rc)
 
     async def _check_context_pressure(self, agent_id: str, handle: AgentHandle) -> None:
         """Flag agents whose context utilisation exceeds the pressure threshold."""

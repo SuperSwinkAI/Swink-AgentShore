@@ -206,6 +206,14 @@ class AgentHandle:
     task_history: list[TaskRecord] = field(default_factory=list)
     # subprocess reference for CLI agents; not included in repr to avoid noise
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    # Monotonic-clock deadline by which the current dispatch must have finished
+    # (effective wall-clock timeout + kill grace + margin), stamped by
+    # ``AgentManager.dispatch`` at the BUSY transition. The HealthMonitor reaps
+    # any agent still BUSY past this deadline — the catch-all for a dispatch
+    # whose own timeout/kill machinery hung and left the agent pinned in BUSY
+    # (which would otherwise suppress every session-end backstop). Only read
+    # while ``status is BUSY``; a stale value on an idle agent is ignored.
+    dispatch_deadline_monotonic: float | None = field(default=None, repr=False)
     current_play_type: PlayType | None = None
     current_play_id: int | None = None
     current_play_started_at: str | None = None
