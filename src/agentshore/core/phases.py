@@ -270,6 +270,15 @@ async def _phase_init_ppo_selector(
         config_index = build_config_index(cfg)
         pp = _resolve_policy_path(cfg, policy_path)
 
+        # #247: pre-warm the torch import OFF the event loop. _ppo_selector_cls()
+        # imports agentshore.rl.selector → agentshore.rl.policy → torch, a cold
+        # ~1-3s import that, run on the loop, freezes Textual's compositor so the
+        # startup checklist hangs on a partial frame. Priming the module cache in
+        # a thread first makes the subsequent _ppo_selector_cls() a cache hit, so
+        # the loop keeps repainting while torch loads.
+        import importlib
+
+        await asyncio.to_thread(importlib.import_module, "agentshore.rl.selector")
         ppo_cls = _ppo_selector_cls()
         ppo: PPOSelector | None = None
         if pp is not None and pp.exists():

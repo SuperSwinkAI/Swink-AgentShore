@@ -1099,7 +1099,10 @@ class PPOSelector:
         config_index: tuple[ConfigKey, ...] = (),
     ) -> PPOSelector:
         """Load weights from *weights_path* and build a PPOSelector."""
-        policy = ActorCritic.load(Path(weights_path))
+        # #247: torch.load is a synchronous, multi-second blocking call; run it
+        # off the event loop so the TUI startup checklist keeps repainting
+        # instead of freezing on a partial frame (the save path already threads).
+        policy = await asyncio.to_thread(ActorCritic.load, Path(weights_path))
         buffer = RolloutBuffer(capacity=256)
         updater = PPOUpdater(
             policy,
