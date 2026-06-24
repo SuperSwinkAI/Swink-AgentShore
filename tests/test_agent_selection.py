@@ -246,6 +246,41 @@ def test_all_excluded_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auth-suppression (#277): a backend-auth-failed type is benched for the session.
+# Its handle returns to IDLE, so the selector must drop it explicitly or a
+# late-resolved play keeps re-dispatching the dead backend.
+# ---------------------------------------------------------------------------
+
+
+def test_auth_suppressed_type_excluded_from_selection() -> None:
+    grok = _make_handle("grok-1", AgentType.GROK)
+    claude = _make_handle("claude-1", AgentType.CLAUDE_CODE)
+
+    result = select_agent_for(
+        PlayType.ISSUE_PICKUP,
+        _handles(grok, claude),
+        auth_suppressed_types=frozenset({"grok"}),
+    )
+    assert result.agent_id == "claude-1"
+
+
+def test_auth_suppressed_only_type_raises() -> None:
+    grok = _make_handle("grok-1", AgentType.GROK)
+    with pytest.raises(AntiConfirmationViolation, match="auth-suppressed"):
+        select_agent_for(
+            PlayType.ISSUE_PICKUP,
+            _handles(grok),
+            auth_suppressed_types=frozenset({"grok"}),
+        )
+
+
+def test_auth_suppressed_empty_set_is_noop() -> None:
+    grok = _make_handle("grok-1", AgentType.GROK)
+    result = select_agent_for(PlayType.ISSUE_PICKUP, _handles(grok))
+    assert result.agent_id == "grok-1"
+
+
+# ---------------------------------------------------------------------------
 # Soft ordering: type affinity
 # ---------------------------------------------------------------------------
 

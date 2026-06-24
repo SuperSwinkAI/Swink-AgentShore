@@ -164,3 +164,56 @@ def test_rate_limit_excludes_only_same_type_candidates() -> None:
     assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
     assert mask[PLAY_TO_INDEX[PlayType.RUN_QA]]
     assert mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
+
+
+# ---------------------------------------------------------------------------
+# #277: auth-suppression must mask late-resolved plays too. Unlike rate_limit,
+# an auth-failed agent returns to IDLE (its process is healthy; only its backend
+# token is dead), so the IDLE gate alone never excludes it. The eligibility mask
+# must drop the auth-suppressed TYPE explicitly, mirroring select_agent_for.
+# ---------------------------------------------------------------------------
+
+
+def _state_with_auth_suppressed(
+    agents: list[AgentSnapshot], suppressed: set[str]
+) -> OrchestratorState:
+    return OrchestratorState(
+        session_id="s",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=agents,
+        auth_suppressed_agent_types=frozenset(suppressed),
+    )
+
+
+def test_auth_suppressed_grok_zeroes_grok_only_plays_even_while_idle() -> None:
+    """A grok type in ``auth_suppressed_agent_types`` is masked for issue_pickup
+    even though its handle is still IDLE — this is the #277 late-resolved gap."""
+    agents = [
+        _agent(agent_id="grok-1", agent_type=AgentType.GROK, status=AgentStatus.IDLE),
+    ]
+    state = _state_with_auth_suppressed(agents, {"grok"})
+    registry = build_default_registry()
+
+    mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
+
+    # The only idle agent is an auth-suppressed grok: issue_pickup must be masked
+    # rather than left selectable to fail at runner selection every tick.
+    assert not mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
+
+
+def test_auth_suppressed_type_does_not_collapse_healthy_types() -> None:
+    """An auth-suppressed grok must not zero plays a healthy claude/codex can run."""
+    agents = [
+        _agent(agent_id="grok-1", agent_type=AgentType.GROK, status=AgentStatus.IDLE),
+        _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE, model_tier="large"),
+        _agent(agent_id="cx-1", agent_type=AgentType.CODEX, model_tier="medium"),
+    ]
+    state = _state_with_auth_suppressed(agents, {"grok"})
+    registry = build_default_registry()
+
+    mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
+
+    for play in (PlayType.ISSUE_PICKUP, PlayType.RUN_QA, PlayType.WRITE_IMPLEMENTATION_PLAN):
+        assert mask[PLAY_TO_INDEX[play]], f"{play.value} was zeroed by grok auth-suppression"

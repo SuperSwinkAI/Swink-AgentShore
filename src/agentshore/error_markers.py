@@ -150,10 +150,18 @@ GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
 # CLI stderr (full set). Was ``cli/errors._RATE_LIMIT_PATTERNS``.
 # "usage limit" / "try again at" are Codex usage-limit signatures (#276): Codex
 # prints "You've hit your usage limit … or try again at <ts>." on a quota miss.
-# Folding them into the rate-limit family routes the dispatch through the exact
-# path Claude's "hit your session limit" already uses — the RATE_LIMIT_RECOVERY
-# take_break plus the provider-wide eligibility hold (rate_limited_types) that
-# benches every same-type instance sharing the exhausted quota.
+# "spending-limit" / "out of credits" are Grok's billing-quota signatures: it
+# prints "responses API error status=403 Forbidden error_message=
+# personal-team-blocked:spending-limit: You have run out of credits …" when the
+# account quota is exhausted. The trailing 403/Forbidden previously got it
+# misclassified as AUTH (a permanent session bench) when it is really a
+# recoverable quota exhaustion — the Grok analogue of Codex's usage limit.
+# Folding all of these into the rate-limit family routes the dispatch through the
+# exact path Claude's "hit your session limit" already uses — the
+# RATE_LIMIT_RECOVERY take_break plus the provider-wide eligibility hold
+# (rate_limited_types) that benches every same-type instance sharing the
+# exhausted quota. Because ``_classify_error`` checks rate_limit *before* auth,
+# the quota markers win over the coexisting 403/Forbidden auth tokens.
 RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
@@ -165,6 +173,8 @@ RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "throttl",
     "usage limit",
     "try again at",
+    "spending-limit",
+    "out of credits",
 )
 
 # CLI stdout-safe subset. Was ``cli/errors._RATE_LIMIT_STDOUT``.
