@@ -2228,6 +2228,22 @@ def test_classify_error_stderr_still_matches_generic_tokens() -> None:
     assert _classify_error(1, "model not found", "") == "invalid_model"
 
 
+def test_classify_error_timestamp_digits_are_not_auth() -> None:
+    """Regression: the exit-path classifier must not read a ``401``/``403``
+    digit-run inside a Codex stderr ISO timestamp as an auth failure. The bare
+    tokens were removed from the auth vocabulary; only phrased status codes
+    (``http 401`` / ``403 forbidden`` / ``401 unauthorized``) classify as auth."""
+    codex_skill_noise = (
+        "2026-06-24T18:40:20.319401Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/agents: "
+        "No such file or directory (os error 2)"
+    )
+    assert _classify_error(1, codex_skill_noise, "") == "unknown"
+    assert _classify_error(1, "boot at 18:40:20.319403Z ready", "") == "unknown"
+    # A genuinely phrased rejection still classifies as auth.
+    assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
+
+
 def test_classify_error_high_precision_stdout_phrases_still_match() -> None:
     """Distinctive phrases (real CLI/tool verdicts) are still caught in stdout."""
     # Claude reports quota exhaustion on stdout with nothing on stderr.
@@ -2369,6 +2385,44 @@ def test_stderr_sniffer_real_401_trips_even_alongside_cache_blip() -> None:
         "HTTP 401 Unauthorized\n"
     )
     assert sniffer.feed(text) is True
+    assert sniffer.auth_hit is True
+
+
+def test_stderr_sniffer_timestamp_containing_401_does_not_trip() -> None:
+    """Regression: a benign Codex skill-loader line whose microsecond ISO
+    timestamp happens to contain the digit-run ``401`` must NOT trip a hard auth
+    abort. Codex prefixes every stderr line with a timestamp like
+    ``…18:40:20.319401Z``; the old bare ``"401"`` token substring-matched that
+    fragment and spuriously benched the whole Codex type as backend_auth_failed
+    (session b0d0c02c, 2026-06-24)."""
+    sniffer = _StderrSniffer()
+    line = (
+        "2026-06-24T18:40:20.319401Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/plugins/sharepoint/skills/"
+        "sharepoint-powerpoint/agents: No such file or directory (os error 2)\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_timestamp_containing_403_does_not_trip() -> None:
+    """Companion to the 401 case: a ``403`` digit-run inside a timestamp
+    fragment must not trip the auth abort either."""
+    sniffer = _StderrSniffer()
+    line = (
+        "2026-06-24T18:40:20.319403Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/agents: "
+        "No such file or directory (os error 2)\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_phrased_403_forbidden_still_trips() -> None:
+    """The phrased status code is what a real rejection prints, so dropping the
+    bare token must not weaken detection of a genuine 403 auth failure."""
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("ERROR backend returned HTTP 403 Forbidden\n") is True
     assert sniffer.auth_hit is True
 
 

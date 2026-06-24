@@ -33,9 +33,7 @@ from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 # Frozen snapshot of the canonical auth superset. Update this deliberately when
 # intentionally adding an auth spelling — the diff is the audit trail.
 _FROZEN_AUTH_MARKERS = (
-    "401",
     "401 unauthorized",
-    "403",
     "403 forbidden",
     "active gh_token account lacks",
     "authentication",
