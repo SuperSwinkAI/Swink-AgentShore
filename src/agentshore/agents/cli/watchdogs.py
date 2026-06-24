@@ -15,6 +15,7 @@ from typing import Final, NoReturn
 from agentshore.agents.cli.errors import (
     _AUTH_PATTERNS,
     _CACHE_RENEWAL_MARKERS,
+    _RATE_LIMIT_PATTERNS,
     _is_cache_renewal_stdin_hang,
     _is_transient_cache_blip,
 )
@@ -153,6 +154,16 @@ class _StderrSniffer:
         self.tail = (self.tail + text)[-self.tail_window :]
         if not self.auth_hit:
             lowered = self.tail.lower()
+            # A quota/billing exhaustion (Grok "spending-limit / out of credits",
+            # Codex "usage limit") is a RECOVERABLE rate-limit, not an auth death —
+            # even though Grok wraps it in a 403/Forbidden that matches the auth
+            # markers below. Suppress the live auth abort for these so the dispatch
+            # resolves normally and ``_classify_error`` (which checks rate_limit
+            # before auth) buckets it as rate_limit → transient cooldown, not a
+            # permanent session-wide auth suppression. Mirrors the rate_limit-wins
+            # ordering in ``_classify_error``.
+            if any(p in lowered for p in _RATE_LIMIT_PATTERNS):
+                return False
             # #190: a genuine auth marker that is NOT one of the cache-renewal
             # markers (e.g. 401/403/unauthorized/invalid api key) always trips,
             # even if a transient cache-renewal+EOF line coexists in the tail.

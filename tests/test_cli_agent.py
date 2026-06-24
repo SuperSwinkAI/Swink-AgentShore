@@ -2086,6 +2086,21 @@ def test_classify_error_codex_usage_limit_from_stderr() -> None:
     )
 
 
+def test_classify_error_grok_spending_limit_is_rate_limit_not_auth() -> None:
+    # Grok prints its quota exhaustion as a 403/Forbidden, but it is a RECOVERABLE
+    # billing-quota miss (the Grok analogue of Codex's usage limit), not an auth
+    # death. The quota markers must win over the coexisting 403/Forbidden auth
+    # tokens so it rides the transient rate_limit cooldown, not a permanent
+    # session-wide auth suppression.
+    stderr = (
+        "responses API error status=403 Forbidden "
+        "error_message=personal-team-blocked:spending-limit: "
+        "You have run out of credits or need a Grok subscription. "
+        "Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok."
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.RATE_LIMIT
+
+
 def test_classify_error_auth() -> None:
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
 
@@ -2261,6 +2276,23 @@ def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:
     assert sniffer.feed("INFO booting model\nINFO ready\n") is False
     assert sniffer.auth_hit is False
     assert "booting model" in sniffer.captured
+
+
+def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
+    # Grok's quota exhaustion carries a 403/Forbidden that matches the auth
+    # markers, but it is a recoverable rate-limit. The sniffer must NOT fire a
+    # live auth abort: the dispatch should exit normally and classify as
+    # rate_limit rather than a permanent auth suppression.
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR responses API error status=403 Forbidden "
+        "error_message=personal-team-blocked:spending-limit: "
+        "You have run out of credits or need a Grok subscription.\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+    # The text is still captured so _finalize_nonzero_exit can classify it.
+    assert "spending-limit" in sniffer.captured
 
 
 def test_stderr_sniffer_tail_is_bounded() -> None:
