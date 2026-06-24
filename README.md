@@ -4,6 +4,8 @@
 
 **RL-based multi-agent coding orchestrator.** AgentShore™ runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, Grok, or Antigravity agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
 
+> **Background and philosophy:** [superswinkai.github.io/swink-agentshore](https://superswinkai.github.io/swink-agentshore/)
+
 ## Download
 
 | Platform | Installer |
