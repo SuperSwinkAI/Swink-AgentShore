@@ -4,6 +4,15 @@
 
 **RL-based multi-agent coding orchestrator.** AgentShore™ runs a reinforcement learning policy that selects "plays" — discrete skills like issue pickup, code review, QA, and cleanup — and dispatches them to Claude, Codex, Grok, or Antigravity agents working a GitHub issue backlog. You steer via GitHub issues; AgentShore handles the progression.
 
+## Download
+
+| Platform | Installer |
+| --- | --- |
+| **macOS** (Apple Silicon) | [Download `.pkg`](https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/AgentShore.pkg) |
+| **Windows** (x64) | [Download `.exe`](https://github.com/SuperSwinkAI/Swink-AgentShore/releases/latest/download/AgentShoreSetup-x64.exe) |
+
+Prefer the CLI? `pip install agentshore` — see [Install](#install) below. Source is [on GitHub](https://github.com/SuperSwinkAI/Swink-AgentShore).
+
 ## What it does
 
 - Picks up GitHub issues, implements them, opens PRs, reviews them, runs QA, and merges
