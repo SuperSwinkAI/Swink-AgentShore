@@ -122,6 +122,15 @@ def test_canonical_set_is_union_of_stream_views(
     assert canonical == frozenset(stderr_view).union(stdout_view)
 
 
+def test_codex_usage_limit_markers_present_in_rate_limit_family() -> None:
+    # #276: Codex's quota-miss signatures must live in the rate-limit family so a
+    # weekly-quota exit classifies as RATE_LIMIT (like Claude's session limit) and
+    # inherits the provider-wide eligibility hold + take_break, not UNKNOWN.
+    assert "usage limit" in RATE_LIMIT_STDERR_PATTERNS
+    assert "try again at" in RATE_LIMIT_STDERR_PATTERNS
+    assert "hit your usage limit" in RATE_LIMIT_STDOUT_MARKERS
+
+
 def test_consumers_read_the_registry_objects() -> None:
     # Phase 1 rewiring: the post-decomposition consumer names must resolve to the
     # exact registry objects, so the single home is real (not a re-copied table).

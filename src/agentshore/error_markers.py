@@ -148,6 +148,12 @@ GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
 # ===========================================================================
 
 # CLI stderr (full set). Was ``cli/errors._RATE_LIMIT_PATTERNS``.
+# "usage limit" / "try again at" are Codex usage-limit signatures (#276): Codex
+# prints "You've hit your usage limit … or try again at <ts>." on a quota miss.
+# Folding them into the rate-limit family routes the dispatch through the exact
+# path Claude's "hit your session limit" already uses — the RATE_LIMIT_RECOVERY
+# take_break plus the provider-wide eligibility hold (rate_limited_types) that
+# benches every same-type instance sharing the exhausted quota.
 RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
@@ -157,15 +163,21 @@ RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "capacity",
     "retry after",
     "throttl",
+    "usage limit",
+    "try again at",
 )
 
 # CLI stdout-safe subset. Was ``cli/errors._RATE_LIMIT_STDOUT``.
+# "hit your usage limit" is the Codex stdout quota signature (mirrors Claude's
+# "hit your session limit"); kept as the full distinctive phrase so it never
+# matches an agent's work product (#276).
 RATE_LIMIT_STDOUT_MARKERS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
     "too many requests",
     "retry after",
     "hit your session limit",
+    "hit your usage limit",
 )
 
 RATE_LIMIT_MARKERS: frozenset[str] = frozenset(RATE_LIMIT_STDERR_PATTERNS).union(
