@@ -2064,6 +2064,28 @@ def test_classify_error_claude_session_limit_from_stdout() -> None:
     )
 
 
+def test_classify_error_codex_usage_limit_from_stdout() -> None:
+    # Codex prints its weekly-quota miss on stdout with the reset timestamp; it
+    # must classify as RATE_LIMIT (not UNKNOWN) so it rides the same provider-wide
+    # eligibility hold + take_break path Claude's session-limit uses (#276).
+    assert (
+        _classify_error(
+            1,
+            "",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+            "or try again at Jun 24th, 2026 4:19 PM.",
+        )
+        is ErrorClass.RATE_LIMIT
+    )
+
+
+def test_classify_error_codex_usage_limit_from_stderr() -> None:
+    assert (
+        _classify_error(1, "You've hit your usage limit. … try again at Jun 24th 4:19 PM.", "")
+        is ErrorClass.RATE_LIMIT
+    )
+
+
 def test_classify_error_auth() -> None:
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
 
