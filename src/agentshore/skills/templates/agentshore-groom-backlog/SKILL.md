@@ -133,8 +133,11 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "dependency_edges_deferred": [],
   "open_work_after": {"issues": 0, "prs": 0},
   "verification_failures": [],
+  "learnings": [{"pattern": "the agentshore/decomposed tracker pattern requires a '## Sub-tasks' section; plain checkbox lists in the body are not detected by the close-tracker logic", "confidence": 0.75, "category": "conventions"}],
   "error": null
 }
 ```
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (label taxonomy surprises, beads graph conventions, recurring backlog debt patterns) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. The harvester also accepts the legacy `type:"learnings"` artifact form emitted by earlier grooming passes — both forms are harvested; prefer the top-level `learnings` array for new entries.
 
 A clean graph with no changes is `success: true` with all empty lists — not an error. Always emit the block — skipping causes `no valid result block` and discards the work. This is a single turn with no callback: never end it to "wait for the task notification" or watch a file/process. Finish your grooming pass now and emit the block.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from agentshore.budget import budget_reserve_reached
@@ -36,7 +37,6 @@ from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
-    from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
     from agentshore.core.context import _DispatchContext
@@ -430,7 +430,11 @@ class CompletionProcessor:
             next_state,
             completed_play_type,
         )
-        await self._publish_completion_results(outcome, next_state, completed_play_type)
+        worktree_path_raw = ctx.params.extras.get("worktree_path")
+        worktree_path = Path(worktree_path_raw) if isinstance(worktree_path_raw, str) else None
+        await self._publish_completion_results(
+            outcome, next_state, completed_play_type, worktree_path=worktree_path
+        )
         await self._handle_end_session_completion(ctx, outcome, next_state, completed_play_type)
 
     def _pop_completed_dispatch(
@@ -891,6 +895,8 @@ class CompletionProcessor:
         outcome: PlayOutcome,
         next_state: OrchestratorState,
         completed_play_type: PlayType,
+        *,
+        worktree_path: Path | None = None,
     ) -> None:
         # Refresh issue cache after plays that modify issues. QA and design
         # audit can create follow-up issues even if their play result is
@@ -951,6 +957,15 @@ class CompletionProcessor:
             await self._host._safe_call(
                 self.update_learnings(outcome, completed_play_type),
                 "update_learnings",
+            )
+
+        # Fork-guard: detect cross-fork PRs or non-origin remotes in the worktree.
+        # Detect-and-log only — never blocks completion or mutates any state.
+        has_artifacts = bool(outcome.artifacts)
+        if has_artifacts or worktree_path is not None:
+            await self._host._safe_call(
+                self._check_fork_guard(outcome, worktree_path, completed_play_type),
+                "fork_guard",
             )
 
         await self._host._safe_call(
@@ -1139,6 +1154,58 @@ class CompletionProcessor:
     async def update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
         """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""
         await self._learnings_harvester.update_learnings(outcome, play_type)
+
+    async def _check_fork_guard(
+        self,
+        outcome: PlayOutcome,
+        worktree_path: Path | None,
+        completed_play_type: PlayType,
+    ) -> None:
+        """Detect cross-fork PRs and non-origin remotes; log findings, never abort.
+
+        Best-effort: derives origin_owner from the main repo's origin remote.
+        Returns silently when the origin cannot be parsed.
+        """
+        from agentshore import command
+        from agentshore.core.fork_guard import (
+            detect_cross_fork_pr_artifacts,
+            detect_non_origin_remotes,
+            parse_origin_owner,
+        )
+
+        # Derive origin_owner from the main repo's remote.origin.url (best-effort).
+        origin_owner: str | None = None
+        try:
+            remote_result = await command.git(
+                "config", "--get", "remote.origin.url", cwd=self._repo_root
+            )
+            if remote_result.returncode == 0 and remote_result.stdout.strip():
+                origin_owner = parse_origin_owner(remote_result.stdout.strip())
+        except Exception:
+            pass
+
+        if origin_owner is None:
+            # Can't derive a baseline owner; skip cross-fork PR check.
+            pass
+        else:
+            for finding in detect_cross_fork_pr_artifacts(outcome.artifacts, origin_owner):
+                _logger.warning(
+                    "cross_fork_pr_detected",
+                    play_id=outcome.play_id,
+                    play_type=completed_play_type.value,
+                    session_id=self._session_id,
+                    detail=finding.detail,
+                )
+
+        if worktree_path is not None and worktree_path.exists():
+            for finding in await detect_non_origin_remotes(worktree_path):
+                _logger.warning(
+                    "non_origin_remote_detected",
+                    play_id=outcome.play_id,
+                    play_type=completed_play_type.value,
+                    session_id=self._session_id,
+                    detail=finding.detail,
+                )
 
     async def check_no_forward_progress(
         self, state: OrchestratorState, outcome: PlayOutcome

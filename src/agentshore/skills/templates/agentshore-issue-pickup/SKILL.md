@@ -58,6 +58,7 @@ Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; 
 - Never touch `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. If CI changes are required, post a comment stating CI config is owned by the human maintainer, request `agentshore/disallowed`, then exit with `success: false`, `error: "ci-change requested but forbidden by skill policy"` and the policy-disallowed mutation shape below.
 - Never `git worktree add/remove/prune` — AgentShore owns lifecycle.
 - Never `git stash`, `git push --force`, or stack branches on an unmerged dependency.
+- Never `gh repo fork`, never `git remote add` a non-origin remote, and never open a cross-fork PR (a `gh pr create` whose `--head` points at a fork). If pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` — do not work around it by forking.
 
 **Report — one fenced JSON block, nothing else:**
 
@@ -72,11 +73,14 @@ Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; 
   "branch": "agentshore/17-add-widget",
   "tests_passed": true,
   "verification_evidence": [{"command": "pytest tests/test_widget.py -v", "exit_code": 0, "summary": "12 passed"}],
+  "learnings": [{"pattern": "pytest requires PYTHONPATH=src to discover the package", "confidence": 0.9, "category": "test-setup"}],
   "error": null
 }
 ```
 
 `status`: `DONE` | `DONE_WITH_CONCERNS` | `NEEDS_CONTEXT` | `BLOCKED`. `DONE_WITH_CONCERNS` when the change partially advances the issue. Irrecoverable failure → `success: false`.
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (build/test quirks, conventions, gotchas) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. NEVER record workarounds that violate the Forbidden-mutations rules (e.g. forking).
 
 For BLOCKED or policy-disallowed cases, populate `requested_mutations` so AgentShore applies a durable gate:
 

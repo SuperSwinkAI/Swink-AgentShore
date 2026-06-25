@@ -273,6 +273,14 @@ def _verify_github_repo_access_via_api(name_with_owner: str, token: str) -> None
             f"{returned!r}, expected {name_with_owner!r}"
         )
 
+    permissions = payload.get("permissions")
+    if not isinstance(permissions, dict) or permissions.get("push") is not True:
+        raise AgentAuthError(
+            "GitHub repository access preflight failed: the assigned identity token "
+            f"lacks push access to {name_with_owner}; add the identity as a collaborator "
+            "with write access or reassign the agent to a writer identity."
+        )
+
 
 def _github_http_error_detail(exc: urllib.error.HTTPError) -> str:
     try:

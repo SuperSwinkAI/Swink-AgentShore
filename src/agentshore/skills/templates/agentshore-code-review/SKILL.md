@@ -78,8 +78,11 @@ non_blocking_findings: <int>
   "issues_existing": [],
   "findings_count": {"blocking": 0, "non_blocking": 2},
   "spec_compliance": "PASS",
+  "learnings": [{"pattern": "all new async functions must use the project's custom @retry_on_rate_limit decorator, not tenacity directly", "confidence": 0.8, "category": "conventions"}],
   "error": null
 }
 ```
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future reviews or plays (recurring anti-patterns, project conventions discovered from the diff, test-coverage norms) — grounded in what was found this review, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was found. NEVER record secrets, tokens, or PII from the diff. NEVER record workarounds that violate the Forbidden rules (e.g. forking).
 
 Valid `verdict`: `APPROVE`, `REQUEST_CHANGES`, `COMMENT`, `SKIP`. On skip include `verdict: SKIP` and `error: <reason>`; for zero-diff also include `head_sha`. On irrecoverable failure: `success: false`, `error: <description>`. Never omit the result block.
