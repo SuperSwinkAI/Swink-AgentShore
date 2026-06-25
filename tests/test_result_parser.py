@@ -396,3 +396,114 @@ def test_parse_extracts_review_patterns() -> None:
         {"pattern": "missing regression test", "category": "testing", "frequency": 2},
         {"pattern": "tighten type annotations", "category": "typing"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# learnings extraction — Bug B
+# ---------------------------------------------------------------------------
+
+
+def test_parse_extracts_learnings_list() -> None:
+    """Top-level ``learnings`` array is normalized onto SkillResult.learnings."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"pattern": "always run ruff before committing", "confidence": 0.8, "category": "workflow"},
+        {"pattern": "prefer asyncio.to_thread for blocking I/O", "confidence": 0.7, "category": "async"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 2
+    assert result.learnings[0] == {
+        "pattern": "always run ruff before committing",
+        "confidence": 0.8,
+        "category": "workflow",
+    }
+    assert result.learnings[1] == {
+        "pattern": "prefer asyncio.to_thread for blocking I/O",
+        "confidence": 0.7,
+        "category": "async",
+    }
+
+
+def test_parse_learnings_defaults_to_empty() -> None:
+    """A result block without a ``learnings`` key yields an empty list, not None."""
+    output = '{"success": true, "artifacts": []}'
+    result = parse_skill_result(output)
+    assert result.learnings == []
+
+
+def test_parse_learnings_drops_non_dict_entries() -> None:
+    """Non-dict items in ``learnings`` are silently dropped."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        "not a dict",
+        42,
+        {"pattern": "valid entry", "confidence": 0.6, "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["pattern"] == "valid entry"
+
+
+def test_parse_learnings_drops_entries_without_pattern() -> None:
+    """Dict entries missing a ``pattern`` key or with an empty pattern are dropped."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"confidence": 0.5, "category": "general"},
+        {"pattern": "", "confidence": 0.5, "category": "general"},
+        {"pattern": "keeper", "confidence": 0.5, "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["pattern"] == "keeper"
+
+
+def test_parse_learnings_defaults_confidence_on_bad_value() -> None:
+    """A non-numeric confidence falls back to DEFAULT_LEARNING_CONFIDENCE."""
+    from agentshore.core.learnings_harvester import DEFAULT_LEARNING_CONFIDENCE
+
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"pattern": "test pattern", "confidence": "high", "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["confidence"] == DEFAULT_LEARNING_CONFIDENCE
+
+
+def test_parse_learnings_caps_at_ten() -> None:
+    """At most 10 learnings are extracted even if the agent emits more."""
+    import json as _json
+
+    learning_entries = [
+        {"pattern": f"pattern-{i}", "confidence": 0.5, "category": "general"} for i in range(15)
+    ]
+    output = _json.dumps({"success": True, "artifacts": [], "learnings": learning_entries})
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 10
+
+
+def test_parse_learnings_non_list_treated_as_empty() -> None:
+    """A ``learnings`` value that is not a list is safely ignored."""
+    output = '{"success": true, "artifacts": [], "learnings": "not a list"}'
+    result = parse_skill_result(output)
+    assert result.learnings == []

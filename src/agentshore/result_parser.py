@@ -315,6 +315,30 @@ def parse_skill_result(output: str) -> SkillResult:
     verification_evidence = _json_object_list(data, "verification_evidence")
     review_patterns = _json_object_list(data, "review_patterns")
 
+    # Extract top-level ``learnings`` array emitted by agents. Each element must
+    # be a dict with a non-empty ``pattern`` string; malformed entries are dropped.
+    # Normalized to {"pattern": str, "confidence": float, "category": str} and
+    # capped at 10 entries.
+    from agentshore.core.learnings_harvester import (  # noqa: PLC0415
+        DEFAULT_LEARNING_CONFIDENCE,
+    )
+
+    learnings_raw = data.get("learnings", [])
+    learnings: list[JsonObject] = []
+    if isinstance(learnings_raw, list):
+        for raw_item in learnings_raw[:10]:
+            if not isinstance(raw_item, dict):
+                continue
+            pattern = raw_item.get("pattern", "")
+            if not isinstance(pattern, str) or not pattern:
+                continue
+            try:
+                confidence = float(raw_item.get("confidence", DEFAULT_LEARNING_CONFIDENCE))
+            except (TypeError, ValueError):
+                confidence = DEFAULT_LEARNING_CONFIDENCE
+            category = str(raw_item.get("category", "general"))
+            learnings.append({"pattern": pattern, "confidence": confidence, "category": category})
+
     return SkillResult(
         success=success,
         artifacts=artifacts,
@@ -331,6 +355,7 @@ def parse_skill_result(output: str) -> SkillResult:
         tests_passed=tests_passed,
         verification_evidence=verification_evidence,
         review_patterns=review_patterns,
+        learnings=learnings,
     )
 
 

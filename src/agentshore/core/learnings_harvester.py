@@ -61,6 +61,38 @@ class LearningsHarvester:
                 entries = reinforced
                 changed = True
 
+        # Harvest learnings carried directly in the outcome (all successful
+        # skill-backed plays emit a top-level ``learnings`` array, normalized
+        # by result_parser before reaching here).
+        if outcome.success and outcome.play_id is not None and outcome.learnings:
+            import uuid as _uuid  # noqa: PLC0415
+            from datetime import UTC, datetime  # noqa: PLC0415
+
+            for raw_entry in outcome.learnings:
+                if not isinstance(raw_entry, dict):
+                    continue
+                pattern = raw_entry.get("pattern", "")
+                if not isinstance(pattern, str) or not pattern:
+                    continue
+                if any(e.pattern == pattern for e in entries):
+                    continue
+                raw_conf = raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
+                entries.append(
+                    Learning(
+                        id=str(_uuid.uuid4()),
+                        pattern=pattern,
+                        confidence=float(raw_conf)
+                        if isinstance(raw_conf, (int, float))
+                        else DEFAULT_LEARNING_CONFIDENCE,  # noqa: E501
+                        sessions_since_use=0,
+                        source_play_id=outcome.play_id,
+                        last_reinforced_play_id=outcome.play_id,
+                        created_at=datetime.now(UTC).isoformat(),
+                        category=str(raw_entry.get("category", "general")),
+                    )
+                )
+                changed = True
+
         # Harvest new learnings from GROOM_BACKLOG artifacts
         if play_type == _PlayType.GROOM_BACKLOG and outcome.success:
             import uuid as _uuid  # noqa: PLC0415
@@ -78,17 +110,18 @@ class LearningsHarvester:
                     if not isinstance(raw_entry, dict):
                         continue
                     pattern = raw_entry.get("pattern", "")
-                    if not pattern:
+                    if not isinstance(pattern, str) or not pattern:
                         continue
                     if any(e.pattern == pattern for e in entries):
                         continue
+                    raw_conf = raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
                     entries.append(
                         Learning(
                             id=str(_uuid.uuid4()),
                             pattern=pattern,
-                            confidence=float(
-                                raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
-                            ),
+                            confidence=float(raw_conf)
+                            if isinstance(raw_conf, (int, float))
+                            else DEFAULT_LEARNING_CONFIDENCE,  # noqa: E501
                             sessions_since_use=0,
                             source_play_id=outcome.play_id,
                             last_reinforced_play_id=outcome.play_id,

@@ -760,6 +760,7 @@ class SkillBackedPlay(Play, ABC):
             alignment_delta=0.0,
             error=skill_result.error,
             failure_kind=failure_kind,
+            learnings=skill_result.learnings,
         )
 
 

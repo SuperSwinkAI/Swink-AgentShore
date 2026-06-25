@@ -234,6 +234,7 @@ class PlayOutcome:
     # ``_infer_failure_category``); the substring inferer is the fallback when a
     # play leaves this None.
     failure_kind: FailureKind | None = None
+    learnings: list[JsonObject] = field(default_factory=list)
 
     @classmethod
     def failed(
@@ -333,6 +334,10 @@ class SkillResult:
     # a defect-specific nudge instead of the generic "emit the JSON block" prompt.
     # Only meaningful when ``success`` is False.
     missing_success_envelope: bool = False
+    # Learnings extracted from the top-level ``learnings`` array in the agent's
+    # result block. Each entry is a normalized dict with ``pattern``,
+    # ``confidence``, and ``category`` keys (validated by result_parser).
+    learnings: list[JsonObject] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
