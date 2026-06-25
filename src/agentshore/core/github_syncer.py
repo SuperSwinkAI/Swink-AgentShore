@@ -23,7 +23,7 @@ sites.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from agentshore.github.trust import filter_trusted_pull_requests, trusted_pr_author_logins
 
@@ -31,6 +31,20 @@ if TYPE_CHECKING:
     from agentshore.config import RuntimeConfig
     from agentshore.data.store import DataStore, GitHubIssueRecord, PullRequestRecord
     from agentshore.github.adapter import GitHubAdapter
+
+
+class PullRequestResync(NamedTuple):
+    """Outcome of reconciling locally-open PRs against GitHub.
+
+    ``resolved`` — records re-fetched for locally-open PRs that GitHub still
+    knows about (typically now MERGED/CLOSED); the caller caches these.
+    ``absent`` — locally-open PR numbers GitHub has **no object for at all**
+    (a 404 against ``state="all"``, not merely a trust-filtered live PR); the
+    caller evicts these from the mirror (#279 absence reconciliation).
+    """
+
+    resolved: list[PullRequestRecord]
+    absent: list[int]
 
 
 # Lookback applied to the sync cursor so an issue updated mid-fetch is still
@@ -112,29 +126,46 @@ class GitHubSyncer:
         fetched_open: list[PullRequestRecord],
         limit: int,
         trusted_authors: frozenset[str] | None,
-    ) -> list[PullRequestRecord]:
-        """Re-fetch locally-open PRs absent from the fresh open-list.
+    ) -> PullRequestResync:
+        """Reconcile locally-open PRs against GitHub.
 
-        Any locally-cached open PR that did not appear in ``fetched_open`` has
-        likely transitioned to MERGED or CLOSED on GitHub. Re-pulling those by
-        number via ``state="all"`` lets the cache pick up the new state. Returns
-        the resolved records (possibly empty); the caller decides how to merge
-        them into the open set and how to log.
+        Any locally-cached open PR that did not appear in ``fetched_open`` is
+        re-checked against ``state="all"``:
+
+        * present on GitHub (now MERGED/CLOSED, or trust-filtered-but-real) →
+          its resolved record is returned in ``resolved`` for the caller to
+          cache (trust-filtered ones are simply left as-is);
+        * **absent** from GitHub entirely (a 404 — the PR was never opened, or
+          the number was an issue/hallucination) → returned in ``absent`` for
+          the caller to evict from the mirror (#279).
+
+        Absence is only trusted when the adapter is available: an
+        unavailable/transient fetch returns ``[]``, which must not be read as
+        "every missing PR is a phantom". A false eviction self-heals on the next
+        refresh (the upsert overwrites ``state`` from GitHub), so guarding on
+        availability alone is safe.
         """
         fetched_numbers = {pr.pr_number for pr in fetched_open}
         locally_open = await self._store.list_open_pull_requests(self._session_id)
         missing = [pr for pr in locally_open if pr.pr_number not in fetched_numbers]
         if not missing:
-            return []
+            return PullRequestResync(resolved=[], absent=[])
         all_prs = await self._gh.list_pull_requests(state="all", limit=limit)
-        all_prs = filter_trusted_pull_requests(
+        # Raw GitHub-known numbers, BEFORE trust filtering — used to tell a
+        # genuine 404 (phantom) apart from a live-but-untrusted PR.
+        github_known = {pr.pr_number for pr in all_prs}
+        trusted = filter_trusted_pull_requests(
             all_prs,
             self._cfg,
             trusted_authors=trusted_authors,
             context="refresh_resync",
         )
-        by_number = {pr.pr_number: pr for pr in all_prs}
-        return [by_number[stale.pr_number] for stale in missing if stale.pr_number in by_number]
+        by_number = {pr.pr_number: pr for pr in trusted}
+        resolved = [by_number[stale.pr_number] for stale in missing if stale.pr_number in by_number]
+        absent: list[int] = []
+        if self._gh.available:
+            absent = [stale.pr_number for stale in missing if stale.pr_number not in github_known]
+        return PullRequestResync(resolved=resolved, absent=absent)
 
     async def cache_pull_requests(self, pull_requests: list[PullRequestRecord]) -> None:
         await self._store.cache_pull_requests(self._session_id, pull_requests)

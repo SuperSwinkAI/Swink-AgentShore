@@ -170,6 +170,39 @@ class _PullRequestsMixin(_DataStoreBase):
             raise
 
     @_serialized
+    async def mark_pull_request_absent(self, session_id: str, pr_number: int) -> None:
+        """Evict a PR the GitHub mirror can no longer confirm exists.
+
+        Sets ``state='absent'`` — a value outside every open/active eligibility
+        whitelist (``list_open_pull_requests`` / ``list_active_pull_requests``),
+        so the PR drops out of code_review/merge selection — and drains any
+        pending/claimed ``review_queue`` rows so the resolver stops re-offering
+        it. Used by the refresh-time absence reaper (#279) and the
+        ``code_review`` phantom-target backstop (#278).
+
+        ``state='absent'`` is not terminal-permanent: a later GitHub refresh that
+        actually returns the PR re-caches it via ``state = excluded.state`` in the
+        upsert, so a false eviction (transient fetch gap) self-heals on the next
+        cycle. A genuine phantom never reappears and stays evicted.
+        """
+        now = now_iso()
+        try:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            await self._conn.execute(
+                "UPDATE pull_requests SET state = 'absent' WHERE pr_number = ? AND session_id = ?",
+                (pr_number, session_id),
+            )
+            await self._conn.execute(
+                "UPDATE review_queue SET status = 'done', completed_at = ? "
+                "WHERE session_id = ? AND pr_number = ? AND status IN ('pending', 'claimed')",
+                (now, session_id, pr_number),
+            )
+            await self._conn.commit()
+        except (sqlite3.DatabaseError, OSError):
+            await self._conn.rollback()
+            raise
+
+    @_serialized
     async def get_pr_author(self, pr_number: int, session_id: str) -> str | None:
         """Return the agent_id that authored *pr_number*, or None if unknown."""
         async with self._conn.execute(

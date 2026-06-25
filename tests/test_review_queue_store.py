@@ -275,3 +275,48 @@ async def test_external_mutation_idempotency_no_error(tmp_path) -> None:
         assert existing.idempotency_key == "key-abc"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_mark_pull_request_absent_evicts_and_drains(tmp_path) -> None:
+    """mark_pull_request_absent (the #279 reaper / #278 backstop primitive) sets
+    the PR's state to 'absent' so it drops out of the open/active eligibility
+    filters, and drains its pending review-queue rows so the resolver stops
+    re-offering it."""
+    from agentshore.data.store import PullRequestRecord
+
+    store = await _make_store(tmp_path)
+    try:
+        await store.record_pull_request(
+            PullRequestRecord(
+                pr_number=2665,
+                session_id="s1",
+                state="open",
+                created_at="2026-05-07T00:00:00+00:00",
+                branch="feature/phantom",
+            )
+        )
+        await store.enqueue_review(
+            ReviewQueueRecord(
+                pr_number=2665,
+                session_id="s1",
+                enqueued_at="2026-05-07T00:01:00+00:00",
+            )
+        )
+        # Precondition: the PR is open and a review is pending.
+        assert [pr.pr_number for pr in await store.list_open_pull_requests("s1")] == [2665]
+        assert len(await store.list_pending_reviews("s1")) == 1
+
+        await store.mark_pull_request_absent("s1", 2665)
+
+        # The PR no longer matches the open/active eligibility filters...
+        assert await store.list_open_pull_requests("s1") == []
+        assert await store.list_active_pull_requests("s1") == []
+        # ...the row is marked absent (not deleted — auditable)...
+        evicted = await store.get_pull_request("s1", 2665)
+        assert evicted is not None
+        assert evicted.state == "absent"
+        # ...and the pending review row was drained.
+        assert await store.list_pending_reviews("s1") == []
+    finally:
+        await store.close()

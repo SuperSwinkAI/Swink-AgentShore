@@ -197,17 +197,31 @@ class IssueSyncer:
                     trusted_authors=trusted_pr_authors,
                     context="refresh_open",
                 )
-                refetched = await syncer.resync_missing_pull_requests(
+                resync = await syncer.resync_missing_pull_requests(
                     fetched_open=pull_requests,
                     limit=_PR_LIMIT,
                     trusted_authors=trusted_pr_authors,
                 )
+                refetched = resync.resolved
                 if refetched:
                     pull_requests.extend(refetched)
                     _logger.info("github_pull_requests_state_resync", count=len(refetched))
                 if pull_requests:
                     await syncer.cache_pull_requests(pull_requests)
                     _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
+                # Absence reconciliation (#279): evict locally-open PRs GitHub
+                # has no object for at all (phantoms — never opened, or an
+                # agent-reported issue/hallucinated number). Marking them
+                # ``absent`` drops them out of code_review eligibility and drains
+                # their review-queue rows so the resolver stops re-offering them.
+                for pr_number in resync.absent:
+                    await self._store.mark_pull_request_absent(self._session_id, pr_number)
+                if resync.absent:
+                    _logger.info(
+                        "pr_absence_reconciled",
+                        count=len(resync.absent),
+                        pr_numbers=resync.absent,
+                    )
                 # desktop-12g9: mark worktree rows ``stale`` for PRs that
                 # transitioned to MERGED or CLOSED, then run the TTL reaper.
                 # ``refetched`` carries the resolved state for previously-open
