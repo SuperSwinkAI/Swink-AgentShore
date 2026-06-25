@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from agentshore.agents.manager import AgentManager
 from agentshore.config import AgentConfig, ModelTierConfig, RuntimeConfig
-from agentshore.data.store import DataStore, SessionRecord
+from agentshore.data.store import DataStore, PullRequestRecord, SessionRecord
 from agentshore.errors import ErrorClass
 from agentshore.plays.executor import PlayExecutor
 from agentshore.plays.internal.instantiate_agent import InstantiateAgentPlay
@@ -570,6 +570,22 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
 
         resolver.resolve = AsyncMock(return_value=PlayParams(issue_number=7))
 
+        # -- GitHub adapter that confirms the mock agent's PR #42 exists.
+        # Confirm-then-write (#279): the executor records a PR only when GitHub
+        # returns a real object for it, so the slice must wire that confirmation.
+        github = AsyncMock()
+        github.label_issue = AsyncMock(return_value=True)
+        github.retarget_pr_base = AsyncMock(return_value=False)
+        github.fetch_pull_request_by_number = AsyncMock(
+            return_value=PullRequestRecord(
+                pr_number=42,
+                session_id="sess-slice",
+                state="open",
+                created_at="2026-01-01T00:00:00+00:00",
+                branch="agentshore/7-fix",
+            )
+        )
+
         # -- Create executor --
         executor = PlayExecutor(
             registry=registry,
@@ -579,6 +595,7 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
             cfg=cfg,
             project_path=tmp_path,
             session_id="sess-slice",
+            github=github,
         )
 
         # -- Build state with IDLE agent and open issue --

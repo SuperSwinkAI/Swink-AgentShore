@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentshore.config import AgentPreferencesConfig, RuntimeConfig, ScopeConfig
+from agentshore.data.store import PullRequestRecord
 from agentshore.errors import AgentTimeout, PreconditionFailed
 from agentshore.plays.base import PlayParams
 from agentshore.plays.executor import PlayExecutor, build_idempotency_key
@@ -146,6 +147,23 @@ def _make_store() -> AsyncMock:
     return store
 
 
+def _confirmed_pr_view(number: int, branch: str = "feature/foo") -> PullRequestRecord:
+    """A GitHub-confirmed PR record, as ``fetch_pull_request_by_number`` returns.
+
+    Confirm-then-write (#279): ``_record_pr_artifact`` only records/enqueues a PR
+    when GitHub confirms it via ``fetch_pull_request_by_number``, so tests of the
+    happy path must wire this as the adapter's return value.
+    """
+    return PullRequestRecord(
+        pr_number=number,
+        session_id="sess-test",
+        state="open",
+        created_at="2026-01-01T00:00:00Z",
+        branch=branch,
+        head_sha=f"sha{number}",
+    )
+
+
 def _make_manager(
     agent_id: str = "agent-1",
     agent_type: AgentType = AgentType.CLAUDE_CODE,
@@ -259,7 +277,12 @@ async def test_issue_pickup_publish_failure_existing_pr_reconciles_to_success() 
         }
     )
     github.label_issue = AsyncMock(return_value=True)
-    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+    # Confirm-then-write (#279): once the reconciler finds PR #77 by branch, the
+    # record/enqueue gate re-confirms it via fetch_pull_request_by_number, which
+    # must agree that #77 exists.
+    github.fetch_pull_request_by_number = AsyncMock(
+        return_value=_confirmed_pr_view(77, branch="agentshore/225-fix-auth")
+    )
     play = _make_play(
         outcome=_make_outcome(
             success=False,
@@ -851,15 +874,20 @@ async def test_pr_artifact_double_writes_cache_and_db() -> None:
     play = _make_play(outcome=success_outcome)
     store = _make_store()
     manager = _make_manager(agent_id=agent_id)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(
+        return_value=_confirmed_pr_view(55, branch="feature/foo")
+    )
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
-        executor = _make_executor(play=play, store=store, manager=manager)
+        executor = _make_executor(play=play, store=store, manager=manager, github=github)
         await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
     # Cache write
     manager.record_branch_exposure.assert_called_once_with("feature/foo", agent_id)
-    # DB write
+    # DB write — the confirmed record from GitHub, with local authorship stamped.
     store.record_pull_request.assert_called_once()
     pr_record = store.record_pull_request.call_args[0][0]
     assert pr_record.pr_number == 55
@@ -1269,10 +1297,15 @@ async def test_pr_artifact_enqueues_review() -> None:
     store = _make_store()
     store.enqueue_review = AsyncMock(return_value=1)
     manager = _make_manager(agent_id=agent_id)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(
+        return_value=_confirmed_pr_view(88, branch="feature/bar")
+    )
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
-        executor = _make_executor(play=play, store=store, manager=manager)
+        executor = _make_executor(play=play, store=store, manager=manager, github=github)
         await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
     store.enqueue_review.assert_called_once()
@@ -1295,7 +1328,9 @@ async def test_pr_artifact_applies_github_label() -> None:
     manager = _make_manager(agent_id=agent_id)
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
-    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+    github.fetch_pull_request_by_number = AsyncMock(
+        return_value=_confirmed_pr_view(99, branch="feature/baz")
+    )
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
@@ -1348,7 +1383,11 @@ async def test_pr_artifact_no_label_when_no_author_type() -> None:
     manager.get_handle = MagicMock(side_effect=_get_handle_side_effect)
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
-    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+    # PR #77 IS confirmed on GitHub — so the no-label decision is driven purely
+    # by author_agent_type being None, not by an unconfirmed-PR short-circuit.
+    github.fetch_pull_request_by_number = AsyncMock(
+        return_value=_confirmed_pr_view(77, branch="feature/qux")
+    )
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
@@ -1368,8 +1407,10 @@ async def test_pr_artifact_no_label_when_no_author_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pr_artifact_no_label_when_no_github() -> None:
-    """When self._github is None, enqueue_review still runs but no label call."""
+async def test_pr_artifact_unconfirmed_when_no_github() -> None:
+    """With no GitHub adapter the PR can't be confirmed, so confirm-then-write
+    (#279) records and enqueues nothing — invented PR state never enters the
+    mirror."""
     agent_id = "agent-1"
     pr_artifact = {"type": "pull_request", "number": 66, "branch": "feature/quux"}
 
@@ -1381,13 +1422,41 @@ async def test_pr_artifact_no_label_when_no_github() -> None:
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
-        # No github= arg → defaults to None
+        # No github= arg → defaults to None → cannot confirm the PR exists.
         executor = _make_executor(play=play, store=store, manager=manager)
         await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
-    # enqueue_review should still be called
-    store.enqueue_review.assert_called_once()
-    # No github adapter → no label call (and no error)
+    # Unconfirmed → nothing recorded, nothing enqueued.
+    store.record_pull_request.assert_not_called()
+    store.enqueue_review.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pr_artifact_unconfirmed_when_github_404() -> None:
+    """Confirm-then-write (#279): when GitHub is reachable but returns no object
+    for the reported PR number (a 404 — never opened, or an issue/hallucinated
+    number), nothing is recorded, enqueued, or labeled. This is the exact
+    phantom that previously got re-offered to code_review for hours (#278)."""
+    agent_id = "agent-1"
+    pr_artifact = {"type": "pull_request", "number": 2665, "branch": "feature/phantom"}
+
+    success_outcome = _make_outcome(artifacts=[pr_artifact], agent_id=agent_id)
+    play = _make_play(outcome=success_outcome)
+    store = _make_store()
+    store.enqueue_review = AsyncMock(return_value=1)
+    manager = _make_manager(agent_id=agent_id)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)  # 404 — phantom
+
+    with patch("agentshore.plays.executor.select_agent_for") as mock_select:
+        mock_select.return_value = manager.handles[agent_id]
+        executor = _make_executor(play=play, store=store, manager=manager, github=github)
+        await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
+
+    store.record_pull_request.assert_not_called()
+    store.enqueue_review.assert_not_called()
+    github.label_issue.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

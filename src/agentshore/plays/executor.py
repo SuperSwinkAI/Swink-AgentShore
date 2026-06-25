@@ -348,6 +348,12 @@ class PlayExecutor:
                 branch=params.branch,
                 required_agent_type=params.target_agent_type,
                 required_agent_id=params.target_agent_id,
+                # #277: a backend-auth-suppressed type must not be chosen as the
+                # runner for a late-resolved play (issue_pickup/reconcile_state),
+                # whose runner the candidate layer leaves unresolved. The
+                # auth-failed handle is back in IDLE, so only this explicit set
+                # filter keeps it from being re-dispatched into the dead backend.
+                auth_suppressed_types=frozenset(self._manager.last_auth_failed_types),
             )
         except AntiConfirmationViolation as exc:
             raise _SkipDispatchError(

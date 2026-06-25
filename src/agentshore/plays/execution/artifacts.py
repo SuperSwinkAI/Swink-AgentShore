@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.data.models import ReviewQueueRecord
-from agentshore.data.store import PullRequestRecord
 from agentshore.errors import PreconditionFailed
 from agentshore.logging import get_logger
 from agentshore.plays._publish_reconciler import _pr_number_from_payload
@@ -13,7 +12,7 @@ from agentshore.plays._publish_reconciler import _pr_number_from_payload
 if TYPE_CHECKING:
     from agentshore.agents.manager import AgentManager
     from agentshore.config import RuntimeConfig
-    from agentshore.data.store import DataStore
+    from agentshore.data.store import DataStore, PullRequestRecord
     from agentshore.github.adapter import GitHubAdapter
     from agentshore.plays.base import PlayParams
     from agentshore.state import OrchestratorState, PlayOutcome, PlayType
@@ -81,35 +80,49 @@ async def _retarget_pr_to_target(
     return retargeted
 
 
-async def _enrich_and_retarget_pr(
+async def _confirm_and_record_pr(
     github: GitHubAdapter | None,
     cfg: RuntimeConfig,
     store: DataStore,
     session_id: str,
     pr_number: int,
+    issue_number: int | None,
     author_agent_id: str,
     author_agent_type: str | None,
     author_github_login: str | None,
-) -> None:
-    """Enrich the freshly-recorded PR row from GitHub and correct its base.
+) -> PullRequestRecord | None:
+    """Confirm the PR exists on GitHub, then record the enriched row.
 
-    Immediately enrich review_decision/mergeable/head_sha/is_draft from
-    GitHub so the next code_review / merge_pr eligibility check sees real
-    data, not the NULL defaults left by ``record_pull_request``. Without
-    this, the next periodic refresh's COALESCE upsert can fail to populate
-    these fields if the PR-trust filter or another sync path drops the
-    record before the cache write commits.
+    The single confirmation gate for the PR mirror: a PR row is written only
+    when GitHub returns a real object for ``pr_number``. Returns the recorded
+    record on confirmation, or ``None`` when GitHub cannot confirm it — adapter
+    unavailable, a transient fetch failure, or a 404 for a number the agent
+    reported but never actually opened (an issue number, or a hallucinated PR
+    number). The caller treats ``None`` as "do not enqueue, do not label", so
+    invented PR state can never enter the mirror (#279) and be re-offered to
+    code_review forever (the phantom-PR class behind #278).
+
+    On confirmation it also enriches review_decision/mergeable/head_sha/is_draft
+    from GitHub (so the next code_review/merge_pr eligibility check sees real
+    data, not NULL defaults) and deterministically retargets the PR base to the
+    configured target branch.
     """
     if github is None:
-        return
+        return None
     try:
         enriched = await github.fetch_pull_request_by_number(pr_number)
     except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover
         _logger.warning("pr_enrichment_failed", pr_number=pr_number, error=str(exc))
         enriched = None
     if enriched is None:
-        return
-    # Preserve the authorship fields we just stamped.
+        return None
+    # GitHub is the source of truth for the PR object; stamp the session and
+    # carry the originating issue when GitHub's closing-refs didn't capture it,
+    # then overlay the authorship we resolved locally (used by code_review
+    # anti-confirmation before the next refresh fills github_author).
+    enriched.session_id = session_id
+    if enriched.issue_number is None:
+        enriched.issue_number = issue_number
     enriched.author_agent_id = author_agent_id
     enriched.author_agent_type = author_agent_type
     if author_github_login is not None:
@@ -134,6 +147,7 @@ async def _enrich_and_retarget_pr(
     if retargeted:
         enriched.base_ref = cfg.project.target_branch
     await store.record_pull_request(enriched)
+    return enriched
 
 
 async def _record_pr_artifact(
@@ -148,7 +162,15 @@ async def _record_pr_artifact(
     artifact: dict[str, object],
     now: str,
 ) -> None:
-    """Record authorship, enrich, retarget, enqueue, and label a created PR."""
+    """Confirm a created PR exists on GitHub, then record, enqueue, and label it.
+
+    Confirm-then-write (#279): the PR is recorded and enqueued for review only
+    when GitHub returns a real object for it. An agent-reported PR number GitHub
+    can't confirm (never opened, an issue number, a hallucination) is dropped
+    with a ``pr_publish_unconfirmed`` warning — invented PR state never enters
+    the mirror, so it can't be re-offered to code_review forever (the phantom-PR
+    class behind #278).
+    """
     pr_number = _pr_number_from_payload(artifact)
     branch = str(artifact.get("branch") or params.branch or "")
     if pr_number is None or not outcome.agent_id:
@@ -157,11 +179,9 @@ async def _record_pr_artifact(
     if not branch:
         # Surface the leak loudly: a PR-authoring play returned a PR
         # artifact without a branch, and the dispatch params had no
-        # fallback either. The record will be persisted with
-        # ``branch=None``; the COALESCE upsert preserves any later refresh,
-        # but the in-memory snapshot used by the next code_review dispatch
-        # will see ``None`` and fail worktree allocation with
-        # ``missing_branch``. See issue #567 follow-up.
+        # fallback either. GitHub's headRefName is authoritative for the
+        # confirmed record, but the missing artifact branch is still a signal
+        # worth logging. See issue #567 follow-up.
         _logger.warning(
             "pr_record_missing_branch",
             pr_number=pr_number,
@@ -173,33 +193,31 @@ async def _record_pr_artifact(
     manager.record_branch_exposure(branch, outcome.agent_id)
 
     author_agent_type, author_github_login = _resolve_pr_author(manager, outcome.agent_id)
-    await store.record_pull_request(
-        PullRequestRecord(
-            pr_number=pr_number,
-            session_id=session_id,
-            issue_number=params.issue_number,
-            branch=branch or None,
-            state="open",
-            author_agent_id=outcome.agent_id,
-            author_agent_type=author_agent_type,
-            # Stamp the resolved GH login here so identity-based
-            # anti-confirmation works the moment the PR is recorded — without
-            # waiting for the next GitHub refresh to fill github_author from
-            # the API.
-            github_author=author_github_login,
-            created_at=now,
-        )
-    )
-    await _enrich_and_retarget_pr(
+    confirmed = await _confirm_and_record_pr(
         github,
         cfg,
         store,
         session_id,
         pr_number,
+        params.issue_number,
         outcome.agent_id,
         author_agent_type,
         author_github_login,
     )
+    if confirmed is None:
+        # GitHub did not confirm the PR exists — record nothing, enqueue
+        # nothing, label nothing. The branch is still surfaced via the publish
+        # reconciler's branch evidence, and the next GitHub refresh adopts the
+        # PR if it actually lands later.
+        _logger.warning(
+            "pr_publish_unconfirmed",
+            pr_number=pr_number,
+            branch=branch or None,
+            issue_number=params.issue_number,
+            play_type=play_type.value,
+            agent_id=outcome.agent_id,
+        )
+        return
     # Enqueue PR for code review.
     await store.enqueue_review(
         ReviewQueueRecord(

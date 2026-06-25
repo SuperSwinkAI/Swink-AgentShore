@@ -8,14 +8,40 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agentshore.data.models import ReviewFeedbackPatternRecord
+from agentshore.logging import get_logger
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import CapabilityGate
 from agentshore.state import PlayType
+
+_logger = get_logger(__name__)
 
 # Match the SHA inside a skill error like "already reviewed at <sha>".
 # Hex range is intentionally permissive (4–40) — the message format already
 # constrains us, and very short test SHAs should still match.
 _ALREADY_REVIEWED_SHA_RE = re.compile(r"already reviewed at ([0-9a-f]{4,40})")
+
+# A code_review that fast-failed because the target doesn't resolve to a real PR
+# on GitHub (phantom — an agent-reported number that was never opened, or an
+# issue number). Deliberately narrow: transient failures (timeout, network,
+# rate-limit) must still retry, so only definitive "the PR isn't there"
+# signatures match. Substring-matched against the lowercased outcome error.
+_PHANTOM_PR_ERROR_MARKERS: tuple[str, ...] = (
+    "does not exist",
+    "could not resolve to a pullrequest",
+    "no pull request to review",
+    "no pr to review",
+    "no open pr exists",
+    "no pull request exists",
+)
+
+
+def _is_phantom_pr_error(error: str | None) -> bool:
+    """True when *error* says the review target isn't a real PR on GitHub."""
+    if not error:
+        return False
+    haystack = error.lower()
+    return any(marker in haystack for marker in _PHANTOM_PR_ERROR_MARKERS)
+
 
 if TYPE_CHECKING:
     from agentshore.plays.base import PlayExecutionContext, PlayParams
@@ -168,6 +194,23 @@ class CodeReviewPlay(SkillBackedPlay):
             )
             if records:
                 await ctx.store.record_review_patterns(records)
+        # Phantom-target backstop (#278): a code_review that fast-failed because
+        # the PR doesn't resolve to a real PR on GitHub would otherwise be
+        # re-offered every tick — the review-queue row stays pending and any
+        # lingering open PR record keeps matching eligibility. Evict it from the
+        # mirror so it's offered at most once. #279's confirm-then-write prevents
+        # most phantoms at the source; this bounds any that slip through.
+        if (
+            not outcome.success
+            and params.pr_number is not None
+            and _is_phantom_pr_error(outcome.error)
+        ):
+            await ctx.store.mark_pull_request_absent(ctx.session_id, params.pr_number)
+            _logger.info(
+                "code_review_phantom_target_evicted",
+                pr_number=params.pr_number,
+                error=outcome.error,
+            )
         return outcome
 
 

@@ -2064,6 +2064,43 @@ def test_classify_error_claude_session_limit_from_stdout() -> None:
     )
 
 
+def test_classify_error_codex_usage_limit_from_stdout() -> None:
+    # Codex prints its weekly-quota miss on stdout with the reset timestamp; it
+    # must classify as RATE_LIMIT (not UNKNOWN) so it rides the same provider-wide
+    # eligibility hold + take_break path Claude's session-limit uses (#276).
+    assert (
+        _classify_error(
+            1,
+            "",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+            "or try again at Jun 24th, 2026 4:19 PM.",
+        )
+        is ErrorClass.RATE_LIMIT
+    )
+
+
+def test_classify_error_codex_usage_limit_from_stderr() -> None:
+    assert (
+        _classify_error(1, "You've hit your usage limit. … try again at Jun 24th 4:19 PM.", "")
+        is ErrorClass.RATE_LIMIT
+    )
+
+
+def test_classify_error_grok_spending_limit_is_rate_limit_not_auth() -> None:
+    # Grok prints its quota exhaustion as a 403/Forbidden, but it is a RECOVERABLE
+    # billing-quota miss (the Grok analogue of Codex's usage limit), not an auth
+    # death. The quota markers must win over the coexisting 403/Forbidden auth
+    # tokens so it rides the transient rate_limit cooldown, not a permanent
+    # session-wide auth suppression.
+    stderr = (
+        "responses API error status=403 Forbidden "
+        "error_message=personal-team-blocked:spending-limit: "
+        "You have run out of credits or need a Grok subscription. "
+        "Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok."
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.RATE_LIMIT
+
+
 def test_classify_error_auth() -> None:
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
 
@@ -2191,6 +2228,22 @@ def test_classify_error_stderr_still_matches_generic_tokens() -> None:
     assert _classify_error(1, "model not found", "") == "invalid_model"
 
 
+def test_classify_error_timestamp_digits_are_not_auth() -> None:
+    """Regression: the exit-path classifier must not read a ``401``/``403``
+    digit-run inside a Codex stderr ISO timestamp as an auth failure. The bare
+    tokens were removed from the auth vocabulary; only phrased status codes
+    (``http 401`` / ``403 forbidden`` / ``401 unauthorized``) classify as auth."""
+    codex_skill_noise = (
+        "2026-06-24T18:40:20.319401Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/agents: "
+        "No such file or directory (os error 2)"
+    )
+    assert _classify_error(1, codex_skill_noise, "") == "unknown"
+    assert _classify_error(1, "boot at 18:40:20.319403Z ready", "") == "unknown"
+    # A genuinely phrased rejection still classifies as auth.
+    assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
+
+
 def test_classify_error_high_precision_stdout_phrases_still_match() -> None:
     """Distinctive phrases (real CLI/tool verdicts) are still caught in stdout."""
     # Claude reports quota exhaustion on stdout with nothing on stderr.
@@ -2239,6 +2292,23 @@ def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:
     assert sniffer.feed("INFO booting model\nINFO ready\n") is False
     assert sniffer.auth_hit is False
     assert "booting model" in sniffer.captured
+
+
+def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
+    # Grok's quota exhaustion carries a 403/Forbidden that matches the auth
+    # markers, but it is a recoverable rate-limit. The sniffer must NOT fire a
+    # live auth abort: the dispatch should exit normally and classify as
+    # rate_limit rather than a permanent auth suppression.
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR responses API error status=403 Forbidden "
+        "error_message=personal-team-blocked:spending-limit: "
+        "You have run out of credits or need a Grok subscription.\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+    # The text is still captured so _finalize_nonzero_exit can classify it.
+    assert "spending-limit" in sniffer.captured
 
 
 def test_stderr_sniffer_tail_is_bounded() -> None:
@@ -2315,6 +2385,44 @@ def test_stderr_sniffer_real_401_trips_even_alongside_cache_blip() -> None:
         "HTTP 401 Unauthorized\n"
     )
     assert sniffer.feed(text) is True
+    assert sniffer.auth_hit is True
+
+
+def test_stderr_sniffer_timestamp_containing_401_does_not_trip() -> None:
+    """Regression: a benign Codex skill-loader line whose microsecond ISO
+    timestamp happens to contain the digit-run ``401`` must NOT trip a hard auth
+    abort. Codex prefixes every stderr line with a timestamp like
+    ``…18:40:20.319401Z``; the old bare ``"401"`` token substring-matched that
+    fragment and spuriously benched the whole Codex type as backend_auth_failed
+    (session b0d0c02c, 2026-06-24)."""
+    sniffer = _StderrSniffer()
+    line = (
+        "2026-06-24T18:40:20.319401Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/plugins/sharepoint/skills/"
+        "sharepoint-powerpoint/agents: No such file or directory (os error 2)\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_timestamp_containing_403_does_not_trip() -> None:
+    """Companion to the 401 case: a ``403`` digit-run inside a timestamp
+    fragment must not trip the auth abort either."""
+    sniffer = _StderrSniffer()
+    line = (
+        "2026-06-24T18:40:20.319403Z ERROR codex_core_skills::loader: failed to "
+        "read skills dir /Users/x/.codex/.tmp/plugins/agents: "
+        "No such file or directory (os error 2)\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_phrased_403_forbidden_still_trips() -> None:
+    """The phrased status code is what a real rejection prints, so dropping the
+    bare token must not weaken detection of a genuine 403 auth failure."""
+    sniffer = _StderrSniffer()
+    assert sniffer.feed("ERROR backend returned HTTP 403 Forbidden\n") is True
     assert sniffer.auth_hit is True
 
 

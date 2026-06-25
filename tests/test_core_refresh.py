@@ -192,24 +192,61 @@ async def test_refresh_filters_untrusted_prs_before_cache() -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh_handles_pr_dropped_and_not_in_state_all() -> None:
-    """If a PR is missing from state="open" AND state="all" (e.g., deleted
-    or visibility lost), don't crash and don't fabricate a record. Skip it
-    silently — the next refresh will retry."""
+async def test_refresh_evicts_pr_absent_from_github() -> None:
+    """A locally-open PR that GitHub has no object for (missing from both
+    state="open" AND state="all") is a phantom — never opened, or an
+    agent-reported issue/hallucinated number. The absence reaper (#279) marks
+    it absent so code_review stops targeting it, rather than leaving it to be
+    re-offered forever (the bug behind #278). It is never fabricated/cached."""
     orch = _make_orchestrator()
     orch._store.list_open_pull_requests = AsyncMock(return_value=[_pr_record(99)])
+    orch._store.mark_pull_request_absent = AsyncMock()
 
     gh = MagicMock()
     gh.probe = AsyncMock()
     gh.available = True
     gh.list_issues = AsyncMock(return_value=[])
-    gh.list_pull_requests = AsyncMock(side_effect=[[], []])  # both empty
+    gh.list_pull_requests = AsyncMock(side_effect=[[], []])  # both empty: #99 is a phantom
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # cache_pull_requests not called (nothing to cache).
+    # No record fabricated/cached...
     orch._store.cache_pull_requests.assert_not_awaited()
+    # ...but the phantom is evicted from the mirror.
+    orch._store.mark_pull_request_absent.assert_awaited_once_with("s1", 99)
+
+
+@pytest.mark.asyncio
+async def test_refresh_does_not_evict_trust_filtered_live_pr() -> None:
+    """False-reap guard: a locally-open PR whose author is no longer trusted is
+    dropped from the trusted open-fetch but STILL EXISTS on GitHub (present in
+    the raw state="all" set). The reaper must NOT evict it — only genuine 404s
+    are phantoms."""
+    orch = _make_orchestrator()
+    # #21 is locally open; its author "stranger" is untrusted (cfg trusts only "trusted").
+    orch._store.list_open_pull_requests = AsyncMock(
+        return_value=[_pr_record(21, github_author="stranger")]
+    )
+    orch._store.mark_pull_request_absent = AsyncMock()
+
+    gh = MagicMock()
+    gh.probe = AsyncMock()
+    gh.available = True
+    gh.list_issues = AsyncMock(return_value=[])
+    # state="open" raw includes #21 (filtered out as untrusted → fetched_open empty);
+    # state="all" raw still includes #21 → GitHub knows it → NOT a phantom.
+    gh.list_pull_requests = AsyncMock(
+        side_effect=[
+            [_pr_record(21, github_author="stranger")],
+            [_pr_record(21, github_author="stranger")],
+        ]
+    )
+
+    with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
+        await orch._completion.refresh_issues()
+
+    orch._store.mark_pull_request_absent.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

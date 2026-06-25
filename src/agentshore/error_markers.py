@@ -52,14 +52,28 @@ PUBLISH_AUTH_MARKERS: tuple[str, ...] = (
 # CLI stderr auth classification (full set). Was ``cli/errors._AUTH_PATTERNS``.
 # The trailing two are Codex backend-session TTL-expiry signatures — stderr-only,
 # deliberately NOT mirrored into the stdout subset (see CACHE_RENEWAL_MARKERS).
+#
+# Status codes are kept ONLY in their phrased forms ("http 401" / "401
+# unauthorized" / "http 403" / "403 forbidden"). The bare 3-digit tokens "401"
+# and "403" were removed: the live ``_StderrSniffer`` substring-matches this view
+# against an 8 KiB tail of raw CLI stderr, and Codex prefixes every stderr line
+# with a microsecond ISO timestamp (e.g. ``…18:40:20.319401Z``). The bare token
+# "401" is a substring of that timestamp fragment, so a benign skill-loader line
+# spuriously tripped a hard auth abort → ``agent_type_auth_suppressed`` benched
+# all Codex agents as "backend_auth_failed" when the token was fine (the agent was
+# merely rate-limited). The phrased forms carry a space + word and cannot collide
+# with timestamp noise, while "unauthorized"/"forbidden" below still catch a real
+# rejection that omits the numeric code.
 STDERR_AUTH_PATTERNS: tuple[str, ...] = (
     "unauthorized",
-    "401",
+    "http 401",
+    "401 unauthorized",
     "authentication",
     "invalid api key",
     "bad credentials",
     "forbidden",
-    "403",
+    "http 403",
+    "403 forbidden",
     "irrecoverable github access failure",
     "github connector returned 404",
     "connector repo 404",
@@ -148,6 +162,20 @@ GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
 # ===========================================================================
 
 # CLI stderr (full set). Was ``cli/errors._RATE_LIMIT_PATTERNS``.
+# "usage limit" / "try again at" are Codex usage-limit signatures (#276): Codex
+# prints "You've hit your usage limit … or try again at <ts>." on a quota miss.
+# "spending-limit" / "out of credits" are Grok's billing-quota signatures: it
+# prints "responses API error status=403 Forbidden error_message=
+# personal-team-blocked:spending-limit: You have run out of credits …" when the
+# account quota is exhausted. The trailing 403/Forbidden previously got it
+# misclassified as AUTH (a permanent session bench) when it is really a
+# recoverable quota exhaustion — the Grok analogue of Codex's usage limit.
+# Folding all of these into the rate-limit family routes the dispatch through the
+# exact path Claude's "hit your session limit" already uses — the
+# RATE_LIMIT_RECOVERY take_break plus the provider-wide eligibility hold
+# (rate_limited_types) that benches every same-type instance sharing the
+# exhausted quota. Because ``_classify_error`` checks rate_limit *before* auth,
+# the quota markers win over the coexisting 403/Forbidden auth tokens.
 RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
@@ -157,15 +185,23 @@ RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "capacity",
     "retry after",
     "throttl",
+    "usage limit",
+    "try again at",
+    "spending-limit",
+    "out of credits",
 )
 
 # CLI stdout-safe subset. Was ``cli/errors._RATE_LIMIT_STDOUT``.
+# "hit your usage limit" is the Codex stdout quota signature (mirrors Claude's
+# "hit your session limit"); kept as the full distinctive phrase so it never
+# matches an agent's work product (#276).
 RATE_LIMIT_STDOUT_MARKERS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
     "too many requests",
     "retry after",
     "hit your session limit",
+    "hit your usage limit",
 )
 
 RATE_LIMIT_MARKERS: frozenset[str] = frozenset(RATE_LIMIT_STDERR_PATTERNS).union(

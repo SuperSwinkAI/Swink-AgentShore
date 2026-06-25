@@ -810,6 +810,72 @@ async def test_code_review_genuine_success_passes_through() -> None:
 
 
 @pytest.mark.asyncio
+async def test_code_review_phantom_target_evicted_on_failure() -> None:
+    """#278 backstop: a code_review that fast-fails because the target PR does
+    not exist on GitHub evicts the PR from the mirror, so the resolver stops
+    re-offering the phantom every tick."""
+    from unittest.mock import patch
+
+    from agentshore.plays.base import PlayParams
+    from agentshore.plays.skill_backed.base import SkillBackedPlay
+    from agentshore.state import PlayOutcome, PlayType
+
+    skill_outcome = PlayOutcome(
+        play_type=PlayType.CODE_REVIEW,
+        agent_id="a1",
+        success=False,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=50,
+        dollar_cost=0.01,
+        artifacts=[],
+        alignment_delta=0.0,
+        error="PR #2665 does not exist on GitHub. gh api ... returns 404. Nothing to review.",
+    )
+
+    play = CodeReviewPlay()
+    ctx = _ctx()
+    ctx.store.mark_pull_request_absent = AsyncMock()
+    with patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)):
+        outcome = await play.execute(_state(), PlayParams(pr_number=2665), ctx=ctx)
+
+    assert outcome.success is False
+    ctx.store.mark_pull_request_absent.assert_awaited_once_with("sess", 2665)
+
+
+@pytest.mark.asyncio
+async def test_code_review_transient_failure_does_not_evict() -> None:
+    """A non-phantom failure (timeout, network, rate-limit) must NOT evict the
+    PR — the target is real and the play should retry on a later tick."""
+    from unittest.mock import patch
+
+    from agentshore.plays.base import PlayParams
+    from agentshore.plays.skill_backed.base import SkillBackedPlay
+    from agentshore.state import PlayOutcome, PlayType
+
+    skill_outcome = PlayOutcome(
+        play_type=PlayType.CODE_REVIEW,
+        agent_id="a1",
+        success=False,
+        partial=False,
+        duration_seconds=1.0,
+        token_cost=50,
+        dollar_cost=0.01,
+        artifacts=[],
+        alignment_delta=0.0,
+        error="agent (claude_code/medium) timed out after 600.0s",
+    )
+
+    play = CodeReviewPlay()
+    ctx = _ctx()
+    ctx.store.mark_pull_request_absent = AsyncMock()
+    with patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)):
+        await play.execute(_state(), PlayParams(pr_number=42), ctx=ctx)
+
+    ctx.store.mark_pull_request_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_code_review_persists_pass_verdict() -> None:
     """A PASS skill result with zero blocking findings must persist
     `status='PASS'` alongside the SHA so merge_pr can gate on it."""
