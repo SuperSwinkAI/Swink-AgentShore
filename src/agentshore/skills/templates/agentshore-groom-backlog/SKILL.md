@@ -17,13 +17,15 @@ Groom the backlog from `$AGENTSHORE_PROJECT_PATH` (bd lives in the main repo). `
 
 > ℹ️ **The bd snapshot already carries edge targets — no per-bead calls needed.** `bd list --all --json` emits a per-bead `dependencies` array; each entry has a `depends_on_id` (the bead this one is blocked by) and a `type`. Read edge targets directly from `.dependencies[].depends_on_id` in the Pre-flight snapshot. Do **not** fan out per-bead `bd dep list <id> --json` calls to discover or existence-check edges — that fan-out hits the same single-writer bottleneck called out above; the snapshot you already hold has every edge.
 
-**Reconciliation invariants** (must hold before `success: true`):
-1. Every open GH issue has a beads task with `external_ref="gh-<N>"`.
-2. Every open beads task has a non-null `external_ref`.
-3. Every story is linked to an epic; every task to a story.
+**Reconciliation invariants** — these describe the state groom **resolves the backlog into**; they are *work to do*, not gates that fail the play:
+1. Every open GH issue has a bead (**any type** — task, story, feature, or epic) with `external_ref="gh-<N>"`. A GH issue that already mirrors to a story/feature/epic **satisfies this** — do not demand a `task` specifically. Only a genuinely bead-less issue is unreconciled; Phase 2 fixes it by creating a task and linking it.
+2. Every open beads task has a non-null `external_ref` — reconcile it in Phase 2 if missing.
+3. Every story is linked to an epic; every task to a story — `bd link` any that aren't.
 4. `bd list --all --json --limit 0` runs cleanly and returns ≥ 1 epic.
 
-Violations populate `verification_failures` and force `success: false`.
+**Imperfections are resolved, never failed.** Work each violation above in Phases 2–3 until it holds. An imperfection you genuinely cannot auto-resolve (e.g. a decomposed tracker whose children can't be inferred, or an ambiguous title→issue mapping) is **flagged for a human**, not failed: `gh issue edit <N> --add-label "needs-human-review"` with an explanatory comment, and record it in `flagged_for_human`. Reserve `verification_failures` + `success: false` strictly for a **hard execution error** — the bd snapshot won't run (invariant 4), beads isn't initialised, or a `bd`/`gh` mutation command errored — never for a backlog imperfection you detected and handled.
+
+**Dolt persistence is local — never push, never fail on it.** `bd` mutations auto-commit to the **local** beads DB; that local state is the authoritative result of this play and is all the next play reads. AgentShore does not require or configure a Dolt remote. Treat any Dolt sync/remote notice `bd` prints — e.g. `bd dolt push skipped because no Dolt remote`, "no remote configured", "could not push" — as an expected, environmental no-op. **Do not run `bd dolt push` yourself, and never set `success: false` because of a Dolt push/sync/remote message.**
 
 **State roles.** Every triaged issue carries one **category** (`bug` if labeled `bug`/`type/bug`; else `enhancement`) and one **state** derived from labels:
 
@@ -90,7 +92,7 @@ Partial evidence → **keep**, not Shipped. Record per-item verdicts in `groomin
 
 **Close shipped work.** For every verdict `stale_close`, close child tasks → stories → epics in that order. `bd close <ids…> --reason="shipped: <sha or PR #>"` and `gh issue close <N> --comment "Closed by groom-backlog: shipped in <sha or PR #>."`. Record in `beads_closed_stale` / `issues_closed_stale`. Shipped takes precedence over Stale/Duplicate/Orphaned so the evidence is the reason persisted.
 
-**Close completed trackers.** For each open GH issue labeled `agentshore/decomposed`, take the union of children from `gh issue list --search "Parent: #<N>" --state all` (also `"depends on #<N>"`) and parsed `- [ ] #<M>` / `- [x] #<M>` entries from the parent's `## Sub-tasks` checklist. If the union is non-empty and every child is `CLOSED`, close the parent with a sub-task list comment → `trackers_closed`. Skip parents labeled `agentshore/blocked` or `needs-human-review`; empty union is malformed — record in `verification_failures`. For each open epic, if every child story is `closed`, `bd close <epic_id> --reason "All child stories complete"` → `epics_closed`. Closed-as-wontfix children still count as closed.
+**Close completed trackers.** For each open GH issue labeled `agentshore/decomposed`, take the union of children from `gh issue list --search "Parent: #<N>" --state all` (also `"depends on #<N>"`) and parsed `- [ ] #<M>` / `- [x] #<M>` entries from the parent's `## Sub-tasks` checklist. If the union is non-empty and every child is `CLOSED`, close the parent with a sub-task list comment → `trackers_closed`. Skip parents labeled `agentshore/blocked` or `needs-human-review`; an empty union means the tracker's children can't be inferred — **flag it, don't fail**: `gh issue edit <N> --add-label "needs-human-review"` and `gh issue comment <N> --body "groom-backlog: labeled agentshore/decomposed but no child issues were discoverable via Parent/depends-on search or a '## Sub-tasks' checklist — needs a human to relink or close."`, then record in `flagged_for_human`. For each open epic, if every child story is `closed`, `bd close <epic_id> --reason "All child stories complete"` → `epics_closed`. Closed-as-wontfix children still count as closed.
 
 ---
 
@@ -104,7 +106,7 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 
 ---
 
-**Verify.** Re-fetch `bd list --all --json --limit 0` and `gh issue list --state open --limit 200`. Check each invariant. Confirm every issue in `blocks_cleared` and `blocks_swept` no longer carries the label that was removed; confirm `agentshore/needs-refinement` applied to every flagged issue; confirm every `trackers_closed` parent reports `CLOSED`; confirm every `epics_closed` returns `bd show … status: closed`; confirm every `beads_closed_stale` / `issues_closed_stale` is closed. Confirm `dependency_edges_deferred` + `blocks_clear_deferred` + `blocks_swept_deferred` hold whatever the per-run caps deferred (no silent truncation). Derive `epics_after`. Snapshot `open_work_after` counts (`gh issue list --state open --limit 200`, `gh pr list --state open --limit 50`). Any failure → `verification_failures`, then `success: false`.
+**Verify.** Re-fetch `bd list --all --json --limit 0` and `gh issue list --state open --limit 200`. Check each invariant. Confirm every issue in `blocks_cleared` and `blocks_swept` no longer carries the label that was removed; confirm `agentshore/needs-refinement` applied to every flagged issue; confirm every `trackers_closed` parent reports `CLOSED`; confirm every `epics_closed` returns `bd show … status: closed`; confirm every `beads_closed_stale` / `issues_closed_stale` is closed. Confirm `dependency_edges_deferred` + `blocks_clear_deferred` + `blocks_swept_deferred` hold whatever the per-run caps deferred (no silent truncation). Derive `epics_after`. Snapshot `open_work_after` counts (`gh issue list --state open --limit 200`, `gh pr list --state open --limit 50`). An invariant still unmet that you **could** resolve → resolve it now; one you genuinely cannot → flag for human (`needs-human-review` + comment) and record in `flagged_for_human`. Only a hard execution error (snapshot won't run, a `bd`/`gh` mutation errored) goes to `verification_failures` → `success: false`.
 
 **Forbidden mutations:**
 - Never touch `.github/workflows/**` or any CI config.
@@ -134,6 +136,7 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "dependency_edges_added": [],
   "dependency_edges_deferred": [],
   "open_work_after": {"issues": 0, "prs": 0},
+  "flagged_for_human": [],
   "verification_failures": [],
   "learnings_compacted": [{"pattern": "label `priority/*` and `agentshore/blocked` are mutually exclusive; remove priority when blocked", "category": "conventions", "merged_from": ["<id-a>", "<id-b>"]}],
   "learnings": [{"pattern": "the agentshore/decomposed tracker pattern requires a '## Sub-tasks' section; plain checkbox lists in the body are not detected by the close-tracker logic", "confidence": 0.75, "category": "conventions"}],
@@ -145,4 +148,4 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 
 Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (label taxonomy surprises, beads graph conventions, recurring backlog debt patterns) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. Emit learnings as this top-level `learnings` array (the harvester only ingests this form).
 
-A clean graph with no changes is `success: true` with all empty lists — not an error. Always emit the block — skipping causes `no valid result block` and discards the work. This is a single turn with no callback: never end it to "wait for the task notification" or watch a file/process. Finish your grooming pass now and emit the block.
+`flagged_for_human` holds imperfections groom could not auto-resolve and escalated (each `{"issue": N, "reason": "<one line>"}`); emitting it keeps the play `success: true`. A clean graph with no changes is `success: true` with all empty lists — not an error. Imperfections you found and **resolved or flagged** also leave the play `success: true` — `success: false` is only for a hard execution error (snapshot won't run, a `bd`/`gh` mutation errored), never for backlog debt you detected and handled. Always emit the block — skipping causes `no valid result block` and discards the work. This is a single turn with no callback: never end it to "wait for the task notification" or watch a file/process. Finish your grooming pass now and emit the block.
