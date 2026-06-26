@@ -120,6 +120,16 @@ _logger = structlog.get_logger(__name__)
 # session.start indefinitely.
 DEFAULT_FIRST_SNAPSHOT_TIMEOUT_SECONDS: float = 30.0
 
+# Cap on how long a new session.start waits for the *previous* orchestrator's
+# store teardown (``orch.stop()`` → ``DataStore.close()``) to finish before it
+# boots its own orchestrator (#283). The close does an Online-Backup snapshot +
+# ``os.replace`` of agentshore.db and holds the SQLite writer/checkpoint lock;
+# running a new ``store_init`` concurrently with it yields "database is locked".
+# The window is normally sub-second, but a large DB on throttled disk I/O can
+# legitimately take longer, so the bound is generous — exceeding it surfaces a
+# clean "still shutting down, retry" error instead of a raw lock failure.
+STORE_TEARDOWN_WAIT_SECONDS: float = 60.0
+
 
 # Canonical step IDs must stay in lockstep with
 # ``desktop/src/startupSteps.ts:STARTUP_STEP_IDS``.
@@ -590,6 +600,51 @@ async def run_session_start(
     )
 
 
+async def stop_orchestrator_tracked(state: ServerState, orch: OrchestratorHandle) -> None:
+    """Run ``orch.stop()`` as a tracked teardown task (#283).
+
+    ``orch.stop()`` closes the orchestrator's ``DataStore`` (Online-Backup
+    snapshot + ``os.replace`` of agentshore.db), holding the SQLite
+    writer/checkpoint lock for the duration. Publishing the in-flight stop on
+    ``state.store_teardown_task`` lets a concurrent ``session.start`` await it
+    via :func:`_await_prior_store_teardown` before opening its own store, so the
+    two never contend for the lock. The task self-clears the slot on completion
+    (only when it is still the registered task, so a fast restart that has
+    already registered its own teardown is not clobbered).
+    """
+    task = asyncio.ensure_future(orch.stop())
+    state.store_teardown_task = task
+    try:
+        await task
+    finally:
+        if state.store_teardown_task is task:
+            state.store_teardown_task = None
+
+
+async def _await_prior_store_teardown(state: ServerState) -> None:
+    """Block until any in-flight orchestrator store teardown finishes (#283).
+
+    Returns immediately when no teardown is running. Uses ``shield`` so a
+    timeout here never cancels the actual close (which must run to completion to
+    leave agentshore.db consistent); on timeout it raises a clean
+    ``SessionStartError`` rather than letting the new ``store_init`` race the
+    close and fail with a bare "database is locked".
+    """
+    task = state.store_teardown_task
+    if task is None or task.done():
+        return
+    _logger.info("session_start_awaiting_store_teardown")
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=STORE_TEARDOWN_WAIT_SECONDS)
+    except TimeoutError as exc:
+        raise SessionStartError(
+            STEP_FIRST_SNAPSHOT,
+            -32603,
+            "previous session is still shutting down (database close in progress) — "
+            "retry in a moment",
+        ) from exc
+
+
 async def _start_orchestrator(
     *,
     state: ServerState,
@@ -631,6 +686,13 @@ async def _start_orchestrator(
     from agentshore.session_path import session_dir as _session_dir
     from agentshore.sidecar.notification_emitters import build_session_completed_emitter
     from agentshore.sidecar.server import SessionContext
+
+    # #283: a previous session's store teardown (orch.stop() → DataStore.close,
+    # which snapshots + os.replaces agentshore.db under the writer lock) may
+    # still be running — the ESR "restart" button unlocks before that close
+    # finishes. Wait for it to complete before opening this session's store, or
+    # the new store_init contends with the close and hits "database is locked".
+    await _await_prior_store_teardown(state)
 
     sdir = _session_dir(project_path)
     sdir.mkdir(parents=True, exist_ok=True)
@@ -787,7 +849,7 @@ async def _start_orchestrator(
                     "log_path": state.session_context.log_path,
                 }
         try:
-            await orch.stop()
+            await stop_orchestrator_tracked(state, orch)
         except Exception:
             _logger.exception("sidecar_orchestrator_stop_failed", session_id=session_id)
         if payload is not None and state.session_context is not None:

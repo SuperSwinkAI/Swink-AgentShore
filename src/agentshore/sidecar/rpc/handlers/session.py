@@ -36,6 +36,7 @@ from agentshore.sidecar.rpc.router_helpers import (
 from agentshore.sidecar.session_lifecycle import (
     SessionStartError,
     run_session_start,
+    stop_orchestrator_tracked,
 )
 
 SESSION_STOP_MODES: frozenset[str] = frozenset({"drain", "hard"})
@@ -181,8 +182,11 @@ async def _build_session_stop_response(
     )
 
     if orch is not None:
+        # Track the store teardown (#283) so a session.start racing this stop
+        # waits for agentshore.db's close (snapshot + os.replace under the
+        # writer lock) before opening its own store.
         with contextlib.suppress(Exception):
-            await orch.stop()
+            await stop_orchestrator_tracked(state, orch)
         state.orchestrator = None
         state.orchestrator_task = None
         payload["report_path"] = context.report_path

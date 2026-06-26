@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import sqlite3
+import time
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -41,7 +42,7 @@ from agentshore.data.store.mixins.sessions import _SessionsMixin
 from agentshore.data.store.mixins.trajectory import _TrajectoryMixin
 from agentshore.data.store.mixins.work_claims import _WorkClaimsMixin
 from agentshore.data.store.mixins.worktrees import _WorktreesMixin
-from agentshore.errors import DatabaseError
+from agentshore.errors import DatabaseError, DatabaseLockedError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -111,13 +112,20 @@ class DataStore(
         schema_sql = _load_schema_sql()
         await self._apply_schema_with_lock_retry(schema_sql)
 
-    # Bounded retry for the writer-lock race on a quick stop->start (#4).
-    _INIT_LOCK_RETRY_ATTEMPTS = 5
+    # Bounded retry for the writer-lock race on a quick stop->start (#4, #283).
+    # Bounded by wall-clock, not a fixed attempt count: a previous session's
+    # store ``close()`` (Online-Backup snapshot + ``os.replace`` of the DB file,
+    # #283) can legitimately hold the writer lock for several seconds on a large
+    # DB or throttled disk, which a fixed 5-attempt budget could exhaust mid-
+    # close and then hard-fail a restart. The sidecar's session-start barrier
+    # (``session_lifecycle._await_prior_store_teardown``) normally prevents the
+    # overlap entirely; this is the store-level backstop with a generous window.
+    _INIT_LOCK_RETRY_BUDGET_SECONDS = 45.0
     _INIT_LOCK_RETRY_BASE_DELAY = 0.5
     _INIT_LOCK_RETRY_MAX_DELAY = 4.0
 
     async def _apply_schema_with_lock_retry(self, schema_sql: str) -> None:
-        """Apply schema + migrations, retrying a transient writer-lock (#4).
+        """Apply schema + migrations, retrying a transient writer-lock (#4, #283).
 
         ``busy_timeout`` (set above) already waits up to 5s per statement for
         the WAL writer-lock held by an outgoing session's sidecar on a quick
@@ -126,18 +134,24 @@ class DataStore(
         persist past 5s and the first write raises "database is locked",
         hard-failing ``session.start`` at the first-snapshot step (#4).
 
-        This bounded application-level retry re-attempts the whole write
-        phase with exponential backoff, gating startup on lock availability
-        instead of failing. The schema script (``CREATE ... IF NOT EXISTS``)
-        and the migrations are individually idempotent, so re-running is
-        safe. Because ``initialize()`` runs before the first state snapshot,
-        succeeding here also frees the later snapshot write. Only the
-        "database is locked" OperationalError is retried; every other error
-        propagates immediately.
+        This application-level retry re-attempts the whole write phase with
+        exponential backoff, gating startup on lock availability instead of
+        failing, until the wall-clock budget is exhausted. The schema script
+        (``CREATE ... IF NOT EXISTS``) and the migrations are individually
+        idempotent, so re-running is safe. Because ``initialize()`` runs before
+        the first state snapshot, succeeding here also frees the later snapshot
+        write. Only the "database is locked" OperationalError is retried; every
+        other error propagates immediately. On budget exhaustion a typed
+        :class:`DatabaseLockedError` is raised so the caller can render an
+        actionable "database busy, retry" message (#283) rather than a bare
+        ``OperationalError`` string.
         """
         assert self._db is not None
         delay = self._INIT_LOCK_RETRY_BASE_DELAY
-        for attempt in range(1, self._INIT_LOCK_RETRY_ATTEMPTS + 1):
+        deadline = time.monotonic() + self._INIT_LOCK_RETRY_BUDGET_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 await self._db.executescript(schema_sql)
                 await self._validate_schema_namespace()
@@ -145,15 +159,21 @@ class DataStore(
                 await self._db.commit()
                 return
             except sqlite3.OperationalError as exc:
-                if (
-                    "database is locked" not in str(exc).lower()
-                    or attempt == self._INIT_LOCK_RETRY_ATTEMPTS
-                ):
+                if "database is locked" not in str(exc).lower():
                     raise
+                # Give up if even after the next backoff we'd be past the budget,
+                # so we never sleep past the deadline for a doomed retry.
+                if time.monotonic() + delay >= deadline:
+                    raise DatabaseLockedError(
+                        "store init could not acquire the database lock within "
+                        f"{self._INIT_LOCK_RETRY_BUDGET_SECONDS:.0f}s "
+                        f"({attempt} attempts) — a previous session may still be "
+                        "shutting down; retry in a moment"
+                    ) from exc
                 structlog.get_logger(__name__).warning(
                     "store_init_db_locked_retry",
                     attempt=attempt,
-                    max_attempts=self._INIT_LOCK_RETRY_ATTEMPTS,
+                    budget_seconds=self._INIT_LOCK_RETRY_BUDGET_SECONDS,
                     delay_seconds=delay,
                     db_path=str(self._db_path),
                     error=str(exc),

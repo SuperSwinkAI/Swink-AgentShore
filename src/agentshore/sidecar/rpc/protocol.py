@@ -77,6 +77,14 @@ class ServerState:
     # type-check without per-site ``# type: ignore[attr-defined]``.
     orchestrator: OrchestratorHandle | None = None
     orchestrator_task: asyncio.Task[None] | None = None
+    # In-flight ``orch.stop()`` teardown (#283). Set while the outgoing
+    # orchestrator's ``DataStore.close()`` runs — that close does a heavyweight
+    # Online-Backup snapshot + ``os.replace`` of agentshore.db and holds the
+    # SQLite writer/checkpoint lock for seconds. A restart fired from the ESR
+    # screen (which is unlocked *before* this close finishes) must await this
+    # task before its new orchestrator's ``store_init`` runs, or the two
+    # contend and the new ``store_init`` hits "database is locked".
+    store_teardown_task: asyncio.Task[None] | None = None
     esr_ready_report_path: str | None = None
     esr_ready_log_path: str | None = None
     # Optional timelapse capture (desktop feature). ``timelapse_run_id`` is the

@@ -278,5 +278,19 @@ class DatabaseError(OrchestratorError):
     error_type = "database_error"
 
 
+class DatabaseLockedError(DatabaseError):
+    """Store init exhausted its lock-retry budget (#283).
+
+    Raised when ``DataStore.initialize`` could not acquire the SQLite
+    writer lock within the bounded retry window — typically because a
+    previous session's store ``close()`` (snapshot + ``os.replace`` of the
+    DB file) was still in flight. Distinct from the generic
+    :class:`DatabaseError` so callers can render an actionable "database
+    busy, retry" message instead of a bare ``OperationalError`` string.
+    """
+
+    error_type = "database_locked"
+
+
 class SocketError(OrchestratorError):
     error_type = "socket_error"

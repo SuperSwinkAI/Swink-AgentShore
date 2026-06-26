@@ -87,9 +87,15 @@ async def test_initialize_retries_transient_db_locked_then_succeeds(
 async def test_initialize_raises_after_persistent_db_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lock that never clears propagates after the bounded attempts (#4)."""
+    """A lock that never clears raises a typed DatabaseLockedError once the
+    wall-clock retry budget is exhausted (#4, #283)."""
+    from agentshore.errors import DatabaseLockedError
+
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
+    # Zero budget => give up on the first persistent lock instead of spinning
+    # for the full default window.
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BUDGET_SECONDS", 0.0)
     store = DataStore(tmp_path / "locked.db")
     await store.initialize()
     try:
@@ -98,7 +104,7 @@ async def test_initialize_raises_after_persistent_db_locked(
             raise sqlite3.OperationalError("database is locked")
 
         monkeypatch.setattr(store._db, "executescript", always_locked)
-        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        with pytest.raises(DatabaseLockedError, match="could not acquire the database lock"):
             await store._apply_schema_with_lock_retry(_load_schema_sql())
     finally:
         await store.close()
