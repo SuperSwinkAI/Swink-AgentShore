@@ -442,7 +442,12 @@ async def run_session_start(
     project_path: Path | None = (
         Path(state.active_project_path) if state.active_project_path else None
     )
-    session_id = state.session_id or str(uuid.uuid4())
+    # Always mint a fresh id (#283): the sidecar ``session.start`` has no
+    # resume-by-id semantics, and reusing a stale ``state.session_id`` left by a
+    # prior (naturally ended) session collides with that session's persisted
+    # ``sessions`` row → "UNIQUE constraint failed: sessions.session_id" on
+    # restart. ``state.session_id`` is an output of start, never an input.
+    session_id = str(uuid.uuid4())
     state.session_id = session_id
 
     # Phase 1: config_merge
@@ -643,6 +648,28 @@ async def _await_prior_store_teardown(state: ServerState) -> None:
             "previous session is still shutting down (database close in progress) — "
             "retry in a moment",
         ) from exc
+
+
+def _clear_session_state(state: ServerState) -> None:
+    """Reset per-session ``ServerState`` after a session ends (#283).
+
+    The explicit ``session.stop`` path clears these inline
+    (``handlers/session.py``); the natural-exit (self-drain → shutdown_complete)
+    and crash paths must do the same. Otherwise, in the long-lived sidecar, the
+    stale ``session_id`` is reused by the next ``session.start`` — colliding with
+    its persisted ``sessions`` row (UNIQUE constraint) — and the dead
+    orchestrator + its (closed) store linger reachable instead of being GC'd.
+    Does not touch the dashboard bridge: the desktop still serves the ESR after a
+    natural end, so bridge teardown stays owned by the explicit-stop path.
+    """
+    state.session_active = False
+    state.session_id = None
+    state.started_at = None
+    state.session_context = None
+    state.esr_ready_report_path = None
+    state.esr_ready_log_path = None
+    state.orchestrator = None
+    state.orchestrator_task = None
 
 
 async def _start_orchestrator(
@@ -861,6 +888,10 @@ async def _start_orchestrator(
             payload["timelapse_output_path"] = await stop_timelapse_capture(state)
         if emit_session_completed is not None and payload is not None:
             emit_session_completed(payload)
+        # Natural exit closed the store above (stop_orchestrator_tracked) but, unlike
+        # the explicit-stop path, never cleared session state — leaving the stale
+        # session_id to be reused on the next start (#283). Clear it now.
+        _clear_session_state(state)
 
     def _on_orchestrator_done(task: asyncio.Task[None]) -> None:
         """Retrieve + report a crashed orchestrator task and finalize the session.
@@ -888,6 +919,15 @@ async def _start_orchestrator(
                 await orch._store.fail_session(session_id, "orchestrator_task_crashed")
             except Exception:
                 _logger.exception("sidecar_fail_session_failed", session_id=session_id)
+            # A crashed run never reached stop_orchestrator_tracked in _supervise,
+            # so the store is still open. Close it (+ clear state) or the
+            # connection leaks into the long-lived sidecar and blocks the next
+            # session.start (#283). orch.stop() is re-entrancy safe.
+            try:
+                await stop_orchestrator_tracked(state, orch)
+            except Exception:
+                _logger.exception("sidecar_crashed_stop_failed", session_id=session_id)
+            _clear_session_state(state)
 
         asyncio.get_running_loop().create_task(
             _finalize_crashed_session(), name=f"fail-session-{session_id}"

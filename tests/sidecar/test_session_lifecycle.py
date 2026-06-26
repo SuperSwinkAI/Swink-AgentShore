@@ -21,6 +21,7 @@ which makes a fully isolated test setup heavy).
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -509,6 +510,18 @@ async def test_session_stop_drain_respects_timeout(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_start_always_mints_fresh_session_id(tmp_path: Path) -> None:
+    """#283: session.start ignores any stale ``state.session_id`` (left by a prior
+    naturally-ended or failed session) and always mints a fresh id, so the new
+    sessions-row INSERT can't collide with the prior session's persisted row."""
+    project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
+    state = ServerState(active_project_path=str(project), session_id="stale-prior-id")
+    outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+    assert outcome.session_id != "stale-prior-id"
+    assert state.session_id == outcome.session_id
+
+
+@pytest.mark.asyncio
 async def test_natural_exit_emits_session_completed_notification(tmp_path: Path) -> None:
     """session.start boots the orchestrator; natural exit emits session.completed.
 
@@ -522,7 +535,9 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
 
     project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
 
-    session_id = "sess-natural-exit-e2e"
+    # A valid UUID so we can patch uuid4 to mint exactly this id (start always
+    # mints fresh now, #283), keeping it aligned with the session row below.
+    session_id = "11111111-1111-4111-8111-111111111111"
     db_path = tmp_path / "db.sqlite"
     store = DataStore(db_path)
     await store.initialize()
@@ -581,12 +596,16 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     def notify(notif: dict[str, object]) -> None:
         emitted.append(notif)
 
-    state = ServerState(active_project_path=str(project), session_id=session_id)
+    state = ServerState(active_project_path=str(project))
 
     with (
         patch("agentshore.core.Orchestrator") as mock_orch_cls,
         patch("agentshore.ipc.state_writer.StateWriter"),
         patch("agentshore.ipc.provider.IpcStateProvider"),
+        patch(
+            "agentshore.sidecar.session_lifecycle.uuid.uuid4",
+            return_value=uuid.UUID(session_id),
+        ),
     ):
         mock_orch_cls.bootstrap = AsyncMock(return_value=fake_orch)
 
@@ -600,6 +619,12 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
 
         assert state.orchestrator_task is not None
         await asyncio.wait_for(state.orchestrator_task, timeout=5.0)
+
+    # Natural exit clears session state so the next start mints fresh (#283).
+    assert state.session_id is None
+    assert state.session_context is None
+    assert state.orchestrator is None
+    assert state.orchestrator_task is None
 
     await store.close()
 

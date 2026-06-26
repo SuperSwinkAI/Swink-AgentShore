@@ -316,6 +316,39 @@ async def test_aenter_creates_session_row(tmp_path: Path) -> None:
         assert row["status"] == "running"
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_closes_store_on_post_init_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#283: a bootstrap phase failing after datastore-init closes the partially
+    opened store, so its SQLite connection + WAL writer-lock don't leak into the
+    long-lived sidecar and block the next session.start."""
+    from agentshore.core import phases
+
+    captured: dict[str, object] = {}
+    real_init = phases._phase_init_datastore
+
+    async def _capture_init(repo_root: Path) -> object:
+        store = await real_init(repo_root)
+        captured["store"] = store
+        return store
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("post-init bootstrap phase failed")
+
+    # Fail the very next phase after datastore-init (keeps the test fast — no PPO).
+    monkeypatch.setattr(phases, "_phase_init_datastore", _capture_init)
+    monkeypatch.setattr(phases, "_phase_reset_session_scoped_tables", _boom)
+
+    with pytest.raises(RuntimeError, match="post-init bootstrap phase failed"):
+        await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
+
+    store = captured["store"]
+    assert store is not None
+    # close() nulls _db; a leaked connection would leave it set.
+    assert store._db is None  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------------------
 # __aexit__ marks session completed
 # ---------------------------------------------------------------------------

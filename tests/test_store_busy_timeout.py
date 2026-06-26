@@ -109,6 +109,47 @@ async def test_initialize_raises_after_persistent_db_locked(
 
 
 @pytest.mark.asyncio
+async def test_initialize_closes_connection_when_schema_apply_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure during initialize() (here the schema lock-retry budget) closes
+    the just-opened connection rather than leaking it — a leaked handle holds
+    agentshore.db's writer-lock in the long-lived sidecar and blocks the next
+    session.start (#283)."""
+    from agentshore.errors import DatabaseLockedError
+
+    async def _always_locked(self: DataStore, schema_sql: str) -> None:
+        raise DatabaseLockedError("could not acquire the database lock")
+
+    monkeypatch.setattr(DataStore, "_apply_schema_with_lock_retry", _always_locked)
+    store = DataStore(tmp_path / "init_fail.db")
+    with pytest.raises(DatabaseLockedError, match="could not acquire the database lock"):
+        await store.initialize()
+    # The connection opened before the schema apply must be closed + cleared.
+    assert store._db is None
+
+
+@pytest.mark.asyncio
+async def test_close_releases_connection_when_backup_raises_unexpected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """close() releases the main connection even when backup() raises a type
+    outside (aiosqlite.Error, OSError) — e.g. an unexpected error or cancellation
+    during shutdown — so the writer-lock is never leaked into the sidecar (#283)."""
+    store = DataStore(tmp_path / "close_fail.db")
+    await store.initialize()
+
+    async def _boom(_target: object) -> None:
+        raise RuntimeError("unexpected backup failure")
+
+    monkeypatch.setattr(store._db, "backup", _boom)  # type: ignore[union-attr]
+    with pytest.raises(RuntimeError, match="unexpected backup failure"):
+        await store.close()
+    # Despite the unexpected backup exception, the main connection was closed.
+    assert store._db is None
+
+
+@pytest.mark.asyncio
 async def test_initialize_does_not_retry_non_lock_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

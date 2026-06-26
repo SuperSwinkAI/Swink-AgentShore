@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
-    from agentshore.data.store import ArchiveRecord
+    from agentshore.data.store import ArchiveRecord, DataStore
     from agentshore.plays.selector import PlaySelector
     from agentshore.state import (
         PlayOutcome,
@@ -124,6 +124,8 @@ class Orchestrator(_OrchestratorBase):
             await provider.on_bootstrap_phase(phase, status, elapsed_ms)
 
         token = _bootstrap_phase_publisher.set(_publish_bootstrap_phase)
+        store: DataStore | None = None
+        bootstrap_returned = False
         try:
             store = await phases._phase_init_datastore(repo_root)
             await phases._phase_reset_session_scoped_tables(store)
@@ -234,9 +236,19 @@ class Orchestrator(_OrchestratorBase):
 
             with suppress(Exception):
                 await _publish_bootstrap_phase("ready", "completed", 0.0)
+            bootstrap_returned = True
             return orch
         finally:
             _bootstrap_phase_publisher.reset(token)
+            # #283: if a phase after datastore-init raised (e.g. UNIQUE on the
+            # session row from a reused session_id, or the schema lock-retry
+            # budget), close the partially-opened DataStore. Otherwise its
+            # SQLite connection + WAL writer-lock leak into the long-lived
+            # sidecar and block every subsequent session.start until the app is
+            # quit. orch is never returned on this path, so nobody else closes it.
+            if not bootstrap_returned and store is not None:
+                with suppress(Exception):
+                    await store.close()
 
     async def __aenter__(self) -> Orchestrator:
         # Bootstrap creates the session row; recreate it here if bootstrap was

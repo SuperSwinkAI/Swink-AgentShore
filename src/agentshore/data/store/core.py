@@ -90,22 +90,38 @@ class DataStore(
         """Open the database connection and apply the schema."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self._db_path))
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
-        # desktop-#4: absorb the transient WAL writer-lock an outgoing sidecar
-        # holds on a quick stop→start (else first-snapshot write hard-fails
-        # session.start); the lock clears within seconds.
-        await self._db.execute("PRAGMA busy_timeout=5000")
-        # desktop-gkku: durability hardening where fsyncs get deferred (macOS
-        # screen-lock I/O throttling, desktop-tvsb). synchronous=FULL forces
-        # F_FULLFSYNC (un-deferrable; ~2-3x commit cost, acceptable here);
-        # wal_autocheckpoint=100 closes the checkpointed-vs-main desync window
-        # 10x faster than the 1000-page default.
-        await self._db.execute("PRAGMA synchronous=FULL")
-        await self._db.execute("PRAGMA wal_autocheckpoint=100")
-        schema_sql = _load_schema_sql()
-        await self._apply_schema_with_lock_retry(schema_sql)
+        # #283: from here on, any failure (PRAGMA error, or the schema lock-retry
+        # budget raising DatabaseLockedError) must close the just-opened
+        # connection. Otherwise it leaks into the long-lived sidecar still
+        # holding agentshore.db's WAL writer-lock, permanently blocking the next
+        # session.start. The DataStore object itself is discarded by the caller
+        # on failure, so this is the only place that can release the handle.
+        init_ok = False
+        try:
+            self._db.row_factory = aiosqlite.Row
+            await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA foreign_keys=ON")
+            # desktop-#4: absorb the transient WAL writer-lock an outgoing sidecar
+            # holds on a quick stop→start (else first-snapshot write hard-fails
+            # session.start); the lock clears within seconds.
+            await self._db.execute("PRAGMA busy_timeout=5000")
+            # desktop-gkku: durability hardening where fsyncs get deferred (macOS
+            # screen-lock I/O throttling, desktop-tvsb). synchronous=FULL forces
+            # F_FULLFSYNC (un-deferrable; ~2-3x commit cost, acceptable here);
+            # wal_autocheckpoint=100 closes the checkpointed-vs-main desync window
+            # 10x faster than the 1000-page default.
+            await self._db.execute("PRAGMA synchronous=FULL")
+            await self._db.execute("PRAGMA wal_autocheckpoint=100")
+            schema_sql = _load_schema_sql()
+            await self._apply_schema_with_lock_retry(schema_sql)
+            init_ok = True
+        finally:
+            if not init_ok:
+                db = self._db
+                self._db = None
+                if db is not None:
+                    with contextlib.suppress(Exception):
+                        await db.close()
 
     # Writer-lock retry budget for a quick stop->start (#4, #283). Wall-clock
     # bounded, not attempt-count: a prior session's close() (Online-Backup +
@@ -334,24 +350,36 @@ class DataStore(
         backup_error: Exception | None = None
         replace_error: Exception | None = None
         try:
-            target = await aiosqlite.connect(str(tmp_path))
             try:
-                await self._db.backup(target)
-            finally:
-                await target.close()
-            backup_ok = True
-        except (aiosqlite.Error, OSError) as exc:
-            # Don't suppress — surfaced as store_close_failed so the operator
-            # knows the snapshot didn't land; main DB file left untouched.
-            structlog.get_logger(__name__).warning(
-                "store_close_backup_failed",
-                error=str(exc),
-                tmp_path=str(tmp_path),
-            )
-            backup_error = exc
-
-        await self._db.close()
-        self._db = None
+                target = await aiosqlite.connect(str(tmp_path))
+                try:
+                    await self._db.backup(target)
+                finally:
+                    # A wedged/raising target close must not skip the main-db
+                    # close below — suppress so the writer-lock is still released.
+                    with contextlib.suppress(Exception):
+                        await target.close()
+                backup_ok = True
+            except (aiosqlite.Error, OSError) as exc:
+                # Don't suppress — surfaced as store_close_failed so the operator
+                # knows the snapshot didn't land; main DB file left untouched.
+                structlog.get_logger(__name__).warning(
+                    "store_close_backup_failed",
+                    error=str(exc),
+                    tmp_path=str(tmp_path),
+                )
+                backup_error = exc
+        finally:
+            # #283: release the main connection no matter how the backup exited —
+            # including unexpected exception types (e.g. CancelledError during
+            # shutdown) the except above does not catch. A connection leaked here
+            # keeps agentshore.db's WAL writer-lock held in the long-lived sidecar
+            # and permanently blocks the next session.start.
+            db = self._db
+            self._db = None
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    await db.close()
 
         if backup_ok:
             try:
