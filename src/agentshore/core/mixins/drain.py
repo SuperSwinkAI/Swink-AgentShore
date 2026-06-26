@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.state import (
+        BudgetSnapshot,
         OrchestratorState,
     )
 
@@ -397,10 +398,21 @@ class DrainController:
         return await self._apply_and_publish(resumed=resumed)
 
     async def current_budget(self) -> dict[str, object]:
-        """Return the live-effective caps + spend/remaining (prefill/echo)."""
-        state = await self._state_builder.build_state()
+        """Return the live-effective caps + spend/remaining (prefill/echo).
+
+        Genuinely side-effect-free: builds *only* the budget snapshot via the
+        cheap single-query aggregate (:meth:`StateBuilder.build_budget_only`)
+        rather than a full :meth:`build_state`. The old path rebuilt the entire
+        authoritative state — a ten-read DB fan-out plus a beads graph load — and
+        ran ``build_state``'s mutating helpers (``abandon_work_for_missing_agents``
+        / ``release_claims_for_prolonged_idle_agents``) on what is documented as a
+        pure read. Under a busy session that prefill stalled long enough for the
+        desktop "Adjust Budget…" dialog to look hung (#281); the lightweight read
+        never abandons work or releases claims.
+        """
+        budget = await self._state_builder.build_budget_only()
         # A pure read never resumes/reverses anything.
-        return self._applied_from_state(state, resumed=False)
+        return self._applied_from_budget(budget, resumed=False)
 
     # --- live-budget helpers ----------------------------------------------
 
@@ -457,7 +469,12 @@ class DrainController:
     def _applied_from_state(
         state: OrchestratorState, *, resumed: bool = False
     ) -> dict[str, object]:
-        b = state.budget
+        return DrainController._applied_from_budget(state.budget, resumed=resumed)
+
+    @staticmethod
+    def _applied_from_budget(
+        b: BudgetSnapshot | None, *, resumed: bool = False
+    ) -> dict[str, object]:
         if b is None:
             return {"resumed": resumed}
         remaining = (

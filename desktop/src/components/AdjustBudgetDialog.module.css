@@ -47,6 +47,12 @@
   margin: 12px 0 0 0;
 }
 
+.loading {
+  color: var(--muted, #6b7280);
+  font-size: 14px;
+  margin: 4px 0 0 0;
+}
+
 .applied {
   display: none;
 }

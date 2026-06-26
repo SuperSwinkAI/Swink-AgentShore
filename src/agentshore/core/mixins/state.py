@@ -567,6 +567,37 @@ class StateBuilder:
             elapsed_minutes=elapsed_minutes,
         )
 
+    async def build_budget_only(self) -> BudgetSnapshot:
+        """Build only the budget snapshot via one cheap aggregate query.
+
+        Side-effect-free read path for the live ``session.get_budget`` prefill
+        (the desktop "Adjust Budget…" dialog, #281). Unlike :meth:`build_state`
+        it skips the ten-read fan-out + beads graph load and the two mutating
+        helpers (``abandon_work_for_missing_agents`` /
+        ``release_claims_for_prolonged_idle_agents``) — a prefill must never
+        abandon work or release claims. Reuses the single
+        ``COUNT(*)/SUM(dollar_cost)`` ``session_play_totals`` query and refreshes
+        the cached dollar inputs so the budget-countdown heartbeat keeps working.
+
+        ``session_play_totals`` counts every play row (internal types included),
+        whereas :meth:`assemble_state` excludes internal plays from ``total_plays``
+        — but that count only feeds the cosmetic ``estimated_cost_per_play`` field,
+        which the ``session.get_budget`` echo does not return, so the dollar/time
+        figures the dialog prefills are identical either way.
+        """
+        total_plays, total_cost = await self._store.session_play_totals(self._session_id)
+        self._last_budget_inputs = (total_plays, total_cost)
+        loop_started_at = self._runtime.loop_started_at
+        elapsed_minutes = (
+            (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
+        )
+        return self._snapshots.build_budget_snapshot(
+            total_plays,
+            total_cost,
+            budget_cfg=self._host.effective_budget_caps(),
+            elapsed_minutes=elapsed_minutes,
+        )
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 

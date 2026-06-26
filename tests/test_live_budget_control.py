@@ -56,6 +56,15 @@ def _mock_state(orch: object, snap: SimpleNamespace) -> None:
     orch._state_builder.build_state = AsyncMock(return_value=snap)  # type: ignore[attr-defined]
 
 
+def _mock_budget_only(orch: object, snap: SimpleNamespace) -> None:
+    # ``current_budget`` reads only the budget snapshot via the cheap,
+    # side-effect-free ``build_budget_only`` path (#281), not the full
+    # ``build_state``. Mock that and surface the inner ``BudgetSnapshot``.
+    orch._state_builder.build_budget_only = AsyncMock(  # type: ignore[attr-defined]
+        return_value=snap.budget
+    )
+
+
 # --------------------------------------------------------------------------- #
 # effective_budget_caps
 # --------------------------------------------------------------------------- #
@@ -235,7 +244,7 @@ async def test_current_budget_does_not_push_state(tmp_path: Path) -> None:
     # Read-only prefill must not emit a state_update.
     orch = make_test_orchestrator(tmp_path)
     orch._state_provider = AsyncMock()
-    _mock_state(orch, _snap(total=200.0, spent=10.0))
+    _mock_budget_only(orch, _snap(total=200.0, spent=10.0))
     await orch.current_budget()
     orch._state_provider.on_state_update.assert_not_awaited()
 
@@ -243,7 +252,7 @@ async def test_current_budget_does_not_push_state(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
     orch = make_test_orchestrator(tmp_path)
-    _mock_state(
+    _mock_budget_only(
         orch, _snap(total=200.0, spent=42.0, time_enabled=True, time_total=1440, time_elapsed=240)
     )
     echo = await orch.current_budget()
@@ -251,6 +260,41 @@ async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
     assert echo["spent"] == 42.0
     assert echo["time_remaining_minutes"] == 1200.0
     assert echo["resumed"] is False
+
+
+@pytest.mark.asyncio
+async def test_current_budget_uses_cheap_read_not_build_state(tmp_path: Path) -> None:
+    # #281: the prefill must use the side-effect-free build_budget_only path and
+    # must NOT call the heavyweight build_state (which abandons work / releases
+    # claims and stalled the desktop "Adjust Budget…" dialog under load).
+    orch = make_test_orchestrator(tmp_path)
+    orch._state_builder.build_state = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=AssertionError("current_budget must not call build_state (#281)")
+    )
+    _mock_budget_only(orch, _snap(total=120.0, spent=5.0))
+    echo = await orch.current_budget()
+    assert echo["total"] == 120.0
+    assert echo["spent"] == 5.0
+    orch._state_builder.build_state.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_build_budget_only_sources_spend_from_cheap_aggregate(tmp_path: Path) -> None:
+    # #281: build_budget_only must read spend from the single-query
+    # session_play_totals aggregate (COUNT(*)/SUM(dollar_cost)), not the
+    # ten-read build_state fan-out.
+    store = AsyncMock()
+    store.session_play_totals = AsyncMock(return_value=(7, 18.5))
+    orch = make_test_orchestrator(
+        tmp_path,
+        cfg=RuntimeConfig(budget=BudgetConfig(enabled=True, total=100.0)),
+        store=store,
+    )
+    snap = await orch._state_builder.build_budget_only()
+    assert snap.spent == 18.5
+    assert snap.total_budget == 100.0
+    assert snap.remaining == pytest.approx(81.5)
+    store.session_play_totals.assert_awaited_once()
 
 
 # --------------------------------------------------------------------------- #

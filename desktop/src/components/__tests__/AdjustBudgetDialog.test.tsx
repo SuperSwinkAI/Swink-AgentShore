@@ -43,6 +43,37 @@ describe("AdjustBudgetDialog", () => {
     expect(screen.getByTestId("budget-time-mode-unlimited")).toBeChecked();
   });
 
+  it("shows a loading indicator (not an empty dialog) while getBudget is in flight (#281)", async () => {
+    // Reproduces the hang report: a slow get_budget prefill left the dialog
+    // empty — header + buttons, no sliders, no error. Now a loading status
+    // shows until the prefill resolves.
+    let resolveBudget: (v: { budget: typeof APPLIED_CAPPED }) => void = () => {};
+    getBudgetMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveBudget = resolve;
+      }),
+    );
+    render(<AdjustBudgetDialog onClose={() => {}} />);
+
+    // While pending: loading visible, no sliders, no error banner.
+    expect(screen.getByTestId("adjust-budget-loading")).toHaveTextContent(
+      "Loading current budget…",
+    );
+    expect(screen.getByTestId("adjust-budget-loading")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(screen.queryByTestId("budget-slider")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("adjust-budget-load-error")).not.toBeInTheDocument();
+
+    // Once it resolves: loading gone, sliders present.
+    resolveBudget({ budget: APPLIED_CAPPED });
+    await waitFor(() =>
+      expect(screen.getByTestId("budget-slider")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("adjust-budget-loading")).not.toBeInTheDocument();
+  });
+
   it("submits the edited selection via setBudgetLive and closes", async () => {
     getBudgetMock.mockResolvedValueOnce({ budget: APPLIED_CAPPED });
     setBudgetLiveMock.mockResolvedValueOnce({
