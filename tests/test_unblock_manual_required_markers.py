@@ -94,8 +94,7 @@ def _processor(*, record_returns: bool = False) -> tuple[CompletionProcessor, Ma
     proc._executor._resolver = resolver
     proc._host = MagicMock()  # type: ignore[attr-defined]
     proc._host._safe_call = AsyncMock()
-    # Instance attribute shadows the real coroutine method so the (mocked)
-    # _safe_call receives a plain value, not an un-awaited coroutine.
+    # Shadow the coroutine method so mocked _safe_call gets a plain value, not a coroutine.
     proc.mark_pr_manual_required = MagicMock()  # type: ignore[attr-defined]
     return proc, resolver
 

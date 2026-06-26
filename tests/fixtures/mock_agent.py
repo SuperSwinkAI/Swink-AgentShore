@@ -91,9 +91,7 @@ def _emit_plain(result: dict[str, object]) -> None:
 
 def _emit_stream_json(result: dict[str, object]) -> None:
     """Emit Claude-style stream-json events followed by a final content block."""
-    # Start event
     _emit(json.dumps({"type": "message_start", "message": {"id": "msg_mock"}}) + "\n")
-    # Content block with the result embedded
     content = json.dumps(result, indent=2)
     _emit(
         json.dumps(
@@ -104,7 +102,7 @@ def _emit_stream_json(result: dict[str, object]) -> None:
         )
         + "\n"
     )
-    # Usage event (provides token/cost metadata)
+    # Usage event: token/cost metadata.
     _emit(
         json.dumps(
             {
@@ -114,7 +112,6 @@ def _emit_stream_json(result: dict[str, object]) -> None:
         )
         + "\n"
     )
-    # Stop event
     _emit(json.dumps({"type": "message_stop"}) + "\n")
 
 
@@ -176,8 +173,7 @@ def main() -> None:
         sys.exit(0)
 
     elif _MODE == "long_line":
-        # Emit a single line longer than MOCK_AGENT_LINE_BYTES, then the
-        # success result. Used to test the asyncio readline buffer cap.
+        # Oversized line before the success result: exercises the asyncio readline cap.
         size = _LINE_BYTES if _LINE_BYTES > 0 else 200_000
         _emit("x" * size + "\n")
         _emit_result(_success_result())

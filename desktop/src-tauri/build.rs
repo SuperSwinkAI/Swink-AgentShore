@@ -7,9 +7,8 @@ const SOURCE_BD_NAME: &str = "bd";
 fn main() {
     let target = std::env::var("TARGET").unwrap_or_default();
     if target.contains("windows") {
-        // Windows: bd is provisioned at install time via the managed sidecar venv,
-        // not bundled as a Tauri externalBin. packaging/desktop/windows/tauri.windows-installer.conf.json
-        // sets externalBin:[] for the Tauri build.
+        // Windows provisions bd at install time, not as a Tauri externalBin
+        // (tauri.windows-installer.conf.json sets externalBin:[]).
         println!("cargo:rerun-if-env-changed=TARGET");
     } else if std::env::var_os("AGENTSHORE_SKIP_BD_SIDECAR").is_none() {
         ensure_bd_sidecar();

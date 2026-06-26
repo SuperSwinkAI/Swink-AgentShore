@@ -151,7 +151,6 @@ def test_update_runs_config_loss_when_steps_have_config_actions():
         buf.add(_step())
     buf.compute_advantages(0.0)
 
-    # Snapshot config_head bias before update
     before = policy.config_head.bias.detach().clone()
     stats = updater.update(buf)
     after = policy.config_head.bias.detach().clone()

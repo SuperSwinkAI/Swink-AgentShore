@@ -23,11 +23,8 @@ from agentshore.state import IssueSnapshot, PlayType, PullRequestSnapshot
 
 # ---------------------------------------------------------------------------
 # render_skill_prompt — argument handling (with auto-reinstall from bundled)
-#
-# Note: as of the auto-reinstall fallback, render_skill_prompt no longer
-# returns a literal slash-command string. The function now always embeds
-# the SKILL.md body. These tests pass a real project_path and rely on the
-# bundled templates being copied in by the auto-reinstall path.
+# NOTE: render no longer returns a literal slash-command; it always embeds the
+# SKILL.md body, so these tests pass a real project_path and rely on auto-reinstall.
 # ---------------------------------------------------------------------------
 
 

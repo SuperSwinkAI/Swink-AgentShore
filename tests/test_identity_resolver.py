@@ -356,9 +356,7 @@ def test_explicit_gh_config_dir_takes_precedence(tmp_path) -> None:
     assert env["GH_CONFIG_DIR"] == str(explicit)
 
 
-# ---------------------------------------------------------------------------
 # report_identities — diagnostic / startup banner
-# ---------------------------------------------------------------------------
 
 
 def _report(*, identities: dict[str, GitHubIdentity], agents: dict[str, AgentConfig]) -> list:
@@ -858,9 +856,7 @@ def test_report_gh_login_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     assert row.resolved_login == "example-user"
 
 
-# ---------------------------------------------------------------------------
 # require_two_distinct_gh_identities
-# ---------------------------------------------------------------------------
 
 
 def test_require_two_identities_passes_with_two_logins() -> None:
@@ -1056,7 +1052,7 @@ def test_require_two_identities_rejects_undefined_identity() -> None:
         },
         agents={
             "claude_code": AgentConfig(identity="alice"),
-            "codex": AgentConfig(identity="ghost"),  # not defined
+            "codex": AgentConfig(identity="ghost"),
         },
     )
     with pytest.raises(ConfigError, match=r"not defined"):

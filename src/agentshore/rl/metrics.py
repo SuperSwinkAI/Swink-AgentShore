@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# _HIST_LEN is single-homed in ``observation`` (the RL obs vector is index-
-# sensitive; a one-sided edit would silently corrupt the encoding) and imported
-# above so metrics' rolling history length can never drift from it.
+# _HIST_LEN imported from ``observation`` (single source) — the obs vector is
+# index-sensitive, so a divergent copy here would silently corrupt the encoding.
 _ROLLING_WINDOW = 10  # plays to average over
 _AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset(
     {"agentshore/intake", "agentshore/qa", "agentshore/review"}
@@ -70,9 +69,8 @@ def compute_agent_specialization(
     for play in history:
         agent_id = play.agent_id
         play_type_raw = play.play_type
-        # Hard-fail-safe: reject anything that isn't a real (str, str). Tests
-        # often stub the play history with MagicMock — those objects make every
-        # attribute a Mock, which then breaks tuple sorting downstream.
+        # Reject non-(str, str): MagicMock-stubbed history (common in tests) makes
+        # every attribute a Mock, which breaks tuple sorting downstream.
         if not isinstance(agent_id, str) or not isinstance(play_type_raw, str):
             continue
         buckets.setdefault((agent_id, play_type_raw), []).append(bool(play.success))
@@ -224,9 +222,8 @@ class MetricsEngine:
         )
         busy_count = sum(1 for a in state.agents if a.status == AgentStatus.BUSY)
 
-        # Emit epic-level metrics from beads graph (Track 5).
-        # These replace the old cluster_* metrics; keyed under epic_closure_ratio_mean,
-        # epics_total, and tasks_ready so dashboards and log queries can grep for them.
+        # Epic-level metrics from beads graph (Track 5). Keyed under
+        # epic_closure_ratio_mean / epics_total / tasks_ready for dashboard + log grep.
         if state.graph is not None:
             epic_ratios = [e.closure_ratio for e in state.graph.epics]
             epic_closure_ratio_mean = sum(epic_ratios) / len(epic_ratios) if epic_ratios else 0.0
@@ -454,8 +451,8 @@ class _IssueClosureEvidence:
     merge_pr_artifact_present: bool
 
 
-# Artifact ``type`` strings that carry issue-closure evidence. Kept as named
-# constants so the dispatch reads intent rather than scattering magic strings.
+# Artifact ``type`` strings carrying issue-closure evidence — named constants
+# so dispatch reads intent rather than scattering magic strings.
 _ARTIFACT_ISSUE_CLOSED = "issue_closed"
 _ARTIFACT_ISSUES_CLOSED = "issues_closed"
 _ARTIFACT_PR_MERGED_ISSUE_NUMBERS = "pr_merged_issue_numbers"

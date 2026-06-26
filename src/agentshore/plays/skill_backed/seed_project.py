@@ -54,23 +54,16 @@ class SeedProjectPlay(SkillBackedPlay):
         if reasons:
             return reasons
 
-        # Carve-out for projects that actually need seeding: the bd graph is
-        # empty (issue #566). The previous gate keyed on
-        # ``state.last_play_success_by_type.get(SEED_PROJECT) is None`` —
-        # which conflated "this session's first play" with "project needs
-        # seeding". On a fresh session against an already-seeded project (200
-        # open issues, established epic graph), the old carve-out fired and
-        # bypassed the 10-issue ceiling. The new predicate keys on the actual
-        # signal: if the bd graph already has epics, the project has been
-        # seeded and the ceiling applies uniformly regardless of session
-        # history.
+        # Carve-out for projects that truly need seeding: empty bd graph (#566).
+        # Keying on first-play-of-session conflated that with "needs seeding" and
+        # let a fresh session against an already-seeded project bypass the ceiling;
+        # has_epics is the real signal.
         graph_is_empty = state.graph is None or not state.graph.has_epics
         if graph_is_empty:
             return []
 
-        # Already-seeded project: allow iff open_issues_count < ceiling
-        # (desktop-hzgb).  The ceiling prevents the unlimited-retry pattern
-        # that powered the 17-back-to-back-seeds incident.
+        # Already-seeded: allow iff open_issues < ceiling. Ceiling blocks the
+        # unlimited-retry pattern behind the 17-back-to-back-seeds incident.
         count = len(state.open_issues)
         ceiling = self._mid_session_issue_ceiling
         if count >= ceiling:
@@ -112,7 +105,7 @@ class SeedProjectPlay(SkillBackedPlay):
         )
 
 
-# Fail seed_project when it creates an implausible number of new issues.
+# Implausibly many new issues per run → fail for human review.
 _SEED_PROJECT_MAX_NEW_ISSUES_PER_RUN = 25
 
 

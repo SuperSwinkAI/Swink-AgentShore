@@ -326,7 +326,7 @@ async def test_aexit_marks_session_completed(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     sid = orch._session_id
     async with orch:
-        pass  # immediate exit
+        pass
 
     import aiosqlite
 
@@ -767,9 +767,7 @@ async def test_blocked_failsafe_end_session_preserves_idle_streak(tmp_path: Path
 @pytest.mark.asyncio
 async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path) -> None:
     selector = MagicMock()
-    # Eligibility refactor: the loop drains the selector's confirm-repick tally
-    # once per cycle via consume_repick_count(). Return a real int so
-    # _record_selection_repicks doesn't choke on a MagicMock comparison.
+    # Real int (not MagicMock) so _record_selection_repicks survives the comparison.
     selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     calls = 0
@@ -1055,9 +1053,7 @@ async def test_instantiate_selector_pick_dispatches_with_in_flight_work(
 ) -> None:
     selector = MagicMock()
     selector.select = AsyncMock(return_value=(PlayType.INSTANTIATE_AGENT, PlayParams()))
-    # Eligibility refactor: the loop drains confirm-repicks once per cycle via
-    # consume_repick_count(); return a real int so _record_selection_repicks
-    # doesn't crash on a MagicMock comparison.
+    # Real int (not MagicMock) so _record_selection_repicks survives the comparison.
     selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
@@ -1216,7 +1212,6 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
             # stop() should wake it
             await orch.stop()
             await asyncio.wait_for(task, timeout=5.0)
-            # Should have exited cleanly
             assert task.done()
 
 

@@ -29,9 +29,8 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-#: Max length of the failing-git stderr surfaced on a restore failure. Keeps the
-#: ``main_repo_auto_restore_failed`` event (and any reconcile diagnostics) bounded
-#: while preserving the operator-actionable tail of git's error message.
+#: Max length of failing-git stderr surfaced on a restore failure — keeps the
+#: ``main_repo_auto_restore_failed`` event bounded while preserving the tail.
 _RESTORE_STDERR_MAX = 500
 
 
@@ -53,17 +52,14 @@ class RestoreResult:
         return self.ok
 
 
-# Substring that flags a path which leaked through bash quoting and ended up
-# with a literal backslash-space. The canonical example is a project dir whose
-# name contains a space (e.g. ``~/Dev/Some Project``) becoming a mangled sibling
-# ``Some\ Project`` when a skill template's quoting dropped a level. The check is
-# intentionally a substring scan rather than a regex — there is no
-# legitimate filesystem path that should contain ``\ `` on macOS or Linux.
+# Substring flagging a path that leaked through bash quoting as a literal
+# backslash-space (e.g. ``~/Dev/Some Project`` mangled to ``Some\ Project`` when
+# a skill template dropped a quoting level). No legitimate POSIX path contains
+# ``\ ``, so a substring scan (not regex) suffices.
 PATH_ESCAPE_MARKER = "\\ "
 
-# Fallback default branch name if ``origin/HEAD`` cannot be resolved at
-# session start. ``main`` matches GitHub's default for new repos and is the
-# most common configuration in the AgentShore fleet.
+# Fallback default branch when ``origin/HEAD`` can't be resolved at session
+# start; ``main`` is GitHub's new-repo default and the fleet's common case.
 DEFAULT_BRANCH_FALLBACK = "main"
 
 
@@ -121,10 +117,9 @@ def current_head_ref(repo_root: Path) -> str | None:
     return ref or None
 
 
-#: Subdir under ``.agentshore/`` where :func:`restore_default_branch`
-#: quarantines untracked files that block the default-branch checkout. Mirrors
-#: ``trunk_artifacts.QUARANTINE_DIRNAME`` so recovered content lands in one
-#: well-known, gitignored place (``.agentshore/`` never re-flags as dirty trunk).
+#: Subdir under ``.agentshore/`` where :func:`restore_default_branch` quarantines
+#: untracked files blocking the default-branch checkout. Mirrors
+#: ``trunk_artifacts.QUARANTINE_DIRNAME``; ``.agentshore/`` never re-flags dirty.
 _RESTORE_RECLAIM_DIRNAME = "reclaimed"
 
 
@@ -246,9 +241,8 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResul
     if _checkout():
         return RestoreResult(ok=True)
 
-    # Checkout was refused — recover from an in-progress merge / dirty index.
-    # ``--abort`` is the merge-specific unwind; ``reset --hard`` then drops the
-    # conflicted/dirty *tracked* worktree+index so the checkout can land.
+    # Checkout refused: ``merge --abort`` unwinds an in-progress merge, then
+    # ``reset --hard`` drops conflicted/dirty *tracked* state so checkout lands.
     merge_in_progress = (repo_root / ".git" / "MERGE_HEAD").exists()
     for recovery in (["merge", "--abort"], ["reset", "--hard"]):
         if recovery == ["merge", "--abort"] and not merge_in_progress:
@@ -257,10 +251,9 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResul
         if _checkout():
             return RestoreResult(ok=True)
 
-    # Still refused after merge-abort + reset --hard: the blocker is untracked
-    # working-tree files the default branch would overwrite (#175). Quarantine
-    # them (recoverable) and retry, so a branch-switched HEAD left with untracked
-    # work no longer wedges dispatch.
+    # Still refused: blocker is untracked files the default branch would
+    # overwrite (#175). Quarantine (recoverable) and retry so untracked work on a
+    # branch-switched HEAD no longer wedges dispatch.
     quarantined = _quarantine_untracked_blockers(repo_root)
     if quarantined:
         _logger.warning(
@@ -286,14 +279,10 @@ def path_contains_backslash_space(path: str | Path) -> bool:
     return PATH_ESCAPE_MARKER in str(path)
 
 
-# Canonical set of repo-root paths AgentShore (or its plays / sidecars) owns.
-# Single source of truth for BOTH consumers so they can't drift (#594): the
-# gitignore writer below ignores them (left untracked they dirty the trunk and
-# block merge_pr / reconcile_state on the next run), and
+# Repo-root paths AgentShore owns. Single source for both consumers so they
+# can't drift (#594): the gitignore writer below ignores them, and
 # ``wedge_signals._AGENTSHORE_OWNED_UNTRACKED_PREFIXES`` derives from this to
-# filter them out of the dirty-trunk wedge signal. Previously two hand-kept
-# literals had drifted — the two ``*_refs.txt`` artifacts were gitignored here
-# but still counted dirty by wedge_signals.
+# filter them out of the dirty-trunk signal (the two had previously drifted).
 AGENTSHORE_OWNED_ROOT_PATHS: tuple[str, ...] = (
     ".agentshore/",
     ".agents/",
@@ -432,10 +421,9 @@ def _resolve_signing_key() -> str:
     """
     import pathlib
 
-    # Use the hardened git_sync wrapper (stdin=DEVNULL, CREATE_NO_WINDOW) rather
-    # than raw subprocess.run. In the desktop sidecar, the process's stdin is the
-    # live Tauri JSON-RPC pipe; git's MSYS2 runtime probes stdin on startup and
-    # wedges at 0 CPU forever when it inherits that pipe.
+    # Hardened git_sync (stdin=DEVNULL, CREATE_NO_WINDOW), not raw subprocess.run:
+    # in the sidecar stdin is the live Tauri JSON-RPC pipe, and git's MSYS2
+    # runtime wedges at 0 CPU forever if it inherits and probes that pipe.
     result = command.git_sync(
         "config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5
     )
@@ -554,9 +542,8 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=10,
-            # A passphrase-protected key would otherwise prompt on the inherited
-            # stdin (the live Tauri JSON-RPC pipe); DEVNULL fails fast instead of
-            # contending the pipe (#155).
+            # A passphrase-protected key would prompt on the inherited stdin (the
+            # live Tauri JSON-RPC pipe); DEVNULL fails fast instead (#155).
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -566,7 +553,6 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
         stderr = add_result.stderr.strip()
         return False, f"ssh-add load failed: {stderr}"
 
-    # Re-check after loading
     return _keys_loaded()
 
 

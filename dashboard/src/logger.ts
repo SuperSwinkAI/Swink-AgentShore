@@ -29,10 +29,7 @@ export const dashboardLogger = {
     message: string,
     context: DashboardLogContext = {},
   ): void {
-    // Errors are always surfaced — they indicate broken invariants users
-    // and devs both need to see, and they're infrequent enough that rate
-    // limiting hasn't been needed. If that changes, gate this behind a
-    // token bucket here in one place.
+    // Always surfaced (unlike warn): infrequent broken-invariant signals; add a token bucket here if that changes.
     console.error("[agentshore-dashboard]", { channel, message, ...context });
   },
 };

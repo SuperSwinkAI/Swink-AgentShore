@@ -68,9 +68,8 @@ class _WizardAbortError(Exception):
     """Raised when input retries are exhausted; converts to a clean skip."""
 
 
-# Sentinel returned by ``_prompt_choice`` when the user picks an extra-key
-# option (e.g. ``"n"`` for new account). Callers compare against the sentinel
-# prefix; the trailing key identifies which extra option was chosen.
+# Sentinel prefix for an extra-key choice from _prompt_choice; the trailing
+# key (e.g. "n" for new account) identifies which extra option was picked.
 _EXTRA_PREFIX = "__extra__:"
 
 # POSIX shell variable name shape — what `gh_token_env:` MUST hold.
@@ -137,7 +136,7 @@ class IdentityWizard:
         self._new_logins: set[str] = set()
         self._active_idx = next((i for i, a in enumerate(self._accounts) if a.active), 0)
 
-    # -- two-pass orchestration ----------------------------------------------
+    # Two-pass orchestration.
 
     def _pass1_bind_agents(self) -> dict[str, str]:
         """Map each agent to a login via interactive prompts."""
@@ -277,9 +276,7 @@ class IdentityWizard:
         )
 
 
-# ---------------------------------------------------------------------------
-# Prompt helpers (module-level for monkeypatch compatibility)
-# ---------------------------------------------------------------------------
+# Prompt helpers — module-level so tests can monkeypatch them.
 
 
 def _prompt_env_var_name(login: str, *, max_attempts: int = 5) -> str:
@@ -344,10 +341,8 @@ def _prompt_token_strategy(
     ):
         from beaupy import prompt as beaupy_prompt
 
-        # Masked echo (one ``*`` per character) so a pasted PAT is visibly
-        # registered. click's ``hide_input`` shows nothing, which left users
-        # unsure the paste landed. beaupy returns "" on an empty Enter and
-        # None on ESC/Ctrl-C (raise_on_* default False) — both back out here.
+        # Masked echo confirms the paste landed (click's hide_input shows
+        # nothing). beaupy returns "" on empty Enter / None on ESC — both back out.
         token = beaupy_prompt(
             "    Paste PAT (masked; press Enter to back out): ",
             secure=True,

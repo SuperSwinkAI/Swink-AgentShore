@@ -8,10 +8,6 @@ from agentshore.agents._selection import select_agent_for
 from agentshore.errors import AntiConfirmationViolation
 from agentshore.state import AgentStatus, AgentType, PlayType
 
-# ---------------------------------------------------------------------------
-# Minimal AgentHandle stub
-# ---------------------------------------------------------------------------
-
 
 class _FakeHandle:
     """Minimal stand-in for AgentHandle used by select_agent_for."""
@@ -31,11 +27,6 @@ class _FakeHandle:
         self.consecutive_timeouts = 0
         self.model_tier = model_tier
         self.github_identity = github_identity
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_code_review_excludes_pr_author() -> None:

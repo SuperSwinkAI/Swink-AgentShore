@@ -78,11 +78,6 @@ def _make_bridge(
     )
 
 
-# ---------------------------------------------------------------------------
-# File watcher behavior
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_bridge_picks_up_state_snapshot(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path
@@ -356,11 +351,6 @@ async def test_prime_from_disk_ignores_stale_session_ended(
     assert bridge._session_ended is True
 
 
-# ---------------------------------------------------------------------------
-# Session-aware replay gate (Tier 0)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_poll_rejects_cross_session_snapshot(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path
@@ -552,11 +542,6 @@ async def test_events_tail_resumes_after_rotation(
     assert parsed["payload"]["play_id"] == 2
 
 
-# ---------------------------------------------------------------------------
-# Command forwarding
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_bridge_forwards_command_to_ipc(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path
@@ -707,11 +692,6 @@ async def test_bridge_rejects_wrong_token(
     assert "Read-only" in error["error"]
 
 
-# ---------------------------------------------------------------------------
-# Server lifecycle
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_bridge_server_exits_after_session_ended(
     sock_path: Endpoint, static_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -770,11 +750,6 @@ async def test_bridge_server_exits_after_session_ended(
 
     assert len(fake_servers) == 1
     assert fake_servers[0].should_exit is True
-
-
-# ---------------------------------------------------------------------------
-# Packaging smoke
-# ---------------------------------------------------------------------------
 
 
 def test_default_static_assets_exist() -> None:

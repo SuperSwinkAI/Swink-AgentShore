@@ -119,8 +119,7 @@ async def test_concurrent_writes_and_streaming_reads_do_not_raise(tmp_path: Path
         issue_counter = 0
 
         async def writer(n: int) -> None:
-            # Each write opens an implicit transaction and commits — exactly the
-            # commit side of the race when it overlaps another task's cursor.
+            # Each write commits — the commit side of the race vs another task's cursor.
             nonlocal issue_counter
             for i in range(15):
                 issue_counter += 1
@@ -152,8 +151,7 @@ async def test_streaming_replay_iterator_does_not_hold_cursor_across_yields(
     try:
         session_id = "replay-session"
         await _seed_session(store, session_id)
-        # The iterator is a thin smoke check here; the contention guarantee is
-        # that consuming it while another task commits never raises.
+        # Smoke check: consuming the iterator while another task commits must not raise.
         seen = 0
         async for _record in store.iter_experience_for_replay(session_id, 13):
             seen += 1  # pragma: no cover - no rows seeded; loop body unused

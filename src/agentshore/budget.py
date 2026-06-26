@@ -117,9 +117,7 @@ def parse_duration_delta(text: str) -> int:
     return _parse_duration_core(text, min_minutes=None, max_minutes=MAX_TIME_BUDGET_MINUTES)
 
 
-# ---------------------------------------------------------------------------
-# Parse / validate a raw YAML budget mapping → BudgetConfig
-# ---------------------------------------------------------------------------
+# --- Parse / validate a raw YAML budget mapping → BudgetConfig ---
 
 
 def parse_budget_raw(raw: dict[str, object]) -> BudgetConfig:

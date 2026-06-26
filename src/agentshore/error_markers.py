@@ -21,10 +21,7 @@ from __future__ import annotations
 
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 
-# ===========================================================================
-# Auth family
-# ===========================================================================
-#
+# --- Auth family ---
 # Four scoped views detect "this is a GitHub/backend auth failure" against
 # different surfaces, each with deliberately different precision:
 #   * GITHUB_AUTH_ERROR_MARKERS — free-form skill/command error strings
@@ -50,20 +47,13 @@ PUBLISH_AUTH_MARKERS: tuple[str, ...] = (
 )
 
 # CLI stderr auth classification (full set). Was ``cli/errors._AUTH_PATTERNS``.
-# The trailing two are Codex backend-session TTL-expiry signatures — stderr-only,
-# deliberately NOT mirrored into the stdout subset (see CACHE_RENEWAL_MARKERS).
-#
-# Status codes are kept ONLY in their phrased forms ("http 401" / "401
-# unauthorized" / "http 403" / "403 forbidden"). The bare 3-digit tokens "401"
-# and "403" were removed: the live ``_StderrSniffer`` substring-matches this view
-# against an 8 KiB tail of raw CLI stderr, and Codex prefixes every stderr line
-# with a microsecond ISO timestamp (e.g. ``…18:40:20.319401Z``). The bare token
-# "401" is a substring of that timestamp fragment, so a benign skill-loader line
-# spuriously tripped a hard auth abort → ``agent_type_auth_suppressed`` benched
-# all Codex agents as "backend_auth_failed" when the token was fine (the agent was
-# merely rate-limited). The phrased forms carry a space + word and cannot collide
-# with timestamp noise, while "unauthorized"/"forbidden" below still catch a real
-# rejection that omits the numeric code.
+# Trailing two are Codex backend-session TTL-expiry signatures — stderr-only, NOT
+# mirrored into the stdout subset (see CACHE_RENEWAL_MARKERS).
+# Status codes kept ONLY in phrased forms ("http 401"/"401 unauthorized"/...).
+# Bare "401"/"403" were removed: they substring-match the microsecond ISO
+# timestamp Codex prefixes every stderr line with (e.g. ``…319401Z``), so a benign
+# line tripped a hard auth abort that benched all Codex agents while the token was
+# fine. Phrased forms carry a space + word and cannot collide.
 STDERR_AUTH_PATTERNS: tuple[str, ...] = (
     "unauthorized",
     "http 401",
@@ -121,9 +111,7 @@ AUTH_MARKERS: frozenset[str] = frozenset(GITHUB_AUTH_ERROR_MARKERS).union(
     PUBLISH_AUTH_MARKERS, STDERR_AUTH_PATTERNS, STDOUT_AUTH_MARKERS
 )
 
-# ---------------------------------------------------------------------------
-# Auth-adjacent probe vocabularies (siblings, NOT subsets of AUTH_MARKERS).
-# ---------------------------------------------------------------------------
+# --- Auth-adjacent probe vocabularies (siblings, NOT subsets of AUTH_MARKERS) ---
 # These detect the same *category* — "this agent cannot authenticate" — but
 # against a disjoint string set: CLI *login-status* output and *git transport*
 # errors, not GitHub-API auth strings. Homed here for single-sourcing; they are
@@ -157,25 +145,15 @@ GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
     "terminal prompts disabled",
 )
 
-# ===========================================================================
-# Rate-limit family
-# ===========================================================================
+# --- Rate-limit family ---
 
 # CLI stderr (full set). Was ``cli/errors._RATE_LIMIT_PATTERNS``.
-# "usage limit" / "try again at" are Codex usage-limit signatures (#276): Codex
-# prints "You've hit your usage limit … or try again at <ts>." on a quota miss.
-# "spending-limit" / "out of credits" are Grok's billing-quota signatures: it
-# prints "responses API error status=403 Forbidden error_message=
-# personal-team-blocked:spending-limit: You have run out of credits …" when the
-# account quota is exhausted. The trailing 403/Forbidden previously got it
-# misclassified as AUTH (a permanent session bench) when it is really a
-# recoverable quota exhaustion — the Grok analogue of Codex's usage limit.
-# Folding all of these into the rate-limit family routes the dispatch through the
-# exact path Claude's "hit your session limit" already uses — the
-# RATE_LIMIT_RECOVERY take_break plus the provider-wide eligibility hold
-# (rate_limited_types) that benches every same-type instance sharing the
-# exhausted quota. Because ``_classify_error`` checks rate_limit *before* auth,
-# the quota markers win over the coexisting 403/Forbidden auth tokens.
+# Quota signatures folded in (#276): Codex "usage limit"/"try again at", Grok
+# "spending-limit"/"out of credits" (the latter carries a trailing 403/Forbidden
+# that previously misclassified as a permanent AUTH bench). Routing them through
+# rate-limit reuses Claude's take_break + provider-wide eligibility hold;
+# ``_classify_error`` checks rate_limit before auth, so the quota markers win
+# over the coexisting 403 tokens.
 RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
@@ -208,9 +186,7 @@ RATE_LIMIT_MARKERS: frozenset[str] = frozenset(RATE_LIMIT_STDERR_PATTERNS).union
     RATE_LIMIT_STDOUT_MARKERS
 )
 
-# ===========================================================================
-# Timeout family
-# ===========================================================================
+# --- Timeout family ---
 
 # CLI stderr. Was ``cli/errors._TIMEOUT_PATTERNS``.
 TIMEOUT_STDERR_PATTERNS: tuple[str, ...] = (
@@ -224,9 +200,7 @@ TIMEOUT_STDOUT_MARKERS: tuple[str, ...] = ()
 
 TIMEOUT_MARKERS: frozenset[str] = frozenset(TIMEOUT_STDERR_PATTERNS).union(TIMEOUT_STDOUT_MARKERS)
 
-# ===========================================================================
-# Invalid-model family
-# ===========================================================================
+# --- Invalid-model family ---
 
 # CLI stderr. Was ``cli/errors._INVALID_MODEL_PATTERNS``.
 INVALID_MODEL_STDERR_PATTERNS: tuple[str, ...] = (
@@ -249,9 +223,7 @@ INVALID_MODEL_MARKERS: frozenset[str] = frozenset(INVALID_MODEL_STDERR_PATTERNS)
     INVALID_MODEL_STDOUT_MARKERS
 )
 
-# ===========================================================================
-# Single-stream families (match in either stderr or stdout; no precision split)
-# ===========================================================================
+# --- Single-stream families (match in either stderr or stdout; no precision split) ---
 
 # Codex rollout-recording internal error. Was ``cli/errors._CODEX_ROLLOUT_PATTERNS``.
 CODEX_ROLLOUT_MARKERS: frozenset[str] = frozenset({"failed to record rollout items"})

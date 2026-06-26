@@ -529,7 +529,6 @@ async def test_archive_fetch_report_returns_html_path_and_sections(tmp_path: Pat
         '<html><body><section id="x"><h2>X</h2></section></body></html>',
         encoding="utf-8",
     )
-    # Point archive at the dir
     await store.create_archive(
         ArchiveRecord(
             archive_id="archive-2",

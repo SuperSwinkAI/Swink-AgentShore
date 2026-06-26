@@ -37,10 +37,8 @@ _BOOL_PARAMS: dict[str, frozenset[str]] = {
     "drain": frozenset({"end_session_report", "open_report"}),
 }
 
-# Commands that require at least one of a set of optional positive-number params.
-# Each named field, when present, must be a finite positive number; ``delta_minutes``
-# must additionally be a whole number of minutes (an int, or a float with no
-# fractional part). At least one of the fields must be present.
+# At least one named field must be present; each, if present, must be a finite
+# positive number. ``delta_minutes`` must additionally be a whole number.
 _AT_LEAST_ONE_POSITIVE_PARAMS: dict[str, frozenset[str]] = {
     "add_budget": frozenset({"delta_usd", "delta_minutes"}),
 }

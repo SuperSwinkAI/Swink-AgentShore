@@ -270,10 +270,8 @@ def test_session_stats_aggregate_play_history() -> None:
             dollar_cost=0.50,
             agent_id="agent-a",
         ),
-        # In-flight placeholder: dispatched but not yet finalized. The
-        # success=False default must NOT be counted as a failure — the agent is
-        # still doing the work. Mirrors the real placeholder row
-        # (``ended_at``/``agent_id``/``duration_ms`` all unset).
+        # In-flight placeholder (ended_at/agent_id/duration_ms unset): success=False
+        # default must NOT count as a failure — work is still running.
         PlayRecord(
             session_id="s",
             play_type=PlayType.ISSUE_PICKUP.value,
@@ -284,10 +282,8 @@ def test_session_stats_aggregate_play_history() -> None:
 
     stats = SnapshotProjector.compute_session_stats(history)
 
-    # The 4th row is an in-flight placeholder (ended_at unset): it must be
-    # excluded from every ok/fail/total counter so a running play is never
-    # mislabelled a failure. If it leaked in, total_plays would be 4 and
-    # failed_plays would be 2.
+    # In-flight placeholder (ended_at unset) excluded from all counters; if it
+    # leaked in, total_plays would be 4 and failed_plays 2.
     assert stats.total_plays == 3
     assert stats.successful_plays == 2
     assert stats.failed_plays == 1

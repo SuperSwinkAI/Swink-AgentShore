@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Matches any bare "#N" reference (used in the second pass over keyword lines).
+# Bare "#N" reference, for the second pass over keyword lines.
 _BARE_ISSUE_RE = re.compile(r"#(\d+)")
 
 
@@ -129,10 +129,8 @@ def _validated_issue_set(
     if pr_body is None:
         return list(skill_issues)
 
-    # Two-pass extraction so that comma-separated lists like
-    # "Closes #123, #456" or "Fixes #1, #2, and #3" are fully captured.
-    # Pass 1: find every line that contains a closing keyword.
-    # Pass 2: extract ALL #N references from those lines.
+    # Two-pass extraction captures comma-separated lists ("Closes #1, #2, #3"):
+    # pass 1 finds lines with a closing keyword, pass 2 pulls all #N from them.
     body_issues: set[int] = set()
     for line in pr_body.splitlines():
         if _PR_BODY_ISSUE_RE.search(line):
@@ -158,7 +156,7 @@ def _validated_issue_set(
             reason="issue in PR body but missing from skill result — adding",
         )
 
-    # Final set: body_issues is the ground truth; hallucinated entries are dropped.
+    # body_issues is ground truth; hallucinated entries are dropped.
     return sorted(body_issues)
 
 
@@ -209,15 +207,10 @@ class MergePRPlay(SkillBackedPlay):
         """
         outcome = await super().execute(state, params, ctx=ctx)
         if outcome.success and params.pr_number is not None:
-            # Mark the PR merged, complete its reviews, fast-forward the local
-            # target branch, resolve linked issues, and close them + their beads
-            # tasks. The shared reconciler owns this propagation (also used by
-            # unblock_pr for stacked siblings). We pass this module's own helper
-            # names so the tests that patch ``merge_pr.bd`` /
-            # ``merge_pr._fetch_pr_body`` / ``merge_pr._fetch_pr_links`` /
-            # ``merge_pr.fast_forward_local_branch`` by module path still reach
-            # the call sites. Imported lazily to avoid an import cycle
-            # (``_merge_reconcile`` imports this module's helpers).
+            # Shared reconciler propagates the merge (also used by unblock_pr for
+            # stacked siblings). Pass this module's own helpers so tests patching
+            # ``merge_pr.*`` by module path still reach the call sites. Imported
+            # lazily to avoid an import cycle (``_merge_reconcile`` imports them).
             from agentshore.plays.skill_backed._merge_reconcile import reconcile_merged_pr
 
             raw_issues_closed = (
@@ -234,13 +227,10 @@ class MergePRPlay(SkillBackedPlay):
                 fast_forward=fast_forward_local_branch,
             )
 
-            # Record the validated issue list as an artifact so MetricsEngine
-            # can distinguish linked merges from doc-only/hotfix merges when
-            # counting issue throughput. Empty list is meaningful — it tells
-            # downstream consumers "this merge closed no issues" rather than
-            # "no data". See _play_closed_issue() in src/agentshore/rl/metrics.py.
-            # ``issues_closed`` key satisfies the desktop-8otp acceptance criteria
-            # (downstream consumers: run_qa, groom_backlog, dashboard DONE column).
+            # Artifact lets MetricsEngine distinguish linked merges from
+            # doc-only/hotfix ones (see _play_closed_issue in rl/metrics.py). Empty
+            # list is meaningful: "closed no issues", not "no data". The
+            # ``issues_closed`` key feeds run_qa, groom_backlog, dashboard DONE.
             outcome = dataclasses.replace(
                 outcome,
                 artifacts=[

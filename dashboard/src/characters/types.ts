@@ -46,24 +46,20 @@ export interface Character {
   x: number;
   y: number;
 
-  // walk path
   path: Tile[];
   pathIndex: number;
   targetState: CharacterState;
   targetDirection?: Direction | null;
 
-  // animation
   animFrame: number;
   animTimer: number;
 
-  // idle wander
   wanderTimer: number;
 
   // reserved seat key (for cleanup on reassign/removal)
   reservedSeatKey: string | null;
 
-  // play_id of the most recently started play for this agent; used to ignore
-  // stale play_completed events that arrive after a newer play_started
+  // Most recent play_id; ignore stale play_completed events arriving after a newer play_started.
   activePlayId: number | null;
   activePlayType: string | null;
 

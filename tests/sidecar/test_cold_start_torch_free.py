@@ -61,7 +61,7 @@ def test_sidecar_cold_start_does_not_import_torch() -> None:
         f"torch was loaded by sidecar cold start. stdout:\n{out}\nstderr:\n{result.stderr}"
     )
 
-    # Cross-check: the diagnostic module list should be empty too.
+    # Cross-check: no torch.* modules present either.
     for line in out.splitlines():
         if line.startswith("TORCH_MODULES:"):
             modules = line[len("TORCH_MODULES:") :]

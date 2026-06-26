@@ -107,7 +107,6 @@ export class AgentShoreStateManager {
   private npcs = NPCS.map((npc) => spawnNpcCharacter(npc));
   private lastSeenSeq = 0;
 
-  // latest state for HUD (Phase 4)
   latestState: StateUpdate | null = null;
   feedbackPending: string | null = null;
   connected = true;

@@ -81,10 +81,8 @@ def test_rate_limit_on_grok_does_not_zero_claude_codex_eligibility() -> None:
 
     mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
 
-    # Work plays that claude_code or codex are capable of must remain eligible
-    # — the rate_limit on the grok agent must not collapse the whole fleet.
-    # CODE_REVIEW additionally requires a PR snapshot for anti-confirmation
-    # gating, so we cover it in the dedicated test below.
+    # claude/codex work plays must stay eligible — grok's rate_limit must not
+    # collapse the fleet. CODE_REVIEW needs a PR snapshot, covered separately below.
     for play in (PlayType.ISSUE_PICKUP, PlayType.RUN_QA, PlayType.WRITE_IMPLEMENTATION_PLAN):
         assert mask[PLAY_TO_INDEX[play]], f"{play.value} was zeroed by grok rate_limit"
 
@@ -166,12 +164,10 @@ def test_rate_limit_excludes_only_same_type_candidates() -> None:
     assert mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
 
 
-# ---------------------------------------------------------------------------
-# #277: auth-suppression must mask late-resolved plays too. Unlike rate_limit,
-# an auth-failed agent returns to IDLE (its process is healthy; only its backend
-# token is dead), so the IDLE gate alone never excludes it. The eligibility mask
-# must drop the auth-suppressed TYPE explicitly, mirroring select_agent_for.
-# ---------------------------------------------------------------------------
+# #277: auth-suppression must mask late-resolved plays too. Unlike rate_limit, an
+# auth-failed agent returns to IDLE (process healthy, only the backend token dead),
+# so the IDLE gate alone never excludes it. The mask must drop the auth-suppressed
+# TYPE explicitly, mirroring select_agent_for.
 
 
 def _state_with_auth_suppressed(

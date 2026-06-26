@@ -21,10 +21,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_pr_snapshot(
     pr_number: int, *, state: str = "open", blocked: bool = False
@@ -108,11 +104,6 @@ def _make_pr_record(
     )
 
 
-# ---------------------------------------------------------------------------
-# _project_pull_requests: mergeable=CONFLICTING must set blocked=True
-# ---------------------------------------------------------------------------
-
-
 def test_project_pull_requests_conflicting_sets_blocked() -> None:
     """Regression: mergeable=CONFLICTING must propagate to blocked=True.
 
@@ -136,11 +127,6 @@ def test_project_pull_requests_mergeable_pr_not_blocked() -> None:
     snapshots = SnapshotProjector.project_pull_requests(records)
     assert snapshots[0].blocked is False
     assert "merge_conflicts" not in snapshots[0].blocked_reasons
-
-
-# ---------------------------------------------------------------------------
-# _phase_fetch_github snapshots open PRs at bootstrap
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -177,11 +163,6 @@ async def test_phase_ensure_labels_skipped_when_gh_unavailable() -> None:
 
     await _phase_ensure_labels(gh=mock_gh, cfg=RuntimeConfig())
     mock_gh.ensure_labels.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# unblock_pr resolver: in-flight collision dedup
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -229,11 +210,6 @@ async def test_unblock_pr_resolver_picks_other_blocked_pr() -> None:
     result = await resolver._resolve_via_candidates(PlayType.UNBLOCK_PR, state)
     assert result is not None, "Expected PR #21 to be returned"
     assert result.pr_number == 21, f"Expected pr_number=21; got {result.pr_number}"
-
-
-# ---------------------------------------------------------------------------
-# UnblockPrPlay preconditions: all-in-flight defense
-# ---------------------------------------------------------------------------
 
 
 def test_unblock_pr_preconditions_fail_when_all_in_flight() -> None:

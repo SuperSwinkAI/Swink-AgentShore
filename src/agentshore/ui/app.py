@@ -310,7 +310,7 @@ class OrchestratorApp(App[None]):
                     self._paused = False
                     self.run_worker(self._orch.add_budget(delta_usd=delta))
             else:
-                # Dismissed without action — leave session paused
+                # Dismissed without action — resume session
                 self._paused = False
 
         self.push_screen(EscalationModal(event.reason), callback=_on_result)

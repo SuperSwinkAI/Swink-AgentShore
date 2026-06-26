@@ -26,24 +26,19 @@ from agentshore.state import (
 
 
 def _completion(limit: int = 2) -> types.SimpleNamespace:
-    # All shared state lives on one SessionRuntime, shared by the completion
-    # processor and the loop stub so the autonomous-stop write-backs are visible
-    # to the assertions.
+    # One shared SessionRuntime so autonomous-stop write-backs are visible to assertions.
     runtime = SessionRuntime(progress_monitor=ForwardProgressMonitor(no_progress_ticks=limit))
     host = types.SimpleNamespace(
         _runtime=runtime,
         _session_id="s1",
         _drain=types.SimpleNamespace(begin_drain=AsyncMock()),
     )
-    # check_no_forward_progress routes the stop through the host
-    # _initiate_autonomous_stop delegator, which forwards to
-    # self._loop.initiate_autonomous_stop → self._drain.begin_drain.
+    # Stop routes through host → loop.initiate_autonomous_stop → drain.begin_drain.
     loop = types.SimpleNamespace(_host=host, _drain=host._drain, _runtime=runtime)
     loop.initiate_autonomous_stop = types.MethodType(LoopRunner.initiate_autonomous_stop, loop)
     host._loop = loop
     host._initiate_autonomous_stop = types.MethodType(Orchestrator._initiate_autonomous_stop, host)
-    # The processor reads shared state via self._runtime and its own _session_id
-    # (a constructor dep). Build a stand-in with just those surfaces.
+    # Processor only needs shared _runtime + its own _session_id.
     return types.SimpleNamespace(_host=host, _runtime=runtime, _session_id="s1")
 
 

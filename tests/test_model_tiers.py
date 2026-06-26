@@ -175,11 +175,6 @@ def test_effective_model_tier_config_preserves_legacy_top_level_settings() -> No
     assert resolved.reasoning_effort == "xhigh"
 
 
-# ---------------------------------------------------------------------------
-# REASONING_EFFORTS / reasoning_efforts_for
-# ---------------------------------------------------------------------------
-
-
 def test_reasoning_efforts_claude_code_has_five_values() -> None:
     efforts = reasoning_efforts_for(AgentType.CLAUDE_CODE)
 

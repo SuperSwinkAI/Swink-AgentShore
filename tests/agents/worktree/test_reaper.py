@@ -174,9 +174,8 @@ async def test_reap_exception_marks_row_failed_freeing_unique_index(
     assert persisted is not None
     assert persisted.status == "failed"
 
-    # Regression: the (session_id, branch_name) partial unique index is now
-    # free — a fresh allocation for the same pair no longer collides. Before the
-    # fix the stuck 'reaping' row made this insert raise.
+    # Regression: the (session_id, branch_name) partial unique index is free
+    # again — the old stuck 'reaping' row used to make this re-insert collide.
     new_row = await insert_worktree(
         store,
         session_id="sess-other",
@@ -579,10 +578,8 @@ async def test_manager_reap_closed_prs_empty_protected_reaps_all(
     assert not stale_path.exists()
 
 
-# ---------------------------------------------------------------------------
-# In-flight registry contract — the single owner of reap protection
-# (register_dispatch / release_dispatch; #189, #203)
-# ---------------------------------------------------------------------------
+# In-flight registry contract — single owner of reap protection
+# (register_dispatch / release_dispatch; #189, #203).
 
 
 def _alloc(worktree_id: int, path: Path) -> WorktreeAllocation:
@@ -754,9 +751,7 @@ async def test_finalize_after_dispatch_releases_inflight_mark(
     assert wm._protected_ids() == set()
 
 
-# ---------------------------------------------------------------------------
-# reap_git_orphans + sweep two-phase reconciliation
-# ---------------------------------------------------------------------------
+# --- reap_git_orphans + sweep two-phase reconciliation ---
 
 
 async def test_reap_git_orphans_is_noop_on_clean_state(store: DataStore, main_repo: Path) -> None:

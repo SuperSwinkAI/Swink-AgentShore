@@ -93,33 +93,25 @@ class DataStore(
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
-        # desktop-#4: tolerate a transient writer-lock held by an outgoing
-        # session's sidecar on a quick stop→start. Without this, the new
-        # orchestrator's first-snapshot write raised "database is locked" and
-        # hard-failed session.start; the old sidecar releases the WAL lock within
-        # seconds, so waiting up to 5s absorbs the race instead of failing.
+        # desktop-#4: absorb the transient WAL writer-lock an outgoing sidecar
+        # holds on a quick stop→start (else first-snapshot write hard-fails
+        # session.start); the lock clears within seconds.
         await self._db.execute("PRAGMA busy_timeout=5000")
-        # desktop-gkku: durability hardening for environments that defer
-        # fsyncs (macOS screen-lock I/O throttling — desktop-tvsb).
-        #   - synchronous=FULL forces F_FULLFSYNC on macOS, which the OS
-        #     cannot defer even under aggressive power management. The
-        #     2-3x commit slowdown is acceptable at our write volume.
-        #   - wal_autocheckpoint=100 (vs the 1000-page default) closes
-        #     the freshly-checkpointed-vs-main desync window 10x faster,
-        #     reducing the surface area for any deferred-write surprise.
+        # desktop-gkku: durability hardening where fsyncs get deferred (macOS
+        # screen-lock I/O throttling, desktop-tvsb). synchronous=FULL forces
+        # F_FULLFSYNC (un-deferrable; ~2-3x commit cost, acceptable here);
+        # wal_autocheckpoint=100 closes the checkpointed-vs-main desync window
+        # 10x faster than the 1000-page default.
         await self._db.execute("PRAGMA synchronous=FULL")
         await self._db.execute("PRAGMA wal_autocheckpoint=100")
         schema_sql = _load_schema_sql()
         await self._apply_schema_with_lock_retry(schema_sql)
 
-    # Bounded retry for the writer-lock race on a quick stop->start (#4, #283).
-    # Bounded by wall-clock, not a fixed attempt count: a previous session's
-    # store ``close()`` (Online-Backup snapshot + ``os.replace`` of the DB file,
-    # #283) can legitimately hold the writer lock for several seconds on a large
-    # DB or throttled disk, which a fixed 5-attempt budget could exhaust mid-
-    # close and then hard-fail a restart. The sidecar's session-start barrier
-    # (``session_lifecycle._await_prior_store_teardown``) normally prevents the
-    # overlap entirely; this is the store-level backstop with a generous window.
+    # Writer-lock retry budget for a quick stop->start (#4, #283). Wall-clock
+    # bounded, not attempt-count: a prior session's close() (Online-Backup +
+    # os.replace, #283) can hold the lock for seconds on a large/throttled DB,
+    # which a fixed attempt budget could exhaust mid-close. Backstop to the
+    # sidecar's session-start barrier (_await_prior_store_teardown).
     _INIT_LOCK_RETRY_BUDGET_SECONDS = 45.0
     _INIT_LOCK_RETRY_BASE_DELAY = 0.5
     _INIT_LOCK_RETRY_MAX_DELAY = 4.0
@@ -161,8 +153,7 @@ class DataStore(
             except sqlite3.OperationalError as exc:
                 if "database is locked" not in str(exc).lower():
                     raise
-                # Give up if even after the next backoff we'd be past the budget,
-                # so we never sleep past the deadline for a doomed retry.
+                # Bail before sleeping past the deadline on a doomed retry.
                 if time.monotonic() + delay >= deadline:
                     raise DatabaseLockedError(
                         "store init could not acquire the database lock within "
@@ -287,9 +278,8 @@ class DataStore(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         ) as cursor:
             all_tables = {row["name"] for row in await cursor.fetchall()}
-        # Partition assertion: every table is exactly one of meta / preserved /
-        # delete. A new table missing from both sets lands in to_delete, so it
-        # can never be silently forgotten.
+        # Partition: every table is meta, preserved, or delete. A new table
+        # missing from both sets falls into to_delete, never silently retained.
         to_delete = all_tables - self._RESET_PRESERVED_TABLES - self._RESET_META_TABLES
         unknown_preserved = self._RESET_PRESERVED_TABLES - all_tables
         unknown_meta = self._RESET_META_TABLES - all_tables
@@ -302,12 +292,9 @@ class DataStore(
             raise DatabaseError(msg)
         # Deterministic order keeps the executescript stable run-to-run.
         reset_script = "".join(f"DELETE FROM {name};\n" for name in sorted(to_delete))
-        # A single executescript drives every DELETE in one round-trip instead
-        # of one await self._conn.execute() per table (GH #507 / desktop-bbl).
-        # The DELETEs run inside the implicit transaction executescript opens,
-        # and aiosqlite still flushes via commit below. PRAGMA
-        # foreign_keys=OFF/ON wraps the truncation so we don't fight FK
-        # constraints between, e.g., agents and agent_handoffs.
+        # One executescript drives every DELETE in a single round-trip (#507 /
+        # desktop-bbl). foreign_keys=OFF/ON wraps it so FK constraints (e.g.
+        # agents vs agent_handoffs) don't block the truncation.
         await self._conn.execute("PRAGMA foreign_keys=OFF")
         try:
             await self._conn.executescript(reset_script)
@@ -331,11 +318,9 @@ class DataStore(
         if self._db is None:
             return
 
-        # Drain any open implicit transaction before backup. A failed write
-        # (e.g., UNIQUE-constraint IntegrityError) can leave aiosqlite's
-        # connection inside a transaction; sqlite3.Connection.backup() then
-        # deadlocks waiting for the lock to clear. rollback() is a no-op when
-        # autocommit is already in effect.
+        # Drain any open implicit transaction before backup: a prior failed
+        # write (e.g. UNIQUE IntegrityError) leaves the connection in a txn and
+        # backup() then deadlocks on the lock. rollback() is a no-op in autocommit.
         with contextlib.suppress(Exception):
             await self._db.rollback()
 
@@ -356,9 +341,8 @@ class DataStore(
                 await target.close()
             backup_ok = True
         except (aiosqlite.Error, OSError) as exc:
-            # Don't suppress — the orchestrator's shutdown_step logger surfaces
-            # this as ``store_close_failed`` so the operator knows the snapshot
-            # didn't land. Existing main DB file is left untouched.
+            # Don't suppress — surfaced as store_close_failed so the operator
+            # knows the snapshot didn't land; main DB file left untouched.
             structlog.get_logger(__name__).warning(
                 "store_close_backup_failed",
                 error=str(exc),

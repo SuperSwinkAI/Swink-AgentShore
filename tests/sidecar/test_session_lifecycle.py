@@ -344,9 +344,8 @@ class _FakeOrch:
 
     def request_drain(self, reason: str) -> None:
         self.drained.append(reason)
-        # In real orch, request_drain wakes the loop and the loop exits
-        # after the drain completes. The fake immediately releases the
-        # supervised task to mirror that exit semantics.
+        # Real orch: request_drain wakes the loop, which exits after drain.
+        # The fake releases the supervised task immediately to mirror that.
         self._loop_event.set()
 
     async def stop(self) -> None:
@@ -555,10 +554,9 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
             self._natural_exit_callback = cb
 
         def register_esr_ready_callback(self, cb: object) -> None:
-            # Issue #561: the lifecycle wires an esr_ready emitter so drain.py
-            # can skip ``webbrowser.open`` and instead notify the desktop
-            # shell. Accept-and-store keeps this fake passive while still
-            # exercising the contract the lifecycle expects.
+            # #561: lifecycle wires an esr_ready emitter so drain.py notifies the
+            # desktop shell instead of opening webbrowser. Accept-and-store keeps
+            # this fake passive while honoring the contract.
             self._esr_ready_callback = cb
 
         async def publish_initial_state(self) -> None:
@@ -710,6 +708,5 @@ def test_make_bridge_binds_to_advertised_port(tmp_path: Path) -> None:
             "session.start's ipc_endpoint, not re-roll a free port."
         )
     finally:
-        # Bridge isn't started — nothing to clean up beyond letting the
-        # asyncio.Event go out of scope. Assertion is enough.
+        # Bridge isn't started — nothing to clean up; the assertion is enough.
         del bridge

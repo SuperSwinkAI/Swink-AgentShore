@@ -48,10 +48,8 @@ def _dispatch_agents_rpc(
         return _result(req_id, agents_catalog())
 
     if method == "agents.check_auth":
-        # Backend-auth probe for the configured CLI agents (shells out per
-        # agent), mirroring identities.check_access: run off the serve loop so
-        # concurrent setup-screen RPCs don't serialize behind it. The handler
-        # never raises on a probe failure — it returns error-status rows.
+        # Run off the serve loop so concurrent setup-screen RPCs don't serialize
+        # behind the per-agent auth shell-out; probe failures return error rows, never raise.
         obj_params = raw_params if isinstance(raw_params, dict) else {}
         _project_path = active_project_path
 

@@ -22,11 +22,6 @@ def _mock_store() -> Any:
     return store
 
 
-# ---------------------------------------------------------------------------
-# No drift is inferred without a path-boundary source
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_drift_without_prefix_constraints(capsys: Any, caplog: Any) -> None:
     """No prefix constraints means no artifact drift row is logged."""
@@ -49,11 +44,6 @@ async def test_no_drift_without_prefix_constraints(capsys: Any, caplog: Any) -> 
     )
 
     store.log_scope_drift.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Plays with unbounded issue creation do not trigger inflation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -79,11 +69,6 @@ async def test_internal_plays_skip_scope_validation() -> None:
     store.log_scope_drift.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Scope validation runs on failed plays without inferring artifact drift
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_drift_recorded_for_failed_play() -> None:
     """Failed plays also produce no drift without path boundaries."""
@@ -91,7 +76,7 @@ async def test_no_drift_recorded_for_failed_play() -> None:
 
     store = _mock_store()
     skill_result = SkillResult(
-        success=False,  # failed play
+        success=False,
         artifacts=[{"path": "area/backend/bar.py"}],
     )
     cfg = RuntimeConfig()

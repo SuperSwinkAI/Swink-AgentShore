@@ -14,10 +14,6 @@ from agentshore.core.fork_guard import (
     parse_origin_owner,
 )
 
-# ---------------------------------------------------------------------------
-# parse_origin_owner
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     ("remote", "expected"),
@@ -36,11 +32,6 @@ from agentshore.core.fork_guard import (
 )
 def test_parse_origin_owner(remote: str, expected: str | None) -> None:
     assert parse_origin_owner(remote) == expected
-
-
-# ---------------------------------------------------------------------------
-# detect_cross_fork_pr_artifacts
-# ---------------------------------------------------------------------------
 
 
 def test_detect_cross_fork_pr_same_owner_no_findings() -> None:
@@ -92,11 +83,6 @@ def test_detect_cross_fork_pr_unparseable_url_skipped() -> None:
     artifacts = [{"type": "pr", "url": "not-a-github-url"}]
     findings = detect_cross_fork_pr_artifacts(artifacts, origin_owner="jwesleye")
     assert findings == []
-
-
-# ---------------------------------------------------------------------------
-# detect_non_origin_remotes
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -183,11 +169,6 @@ async def test_detect_non_origin_remotes_multiple_extra_remotes(
     names = {f.detail for f in findings}
     assert any("fork" in d for d in names)
     assert any("upstream" in d for d in names)
-
-
-# ---------------------------------------------------------------------------
-# ForkFinding dataclass
-# ---------------------------------------------------------------------------
 
 
 def test_fork_finding_frozen() -> None:

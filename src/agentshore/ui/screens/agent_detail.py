@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from agentshore.state import AgentSnapshot
 
 _STATUS_SYMBOLS: dict[str, str] = {
-    "idle": "●",  # ●
-    "busy": "◉",  # ◉
-    "error": "✕",  # ✕
-    "terminated": "—",  # —
+    "idle": "●",
+    "busy": "◉",
+    "error": "✕",
+    "terminated": "—",
 }
 
 

@@ -29,9 +29,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     mock_selector.should_update = MagicMock(return_value=False)
     mock_selector.should_checkpoint = MagicMock(return_value=False)
     mock_selector.on_play_completed = AsyncMock()
-    # Eligibility refactor: the loop drains confirm-repicks once per cycle via
-    # consume_repick_count(). Return a real int so _record_selection_repicks
-    # doesn't choke on a MagicMock in the ``repicks > 0`` comparison.
+    # Real int (not MagicMock) so _record_selection_repicks survives the repicks > 0 check.
     mock_selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = make_test_orchestrator(
@@ -232,11 +230,9 @@ async def test_loop_awaits_pause_event(tmp_path: Path) -> None:
     task = asyncio.create_task(orch.run_until_idle())
     await asyncio.wait_for(pause_triggered.wait(), timeout=2.0)
 
-    # Loop should be paused
     assert not orch._pause_event.is_set()
     count_at_pause = play_count
 
-    # Resume → loop finishes remaining plays
     await orch.resume()
     await asyncio.wait_for(task, timeout=5.0)
     assert play_count > count_at_pause, "More plays should have run after resume"
@@ -322,18 +318,14 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
 
     orch._executor.execute = mock_execute
 
-    # Loop pauses; need to resume it
     task = asyncio.create_task(orch.run_until_idle())
-    # Wait until the pause has been triggered (but don't resume yet)
-    # Use a short sleep as fallback since _pause_with_reason blocks
+    # Poll until paused (don't resume yet); _pause_with_reason blocks.
     for _ in range(20):
         await asyncio.sleep(0.01)
         if not orch._pause_event.is_set():
             break
-    # Loop is alive but blocked — NOT returned
     assert not task.done(), "_pause_with_reason must not exit the loop"
 
-    # Unblock and let it finish
     await orch.resume()
     await asyncio.wait_for(task, timeout=2.0)
 
@@ -450,10 +442,8 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
 
     cfg = RuntimeConfig(feedback=FeedbackConfig(cadence_minutes=5))
     orch = _make_orch(tmp_path, cfg=cfg)
-    # Anchor the last ack well in the past relative to the *current* monotonic
-    # clock so the 5-minute cadence is due regardless of the host's absolute
-    # monotonic() value — CLOCK_MONOTONIC (time since boot) can read below 300
-    # on a freshly-booted CI runner, which an absolute 0.0 baseline assumed away.
+    # Anchor the ack far in the past: CLOCK_MONOTONIC can read < 300 on a freshly
+    # booted CI runner, so an absolute 0.0 baseline wouldn't make the cadence due.
     orch._feedback_cadence_last_ack_monotonic = time.monotonic() - 10_000.0
 
     paused_reasons: list[str] = []
@@ -510,7 +500,6 @@ async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
 
     orch._state_provider = TrackingProvider()
 
-    # Trigger first cadence pause
     await orch._lifecycle.pause_for_feedback_cadence_if_due()
     assert paused_reasons == ["feedback_cadence_plays"]
     assert not orch._pause_event.is_set()

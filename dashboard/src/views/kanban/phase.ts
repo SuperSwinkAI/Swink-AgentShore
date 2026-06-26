@@ -175,14 +175,12 @@ function _deriveColumns(
       if (!existing) {
         prByIssue.set(pr.issue_number, pr);
       } else if (existing.state !== "open" && pr.state === "open") {
-        // Always prefer an open PR over a closed/merged one.
         prByIssue.set(pr.issue_number, pr);
       } else if (
         existing.state === "open" &&
         pr.state === "open" &&
         pr.pr_number > existing.pr_number
       ) {
-        // Among open PRs, take the highest pr_number (most recently created).
         prByIssue.set(pr.issue_number, pr);
       }
     }

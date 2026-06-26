@@ -29,11 +29,9 @@ def _needs_interactive_agent_selection(cfg: RuntimeConfig, *, config_created: bo
     )
 
 
-# Top-level config blocks whose misconfiguration is security-relevant: silently
-# defaulting them to "empty/permissive" while continuing the wizard would weaken
-# the trust boundary (e.g. an unparseable ``trusted_ids`` block should NOT become
-# "trust everyone"). When the full-loader rejection names one of these, we refuse
-# the agents-only fallback and re-raise instead.
+# Config blocks where defaulting to empty/permissive on parse failure would
+# weaken the trust boundary (an unparseable trusted_ids must not become "trust
+# everyone"): re-raise instead of falling back to the agents-only wizard.
 _SECURITY_RELEVANT_BLOCKS: tuple[str, ...] = ("identities", "trusted_ids")
 
 
@@ -59,14 +57,10 @@ def _load_config_for_agent_setup(config_path: Path) -> RuntimeConfig:
         return load_config(config_path)
     except ConfigError as exc:
         message = str(exc)
-        # Never let a security-relevant block fail *silently*. The init caller
-        # intentionally swallows ConfigError to keep `init` resilient (the agent
-        # wizard should still run when unrelated sections need repair) — without
-        # this echo a broken identities/trusted_ids block would vanish without a
-        # trace. Surface it loudly in red, but still fall through to the
-        # agents-only wizard: the wizard only configures agents, and the trust
-        # boundary is re-enforced at session start (``load_config`` re-raises
-        # there), so the permissive empty-trust fallback here never reaches a run.
+        # init swallows ConfigError to stay resilient, so without this echo a
+        # broken identities/trusted_ids block would vanish silently. Surface it
+        # loudly but still fall through — session start re-enforces the trust
+        # boundary (load_config re-raises), so the empty-trust fallback never runs.
         if any(block in message for block in _SECURITY_RELEVANT_BLOCKS):
             click.secho(
                 f"  ERROR: security-relevant config block failed validation: {message}",
@@ -96,8 +90,7 @@ def _load_config_for_agent_setup(config_path: Path) -> RuntimeConfig:
         if not agents:
             raise
 
-        # Surface the underlying error prominently — it is a real config problem
-        # the user must fix, not an incidental aside.
+        # Real config problem the user must fix — surface prominently.
         click.secho(
             f"  WARNING: agentshore.yaml failed full validation: {message}",
             err=True,
@@ -247,9 +240,8 @@ def _interactive_agent_select(
     from beaupy import prompt as beaupy_prompt
     from beaupy import select as beaupy_select
 
-    # Build the candidate list from supported agent binaries detected on PATH.
-    # Existing config provides defaults; missing detected agents are added so
-    # older agentshore.yaml files still offer every available supported agent.
+    # Candidates = supported agents detected on PATH; existing config provides
+    # defaults, missing ones are added so older yaml still offers every agent.
     candidates: list[tuple[str, AgentConfig]] = []
     seen_agent_keys: set[str] = set()
     for detected_binary in detected_agents:
@@ -275,7 +267,6 @@ def _interactive_agent_select(
             )
         return cfg
 
-    # Pre-fetch model catalogs for all candidate agents up front.
     from agentshore.agents.model_catalog import models_for_agent
 
     click.echo("\n  Fetching available models...", nl=False)
@@ -284,19 +275,16 @@ def _interactive_agent_select(
     }
     click.echo(" done.")
 
-    # Working state: a pure AgentTierEditor over a mutable dict of AgentConfig,
-    # starting from existing config. The renderers below read ``new_agents``
-    # (the same dict the editor mutates in place).
+    # Renderers below read ``new_agents`` — the same dict AgentTierEditor
+    # mutates in place.
     new_agents: dict[str, AgentConfig] = dict(cfg.agents)
-    # Seed any candidate agents that aren't already in new_agents.
     for agent_key, agent_cfg in candidates:
         if agent_key not in new_agents:
             new_agents[agent_key] = agent_cfg
     editor = AgentTierEditor(new_agents)
 
-    # Stable accelerator maps: a number per agent (toggle), a letter per tier
-    # cell (edit). Letters/numbers are assigned once over the fixed candidate
-    # list so they stay put across redraws (muscle memory).
+    # Accelerators assigned once over the fixed candidate list so they stay put
+    # across redraws (muscle memory): number per agent toggle, letter per tier.
     agent_num_by_key: dict[str, str] = {}
     agent_by_number: dict[str, str] = {}
     cell_by_letter: dict[str, tuple[str, str]] = {}
@@ -397,8 +385,7 @@ def _interactive_agent_select(
 
         efforts = reasoning_efforts_for(agent_type)
         is_grok = agent_type == AgentType.GROK
-        # Steps after the header: enable, model (skipped — grok is hard-pinned to
-        # grok-build), reasoning effort (only when the agent's CLI exposes one), then max.
+        # total prompt count: enable + model (skipped for grok) + effort (if any) + max.
         total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
         n = 0
 
@@ -482,7 +469,7 @@ def _interactive_agent_select(
             ),
         )
 
-    # ── Boxed accelerator picker loop ────────────────────────────────────
+    # Boxed accelerator picker loop.
     letter_keys = sorted(cell_by_letter)
     key_hint = f"[{letter_keys[0]}-{letter_keys[-1]}] edit tier · " if letter_keys else ""
     while True:
@@ -518,9 +505,8 @@ def _interactive_agent_select(
 
     cfg = dataclasses.replace(cfg, agents=new_agents)
 
-    # Write selections back to agentshore.yaml. The serialized fields are merged
-    # into each existing raw entry (never replacing it) so user fields the wizard
-    # doesn't manage — e.g. ``binary`` — survive the round-trip.
+    # Merge serialized fields into each raw entry (never replace) so unmanaged
+    # user fields like ``binary`` survive the round-trip.
     from agentshore.config.yaml_io import agent_config_to_yaml_dict
 
     try:

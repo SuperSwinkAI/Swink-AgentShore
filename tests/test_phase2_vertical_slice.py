@@ -55,8 +55,7 @@ def _make_state(
     issues: list | None = None,
     plays_since_last_play_type: dict[PlayType, int] | None = None,
 ) -> OrchestratorState:
-    # Default to a post-seed state so tests that don't care about the seed
-    # gate don't need to set it up explicitly.
+    # Default to post-seed so tests indifferent to the seed gate skip the setup.
     if plays_since_last_play_type is None:
         plays_since_last_play_type = {PlayType.SEED_PROJECT: 5}
     return OrchestratorState(
@@ -147,7 +146,6 @@ def test_instantiate_per_tier_max_enforced_at_execute() -> None:
     """
     play = InstantiateAgentPlay()
     state = _make_state()
-    # Preconditions don't gate on per-tier max — execute/mask do.
     assert play.preconditions(state) == []
 
 
@@ -528,7 +526,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
     # Use stream_json format so CLAUDE_CODE agent type parses output correctly
     monkeypatch.setenv("MOCK_AGENT_FORMAT", "stream_json")
 
-    # -- Set up a real DataStore with a temp-file SQLite DB --
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()
     await store.create_session(
@@ -540,7 +537,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
     )
 
     try:
-        # -- Set up AgentManager with mock_agent subprocess --
         cfg = RuntimeConfig(
             agents={
                 "claude_code": AgentConfig(
@@ -559,18 +555,15 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
         )
         handle = await manager.instantiate(AgentType.CLAUDE_CODE)
 
-        # -- Build registry with IssuePickupPlay --
         registry = PlayRegistry()
         registry.register(IssuePickupPlay())
         registry.freeze()
 
-        # -- Build resolver that returns issue_number=7 --
         resolver = AsyncMock()
         from agentshore.plays.base import PlayParams
 
         resolver.resolve = AsyncMock(return_value=PlayParams(issue_number=7))
 
-        # -- GitHub adapter that confirms the mock agent's PR #42 exists.
         # Confirm-then-write (#279): the executor records a PR only when GitHub
         # returns a real object for it, so the slice must wire that confirmation.
         github = AsyncMock()
@@ -586,7 +579,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
             )
         )
 
-        # -- Create executor --
         executor = PlayExecutor(
             registry=registry,
             resolver=resolver,
@@ -598,7 +590,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
             github=github,
         )
 
-        # -- Build state with IDLE agent and open issue --
         from agentshore.state import AgentSnapshot
 
         state = _make_state(
@@ -618,21 +609,18 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
             issues=[_make_issue(7)],
         )
 
-        # -- Patch select_agent_for to return our handle --
         with patch("agentshore.plays.executor.select_agent_for", return_value=handle):
             outcome = await executor.execute(PlayType.ISSUE_PICKUP, state)
 
-        # Verify success
         assert outcome.success is True, f"Expected success, got error: {outcome.error}"
 
-        # Verify PR record was written to DB (the mock agent emits pr_number=42)
+        # Mock agent emits pr_number=42.
         pr_rows = await store.list_open_pull_requests("sess-slice")
         assert any(pr.pr_number == 42 for pr in pr_rows)
 
-        # Verify play row was written and updated
         plays = await store.get_play_history("sess-slice")
-        # First play is the instantiate_agent call (from manager.instantiate above)
-        # The second is the ISSUE_PICKUP play from executor.execute
+        # plays[0] is the instantiate_agent from manager.instantiate; keep only the
+        # ISSUE_PICKUP play that executor.execute ran.
         issue_pickup_plays = [p for p in plays if p.play_type == PlayType.ISSUE_PICKUP.value]
         assert len(issue_pickup_plays) >= 1
         assert issue_pickup_plays[0].success is True

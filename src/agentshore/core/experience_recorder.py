@@ -109,8 +109,7 @@ class ExperienceRecorder:
         Each sub-step is independently guarded — a failure logs a structured
         ERROR and continues; nothing propagates to the caller / loop.
         """
-        # Step 1 — reward. Cannot proceed without it, so a failure here skips the
-        # whole experience+learning for this play (logged) rather than crashing.
+        # Step 1 — reward. A failure skips the whole experience+learning for this play.
         try:
             ctx_after = await self._metrics.snapshot(next_state)
             reward, _ = compute_reward(
@@ -138,9 +137,8 @@ class ExperienceRecorder:
             )
             return
 
-        # Step 1b — fleet-concurrency sample. Self-guarding (never raises) and
-        # takes the whole next_state so even the field reads are inside its
-        # guard — a bad sample can't take down the loop or the RL tail below it.
+        # Step 1b — fleet-concurrency sample. Self-guarding; whole next_state
+        # passed so even field reads stay inside its guard.
         await self._concurrency_log.record(next_state=next_state, outcome=outcome, reward=reward)
 
         # Step 2 — persist the experience row (independent of policy learning).

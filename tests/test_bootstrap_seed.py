@@ -28,17 +28,15 @@ def test_bootstrap_seed_is_shipped() -> None:
 
 
 def test_bootstrap_seed_matches_build_versions() -> None:
-    # ActorCritic.load raises IncompatibleCheckpointError if the seed's
-    # action_space / policy / observation versions disagree with the current
-    # build. A passing load is the version-pin guard: it breaks CI on a bump.
+    # A passing load is the version-pin guard: ActorCritic.load raises on any
+    # action_space / policy / observation drift, breaking CI on a bump.
     model = ActorCritic.load(_seed_path())
     assert model is not None
 
 
 def test_bootstrap_seed_is_roster_portable() -> None:
-    # The config head is install-specific (sized to one agent roster) and would
-    # shape-mismatch act_config on a different roster. The shipped seed must
-    # strip it (num_configs == 0) so it loads warm on any install.
+    # Config head is roster-specific (shape-mismatches act_config on a different
+    # roster); shipped seed must strip it (num_configs == 0) to load warm anywhere.
     model = ActorCritic.load(_seed_path())
     assert model.num_configs == 0, (
         "shipped seed carries a config head — re-export without --keep-config-head "

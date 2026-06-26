@@ -57,7 +57,7 @@ export class DemoTransport implements DashboardTransport {
       this.onMessage?.({ ...this.baseState(), session_state: "shutting_down" });
       this.onMessage?.({ type: "session_ended", reason: "hard_stop" });
     } else if (command.command === "adjust_budget") {
-      // No-op in demo: budget is static. A real server would update and re-emit state.
+      // No-op in demo: budget is static.
     }
   }
 
@@ -135,8 +135,7 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "bootstrap") {
-      // Walks the modal through a representative phase sequence so the
-      // BootstrapModal can be inspected without a live core process.
+      // Walk the modal through a phase sequence so BootstrapModal is inspectable without a live core.
       const phases = [
         "init_datastore",
         "init_ppo_selector",
@@ -176,9 +175,7 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "session_switch") {
-      // Exercise the Tier 1 session boundary: a first session, then a second
-      // with a different session_id. The manager must clear the first
-      // session's agents/stats and re-show the bootstrap modal for the second.
+      // Tier 1 session boundary: second session_id must clear first session's agents/stats and re-show bootstrap.
       this.onMessage?.({ ...state, session_id: "demo-session-a", total_plays: 7 });
       window.setTimeout(() => {
         this.onMessage?.({

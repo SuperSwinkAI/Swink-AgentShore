@@ -13,8 +13,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO_ROOT / "packaging" / "desktop" / "build_bd_sidecar.py"
 
-# Arbitrary version string for the provision consent-gate tests — the value is
-# only echoed into the install-instructions message, never matched against.
+# Arbitrary version for consent-gate tests; only echoed into instructions, never matched.
 _PINNED = "1.0.4"
 
 
@@ -57,8 +56,7 @@ def test_build_bd_sidecar_rejects_missing_binary(capsys: pytest.CaptureFixture[s
         build_bd_sidecar.main(["--bd", "/no/such/path"])
 
     captured = capsys.readouterr()
-    # The script prints the resolved absolute path; on Windows that becomes
-    # e.g. D:\no\such\path, so compare against the same resolution.
+    # Script prints the resolved absolute path (Windows: D:\no\such\path), so resolve first.
     assert str(Path("/no/such/path").resolve()) in captured.err
 
 

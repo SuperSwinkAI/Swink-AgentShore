@@ -72,16 +72,12 @@ class _OrchestratorBase:
     resolve attribute access; runtime attribute lookup is unaffected.
     """
 
-    # ------------------------------------------------------------------
-    # Owned collaborators / identity — stable for the orchestrator's life and
-    # captured by each component's constructor. These are NOT shared mutable
-    # session state; that all lives on :class:`SessionRuntime` (``self._runtime``).
-    # ------------------------------------------------------------------
-    #: The single owner of all shared mutable session state (TNQA P1). Replaces
-    #: the ~40 ``self._host.<latch>`` reads/writes that previously threaded
-    #: through six ``_*Host`` Protocols. Constructed once in ``__init__``; every
-    #: component receives it as ``runtime=`` and reaches state via
-    #: ``self._runtime.<field>``.
+    # Owned collaborators / identity — stable for the orchestrator's life,
+    # captured by each component's constructor. NOT shared mutable session
+    # state; that lives on :class:`SessionRuntime` (``self._runtime``).
+    #: Single owner of all shared mutable session state (TNQA P1); replaces the
+    #: ~40 ``self._host.<latch>`` reads that threaded through six ``_*Host``
+    #: Protocols. Components receive it as ``runtime=`` and read ``self._runtime``.
     _runtime: SessionRuntime
     _repo_root: Path
     _session_id: str
@@ -125,12 +121,10 @@ class _OrchestratorBase:
         selector: PlaySelector | None = None,
         state_provider: StateProvider | None = None,
     ) -> None:
-        # The single owner of all shared mutable session state (TNQA P1). Every
-        # latch the components previously reached through ``self._host.<latch>``
-        # (and its ``getattr``-guarded ``__new__``-bypass defaults) lives here;
-        # ``SessionRuntime``'s field defaults reproduce the prior latch wall, so a
-        # fresh runtime is always fully initialised. Velocity-window size is the
-        # one cfg-derived constructor arg; everything else takes its default.
+        # Single owner of all shared mutable session state (TNQA P1).
+        # ``SessionRuntime``'s field defaults reproduce the prior latch wall, so
+        # a fresh runtime is fully initialised. Velocity-window size is the one
+        # cfg-derived ctor arg; everything else defaults.
         self._runtime = SessionRuntime(
             cfg=cfg,
             selector=selector,
@@ -144,10 +138,9 @@ class _OrchestratorBase:
         self._seed_path = None
         self._step_index = 0
         self._config_hash = ""
-        # Loop-detection warning memo: highest streak value already logged for each
-        # kind. Reset to None when the streak drops below the warn threshold so a
-        # fresh streak gets a fresh warning. Prevents per-tick log storms while the
-        # streak holds at the same value across orchestrator iterations.
+        # Loop-detection warning memo: highest streak already logged per kind.
+        # Reset to None below the warn threshold so a fresh streak re-warns;
+        # prevents per-tick log storms while the streak holds.
         self._last_warned_failure_streak = None
         self._last_warned_any_streak = None
         # desktop-85ex: track persistent-idle window transitions for the
@@ -263,17 +256,11 @@ class _OrchestratorBase:
         # run_until_idle stamps the first iteration before the loop body runs.
         self._loop._last_loop_iteration_at = 0.0
 
-    # ------------------------------------------------------------------
     # Backward-compatible ``orch._<latch>`` facade over the SessionRuntime.
-    #
-    # External (non-core) callers read a handful of these (``orch._cfg``,
-    # ``orch._registry``, ``orch._state_provider``, ``orch._metrics``,
-    # ``orch._worktrees``, ``orch._policy_version``, ``orch._drain_reason``) and
-    # the existing test suite reads/writes the full set directly. Rather than
-    # rewrite every caller, the orchestrator exposes each latch as a pure
-    # pass-through property — there is no parallel state, the single owner is
-    # still ``self._runtime``. New core code reaches state via ``self._runtime``.
-    # ------------------------------------------------------------------
+    # External callers and the test suite read/write these directly; rather than
+    # rewrite every caller, each latch is a pure pass-through property — no
+    # parallel state, the single owner is still ``self._runtime``. New core code
+    # reaches state via ``self._runtime``.
 
     @property
     def _cfg(self) -> RuntimeConfig:
@@ -699,9 +686,7 @@ class _OrchestratorBase:
     def _auth_suppressed_agent_types(self, value: set[str]) -> None:
         self._runtime.auth_suppressed_agent_types = value
 
-    # ------------------------------------------------------------------
     # Plain readonly accessors used by multiple mixins
-    # ------------------------------------------------------------------
 
     def effective_budget_caps(self) -> BudgetConfig:
         """Resolve the live-effective budget caps (overrides shadowing ``_cfg``).
@@ -738,22 +723,12 @@ class _OrchestratorBase:
         raw = getattr(self._runtime.selector, "_config_index", None)
         return raw if isinstance(raw, tuple) and raw else None
 
-    # ------------------------------------------------------------------
     # Shared infrastructure + host-Protocol loop delegators on the composition
-    # root.
-    #
-    # The 7-mixin teardown is complete: ``_OrchestratorBase`` no longer carries a
-    # not-implemented stub wall. Every behaviour lives in an owned
-    # component. ``_safe_call`` is stateless infra reached via
-    # ``self._host._safe_call`` from every component. The four loop methods other
-    # components reference through their host Protocols
-    # (``_CompletionHost._initiate_autonomous_stop`` /
-    # ``_check_stagnation_escalation`` and ``_DrainHost.stop_loop_liveness_watchdog``,
-    # plus ``__aenter__``'s ``start_loop_liveness_watchdog``) resolve here as thin
-    # delegators forwarding to ``self._loop`` — so ``self._host.<method>`` (and
-    # the public ``orch.<method>``) keep resolving on the composition root now
-    # that the loop is an owned component rather than an inherited mixin.
-    # ------------------------------------------------------------------
+    # root. ``_safe_call`` is stateless infra every component reaches via
+    # ``self._host._safe_call``. The loop methods other components reference
+    # through their host Protocols (autonomous-stop, stagnation,
+    # start/stop_loop_liveness_watchdog) are thin delegators to ``self._loop``,
+    # so ``self._host.<method>`` resolves here on the composition root.
 
     async def _safe_call(self, coro: Awaitable[object], label: str) -> None:
         """Await *coro* and log ERROR if it raises; never propagates.

@@ -28,19 +28,17 @@ from agentshore.config.models import TimelapseConfig
 ERR_PROJECT_NOT_ACTIVE = -32004
 GIT_PROBE_TIMEOUT_SECONDS = 5.0
 GIT_TIMEOUT_RETURN_CODE = 124
-# Deliberately short: inspect() fans probes out concurrently via asyncio.gather
-# and returns within this deadline with fallback values for any slow probe, so
-# the Readiness screen always paints fast. The git layer's non-interactive env
-# (no credential prompt) is what removes the real hang risk — not a longer
+# Deliberately short: inspect() fans probes out concurrently and falls back for
+# any slow probe so the Readiness screen always paints fast. The non-interactive
+# git env (no credential prompt) is what removes the real hang risk, not a longer
 # deadline here.
 INSPECT_PROBE_TIMEOUT_SECONDS = 2.0
 BRANCH_LIST_TIMEOUT_SECONDS = 20.0
 BRANCH_REMOTE_ONLY_LIMIT = 200
 
-# Dedicated thread pool for inspect() probes. Using a custom executor (not the
-# asyncio default executor) means asyncio.run() / loop.shutdown_default_executor()
-# does not wait for slow probe threads — consistent with the original
-# concurrent.futures-based implementation.
+# Dedicated thread pool for inspect() probes. A custom executor (not asyncio's
+# default) means asyncio.run() / shutdown_default_executor() won't wait on slow
+# probe threads.
 _PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=16,
     thread_name_prefix="agentshore-project-probe",
@@ -557,7 +555,6 @@ def set_target_branch(name: str) -> dict[str, object]:
         raise ProjectError("name must be a non-empty string")
     name = name.strip()
 
-    # Validate branch name via git check-ref-format
     check = _run_git(["check-ref-format", "--branch", name], path)
     if check.returncode != 0:
         raise ProjectError(f"invalid branch name: {name!r}", code=-32002)
@@ -712,8 +709,7 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
     return {"enabled": enabled, "yaml_path": str(yaml_path)}
 
 
-# Accepted keys on the ``timelapse:`` mapping written to agentshore.yaml.
-# Mirrors the ``TimelapseConfig`` dataclass in
+# Accepted keys on the ``timelapse:`` mapping; mirrors ``TimelapseConfig`` in
 # ``src/agentshore/config/models.py``.
 _TIMELAPSE_KEYS: frozenset[str] = frozenset({"enabled", "installed"})
 

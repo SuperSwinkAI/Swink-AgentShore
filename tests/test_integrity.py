@@ -27,9 +27,7 @@ from agentshore.data.integrity import (
 from agentshore.data.store import DataStore, SessionRecord
 from tests.ci_support import requires_sqlite3_cli
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 async def _make_store(tmp_path: Path, name: str = "agentshore.db") -> DataStore:
@@ -59,9 +57,7 @@ def _corrupt_file(path: Path, *, offset: int = 4096, n_bytes: int = 256) -> None
         fh.write(b"\xff" * n_bytes)
 
 
-# ---------------------------------------------------------------------------
 # DataStore methods
-# ---------------------------------------------------------------------------
 
 
 async def test_integrity_check_returns_ok_for_clean_db(tmp_path: Path) -> None:
@@ -105,9 +101,7 @@ async def test_snapshot_to_overwrites_existing_dest(tmp_path: Path) -> None:
     assert dest.read_bytes()[:16].startswith(b"SQLite format 3")
 
 
-# ---------------------------------------------------------------------------
 # restore_from_snapshot_ring
-# ---------------------------------------------------------------------------
 
 
 async def test_restore_is_noop_when_main_db_is_clean(tmp_path: Path) -> None:
@@ -151,9 +145,7 @@ async def test_restore_skips_corrupt_snapshots_and_picks_newer(tmp_path: Path) -
     await store.snapshot_to(newer)
     # Make the newer one a fresher mtime AND corrupt it; older is clean.
     _corrupt_file(newer)
-    # Bump older's mtime above newer's so the sort puts older first.
-    # (We actually want newer-first sort to pick newer, fall through to older.)
-    # Make newer "newer" in mtime but corrupt → restore should fall through to older.
+    # newer gets the fresher mtime but is corrupt → restore falls through to clean older.
     now = time.time()
     import os
 
@@ -196,9 +188,7 @@ async def test_restore_falls_through_to_recovery_when_no_clean_snapshot(
     assert len(corrupts) == 1
 
 
-# ---------------------------------------------------------------------------
 # IntegrityMonitor scheduling
-# ---------------------------------------------------------------------------
 
 
 class _FakeStore:
@@ -359,9 +349,7 @@ def test_restore_handles_missing_main_db(tmp_path: Path) -> None:
     assert chosen is None
 
 
-# ---------------------------------------------------------------------------
 # recover_via_sqlite_recover + recovery fallback in restore_from_snapshot_ring
-# ---------------------------------------------------------------------------
 
 
 def _make_seeded_db_sync(path: Path) -> None:

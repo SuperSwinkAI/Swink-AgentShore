@@ -133,9 +133,8 @@ class _WorkClaimsMixin(_DataStoreBase):
         play_id: int | None = None,
         review_queue_id: int | None = None,
     ) -> None:
-        # ``request_mutation_key`` column is left to its NULL default (the
-        # request_play mechanism that populated it was removed); the column
-        # itself is retained as an inert nullable field.
+        # request_mutation_key left NULL: the request_play mechanism that populated
+        # it was removed; column retained as an inert nullable field.
         await self._conn.executemany(
             """
             INSERT INTO work_claims

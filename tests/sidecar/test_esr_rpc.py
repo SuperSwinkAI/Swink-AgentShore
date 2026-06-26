@@ -146,10 +146,8 @@ async def test_archive_fetch_report_parses_sections(tmp_path: Path) -> None:
         """,
         encoding="utf-8",
     )
-    # Update the archive row to point at this report
     archive = await store.get_archive(archive_id)
     assert archive is not None
-    # Adjust archive_path so fetch_report can locate the html
     try:
         result = await archive_rpc.fetch_report(
             store,

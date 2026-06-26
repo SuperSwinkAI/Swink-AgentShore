@@ -24,10 +24,10 @@ AGENTSHORE_BANNER = r"""
 """.strip("\n")
 
 _STATUS_ICONS: dict[str, str] = {
-    "ok": "✓",  # ✓
-    "pending": "◷",  # ◷
-    "error": "✗",  # ✗
-    "skip": "–",  # –
+    "ok": "✓",
+    "pending": "◷",
+    "error": "✗",
+    "skip": "–",
 }
 
 _logger = structlog.get_logger(__name__)
@@ -57,7 +57,6 @@ class SessionStartupScreen(Screen[None]):
             One of ``'ok'``, ``'pending'``, ``'error'``, ``'skip'``.
         """
         icon = _STATUS_ICONS.get(status, "?")
-        # Replace existing check with same label, or append.
         new_checks = list(self._checks)
         for idx, (_, existing_label, _) in enumerate(new_checks):
             if existing_label == label:

@@ -94,8 +94,7 @@ def test_is_async_handoff_detects_manage_task_marker() -> None:
 
 
 def test_is_async_handoff_detects_background_task_wait() -> None:
-    # #236 resurfacing (session aa0b28cd): same behaviour, no manage_task token —
-    # the agent paused and waited on a backgrounded command instead.
+    # #236 resurfacing: no manage_task token; agent paused on a backgrounded command.
     raw = (
         "I will run cargo clippy with the isolated target directory to check for any "
         "errors or warnings. I will pause calling tools and wait for the cargo clippy "
@@ -134,7 +133,7 @@ def test_is_async_handoff_detects_real_242_phrasings(tail: str) -> None:
     assert cli_antigravity.is_async_handoff(tail) is True
 
 
-# --- ensure_low_verbosity_setting --------------------------------------------
+# ensure_low_verbosity_setting
 
 
 def _settings_path(home: Path) -> Path:
@@ -177,12 +176,11 @@ def test_ensure_low_verbosity_tolerates_malformed_file(tmp_path: Path) -> None:
     assert json.loads(path.read_text()) == {"verbosity": "low"}
 
 
-# --- strip_ansi (ConPTY terminal-escape cleanup) -----------------------------
+# strip_ansi (ConPTY terminal-escape cleanup)
 
 
 def test_strip_ansi_removes_agy_conpty_prelude() -> None:
-    # The exact prelude observed from agy under a ConPTY before its real output:
-    # window-title stack, Device-Attributes query, focus reporting, win32 input.
+    # Real agy ConPTY prelude: window-title stack, DA query, focus reporting, win32 input.
     raw = "\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hPONG"
     assert cli_antigravity.strip_ansi(raw) == "PONG"
 
@@ -207,8 +205,7 @@ def test_strip_ansi_is_noop_on_clean_text() -> None:
 
 
 def test_extract_output_strips_ansi_then_unwraps_task_block() -> None:
-    # A ConPTY stream wraps the real output in a task-status block AND carries a
-    # terminal prelude: extract_output must clean escapes first, then unwrap.
+    # Prelude + task-status wrapper: extract_output must strip escapes first, then unwrap.
     raw = (
         "\x1b[1t\x1b[c\x1b[?9001h[Task abc/task-1 Status Update]\r\n"
         "Status: COMPLETED\r\n"

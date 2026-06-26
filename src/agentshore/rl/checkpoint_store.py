@@ -58,9 +58,7 @@ class _WindowsLockingModule(Protocol):
     def locking(self, fd: int, mode: int, nbytes: int, /) -> int: ...
 
 
-# ---------------------------------------------------------------------------
 # Local / canonical checkpoint lifecycle
-# ---------------------------------------------------------------------------
 
 
 def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KEEP) -> None:
@@ -88,8 +86,7 @@ def _archive_old_canonicals(weights_dir: Path) -> None:
         if f == current or f.name.startswith("policy_legacy_"):
             continue
         stem = f.stem  # e.g. "policy_v2" or "policy_a13_o12_p5"
-        # Skip numbered local checkpoints (policy_NNNNNN.pt) — those are managed
-        # by _prune_local_checkpoints, not the canonical quarantine.
+        # Skip numbered local checkpoints — managed by _prune_local_checkpoints, not here.
         suffix = stem[len("policy_") :]
         if suffix.isdigit():
             continue
@@ -133,9 +130,7 @@ def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
         _logger.warning("cleanup_stale_canonical_failed", error=str(exc))
 
 
-# ---------------------------------------------------------------------------
 # Cross-platform advisory file locks
-# ---------------------------------------------------------------------------
 
 
 @contextmanager
@@ -186,9 +181,7 @@ def _prepare_windows_lock_byte(lock_file: BinaryIO) -> None:
     lock_file.seek(0)
 
 
-# ---------------------------------------------------------------------------
 # Global canonical delta-merge write
-# ---------------------------------------------------------------------------
 
 
 def write_global_canonical_blocking(

@@ -64,33 +64,21 @@ class ServerState:
     ipc_endpoint: dict[str, object] | None = None
     session_context: SessionContext | None = None
     data_store: DataStore | None = None
-    # Set by run_session_start when the dashboard bridge boots; session.stop
-    # uses it to tear the bridge down before signalling completion.
+    # Set when the dashboard bridge boots; session.stop tears it down first.
     bridge: EmbeddedBridge | None = None
-    # Populated when session.start boots a real Orchestrator (DESIGN §5.1).
-    # ``orchestrator`` is the engine instance; ``orchestrator_task`` is the
-    # supervised ``run_until_idle`` task. session.stop drives drain/hard
-    # shutdown through these handles before tearing down the bridge.
-    # Typed as ``OrchestratorHandle`` (a TYPE_CHECKING-only Protocol) so the
-    # concrete engine import stays lazy and the cold-start torch-free invariant
-    # (test_cold_start_torch_free.py) is preserved, while the sidecar's calls
-    # type-check without per-site ``# type: ignore[attr-defined]``.
+    # session.start boots a real Orchestrator (DESIGN §5.1); session.stop drains via
+    # these handles. Typed as the TYPE_CHECKING-only OrchestratorHandle Protocol to
+    # keep the engine import lazy (cold-start torch-free invariant).
     orchestrator: OrchestratorHandle | None = None
     orchestrator_task: asyncio.Task[None] | None = None
-    # In-flight ``orch.stop()`` teardown (#283). Set while the outgoing
-    # orchestrator's ``DataStore.close()`` runs — that close does a heavyweight
-    # Online-Backup snapshot + ``os.replace`` of agentshore.db and holds the
-    # SQLite writer/checkpoint lock for seconds. A restart fired from the ESR
-    # screen (which is unlocked *before* this close finishes) must await this
-    # task before its new orchestrator's ``store_init`` runs, or the two
-    # contend and the new ``store_init`` hits "database is locked".
+    # In-flight orch.stop() teardown (#283). Its DataStore.close() holds the SQLite
+    # writer lock for seconds (backup snapshot + os.replace); a restart must await
+    # this or the new store_init hits "database is locked".
     store_teardown_task: asyncio.Task[None] | None = None
     esr_ready_report_path: str | None = None
     esr_ready_log_path: str | None = None
-    # Optional timelapse capture (desktop feature). ``timelapse_run_id`` is the
-    # CLI run-id of an active capture; ``timelapse_runs_cwd`` is the working dir
-    # every timelapse call must share so the run-id resolves. session.stop stops
-    # the capture and attaches the rendered MP4 path to the ESR payload.
+    # Optional timelapse capture (desktop). run-id + shared cwd it must resolve
+    # against; session.stop ends capture and attaches the MP4 to the ESR payload.
     timelapse_run_id: str | None = None
     timelapse_runs_cwd: Path | None = None
 
@@ -169,9 +157,8 @@ def _as_dict(params: object) -> dict[str, object]:
 # Project-method error-code remap table
 # ---------------------------------------------------------------------------
 
-# Methods whose `project_rpc.ERR_PROJECT_NOT_ACTIVE` (-32004) is remapped to
-# the public `ERR_NO_ACTIVE_PROJECT` (-32011) for the shell. `project.select`
-# and `project.deselect` do not call `_require_active`; everything else does.
+# Remaps project_rpc.ERR_PROJECT_NOT_ACTIVE (-32004) → public ERR_NO_ACTIVE_PROJECT
+# (-32011). select/deselect skip _require_active; everything else calls it.
 _PROJECT_NO_ACTIVE_REMAP = frozenset(
     {
         "project.inspect",

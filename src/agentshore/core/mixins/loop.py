@@ -69,76 +69,58 @@ ISSUE_REFRESH_INTERVAL_SECONDS = 120
 AGENT_PING_TIMEOUT_SECONDS = 0.5
 IPC_TIMEOUT_SECONDS = 1.0
 
-# Fibonacci-style idle backoff. The main loop's wait timeout starts at 1s on
-# any tick that produced new state, then stretches across consecutive ticks
-# where the selection-relevant state digest stayed the same. Capped at the
-# last value so override pushes / human pauses are still picked up within
-# ~21s even if no in-flight play completes to wake the loop earlier.
+# Fibonacci idle backoff indexed by idle_streak: 1s on a fresh-state tick,
+# stretching while the selection digest is unchanged. Capped at 21s so override
+# pushes / human pauses are picked up even if no play wakes the loop.
 _IDLE_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0)
 _WAITING_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 30.0, 60.0)
 
-# desktop-kqo5: consecutive idle-with-work ticks spent under a latched trunk
-# dispatch pause (nothing in flight) before the loop auto-stops via drain.
-# RECONCILE_STATE is exempt from the pause and should clear it within a few
-# ticks; this is the last-resort escape so the loop never idles indefinitely on
-# a trunk it cannot heal. At the 21s backoff ceiling this is ~3-4 minutes grace.
+# desktop-kqo5: idle-with-work ticks under a latched trunk-dispatch pause
+# (nothing in flight) before auto-stopping via drain. RECONCILE_STATE should
+# clear the pause within a few ticks; this is the last-resort escape so the loop
+# never idles forever on a trunk it cannot heal. ~3-4 min at the 21s ceiling.
 _WEDGED_IDLE_STOP_TICKS = 12
 
 # Wall-clock seconds the *whole* fleet may sit idle (every agent idle, nothing
-# in flight) before the loop ends the session via a clean autonomous drain. This
-# is the liveness backstop for the end-session wedge: even if every action slot
-# is masked into a corner (e.g. the only open PRs are all manual-required, so no
-# work play is selectable and END_SESSION is gated), a fully-idle fleet must not
-# poll forever. Wall-clock rather than tick-count because idle_backoff makes the
-# tick spacing vary. The clock measures *productive* idle: lifecycle-only churn
-# (INSTANTIATE_AGENT <-> END_AGENT) does not reset it, so a session that only
-# cycles agents with no dispatchable work still reaches the deadline (#166).
+# in flight) before a clean autonomous drain — the end-session-wedge backstop so
+# a fully-masked-into-a-corner fleet can't poll forever. Wall-clock not ticks
+# because idle_backoff varies tick spacing. Measures *productive* idle: lifecycle
+# churn (INSTANTIATE_AGENT <-> END_AGENT) doesn't reset it (#166).
 _FLEET_IDLE_END_SESSION_SECONDS: float = 1200.0
 
-# Consecutive failsafe END_SESSION attempts that may be vetoed by the
-# revalidation gate before the loop forces a clean autonomous drain. The
-# reverse-failsafe (PPO) gets first crack at ending a wedged session; if its
-# END_SESSION is blocked this many times in a row the deterministic backstop
-# fires. At the ~90s failsafe cadence this is ~12 minutes of grace — inside the
-# 20-minute time-budget reserve, so a bookkeeping-wedged session drains in
-# minutes instead of running until the budget cutoff (#255). Honours the
+# Consecutive failsafe END_SESSION attempts vetoed by the revalidation gate
+# before the deterministic backstop forces a drain. PPO's reverse-failsafe gets
+# first crack; if blocked this many times the backstop fires. ~12 min at the 90s
+# failsafe cadence — inside the 20-min budget reserve so a bookkeeping-wedged
+# session drains in minutes, not at the budget cutoff (#255). Honours the
 # "PPO drives, deterministic code only backstops" invariant.
 _END_SESSION_REVALIDATION_WEDGE_LIMIT = 8
 
-# Pure fleet-management plays. In-flight/dispatch of these does NOT count as
-# productive activity for the fleet-idle backstop — a session that only churns
-# them is idle for end-session purposes.
+# Pure fleet-management plays; in-flight/dispatch of these is NOT productive
+# activity for the fleet-idle backstop (a session that only churns them is idle).
 _LIFECYCLE_PLAY_TYPES: frozenset[PlayType] = frozenset(
     {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
 )
 
-# Cadence for the budget-countdown heartbeat: a budget-only frame the loop emits
-# so the dashboard's remaining-time figure keeps ticking down during quiet
-# stretches (idle fleet, or a single long-running play) when no full state update
-# fires. Budget-only by design so the office sprites never re-process and jitter.
-# 30s keeps the displayed minute fresh to within ~30s + one idle-backoff (≤21s),
-# i.e. under a minute even when fully idle.
+# Budget-countdown heartbeat cadence: a budget-only frame so the dashboard's
+# remaining-time keeps ticking during quiet stretches with no full state update.
+# Budget-only so the office sprites never re-process and jitter. 30s keeps the
+# displayed minute fresh to within ~30s + one idle-backoff (≤21s).
 _BUDGET_HEARTBEAT_SECONDS: float = 30.0
 
-# How many times an unanswered loop-detection auto-stop is deferred while
-# actionable work (merge-ready PRs / workable issues) still remains. Each
-# reprieve lifts the pause and resumes the loop (it never leaves the loop
-# wedged); once exhausted, the auto-stop drains as normal so a genuinely stuck
-# session still terminates rather than re-wedging (#9).
+# Times an unanswered loop-detection auto-stop is deferred while actionable work
+# (merge-ready PRs / workable issues) remains. Each reprieve lifts the pause and
+# resumes; once exhausted the auto-stop drains so a stuck session still ends (#9).
 _AUTO_STOP_WORK_REPRIEVE_LIMIT = 2
 
-# Loop-liveness watchdog (#9): how often the independent watchdog task wakes to
-# compare the loop heartbeat against the configured timeout. Kept well below the
-# default 600s timeout so the watchdog reacts promptly once the deadline passes
-# without busy-polling. The watchdog never runs on the loop's critical path, so
-# a blocked loop still gets reaped within ~one interval of the deadline.
+# Loop-liveness watchdog (#9): how often the independent watchdog wakes to compare
+# the loop heartbeat against the timeout. Well below the 600s default so a blocked
+# loop is reaped within ~one interval of the deadline without busy-polling.
 _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS = 15.0
 
-# Per-tick guard circuit-breaker: consecutive run_until_idle ticks whose body
-# raises before the loop stops spinning on the failure and drains gracefully.
-# A single bad tick (recovered next iteration) is normal and never escalates —
-# the streak resets on any clean tick. Set well above transient noise but low
-# enough that a permanently-throwing tick drains in seconds, not silently hangs.
+# Per-tick circuit-breaker: consecutive run_until_idle ticks that raise before the
+# loop drains gracefully instead of spinning. Streak resets on any clean tick; set
+# above transient noise but low enough a permanently-throwing tick drains fast.
 _MAX_CONSECUTIVE_TICK_FAILURES = 10
 
 
@@ -197,48 +179,39 @@ class LoopRunner:
         self._completion = completion
         self._lifecycle = lifecycle
         self._drain = drain
-        # Loop-only counters/latches (only read inside loop methods). Defaults
-        # match the prior _OrchestratorBase class-level/__init__ values.
+        # Loop-only counters/latches (read only inside loop methods).
         self._last_warned_failure_streak: int | None = None
         self._last_warned_any_streak: int | None = None
         self._last_stagnation_stage: int = 0
-        # desktop-85ex: True iff the loop is currently inside a fleet-idle
-        # persistent window (idle streak ≥ fleet_idle_threshold + no in-flight
-        # plays). Flipped to True the first tick the threshold is crossed (emit
-        # one info event), to False the first tick anything dispatches again.
+        # desktop-85ex: True while inside a fleet-idle persistent window (idle
+        # streak ≥ fleet_idle_threshold + nothing in flight). One info event on
+        # each transition; flips False the first tick anything dispatches.
         self._fleet_idle_persistent_active: bool = False
-        # Consecutive idle-with-work ticks spent under a latched trunk pause with
-        # nothing in flight — the wedge signature. Drives the auto-stop in
-        # continue_if_selector_idle_work_remains; reset on any dispatch.
+        # Idle-with-work ticks under a latched trunk pause, nothing in flight —
+        # the wedge signature. Drives the auto-stop; reset on any dispatch.
         self._wedged_idle_ticks: int = 0
-        # Monotonic timestamp the fleet last became *fully* idle (every agent
-        # idle, nothing in flight), or None when not fully idle. Drives the
-        # fleet-idle end-session backstop in continue_if_selector_idle_work_remains;
-        # reset to None on any dispatch / busy agent.
+        # Monotonic ts the fleet last became *fully* idle (every agent idle,
+        # nothing in flight), else None. Drives the fleet-idle end-session
+        # backstop; reset to None on any dispatch / busy agent.
         self._fleet_idle_since: float | None = None
-        # Bounded reprieves granted to an unanswered loop-detection auto-stop
-        # while actionable work remains, so the session is not torn down on top
-        # of finished work. Resets per loop.
+        # Bounded reprieves for an unanswered loop-detection auto-stop while
+        # actionable work remains, so finished work isn't torn down. Resets per loop.
         self._auto_stop_reprieves_used: int = 0
         # Loop-liveness watchdog task handle (#9).
         self._loop_liveness_task: asyncio.Task[None] | None = None
-        # Loop-liveness heartbeat (#9): monotonic timestamp stamped at the top of
-        # every run_until_idle iteration. The watchdog reads it to detect a
-        # hard-frozen loop. float('inf') until run_until_idle stamps the first
-        # iteration so a never-started loop never looks stale to the watchdog.
+        # Loop-liveness heartbeat (#9): monotonic ts stamped atop every
+        # run_until_idle iteration; the watchdog reads it to detect a frozen loop.
+        # inf until the first stamp so a never-started loop never looks stale.
         self._last_loop_iteration_at: float = float("inf")
         # Per-tick guard circuit-breaker counter (see _MAX_CONSECUTIVE_TICK_FAILURES).
         self._tick_failure_streak: int = 0
-        # Consecutive failsafe END_SESSION attempts vetoed by the revalidation
-        # gate (see _END_SESSION_REVALIDATION_WEDGE_LIMIT). Drives the force-drain
-        # backstop for the bookkeeping-wedge in _resolve_tick; reset on any
-        # dispatch (#255).
+        # Consecutive failsafe END_SESSION attempts vetoed by the revalidation gate
+        # (see _END_SESSION_REVALIDATION_WEDGE_LIMIT). Drives the force-drain
+        # backstop in _resolve_tick; reset on any dispatch (#255).
         self._end_session_revalidation_blocks: int = 0
         # Monotonic timestamp of the last budget-countdown heartbeat emit. 0.0
         # until the first one fires (so the first eligible tick emits promptly).
         self._last_budget_heartbeat_at: float = 0.0
-
-    # ------------------------------------------------------------------
 
     async def check_stagnation_escalation(self, state: OrchestratorState) -> bool:
         """Stagnation ladder (warn+entropy at 5, surface at 10, pause at 15)."""
@@ -366,8 +339,7 @@ class LoopRunner:
         }:
             return "engine_paused"
 
-        # If the top mask reason looks like a cooldown / recency cap, that
-        # diagnosis is more specific than the generic ``all_masked`` bucket.
+        # Cooldown / recency cap is a more specific diagnosis than ``all_masked``.
         if reason_counts:
             top_reason = reason_counts[0].get("reason")
             if isinstance(top_reason, MaskReason):
@@ -380,15 +352,11 @@ class LoopRunner:
                     return "cooldown_active"
 
         if reason_counts:
-            # PPO had something to look at but the mask blocked every
-            # candidate.  Payload (caller-attached) carries the top
-            # mask_reasons so operators can trace the root cause.
+            # Mask blocked every candidate. Caller attaches top mask_reasons.
             return "all_masked"
 
         if candidate_plan_has_work:
-            # Workable graph but nothing was pickable — typically resolver
-            # couldn't find a concrete target (no idle reviewer, no
-            # unblocked issue this tick, etc.).
+            # Workable graph but resolver found no concrete target this tick.
             return "no_eligible_targets"
 
         return "selector_returned_none"
@@ -610,11 +578,9 @@ class LoopRunner:
         their own pace.
         """
         # desktop-kqo5 wedge auto-stop: a latched trunk-dispatch pause blocks all
-        # plays except END_AGENT/RECONCILE_STATE. RECONCILE_STATE should heal the
-        # trunk and clear the latch within a few ticks; if it cannot (nothing in
-        # flight, pause persists across the grace window), escalate to a clean
-        # drain-based stop rather than idling forever. Gated strictly on the
-        # latched pause + no in-flight, so healthy capacity-idle never trips it.
+        # plays but END_AGENT/RECONCILE_STATE. If RECONCILE_STATE can't heal the
+        # trunk within the grace window (nothing in flight), escalate to a clean
+        # drain. Gated on pause + no in-flight so capacity-idle never trips it.
         if self._main_repo.dispatch_paused and not self._runtime.in_flight:
             self._wedged_idle_ticks += 1
             if self._wedged_idle_ticks >= _WEDGED_IDLE_STOP_TICKS:
@@ -633,18 +599,12 @@ class LoopRunner:
             self._wedged_idle_ticks = 0
 
         # Fleet-idle end-session backstop: if every agent is idle with nothing in
-        # flight for _FLEET_IDLE_END_SESSION_SECONDS, the session has run out of
-        # things to do (or has been masked into a corner) — end it via a clean
-        # autonomous drain rather than polling forever. fire_natural_exit=True
-        # stamps _natural_exit_reason so run_until_idle fires session.completed
-        # and the normal teardown (end_agent per agent, checkpoint, beads clear),
-        # unlike a bare loop-break which would strand the process at 0 CPU.
-        # "Productively idle" = no work play in flight. A BUSY agent only ever
-        # reflects an in-flight dispatch (state.in_flight_plays mirrors the
-        # dispatch_ctx of not-done dispatches), so lifecycle-only churn — and the
-        # transient BUSY it produces — is treated as idle here. This is what lets
-        # the deadline accumulate through an INSTANTIATE_AGENT <-> END_AGENT
-        # limit cycle instead of being reset every ~40s (#166).
+        # flight past _FLEET_IDLE_END_SESSION_SECONDS, end via clean drain rather
+        # than poll forever. fire_natural_exit=True stamps _natural_exit_reason so
+        # run_until_idle fires session.completed + normal teardown (a bare break
+        # would strand the process at 0 CPU). "Productively idle" = no work play in
+        # flight; lifecycle-only churn (and its transient BUSY) counts as idle, so
+        # the deadline accrues through an INSTANTIATE_AGENT <-> END_AGENT cycle (#166).
         productive_in_flight = any(pt not in _LIFECYCLE_PLAY_TYPES for pt in state.in_flight_plays)
         fleet_fully_idle = not productive_in_flight
         if fleet_fully_idle:
@@ -685,15 +645,12 @@ class LoopRunner:
             mask_reasons=reason_counts,
         )
         if not candidate_plan_has_work:
-            # Issue #562: ``has_remaining_work`` is a *graph* signal (workable
-            # issues, ready tasks, actionable PRs, …) and is NOT correlated
-            # with the action mask. Post idle_tick removal (PR #535) we hit
-            # cases where the mask has eligible play slots but the graph
-            # signal says "no work" — exiting the loop here strands the
-            # session even though PPO has plays it can pick. If any mask
-            # slot is True, treat this tick as a wait (sleep + keep going);
-            # the next state transition (issue refresh, agent state change,
-            # ceiling-tick re-eval) will re-run the selector.
+            # Issue #562: ``has_remaining_work`` is a *graph* signal, NOT
+            # correlated with the action mask. Post idle_tick removal (PR #535)
+            # the mask can have eligible slots while the graph says "no work" —
+            # exiting here would strand a session PPO can still work. If any mask
+            # slot is True, wait (sleep + keep going); the next state transition
+            # re-runs the selector.
             if any(state.action_mask):
                 _logger.debug(
                     "selector_idle_mask_has_plays",
@@ -705,24 +662,15 @@ class LoopRunner:
                 )
                 await asyncio.sleep(self.idle_backoff("waiting_for_capacity"))
                 return True
-            # Every action slot is masked AND the graph signal says no work. What
-            # this means depends on the selector:
-            #
-            # * Live PPO — an all-masked idle tick is COMMON and transient: it
-            #   happens routinely while agents are mid-issue and work is
-            #   reconciling between refreshes. It is NOT a terminal signal and
-            #   must NOT end the session, or we would tear down live runs out from
-            #   under in-progress work. Keep polling; a live session only ever ends
-            #   from here via the fleet-idle backstop above (a clean drain after
-            #   the WHOLE fleet sits idle past the limit) or once PPO unmasks and
-            #   selects END_SESSION. (Bare-``return False`` here would also park:
-            #   it breaks run_until_idle without setting _natural_exit_reason, so
-            #   the sidecar supervisor returns without calling stop().)
-            #
-            # * Scripted/replay selector (FixedPlanSelector, test mocks) — a None
-            #   selection with an exhausted plan is definitively terminal: nothing
-            #   more will ever come, there is no fleet-idle backstop semantics, and
-            #   the harness owns teardown. Break the loop.
+            # Every slot masked AND graph says no work. Meaning depends on selector:
+            # * Live PPO — common, transient (agents mid-issue, work reconciling);
+            #   NOT terminal, must NOT end the session or we tear down live work.
+            #   Keep polling; a live session only ends via the fleet-idle backstop
+            #   above or once PPO selects END_SESSION. (Bare return False would park:
+            #   breaks run_until_idle without _natural_exit_reason, so the sidecar
+            #   supervisor returns without stop().)
+            # * Scripted/replay selector — exhausted plan is terminal; harness owns
+            #   teardown. Break the loop.
             if isinstance(self._runtime.selector, _ppo_selector_cls()):
                 _logger.debug(
                     "selector_idle_all_masked_keep_polling",
@@ -931,11 +879,9 @@ class LoopRunner:
                     "hard-frozen — force-draining and stopping the session"
                 ),
             )
-            # Drive teardown off the (dead) loop. begin_drain is idempotent and
-            # records the drain reason / fires the ESR; stop() then performs the
-            # full graceful shutdown (end agents, checkpoint, beads clear, store
-            # close) and is re-entrancy safe. Guarded because the watchdog runs
-            # off the (dead) loop — a begin_drain failure must not kill it.
+            # Drive teardown off the (dead) loop: begin_drain (idempotent, records
+            # reason + fires ESR) then stop() (full graceful shutdown, re-entrancy
+            # safe). Guarded so a begin_drain failure can't kill the watchdog.
             await self._host._safe_call(
                 self.initiate_autonomous_stop("loop_liveness_timeout"),
                 "loop_liveness_begin_drain",
@@ -980,16 +926,14 @@ class LoopRunner:
         self._last_loop_iteration_at = time.monotonic()
 
         while not self._runtime.stop_requested:
-            # Loop-liveness heartbeat (#9): stamp every iteration so the
-            # independent watchdog can detect a hard-frozen loop. Stays OUTSIDE
-            # the per-tick guard so it advances even on a throwing tick — a
-            # fast-failing-but-looping tick must not look hard-frozen.
+            # Loop-liveness heartbeat (#9): stamp every iteration so the watchdog
+            # can detect a frozen loop. OUTSIDE the per-tick guard so it advances
+            # even on a throwing tick (a fast-failing loop must not look frozen).
             self._last_loop_iteration_at = time.monotonic()
             # Budget-countdown heartbeat: emit a budget-only frame on a fixed
-            # cadence so the dashboard's remaining-time figure keeps ticking even
-            # when this tick neither dispatches nor completes a play (idle fleet,
-            # or one long-running play). Outside the per-tick guard — a heartbeat
-            # failure must never trip the loop breaker.
+            # cadence so the dashboard's remaining-time keeps ticking during idle/
+            # long-play ticks. Outside the per-tick guard so a heartbeat failure
+            # never trips the loop breaker.
             await self._maybe_emit_budget_heartbeat()
             tick_raised = False
             try:
@@ -1084,14 +1028,12 @@ class LoopRunner:
         :class:`Continue`/:class:`WaitInFlight`/:class:`WaitIdle`/:class:`Pause`,
         and the dispatch tail becomes :class:`Dispatch`.
         """
-        # Pause blocks new selection/dispatch, but completed in-flight plays
-        # still need to be harvested so agent completions, costs, and rewards
-        # do not get stranded behind the pause gate.
+        # Pause blocks new selection/dispatch, but in-flight completions must
+        # still be harvested so completions/costs/rewards aren't stranded.
         if not self._runtime.pause_event.is_set():
-            # Bound the wait by the unanswered-pause deadline (#9) so a
-            # feedback pause nobody answers auto-stops instead of wedging the
-            # loop indefinitely. ``remaining`` is None when no deadline is
-            # armed (manual pause), making this a plain block-until-resume.
+            # Bound the wait by the unanswered-pause deadline (#9) so an
+            # unanswered feedback pause auto-stops instead of wedging. remaining
+            # is None when no deadline is armed (manual pause) → block-until-resume.
             remaining: float | None = None
             if self._runtime.pause_deadline is not None:
                 remaining = max(0.0, self._runtime.pause_deadline - time.monotonic())
@@ -1131,12 +1073,10 @@ class LoopRunner:
 
         await self._completion.harvest_completed()
 
-        # Periodic GitHub refresh fallback: fires when no refresh-triggering
-        # play has completed recently, keeping cache fresh across long runs of
-        # run_qa / systematic_debugging / unblock_pr. Invalidates the digest
-        # so the next tick re-runs the selector; does NOT reset the idle
-        # streak — a fleet sitting idle through a refresh has not become
-        # less idle (desktop-mib1).
+        # Periodic GitHub refresh fallback when no refresh-triggering play ran
+        # recently (long run_qa / systematic_debugging / unblock_pr stretches).
+        # Invalidates the digest to force a re-select; does NOT reset idle_streak —
+        # idling through a refresh isn't less idle (desktop-mib1).
         if time.monotonic() - self._runtime.last_refresh_time > ISSUE_REFRESH_INTERVAL_SECONDS:
             await self._host._safe_call(
                 self._completion.refresh_issues(), "refresh_issues_periodic"
@@ -1150,10 +1090,8 @@ class LoopRunner:
         should_stop, reason = self._lifecycle.should_terminate(state)
         if should_stop:
             if reason == "drain_complete":
-                # Defensive-visibility warning (was inline in should_terminate
-                # before 03 M5, hence emitted before the loop_terminating log):
-                # fire the one-shot drain-complete hook only on the genuine
-                # drain-completion path, with this tick's state — not from
+                # Fire the one-shot drain-complete hook only on the genuine
+                # drain-completion path with this tick's state — not from
                 # stop_inner, which also runs for hard_stop.
                 self._drain._on_drain_complete(state)
             _logger.info(
@@ -1168,24 +1106,19 @@ class LoopRunner:
             # reason set but should_stop False → pause; loop blocks at wait() next iteration
             return Pause(reason)
 
-        # PPO sees the full mask every tick. The eligibility mask
-        # (``compute_agent_eligibility_mask``) zeros out worker plays when no
-        # IDLE agent matches, and ``compute_config_mask`` bounds
-        # INSTANTIATE_AGENT by the per-(type, tier) ``max`` on each model tier.
-        # If nothing is pickable, the ``selection is None`` path below falls
-        # through to ``_wait_for_in_flight`` as before.
+        # PPO sees the full mask every tick: the eligibility mask zeros worker
+        # plays when no IDLE agent matches, and compute_config_mask bounds
+        # INSTANTIATE_AGENT per (type, tier) max. Nothing pickable → the
+        # selection-is-None path below waits on in-flight.
         idle_agents = [a for a in state.agents if a.status == AgentStatus.IDLE]
 
-        # Skip ``select_play`` (and its log line) when nothing the selector
-        # cares about has changed since the last attempt. The watchdog at
-        # the ceiling tick still re-evaluates regardless, so a missed
-        # signal recovers within ~21s. See ``selection_state_digest``.
+        # Skip select_play (and its log line) when nothing the selector cares
+        # about changed since last attempt. The ceiling tick re-evaluates
+        # regardless, so a missed signal recovers within ~21s.
         digest = self.selection_state_digest(state, idle_agents)
         ceiling_tick = self._runtime.idle_streak >= len(_IDLE_BACKOFF_SECONDS) - 1
         if digest == self._runtime.last_selection_digest and not ceiling_tick:
-            # Nothing changed since the last attempt — idle without re-running
-            # the selector (and without its log line, hence log_selector_idle
-            # False and no structured play_skipped emit).
+            # Unchanged — idle without re-running the selector or its log line.
             return self._resolve_idle_tick(
                 state,
                 reason="unchanged_digest",
@@ -1199,14 +1132,12 @@ class LoopRunner:
 
         selection = await self._dispatcher.select_play(state, override_play=override_play)
         # Fold this cycle's EligibilityAuthority confirm-repicks into the rolling
-        # divergence window (observation slot executor_skip_rate_recent_50). Drain
-        # once per selection cycle whether or not a play was produced — an
-        # all-repick cycle that yields None is exactly the divergence signal.
+        # divergence window (obs slot executor_skip_rate_recent_50). Drain once per
+        # cycle even on a None result — an all-repick None IS the divergence signal.
         self._velocity.record_selection_repicks(self._runtime.selector)
         if selection is None:
-            # Selector idled with a fresh digest: log ``selector_idle`` (once
-            # per distinct digest, thanks to the gate above) and, when work is
-            # in flight, emit a structured play_skipped before backing off.
+            # Selector idled on a fresh digest: log selector_idle and, when work
+            # is in flight, emit a structured play_skipped before backing off.
             return self._resolve_idle_tick(
                 state,
                 reason="selector_none",
@@ -1214,12 +1145,10 @@ class LoopRunner:
                 emit_skipped=True,
             )
 
-        # Selector picked a play. Defer the idle-streak / fleet-idle resets until
-        # we know the play will *actually* dispatch (below). A reverse-failsafe
-        # END_SESSION that the revalidation gate vetoes must NOT reset the streak —
-        # otherwise every blocked attempt re-pins idle_streak at ~1, the fleet-idle
-        # escalation never accumulates, and only the 20-minute time budget can end a
-        # bookkeeping-wedged session (#255).
+        # Selector picked a play. Defer idle-streak / fleet-idle resets until we
+        # know it will *actually* dispatch — a revalidation-vetoed reverse-failsafe
+        # END_SESSION must NOT reset the streak, else every blocked attempt re-pins
+        # idle_streak at ~1 and only the time budget ends a wedged session (#255).
         play_type, params = selection
 
         if (
@@ -1264,10 +1193,10 @@ class LoopRunner:
                         )
                 return Continue()
 
-        # Dispatching for real — reset the idle bookkeeping now. If we were inside a
-        # fleet-idle persistent window (desktop-85ex), emit the exit transition once
-        # before clearing the flag — the second of the two bookend events the memory
-        # project_loop_detector_warning_storm mandates we preserve.
+        # Dispatching for real — reset idle bookkeeping. If inside a fleet-idle
+        # persistent window (desktop-85ex), emit the exit transition once before
+        # clearing the flag (the second bookend event, per
+        # project_loop_detector_warning_storm).
         if self._fleet_idle_persistent_active:
             _logger.info(
                 "fleet_idle_persistent",
@@ -1280,10 +1209,9 @@ class LoopRunner:
         self._runtime.idle_streak = 0
         self._wedged_idle_ticks = 0
         self._end_session_revalidation_blocks = 0
-        # Only a *productive* selection resets the fleet-idle deadline. A
-        # lifecycle-only pick (INSTANTIATE_AGENT / END_AGENT) must not, or an
-        # instantiate<->end limit cycle would pin the clock at zero forever and
-        # the backstop would never fire (#166).
+        # Only a *productive* pick resets the fleet-idle deadline; a lifecycle-only
+        # pick must not, or an instantiate<->end cycle pins the clock at zero and
+        # the backstop never fires (#166).
         if play_type not in _LIFECYCLE_PLAY_TYPES:
             self._fleet_idle_since = None
         return Dispatch(play_type, params, state)
@@ -1348,8 +1276,7 @@ class LoopRunner:
                 if not dispatched:
                     return False
                 # NO await on dispatch itself — wait only on resulting in-flight
-                # work. Tests patch the module-local
-                # ``agentshore.core.mixins.loop.AGENT_PING_TIMEOUT_SECONDS``.
+                # work. Tests patch module-local AGENT_PING_TIMEOUT_SECONDS.
                 if self._runtime.in_flight:
                     await self._completion.wait_for_in_flight(timeout=AGENT_PING_TIMEOUT_SECONDS)
                     return False

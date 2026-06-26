@@ -23,10 +23,6 @@ from agentshore.data.store import (
     TrajectorySnapshotRecord,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest_asyncio.fixture
 async def store(tmp_path):
@@ -53,11 +49,6 @@ async def _seed(store: DataStore) -> tuple[str, int]:
     return sid, play_id
 
 
-# ---------------------------------------------------------------------------
-# record_play now returns play_id
-# ---------------------------------------------------------------------------
-
-
 async def test_record_play_returns_auto_increment_play_id(store):
     sid = "sess-play-id"
     await store.create_session(
@@ -82,11 +73,6 @@ async def test_record_play_returns_auto_increment_play_id(store):
     assert isinstance(id1, int)
     assert isinstance(id2, int)
     assert id2 > id1
-
-
-# ---------------------------------------------------------------------------
-# scope_drift_log
-# ---------------------------------------------------------------------------
 
 
 async def test_log_scope_drift_persists_row(store):
@@ -122,11 +108,6 @@ async def test_log_scope_drift_fk_requires_existing_play(store):
 
     with pytest.raises(aiosqlite.IntegrityError):
         await store.log_scope_drift(rec)
-
-
-# ---------------------------------------------------------------------------
-# human_feedback
-# ---------------------------------------------------------------------------
 
 
 async def test_record_and_list_human_feedback_round_trip(store):
@@ -169,11 +150,6 @@ async def test_reset_session_scoped_tables_clears_human_feedback(store):
     assert await store.count_human_feedback(sid) == 0
 
 
-# ---------------------------------------------------------------------------
-# trajectory_snapshots
-# ---------------------------------------------------------------------------
-
-
 async def test_record_trajectory_snapshot_round_trip(store):
     sid, play_id = await _seed(store)
     rec = TrajectorySnapshotRecord(
@@ -199,11 +175,6 @@ async def test_get_latest_trajectory_returns_none_when_absent(store):
     )
     result = await store.get_latest_trajectory(sid)
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# list_open_pull_requests
-# ---------------------------------------------------------------------------
 
 
 async def test_list_open_pull_requests_returns_only_open(store):
@@ -266,11 +237,6 @@ async def test_pull_request_metadata_round_trips_for_environment_state(store):
     assert pr.status_check_summary == "failed"
     assert pr.is_draft is False
     assert pr.author_agent_id == "agent-a"
-
-
-# ---------------------------------------------------------------------------
-# update_play
-# ---------------------------------------------------------------------------
 
 
 async def test_update_play_sets_outcome_fields(store):

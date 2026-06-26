@@ -30,11 +30,9 @@ if TYPE_CHECKING:
     )
 
 
-# Automated-escalation pause reasons where the loop is waiting on a human who
-# may be AFK; these auto-stop after ``feedback.unanswered_timeout_seconds`` (#9)
-# rather than wedging the loop indefinitely. Explicit ``user_request`` /
-# ``ipc_request`` pauses are intentionally excluded — an operator who paused is
-# present and may be holding deliberately.
+# Automated-escalation pauses where the awaited human may be AFK: these auto-stop
+# after ``feedback.unanswered_timeout_seconds`` (#9) rather than wedging forever.
+# Explicit user/ipc pauses are excluded — an operator who paused is present.
 _AUTO_STOP_PAUSE_REASONS: frozenset[str] = frozenset(
     {"loop_detected", "stagnation", "budget_exhausted", "budget_predictive"}
 )
@@ -100,10 +98,9 @@ class LifecycleController:
                 a.status == AgentStatus.TERMINATED for a in state.agents
             )
             if no_live_agents:
-                # Pure predicate: the defensive "drain completed with mergeable
-                # PRs" visibility check now fires from
-                # ``DrainController._on_drain_complete`` during drain
-                # finalization, keeping this method free of side effects.
+                # Pure predicate: the "drain completed with mergeable PRs" visibility
+                # check fires from ``DrainController._on_drain_complete`` instead, keeping
+                # this method side-effect-free.
                 return True, "drain_complete"
             return False, None  # continue; mask allows only end_agent
         if state.session_state == SessionState.SHUTTING_DOWN:
@@ -113,11 +110,10 @@ class LifecycleController:
         if max_plays is not None and state.total_plays >= max_plays:
             return True, "max_plays"
 
-        # Wall-clock time budget hard-stop backstop. The primary path is the
-        # 20-minute graceful drain in ``begin_budget_reserve_drain_if_needed``;
-        # this fires only if the deadline is reached anyway (e.g. a single play
-        # ran past the reserve window). Reads config + the monotonic loop clock
-        # so it is independent of snapshot population order.
+        # Wall-clock hard-stop backstop: the primary path is the graceful drain in
+        # ``begin_budget_reserve_drain_if_needed``; this fires only if the deadline is
+        # hit anyway (e.g. a play ran past the reserve window). Uses the monotonic loop
+        # clock so it's independent of snapshot population order.
         budget_cfg = self._host.effective_budget_caps()
         if budget_cfg.time_enabled and self._runtime.loop_started_at > 0:
             elapsed_minutes = (time.monotonic() - self._runtime.loop_started_at) / 60
@@ -149,10 +145,8 @@ class LifecycleController:
         """
         self._runtime.pause_reason = reason
         self._runtime.pause_event.clear()
-        # Arm the unanswered-pause backstop (#9): an automated-escalation pause
-        # that nobody answers must auto-stop rather than wedge the loop forever.
-        # Scoped to escalations where the awaited human may be AFK; explicit
-        # user/ipc pauses are excluded — an operator who paused is present.
+        # Arm the unanswered-pause backstop (#9): an unanswered automated escalation
+        # must auto-stop rather than wedge forever (see _AUTO_STOP_PAUSE_REASONS).
         timeout = self._runtime.cfg.feedback.unanswered_timeout_seconds
         if reason in _AUTO_STOP_PAUSE_REASONS and timeout is not None:
             self._runtime.pause_deadline = time.monotonic() + float(timeout)
@@ -234,16 +228,13 @@ class LifecycleController:
             _logger.warning("config_non_reloadable_fields_changed", fields=warned)
 
         self._runtime.cfg = new_cfg
-        # The PPO selector captures the orchestrator config at construction and
-        # builds its action mask from it (including the user-disabled-play
-        # hard-mask). It is not re-created on reload, so refresh its reference
-        # here or a play disabled mid-session via Preferences would stay
-        # selectable until the session restarts.
+        # The PPO selector builds its action mask from the config captured at
+        # construction (incl. user-disabled-play hard-mask) and isn't re-created on
+        # reload; refresh it here or a play disabled mid-session stays selectable.
         if isinstance(self._runtime.selector, _ppo_selector_cls()):
             self._runtime.selector.update_orchestrator_cfg(new_cfg)
-        # desktop-kqo5: SIGHUP-triggered reload also refreshes the cached
-        # default branch in case the operator pointed origin/HEAD at a new
-        # branch (e.g. main -> develop) between sessions.
+        # Reload also refreshes the cached default branch in case origin/HEAD was
+        # repointed (e.g. main -> develop) between sessions.
         try:
             new_default, assumed = await _asyncio.to_thread(resolve_default_branch, self._repo_root)
         except Exception as exc:

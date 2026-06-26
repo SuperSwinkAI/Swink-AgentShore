@@ -171,12 +171,9 @@ def build_argv(
             args += ["-m", model]
         if reasoning_effort:
             args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
-        # desktop-pxg: without this, codex's shell tool runs subprocesses (gh,
-        # git, etc.) with a stripped env, so the GH_TOKEN we inject for the
-        # codex process never reaches `gh api user`. Result: identity mismatch
-        # and refused mutations. Setting inherit=all passes our env (including
-        # the per-identity GH_TOKEN/GH_CONFIG_DIR) through to every codex
-        # shell-tool invocation.
+        # desktop-pxg: codex's shell tool otherwise strips the env, so our
+        # injected GH_TOKEN/GH_CONFIG_DIR never reach `gh api user` (identity
+        # mismatch, refused mutations). inherit=all passes them through.
         args += ["-c", "shell_environment_policy.inherit=all"]
         args.extend(extra_flags)
         if project_dir:
@@ -268,8 +265,7 @@ def build_resume_argv(
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
         )
-        # base == [binary, "exec", "--json", ...]; turn it into the resume
-        # subcommand: [binary, "exec", "resume", <id>, "--json", ...].
+        # Splice "resume <id>" into base [binary, "exec", "--json", ...].
         return [base[0], "exec", "resume", resume_session_id, *base[2:]]
 
     if agent_type == AgentType.GROK:

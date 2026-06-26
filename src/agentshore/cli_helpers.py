@@ -13,20 +13,10 @@ from agentshore.errors import OrchestratorError
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.state import AgentType
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 _DEFAULT_BUDGET: float = 200.0
-# Wall-clock safety default (24h) injected for a fresh/unconfigured session,
-# parallel to the $200 dollar safety default above.
+# Wall-clock safety default (24h), parallel to the $200 dollar default above.
 _DEFAULT_TIME_MINUTES: int = 1440
 _PROJECT_DIR = ".agentshore"
-
-
-# ---------------------------------------------------------------------------
-# Detection helpers
-# ---------------------------------------------------------------------------
 
 
 def _find_repo_root(start: Path) -> Path:

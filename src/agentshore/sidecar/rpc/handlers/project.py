@@ -50,11 +50,9 @@ async def _finalize_project_select(
     include_inspect: bool = True,
 ) -> JsonRpcResponse:
     state.active_project_path = resolved
-    # When the desktop launches from Finder the sidecar's cwd is "/".
-    # Subprocess spawns that inherit this cwd traverse ~/Music etc. on
-    # relative-path operations, triggering macOS TCC prompts (see
-    # desktop-2za5). Re-anchor cwd at project select; all downstream
-    # subprocess spawns will inherit it unless they pass an explicit cwd.
+    # Finder-launched sidecar has cwd "/"; child spawns then traverse ~/Music
+    # etc. on relative ops, triggering macOS TCC prompts (desktop-2za5).
+    # Re-anchor cwd here so downstream spawns inherit the project dir.
     with contextlib.suppress(OSError):
         os.chdir(resolved)
     if not include_inspect:
@@ -190,8 +188,8 @@ def _dispatch_project_rpc(
     if method == "project.install_timelapse":
         return _dispatch_install_timelapse(req_id)
 
-    # project.inspect and project.branches are async coroutines — wrap them so
-    # ProjectError / _ParamError raised during await is handled consistently.
+    # inspect/branches are coroutines — wrap so ProjectError/_ParamError raised
+    # during await is handled consistently.
     if method in ("project.inspect", "project.branches"):
 
         async def _run_async_project() -> JsonRpcResponse:

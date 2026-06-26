@@ -21,7 +21,7 @@ def test_json_safe_recurses_into_containers() -> None:
 
 
 def test_json_safe_preserves_bools_and_scalars() -> None:
-    # bool is a float subclass conceptually elsewhere; it must pass through.
+    # bool must pass through untouched, not be coerced like a number.
     assert json_safe(True) is True
     assert json_safe(False) is False
     assert json_safe("x") == "x"

@@ -40,11 +40,6 @@ async def setup(tmp_path: Path):
     await store.close()
 
 
-# --------------------------------------------------------------------------- #
-# Tests
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.asyncio
 async def test_create_archive_creates_directory(setup: tuple) -> None:
     """Verify archive directory is created after archival."""
@@ -139,7 +134,6 @@ async def test_archive_list_multiple(setup: tuple) -> None:
     """Create 2 archives (different sessions) and verify both appear in list."""
     store, archiver, db_path, _archive_dir = setup
 
-    # Create a second session
     session2 = SessionRecord(
         session_id="second-session-99887766",
         project_path="/tmp/proj2",
@@ -181,7 +175,6 @@ async def test_auto_archive_disabled(setup: tuple) -> None:
         db_path=db_path,
     )
     assert result is None
-    # Archive dir should not even exist
     assert not archive_dir.exists()
 
 
@@ -211,7 +204,6 @@ async def test_complete_session_persists_play_totals(tmp_path: Path) -> None:
                 started_at=datetime.now(UTC).isoformat(),
             )
         )
-        # Two finalized plays with non-zero cost; one mid-session play with cost.
         for cost in (1.25, 2.50, 0.75):
             await store.record_play(
                 PlayRecord(
@@ -225,7 +217,7 @@ async def test_complete_session_persists_play_totals(tmp_path: Path) -> None:
 
         await store.complete_session(session_id, final_alignment=0.5)
 
-        # (a) session row carries the real aggregate, not the 0/0.0 defaults.
+        # (a) session row carries the real aggregate, not the 0/0.0 defaults (#170).
         session = await store.get_session(session_id)
         assert session is not None
         assert session.total_plays == 3

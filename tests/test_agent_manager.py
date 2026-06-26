@@ -29,11 +29,6 @@ if TYPE_CHECKING:
 SESSION_ID = "test-session-1"
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest_asyncio.fixture
 async def store(tmp_path: Path) -> DataStore:
     s = DataStore(tmp_path / "agentshore.db")
@@ -68,11 +63,6 @@ def _make_manager(
     )
 
 
-# ---------------------------------------------------------------------------
-# instantiate
-# ---------------------------------------------------------------------------
-
-
 async def test_instantiate_registers_agent_record(
     store: DataStore, tmp_path: Path, mock_agent_path: Path
 ) -> None:
@@ -83,7 +73,6 @@ async def test_instantiate_registers_agent_record(
     assert handle.status == AgentStatus.IDLE
     assert handle.agent_type == AgentType.CODEX
 
-    # Check persisted record
     agent_id = handle.agent_id
     async with store._conn.execute(
         "SELECT agent_id, session_id, agent_type FROM agents WHERE agent_id = ?",
@@ -181,11 +170,6 @@ async def test_mark_agent_error_non_auth_does_not_suppress_type(
     assert mgr.last_auth_failed_types == set()
 
 
-# ---------------------------------------------------------------------------
-# dispatch — end-to-end via mock agent
-# ---------------------------------------------------------------------------
-
-
 async def test_dispatch_success_updates_handle_and_store(
     store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -197,9 +181,8 @@ async def test_dispatch_success_updates_handle_and_store(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
     agent_id = handle.agent_id
-    # A prior stream-idle timeout left the storm counter elevated; a successful
-    # dispatch must reset it so a one-off stall doesn't accumulate toward the
-    # bench limit (#161).
+    # #161: a successful dispatch resets the storm counter so a one-off stall
+    # doesn't accumulate toward the bench limit.
     handle.consecutive_timeouts = 3
 
     result = await mgr.dispatch(agent_id, "do the work")
@@ -209,18 +192,15 @@ async def test_dispatch_success_updates_handle_and_store(
     assert result.tokens_out == 200
     assert handle.consecutive_timeouts == 0
 
-    # Parse the raw output using the shared result parser
     sr = parse_skill_result(result.raw_output)
     assert sr.success is True
     assert len(sr.artifacts) == 1
     assert sr.artifacts[0]["number"] == 42  # type: ignore[index]
 
-    # Handle counters updated
-    assert handle.total_tokens == 700  # 500 in + 200 out
+    assert handle.total_tokens == 700
     assert handle.total_cost > 0.0
     assert handle.status == AgentStatus.IDLE
 
-    # DataStore stats updated
     cursor = await store._conn.execute(
         "SELECT tasks_completed, tasks_failed FROM agents WHERE agent_id = ?",
         (agent_id,),
@@ -638,11 +618,6 @@ async def test_successful_dispatch_resets_type_stream_hang_streak(
     assert mgr._type_stream_hang_streak[handle.agent_type.value] == 0
 
 
-# ---------------------------------------------------------------------------
-# Circuit breaker integration
-# ---------------------------------------------------------------------------
-
-
 async def test_dispatch_blocked_when_circuit_breaker_open(
     store: DataStore, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
@@ -663,20 +638,14 @@ async def test_dispatch_blocked_when_circuit_breaker_open(
 
     from agentshore.errors import AgentProcessError
 
-    # Three failures to open the breaker (default threshold = 3)
+    # Three failures open the breaker (default threshold = 3).
     for _ in range(3):
         with pytest.raises(AgentProcessError):
             await mgr.dispatch(agent_id, "prompt")
         handle.transition_to(AgentStatus.IDLE)  # reset so dispatch doesn't short-circuit
 
-    # Circuit is now open — next call blocked immediately
     with pytest.raises(PreconditionFailed, match="Circuit breaker OPEN"):
         await mgr.dispatch(agent_id, "prompt")
-
-
-# ---------------------------------------------------------------------------
-# clear
-# ---------------------------------------------------------------------------
 
 
 async def test_clear_removes_handle_and_sets_terminated_at(
@@ -695,7 +664,7 @@ async def test_clear_removes_handle_and_sets_terminated_at(
     )
     row = await cursor.fetchone()
     assert row is not None
-    assert row[0] is not None  # terminated_at set
+    assert row[0] is not None
 
 
 async def test_clear_unknown_agent_raises(store: DataStore, tmp_path: Path) -> None:
@@ -716,7 +685,7 @@ async def test_clear_refuses_to_kill_agent_with_active_play(
     handle = await mgr.instantiate(AgentType.CODEX)
     agent_id = handle.agent_id
 
-    # Simulate the agent being mid-play (as dispatch() would set it).
+    # Mid-play, as dispatch() would set it.
     handle.start_play(
         play_type=AgentType.CODEX,  # type: ignore[arg-type]  # value only matters for message
         play_id=42,
@@ -730,7 +699,6 @@ async def test_clear_refuses_to_kill_agent_with_active_play(
     with pytest.raises(PreconditionFailed, match="active in-flight play"):
         await mgr.clear(agent_id)
 
-    # Agent must still be alive.
     assert agent_id in mgr.handles
 
 
@@ -801,10 +769,8 @@ async def test_active_play_agent_ids_reflects_live_state(
     handle_a = await mgr.instantiate(AgentType.CODEX)
     handle_b = await mgr.instantiate(AgentType.CODEX)
 
-    # Initially no active plays.
     assert mgr.active_play_agent_ids() == frozenset()
 
-    # Give handle_a an active play.
     handle_a.start_play(
         play_type=AgentType.CODEX,  # type: ignore[arg-type]
         play_id=1,
@@ -818,7 +784,6 @@ async def test_active_play_agent_ids_reflects_live_state(
     assert handle_a.agent_id in active
     assert handle_b.agent_id not in active
 
-    # Give handle_b one too.
     handle_b.start_play(
         play_type=AgentType.CODEX,  # type: ignore[arg-type]
         play_id=2,
@@ -831,7 +796,6 @@ async def test_active_play_agent_ids_reflects_live_state(
     assert handle_a.agent_id in active
     assert handle_b.agent_id in active
 
-    # Clear handle_a's play.
     handle_a.clear_play()
     active = mgr.active_play_agent_ids()
     assert handle_a.agent_id not in active
@@ -876,11 +840,6 @@ async def test_clear_handles_concurrent_process_null(
     assert handle.agent_id not in mgr.handles
 
 
-# ---------------------------------------------------------------------------
-# Authorship cache
-# ---------------------------------------------------------------------------
-
-
 async def test_record_branch_exposure_records_branch_exposure(
     store: DataStore, tmp_path: Path
 ) -> None:
@@ -907,11 +866,6 @@ async def test_record_branch_exposure_last_writer_wins(store: DataStore, tmp_pat
     assert mgr.branch_exposure["branch-a"] == "agent-2"
 
 
-# ---------------------------------------------------------------------------
-# Error recovery
-# ---------------------------------------------------------------------------
-
-
 async def test_attempt_recovery_transitions_error_to_idle(
     store: DataStore, tmp_path: Path, mock_agent_path: Path
 ) -> None:
@@ -920,13 +874,11 @@ async def test_attempt_recovery_transitions_error_to_idle(
     handle = await mgr.instantiate(AgentType.CODEX)
     agent_id = handle.agent_id
 
-    # Put agent into ERROR state
     handle.transition_to(AgentStatus.ERROR)
 
-    # Trip the breaker and let the cooldown elapse so it becomes HALF_OPEN.
+    # Trip the breaker, then record success so it returns to CLOSED (dispatchable).
     cb = mgr.circuit_breakers[agent_id]
     cb.record_failure()
-    # Force HALF_OPEN by recording success (resets to CLOSED, which allows dispatch)
     cb.record_success()
 
     result = await mgr.attempt_recovery(agent_id)
@@ -972,11 +924,7 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     assert handle.last_error_class == "auth"
 
 
-# ---------------------------------------------------------------------------
-# placeholder cost for no-usage agents (grok / antigravity)
-# ---------------------------------------------------------------------------
-
-
+# Placeholder cost for no-usage agents (grok / antigravity).
 def _invocation(dollar_cost: float) -> AgentInvocationResult:
     return AgentInvocationResult(
         raw_output="ok",
@@ -1009,7 +957,6 @@ def test_placeholder_cost_is_running_mean_of_measured_plays(
     # A no-usage grok dispatch is billed the mean of the two measured plays (= 2.00).
     grok = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
     assert grok.dollar_cost == pytest.approx(2.00)
-    # Placeholder plays must NOT pollute the measured mean: another no-usage play
-    # still sees 2.00, not a drifted value.
+    # Placeholder plays must NOT pollute the measured mean — another sees 2.00, not drift.
     grok2 = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
     assert grok2.dollar_cost == pytest.approx(2.00)

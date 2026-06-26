@@ -73,7 +73,6 @@ def identity(project: str, reconfigure: bool) -> None:
     cfg = load_config(cfg_path)
     rows = report_identities(cfg)
     echo_identity_report(rows)
-    # Exit 1 if any configured identity failed to resolve.
     if bad_identity_rows(rows):
         raise SystemExit(1)
 

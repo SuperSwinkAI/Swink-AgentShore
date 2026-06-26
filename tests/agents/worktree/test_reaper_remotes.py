@@ -48,7 +48,6 @@ async def test_strip_non_origin_remotes_removes_fork(bare_repo: Path) -> None:
     """A ``fork`` remote is removed; only ``origin`` remains."""
     _git("remote", "add", "fork", "https://github.com/fork/repo.git", cwd=bare_repo)
 
-    # Sanity: both remotes present before.
     before = _git("remote", cwd=bare_repo).split()
     assert set(before) == {"origin", "fork"}
 

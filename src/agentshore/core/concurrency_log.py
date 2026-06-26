@@ -157,11 +157,10 @@ class ConcurrencyLog:
         self._session_id = session_id
         self._lock = asyncio.Lock()
         self._seq = 0
-        # Per-session artifact. The session directory is keyed by a stable
-        # project hash, so a prior session for the same project would otherwise
-        # leave its samples behind and the ESR/graph would read two runs. Drop
-        # it on construction; nothing tails this file, so there is no reader
-        # lock to fight (unlike the dashboard state/event files).
+        # Per-session artifact, but the session dir is keyed by a stable project
+        # hash — a prior run's samples would otherwise linger and the ESR/graph
+        # would read two runs. Drop on construction; nothing tails this file, so
+        # no reader lock to fight (unlike the dashboard state/event files).
         with contextlib.suppress(OSError):
             self._path.unlink()
 

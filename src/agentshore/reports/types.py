@@ -171,11 +171,8 @@ class AgentPerformanceData(TypedDict):
     success_rate: float
     total_cost: float
     avg_duration: float
-    # desktop-31h2: cumulative dispatch count for this agent over the session,
-    # plus its share of the fleet-wide dispatch total. ``dispatch_share`` is
-    # ``agent.dispatch_count / sum_over_fleet(dispatch_count)``, or 0.0 when
-    # nothing has been dispatched yet. Lets dashboards spot agents that get
-    # 0 plays for long stretches even when work is available.
+    # dispatch_share = dispatch_count / fleet dispatch total (0.0 when none yet);
+    # surfaces agents starved of plays while work is available.
     dispatch_count: int
     dispatch_share: float
 
@@ -314,9 +311,8 @@ class EndSessionReportData(TypedDict):
     play_log_rows: list[PlayLogRowEntry]
     play_log_unique_agents: int
     play_log_plays_in_use: int
-    # Total user-facing play slots (registry minus internal heartbeats).
-    # Renders as the denominator in "<plays_in_use> / <total_slots>".
-    # Previously hardcoded to 17 in the template; now derived (desktop-j8b).
+    # Denominator in "<plays_in_use> / <total_slots>"; derived (registry minus
+    # internal heartbeats), not hardcoded.
     play_log_total_slots: int
 
 

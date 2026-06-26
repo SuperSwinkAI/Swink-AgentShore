@@ -36,14 +36,11 @@ def _make_orch() -> Orchestrator:
     orch._state_provider = MagicMock()
     orch._state_provider.on_session_draining = AsyncMock()
     orch._store.update_session_state = AsyncMock()
-    # Drain tests assert on .set() of the pause event, so swap the real
-    # asyncio.Event for a MagicMock that records the call.
+    # Drain tests assert on the pause event's .set(); MagicMock records the call.
     orch._pause_event = MagicMock()
     orch._pause_event.set = MagicMock()
     orch._pause_event.is_set = MagicMock(return_value=True)
-    # Rebuild the drain/lifecycle components so they capture the test session_id
-    # (the factory baked in its own "test-session" at construction time, and
-    # assertions in this file match on "sess-test").
+    # Rebuild drain/lifecycle to capture "sess-test" (factory baked in "test-session").
     orch._lifecycle = LifecycleController(
         host=orch,
         runtime=orch._runtime,
@@ -181,7 +178,7 @@ def test_request_drain_wakes_pause_event() -> None:
 def test_should_terminate_drain_with_in_flight_returns_false() -> None:
     """_should_terminate returns False while plays are still in flight."""
     orch = _make_orch()
-    orch._in_flight = {"play-1": MagicMock()}  # one play in flight
+    orch._in_flight = {"play-1": MagicMock()}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.BUSY)])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is False

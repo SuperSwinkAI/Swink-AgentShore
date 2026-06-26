@@ -95,11 +95,9 @@ def setup_logging(
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            # Render exc_info into a structured ``exception`` field so
-            # ``_logger.exception(...)`` / ``exc_info=True`` sites emit a real
-            # traceback in the NDJSON. Without this the formatter dropped the
-            # stack entirely (only ``"exc_info": true`` survived), which made an
-            # orchestrator-loop crash undiagnosable. Must precede JSONRenderer.
+            # Render exc_info into a structured ``exception`` field so exc_info=True
+            # sites emit a real traceback in the NDJSON; without this only
+            # ``"exc_info": true`` survived. Must precede JSONRenderer.
             structlog.processors.dict_tracebacks,
             structlog.processors.JSONRenderer(),
         ],

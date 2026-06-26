@@ -36,10 +36,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 def _agent(agent_id: str = "agent-1", github_identity: str | None = "reviewer") -> AgentSnapshot:
     return AgentSnapshot(
@@ -116,11 +112,6 @@ def _work_state(**kwargs: object) -> OrchestratorState:
     return OrchestratorState(**base)  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
-# eligibility() / confirm() agreement
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_eligibility_confirm_agreement() -> None:
     """eligibility().verdicts[pt].valid == confirm(pt, ...).valid for all plays.
@@ -142,11 +133,6 @@ async def test_eligibility_confirm_agreement() -> None:
         assert confirmed.valid == verdict.valid, (
             f"{pt.value}: eligibility valid={verdict.valid} but confirm valid={confirmed.valid}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Live-drift confirm → clean re-pick
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -177,11 +163,6 @@ async def test_confirm_live_drift_is_clean_repick() -> None:
     assert verdict.reason is not None
     # Clean re-pick: the drifted target is gone from the live candidate set.
     assert all(c.params.issue_number != 234 for c in verdict.candidates)
-
-
-# ---------------------------------------------------------------------------
-# Idle-maintenance plays mask via eligibility()
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -234,11 +215,6 @@ async def test_idle_maintenance_plays_mask() -> None:
         PlayType.DESIGN_AUDIT,
     ):
         assert not mask[V1_ACTION_ORDER.index(pt)]
-
-
-# ---------------------------------------------------------------------------
-# No action-space / observation dimension bump
-# ---------------------------------------------------------------------------
 
 
 def test_no_version_bump() -> None:

@@ -44,9 +44,8 @@ async def test_second_writer_waits_instead_of_erroring(tmp_path: Path) -> None:
         other = await aiosqlite.connect(str(db_path))
         try:
             await other.execute("PRAGMA busy_timeout=5000")
-            # Writing through the second connection should succeed (waits out
-            # any momentary lock rather than raising). Use a scratch table so we
-            # don't depend on schema specifics.
+            # Second connection's write should wait out any momentary lock rather
+            # than raise. Scratch table avoids depending on schema specifics.
             await other.execute("CREATE TABLE IF NOT EXISTS _race (id INTEGER)")
             await other.execute("INSERT INTO _race (id) VALUES (1)")
             await other.commit()
@@ -93,8 +92,7 @@ async def test_initialize_raises_after_persistent_db_locked(
 
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
-    # Zero budget => give up on the first persistent lock instead of spinning
-    # for the full default window.
+    # Zero budget: give up on the first persistent lock, not the full window.
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BUDGET_SECONDS", 0.0)
     store = DataStore(tmp_path / "locked.db")
     await store.initialize()

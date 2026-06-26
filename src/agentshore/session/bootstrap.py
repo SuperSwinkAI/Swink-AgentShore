@@ -259,9 +259,9 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         )
         raise SystemExit(1)
 
-    # Default socket location: well-known per-project path. When --socket
-    # overrides it, also register the override via a symlink at the well-known
-    # path so external tools can still discover it by hashing the project.
+    # Default socket: well-known per-project path. When --socket overrides it,
+    # also symlink the well-known path so external tools can still discover it
+    # by hashing the project.
     well_known_socket = session_socket_path(opts.project_path)
     ipc_endpoint, resolved_socket = resolve_start_ipc_endpoint(
         opts.project_path,
@@ -270,27 +270,23 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         ipc_port=opts.ipc_port,
     )
 
-    # Detect git repo root.
     try:
         repo_root = cli_helpers._find_repo_root(opts.project_path)
     except OrchestratorError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    # Resolve --seed as file or directory.
     seed_path: Path | None = None
     seed_kind: str | None = None
     if opts.seed is not None:
         seed_path, seed_kind = _resolve_seed_input_path(opts.seed, repo_root)
 
-    # Detect GitHub remote.
     try:
         gh_info = cli_helpers._detect_gh_remote(repo_root)
     except OrchestratorError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    # Detect agents on PATH and API keys.
     agents = cli_helpers._detect_agents()
     api_keys = cli_helpers._detect_api_keys()
 
@@ -309,7 +305,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         )
         raise SystemExit(1)
 
-    # Create .agentshore/ directory.
     agentshore_dir = repo_root / _PROJECT_DIR
     agentshore_dir.mkdir(exist_ok=True)
 
@@ -336,7 +331,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         default_config_path.write_text(config_text)
         click.echo(f"Generated {default_config_path}")
 
-    # Load config and apply CLI overrides.
     cfg_path = Path(opts.config_path) if opts.config_path else repo_root / "agentshore.yaml"
     cfg, effective_policy_mode = _load_config_with_overrides(
         cfg_path,
@@ -455,11 +449,9 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # desktop-l7i: warn if no SSH key is loaded in the agent. Identity-
-    # configured runs use SSH-signed commits via `git merge --no-ff`; an empty
-    # ssh-agent means merge_pr plays will fail mid-session with
-    # 'ssh-signing-key-not-loaded' (observed as 3 failures + 1 false-positive
-    # loop_detected).
+    # desktop-l7i: warn if no SSH key is loaded. Identity runs use SSH-signed
+    # commits via `git merge --no-ff`; an empty ssh-agent means merge_pr plays
+    # fail mid-session with 'ssh-signing-key-not-loaded'.
     report_ssh_signing_status(repo_root)
     click.echo()
 
@@ -502,8 +494,7 @@ def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # Non-blocking non-ok statuses (timeout/error/unprobeable that aren't "ok"):
-    # surface as warnings but never gate the launch.
+    # Non-blocking non-ok statuses (timeout/error/unprobeable): warn, never gate.
     for result in results:
         if not result.ok and not result.blocks_launch:
             click.echo(
@@ -554,8 +545,7 @@ def preflight_git_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # Non-blocking non-ok statuses (timeout/error/unprobeable): surface as
-    # warnings but never gate the launch.
+    # Non-blocking non-ok statuses (timeout/error/unprobeable): warn, never gate.
     for result in results:
         if not result.ok and not result.blocks_launch:
             click.echo(

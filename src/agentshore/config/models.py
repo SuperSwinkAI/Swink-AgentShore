@@ -75,11 +75,10 @@ class PolicyMode(StrEnum):
 class ProjectConfig:
     path: str = "."
     goals: str | None = None
-    # The git branch new PRs target and merges land into. ``None`` means
-    # "fall back to the repo's GitHub default branch (origin/HEAD)" so
-    # existing projects with no key behave identically. Set via the desktop
-    # setup wizard, ``agentshore init`` prompt / ``--target-branch`` flag, or
-    # the sidecar ``project.set_target_branch`` RPC.
+    # Branch new PRs target and merges land into. ``None`` ⇒ fall back to the
+    # repo's GitHub default branch (origin/HEAD), so projects with no key are
+    # unchanged. Set via desktop wizard, ``agentshore init`` / ``--target-branch``,
+    # or the sidecar ``project.set_target_branch`` RPC.
     target_branch: str | None = None
 
 
@@ -109,10 +108,9 @@ class BudgetConfig:
     enabled: bool = False
     total: float = 0.0
     warning_threshold: float = 0.20
-    # Wall-clock time cap, an independent soft-cap dimension parallel to the
-    # dollar cap above. ``time_enabled`` off ⇒ no wall-clock limit. When on,
-    # ``time_total_minutes`` is validated to 60–4320 (1h–72h). A 20-minute
-    # graceful drain mirrors the dollar reserve; the deadline is the backstop.
+    # Wall-clock cap, independent of the dollar cap above. Off ⇒ no time limit;
+    # on ⇒ time_total_minutes validated to 60–4320 (1h–72h). 20-min graceful
+    # drain mirrors the dollar reserve; the deadline is the backstop.
     time_enabled: bool = False
     time_total_minutes: int = 0
 
@@ -174,17 +172,14 @@ class AgentConfig:
     timeout: int | None = None
     # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
-    # Per-agent override for the launch-to-first-byte watchdog (#177/#204). When
-    # set, it overrides both the per-agent-type built-in default and the global
-    # ``_FIRST_BYTE_DEADLINE_S`` floor (still clamped to ``timeout``). ``None``
-    # falls back to the per-type default, then the global default.
+    # Per-agent override for the launch-to-first-byte watchdog (#177/#204);
+    # overrides the per-type and global ``_FIRST_BYTE_DEADLINE_S`` floor (still
+    # clamped to ``timeout``). ``None`` ⇒ per-type default, then global default.
     first_byte_timeout_seconds: int | None = None
     max_output_size: int = 10_000_000
-    # Per-line buffer size for asyncio.create_subprocess_exec. CLI agents emit
-    # stream-json where a single result line can exceed asyncio's 64KB default
-    # (especially for skills like code_review that gather lots of
-    # evidence). 4MB gives ample headroom while staying well under
-    # max_output_size.
+    # Per-line buffer for create_subprocess_exec; a single stream-json result
+    # line can exceed asyncio's 64KB default (e.g. code_review evidence). 4MB
+    # gives headroom while staying well under max_output_size.
     line_limit_bytes: int = 4_194_304
     extra_flags: tuple[str, ...] = ()
     identity: str | None = None
@@ -305,17 +300,13 @@ class RewardConfig:
     issue_inflation_penalty: float = 2.0
     anti_confirmation_bonus: float = 0.3
     loop_penalty: float = 1.5
-    # Small per-play bonus for "progress plays" (issue_pickup, code_review,
-    # merge_pr) on success — biases PPO toward moving issues forward
-    # rather than collapsing onto cheap planning loops.
+    # Progress-play bonus (issue_pickup, code_review, merge_pr) — biases PPO
+    # toward moving issues forward over cheap planning loops.
     progress_play_bonus: float = 0.5
-    # Larger bonus for a successful QA pass (gated by the standard play cooldown
-    # so PPO can't farm it).
+    # QA-pass bonus; gated by the standard play cooldown so PPO can't farm it.
     qa_success_bonus: float = 2.0
-    # Dedicated bonus for a successful merge_pr — the terminal-win signal.
-    # 5× the generic progress_play_bonus so PPO learns merges (not the work
-    # leading up to them) are the goal. Sized above qa_success_bonus to keep
-    # merging the strongest single-play reward outside project completion.
+    # merge_pr terminal-win signal: 5× progress_play_bonus and above
+    # qa_success_bonus so merging is the strongest play reward short of completion.
     merge_pr_bonus: float = 2.5
     # Multi-agent and velocity shaping (dispatch plays only)
     concurrent_agent_bonus: float = 0.1
@@ -344,9 +335,8 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class StagnationConfig:
-    # Thresholds in WHOLE MINUTES of "all agents idle" wall-clock time. A
-    # busy agent resets the counter — these fire only when no agent has been
-    # working for the configured number of minutes.
+    # Thresholds in WHOLE MINUTES of "all agents idle" wall-clock; a busy agent
+    # resets the counter.
     warn_after: int = 1
     alert_after: int = 3
     pause_after: int = 5

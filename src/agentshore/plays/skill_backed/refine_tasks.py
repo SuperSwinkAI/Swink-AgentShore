@@ -36,16 +36,9 @@ class RefineTaskBreakdownPlay(SkillBackedPlay):
                     source=MaskSource.CANDIDATE,
                 )
             ]
-        # Without this gate, the play earns net-positive reward via the
-        # multi-agent dispatch bonuses while doing zero work whenever no issue
-        # carries the gate label — observed as 25 of 138 plays (18%) on a prior
-        # run. The Step 6 label-cleanup sweeps
-        # that previously justified unconditional dispatch now live in
-        # agentshore-project-alignment-check.
-        # Mirror the candidate filter (candidates.issue_available_for_refine):
-        # an issue is refine-eligible only when it still needs refinement AND
-        # has not already been refined (agentshore/refined). This keeps the play
-        # from being dispatched to no-op on already-refined issues.
+        # Gate stops the play no-opping for dispatch reward when no issue carries
+        # the label (was 25/138 plays, 18%). Mirror candidates.issue_available_
+        # for_refine: eligible = needs-refinement AND not already refined.
         if not any(
             "agentshore/needs-refinement" in i.labels and "agentshore/refined" not in i.labels
             for i in state.open_issues

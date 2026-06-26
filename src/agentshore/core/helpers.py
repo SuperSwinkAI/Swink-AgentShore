@@ -37,21 +37,17 @@ if TYPE_CHECKING:
     from agentshore.state import OrchestratorState, PlayOutcome
 
 
-# Single package-wide logger shared by every core module via
-# ``from agentshore.core.helpers import _logger``. Tests that assert on log
-# events patch it at the call-site module (whole-object replacement) or via
-# ``agentshore.core.helpers._logger.<method>`` (the shared object's attribute,
-# which every module's binding observes).
+# Package-wide logger shared by every core module. Tests patch it at the
+# call-site module (whole-object) or via ``helpers._logger.<method>`` (the
+# shared object's attribute, observed by every module's binding).
 _logger = structlog.get_logger("agentshore.core")
 
 MIN_COST_PER_PLAY = 0.05
 MIN_DURATION_SECONDS = 1.0
 
-# Multipliers of the configured warn threshold at which `loop_detected` is
-# emitted. e.g. with warn_after=3, emissions fire at streak ∈ {3, 6, 15, 30,
-# 60, 150, 300}. Combined with the per-kind `_last_warned_*_streak` memo,
-# this gives geometric spacing on long-lived streaks instead of one
-# emission per monotonic increment.
+# Warn-threshold multipliers at which `loop_detected` fires — geometric spacing
+# on long streaks instead of one emission per increment. With warn_after=3:
+# streak ∈ {3, 6, 15, 30, 60, 150, 300}, deduped by the `_last_warned_*` memo.
 _LOOP_DETECTED_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 20, 50, 100)
 
 
@@ -176,9 +172,8 @@ def _build_reward_signals(
             agent.agent_id for agent in next_state.agents if agent.status == AgentStatus.BUSY
         }
         busy_agent_count = len(busy_agent_ids)
-        # Reward is computed after the completed agent has usually returned to
-        # IDLE. Count that agent as busy for this just-finished dispatch window,
-        # without double-counting if state already still marks it BUSY.
+        # Reward runs after the completed agent usually returned to IDLE; count it
+        # busy for this just-finished window, but not if state still marks it BUSY.
         if outcome.agent_id is not None and outcome.agent_id not in busy_agent_ids:
             completed_agent_live = any(agent.agent_id == outcome.agent_id for agent in live_agents)
             if completed_agent_live:
@@ -192,11 +187,9 @@ def _build_reward_signals(
         success=outcome.success,
         partial=outcome.partial,
         inflation_raised=outcome.inflation_raised,
-        # Only CODE_REVIEW carries an anti-confirmation invariant now; RUN_QA
-        # runs against the merged trunk and any can_test agent qualifies. The
-        # selector / executor enforce the identity check at dispatch — this
-        # signal exists for reward shaping when the play succeeds despite the
-        # constraint.
+        # Only CODE_REVIEW carries the anti-confirmation invariant now (RUN_QA
+        # runs on merged trunk, any can_test agent qualifies). Identity check is
+        # enforced at dispatch; this signal is just for reward shaping on success.
         anti_confirmation_play=outcome.play_type == PlayType.CODE_REVIEW,
         anti_confirmation_satisfied=outcome.play_type == PlayType.CODE_REVIEW,
         dollar_cost=outcome.dollar_cost,
@@ -211,8 +204,8 @@ def _build_reward_signals(
         live_agent_count=live_agent_count,
         type_diversity_in_window=type_diversity_in_window,
         rolling_velocity=rolling_velocity,
-        # desktop-8zzy: feed PR-pressure signal into the reward function so
-        # MERGE_PR / CODE_REVIEW earn a small bonus when the queue is filling up.
+        # desktop-8zzy: PR-pressure signal so MERGE_PR / CODE_REVIEW earn a
+        # small bonus when the queue fills up.
         open_pr_count=ctx_after.open_pr_count,
     )
 
@@ -226,12 +219,10 @@ def _cluster_just_completed(state_before: OrchestratorState, next_state: Orchest
     """
     if next_state.graph is None or state_before.graph is None:
         return False
-    # Global completion
     was_complete = state_before.graph.global_closure_ratio >= 1.0
     now_complete = next_state.graph.global_closure_ratio >= 1.0
     if now_complete and not was_complete:
         return True
-    # Per-epic completion: any epic newly crossing 1.0
     before_ids = {e.bead_id for e in state_before.graph.epics if e.closure_ratio >= 1.0}
     for epic in next_state.graph.epics:
         if epic.closure_ratio >= 1.0 and epic.bead_id not in before_ids:

@@ -11,13 +11,8 @@ def test_main_module_invokes_cli_main() -> None:
     """Running ``python -m agentshore`` must call agentshore.cli.main()."""
     fake_main = MagicMock()
 
-    # Patch the cli.main attribute that __main__ imports. Because __main__.py
-    # does ``from agentshore.cli import main`` and then calls ``main()``, we need
-    # to replace the function object on the agentshore.cli module *before* the
-    # __main__ module body executes. runpy.run_module re-executes __main__
-    # with run_name="__main__"; the import of agentshore.cli inside that fresh
-    # execution will resolve to the already-imported module in sys.modules,
-    # so monkey-patching the attribute beforehand is sufficient.
+    # __main__ does ``from agentshore.cli import main``; patch the attribute before
+    # runpy re-executes the module body so the cached cli module resolves to our fake.
     import agentshore.cli as cli_module
 
     original = cli_module.main

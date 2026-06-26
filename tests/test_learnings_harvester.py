@@ -11,10 +11,6 @@ from agentshore.core.learnings_harvester import LearningsHarvester
 from agentshore.learnings import Learning, load, save_atomic
 from agentshore.state import PlayOutcome, PlayType
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _harvester(repo_root: Path) -> LearningsHarvester:
     cfg = LearningsConfig(file=".agentshore/learnings.json")
@@ -43,11 +39,6 @@ def _outcome(
         learnings=list(learnings) if learnings else [],
         learnings_compacted=list(learnings_compacted) if learnings_compacted else [],
     )
-
-
-# ---------------------------------------------------------------------------
-# Basic harvest — outcome.learnings path
-# ---------------------------------------------------------------------------
 
 
 async def test_harvest_writes_learning_to_file(tmp_path: Path) -> None:
@@ -86,11 +77,6 @@ async def test_harvest_no_op_when_learnings_empty(tmp_path: Path) -> None:
 
     path = tmp_path / ".agentshore/learnings.json"
     assert not path.exists()
-
-
-# ---------------------------------------------------------------------------
-# Dedup — same pattern twice → one entry
-# ---------------------------------------------------------------------------
 
 
 async def test_dedup_same_pattern_twice_yields_one_entry(tmp_path: Path) -> None:
@@ -133,7 +119,6 @@ async def test_reharvest_reinforces_existing_entry(tmp_path: Path) -> None:
     entries = load(path)
     matched = [e for e in entries if e.pattern == "pre-existing"]
     assert len(matched) == 1
-    # Same entry reinforced in place, not duplicated or replaced.
     assert matched[0].id == "existing-1"
     assert matched[0].confidence == pytest.approx(0.8)  # 0.7 + 0.1
     assert matched[0].sessions_since_use == 0
@@ -163,17 +148,11 @@ async def test_reharvest_caps_confidence_at_1_0(tmp_path: Path) -> None:
     assert entries[0].confidence <= 1.0
 
 
-# ---------------------------------------------------------------------------
-# max_entries trim
-# ---------------------------------------------------------------------------
-
-
 async def test_max_entries_trim(tmp_path: Path) -> None:
     """Entries exceeding max_entries are trimmed to the highest-confidence set."""
     cfg = LearningsConfig(file=".agentshore/learnings.json", max_entries=3)
     h = LearningsHarvester(repo_root=tmp_path, learnings_cfg=cfg)
 
-    # Pre-populate 3 entries at high confidence.
     path = tmp_path / ".agentshore/learnings.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     save_atomic(
@@ -206,7 +185,6 @@ async def test_max_entries_trim(tmp_path: Path) -> None:
         ],
     )
 
-    # Outcome adds a 4th entry at low confidence — it should be trimmed away.
     outcome = _outcome(
         learnings=[{"pattern": "delta-low", "confidence": 0.3, "category": "general"}]
     )
@@ -217,11 +195,6 @@ async def test_max_entries_trim(tmp_path: Path) -> None:
     patterns = {e.pattern for e in entries}
     assert "delta-low" not in patterns
     assert "alpha" in patterns
-
-
-# ---------------------------------------------------------------------------
-# Multiple learnings in one outcome
-# ---------------------------------------------------------------------------
 
 
 async def test_multiple_learnings_in_one_outcome(tmp_path: Path) -> None:
@@ -242,11 +215,6 @@ async def test_multiple_learnings_in_one_outcome(tmp_path: Path) -> None:
     assert patterns == {"one", "two", "three"}
 
 
-# ---------------------------------------------------------------------------
-# Malformed entries in outcome.learnings are silently dropped
-# ---------------------------------------------------------------------------
-
-
 async def test_malformed_entries_in_outcome_dropped(tmp_path: Path) -> None:
     """Non-dict entries and dicts without a pattern are dropped; valid ones still land."""
     h = _harvester(tmp_path)
@@ -263,11 +231,6 @@ async def test_malformed_entries_in_outcome_dropped(tmp_path: Path) -> None:
     entries = load(tmp_path / ".agentshore/learnings.json")
     assert len(entries) == 1
     assert entries[0].pattern == "valid-entry"
-
-
-# ---------------------------------------------------------------------------
-# learnings_compacted — groom re-distillation (wholesale replace)
-# ---------------------------------------------------------------------------
 
 
 def _seed(tmp_path: Path, entries: list[Learning]) -> Path:

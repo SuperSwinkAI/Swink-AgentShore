@@ -143,8 +143,7 @@ def recover_via_sqlite_recover(
             capture_output=True,
             check=False,
             timeout=timeout_seconds,
-            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
-            # a subprocess probing it can wedge the caller (#155).
+            # Don't inherit sidecar stdin (live Tauri JSON-RPC pipe) — probing wedges caller (#155).
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
@@ -174,9 +173,8 @@ def recover_via_sqlite_recover(
         return False, [f".recover load OSError: {exc}"]
 
     if load.returncode != 0:
-        # Partial-failure load may still be useful — validate the result rather
-        # than bailing on nonzero exit. SQLite returns nonzero on any INSERT
-        # error but most rows can still land.
+        # SQLite returns nonzero on any INSERT error but most rows still land;
+        # validate the result instead of bailing.
         _logger.warning(
             "db_recovery_load_returned_nonzero",
             returncode=load.returncode,
@@ -209,15 +207,12 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
     if ok:
         return None
 
-    # File doesn't exist at all — first-run scenario, let store.initialize()
-    # create the schema fresh. Don't waste cycles on recovery of a missing file.
+    # Missing file — first run; let store.initialize() create the schema fresh.
     if not db_path.exists():
         return None
 
-    # Capture corruption evidence before any recovery attempt — best-effort,
-    # never raises. The dict is emitted as a single structured log event so
-    # post-mortems can correlate downstream symptoms back to the moment of
-    # detection via the embedded ``corruption_event_id``.
+    # Capture corruption evidence before recovery — best-effort, never raises;
+    # the embedded ``corruption_event_id`` lets post-mortems correlate symptoms.
     try:
         from agentshore.data.corruption_evidence import capture_corruption_evidence
 
@@ -241,13 +236,11 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
 
     if chosen is not None:
         corrupt_dest = db_path.with_name(f"{_CORRUPT_PREFIX}{int(time.time())}")
-        # Preserve the corrupt file via atomic rename so post-mortem tools
-        # (``sqlite3 .recover``, page dumps) can still inspect it.
+        # Atomic rename preserves the corrupt file for post-mortem inspection.
         if db_path.exists():
             os.replace(db_path, corrupt_dest)
-        # Copy the snapshot into the main slot. We *copy* rather than rename
-        # so the chosen snapshot stays in the ring as a known-good fallback
-        # if the restore itself proves bad on first write.
+        # Copy (not rename) so the snapshot stays in the ring as a known-good
+        # fallback if this restore itself proves bad on first write.
         shutil.copy2(chosen, db_path)
         _logger.warning(
             "db_auto_restored",
@@ -282,12 +275,10 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
         )
         return db_path
 
-    # 3. Recovery failed. Move the corrupt file aside so the caller's
-    #    ``store.initialize()`` creates a fresh empty DB instead of crashing
-    #    on the malformed pages. Session history is lost but the user gets a
-    #    working session — weights, learnings.json, reports, contexts/, and
-    #    project state (git, GitHub, beads) all live outside agentshore.db and
-    #    are untouched.
+    # 3. Recovery failed. Move the corrupt file aside so store.initialize()
+    #    creates a fresh empty DB. Only session history is lost — weights,
+    #    learnings.json, reports, contexts/, and project state live outside
+    #    agentshore.db and are untouched.
     if recovered_path.exists():
         recovered_path.unlink()
     corrupt_dest = db_path.with_name(f"{_CORRUPT_PREFIX}{int(time.time())}")
@@ -351,8 +342,7 @@ class IntegrityMonitor:
         return self._task is not None and not self._task.done()
 
     async def _run(self) -> None:
-        # Wake-up granularity = the smallest configured interval, so we
-        # don't oversleep any of the three timers.
+        # Tick at the smallest interval so no timer is overslept.
         tick = max(
             1.0,
             min(
@@ -412,8 +402,7 @@ class IntegrityMonitor:
             _logger.debug("db_integrity_check", status="ok")
             return
         _logger.error("db_integrity_failed", errors=errors)
-        # Capture surrounding system state so the next post-mortem can attribute
-        # the corruption to its root cause. Best-effort; never raises.
+        # Capture surrounding state for root-cause attribution. Best-effort; never raises.
         if self._db_path is not None:
             try:
                 from agentshore.data.corruption_evidence import (
@@ -428,8 +417,7 @@ class IntegrityMonitor:
                 )
             except Exception as exc:  # noqa: BLE001 — evidence capture must not raise
                 _logger.warning("db_corruption_evidence_capture_failed", error=str(exc))
-        # Failure → take an immediate snapshot so the next startup has a
-        # fresh known-good image to restore from.
+        # Snapshot immediately so the next startup has a fresh known-good image.
         await self._rotate_snapshot()
 
     async def _rotate_snapshot(self) -> None:

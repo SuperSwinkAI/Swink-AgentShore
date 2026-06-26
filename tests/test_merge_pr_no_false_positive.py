@@ -96,7 +96,7 @@ def test_merge_pr_no_ff_advances_sha_but_symbolic_ref_unchanged(
     post_ref = current_head_ref(merge_repo)
     post_sha = _git(["rev-parse", "HEAD"], merge_repo).stdout.strip()
 
-    # SHA advanced (commit moved forward).
+    # SHA advanced.
     assert post_sha != pre_sha
     # Symbolic ref unchanged — this is what the guard checks.
     assert post_ref == pre_ref == "refs/heads/main"
@@ -107,8 +107,7 @@ def test_merge_pr_no_ff_advances_sha_but_symbolic_ref_unchanged(
     )
     assert mutated is False
     assert observed_post == pre_ref
-    # No mutation → no auto-restore attempted; the guard returns the trivially-ok
-    # RestoreResult sentinel (mutated=False above is what proves no restore ran).
+    # No mutation → no restore ran; guard returns the trivially-ok RestoreResult sentinel.
     assert restored.ok is True
 
 

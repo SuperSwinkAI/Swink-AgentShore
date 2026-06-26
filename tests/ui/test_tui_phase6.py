@@ -17,7 +17,6 @@ async def test_action_generate_report_no_orch() -> None:
     """action_generate_report returns early when no orchestrator is set."""
     app = OrchestratorApp()
     async with app.run_test():
-        # Should return early without crash (no notify, no error)
         await app.action_generate_report()
 
 
@@ -45,7 +44,6 @@ async def test_action_show_issues_no_state() -> None:
     app = OrchestratorApp()
     async with app.run_test():
         await app.action_show_issues()
-        # Should notify "No open issues" without crashing
 
 
 # ---------------------------------------------------------------------------

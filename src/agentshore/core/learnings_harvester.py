@@ -57,12 +57,10 @@ class LearningsHarvester:
         entries = await asyncio.to_thread(load, learnings_path)
         changed = False
 
-        # Groom re-distillation: a wholesale replacement of the store. The agent
-        # read the full store and returned a semantically-compacted set, each
-        # entry tagging the source ids it merged. We rebuild the store, folding
-        # numeric metadata deterministically from those sources (the agent never
-        # invents confidence). Destructive, so guarded: a payload that would wipe
-        # a non-empty store is rejected and the prior store is kept intact.
+        # Groom re-distillation: wholesale store replacement from the agent's
+        # compacted set. Numeric metadata is folded deterministically from each
+        # entry's merged source ids (agent never invents confidence). Guarded:
+        # a payload that would empty a non-empty store is rejected.
         if (
             self._learnings_cfg.redistill_in_groom
             and outcome.success

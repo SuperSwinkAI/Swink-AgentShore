@@ -34,9 +34,7 @@ def sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
     return d
 
 
-# --------------------------------------------------------------------------- #
 # session_path persistence
-# --------------------------------------------------------------------------- #
 
 
 def test_timelapse_info_round_trip(tmp_path: Path, sessions_dir: Path) -> None:
@@ -62,9 +60,7 @@ def test_cleanup_session_removes_timelapse_info(tmp_path: Path, sessions_dir: Pa
     assert sp.read_timelapse_info(tmp_path) is None
 
 
-# --------------------------------------------------------------------------- #
 # start: _maybe_start_cli_timelapse
-# --------------------------------------------------------------------------- #
 
 
 def test_start_capture_persists_run_id(tmp_path: Path, sessions_dir: Path) -> None:
@@ -107,9 +103,7 @@ def test_start_capture_error_is_swallowed(tmp_path: Path, sessions_dir: Path) ->
     assert sp.read_timelapse_info(tmp_path) is None
 
 
-# --------------------------------------------------------------------------- #
 # finalize: _finalize_cli_timelapse
-# --------------------------------------------------------------------------- #
 
 
 def test_finalize_stops_renders_and_clears(tmp_path: Path, sessions_dir: Path) -> None:
@@ -147,9 +141,7 @@ def test_finalize_swallows_stop_error_and_clears(tmp_path: Path, sessions_dir: P
     assert sp.read_timelapse_info(tmp_path) is None
 
 
-# --------------------------------------------------------------------------- #
 # stop command backstop
-# --------------------------------------------------------------------------- #
 
 
 def _make_git_repo(tmp_path: Path) -> Path:

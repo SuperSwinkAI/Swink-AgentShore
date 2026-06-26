@@ -325,7 +325,6 @@ async def test_prune_locks_preserves_locks_for_active_rows(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
     """Locks whose (scope, key) matches an active row are retained."""
-    # Seed an active row with branch_name="kept".
     await insert_worktree(
         store,
         session_id="sess-1",

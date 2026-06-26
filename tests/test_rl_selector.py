@@ -1216,7 +1216,7 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     wip_idx = PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]
     merge_idx = PLAY_TO_INDEX[PlayType.MERGE_PR]
 
-    # Force the play head: write_impl first, then merge_pr. (value, log_prob, value)
+    # Force the play head: write_impl first, then merge_pr. (action, log_prob, value)
     act_calls = {"n": 0}
 
     def _act(obs, mask, *, greedy):  # noqa: ANN001

@@ -36,9 +36,7 @@ def _no_token_login_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # gh auth status parser
-# ---------------------------------------------------------------------------
 
 
 _GH_STATUS_TEXT = """\
@@ -75,9 +73,7 @@ gitlab.com
     assert parse_gh_auth_status(text) == []
 
 
-# ---------------------------------------------------------------------------
 # YAML patcher
-# ---------------------------------------------------------------------------
 
 
 _BASE_YAML = """\
@@ -335,9 +331,7 @@ identities:
     assert cfg.agents["codex"].identity == "bot-user"
 
 
-# ---------------------------------------------------------------------------
 # run_wizard interactive flow
-# ---------------------------------------------------------------------------
 
 
 def test_run_wizard_no_accounts_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,13 +426,10 @@ def test_run_wizard_skip_for_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     accounts = [GhAccount(login="example-user", active=True)]
     result = run_wizard(["claude_code", "codex"], accounts=accounts)
     assert result.agent_to_identity == {"claude_code": "example-user"}
-    # codex was skipped, no entry in agent_to_identity
     assert "codex" not in result.agent_to_identity
 
 
-# ---------------------------------------------------------------------------
 # init integration — wizard skipped for non-TTY
-# ---------------------------------------------------------------------------
 
 
 def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -457,9 +448,8 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(keyring_child, "keyring_set", fake_keyring_set)
 
-    # New flow: Pass 1 picks claude_code → 1; Pass 2 prompts email "",
-    # name "", "Do you have a PAT?" → True (paste path), then the masked PAT
-    # paste "ghp_secret" (via beaupy) — stored in keychain at the default service.
+    # Pass 1: claude_code → 1. Pass 2: email "", name "", "Have a PAT?" → True
+    # (paste path), then masked PAT "ghp_secret" via beaupy stored at default service.
     inputs = iter(["1", "", ""])
     confirms = iter([True])  # paste-PAT-now → yes
 
@@ -495,8 +485,7 @@ def test_keychain_backend_label_when_no_backend(monkeypatch: pytest.MonkeyPatch)
     from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
-    # keyring_child.keyring_backend_name() returns the class name; the keychain.py
-    # wrapper hides the keychain option when the name contains "fail" (case-insensitive).
+    # keychain option is hidden when the backend class name contains "fail".
     monkeypatch.setattr(keyring_child, "keyring_backend_name", lambda: "FailKeyring")
     assert mod._keychain_backend_label() is None
 
@@ -512,10 +501,8 @@ def test_run_identity_wizard_skips_when_non_interactive(
     config_path = tmp_path / "agentshore.yaml"
     config_path.write_text(_BASE_YAML, encoding="utf-8")
 
-    # Should print a message and return without touching the file.
     run_identity_wizard(config_path, ["claude_code", "codex"])
 
-    # File unchanged.
     assert "identities" not in config_path.read_text(encoding="utf-8")
 
 
@@ -551,9 +538,7 @@ trusted_ids:
     assert data["trusted_ids"]["github_logins"] == ["existinguser", "bot-user"]
 
 
-# ---------------------------------------------------------------------------
 # `agentshore identity` CLI command
-# ---------------------------------------------------------------------------
 
 
 def test_agentshore_identity_prints_table_when_resolved(
@@ -721,9 +706,7 @@ identities:
     assert "Could not resolve" in result.output
 
 
-# ---------------------------------------------------------------------------
 # _prompt_choice — re-prompt on garbage, max-attempts abort, extra keys
-# ---------------------------------------------------------------------------
 
 
 def test_prompt_choice_reprompts_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -773,9 +756,7 @@ def test_prompt_choice_max_attempts_raises_abort(monkeypatch: pytest.MonkeyPatch
         mod._prompt_choice("agent", ["example-user"], 0)
 
 
-# ---------------------------------------------------------------------------
 # _prompt_new_login — validation, duplicates, back-out
-# ---------------------------------------------------------------------------
 
 
 def test_prompt_new_login_accepts_valid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -816,9 +797,7 @@ def test_prompt_new_login_back_out(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mod._prompt_new_login(set()) is None
 
 
-# ---------------------------------------------------------------------------
 # run_wizard — new-account path, two-pass detail prompts
-# ---------------------------------------------------------------------------
 
 
 def test_run_wizard_new_account_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -842,8 +821,7 @@ def test_run_wizard_new_account_path(monkeypatch: pytest.MonkeyPatch) -> None:
             "",
             "",
             "",
-            "",  # newbot details (Enter for email, name,
-            #  strategy=default-which-is-2, env-var name)
+            "",  # newbot: email, name, strategy=default(2=env), env-var name
         ]
     )
 
@@ -1433,9 +1411,7 @@ def test_run_wizard_shared_identity_prompts_details_once(
     assert list(result.identities.keys()) == ["example-user"]
 
 
-# ---------------------------------------------------------------------------
 # run_identity_wizard — gating with force_run
-# ---------------------------------------------------------------------------
 
 
 def test_run_identity_wizard_force_run_non_tty(
@@ -1457,9 +1433,7 @@ def test_run_identity_wizard_force_run_non_tty(
     assert "not a TTY" in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------------------
 # _agent_keys_from_yaml — disabled-agent filter
-# ---------------------------------------------------------------------------
 
 
 def test_agent_keys_from_yaml_filters_disabled_and_unsupported(tmp_path: Path) -> None:
@@ -1487,9 +1461,7 @@ agents:
     assert "aider" not in keys  # unsupported agent type — load_config would reject it
 
 
-# ---------------------------------------------------------------------------
 # `agentshore identity --reconfigure`
-# ---------------------------------------------------------------------------
 
 
 def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(

@@ -124,11 +124,9 @@ mod platform_macos {
     unsafe impl Sync for ActivityToken {}
 
     pub fn begin_activity(reason: &str) -> Option<ActivityToken> {
-        // userInitiated already implies idleSystemSleepDisabled +
-        // automaticTerminationDisabled + suddenTerminationDisabled +
-        // background; OR'ing latencyCritical adds the "treat as
-        // foreground" hint for App Nap suppression specifically. The
-        // bead spec calls for this combo.
+        // userInitiated already implies idle-sleep/termination-disabled +
+        // background; latencyCritical adds the "treat as foreground" hint that
+        // suppresses App Nap specifically.
         let options = NSActivityOptions::UserInitiated | NSActivityOptions::LatencyCritical;
         let reason_ns = NSString::from_str(reason);
         let info = NSProcessInfo::processInfo();

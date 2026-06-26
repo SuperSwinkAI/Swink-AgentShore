@@ -25,10 +25,6 @@ from agentshore.session_path import IpcEndpoint, find_free_tcp_port
 
 type Endpoint = Path | IpcEndpoint
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture()
 def sock_path() -> Iterator[Endpoint]:
@@ -42,11 +38,6 @@ def sock_path() -> Iterator[Endpoint]:
         yield Path(short_dir) / "f.sock"
     finally:
         shutil.rmtree(short_dir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 async def _connect(
@@ -68,11 +59,6 @@ def _create_stale_unix_socket(path: Path) -> None:
         sock.bind(str(path))
     finally:
         sock.close()
-
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -172,11 +158,6 @@ async def test_stale_socket_cleanup_replaces_dangling_symlink(
         await writer.wait_closed()
     finally:
         await server.stop()
-
-
-# ---------------------------------------------------------------------------
-# Command handling
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

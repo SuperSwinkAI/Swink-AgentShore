@@ -17,10 +17,6 @@ from agentshore.state import JsonArtifact, JsonIssueRef, JsonObject, SkillResult
 # array. result_parser is config-agnostic, hence a constant rather than the cfg.
 _MAX_COMPACTED_ENTRIES = 500
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
 
 def _extract_json_object(text: str, start: int) -> str | None:
     """Extract a complete JSON object starting at *start* in *text*.
@@ -156,11 +152,6 @@ def _has_balanced_json_object(text: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def parse_skill_result(output: str) -> SkillResult:
     """Parse the JSON result block from *output* text.
 
@@ -220,7 +211,6 @@ def parse_skill_result(output: str) -> SkillResult:
             error=f"no valid result block found in agent output ({detail})",
         )
 
-    # Validate required fields.
     if "success" not in data:
         return SkillResult(
             success=False,
@@ -234,7 +224,6 @@ def parse_skill_result(output: str) -> SkillResult:
             error=f"result block field 'success' is not a boolean: {success!r}",
         )
 
-    # Extract optional fields with safe defaults.
     artifacts_raw = data.get("artifacts", [])
     if not isinstance(artifacts_raw, list):
         artifacts_raw = []

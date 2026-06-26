@@ -23,8 +23,7 @@ class TestStrOrNone:
         assert str_or_none("claude-1") == "claude-1"
 
     def test_non_string_value_collapses_to_none(self) -> None:
-        # A malformed scalar (e.g. an int from bad YAML) is dropped rather than
-        # silently stringified into a bogus token.
+        # Malformed scalar (e.g. int from bad YAML) drops, not stringified to a bogus token.
         assert str_or_none(42) is None
 
     def test_empty_string_value_returned_as_empty_string(self) -> None:
@@ -237,9 +236,8 @@ class TestReportSshSigningStatus:
             patch.object(
                 helpers, "_check_ssh_signing_key_loaded", return_value=(False, "agent unreachable")
             ),
-            # Stub the key probe so the faked-win32 hint doesn't run the real
-            # ``shutil.which`` (its win32 branch calls ``_winapi``, absent off
-            # Windows); the hint's platform-branching logic still runs for real.
+            # Stub key probe: faked win32 would route shutil.which through _winapi
+            # (absent off Windows); platform-branching in the hint still runs for real.
             patch(
                 "agentshore.core.git_safety._resolve_signing_key",
                 return_value="~/.ssh/id_ed25519",

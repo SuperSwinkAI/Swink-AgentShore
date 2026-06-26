@@ -12,10 +12,6 @@ from agentshore.agents.handle import AgentHandle
 from agentshore.agents.health import HealthMonitor
 from agentshore.state import AgentStatus, AgentType
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_handle(
     agent_id: str = "a1",
@@ -56,15 +52,10 @@ def _make_monitor(
     )
 
 
-# ---------------------------------------------------------------------------
-# Crash detection
-# ---------------------------------------------------------------------------
-
-
 async def test_crash_detected_sets_error_status_and_calls_callback() -> None:
     handle = _make_handle("cli-1", AgentType.CLAUDE_CODE)
 
-    # Attach a fake process that has already exited (returncode is set)
+    # Process already exited (returncode set).
     fake_proc = MagicMock()
     fake_proc.returncode = 1
     handle.process = fake_proc  # type: ignore[assignment]
@@ -130,11 +121,6 @@ async def test_terminated_agents_skipped() -> None:
     on_crash.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Context pressure
-# ---------------------------------------------------------------------------
-
-
 async def test_context_pressure_fires_at_threshold() -> None:
     handle = _make_handle("cli-4", AgentType.CLAUDE_CODE)
     handle.context_size = 165_000  # 82.5% of 200_000
@@ -185,11 +171,6 @@ async def test_context_pressure_skipped_without_max_context() -> None:
     on_pressure.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Start / stop lifecycle
-# ---------------------------------------------------------------------------
-
-
 async def test_monitor_start_and_stop() -> None:
     handle = _make_handle()
     poll_calls: list[float] = []
@@ -226,11 +207,6 @@ async def test_monitor_stop_is_idempotent() -> None:
     # Stopping before starting should not raise
     mon.stop()
     mon.stop()
-
-
-# ---------------------------------------------------------------------------
-# Error recovery
-# ---------------------------------------------------------------------------
 
 
 async def test_error_agent_recovery_triggered() -> None:
@@ -292,11 +268,9 @@ async def test_error_recovery_skipped_when_no_callback() -> None:
     await mon._poll_all()  # must not raise
 
 
-# ---------------------------------------------------------------------------
-# Busy-watchdog — reap an agent stuck BUSY past its dispatch deadline
-# (session a3202694: a hung SIGKILL pinned an agy agent in BUSY for hours,
-# suppressing every session-end backstop)
-# ---------------------------------------------------------------------------
+# Busy-watchdog reaps an agent stuck BUSY past its dispatch deadline.
+# Regression (session a3202694): a hung SIGKILL pinned an agy agent BUSY for
+# hours, suppressing every session-end backstop.
 
 
 def _busy_handle(
@@ -373,15 +347,11 @@ async def test_busy_watchdog_noop_when_no_deadline_set() -> None:
 
 
 async def test_busy_watchdog_uses_real_returncode_when_process_exited() -> None:
-    # If liveness already saw the exit it transitions to ERROR first; but if the
-    # process exited with a real code and status is somehow still BUSY, the
-    # watchdog forwards that code rather than the -1 sentinel.
+    # Watchdog forwards a real exit code (not the -1 sentinel) when BUSY is still set.
     handle = _busy_handle(deadline=999.0, returncode=137)
     on_crash = AsyncMock()
-    # Skip the liveness check (which would fire on returncode!=None) by making
-    # this a non-CLI... no — keep it CLI but assert end state. Liveness runs
-    # first and will transition to ERROR + call on_crash(137); the watchdog then
-    # sees status != BUSY and is a no-op. Either way on_crash carries rc=137.
+    # Liveness runs first: ERROR + on_crash(137); watchdog then sees status != BUSY
+    # and no-ops. Either way on_crash carries rc=137.
     mon = _make_monitor({"busy-1": handle}, on_crash=on_crash, monotonic=lambda: 1000.0)
 
     await mon._poll_all()

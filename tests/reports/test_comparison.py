@@ -15,10 +15,6 @@ from agentshore.data.store import (
 from agentshore.reports.collector import ReportDataCollector
 from agentshore.reports.generator import ReportGenerator
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 NOW = "2026-04-27T00:00:00+00:00"
 END = "2026-04-27T01:00:00+00:00"
 
@@ -115,11 +111,6 @@ async def _add_issues(store: DataStore, sid: str, *, opened: int = 2, closed: in
     await store.cache_github_issues(sid, issues)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 async def test_comparison_new_fields_populated(store):
     await _make_session(store, "s-a", total_cost=3.0, final_alignment=0.7)
     await _make_session(store, "s-b", total_cost=5.0, final_alignment=0.9)
@@ -166,7 +157,6 @@ async def test_comparison_new_fields_populated(store):
     assert cmp["alignment_diff"] == pytest.approx(0.2)
     assert cmp["play_count_diff"] == 1  # 4 - 3
 
-    # cost_breakdown fields
     cb_a = cmp["cost_breakdown_a"]
     assert "issue_pickup" in cb_a["by_play_type"]
     assert cb_a["by_play_type"]["issue_pickup"] == pytest.approx(2.0)
@@ -176,7 +166,6 @@ async def test_comparison_new_fields_populated(store):
     cb_b = cmp["cost_breakdown_b"]
     assert "merge_pr" in cb_b["by_play_type"]
 
-    # play_distribution fields
     dist_a = cmp["play_distribution_a"]
     assert dist_a["issue_pickup"] == 2
     assert dist_a["code_review"] == 1

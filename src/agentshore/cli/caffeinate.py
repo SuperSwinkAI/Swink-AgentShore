@@ -42,12 +42,9 @@ def maybe_re_exec_under_caffeinate() -> None:
     if caffeinate is None:
         return
 
-    # Pass the sentinel through to the re-exec'd process so the very next
-    # call to this function (after caffeinate spawns python) short-circuits.
+    # Set sentinel so the re-exec'd process short-circuits this check.
     os.environ[_SENTINEL_ENV] = "1"
-    # ``caffeinate -i`` prevents idle system sleep, which is the I/O
-    # throttling that causes the corruption. It does NOT prevent display
-    # sleep or screen lock — the user's battery/UX behaviour is unchanged.
-    # caffeinate exits when its child (the re-exec'd agentshore) exits, so
-    # no -w pid plumbing is needed.
+    # ``-i`` prevents idle system sleep (the I/O throttling that corrupts the
+    # WAL); it does NOT touch display sleep/screen lock, so battery/UX is
+    # unchanged. caffeinate exits with its child, so no -w pid plumbing needed.
     os.execvp(caffeinate, [caffeinate, "-i", *sys.argv])

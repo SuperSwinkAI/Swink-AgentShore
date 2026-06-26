@@ -235,9 +235,8 @@ def _build_timeline(
         if parsed_start is not None and parsed_end is not None
         else None
     )
-    # True time axis: place each sample at its real elapsed offset so idle
-    # stretches render as flat gaps. Fall back to even ordinal spacing only when
-    # there is no usable span (single sample / unparseable timestamps).
+    # Place samples at real elapsed offset so idle stretches render as flat gaps;
+    # fall back to ordinal spacing only without a usable span.
     use_time_axis = (
         parsed_start is not None and duration_seconds is not None and duration_seconds > 0
     )

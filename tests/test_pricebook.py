@@ -22,11 +22,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# Bundled load
-# ---------------------------------------------------------------------------
-
-
 def test_bundled_pricing_yaml_is_resource_readable() -> None:
     """The wheel ships pricing.yaml and it parses (guards packaging)."""
     ref = importlib.resources.files("agentshore.data").joinpath("pricing.yaml")
@@ -42,11 +37,6 @@ def test_load_pricebook_has_expected_structure() -> None:
     assert pb.cache_read_multiplier == 0.1
     assert pb.cache_write_multiplier == 1.25
     assert isinstance(pb.default, AgentPricing)
-
-
-# ---------------------------------------------------------------------------
-# Resolution precedence
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_prefers_per_model_entry() -> None:
@@ -120,11 +110,6 @@ def test_default_quote_is_global_default() -> None:
     assert quote.pricing == bundled_pricebook().default
 
 
-# ---------------------------------------------------------------------------
-# Global override (single touchpoint) — deep merge
-# ---------------------------------------------------------------------------
-
-
 def _point_global_pricing_at(monkeypatch: pytest.MonkeyPatch, path: Path, payload: object) -> None:
     path.write_text(yaml.dump(payload), encoding="utf-8")
     monkeypatch.setattr(pricing_mod, "GLOBAL_PRICING_PATH", path)
@@ -153,9 +138,7 @@ def test_global_override_deep_merges_over_bundled(
         },
     )
     pb = load_pricebook()
-    # Overridden value wins.
     assert pb.models["sonnet"].cost_per_1k_input == 0.999
-    # New model is now present.
     assert pb.resolve("claude_code", "claude-opus-4-8").cost_per_1k_output == 0.025
     # Untouched bundled entries survive the merge.
     assert "haiku" in pb.models
@@ -190,11 +173,6 @@ def test_bundled_pricebook_ignores_global_override(
     )
     assert bundled_pricebook().models["sonnet"].cost_per_1k_input == 0.003
     assert load_pricebook().models["sonnet"].cost_per_1k_input == 9.9
-
-
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
 
 
 def test_negative_rate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

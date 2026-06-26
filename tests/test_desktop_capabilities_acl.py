@@ -28,9 +28,8 @@ def test_desktop_capabilities_include_minimum_v1_acl() -> None:
     assert "shell:allow-open" in object_permissions
     assert "shell:allow-execute" in object_permissions
     assert "fs:allow-read" in object_permissions
-    # The Check-for-Updates app menu uses the updater plugin (declared in
-    # Cargo.toml / tauri.conf.json, used in AppMenu.tsx), so the updater grant
-    # is an intentional part of the v1 ACL.
+    # updater grant is intentional v1 ACL: Check-for-Updates menu uses the
+    # updater plugin (AppMenu.tsx; declared in Cargo.toml / tauri.conf.json).
     assert "updater:default" in string_permissions
 
 

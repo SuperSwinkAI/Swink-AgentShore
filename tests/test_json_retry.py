@@ -281,9 +281,7 @@ async def test_retry_recovers_for_non_claude_agents(
     assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == session_id
 
 
-# ---------------------------------------------------------------------------
 # No-op retry (clean-exit empty output) — desktop no-op resilience
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

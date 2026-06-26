@@ -195,11 +195,9 @@ async def test_writer_resets_prior_session_file(tmp_path: Path) -> None:
 
 async def test_record_never_raises_on_bad_input(tmp_path: Path) -> None:
     log = ConcurrencyLog(tmp_path, "sess-x")
-    # A next_state missing `.agents` must degrade to a warning, not propagate —
-    # the attribute read happens inside the guard. This is the exact "unguarded
-    # work as a call argument" shape that crashed the loop (#experience-recorder).
+    # Missing `.agents` must warn, not propagate — the read happens inside the
+    # guard (the "unguarded work as a call argument" crash, #experience-recorder).
     await log.record(next_state=SimpleNamespace(total_plays=0), outcome=_outcome("c1"), reward=0.0)  # type: ignore[arg-type]
-    # No exception, and nothing (or no valid sample) was appended.
     assert not log.path.exists() or log.path.read_text(encoding="utf-8") == ""
 
 

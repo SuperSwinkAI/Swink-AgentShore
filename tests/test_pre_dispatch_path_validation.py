@@ -78,8 +78,7 @@ def _build_dispatch_harness(working_dir: Path) -> object:
         state_builder=orch._state_builder,
         completion=orch._completion,
     )
-    # The drop helper writes to the store + emits a warning. We capture by
-    # patching the method directly on the Dispatcher.
+    # Patch the drop helper (writes store + warns) so the test can assert on it.
     orch._dispatcher.drop_selected_play_before_dispatch = AsyncMock()  # type: ignore[method-assign]
     return orch, state_mock
 
@@ -104,7 +103,6 @@ async def test_dispatch_refuses_backslash_space_working_dir(
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
     assert result is False
-    # The drop helper got the right event + reason.
     orch._dispatcher.drop_selected_play_before_dispatch.assert_awaited_once()
     drop_call = orch._dispatcher.drop_selected_play_before_dispatch.await_args
     assert drop_call.kwargs["event"] == "pre_dispatch_worktree_path_invalid"
@@ -152,14 +150,10 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
     orch, state = _build_dispatch_harness(tmp_path)
     params = PlayParams()
 
-    # Stub minimum extras to fall through past the backslash-space guard. We
-    # short-circuit by asserting the helper itself is NOT called.
+    # Fall through past the backslash-space guard; later plumbing (missing
+    # executor/state) may raise for ISSUE_PICKUP — fine, we only assert the
+    # guard did NOT trip.
     state.session_state = MagicMock()
-    # _shutdown_allows_only_end_agent reads draining/stop_requested/state.session_state.
-    # All False by setup. The next interesting check after our guard is
-    # END_SESSION revalidation — which doesn't fire for ISSUE_PICKUP.
-    # _dispatch_play will then try to consume_pending / create the task, which
-    # we don't care about — we only care that the new guard did NOT trip.
     from contextlib import suppress
 
     with suppress(Exception):

@@ -55,17 +55,14 @@ def make_test_orchestrator(
     if selector is None:
         selector = MagicMock()
         selector.__class__.__name__ = "MockSelector"
-        # Eligibility refactor: the loop drains the selector's confirm-repick
-        # tally once per cycle via consume_repick_count(). On a bare MagicMock
-        # that returns a MagicMock, which then explodes on ``repicks > 0`` in
-        # _record_selection_repicks. Return a real int so the window stays clean.
+        # consume_repick_count must return a real int; a bare MagicMock explodes
+        # on ``repicks > 0`` in _record_selection_repicks.
         selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = Orchestrator.__new__(Orchestrator)
 
-    # The single owner of all shared mutable session state. Constructed first so
-    # the orchestrator's ``orch._<latch>`` compat properties (which delegate to
-    # ``orch._runtime``) resolve for the rest of this factory and for tests.
+    # Single owner of all shared mutable session state; constructed first so the
+    # ``orch._<latch>`` compat properties (which delegate here) resolve below.
     runtime = SessionRuntime(cfg=cfg, selector=selector, state_provider=NullStateProvider())
     orch._runtime = runtime
     runtime.policy_version = "test"
@@ -155,11 +152,9 @@ def make_test_orchestrator(
         state_builder=orch._state_builder,
         completion=orch._completion,
     )
-    # The conductor — constructed last; references every sibling component +
-    # the 1a collaborators. Owns the loop-only counters (tick-failure streak,
-    # wedge counter, watchdog handle, heartbeat, fleet-idle latch, warning memos,
-    # stagnation stage). On this __new__-bypass stub the heartbeat keeps its
-    # float('inf') default (loop never started → not stale to the watchdog).
+    # The conductor — constructed last; references every sibling component. On
+    # this __new__-bypass stub the heartbeat keeps its float('inf') default so
+    # the loop (never started) isn't stale to the watchdog.
     orch._loop = LoopRunner(
         host=orch,
         runtime=runtime,

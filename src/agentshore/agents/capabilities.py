@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from agentshore.state import AgentType
 
-# Keys: AgentType enum, values: capability dict.
-# max_context is used by the observation builder; cost estimation reads pricing
-# from AgentConfig (see agentshore.agents.costs), not from this registry.
-# Merging is GitHub/repository plumbing, not a provider-specific capability.
-# Keep it available to every agent type so scheduler availability cannot strand
-# approved PRs behind a disabled or saturated provider.
+# max_context feeds the observation builder; cost estimation reads pricing from
+# AgentConfig (see agentshore.agents.costs), not this registry.
+# can_merge is GitHub plumbing, not a provider-specific capability — kept on every
+# type so availability can't strand approved PRs behind a saturated provider.
 AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
     AgentType.CLAUDE_CODE: {
         "can_implement": True,

@@ -69,11 +69,6 @@ def main_repo(tmp_path: Path) -> Path:
     return repo
 
 
-# ---------------------------------------------------------------------------
-# git_safety helpers (pure functions, no orchestrator)
-# ---------------------------------------------------------------------------
-
-
 def test_resolve_default_branch_reads_origin_head(main_repo: Path) -> None:
     branch, assumed = resolve_default_branch(main_repo)
     assert branch == "main"
@@ -161,11 +156,6 @@ def test_find_path_escape_siblings_returns_empty_when_clean(tmp_path: Path) -> N
 def test_path_escape_marker_constant() -> None:
     # Catch-and-rename guard: the marker is load-bearing for the sweeper.
     assert PATH_ESCAPE_MARKER == "\\ "
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator boundary check via _check_main_repo_invariant
-# ---------------------------------------------------------------------------
 
 
 class _CompletionGuardHarness:
@@ -356,7 +346,6 @@ async def test_auto_restore_failure_pauses_dispatch(
 
     assert harness.orch._main_repo.dispatch_paused is True
     assert "main_repo_auto_restore_failed" in _event_names(captured)
-    # #175 observability: the failing git's stderr is threaded onto the event so
-    # operators see *why* the restore failed instead of an opaque pause.
+    # #175 observability: git stderr is threaded onto the event so operators see why.
     failure_event = next(e for e in captured if e.get("event") == "main_repo_auto_restore_failed")
     assert failure_event.get("reason") == git_stderr

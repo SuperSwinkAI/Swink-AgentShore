@@ -1,12 +1,7 @@
 import React, { useEffect, useState } from "react";
 
-// React port of `dashboard/src/hud/bootstrapModal.ts`.
-//
-// The imperative version reads `bootstrapPhase` and `bootstrapStartedAt`
-// directly off `AgentShoreStateManager` and toggles DOM classes. Here we
-// expose a `notifyBootstrapModal` function the host wires up (typically
-// from the same place that pushes other state updates), and the
-// component re-renders + ticks elapsed-time internally via state.
+// React port of `dashboard/src/hud/bootstrapModal.ts`. Host wires up
+// `notifyBootstrapModal`; the component re-renders + ticks elapsed-time via state.
 
 const PHASE_LABELS: Record<string, string> = {
   init_datastore: "Opening session database",
@@ -54,8 +49,7 @@ export function BootstrapModal(): React.ReactElement {
   const { phase, startedAt } = useBootstrapModalState();
   const visible = phase !== null;
 
-  // Tick a 250ms interval only while visible so the "Ns elapsed" line
-  // advances live. The imperative version did the same via setInterval.
+  // Tick every 250ms only while visible so the "Ns elapsed" line advances live.
   const [, forceTick] = useState(0);
   useEffect(() => {
     if (!visible) return undefined;

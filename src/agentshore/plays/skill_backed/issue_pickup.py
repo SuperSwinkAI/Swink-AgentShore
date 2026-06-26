@@ -21,37 +21,25 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Backpressure: when the open-PR queue reaches MAX_OPEN_PRS, mask issue_pickup so
-# the policy clears review/merge work before opening more PRs. Past sessions have
-# accumulated 20+ open PRs while every code_review either deduped or returned
-# BLOCK; the queue grows without bound and the budget burns on context for PRs
-# that never merge. The threshold lives in ``plays.candidates`` (single source of
-# truth) so the END_SESSION human-jam escape hatch stays coupled to it.
+# Backpressure: at MAX_OPEN_PRS open PRs, mask issue_pickup so the policy drains
+# review/merge before opening more (else the queue grows unbounded burning budget
+# on PRs that never merge). Threshold lives in ``plays.candidates`` so the
+# END_SESSION human-jam escape hatch stays coupled to it.
 
-# Per-issue circuit breaker. Failure classes that flip the same streak:
-#   (1) The EligibilityAuthority's live ``confirm`` rejects the selected
-#       issue when its bead dropped out of the live candidate set
-#       (``EligibilityAuthority._live_target_reason``), which the selector
-#       turns into a clean re-pick. Historical race-condition guard.
-#   (2) ``execute()`` runs the agent and the returned outcome has
-#       ``success=False`` — typically a body-declared dependency like
-#       "blocked by open dependency: #N". Without this, PPO keeps
-#       re-dispatching the same dep-blocked issue every couple of plays
-#       and burns ~$0.10–0.20 per cycle.
-#   (3) The dispatch times out or the agent crashes (``AgentTimeout`` /
-#       ``AgentProcessCrashed``). These raise straight past the streak
-#       accounting in ``execute()`` (the executor catches them), so #222
-#       they were invisible to the circuit and a repeatedly-timing-out
-#       issue was re-dispatched every tick with no backoff.
-# After ``_SKIP_CIRCUIT_THRESHOLD`` consecutive failures the issue goes on
-# cooldown for ``_SKIP_CIRCUIT_COOLDOWN_PLAYS`` plays; a successful pickup
-# or the issue closing clears the streak. This is a *cost* breaker, not a
-# correctness gate. A **dependency-block** cooldown re-arms the moment the
-# blocker clears (its bead becomes ready — see ``_rearm_ready_issues``),
-# never held for the full window. A **timeout/crash** cooldown is marked
-# non-rearmable: bead-readiness is irrelevant to a timeout (the bead was
-# never blocked), so re-arming on readiness would defeat the cooldown
-# entirely (#222) — those ride out the full window instead.
+# Per-issue cost breaker (not a correctness gate). Three failure classes flip the
+# same streak:
+#   (1) EligibilityAuthority live ``confirm`` rejects an issue whose bead left the
+#       candidate set → selector re-picks. Historical race guard.
+#   (2) ``execute()`` outcome ``success=False`` — typically a body-declared dep
+#       block; without this PPO re-dispatches it every few plays (~$0.10–0.20/cycle).
+#   (3) Timeout/crash (``AgentTimeout``/``AgentProcessCrashed``) raise past the
+#       streak accounting; counted in the ``except`` (#222 — previously invisible,
+#       re-dispatched every tick with no backoff).
+# After ``_SKIP_CIRCUIT_THRESHOLD`` failures the issue cools down for
+# ``_SKIP_CIRCUIT_COOLDOWN_PLAYS`` plays; a success or close clears the streak.
+# Dependency-block cooldowns re-arm the moment the bead is ready
+# (``_rearm_ready_issues``); timeout/crash cooldowns are non-rearmable and ride
+# out the full window (bead-readiness is irrelevant to a timeout, #222).
 _SKIP_CIRCUIT_THRESHOLD = 3
 _SKIP_CIRCUIT_COOLDOWN_PLAYS = 20
 
@@ -76,11 +64,9 @@ class IssuePickupPlay(SkillBackedPlay):
 
     def __init__(self) -> None:
         super().__init__()
-        # Per-issue failure→cooldown circuit on the PLAYS clock: after
-        # ``_SKIP_CIRCUIT_THRESHOLD`` consecutive failures an issue is benched for
-        # ``_SKIP_CIRCUIT_COOLDOWN_PLAYS`` of ``state.total_plays``. The explicit
-        # ``Clock.PLAYS`` is what keeps this from being confused with the
-        # like-valued grok-wedge cooldown, which counts ``last_play_id`` ticks.
+        # Per-issue failure→cooldown circuit on the PLAYS clock. Explicit
+        # ``Clock.PLAYS`` distinguishes it from the like-valued grok-wedge
+        # cooldown, which counts ``last_play_id`` ticks.
         self._skip: Cooldown[int] = Cooldown(
             CooldownSpec(
                 threshold=_SKIP_CIRCUIT_THRESHOLD,
@@ -88,11 +74,9 @@ class IssuePickupPlay(SkillBackedPlay):
                 clock=Clock.PLAYS,
             )
         )
-        # issue_number → whether the cooldown re-arms the moment the bead is
-        # ready again. True for dependency-block failures (bead readiness is the
-        # relevant signal); False for timeout / agent-crash failures, where
-        # readiness is irrelevant and re-arming would defeat the cooldown (#222).
-        # Held only for issues currently on cooldown (reconciled in
+        # issue_number → re-arms when the bead is ready again. True for dep-block
+        # failures; False for timeout/crash (readiness irrelevant, re-arming would
+        # defeat the cooldown, #222). Held only while on cooldown (reconciled in
         # ``_issues_on_cooldown``).
         self._skip_rearmable: dict[int, bool] = {}
 
@@ -144,7 +128,7 @@ class IssuePickupPlay(SkillBackedPlay):
         for issue_number in ready_issue_numbers & on_cooldown:
             if not self._skip_rearmable.get(issue_number, True):
                 # Timeout/crash cooldown: bead-readiness never blocked it, so a
-                # ready bead must not clear it — let it ride out the window (#222).
+                # ready bead must not clear it — ride out the window (#222).
                 continue
             self._skip.clear(issue_number)
             self._skip_rearmable.pop(issue_number, None)
@@ -152,8 +136,7 @@ class IssuePickupPlay(SkillBackedPlay):
     def _issues_on_cooldown(self, total_plays: int) -> set[int]:
         """Return the set of issue_numbers still inside their skip cooldown."""
         on_cooldown = self._skip.armed_keys(now=total_plays)
-        # Keep the rearmability sidecar aligned with the live cooldown set — drop
-        # tags for issues whose window has just expired (pruned by armed_keys).
+        # Keep the rearmability sidecar aligned: drop tags for expired windows.
         for issue_number in set(self._skip_rearmable) - on_cooldown:
             del self._skip_rearmable[issue_number]
         return on_cooldown
@@ -178,8 +161,7 @@ class IssuePickupPlay(SkillBackedPlay):
         open_numbers = {issue.issue_number for issue in state.open_issues}
         self._purge_closed_issues(open_numbers)
         # Re-arm before reading the cooldown set: a cooled-down issue whose
-        # blocker has cleared (its bead is ready again) must be selectable
-        # this same tick, never held for the rest of the cooldown window.
+        # blocker has cleared must be selectable this same tick.
         self._rearm_ready_issues(state)
         on_cooldown = self._issues_on_cooldown(state.total_plays)
         if not state.open_issues:

@@ -20,11 +20,9 @@ def _infer_failure_category(outcome: PlayOutcome) -> str:
     if outcome.failure_kind is not None:
         return str(outcome.failure_kind.to_category())
     error = (outcome.error or "").lower()
-    # Auth detection routes through the single canonical AUTH_MARKERS superset
-    # (Phase 4): closes the old miss of GitHub-table spellings ("repository not
-    # found", "http 401/403", …) that the narrow publish subset lacked, and drops
-    # the previous bare ``"auth" in error`` fallback that false-matched
-    # "author"/"authorization"/"authored by".
+    # Canonical AUTH_MARKERS superset (Phase 4): covers GitHub-table spellings
+    # ("repository not found", "http 401/403") the publish subset lacked, and
+    # avoids the bare "auth" fallback that false-matched "author"/"authorized".
     if any(marker in error for marker in AUTH_MARKERS):
         return "agent_error"
     if error.startswith(("test", "ci", "pytest", "lint")):

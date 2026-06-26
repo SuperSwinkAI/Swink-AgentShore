@@ -46,7 +46,6 @@ def test_picker_shows_current_marker_when_default_matches_login() -> None:
 
     label, logins, default_idx, *_ = mock_prompt.call_args.args
     assert "current: bob" in label
-    # Default index points to bob (index 1)
     assert logins[default_idx] == "bob"
 
 
@@ -135,7 +134,7 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
             existing_identities=existing,
         )
 
-    # Step 2 confirm was invoked at least once (the "Keep existing settings?" prompt).
+    # The "Keep existing settings?" prompt fired.
     assert mock_confirm.called
     # Result preserved the existing keychain binding verbatim.
     assert result.agent_to_identity == {"claude_code": "bot-user"}

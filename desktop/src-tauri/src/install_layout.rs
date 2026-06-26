@@ -10,10 +10,6 @@
 /// cfg predicate as appropriate.
 use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------
-// Process-creation flags (Windows)
-// ---------------------------------------------------------------------------
-
 /// `CREATE_NO_WINDOW` suppresses the console-window flash and avoids AV
 /// window-hooking latency on every subprocess spawn.
 #[cfg(target_os = "windows")]

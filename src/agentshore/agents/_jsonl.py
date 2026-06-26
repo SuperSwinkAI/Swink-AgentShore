@@ -28,11 +28,9 @@ class _UsageTotals:
     turn_count: int = 0
     max_turn_input_tokens: int = 0
     # Vendor-authoritative dollar cost when the agent reports one (Claude Code's
-    # ``total_cost_usd`` on the result event). 0.0 means "agent reported no cost"
-    # — the dispatch layer then derives cost from the token counts above. This
-    # is preferred over token-derivation because the vendor figure accounts for
-    # the exact model and 5-minute vs 1-hour ephemeral-cache tiers, which the
-    # static pricing table cannot reconstruct from token counts alone.
+    # ``total_cost_usd``); 0.0 = none reported → dispatch derives from tokens.
+    # Preferred: the vendor figure accounts for exact model + ephemeral-cache tier
+    # (5m vs 1h), which the static pricing table can't reconstruct from tokens.
     reported_cost: float = 0.0
 
 

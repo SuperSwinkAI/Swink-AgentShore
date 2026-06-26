@@ -13,7 +13,6 @@ class TestSetupLogging:
     def test_setup_logging_returns_without_error(self) -> None:
         """Calling with defaults must not raise."""
         setup_logging()
-        # Verify stdlib root logger was reconfigured
         root = logging.getLogger()
         assert root.level == logging.INFO
 
@@ -22,12 +21,9 @@ class TestSetupLogging:
         setup_logging(session_id="sess-abc-123")
         log = get_logger("test")
 
-        # structlog caches loggers, so force a fresh bind
         log.warning("hello", extra_key="val")
 
-        # The session_id is injected via context-var processor; verify by
-        # inspecting the root handler's formatter (ProcessorFormatter) output.
-        # We check the context-var was set:
+        # session_id is injected via a context-var processor; verify the var was set.
         from agentshore.logging import _session_id_var
 
         assert _session_id_var.get() == "sess-abc-123"

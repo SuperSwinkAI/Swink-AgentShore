@@ -65,9 +65,8 @@ def test_hardened_env_git_is_non_interactive() -> None:
 
 
 def test_hardened_env_git_pins_noninteractive_editor() -> None:
-    # The git editor is a separate interactive surface from the credential
-    # prompt; without these a rebase-internal ``git commit -e`` opens vim and
-    # hangs forever on a detached subprocess, leaking the worktree (#168).
+    # git's editor is a separate interactive surface; unpinned, a rebase-internal
+    # ``git commit -e`` opens vim and hangs forever, leaking the worktree (#168).
     # ``true`` (not "") is the no-op editor git honours.
     env = subprocess_env.hardened_env(for_git=True)
     assert env[subprocess_env.GIT_EDITOR_ENV] == "true"

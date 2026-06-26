@@ -23,11 +23,6 @@ class ForkFinding:
     detail: str
 
 
-# ---------------------------------------------------------------------------
-# Origin-owner parsing
-# ---------------------------------------------------------------------------
-
-
 def parse_origin_owner(remote_or_nwo: str) -> str | None:
     """Return the GitHub owner (org/user) from a remote URL or owner/repo string.
 
@@ -65,11 +60,6 @@ def parse_origin_owner(remote_or_nwo: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Sync detector: cross-fork PR artifacts
-# ---------------------------------------------------------------------------
-
-
 def detect_cross_fork_pr_artifacts(
     artifacts: Sequence[object],
     origin_owner: str,
@@ -100,11 +90,6 @@ def detect_cross_fork_pr_artifacts(
                 )
             )
     return findings
-
-
-# ---------------------------------------------------------------------------
-# Async detector: non-origin remotes in a worktree
-# ---------------------------------------------------------------------------
 
 
 async def detect_non_origin_remotes(worktree: Path) -> list[ForkFinding]:

@@ -55,7 +55,6 @@ def _first_identity(output: str, prefix: str) -> str:
     return ""
 
 
-# ── 1. Stop running processes ────────────────────────────────────────────────
 def stop_processes(ctx: BuildContext) -> None:
     log("Stopping running AgentShore processes")
     killed = False
@@ -76,7 +75,6 @@ def stop_processes(ctx: BuildContext) -> None:
         run_ok(["pkill", "-KILL", "-f", pattern])
 
 
-# ── 2. Clean stale files ─────────────────────────────────────────────────────
 def clean_stale(ctx: BuildContext) -> None:
     log("Cleaning stale files")
     sessions = Path.home() / ".agentshore" / "sessions"
@@ -112,7 +110,6 @@ def clean_stale(ctx: BuildContext) -> None:
             info(f"Forgot pkg receipt: {receipt}")
 
 
-# ── 4. Bundled bd sidecar ────────────────────────────────────────────────────
 def build_sidecar(ctx: BuildContext) -> None:
     if ctx.skip_sidecar:
         log("Skipping sidecar binary build (--skip-sidecar)")
@@ -122,7 +119,6 @@ def build_sidecar(ctx: BuildContext) -> None:
     run([npm, "run", "build:tauri-sidecars"], cwd=ctx.desktop_dir)
 
 
-# ── 6. Resolve code-signing identity ─────────────────────────────────────────
 def resolve_signing_identity(ctx: BuildContext) -> None:
     if ctx.no_sign:
         log("Skipping code-signing identity resolution (--no-sign)")
@@ -139,7 +135,6 @@ def resolve_signing_identity(ctx: BuildContext) -> None:
         info("Install a Developer ID cert to enable signing, or pass --no-sign to silence this")
 
 
-# ── 7. Tauri app bundle ──────────────────────────────────────────────────────
 def build_tauri(ctx: BuildContext) -> None:
     log(f"Building Tauri app bundle ({ctx.build_mode})")
     npx = require_tool("npx", "install Node.js (npx)")
@@ -153,7 +148,6 @@ def build_tauri(ctx: BuildContext) -> None:
     info(f"Bundle ready at {ctx.built_app}")
 
 
-# ── 8. Verify the .app artifact ──────────────────────────────────────────────
 def verify_app(ctx: BuildContext) -> None:
     log("Verifying .app artifact")
     problems = verify.verify_macos(ctx.built_app, ctx.root, require_signature=ctx.is_signed)
@@ -183,7 +177,6 @@ def _stage_scripts(stage: Path, files: list[tuple[Path, str]], executable: set[s
             os.chmod(stage / name, 0o755)
 
 
-# ── 9. Wrap .app in .pkg installer ───────────────────────────────────────────
 def build_pkg(ctx: BuildContext) -> None:
     if not ctx.build_pkg:
         return
@@ -203,7 +196,7 @@ def build_pkg(ctx: BuildContext) -> None:
     shutil.rmtree(component_dir, ignore_errors=True)
     component_dir.mkdir(parents=True, exist_ok=True)
 
-    # — Desktop component (BundleIsRelocatable=false; see original script note) —
+    # — Desktop component (BundleIsRelocatable=false) —
     app_component_pkg = component_dir / "agentshore-desktop-component.pkg"
     app_component_plist = component_dir / "agentshore-desktop-component.plist"
     app_component_plist.write_text(_COMPONENT_PLIST.format(app_name=APP_NAME))
@@ -315,7 +308,6 @@ def build_pkg(ctx: BuildContext) -> None:
     info(f"Wrote {pkg_out}")
 
 
-# ── 10. Notarize ─────────────────────────────────────────────────────────────
 def notarize(ctx: BuildContext) -> None:
     if not ctx.notarize:
         return
@@ -330,7 +322,6 @@ def notarize(ctx: BuildContext) -> None:
     info(f"Notarized + stapled {pkg_out}")
 
 
-# ── 11. Install ──────────────────────────────────────────────────────────────
 def install(ctx: BuildContext) -> None:
     if not ctx.do_install:
         return
@@ -345,7 +336,6 @@ def install(ctx: BuildContext) -> None:
         info(f"Copied .app to {installed}")
 
 
-# ── 12. Reveal ───────────────────────────────────────────────────────────────
 def reveal(ctx: BuildContext) -> None:
     log("Build complete")
     info(f".app: {ctx.built_app}")

@@ -330,8 +330,7 @@ def test_session_start_emits_per_phase_progress_notifications() -> None:
         assert ok_params["step"] == step
         assert running_params["percent"] == 0
         assert ok_params["percent"] == 100
-        # The "ok" message is the human-readable phase label without an
-        # ellipsis suffix; the "running" message tacks on "…".
+        # "running" message is the "ok" phase label plus a "…" suffix.
         assert running_params["message"] == f"{ok_params['message']}…"
 
 
@@ -404,9 +403,8 @@ def test_session_start_fails_when_beads_init_fails(tmp_path: object) -> None:
     assert error["code"] == -32602
     assert ".beads" in cast("str", error["message"])
 
-    # config_merge + check_agent_auth + install_skills emit ok; init_beads
-    # emits running then failed. (No CLI agents configured, so check_agent_auth
-    # is a no-op that still emits its running/ok pair.)
+    # First three phases emit ok; init_beads emits running then failed.
+    # (check_agent_auth still emits its running/ok pair with no CLI agents.)
     steps_seen = [cast("dict[str, object]", n["params"])["step"] for n in notifications]
     assert steps_seen == [
         "config_merge",
@@ -432,8 +430,7 @@ def test_session_start_succeeds_with_valid_project(tmp_path: object) -> None:
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
     state = ServerState(active_project_path=str(project_path))
-    # start_bridge=False keeps the unit-test fast: skip real uvicorn binding.
-    # A separate async test exercises the bridge-running path.
+    # start_bridge=False skips real uvicorn binding; an async test covers it.
     from agentshore.sidecar.session_lifecycle import run_session_start
 
     outcome = asyncio.run(run_session_start(state, start_bridge=False))
@@ -470,11 +467,8 @@ def test_session_start_runs_bd_hooks_after_init(tmp_path: object) -> None:
     (project_path / ".beads").mkdir()
 
     mock_setup = AsyncMock(return_value=["claude", "codex"])
-    # This test exercises the bd-hooks phase, not the check_agent_auth gate that
-    # dd7fcb3 ("Guard desktop starts against single identity") added ahead of it.
-    # That gate requires two enabled agents to bind distinct identities; neutralise
-    # it here (matching how test_session_lifecycle isolates the auth phase) so the
-    # bd-hooks assertion is what's under test.
+    # Neutralise the check_agent_auth gate (dd7fcb3 — requires two distinct
+    # identities) so the bd-hooks phase is what's under test.
     with (
         patch("agentshore.beads.setup.bd_setup_for_agent_types", mock_setup),
         patch("agentshore.agents.identity.require_two_distinct_gh_identities"),

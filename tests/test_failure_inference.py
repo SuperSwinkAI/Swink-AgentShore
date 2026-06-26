@@ -22,16 +22,15 @@ def _outcome(error: str) -> PlayOutcome:
 
 
 def test_github_table_auth_spelling_is_agent_error() -> None:
-    # Phase 4: the inferer now uses the canonical AUTH_MARKERS superset, so a
-    # GitHub-table auth spelling the narrow publish subset lacked is caught.
+    # Phase 4: inferer uses canonical AUTH_MARKERS superset, catching GitHub-table
+    # auth spellings the narrow publish subset missed.
     assert _infer_failure_category(_outcome("fatal: repository not found")) == "agent_error"
     assert _infer_failure_category(_outcome("HTTP 401 Unauthorized")) == "agent_error"
 
 
 def test_bare_auth_substring_no_longer_false_matches() -> None:
-    # Phase 4 dropped the bare ``"auth" in error`` fallback that matched
-    # "author"/"authorization"/"authored by". These carry no real auth marker, so
-    # they fall through to code_error instead of being mislabelled agent_error.
+    # Phase 4 dropped the bare ``"auth" in error`` fallback that false-matched
+    # "author"/"authorization" → no real auth marker, so these go code_error not agent_error.
     assert _infer_failure_category(_outcome("the author of the PR disagrees")) == "code_error"
     assert _infer_failure_category(_outcome("missing authorization header in handler")) == (
         "code_error"

@@ -37,7 +37,6 @@ def test_actor_bias_set():
 def test_bias_sum_consistent():
     m = _policy()
     # bias = log(w) - mean(log(w)) → sum of exp(bias) ≈ num_actions (before renorm)
-    # just verify the bias is finite and non-trivial
     b = m.actor.bias.detach().numpy()
     assert np.all(np.isfinite(b))
     assert b.max() > b.min()

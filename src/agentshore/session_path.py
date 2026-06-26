@@ -509,14 +509,6 @@ def is_session_running(project_path: Path) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Process lifecycle management
-# ---------------------------------------------------------------------------
-
-
-# -- low-level process utilities --------------------------------------------
-
-
 def _process_alive_windows(pid: int) -> bool:
     """Liveness probe for Windows that has no side effects.
 
@@ -546,9 +538,6 @@ def _process_alive_windows(pid: int) -> bool:
 
     handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, False, pid)
     if not handle:
-        # No such PID -> dead. Any other failure (e.g. access denied) means the
-        # process exists but we lack rights -> treat as alive, never discard a
-        # live session.
         last_err: int = ctypes.get_last_error()  # type: ignore[attr-defined]
         return last_err != _WIN_ERROR_INVALID_PARAMETER
     try:
@@ -622,9 +611,6 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
 
     sig = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM
     _signal_group(pid, sig)
-
-
-# -- high-level operations --------------------------------------------------
 
 
 def _connect_ipc(endpoint: IpcEndpoint, sock: socket.socket) -> bool:

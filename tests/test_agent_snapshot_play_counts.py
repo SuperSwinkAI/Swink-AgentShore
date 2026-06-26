@@ -75,8 +75,8 @@ def test_unknown_agent_id_in_history_is_ignored():
     orch = _orch_with_handles([_handle("a")])
     history = [
         _play("a", True),
-        _play("ghost", True),  # not in handles
-        _play(None, True),  # internal play (no agent)
+        _play("ghost", True),
+        _play(None, True),
     ]
     snaps = {s.agent_id: s for s in orch._snapshots.build_agent_snapshots(history)}
     assert snaps["a"].tasks_completed == 1

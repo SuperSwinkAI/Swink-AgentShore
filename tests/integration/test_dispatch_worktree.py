@@ -41,10 +41,6 @@ from agentshore.plays.base import PlayParams
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentType, PlayType
 
-# ---------------------------------------------------------------------------
-# Fake git repo + remote
-# ---------------------------------------------------------------------------
-
 
 def _run(*args: str, cwd: Path) -> str:
     """Run a subprocess synchronously; raise with full output on failure."""
@@ -90,11 +86,6 @@ def _init_repo_with_remote(tmp_path: Path, branch: str) -> Path:
     _run("git", "push", "-u", "origin", branch, cwd=main_repo)
     _run("git", "switch", "main", cwd=main_repo)
     return main_repo
-
-
-# ---------------------------------------------------------------------------
-# Fake CLI binary
-# ---------------------------------------------------------------------------
 
 
 def _write_fake_cli(
@@ -143,11 +134,6 @@ OUT
     return target
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _cfg(binary: Path) -> RuntimeConfig:
     """Build a minimal config with one CLI agent pointed at the fake binary."""
     return RuntimeConfig(
@@ -184,11 +170,6 @@ async def _count_active_worktrees(store: DataStore, *, session_id: str) -> int:
     )
     row = await cur.fetchone()
     return int(row[0]) if row is not None else 0
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

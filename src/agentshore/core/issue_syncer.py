@@ -19,38 +19,18 @@ if TYPE_CHECKING:
     from agentshore.state import PlayType
 
 
-# ---------------------------------------------------------------------------
-# Module-level constants (moved from completion.py)
-# ---------------------------------------------------------------------------
-
-# Used by ``refresh_issues`` — declared module-level so renaming inside the
-# function body doesn't drift them away from the constants the original
-# monolithic ``core.py`` referenced.
 _DUPLICATE_BEAD_TITLE_RE = re.compile(r"^Duplicate bead", re.IGNORECASE)
 _PR_LIMIT = 50
 
-# Plays that should trigger a *full* paginated re-sync of GitHub issues, vs.
-# the incremental ``since=`` sync used for everything else. Deletions and
-# repo transfers don't bump ``updated_at`` and so are invisible to incremental
-# sync — these plays act as the belt-and-suspenders that catches them.
-
-# Substring signatures that mean "the agent ran issue_pickup, looked at the
-# real GH state, and discovered the issue was already CLOSED while our cache
-# still listed it open." GitHub's incremental ``since=`` query has been
-# observed missing close-state transitions for 30+ refresh cycles, leaving
-# the orchestrator burning $0.10–0.20 per phantom pickup. Detecting this
-# signal forces a paginated full sync on the next refresh so the cache
-# self-heals (observed 2026-05-28 session 08a948ed, issue #966).
+# Signatures meaning issue_pickup found the issue already CLOSED on GH while our
+# cache still listed it open. Incremental ``since=`` has been seen missing
+# close-state transitions for 30+ cycles ($0.10–0.20 per phantom pickup); this
+# forces a full sync next refresh so the cache self-heals (#966, 2026-05-28).
 _ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
     "is already closed",
     "already CLOSED",
     "already closed",
 )
-
-
-# ---------------------------------------------------------------------------
-# IssueSyncer
-# ---------------------------------------------------------------------------
 
 
 class IssueSyncer:
@@ -121,9 +101,8 @@ class IssueSyncer:
                 )
                 since = None if full_sync else last_sync
 
-                # Capture the cutoff *before* the fetch so anything that
-                # updates mid-fetch is picked up next time. Lookback absorbs
-                # clock skew between gh and the local box.
+                # Capture the cutoff *before* the fetch so mid-fetch updates are
+                # picked up next time; lookback absorbs gh/local clock skew.
                 new_cutoff = sync_cursor_now()
 
                 # ``state="all"`` so close/reopen transitions surface — the
@@ -144,9 +123,8 @@ class IssueSyncer:
                         cursor=new_cutoff,
                     )
 
-                # Duplicate-bead close sweep runs only on full sync — it
-                # needs the complete open-issue set to safely identify
-                # issues whose only linked beads are closed duplicates.
+                # Duplicate-bead close sweep runs only on full sync — needs the
+                # complete open-issue set to find issues whose only beads are closed dups.
                 if full_sync and issues is not None:
                     open_issues = [iss for iss in issues if iss.state == "open"]
                     from agentshore.beads import (  # noqa: PLC0415
@@ -209,11 +187,9 @@ class IssueSyncer:
                 if pull_requests:
                     await syncer.cache_pull_requests(pull_requests)
                     _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
-                # Absence reconciliation (#279): evict locally-open PRs GitHub
-                # has no object for at all (phantoms — never opened, or an
-                # agent-reported issue/hallucinated number). Marking them
-                # ``absent`` drops them out of code_review eligibility and drains
-                # their review-queue rows so the resolver stops re-offering them.
+                # Absence reconciliation (#279): mark locally-open PRs GitHub has no
+                # object for (phantoms/hallucinated numbers) ``absent`` — drops them
+                # from code_review eligibility and drains their review-queue rows.
                 for pr_number in resync.absent:
                     await self._store.mark_pull_request_absent(self._session_id, pr_number)
                 if resync.absent:
@@ -222,11 +198,9 @@ class IssueSyncer:
                         count=len(resync.absent),
                         pr_numbers=resync.absent,
                     )
-                # desktop-12g9: mark worktree rows ``stale`` for PRs that
-                # transitioned to MERGED or CLOSED, then run the TTL reaper.
-                # ``refetched`` carries the resolved state for previously-open
-                # PRs that disappeared from the open-list. ``stale`` rows older
-                # than ``reap_ttl_seconds`` get reaped.
+                # Mark worktree rows ``stale`` for PRs that went MERGED/CLOSED (from
+                # ``refetched``), then run the TTL reaper (``stale`` rows older than
+                # ``reap_ttl_seconds``).
                 await self._mark_worktrees_stale_for_closed_prs(refetched)
                 await self._sweep_closed_pr_worktrees()
                 await self._sweep_disk_pressure_worktrees()

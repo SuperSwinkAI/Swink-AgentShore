@@ -14,22 +14,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _write_config(path: Path, overrides: dict[str, object] | None = None) -> None:
     """Write a minimal agentshore.yaml with optional top-level overrides."""
     data: dict[str, object] = {"budget": {"enabled": True, "total": 20.0}}
     if overrides:
         data.update(overrides)
     path.write_text(yaml.dump(data), encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -45,7 +35,6 @@ async def test_reload_config_swaps_cfg(tmp_path: Path) -> None:
         assert orch._cfg.budget.enabled is False
         assert orch._cfg.budget.total == 0.0
 
-        # Modify config file — change budget total
         _write_config(config_path, {"budget": {"enabled": True, "total": 25.0}})
         await orch._lifecycle.reload_config()
 
@@ -58,9 +47,7 @@ async def test_reload_config_no_path(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path)
     async with orch:
         original_cfg = orch._cfg
-        # Should not raise
         await orch._lifecycle.reload_config()
-        # _cfg should be unchanged
         assert orch._cfg is original_cfg
 
 
@@ -76,7 +63,7 @@ async def test_reload_config_invalid_yaml(tmp_path: Path) -> None:
         original_cfg = orch._cfg
         config_path.write_text("invalid: yaml: {{{", encoding="utf-8")
         await orch._lifecycle.reload_config()
-        assert orch._cfg is original_cfg  # unchanged
+        assert orch._cfg is original_cfg
 
 
 @pytest.mark.asyncio
@@ -89,9 +76,8 @@ async def test_reload_config_no_changes(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, config_path=config_path)
     async with orch:
         original_cfg = orch._cfg
-        # Reload without modifying the file — content still matches
+        # Reload an unchanged file — content still matches, no swap.
         await orch._lifecycle.reload_config()
-        # Config should not have been swapped (no changes detected)
         assert orch._cfg is original_cfg
 
 
@@ -105,7 +91,6 @@ async def test_reload_config_logs_changed_fields(tmp_path: Path) -> None:
         cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
     )
     async with orch:
-        # Mutate config on disk: change budget and scope
         config_path.write_text(
             yaml.dump(
                 {

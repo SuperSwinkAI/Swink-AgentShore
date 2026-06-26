@@ -98,7 +98,6 @@ def test_parse_reports_missing_success_envelope_distinctly() -> None:
     assert result.error is not None
     # Shared prefix preserved so the JSON-retry trigger still fires.
     assert "no valid result block" in result.error
-    # Distinct wording naming the actual defect.
     assert "no top-level boolean 'success' field" in result.error
 
 
@@ -130,8 +129,7 @@ def test_parse_reports_long_output_with_no_json() -> None:
     assert result.error is not None
     assert f"{len(output)} chars but no JSON result block" in result.error
     assert "tail:" in result.error
-    # Tail of the agent output should appear in the error so operators can
-    # diagnose the failure mode from the play_completed log line alone.
+    # Tail must surface in error so operators can diagnose from the log line alone.
     assert "Inspect the uv.lock diff first" in result.error
 
 
@@ -398,9 +396,7 @@ def test_parse_extracts_review_patterns() -> None:
     ]
 
 
-# ---------------------------------------------------------------------------
 # learnings extraction — Bug B
-# ---------------------------------------------------------------------------
 
 
 def test_parse_extracts_learnings_list() -> None:
@@ -509,9 +505,7 @@ def test_parse_learnings_non_list_treated_as_empty() -> None:
     assert result.learnings == []
 
 
-# ---------------------------------------------------------------------------
 # learnings_compacted (groom re-distillation, wholesale replace)
-# ---------------------------------------------------------------------------
 
 
 def test_parse_learnings_compacted_normalizes_entries() -> None:

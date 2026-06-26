@@ -35,21 +35,18 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Sent (not the full original skill prompt) when the agent finished work but omitted the
-# JSON envelope and we retry over ``--resume``. The agent already holds all of its prior
-# context in the resumed session, so re-sending the ~10 KB skill prompt only risks it
-# re-doing the work and buries the one thing we need. This short, recency-optimal nudge
-# asks only for the missing block and explicitly forbids redoing work. See #223.
+# Resume-retry nudge (#223): agent finished work but omitted the JSON envelope. The resumed
+# session still holds full context, so re-sending the ~10 KB prompt risks redoing work; ask
+# only for the missing block and forbid redoing.
 _JSON_RETRY_PROMPT = (
     "Your previous turn completed work but did not emit the required JSON result block. "
     "Do not redo or repeat any work. Output only the fenced JSON result block for what "
     "you already did, matching the schema in your instructions."
 )
 
-# Defect-specific variant (#229): used when the agent DID emit a JSON object but it
-# lacked the required top-level boolean ``success`` (the near-miss case flagged by
-# ``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more
-# of these than the generic nudge, which the agent answers by re-emitting the same shape.
+# Near-miss variant (#229): JSON emitted but missing top-level boolean ``success``
+# (``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more than
+# the generic nudge, which the agent answers by re-emitting the same shape.
 _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Your previous turn emitted a JSON result block, but it is missing the required "
     "top-level boolean `success` field. Do not redo or repeat any work. Re-emit the exact "
@@ -57,12 +54,9 @@ _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Do not invent other keys. Output only that one fenced JSON block."
 )
 
-# #236: agy-specific variant for when the agent ended its turn by deferring work to an
-# async/background task (the manage_task tool, a backgrounded command, or just "pause and
-# wait for it to finish") instead of completing the work. Unlike the generic nudge (which
-# says "don't redo work"), the work was never finished — the agent must re-run it
-# synchronously. Resume context gives it the full history of what it was trying to do; the
-# nudge redirects execution style, not scope.
+# #236: agy async/background-handoff variant — agent deferred work to an async task instead
+# of finishing it. Unlike the generic nudge, the work is unfinished, so it must re-run
+# synchronously; this redirects execution style, not scope.
 _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "Your previous turn ended by deferring a command to an async or background task and "
     "waiting on it, instead of running it to completion. Do not use manage_task, do not "
@@ -72,14 +66,11 @@ _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "JSON block is emitted."
 )
 
-# #242: agy's runtime auto-backgrounds commands it judges long-running and then ends the
-# ``-p`` turn narrating that it is "waiting for the background task" — producing prose, no
-# JSON. The shared discipline preamble already says "run in the foreground", but agy needs
-# this named, emphatic, recency-positioned directive appended to the INITIAL dispatch to
-# comply (verified across Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8 with; the residual
-# leak is caught by ``cli_antigravity.is_async_handoff`` → the retry nudge above). Applied up
-# front so the handoff is *prevented*, not merely retried. agy-only: the other CLIs do not
-# auto-background, so this noise is scoped to ANTIGRAVITY dispatches.
+# #242: agy auto-backgrounds long commands and ends the ``-p`` turn narrating it is "waiting
+# for the background task" (prose, no JSON). Appended to the INITIAL dispatch so the handoff
+# is prevented, not just retried (verified Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8
+# with; residual leak caught by ``cli_antigravity.is_async_handoff``). agy-only — other CLIs
+# don't auto-background.
 _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
     "\n\n## Antigravity: run every command synchronously\n\n"
     "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
@@ -98,21 +89,16 @@ def _with_antigravity_sync_directive(prompt: str, agent_type: AgentType | None) 
     return prompt
 
 
-# First-byte deadline for the no-JSON resume-retry dispatch (#232). The resume only asks
-# the agent to re-print a result block it already computed, so it should start streaming
-# within seconds. Without an override it inherits the per-agent-type default — 1800s for
-# antigravity (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE), which turns a silent resume hang
-# into 30 min of dead slot time. A short budget fast-fails (recoverable TIMEOUT_STREAM_IDLE)
-# and frees the slot. This is safe precisely because a re-emission is NOT a fresh long task.
-# Not applied for async/background handoffs (#236) — those require completing real work.
+# First-byte deadline for the no-JSON resume-retry (#232). A re-emission should stream in
+# seconds; without this it inherits agy's 1800s default (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE),
+# turning a silent resume hang into 30 min of dead slot. Short budget fast-fails (recoverable
+# TIMEOUT_STREAM_IDLE). Not applied to async handoffs (#236) — those do real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
 
-# Maximum consecutive clean-exit empty no-op dispatches before the play is failed
-# and the agent is routed into a standard take_break. The first dispatch counts as
-# attempt 1, so this bounds the play at 1 initial + 2 fresh re-dispatches. Each
-# re-dispatch is FRESH (no --resume): an empty agy session resumes empty (verified
-# live), so resuming a no-op is useless — only a fresh turn can recover. These 3
-# attempts ARE the "3 no-ops in a row" that trip the break (desktop no-op resilience).
+# Max consecutive clean-exit empty no-op dispatches before failing the play and routing the
+# agent into take_break. First dispatch is attempt 1, so this bounds it at 1 initial + 2
+# re-dispatches. Re-dispatches are FRESH (no --resume): an empty agy session resumes empty
+# (verified), so only a fresh turn recovers.
 _NOOP_STREAK_LIMIT = 3
 
 
@@ -127,8 +113,8 @@ def _worktree_cwd_override(params: PlayParams) -> Path | None:
     """
     from agentshore.agents.worktree import TrunkAllocation, WorktreeAllocation
 
-    # Issue #565: allocation moved off ``params.extras`` (which JSON-serializes)
-    # onto the private ``_runtime_allocation`` field.
+    # #565: allocation moved off ``params.extras`` (JSON-serializes) onto private
+    # ``_runtime_allocation``.
     allocation = params._runtime_allocation
     if isinstance(allocation, (WorktreeAllocation, TrunkAllocation)):
         return allocation.path
@@ -142,11 +128,9 @@ _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.SYSTEMATIC_DEBUGGING,
     }
 )
-# Minimum worktree age before any destructive worktree sweep may delete it.
-# Shared by PRUNE and RECONCILE_STATE — both remove worktrees and both must keep
-# anything younger, which is the load-bearing guard against the allocate-then-
-# delete race (#189, #218): a worktree created inside this window is protected
-# regardless of how stale a claim query looks.
+# Min worktree age before any destructive sweep may delete it. Shared by PRUNE and
+# RECONCILE_STATE; load-bearing guard against the allocate-then-delete race (#189, #218) —
+# a worktree created inside this window is protected however stale a claim query looks.
 _WORKTREE_MIN_AGE_HOURS = 3
 
 

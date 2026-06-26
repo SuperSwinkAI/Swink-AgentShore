@@ -149,15 +149,10 @@ export function Dashboard({
     };
   }, []);
 
-  // Fire onFirstAgentInstantiated exactly once per Dashboard mount.
-  // The ref resets when wsUrl changes (different session), so a
-  // subsequent session also gets one shot at firing the callback.
+  // Fire onFirstAgentInstantiated once per mount; reset on wsUrl change so each session gets one shot.
   const firstAgentFiredRef = useRef(false);
-  // Fire onFirstStateUpdate exactly once per Dashboard mount, on the
-  // first state_update frame. Unlike the first-agent fast-path, a
-  // state_update always arrives once the bridge is live — including in
-  // no-work sessions that never spawn an agent (issue #10). Reset on
-  // wsUrl change so a subsequent session also gets one shot.
+  // Fire onFirstStateUpdate once per mount on first state_update — always arrives once the bridge
+  // is live, even in no-work sessions that never spawn an agent (#10). Reset on wsUrl change.
   const firstStateUpdateFiredRef = useRef(false);
   useEffect(() => {
     firstAgentFiredRef.current = false;
@@ -174,13 +169,9 @@ export function Dashboard({
       transport ?? new WebSocketClient(wsUrl as string);
     transportRef.current = client;
 
-    // Session-boundary reset (Tier 1): the manager detects a session_id change
-    // on any frame and calls this hook to wipe accumulators that carry
-    // per-session state but live outside the manager (play bar, agent stats,
-    // event drawer, bootstrap modal). resetSession() already drops the
-    // manager's own characters/seq/bootstrap; this clears the component DOM —
-    // the modal only re-evaluates when notified, so pushing the cleared phase
-    // hides a modal left up by the prior run before the new run re-shows it.
+    // Session-boundary reset: on session_id change, wipe per-session accumulators that
+    // live outside the manager (play bar, agent stats, event drawer, bootstrap modal).
+    // Pushing the cleared phase hides a modal left up by the prior run.
     stateManager.onSessionReset = () => {
       notifyPlayBarClear();
       notifyAgentPlayStatsReset();
@@ -205,23 +196,19 @@ export function Dashboard({
           notifyStatsStageUpdate(msg);
           notifyKanbanStateUpdate(msg);
           notifyDashboardCanvasStickies(msg);
-          // The engine is confirmed live the moment any state_update
-          // arrives. Dismiss the desktop's session-starting overlay
-          // here so a no-work session (which never instantiates an
-          // agent) doesn't hang the spinner forever (issue #10).
+          // First state_update = engine confirmed live. Dismiss the desktop's
+          // session-starting overlay so a no-work session never hangs the spinner (#10).
           if (!firstStateUpdateFiredRef.current) {
             firstStateUpdateFiredRef.current = true;
             onFirstStateUpdate?.();
           }
-          // Surface the session lifecycle phase on every frame so the desktop
-          // can lock the Adjust Budget control once draining/shutting_down
-          // (the absolute cap OVERRIDE silently no-ops past drain — #244).
+          // Surface lifecycle phase each frame so the desktop locks Adjust Budget once
+          // draining/shutting_down (absolute cap OVERRIDE silently no-ops past drain — #244).
           onSessionStateChange?.(msg.session_state);
           break;
         case "budget_update":
-          // Budget-countdown heartbeat: refresh only the budget bar. Routed
-          // nowhere near the office StateManager's agent handling, so the
-          // sprites never re-process or jitter on these frequent frames.
+          // Budget heartbeat: refresh only the budget bar — kept away from the
+          // StateManager's agent handling so sprites don't jitter on these frequent frames.
           notifyPlaysPanelBudget(msg);
           break;
         case "play_event":
@@ -230,9 +217,8 @@ export function Dashboard({
           notifyEventDrawerEvent(msg);
           notifySidePanelPlayEvent(msg);
           notifyPlaysPanelEvent(msg);
-          // Dismiss the desktop's session-starting overlay on the
-          // first instantiate_agent dispatch — by then the user is
-          // looking at a populated office, not an empty floor.
+          // Dismiss session-starting overlay on first instantiate_agent dispatch
+          // (office is populated by then).
           if (
             !firstAgentFiredRef.current &&
             msg.play_type === "instantiate_agent" &&
@@ -269,8 +255,7 @@ export function Dashboard({
           });
           break;
         case "session_paused":
-          // Render the drain banner with a "PAUSED" label so the user
-          // can see the orchestrator is paused (vs. ended/drained).
+          // Drain banner with PAUSED label (distinct from ended/drained).
           setDrainState({
             visible: true,
             reason: `paused: ${msg.reason ?? "unknown"}`,
@@ -282,14 +267,12 @@ export function Dashboard({
           setDrainState((prev) => ({ ...prev, connectionLost: prev.visible }));
           break;
         case "event_history_replay":
-          // Replay broadcast on reconnect — feed the cached play events
-          // into the agent-stats accumulator so per-agent counters
-          // recover their history instead of starting from zero.
+          // Reconnect replay — feed cached play events into agent-stats so per-agent
+          // counters recover instead of resetting to zero.
           notifyAgentPlayStatsReplay(msg.events ?? []);
           break;
         case "error":
-          // Errors bypass the DEV/?debug=1 gate — production bugs were going
-          // completely silent before. dashboardLogger.error handles surfacing.
+          // Errors bypass the DEV/?debug=1 gate — production bugs were going silent.
           dashboardLogger.error("server", "received error frame", { msg });
           break;
         case "auth_token":
@@ -330,14 +313,12 @@ export function Dashboard({
       ? "reconnecting…"
       : "offline";
 
-  // Surface the connection target so a Tauri WebSocket policy block
-  // (the most likely cause of a stuck "connecting…") is diagnosable
-  // without opening devtools.
+  // Surface the connection target so a Tauri WebSocket policy block (likely cause
+  // of a stuck "connecting…") is diagnosable without devtools.
   const connectionTitle = wsUrl ? `WebSocket: ${wsUrl}` : "no WebSocket URL";
 
-  // Mirror the imperative kanban-active / stats-active body classes the
-  // existing CSS keys off of. Without these, the kanban + stats stages
-  // wouldn't slide on top of the canvas.
+  // Mirror the kanban-active / stats-active body classes the CSS keys off of;
+  // without them the kanban + stats stages won't slide over the canvas.
   useEffect(() => {
     const body = document.body;
     body.classList.toggle("kanban-active", viewMode === "kanban");
@@ -350,11 +331,8 @@ export function Dashboard({
     };
   }, [viewMode]);
 
-  // Push insets to the kanban / stats stages so their columns slide
-  // inside the surrounding HUD panels instead of overlapping them.
-  // bootstrapDashboard.ts did the same via updateKanbanInsets /
-  // updateStatsInsets — without it the kanban board paints under the
-  // event drawer (left) and agents panel (right).
+  // Push insets so the kanban / stats columns slide inside the HUD panels instead
+  // of painting under the event drawer (left) and agents panel (right).
   useEffect(() => {
     if (viewMode === "office") return;
 

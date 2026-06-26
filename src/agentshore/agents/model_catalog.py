@@ -27,10 +27,9 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-opus-4-5",
         "claude-opus-4-7",
         "claude-opus-4-8",
-        # claude-fable-5 is intentionally omitted: the claude CLI reports it as
-        # currently unavailable (gated behind fable-mythos-access), so offering
-        # it would only yield INVALID_MODEL dispatch failures. Re-add when it is
-        # generally available.
+        # claude-fable-5 omitted: claude CLI reports it unavailable (gated behind
+        # fable-mythos-access) so offering it only yields INVALID_MODEL failures.
+        # Re-add when GA.
     ],
     "codex": [
         # ChatGPT-account-compatible line (also works with API-key auth).
@@ -44,12 +43,9 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "grok-build",
     ],
     "antigravity": [
-        # Antigravity (binary ``agy``) exposes models by display name; the
-        # reasoning effort is baked into the name, so there is no separate effort
-        # flag. This list mirrors ``agy models`` (validated against agy 1.0.10) —
-        # both Google (Gemini) and non-Google (Claude, GPT-OSS) backends. There
-        # is no httpx live-fetch branch; the canonical source is the ``agy
-        # models`` subcommand, kept in sync here by hand.
+        # agy exposes models by display name with reasoning effort baked in (no
+        # separate effort flag). Mirrors ``agy models`` (validated agy 1.0.10);
+        # no live-fetch branch — kept in sync by hand.
         "Gemini 3.5 Flash (Low)",
         "Gemini 3.5 Flash (Medium)",
         "Gemini 3.5 Flash (High)",

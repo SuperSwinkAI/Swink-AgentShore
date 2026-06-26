@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"verify: {args.app} does not exist", file=sys.stderr)
             return 1
         problems = verify_macos(args.app, root, require_signature=args.require_signature)
-    else:  # windows verification is landed with the Windows spine port
+    else:  # windows verification not yet ported
         print("verify: --target windows not yet implemented", file=sys.stderr)
         return 2
 

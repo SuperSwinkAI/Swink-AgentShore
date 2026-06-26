@@ -38,12 +38,9 @@ struct UiState {
     theme: String,
     last_selected_tab: String,
     window: Option<WindowState>,
-    // First-run welcome carousel. `#[serde(default)]` is load-bearing: an
-    // existing `ui-state.json` predates this field, and without the default
-    // `read_ui_state`'s `from_value(..).unwrap_or_default()` would fail to
-    // deserialize and silently reset theme / tab / window. Defaulting to
-    // `false` means existing users see the carousel once on the release that
-    // ships it (absent flag == not seen).
+    // `#[serde(default)]` is load-bearing: a pre-existing `ui-state.json` lacks
+    // this field, and without the default the whole struct would fail to
+    // deserialize and silently reset theme/tab/window. `false` == carousel unseen.
     #[serde(default)]
     onboarding_completed: bool,
 }
@@ -216,12 +213,10 @@ fn with_supervisor<R>(
     app: &AppHandle,
     f: impl FnOnce(&sidecar::SidecarSupervisor) -> R,
 ) -> Result<R, String> {
-    // Clone the Arc out under a short-lived lock, then run `f` OUTSIDE the
-    // lock. `f` is typically a blocking JSON-RPC call that can run for
-    // minutes (session.start) to hours (session.stop drain); holding the
-    // holder lock for that duration blockaded shutdown_sidecar_and_agents'
-    // lock acquisition on window close, so the Tauri run loop never returned
-    // and the app lingered headless with the orchestrator still running (#155).
+    // Clone the Arc out under a short-lived lock, then run `f` OUTSIDE it. `f` is
+    // a blocking RPC that can run minutes (session.start) to hours (session.stop
+    // drain); holding the lock that long blockaded shutdown on window close and
+    // left the app running headless (#155).
     let supervisor = {
         let state = app.state::<SidecarHolderState>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -243,24 +238,19 @@ async fn jsonrpc_call(
     params: Option<Value>,
 ) -> Result<Value, String> {
     let method_for_hook = method.clone();
-    // Run the (blocking) supervisor call OFF the main thread. `jsonrpc_call`
-    // used to be a synchronous command, and Tauri runs sync commands on the
-    // main UI thread — so a long RPC (session.start can take many seconds to
-    // minutes for the PPO/beads/bridge bringup) froze the window ("not
-    // responding") and stalled $/progress rendering. spawn_blocking keeps the
-    // event loop pumping so the UI stays live and the startup checklist updates.
+    // Run the blocking supervisor call OFF the main thread. Tauri runs sync
+    // commands on the UI thread, so a long RPC (session.start bringup) froze the
+    // window and stalled $/progress; spawn_blocking keeps the event loop pumping.
     let app_for_call = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         with_supervisor(&app_for_call, |sup| sup.call(method, params))
     })
     .await
     .map_err(|e| format!("sidecar call task failed: {e}"))??;
-    // desktop-bzr2: hold an NSProcessInfo activity assertion while a
-    // AgentShore session is alive so App Nap can't throttle the Tauri UI's
-    // event loop while the window is backgrounded. Acquire on
-    // successful session.start, release on session.stop. session.completed
-    // (natural exit) lands as a notification and is handled in
-    // sidecar::handle_sidecar_notification.
+    // desktop-bzr2: hold an NSProcessInfo activity assertion while a session is
+    // alive so App Nap can't throttle the backgrounded UI. Acquire on
+    // session.start, release on session.stop; natural exit (session.completed) is
+    // released in sidecar's notification handler.
     if result.is_ok() {
         let holder = app.state::<activity::ActivityHolder>();
         match method_for_hook.as_str() {
@@ -361,10 +351,8 @@ fn collect_diagnostics(version: &str) -> Diagnostics {
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    // Full restart of the entire app — the simplest implementation that
-    // reliably re-spawns the sidecar and re-runs the handshake. A future
-    // refinement could in-place respawn just the supervisor's child
-    // process without tearing down the WebView; that's out of scope here.
+    // Full app restart — the simplest way to reliably re-spawn the sidecar and
+    // re-run the handshake (in-place child respawn is out of scope).
     app.restart()
 }
 
@@ -488,10 +476,8 @@ fn shutdown_sidecar_and_agents(app_handle: &AppHandle) {
         let _ = sup.kill_all_agents();
         sup.kill_sidecar();
     }
-    // desktop-bzr2: release the App Nap activity assertion if a session was
-    // still running at quit time. Without this the assertion can linger in
-    // pmset for a fraction of a second past app exit; belt-and-suspenders for
-    // the session.completed path.
+    // desktop-bzr2: release the App Nap assertion if a session was still running
+    // at quit time, so it can't linger in pmset past app exit.
     let activity_state: tauri::State<'_, activity::ActivityHolder> = app_handle.state();
     activity_state.release();
 }
@@ -625,12 +611,10 @@ fn resolve_bundled_sidecar_path(command: &Path) -> std::io::Result<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_default();
 
-    // Tauri's bundler places `externalBin` entries alongside the main
-    // executable on every platform — on macOS that's Contents/MacOS/,
-    // not Contents/Resources/. Earlier macOS arm of this lookup pointed
-    // at ../Resources/agentshore-bd which doesn't exist, so the Python
-    // sidecar logged `agentshore_bd_bin_invalid` and bd subcommands silently
-    // fell through to whatever bd was on PATH (or nothing).
+    // Tauri's bundler places `externalBin` alongside the main executable on
+    // every platform — on macOS that's Contents/MacOS/, not Contents/Resources/.
+    // The old ../Resources/ lookup didn't exist, so bd subcommands silently fell
+    // through to whatever bd was on PATH.
     let base_dir = exe_dir;
 
     let mut command_path = base_dir.join(command);

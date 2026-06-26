@@ -35,11 +35,6 @@ def _make(
     )
 
 
-# ---------------------------------------------------------------------------
-# load / save_atomic roundtrip
-# ---------------------------------------------------------------------------
-
-
 def test_load_save_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "learnings.json"
     entries = [_make("use typed params", confidence=0.8), _make("always validate scope", 0.6)]
@@ -77,8 +72,7 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
     stop = threading.Event()
 
     def reader() -> None:
-        # Loop until the writer signals it has finished its writes. The first
-        # successful read flips ``started_reading`` so the writer knows the
+        # First successful read flips started_reading so the writer knows a
         # reader is actively contending for the file.
         while not stop.is_set():
             try:
@@ -86,10 +80,8 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
                 json.loads(content)
                 results.append(True)
             except OSError:
-                # Windows can report a transient sharing violation while a
-                # concurrent os.replace is in progress. That is not a partial
-                # JSON read, and the next read should observe either the old
-                # file or the new complete file.
+                # Windows transient sharing violation during os.replace — not a
+                # partial read; next read sees the old or new complete file.
                 results.append(True)
             except Exception:
                 results.append(False)
@@ -97,8 +89,7 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
-    # Wait for the reader to make at least one pass before we start writing,
-    # guaranteeing concurrency without relying on sleeps.
+    # Ensure the reader makes a pass before writing — concurrency without sleeps.
     assert started_reading.wait(timeout=5), "reader thread never started"
     for i in range(20):
         save_atomic(path, [_make(f"entry-{i}", confidence=i * 0.05)])
@@ -107,11 +98,6 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
     assert not t.is_alive(), "reader thread did not exit"
     assert results, "reader recorded no observations"
     assert all(results), "reader saw a corrupt partial file"
-
-
-# ---------------------------------------------------------------------------
-# prune
-# ---------------------------------------------------------------------------
 
 
 def test_prune_removes_below_threshold() -> None:
@@ -123,11 +109,6 @@ def test_prune_removes_below_threshold() -> None:
 
 def test_prune_empty_list() -> None:
     assert prune([], min_confidence=0.3) == []
-
-
-# ---------------------------------------------------------------------------
-# decay
-# ---------------------------------------------------------------------------
 
 
 def test_decay_halves_stale_entries() -> None:
@@ -146,11 +127,6 @@ def test_decay_does_not_go_below_zero() -> None:
     entries = [_make("very_stale", confidence=0.1, sessions_since_use=10)]
     result = decay(entries, factor=0.5, threshold_sessions=5)
     assert result[0].confidence >= 0.0
-
-
-# ---------------------------------------------------------------------------
-# reinforce
-# ---------------------------------------------------------------------------
 
 
 def test_reinforce_bumps_matching_entry() -> None:
@@ -182,11 +158,6 @@ def test_reinforce_leaves_non_matching_unchanged() -> None:
     assert result[0].last_reinforced_play_id is None
 
 
-# ---------------------------------------------------------------------------
-# top_k
-# ---------------------------------------------------------------------------
-
-
 def test_top_k_returns_highest_confidence() -> None:
     entries = [_make("a", 0.3), _make("b", 0.9), _make("c", 0.6), _make("d", 0.1)]
     result = top_k(entries, k=2)
@@ -204,11 +175,6 @@ def test_top_k_empty_list() -> None:
     assert top_k([], k=5) == []
 
 
-# ---------------------------------------------------------------------------
-# Phase 5 readiness smoke
-# ---------------------------------------------------------------------------
-
-
 def test_import_smoke() -> None:
     from agentshore.learnings import Learning, load, save_atomic, top_k
 
@@ -216,11 +182,6 @@ def test_import_smoke() -> None:
     assert callable(save_atomic)
     assert callable(top_k)
     assert Learning.__dataclass_fields__  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# scope field — A3
-# ---------------------------------------------------------------------------
 
 
 def test_scope_default_is_project() -> None:
@@ -253,7 +214,6 @@ def test_scope_defaults_when_absent_from_json(tmp_path: Path) -> None:
     import json
 
     path = tmp_path / "learnings.json"
-    # Write JSON that has no 'scope' key.
     path.write_text(
         json.dumps(
             [
@@ -273,11 +233,6 @@ def test_scope_defaults_when_absent_from_json(tmp_path: Path) -> None:
     loaded = load(path)
     assert len(loaded) == 1
     assert loaded[0].scope == "project"
-
-
-# ---------------------------------------------------------------------------
-# Global learnings merge logic — A4
-# ---------------------------------------------------------------------------
 
 
 def test_global_entries_added_when_not_in_project(tmp_path: Path) -> None:
@@ -333,14 +288,12 @@ def test_project_entry_wins_on_id_collision(tmp_path: Path) -> None:
     )
     project_entries = [project_entry]
 
-    # Simulate merge logic.
     global_entries = load(global_path)
     project_ids = {e.id for e in project_entries}
     for ge in global_entries:
         if getattr(ge, "scope", "project") == "global" and ge.id not in project_ids:
             project_entries.append(ge)
 
-    # Only one entry with this id, and it's the project one.
     matched = [e for e in project_entries if e.id == shared_id]
     assert len(matched) == 1
     assert matched[0].pattern == "project version"
@@ -362,7 +315,6 @@ def test_non_global_entries_excluded_from_merge(tmp_path: Path) -> None:
 
     project_entries: list[Learning] = []
 
-    # Simulate merge logic.
     global_entries = load(global_path)
     project_ids = {e.id for e in project_entries}
     for ge in global_entries:
@@ -370,11 +322,6 @@ def test_non_global_entries_excluded_from_merge(tmp_path: Path) -> None:
             project_entries.append(ge)
 
     assert len(project_entries) == 0, "non-global entry should not be merged"
-
-
-# ---------------------------------------------------------------------------
-# category field — #486
-# ---------------------------------------------------------------------------
 
 
 def test_category_default_is_general() -> None:
@@ -460,11 +407,6 @@ def test_reinforce_preserves_category() -> None:
     assert result[0].category == "testing"
 
 
-# ---------------------------------------------------------------------------
-# consolidate — near-duplicate merge (Tier-1)
-# ---------------------------------------------------------------------------
-
-
 def _make_full(
     pattern: str,
     *,
@@ -495,7 +437,7 @@ def test_consolidate_merges_near_duplicates() -> None:
     ]
     result = consolidate(entries, overlap_threshold=0.8)
     assert len(result) == 1
-    # Representative is the highest-confidence member's text, confidence = max.
+    # Representative = highest-confidence member's text; confidence = max.
     assert result[0].pattern == "always run the tests before opening PR"
     assert result[0].confidence == pytest.approx(0.8)
 
@@ -558,11 +500,6 @@ def test_consolidate_disabled_when_threshold_non_positive() -> None:
         _make_full("always run the tests before opening PR"),
     ]
     assert len(consolidate(entries, overlap_threshold=0.0)) == 2
-
-
-# ---------------------------------------------------------------------------
-# fold_learnings — shared deterministic metadata fold
-# ---------------------------------------------------------------------------
 
 
 def test_fold_learnings_folds_metadata_with_chosen_identity() -> None:

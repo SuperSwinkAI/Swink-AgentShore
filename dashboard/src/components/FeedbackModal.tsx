@@ -1,18 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 
-// React port of `dashboard/src/hud/feedbackModal.ts`.
-//
-// The imperative version owns three things:
-//   1. visible/hidden state + reason text (pushed by show/hideFeedbackModal),
-//   2. internal "budget input vs. main buttons" toggle,
-//   3. side-effects on button click (send WS command + clearFeedbackPending +
-//      hide).
-//
-// In this React port, (1) is driven by module-level `notify*()` functions
-// matching TopBarHud's pattern, (2) is local component state, and (3) is
-// surfaced as callbacks via component props so the host (bootstrapDashboard
-// or the desktop shell) wires them to its DashboardTransport +
-// AgentShoreStateManager.
+// React port of `dashboard/src/hud/feedbackModal.ts`: visibility/reason via
+// module-level notify*() (TopBarHud's pattern), the budget-vs-buttons sub-mode
+// as local state, and button side-effects surfaced as props for the host
+// (bootstrapDashboard or desktop shell) to wire to its transport + state.
 
 const REASON_MESSAGES: Record<string, string> = {
   budget_exhausted: "Budget exhausted. No remaining funds.",
@@ -22,12 +13,10 @@ const REASON_MESSAGES: Record<string, string> = {
   stagnation: "Stagnation detected. No alignment progress recently.",
 };
 
-// Automated-escalation reasons whose modal auto-stops the session if left
-// unanswered (#9). Mirrors the engine-side backstop
-// (agentshore.core.mixins.lifecycle._AUTO_STOP_PAUSE_REASONS): an unanswered
-// loop-detection (or stagnation/budget) prompt would otherwise wedge the loop —
-// observed wedging ~8h while the user was AFK. Explicit user/ipc pauses are not
-// in this set, so a deliberate operator pause is never auto-stopped.
+// Reasons whose unanswered modal auto-stops the session (#9). Mirrors engine
+// backstop (lifecycle._AUTO_STOP_PAUSE_REASONS): an unanswered prompt would
+// wedge the loop (observed ~8h AFK). Explicit user/ipc pauses are excluded, so
+// a deliberate operator pause is never auto-stopped.
 export const AUTO_STOP_REASONS: ReadonlySet<string> = new Set([
   "loop_detected",
   "stagnation",
@@ -113,9 +102,7 @@ export function FeedbackModal({
     onStopRef.current = onStop;
   }, [onStop]);
 
-  // Reset the inner sub-modes whenever the modal is dismissed or a new
-  // reason is shown, matching the imperative version's hideBudgetInput()
-  // calls inside show/hide.
+  // Reset inner sub-modes when the modal is dismissed or a new reason shown.
   useEffect(() => {
     setBudgetMode(false);
     setBudgetValue("");
@@ -127,11 +114,9 @@ export function FeedbackModal({
   }, [budgetMode]);
 
   // Unanswered-prompt auto-stop countdown (#9). Runs only for automated
-  // escalations (loop_detected/stagnation/budget) and only while the main
-  // buttons are showing — entering the budget sub-flow counts as a response and
-  // suspends the countdown. On expiry it triggers the same drain stop as the
-  // Stop button. This mirrors the engine backstop so the user sees a visible
-  // timer; whichever fires first cleanly drains the session.
+  // escalations and only while the main buttons show — the budget sub-flow
+  // counts as a response and suspends it. On expiry it drains like Stop,
+  // mirroring the engine backstop; whichever fires first drains cleanly.
   useEffect(() => {
     if (!visible || budgetMode || !shouldAutoStop(reason) || autoStopSeconds <= 0) {
       setSecondsLeft(null);

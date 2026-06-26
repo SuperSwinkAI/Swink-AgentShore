@@ -29,9 +29,7 @@ def _make_orch(feedback: FeedbackConfig | None = None) -> Any:
 
     orch = make_test_orchestrator(Path("."), RuntimeConfig(feedback=feedback or FeedbackConfig()))
     orch._session_id = "test-session"
-    # begin_drain / stop are driven by the watchdog (via the DrainController);
-    # stub them so the unit test observes the calls without running the full
-    # teardown body.
+    # Stub drain (watchdog-driven) so the test observes calls without real teardown.
     orch._drain = MagicMock(name="drain")
     orch._drain.begin_drain = AsyncMock(name="begin_drain")
     orch._drain.stop = AsyncMock(name="stop")
