@@ -29,7 +29,6 @@ from agentshore.reports.types import (
     FailurePlayEntry,
     IssueInflationData,
     IssueThroughputData,
-    LearningsDiffData,
     OverviewData,
     PlayLogColumnEntry,
     PlayLogRowEntry,
@@ -52,7 +51,6 @@ if TYPE_CHECKING:
         PlayRecord,
         ReviewFeedbackPatternRecord,
         ScopeDriftRecord,
-        SessionLearningRecord,
         SessionRecord,
         TrajectorySnapshotRecord,
     )
@@ -696,19 +694,6 @@ def compute_play_distribution(plays: list[PlayRecord]) -> dict[str, int]:
     return dist
 
 
-def compute_learnings_diff(
-    learnings_a: Sequence[SessionLearningRecord],
-    learnings_b: Sequence[SessionLearningRecord],
-) -> LearningsDiffData:
-    patterns_a = {lr.pattern for lr in learnings_a}
-    patterns_b = {lr.pattern for lr in learnings_b}
-    return LearningsDiffData(
-        added=sorted(patterns_b - patterns_a),
-        removed=sorted(patterns_a - patterns_b),
-        shared=sorted(patterns_a & patterns_b),
-    )
-
-
 def compute_alignment_trajectory(plays: list[PlayRecord]) -> list[AlignmentTrajectoryEntry]:
     trajectory: list[AlignmentTrajectoryEntry] = []
     running = 0.0
@@ -803,7 +788,7 @@ def compute_trajectory_analysis(
     )
 
 
-def compute_knowledge(learnings: Sequence[SessionLearningRecord]) -> int:
+def compute_knowledge(learnings: Sequence[object]) -> int:
     """Count session learnings."""
     return len(learnings)
 

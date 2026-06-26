@@ -283,20 +283,6 @@ CREATE TABLE IF NOT EXISTS human_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_session ON human_feedback(session_id);
 
-CREATE TABLE IF NOT EXISTS session_learnings (
-    learning_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
-    pattern             TEXT NOT NULL,
-    category            TEXT NOT NULL,
-    source_play_id      INTEGER REFERENCES plays(play_id),
-    confidence          REAL NOT NULL DEFAULT 0.5,
-    reinforcement_count INTEGER NOT NULL DEFAULT 1,
-    created_at          TEXT NOT NULL,
-    last_reinforced_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_learnings_session ON session_learnings(session_id);
-CREATE INDEX IF NOT EXISTS idx_learnings_category ON session_learnings(category);
-
 CREATE TABLE IF NOT EXISTS session_archives (
     archive_id      TEXT PRIMARY KEY,
     session_id      TEXT NOT NULL REFERENCES sessions(session_id),
@@ -361,4 +347,4 @@ VALUES ('schema_namespace', 'agentshore_dev_v1');
 
 -- Current schema version for the agentshore_dev_v1 generation.
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (4, datetime('now'));
+VALUES (5, datetime('now'));

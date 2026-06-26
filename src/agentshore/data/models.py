@@ -212,21 +212,6 @@ class HumanFeedbackRecord:
 
 
 @dataclass(slots=True)
-class SessionLearningRecord:
-    """Row in the ``session_learnings`` table."""
-
-    session_id: str
-    pattern: str
-    category: str
-    created_at: str
-    last_reinforced_at: str
-    learning_id: int | None = None
-    source_play_id: int | None = None
-    confidence: float = 0.5
-    reinforcement_count: int = 1
-
-
-@dataclass(slots=True)
 class TrajectorySnapshotRecord:
     """Row in the ``trajectory_snapshots`` table."""
 

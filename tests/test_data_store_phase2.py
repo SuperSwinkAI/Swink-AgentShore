@@ -1,6 +1,6 @@
 """Tests for Phase-2 DataStore extensions.
 
-Covers: ScopeDriftRecord, SessionLearningRecord,
+Covers: ScopeDriftRecord,
 TrajectorySnapshotRecord, ReviewFeedbackPatternRecord, list_open_pull_requests,
 and the record_play -> play_id return value.
 """
@@ -20,7 +20,6 @@ from agentshore.data import (
 from agentshore.data.store import (
     HumanFeedbackRecord,
     ScopeDriftRecord,
-    SessionLearningRecord,
     TrajectorySnapshotRecord,
 )
 
@@ -168,66 +167,6 @@ async def test_reset_session_scoped_tables_clears_human_feedback(store):
 
     await store.reset_session_scoped_tables()
     assert await store.count_human_feedback(sid) == 0
-
-
-# ---------------------------------------------------------------------------
-# session_learnings
-# ---------------------------------------------------------------------------
-
-
-async def test_record_learning_returns_id_and_lists_with_confidence_filter(store):
-    sid, play_id = await _seed(store)
-    now = "2026-01-01T00:00:00"
-    lid = await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="Always add tests for edge cases",
-            category="testing",
-            source_play_id=play_id,
-            confidence=0.9,
-            created_at=now,
-            last_reinforced_at=now,
-        )
-    )
-    assert isinstance(lid, int)
-
-    # below threshold — not returned
-    await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="Low confidence pattern",
-            category="testing",
-            confidence=0.3,
-            created_at=now,
-            last_reinforced_at=now,
-        )
-    )
-
-    results = await store.list_learnings(sid, min_confidence=0.5)
-    assert len(results) == 1
-    assert results[0].learning_id == lid
-    assert results[0].pattern == "Always add tests for edge cases"
-
-
-async def test_reinforce_learning_increments_count_and_updates_timestamp(store):
-    sid, play_id = await _seed(store)
-    now = "2026-01-01T00:00:00"
-    lid = await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="pattern A",
-            category="general",
-            created_at=now,
-            last_reinforced_at=now,
-            reinforcement_count=1,
-        )
-    )
-    await store.reinforce_learning(lid)
-
-    results = await store.list_learnings(sid)
-    assert len(results) == 1
-    assert results[0].reinforcement_count == 2
-    assert results[0].last_reinforced_at != now
 
 
 # ---------------------------------------------------------------------------

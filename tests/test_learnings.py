@@ -155,10 +155,18 @@ def test_decay_does_not_go_below_zero() -> None:
 
 def test_reinforce_bumps_matching_entry() -> None:
     entries = [_make("issue_pickup", confidence=0.5)]
-    result = reinforce(entries, pattern="issue_pickup area/backend", source_play_id=7)
+    result = reinforce(entries, pattern="issue_pickup", source_play_id=7)
     assert result[0].confidence == pytest.approx(0.6)
     assert result[0].sessions_since_use == 0
     assert result[0].last_reinforced_play_id == 7
+
+
+def test_reinforce_requires_exact_match() -> None:
+    """A stored pattern is only reinforced on an exact match, not a substring."""
+    entries = [_make("issue_pickup", confidence=0.5)]
+    result = reinforce(entries, pattern="issue_pickup area/backend", source_play_id=7)
+    assert result[0].confidence == pytest.approx(0.5)
+    assert result[0].last_reinforced_play_id is None
 
 
 def test_reinforce_caps_at_1_0() -> None:
@@ -448,5 +456,105 @@ def test_reinforce_preserves_category() -> None:
             category="testing",
         )
     ]
-    result = reinforce(entries, pattern="validate inputs carefully", source_play_id=9)
+    result = reinforce(entries, pattern="validate inputs", source_play_id=9)
     assert result[0].category == "testing"
+
+
+# ---------------------------------------------------------------------------
+# consolidate — near-duplicate merge (Tier-1)
+# ---------------------------------------------------------------------------
+
+
+def _make_full(
+    pattern: str,
+    *,
+    confidence: float = 0.5,
+    sessions_since_use: int = 0,
+    last_reinforced_play_id: int | None = None,
+    created_at: str = "2025-01-01T00:00:00+00:00",
+    category: str = "general",
+) -> Learning:
+    return Learning(
+        id=str(uuid.uuid4()),
+        pattern=pattern,
+        confidence=confidence,
+        sessions_since_use=sessions_since_use,
+        source_play_id=None,
+        last_reinforced_play_id=last_reinforced_play_id,
+        created_at=created_at,
+        category=category,
+    )
+
+
+def test_consolidate_merges_near_duplicates() -> None:
+    from agentshore.learnings import consolidate
+
+    entries = [
+        _make_full("always run the tests before opening a PR", confidence=0.6),
+        _make_full("always run the tests before opening PR", confidence=0.8),
+    ]
+    result = consolidate(entries, overlap_threshold=0.8)
+    assert len(result) == 1
+    # Representative is the highest-confidence member's text, confidence = max.
+    assert result[0].pattern == "always run the tests before opening PR"
+    assert result[0].confidence == pytest.approx(0.8)
+
+
+def test_consolidate_folds_recency_and_reinforcement() -> None:
+    from agentshore.learnings import consolidate
+
+    entries = [
+        _make_full(
+            "use typed config params everywhere",
+            confidence=0.5,
+            sessions_since_use=4,
+            last_reinforced_play_id=3,
+            created_at="2025-02-01T00:00:00+00:00",
+        ),
+        _make_full(
+            "use typed config params always",
+            confidence=0.7,
+            sessions_since_use=1,
+            last_reinforced_play_id=9,
+            created_at="2025-01-01T00:00:00+00:00",
+        ),
+    ]
+    result = consolidate(entries, overlap_threshold=0.6)
+    assert len(result) == 1
+    merged = result[0]
+    assert merged.confidence == pytest.approx(0.7)
+    assert merged.sessions_since_use == 1  # min
+    assert merged.last_reinforced_play_id == 9  # most recent
+    assert merged.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+
+
+def test_consolidate_leaves_distinct_patterns_untouched() -> None:
+    from agentshore.learnings import consolidate
+
+    entries = [
+        _make_full("validate scope after every play"),
+        _make_full("never fork the upstream repository"),
+    ]
+    result = consolidate(entries, overlap_threshold=0.8)
+    assert len(result) == 2
+
+
+def test_consolidate_does_not_merge_across_categories() -> None:
+    from agentshore.learnings import consolidate
+
+    entries = [
+        _make_full("always validate the input data", category="security"),
+        _make_full("always validate the input data", category="testing"),
+    ]
+    result = consolidate(entries, overlap_threshold=0.8)
+    assert len(result) == 2
+
+
+def test_consolidate_disabled_when_threshold_non_positive() -> None:
+    from agentshore.learnings import consolidate
+
+    entries = [
+        _make_full("always run the tests before opening a PR"),
+        _make_full("always run the tests before opening PR"),
+    ]
+    assert len(consolidate(entries, overlap_threshold=0.0)) == 2

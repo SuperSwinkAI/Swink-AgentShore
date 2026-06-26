@@ -157,7 +157,7 @@ async def _phase_init_executor(
 
 
 async def _phase_init_metrics(
-    *, orch: Orchestrator, cfg: RuntimeConfig, store: DataStore, sid: str
+    *, orch: Orchestrator, cfg: RuntimeConfig, store: DataStore, sid: str, repo_root: Path
 ) -> None:
     """Wire the RL ``MetricsEngine`` and policy/config-version metadata."""
     async with _step("init_metrics"):
@@ -166,6 +166,8 @@ async def _phase_init_metrics(
         orch._metrics = MetricsEngine(
             store=store,
             session_id=sid,
+            repo_root=repo_root,
+            learnings_file=cfg.learnings.file,
             stagnation_warn_after=cfg.rl.stagnation.warn_after,
             velocity_provider=orch._velocity.compute_rolling_velocity,
             executor_skip_rate_provider=orch._velocity.executor_skip_rate_recent_50,
@@ -983,7 +985,7 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
             return
         try:
             from agentshore.learnings import Learning as _Learning
-            from agentshore.learnings import decay, load, prune, save_atomic
+            from agentshore.learnings import consolidate, decay, load, prune, save_atomic
 
             learnings_path = repo_root / cfg.learnings.file
             entries = await asyncio.to_thread(load, learnings_path)
@@ -1004,6 +1006,11 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
             entries = decay(
                 prune(entries, min_confidence=cfg.learnings.min_confidence),
                 threshold_sessions=cfg.learnings.decay_after_sessions,
+            )
+            # Compact near-duplicate prose so the store stays small without
+            # losing distinct insights to the max_entries trim.
+            entries = consolidate(
+                entries, overlap_threshold=cfg.learnings.consolidate_overlap_threshold
             )
             await asyncio.to_thread(save_atomic, learnings_path, entries)
             # Merge global-scope learnings that aren't already present locally

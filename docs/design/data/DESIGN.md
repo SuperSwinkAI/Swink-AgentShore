@@ -42,7 +42,7 @@ The source of truth is `src/agentshore/data/schema.sql`. Pre-existing databases 
 | Concurrency & dispatch | `review_queue`, `work_claims`, `dispatch_replay`, `external_mutations` | PR review queue; idempotent resource claims that prevent duplicate concurrent assignment; replay/idempotency log of the most recent dispatched skill prompt; idempotency + audit log for GitHub and other external writes. |
 | Scope | `scope_drift_log` | Non-blocking scope-drift observations (evidence log, not a gate). |
 | RL & policy | `policy_checkpoints`, `rl_experience`, `trajectory_snapshots` | Checkpoint metadata + avg reward; PPO trajectory rows with behavior-policy metadata and masks; projected alignment/cost/remaining-play estimates. |
-| Learning & feedback | `agent_handoffs`, `human_feedback`, `session_learnings`, `review_feedback_patterns` | Handoff metrics; feedback checkpoints + action taken; learned codebase patterns; recurring code-review feedback patterns. |
+| Learning & feedback | `agent_handoffs`, `human_feedback`, `review_feedback_patterns` | Handoff metrics; feedback checkpoints + action taken; recurring code-review feedback patterns. Learnings are stored in `.agentshore/learnings.json` (JSON store), not in SQLite. |
 | Archives | `session_archives` | Index rows for generated session archives. |
 | Worktrees | `worktrees` | AgentShore-managed git worktree allocation and lifecycle for parallel agent work. |
 

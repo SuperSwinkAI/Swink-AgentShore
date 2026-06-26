@@ -238,7 +238,7 @@ class StateBuilder:
             latest_checkpoint_task = tg.create_task(
                 self._store.load_latest_checkpoint(self._session_id)
             )
-            learnings_count_task = tg.create_task(self._store.count_learnings(self._session_id))
+            learnings_count_task = tg.create_task(self._count_learnings_from_json())
             human_feedback_count_task = tg.create_task(
                 self._store.count_human_feedback(self._session_id)
             )
@@ -291,6 +291,26 @@ class StateBuilder:
             learnings_count=learnings_count,
             human_feedback_count=human_feedback_count,
         )
+
+    async def _count_learnings_from_json(self) -> int:
+        """Count learnings from the JSON store (non-zero when the file has entries).
+
+        Runs the blocking file read via ``asyncio.to_thread`` so it fits
+        naturally inside the ``TaskGroup`` that fans out the other DB reads.
+        Falls back to 0 on any I/O or parse error to preserve the same
+        best-effort semantics the old ``count_learnings`` DB call had.
+        """
+        import json as _json
+
+        from agentshore.learnings import load as _load_learnings
+
+        try:
+            cfg = self._runtime.cfg
+            path = self._repo_root / cfg.learnings.file
+            learnings = await asyncio.to_thread(_load_learnings, path)
+            return len(learnings)
+        except (OSError, _json.JSONDecodeError, KeyError, ValueError, TypeError):
+            return 0
 
     async def safe_get_latest_trajectory(self) -> TrajectorySnapshotRecord | None:
         """Best-effort trajectory fetch; logs and returns ``None`` on failure.

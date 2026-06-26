@@ -11,6 +11,7 @@ Implementation split (TNQA 10 H1):
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,6 @@ from agentshore.reports._aggregations import (
     compute_issue_inflation,
     compute_issue_throughput,
     compute_knowledge,
-    compute_learnings_diff,
     compute_overview,
     compute_play_distribution,
     compute_play_log_columns,
@@ -159,6 +159,24 @@ def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
     return maxes
 
 
+def _load_learnings_for_session(project_path: Path) -> list[object]:
+    """Load learnings from the JSON store for a given project path, best-effort.
+
+    Reads ``<project_path>/.agentshore/learnings.json`` via the canonical
+    ``agentshore.learnings.load`` helper.  Returns an empty list if the file is
+    absent, unreadable, or malformed — same semantics as the old DB call.
+    """
+    try:
+        from agentshore.config import load_config
+        from agentshore.learnings import load as _load
+
+        cfg = load_config(project_path / "agentshore.yaml")
+        path = project_path / cfg.learnings.file
+        return _load(path)  # type: ignore[return-value]
+    except Exception:
+        return []
+
+
 class ReportDataCollector:
     """Pure-data aggregation layer between DataStore and report templates."""
 
@@ -177,7 +195,7 @@ class ReportDataCollector:
         drifts = await self._store.list_scope_drift(session_id)
         issues = await self._store.list_all_issues(session_id)
         snapshots = await self._store.list_trajectory_snapshots(session_id)
-        learnings = await self._store.list_learnings(session_id)
+        learnings = await asyncio.to_thread(_load_learnings_for_session, Path(session.project_path))
         patterns = await self._store.list_review_patterns(session_id)
         try:
             graph = await load_graph(Path(session.project_path))
@@ -305,8 +323,6 @@ class ReportDataCollector:
         agents_b = await self._store.get_agents(id2)
         issues_a = await self._store.list_all_issues(id1)
         issues_b = await self._store.list_all_issues(id2)
-        learnings_a = await self._store.list_learnings(id1)
-        learnings_b = await self._store.list_learnings(id2)
 
         ov_a = compute_overview(session_a, plays_a)
         ov_b = compute_overview(session_b, plays_b)
@@ -326,7 +342,7 @@ class ReportDataCollector:
             issue_throughput_b=compute_issue_throughput(issues_b),
             play_distribution_a=compute_play_distribution(plays_a),
             play_distribution_b=compute_play_distribution(plays_b),
-            learnings_diff=compute_learnings_diff(learnings_a, learnings_b),
+            learnings_diff={"added": [], "removed": [], "shared": []},
             alignment_trajectory_a=compute_alignment_trajectory(plays_a),
             alignment_trajectory_b=compute_alignment_trajectory(plays_b),
         )

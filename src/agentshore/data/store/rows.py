@@ -20,7 +20,6 @@ from agentshore.data.models import (
     ReviewFeedbackPatternRecord,
     ReviewQueueRecord,
     ScopeDriftRecord,
-    SessionLearningRecord,
     SessionRecord,
     TrajectorySnapshotRecord,
     WorkClaimRecord,
@@ -272,20 +271,6 @@ def _row_to_human_feedback(row: aiosqlite.Row) -> HumanFeedbackRecord:
         feedback_text=row["feedback_text"],
         action_taken=row["action_taken"],
         created_at=row["created_at"],
-    )
-
-
-def _row_to_learning(row: aiosqlite.Row) -> SessionLearningRecord:
-    return SessionLearningRecord(
-        learning_id=row["learning_id"],
-        session_id=row["session_id"],
-        pattern=row["pattern"],
-        category=row["category"],
-        source_play_id=row["source_play_id"],
-        confidence=row["confidence"],
-        reinforcement_count=row["reinforcement_count"],
-        created_at=row["created_at"],
-        last_reinforced_at=row["last_reinforced_at"],
     )
 
 

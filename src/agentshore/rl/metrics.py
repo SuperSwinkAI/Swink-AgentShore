@@ -19,14 +19,15 @@ from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from agentshore.data.models import (
         GitHubIssueRecord,
         HandoffRecord,
         PullRequestRecord,
-        SessionLearningRecord,
     )
     from agentshore.data.store import DataStore, PlayRecord
+    from agentshore.learnings import Learning
     from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
@@ -113,7 +114,8 @@ class MetricsEngine:
 
     Usage::
 
-        engine = MetricsEngine(store=store, session_id=sid)
+        engine = MetricsEngine(store=store, session_id=sid, repo_root=repo_root,
+                               learnings_file=cfg.learnings.file)
         ctx = await engine.snapshot(state)
     """
 
@@ -122,12 +124,16 @@ class MetricsEngine:
         *,
         store: DataStore,
         session_id: str,
+        repo_root: Path | None = None,
+        learnings_file: str = ".agentshore/learnings.json",
         stagnation_warn_after: int = 5,
         velocity_provider: Callable[[int], float] | None = None,
         executor_skip_rate_provider: Callable[[], float] | None = None,
     ) -> None:
         self._store = store
         self._session_id = session_id
+        self._repo_root = repo_root
+        self._learnings_file = learnings_file
         self._stagnation_warn_after = stagnation_warn_after
         self._velocity_provider = velocity_provider
         # v0.15 Phase 5: orchestrator-owned rate over the last 50 executor outcomes.
@@ -171,7 +177,15 @@ class MetricsEngine:
             prs_approved = []
 
         try:
-            learnings = await self._store.list_learnings(self._session_id)
+            import asyncio as _asyncio
+
+            from agentshore.learnings import load as _load_learnings
+
+            if self._repo_root is not None:
+                _path = self._repo_root / self._learnings_file
+                learnings: list[Learning] = await _asyncio.to_thread(_load_learnings, _path)
+            else:
+                learnings = []
         except (OSError, ValueError, RuntimeError) as exc:
             _logger.warning(
                 "metrics_query_failed",
@@ -254,7 +268,7 @@ def _build_context(
     history: list[PlayRecord],
     prs_open: Sequence[PullRequestRecord],
     prs_approved: Sequence[PullRequestRecord],
-    learnings: Sequence[SessionLearningRecord],
+    learnings: Sequence[Learning],
     handoffs: Sequence[HandoffRecord] = (),
     rolling_velocity: float = 0.0,
     busy_agent_count: int = 0,

@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import structlog
 
-from agentshore.data.migrations import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4
+from agentshore.data.migrations import (
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+    migrate_v4_to_v5,
+)
 from agentshore.data.store.base import _DataStoreBase, _serialized
 from agentshore.data.store.helpers import _load_schema_sql
 from agentshore.data.store.mixins.agents import _AgentsMixin
@@ -26,7 +31,6 @@ from agentshore.data.store.mixins.branch_activity import _BranchActivityMixin
 from agentshore.data.store.mixins.external_mutations import _ExternalMutationsMixin
 from agentshore.data.store.mixins.feedback import _FeedbackMixin
 from agentshore.data.store.mixins.issues import _IssuesMixin
-from agentshore.data.store.mixins.learnings import _LearningsMixin
 from agentshore.data.store.mixins.plays import _PlaysMixin
 from agentshore.data.store.mixins.pull_requests import _PullRequestsMixin
 from agentshore.data.store.mixins.review_patterns import _ReviewPatternsMixin
@@ -55,7 +59,6 @@ class DataStore(
     _ExternalMutationsMixin,
     _ScopeMixin,
     _FeedbackMixin,
-    _LearningsMixin,
     _TrajectoryMixin,
     _ReviewPatternsMixin,
     _ArchiveMixin,
@@ -171,6 +174,7 @@ class DataStore(
         await migrate_v1_to_v2(self._conn)
         await migrate_v2_to_v3(self._conn)
         await migrate_v3_to_v4(self._conn)
+        await migrate_v4_to_v5(self._conn)
 
     @_serialized
     async def wal_checkpoint(self) -> None:

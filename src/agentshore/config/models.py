@@ -485,6 +485,9 @@ class LearningsConfig:
     decay_after_sessions: int = 5
     inject_into_prompts: bool = True
     max_prompt_entries: int = 20
+    # Jaccard token-overlap at/above which two same-category learnings are
+    # merged during session-start consolidation. 0 disables consolidation.
+    consolidate_overlap_threshold: float = 0.8
 
 
 @dataclass(frozen=True)

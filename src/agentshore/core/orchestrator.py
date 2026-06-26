@@ -166,7 +166,9 @@ class Orchestrator(_OrchestratorBase):
             # Let sleeping plays (take_break) abort promptly once drain begins (#30).
             executor._is_draining = lambda: orch._draining
 
-            await phases._phase_init_metrics(orch=orch, cfg=cfg, store=store, sid=sid)
+            await phases._phase_init_metrics(
+                orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
+            )
             _emit_weights_dir_inventory(orch._weights_dir(), phase="session_start")
             phases._phase_cleanup_stale_weights(repo_root)
             if selector is None:

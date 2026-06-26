@@ -105,14 +105,16 @@ async def test_dedup_same_pattern_twice_yields_one_entry(tmp_path: Path) -> None
     assert patterns.count("validate inputs") == 1
 
 
-async def test_dedup_does_not_overwrite_existing_entry(tmp_path: Path) -> None:
-    """A pre-existing learning with the same pattern must not be duplicated."""
+async def test_reharvest_reinforces_existing_entry(tmp_path: Path) -> None:
+    """Re-emitting an existing pattern reinforces it in place (no duplicate):
+    the id is preserved, confidence is bumped, recency is reset, and the
+    reinforcing play is recorded."""
     path = tmp_path / ".agentshore/learnings.json"
     existing = Learning(
         id="existing-1",
         pattern="pre-existing",
-        confidence=0.9,
-        sessions_since_use=0,
+        confidence=0.7,
+        sessions_since_use=4,
         source_play_id=None,
         last_reinforced_play_id=None,
     )
@@ -121,16 +123,42 @@ async def test_dedup_does_not_overwrite_existing_entry(tmp_path: Path) -> None:
 
     h = _harvester(tmp_path)
     outcome = _outcome(
-        learnings=[{"pattern": "pre-existing", "confidence": 0.5, "category": "general"}]
+        play_id=42,
+        learnings=[{"pattern": "pre-existing", "confidence": 0.5, "category": "general"}],
     )
     await h.update_learnings(outcome, PlayType.CODE_REVIEW)
 
     entries = load(path)
     matched = [e for e in entries if e.pattern == "pre-existing"]
     assert len(matched) == 1
-    # Original id and confidence preserved (not overwritten by the new entry)
+    # Same entry reinforced in place, not duplicated or replaced.
     assert matched[0].id == "existing-1"
-    assert matched[0].confidence == pytest.approx(0.9)
+    assert matched[0].confidence == pytest.approx(0.8)  # 0.7 + 0.1
+    assert matched[0].sessions_since_use == 0
+    assert matched[0].last_reinforced_play_id == 42
+
+
+async def test_reharvest_caps_confidence_at_1_0(tmp_path: Path) -> None:
+    """Reinforcing a near-maxed pattern clamps confidence at 1.0."""
+    path = tmp_path / ".agentshore/learnings.json"
+    existing = Learning(
+        id="existing-1",
+        pattern="near-max",
+        confidence=0.95,
+        sessions_since_use=0,
+        source_play_id=None,
+        last_reinforced_play_id=None,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_atomic(path, [existing])
+
+    h = _harvester(tmp_path)
+    outcome = _outcome(learnings=[{"pattern": "near-max", "confidence": 0.5}])
+    await h.update_learnings(outcome, PlayType.ISSUE_PICKUP)
+
+    entries = load(path)
+    assert len(entries) == 1
+    assert entries[0].confidence <= 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,9 @@ Migration history
   summary is persisted for post-hoc diagnosis of why a play was not selected.
 - v3 -> v4: add ``github_issues.github_author`` so issue pickup can be gated to
   trusted identities (opt-in ``trusted_ids.restrict_issues_to_trusted_authors``).
+- v4 -> v5: drop ``session_learnings`` table (and its indexes). The JSON store
+  at ``.agentshore/learnings.json`` is the single source of truth; the SQLite
+  table was never written in production.
 """
 
 from __future__ import annotations
@@ -76,4 +79,24 @@ async def migrate_v3_to_v4(conn: aiosqlite.Connection) -> None:
         await conn.execute("ALTER TABLE github_issues ADD COLUMN github_author TEXT")
     await conn.execute(
         "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))"
+    )
+
+
+async def migrate_v4_to_v5(conn: aiosqlite.Connection) -> None:
+    """Drop the dead ``session_learnings`` table and its indexes.
+
+    The JSON store at ``.agentshore/learnings.json`` is the single source of
+    truth for learnings; the ``session_learnings`` SQLite table was never
+    written in production (``record_learning`` was only called from tests).
+
+    Idempotent: ``DROP TABLE IF EXISTS`` and ``DROP INDEX IF EXISTS`` are no-ops
+    when the objects do not exist (fresh v5 databases, already-migrated databases).
+    Indexes are normally dropped with the table in SQLite, but explicit drops are
+    included for safety.
+    """
+    await conn.execute("DROP INDEX IF EXISTS idx_learnings_category")
+    await conn.execute("DROP INDEX IF EXISTS idx_learnings_session")
+    await conn.execute("DROP TABLE IF EXISTS session_learnings")
+    await conn.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))"
     )

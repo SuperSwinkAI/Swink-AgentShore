@@ -32,7 +32,6 @@ EXPECTED_TABLES = frozenset(
         "agent_handoffs",
         "trajectory_snapshots",
         "human_feedback",
-        "session_learnings",
         "session_archives",
         "review_feedback_patterns",
         "worktrees",
@@ -59,8 +58,8 @@ async def test_fresh_db_has_agentshore_dev_v1_namespace(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_db_schema_version_is_4(tmp_path) -> None:
-    """schema_version table reflects the current version (4)."""
+async def test_fresh_db_schema_version_is_5(tmp_path) -> None:
+    """schema_version table reflects the current version (5)."""
     db_path = tmp_path / "fresh.db"
     store = DataStore(db_path)
     await store.initialize()
@@ -71,7 +70,7 @@ async def test_fresh_db_schema_version_is_4(tmp_path) -> None:
         await store.close()
 
     assert row is not None
-    assert int(row["v"]) == 4
+    assert int(row["v"]) == 5
 
 
 @pytest.mark.asyncio
@@ -88,7 +87,7 @@ async def test_fresh_db_has_all_expected_tables(tmp_path) -> None:
     finally:
         await store.close()
 
-    assert tables == EXPECTED_TABLES
+    assert tables == EXPECTED_TABLES  # 21 tables (schema version 5)
 
 
 @pytest.mark.asyncio

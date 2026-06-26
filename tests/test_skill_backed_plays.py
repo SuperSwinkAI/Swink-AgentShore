@@ -141,7 +141,6 @@ def _state(
 def _ctx() -> MagicMock:
     ctx = MagicMock()
     ctx.manager.dispatch = AsyncMock()
-    ctx.store.list_learnings = AsyncMock(return_value=[])
     ctx.store.list_pending_reviews = AsyncMock(return_value=[])
     ctx.store.complete_review = AsyncMock()
     ctx.session_id = "sess"

@@ -33,39 +33,28 @@ class LearningsHarvester:
         self._learnings_cfg = learnings_cfg
 
     async def update_learnings(self, outcome: PlayOutcome, play_type: PlayType) -> None:
-        """Reinforce learnings on success; harvest new entries after GROOM_BACKLOG."""
+        """Harvest agent-emitted learnings on success; reinforce on re-harvest.
+
+        Every successful skill-backed play emits a top-level ``learnings`` array
+        (normalized by ``result_parser`` before reaching here). A new pattern is
+        appended; re-emitting an existing exact-match pattern reinforces it in
+        place — bumping confidence and resetting recency — so a repeatedly-useful
+        insight survives session-start decay instead of being silently dropped.
+        """
         from agentshore.learnings import (  # noqa: PLC0415
             Learning,
             load,
-            reinforce,
             save_atomic,
             top_k,
         )
-        from agentshore.state import PlayType as _PlayType  # noqa: PLC0415
 
         learnings_path = self._repo_root / self._learnings_cfg.file
         entries = await asyncio.to_thread(load, learnings_path)
         changed = False
 
-        if outcome.success and outcome.play_id is not None:
-            # Build a reinforcement key from skill_name + play_type + artifact paths
-            artifact_paths = " ".join(
-                str(a.get("path", "")) for a in outcome.artifacts if isinstance(a, dict)
-            )
-            reinforce_key = f"{play_type.value} {artifact_paths}".strip()
-            reinforced = reinforce(entries, reinforce_key, source_play_id=outcome.play_id)
-            if any(
-                r.last_reinforced_play_id != e.last_reinforced_play_id
-                for r, e in zip(reinforced, entries, strict=True)
-            ):
-                entries = reinforced
-                changed = True
-
-        # Harvest learnings carried directly in the outcome (all successful
-        # skill-backed plays emit a top-level ``learnings`` array, normalized
-        # by result_parser before reaching here).
         if outcome.success and outcome.play_id is not None and outcome.learnings:
             import uuid as _uuid  # noqa: PLC0415
+            from dataclasses import replace  # noqa: PLC0415
             from datetime import UTC, datetime  # noqa: PLC0415
 
             for raw_entry in outcome.learnings:
@@ -74,7 +63,17 @@ class LearningsHarvester:
                 pattern = raw_entry.get("pattern", "")
                 if not isinstance(pattern, str) or not pattern:
                     continue
-                if any(e.pattern == pattern for e in entries):
+                existing = next((i for i, e in enumerate(entries) if e.pattern == pattern), None)
+                if existing is not None:
+                    # Re-harvest of a known pattern: reinforce in place.
+                    prior = entries[existing]
+                    entries[existing] = replace(
+                        prior,
+                        confidence=min(1.0, prior.confidence + 0.1),
+                        sessions_since_use=0,
+                        last_reinforced_play_id=outcome.play_id,
+                    )
+                    changed = True
                     continue
                 raw_conf = raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
                 entries.append(
@@ -91,44 +90,6 @@ class LearningsHarvester:
                         category=str(raw_entry.get("category", "general")),
                     )
                 )
-                changed = True
-
-        # Harvest new learnings from GROOM_BACKLOG artifacts
-        if play_type == _PlayType.GROOM_BACKLOG and outcome.success:
-            import uuid as _uuid  # noqa: PLC0415
-            from datetime import UTC, datetime  # noqa: PLC0415
-
-            for artifact in outcome.artifacts:
-                if not isinstance(artifact, dict):
-                    continue
-                if artifact.get("type") != "learnings":
-                    continue
-                raw_learnings = artifact.get("learnings", [])
-                if not isinstance(raw_learnings, list):
-                    continue
-                for raw_entry in raw_learnings:
-                    if not isinstance(raw_entry, dict):
-                        continue
-                    pattern = raw_entry.get("pattern", "")
-                    if not isinstance(pattern, str) or not pattern:
-                        continue
-                    if any(e.pattern == pattern for e in entries):
-                        continue
-                    raw_conf = raw_entry.get("confidence", DEFAULT_LEARNING_CONFIDENCE)
-                    entries.append(
-                        Learning(
-                            id=str(_uuid.uuid4()),
-                            pattern=pattern,
-                            confidence=float(raw_conf)
-                            if isinstance(raw_conf, (int, float))
-                            else DEFAULT_LEARNING_CONFIDENCE,  # noqa: E501
-                            sessions_since_use=0,
-                            source_play_id=outcome.play_id,
-                            last_reinforced_play_id=outcome.play_id,
-                            created_at=datetime.now(UTC).isoformat(),
-                            category=str(raw_entry.get("category", "general")),
-                        )
-                    )
                 changed = True
 
         # Trim to max_entries keeping highest confidence
