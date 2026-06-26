@@ -507,3 +507,76 @@ def test_parse_learnings_non_list_treated_as_empty() -> None:
     output = '{"success": true, "artifacts": [], "learnings": "not a list"}'
     result = parse_skill_result(output)
     assert result.learnings == []
+
+
+# ---------------------------------------------------------------------------
+# learnings_compacted (groom re-distillation, wholesale replace)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_learnings_compacted_normalizes_entries() -> None:
+    """``learnings_compacted`` items normalize to {pattern, category, merged_from};
+    the agent's confidence is ignored, merged_from preserved."""
+    import json as _json
+
+    output = _json.dumps(
+        {
+            "success": True,
+            "artifacts": [],
+            "learnings_compacted": [
+                {
+                    "pattern": "merged insight",
+                    "category": "conventions",
+                    "confidence": 0.99,  # ignored
+                    "merged_from": ["id-a", "id-b"],
+                }
+            ],
+        }
+    )
+    result = parse_skill_result(output)
+    assert len(result.learnings_compacted) == 1
+    entry = result.learnings_compacted[0]
+    assert entry == {
+        "pattern": "merged insight",
+        "category": "conventions",
+        "merged_from": ["id-a", "id-b"],
+    }
+    assert "confidence" not in entry
+
+
+def test_parse_learnings_compacted_defaults_and_drops() -> None:
+    """Missing category defaults to 'general'; non-str merged_from ids and
+    pattern-less / non-dict entries are dropped; merged_from defaults to []."""
+    import json as _json
+
+    output = _json.dumps(
+        {
+            "success": True,
+            "artifacts": [],
+            "learnings_compacted": [
+                "not a dict",
+                {"category": "x"},  # no pattern
+                {"pattern": "", "merged_from": ["a"]},  # empty pattern
+                {"pattern": "keeper", "merged_from": ["ok", 7, None]},
+                {"pattern": "no-merge"},  # merged_from absent
+            ],
+        }
+    )
+    result = parse_skill_result(output)
+    assert len(result.learnings_compacted) == 2
+    assert result.learnings_compacted[0] == {
+        "pattern": "keeper",
+        "category": "general",
+        "merged_from": ["ok"],
+    }
+    assert result.learnings_compacted[1] == {
+        "pattern": "no-merge",
+        "category": "general",
+        "merged_from": [],
+    }
+
+
+def test_parse_learnings_compacted_defaults_to_empty() -> None:
+    """No ``learnings_compacted`` key yields an empty list, not None."""
+    result = parse_skill_result('{"success": true, "artifacts": []}')
+    assert result.learnings_compacted == []

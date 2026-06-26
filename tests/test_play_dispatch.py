@@ -270,7 +270,7 @@ async def test_render_skill_prompt_raises_when_template_unavailable(
 
 
 async def test_render_prompt_embedded_skill_adds_context_discipline(tmp_path: Path) -> None:
-    skill_dir = tmp_path / ".codex" / "skills" / "agentshore-code-review"
+    skill_dir = tmp_path / ".agents" / "skills" / "agentshore-code-review"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         """---
@@ -297,9 +297,11 @@ Read `.agentshore/learnings.json` if it exists.
     assert "Read `.agentshore/learnings.json` if it exists." not in result
 
 
-async def test_render_prompt_groom_backlog_uses_standard_discipline(tmp_path: Path) -> None:
-    """agentshore-groom-backlog uses the standard context discipline (not consolidate-specific)."""
-    skill_dir = tmp_path / ".codex" / "skills" / "agentshore-groom-backlog"
+async def test_render_prompt_groom_backlog_allows_full_learnings_read(tmp_path: Path) -> None:
+    """agentshore-groom-backlog gets the re-distillation carve-out: it MAY read the
+    full learnings.json (allowance directive), and its learnings.json read lines are
+    NOT stripped — unlike every other skill."""
+    skill_dir = tmp_path / ".agents" / "skills" / "agentshore-groom-backlog"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         """---
@@ -307,6 +309,8 @@ name: agentshore-groom-backlog
 ---
 
 # agentshore-groom-backlog
+
+Read the full `.agentshore/learnings.json` and re-distill it.
 """,
         encoding="utf-8",
     )
@@ -319,6 +323,11 @@ name: agentshore-groom-backlog
 
     assert "## AgentShore Context Discipline" in result
     assert "Use its `learnings` field" in result
+    # Allowance directive, NOT the prohibition.
+    assert "MAY\nadditionally read the full `.agentshore/learnings.json`" in result
+    assert "do not\nread `.agentshore/learnings.json`" not in result
+    # The skill's own full-store read line survives (strip carve-out for groom).
+    assert "Read the full `.agentshore/learnings.json` and re-distill it." in result
 
 
 # ---------------------------------------------------------------------------

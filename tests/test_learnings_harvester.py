@@ -26,6 +26,7 @@ def _outcome(
     success: bool = True,
     play_id: int | None = 1,
     learnings: list[dict[str, object]] | None = None,
+    learnings_compacted: list[dict[str, object]] | None = None,
     play_type: PlayType = PlayType.ISSUE_PICKUP,
 ) -> PlayOutcome:
     return PlayOutcome(
@@ -40,6 +41,7 @@ def _outcome(
         alignment_delta=0.0,
         play_id=play_id,
         learnings=list(learnings) if learnings else [],
+        learnings_compacted=list(learnings_compacted) if learnings_compacted else [],
     )
 
 
@@ -261,3 +263,168 @@ async def test_malformed_entries_in_outcome_dropped(tmp_path: Path) -> None:
     entries = load(tmp_path / ".agentshore/learnings.json")
     assert len(entries) == 1
     assert entries[0].pattern == "valid-entry"
+
+
+# ---------------------------------------------------------------------------
+# learnings_compacted — groom re-distillation (wholesale replace)
+# ---------------------------------------------------------------------------
+
+
+def _seed(tmp_path: Path, entries: list[Learning]) -> Path:
+    path = tmp_path / ".agentshore/learnings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_atomic(path, entries)
+    return path
+
+
+def _learning(
+    id: str,
+    pattern: str,
+    *,
+    confidence: float = 0.5,
+    sessions_since_use: int = 0,
+    last_reinforced_play_id: int | None = None,
+    created_at: str = "2025-01-01T00:00:00+00:00",
+    category: str = "general",
+) -> Learning:
+    return Learning(
+        id=id,
+        pattern=pattern,
+        confidence=confidence,
+        sessions_since_use=sessions_since_use,
+        source_play_id=None,
+        last_reinforced_play_id=last_reinforced_play_id,
+        created_at=created_at,
+        category=category,
+    )
+
+
+async def test_compacted_replaces_store_and_folds_metadata(tmp_path: Path) -> None:
+    """A compacted entry tagged with merged_from replaces its sources, folding
+    metadata deterministically; un-carried entries are dropped."""
+    path = _seed(
+        tmp_path,
+        [
+            _learning(
+                "a",
+                "run tests before PR",
+                confidence=0.6,
+                sessions_since_use=4,
+                last_reinforced_play_id=3,
+                created_at="2025-02-01T00:00:00+00:00",
+            ),
+            _learning(
+                "b",
+                "always run tests before opening PR",
+                confidence=0.8,
+                sessions_since_use=1,
+                last_reinforced_play_id=9,
+                created_at="2025-01-01T00:00:00+00:00",
+            ),
+            _learning("c", "unrelated obsolete note", confidence=0.7),
+        ],
+    )
+    h = _harvester(tmp_path)
+    outcome = _outcome(
+        play_id=42,
+        learnings_compacted=[
+            {
+                "pattern": "run the tests before opening a PR",
+                "category": "general",
+                "merged_from": ["a", "b"],
+            }
+        ],
+    )
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(path)
+    assert len(entries) == 1  # c was dropped (not carried forward)
+    merged = entries[0]
+    assert merged.pattern == "run the tests before opening a PR"
+    assert merged.id == "a"  # first source id preserved
+    assert merged.confidence == pytest.approx(0.8)  # max
+    assert merged.sessions_since_use == 1  # min
+    assert merged.last_reinforced_play_id == 9  # most recent
+    assert merged.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+
+
+async def test_compacted_entry_without_merged_from_is_fresh(tmp_path: Path) -> None:
+    """A compacted entry with no resolvable provenance becomes a fresh learning."""
+    _seed(tmp_path, [_learning("a", "old", confidence=0.9)])
+    h = _harvester(tmp_path)
+    outcome = _outcome(
+        play_id=7,
+        learnings_compacted=[
+            {"pattern": "brand new synthesis", "category": "x", "merged_from": []}
+        ],
+    )
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(tmp_path / ".agentshore/learnings.json")
+    assert len(entries) == 1
+    assert entries[0].pattern == "brand new synthesis"
+    assert entries[0].confidence == pytest.approx(0.5)  # DEFAULT
+    assert entries[0].sessions_since_use == 0
+    assert entries[0].source_play_id == 7
+
+
+async def test_compacted_empty_result_for_nonempty_store_is_rejected(tmp_path: Path) -> None:
+    """A payload that would empty a non-empty store is rejected; store is kept."""
+    path = _seed(tmp_path, [_learning("a", "keep me", confidence=0.9)])
+    h = _harvester(tmp_path)
+    # Only an invalid (empty-pattern) entry → rebuilt would be empty.
+    outcome = _outcome(play_id=5, learnings_compacted=[{"pattern": "", "merged_from": []}])
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(path)
+    assert len(entries) == 1
+    assert entries[0].pattern == "keep me"
+    assert entries[0].confidence == pytest.approx(0.9)
+
+
+async def test_compacted_then_incremental_appends_on_top(tmp_path: Path) -> None:
+    """After a replace, the incremental ``learnings`` array still appends."""
+    _seed(tmp_path, [_learning("a", "old pattern", confidence=0.6)])
+    h = _harvester(tmp_path)
+    outcome = _outcome(
+        play_id=11,
+        learnings_compacted=[{"pattern": "compacted pattern", "merged_from": ["a"]}],
+        learnings=[{"pattern": "fresh from this run", "confidence": 0.7}],
+    )
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(tmp_path / ".agentshore/learnings.json")
+    patterns = {e.pattern for e in entries}
+    assert patterns == {"compacted pattern", "fresh from this run"}
+
+
+async def test_compacted_ignored_when_kill_switch_off(tmp_path: Path) -> None:
+    """With redistill_in_groom=False the compacted payload is ignored."""
+    path = _seed(tmp_path, [_learning("a", "keep me", confidence=0.9)])
+    cfg = LearningsConfig(file=".agentshore/learnings.json", redistill_in_groom=False)
+    h = LearningsHarvester(repo_root=tmp_path, learnings_cfg=cfg)
+    outcome = _outcome(
+        play_id=5,
+        learnings_compacted=[{"pattern": "would replace", "merged_from": ["a"]}],
+    )
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(path)
+    assert len(entries) == 1
+    assert entries[0].pattern == "keep me"
+
+
+async def test_compacted_noop_on_failure(tmp_path: Path) -> None:
+    """A failed outcome never replaces the store."""
+    path = _seed(tmp_path, [_learning("a", "keep me", confidence=0.9)])
+    h = _harvester(tmp_path)
+    outcome = _outcome(
+        success=False,
+        play_id=5,
+        learnings_compacted=[{"pattern": "would replace", "merged_from": ["a"]}],
+    )
+    await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
+
+    entries = load(path)
+    assert len(entries) == 1
+    assert entries[0].pattern == "keep me"

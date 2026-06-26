@@ -558,3 +558,45 @@ def test_consolidate_disabled_when_threshold_non_positive() -> None:
         _make_full("always run the tests before opening PR"),
     ]
     assert len(consolidate(entries, overlap_threshold=0.0)) == 2
+
+
+# ---------------------------------------------------------------------------
+# fold_learnings — shared deterministic metadata fold
+# ---------------------------------------------------------------------------
+
+
+def test_fold_learnings_folds_metadata_with_chosen_identity() -> None:
+    from agentshore.learnings import fold_learnings
+
+    sources = [
+        _make_full(
+            "a",
+            confidence=0.6,
+            sessions_since_use=4,
+            last_reinforced_play_id=3,
+            created_at="2025-02-01T00:00:00+00:00",
+        ),
+        _make_full(
+            "b",
+            confidence=0.8,
+            sessions_since_use=1,
+            last_reinforced_play_id=9,
+            created_at="2025-01-01T00:00:00+00:00",
+        ),
+    ]
+    folded = fold_learnings(sources, pattern="merged", category="conventions", id="chosen-id")
+    assert folded.id == "chosen-id"
+    assert folded.pattern == "merged"
+    assert folded.category == "conventions"
+    assert folded.confidence == pytest.approx(0.8)  # max
+    assert folded.sessions_since_use == 1  # min
+    assert folded.last_reinforced_play_id == 9  # most recent
+    assert folded.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+
+
+def test_fold_learnings_none_reinforcement_when_no_source_reinforced() -> None:
+    from agentshore.learnings import fold_learnings
+
+    sources = [_make_full("a", last_reinforced_play_id=None)]
+    folded = fold_learnings(sources, pattern="p", category="general", id="x")
+    assert folded.last_reinforced_play_id is None

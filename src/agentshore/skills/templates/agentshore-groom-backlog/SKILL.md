@@ -9,6 +9,8 @@ allowed-tools: Read, Bash(bd:*, gh:*, git:*)
 
 Groom the backlog from `$AGENTSHORE_PROJECT_PATH` (bd lives in the main repo). `$ARGUMENTS` is unused. Read `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md` for project conventions (label taxonomy, triage rules, epic shape); apply concrete requirements and ignore vague advice.
 
+**Re-distill learnings (do this first).** Read the full `$AGENTSHORE_PROJECT_PATH/.agentshore/learnings.json` (each entry has an `id`, `pattern`, `category`, and `confidence`). Produce a consolidated set: merge entries that say the same thing, reword for sharpness, and drop entries now obsolete or contradicted by the current repo. This is qualitative — **keep every distinct insight, collapse only genuine redundancy, and do not aim for any target count** (a small clean store is fine left as-is). Hold this consolidated understanding and **apply it as you groom below** — it is your sharpest record of this repo's conventions, so let it inform triage, refinement flags, and reconciliation. Emit the result as `learnings_compacted` in the result block. For each consolidated entry, list `merged_from`: the `id`s of the source entries you folded into it (echo them exactly) so AgentShore preserves their confidence/recency; a genuinely new synthesis can use an empty `merged_from`. Do **not** include a `confidence` on these — AgentShore re-derives it. **Omit `learnings_compacted` entirely if you merged/removed nothing** (the store stays untouched). This is separate from the incremental `learnings` array below, which is for net-new insights from *this* grooming run.
+
 **Pre-flight.** Read `$AGENTSHORE_PROJECT_PATH/.agentshore/context.json` (repo, owner, session_id). Confirm `.beads/` exists or stop with `error: "beads not initialised"`. Snapshot `bd list --all --json --limit 0`, derive the epic/story/task summary → `epics_before`. Fetch `gh issue list --state open --limit 200 --json number,title,state,labels,body` and `--state closed --limit 100`. The GH list (bodies + labels + numbers) is the working set for Phases 1–3; recompute nothing per-issue that this list already answers.
 
 > ⚠️ **Never background or parallelize `bd`.** No `&`, no background loops, no concurrent `bd` invocations, no "run it in the background while I do X". Embedded Dolt is a single-writer store; concurrent `bd` processes pile up on its lock, each gets slower, and the play burns its entire timeout producing nothing (no result block, work discarded). Run every `bd` command **sequentially, one at a time, foreground**. `gh` and `git` reads are fine to interleave.
@@ -133,10 +135,13 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
   "dependency_edges_deferred": [],
   "open_work_after": {"issues": 0, "prs": 0},
   "verification_failures": [],
+  "learnings_compacted": [{"pattern": "label `priority/*` and `agentshore/blocked` are mutually exclusive; remove priority when blocked", "category": "conventions", "merged_from": ["<id-a>", "<id-b>"]}],
   "learnings": [{"pattern": "the agentshore/decomposed tracker pattern requires a '## Sub-tasks' section; plain checkbox lists in the body are not detected by the close-tracker logic", "confidence": 0.75, "category": "conventions"}],
   "error": null
 }
 ```
+
+`learnings_compacted` is the re-distilled **full** learnings store from the first step — a wholesale replacement, emitted only when you actually merged or removed something (omit it otherwise). Each entry: `pattern` (the consolidated insight), `category` short tag, `merged_from` (the source `id`s you folded in; `[]` for a genuinely new synthesis). No `confidence` — AgentShore re-derives it from the folded sources. Anything you leave out of this set is dropped from the store, so carry forward every distinct insight.
 
 Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (label taxonomy surprises, beads graph conventions, recurring backlog debt patterns) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. Emit learnings as this top-level `learnings` array (the harvester only ingests this form).
 

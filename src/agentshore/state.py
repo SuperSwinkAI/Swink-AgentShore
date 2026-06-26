@@ -235,6 +235,12 @@ class PlayOutcome:
     # play leaves this None.
     failure_kind: FailureKind | None = None
     learnings: list[JsonObject] = field(default_factory=list)
+    # Wholesale-replacement learning set emitted by the groom re-distillation
+    # step (top-level ``learnings_compacted``). Distinct from ``learnings``
+    # (incremental append/reinforce): when present and valid, the harvester
+    # replaces the on-disk store with this set, re-deriving numeric metadata
+    # from each entry's ``merged_from`` source ids.
+    learnings_compacted: list[JsonObject] = field(default_factory=list)
 
     @classmethod
     def failed(
@@ -338,6 +344,11 @@ class SkillResult:
     # result block. Each entry is a normalized dict with ``pattern``,
     # ``confidence``, and ``category`` keys (validated by result_parser).
     learnings: list[JsonObject] = field(default_factory=list)
+    # Wholesale-replacement learning set from the groom re-distillation step
+    # (top-level ``learnings_compacted``). Each entry is a normalized dict with
+    # ``pattern``, ``category`` and ``merged_from`` (source ids absorbed) keys;
+    # confidence is re-derived, not taken from the agent. See PlayOutcome.
+    learnings_compacted: list[JsonObject] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

@@ -488,6 +488,11 @@ class LearningsConfig:
     # Jaccard token-overlap at/above which two same-category learnings are
     # merged during session-start consolidation. 0 disables consolidation.
     consolidate_overlap_threshold: float = 0.8
+    # Kill-switch for the groom re-distillation (Tier-2) agent compaction: when
+    # True, groom is allowed to read the full store and emit a wholesale
+    # ``learnings_compacted`` replacement; when False, that path is disabled and
+    # only the deterministic session-start consolidate() bounds the store.
+    redistill_in_groom: bool = True
 
 
 @dataclass(frozen=True)

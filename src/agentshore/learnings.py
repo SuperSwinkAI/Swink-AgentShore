@@ -169,6 +169,40 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / union if union else 0.0
 
 
+def fold_learnings(
+    sources: list[Learning],
+    *,
+    pattern: str,
+    category: str,
+    id: str,
+    scope: str = "project",
+    source_play_id: int | None = None,
+) -> Learning:
+    """Merge *sources* into one ``Learning`` carrying the given identity fields.
+
+    Numeric/temporal metadata is folded deterministically: ``confidence = max``,
+    ``sessions_since_use = min``, ``last_reinforced_play_id`` = most recent
+    (largest play id, or ``None`` if no source was ever reinforced), and
+    ``created_at`` = earliest. Shared by :func:`consolidate` (token-overlap
+    Tier-1 merge) and the groom re-distillation replace path, which both need
+    identical bookkeeping while choosing the identity fields differently.
+    """
+    reinforced_ids = [
+        m.last_reinforced_play_id for m in sources if m.last_reinforced_play_id is not None
+    ]
+    return Learning(
+        id=id,
+        pattern=pattern,
+        confidence=max(m.confidence for m in sources),
+        sessions_since_use=min(m.sessions_since_use for m in sources),
+        source_play_id=source_play_id,
+        last_reinforced_play_id=max(reinforced_ids) if reinforced_ids else None,
+        created_at=min(m.created_at for m in sources),
+        scope=scope,
+        category=category,
+    )
+
+
 def consolidate(
     entries: list[Learning],
     overlap_threshold: float = 0.8,
@@ -178,10 +212,9 @@ def consolidate(
     Two entries are near-duplicates when their normalized token sets have a
     Jaccard overlap of at least *overlap_threshold*. Each group collapses to one
     representative — the highest-confidence entry's ``id``/``pattern`` — with
-    ``confidence = max``, ``sessions_since_use = min``, the most-recent
-    ``last_reinforced_play_id`` and the earliest ``created_at`` folded in.
-    Deterministic (stable order, no randomness); singletons pass through
-    untouched. A non-positive threshold disables consolidation.
+    metadata folded via :func:`fold_learnings`. Deterministic (stable order, no
+    randomness); singletons pass through untouched. A non-positive threshold
+    disables consolidation.
     """
     if overlap_threshold <= 0 or len(entries) < 2:
         return entries
@@ -205,18 +238,14 @@ def consolidate(
             result.append(base)
             continue
         rep = max(group, key=lambda e: e.confidence)
-        reinforced_ids = [
-            m.last_reinforced_play_id for m in group if m.last_reinforced_play_id is not None
-        ]
         result.append(
-            replace(
-                rep,
-                confidence=max(m.confidence for m in group),
-                sessions_since_use=min(m.sessions_since_use for m in group),
-                last_reinforced_play_id=(
-                    max(reinforced_ids) if reinforced_ids else rep.last_reinforced_play_id
-                ),
-                created_at=min(m.created_at for m in group),
+            fold_learnings(
+                group,
+                pattern=rep.pattern,
+                category=rep.category,
+                id=rep.id,
+                scope=rep.scope,
+                source_play_id=rep.source_play_id,
             )
         )
     return result

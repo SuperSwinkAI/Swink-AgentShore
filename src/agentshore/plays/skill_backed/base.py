@@ -761,6 +761,7 @@ class SkillBackedPlay(Play, ABC):
             error=skill_result.error,
             failure_kind=failure_kind,
             learnings=skill_result.learnings,
+            learnings_compacted=skill_result.learnings_compacted,
         )
 
 
