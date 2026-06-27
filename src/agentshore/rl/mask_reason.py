@@ -87,8 +87,7 @@ class MaskReason:
         return hash((self.text, self.classification, self.source))
 
 
-# Common pre-allocated instances for hot paths. Reuse where the reason text
-# is fixed so we don't allocate per-tick.
+# Pre-allocated instances for fixed-text reasons — avoids per-tick allocation.
 SESSION_DRAINING: Final = MaskReason(
     text="Session draining: only end_agent permitted",
     classification=MaskClassification.INDEFINITE_WAIT,
@@ -114,26 +113,22 @@ SELECTED_CANDIDATE_NO_LONGER_AVAILABLE: Final = MaskReason(
     classification=MaskClassification.HARD,
     source=MaskSource.CANDIDATE,
 )
-# Main-repo dispatch-pause latch is set: only end_agent / reconcile_state are
-# permitted until the trunk is healed. Transient — clears when the pause lifts.
+# Trunk-pause latch: only end_agent / reconcile_state until healed. Transient.
 MAIN_REPO_DISPATCH_PAUSED: Final = MaskReason(
     text="main repo dispatch paused: only end_agent / reconcile_state permitted",
     classification=MaskClassification.TRANSIENT,
     source=MaskSource.CONTROL,
 )
-# END_SESSION is already started or in-flight. Transient — clears when that
-# dispatch resolves.
+# END_SESSION already in-flight. Transient — clears when that dispatch resolves.
 END_SESSION_IN_FLIGHT: Final = MaskReason(
     text="end_session already in flight",
     classification=MaskClassification.TRANSIENT,
     source=MaskSource.CONTROL,
 )
-# Play turned off via the machine-global Preferences. HARD + structural: honored
-# everywhere (including the reverse failsafe), so an explicit user choice is
-# never resurrected by an escape hatch. Only allowlisted, non-critical plays can
-# reach this state, so it can never wedge delivery — and the dedicated source
-# lets observability distinguish "user disabled this" from a stuck/all-masked
-# state rather than flagging it as a wedge.
+# User-disabled via global Preferences. HARD + structural: honored everywhere
+# (incl. reverse failsafe) so the escape hatch never resurrects a user choice.
+# Allowlist-guarded to non-critical plays so it can't wedge delivery; dedicated
+# source lets observability tell "user disabled" apart from a stuck all-masked state.
 USER_DISABLED: Final = MaskReason(
     text="disabled by user preference",
     classification=MaskClassification.HARD,

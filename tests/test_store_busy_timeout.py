@@ -44,9 +44,8 @@ async def test_second_writer_waits_instead_of_erroring(tmp_path: Path) -> None:
         other = await aiosqlite.connect(str(db_path))
         try:
             await other.execute("PRAGMA busy_timeout=5000")
-            # Writing through the second connection should succeed (waits out
-            # any momentary lock rather than raising). Use a scratch table so we
-            # don't depend on schema specifics.
+            # Second connection's write should wait out any momentary lock rather
+            # than raise. Scratch table avoids depending on schema specifics.
             await other.execute("CREATE TABLE IF NOT EXISTS _race (id INTEGER)")
             await other.execute("INSERT INTO _race (id) VALUES (1)")
             await other.commit()
@@ -87,9 +86,14 @@ async def test_initialize_retries_transient_db_locked_then_succeeds(
 async def test_initialize_raises_after_persistent_db_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lock that never clears propagates after the bounded attempts (#4)."""
+    """A lock that never clears raises a typed DatabaseLockedError once the
+    wall-clock retry budget is exhausted (#4, #283)."""
+    from agentshore.errors import DatabaseLockedError
+
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
+    # Zero budget: give up on the first persistent lock, not the full window.
+    monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BUDGET_SECONDS", 0.0)
     store = DataStore(tmp_path / "locked.db")
     await store.initialize()
     try:
@@ -98,10 +102,51 @@ async def test_initialize_raises_after_persistent_db_locked(
             raise sqlite3.OperationalError("database is locked")
 
         monkeypatch.setattr(store._db, "executescript", always_locked)
-        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        with pytest.raises(DatabaseLockedError, match="could not acquire the database lock"):
             await store._apply_schema_with_lock_retry(_load_schema_sql())
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_closes_connection_when_schema_apply_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure during initialize() (here the schema lock-retry budget) closes
+    the just-opened connection rather than leaking it — a leaked handle holds
+    agentshore.db's writer-lock in the long-lived sidecar and blocks the next
+    session.start (#283)."""
+    from agentshore.errors import DatabaseLockedError
+
+    async def _always_locked(self: DataStore, schema_sql: str) -> None:
+        raise DatabaseLockedError("could not acquire the database lock")
+
+    monkeypatch.setattr(DataStore, "_apply_schema_with_lock_retry", _always_locked)
+    store = DataStore(tmp_path / "init_fail.db")
+    with pytest.raises(DatabaseLockedError, match="could not acquire the database lock"):
+        await store.initialize()
+    # The connection opened before the schema apply must be closed + cleared.
+    assert store._db is None
+
+
+@pytest.mark.asyncio
+async def test_close_releases_connection_when_backup_raises_unexpected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """close() releases the main connection even when backup() raises a type
+    outside (aiosqlite.Error, OSError) — e.g. an unexpected error or cancellation
+    during shutdown — so the writer-lock is never leaked into the sidecar (#283)."""
+    store = DataStore(tmp_path / "close_fail.db")
+    await store.initialize()
+
+    async def _boom(_target: object) -> None:
+        raise RuntimeError("unexpected backup failure")
+
+    monkeypatch.setattr(store._db, "backup", _boom)  # type: ignore[union-attr]
+    with pytest.raises(RuntimeError, match="unexpected backup failure"):
+        await store.close()
+    # Despite the unexpected backup exception, the main connection was closed.
+    assert store._db is None
 
 
 @pytest.mark.asyncio

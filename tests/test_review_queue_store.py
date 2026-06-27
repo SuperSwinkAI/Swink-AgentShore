@@ -101,7 +101,6 @@ async def test_claim_review_transitions_status(tmp_path) -> None:
         ok = await store.claim_review(qid, "agent-b")
         assert ok is True
 
-        # Pending list should now be empty.
         pending = await store.list_pending_reviews("s1")
         assert len(pending) == 0
     finally:
@@ -172,7 +171,6 @@ async def test_complete_review_sets_done(tmp_path) -> None:
         await store.claim_review(qid, "agent-b")
         await store.complete_review(qid)
 
-        # Nothing pending after completion.
         pending = await store.list_pending_reviews("s1")
         assert len(pending) == 0
     finally:
@@ -239,9 +237,7 @@ async def test_list_pending_reviews_excludes_claimed_and_done(tmp_path) -> None:
             )
         )
 
-        # Claim PR #1.
         await store.claim_review(qid1, "agent-x")
-        # Complete PR #2 (claim then complete).
         await store.claim_review(qid2, "agent-y")
         await store.complete_review(qid2)
 
@@ -269,7 +265,6 @@ async def test_external_mutation_idempotency_no_error(tmp_path) -> None:
         # Second insert with same idempotency_key should NOT raise.
         await store.record_external_mutation(mutation)
 
-        # Verify only one row exists.
         existing = await store.get_external_mutation("s1", "key-abc")
         assert existing is not None
         assert existing.idempotency_key == "key-abc"

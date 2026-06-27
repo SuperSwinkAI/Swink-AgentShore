@@ -25,8 +25,7 @@ class _PullRequestsMixin(_DataStoreBase):
     """Methods that operate on the ``pull_requests`` and ``branch_activity`` tables."""
 
     if TYPE_CHECKING:
-        # Cross-mixin sibling call: actual impl is in _WorkClaimsMixin, not the
-        # base; resolved via the DataStore MRO at runtime.
+        # Sibling-mixin call (impl in _WorkClaimsMixin); resolved via DataStore MRO.
         async def supersede_work_claims(
             self,
             session_id: str,
@@ -51,15 +50,10 @@ class _PullRequestsMixin(_DataStoreBase):
         for pr in pull_requests:
             if pr.session_id != session_id:
                 pr.session_id = session_id
-        # For pre-existing PRs that are already APPROVED on GitHub at the time
-        # we first see them, seed last_reviewed_sha=head_sha so the policy
-        # routes them straight to merge_pr instead of redundantly
-        # re-reviewing work an authorised reviewer has already approved. The
-        # ON CONFLICT clause below preserves any existing DB value via
-        # COALESCE, so this only takes effect on the very first insert for a
-        # given (pr_number, session_id) — AgentShore-authored PRs are
-        # untouched because we set last_reviewed_sha explicitly via
-        # update_pr_last_reviewed_sha after a successful code_review.
+        # Pre-existing PRs already APPROVED on GitHub seed last_reviewed_sha=head_sha
+        # so the policy routes them to merge_pr instead of re-reviewing. ON CONFLICT
+        # COALESCE preserves existing DB values, so this fires only on first insert;
+        # AgentShore-authored PRs set last_reviewed_sha explicitly post-code_review.
         rows = [_pull_request_upsert_row(pr) for pr in pull_requests]
         await self._conn.executemany(_PULL_REQUEST_UPSERT_SQL, rows)
         await self._conn.commit()
@@ -142,16 +136,14 @@ class _PullRequestsMixin(_DataStoreBase):
         Existing non-null ``merged_at`` is preserved (a refresh from GitHub
         may have already populated the precise timestamp).
         """
-        # Resolve linked-issue resource keys from current PR metadata before
-        # opening the write transaction; ``issue_numbers_for_pr`` reads the PR
-        # body/links, not the state column this method is about to flip.
+        # Resolve linked-issue keys before opening the write transaction
+        # (issue_numbers_for_pr reads PR body/links, not the state column we flip).
         keys = [f"pr:{pr_number}"]
         pr = await self.get_pull_request(session_id, pr_number)
         if pr is not None:
             keys.extend(f"issue:{issue_number}" for issue_number in issue_numbers_for_pr(pr))
-        # The PR state UPDATE and the work-claim supersession run in one
-        # ``BEGIN IMMEDIATE`` transaction so a crash can't leave a merged PR
-        # with a live (locked) work-claim — both flip together or neither does.
+        # State UPDATE + work-claim supersession in one BEGIN IMMEDIATE: a crash
+        # can't leave a merged PR with a live work-claim — both flip or neither.
         try:
             await self._conn.execute("BEGIN IMMEDIATE")
             await self._conn.execute(

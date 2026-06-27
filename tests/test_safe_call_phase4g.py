@@ -96,7 +96,7 @@ async def test_datastore_failure_loop_continues(tmp_path: Path) -> None:
 
     await orch.run_until_idle()
 
-    # Loop completed and executed exactly one play despite any internal errors
+    # One play executed despite store errors.
     assert executed == [PlayType.ISSUE_PICKUP]
 
 
@@ -151,7 +151,6 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
         )
         await orch.run_until_idle()
 
-        # Selector was consulted after override was dropped
         assert selector_called, "Selector should have been called as fallback"
 
 

@@ -159,6 +159,49 @@ async def _reap_one(
         )
 
 
+async def strip_non_origin_remotes(main_repo: Path) -> list[str]:
+    """Remove every git remote whose name is not exactly ``origin``.
+
+    Self-heals stray fork remotes (e.g. a ``fork`` remote left behind by an
+    agent) so an unintended remote can't be used in subsequent plays.
+
+    Best-effort: git failures are logged but never raised — mirrors the
+    ``check=False`` style used throughout this module.
+
+    Returns the list of remote names that were removed (empty when none or on
+    git failure).
+    """
+    try:
+        _, stdout, _ = await _run_git("remote", cwd=main_repo, check=False)
+    except WorktreeAllocationFailed as exc:
+        log.warning("strip_non_origin_remotes_list_failed", repo=str(main_repo), reason=exc.reason)
+        return []
+
+    removed: list[str] = []
+    for name in stdout.splitlines():
+        name = name.strip()
+        if not name or name == "origin":
+            continue
+        try:
+            await _run_git("remote", "remove", name, cwd=main_repo, check=False)
+            removed.append(name)
+        except WorktreeAllocationFailed as exc:
+            log.warning(
+                "strip_non_origin_remotes_remove_failed",
+                repo=str(main_repo),
+                name=name,
+                reason=exc.reason,
+            )
+
+    if removed:
+        log.info(
+            "worktree_non_origin_remotes_stripped",
+            repo=str(main_repo),
+            removed=removed,
+        )
+    return removed
+
+
 async def sweep_session_start(
     store: DataStore,
     *,
@@ -174,6 +217,10 @@ async def sweep_session_start(
     on-disk worktree (the DB-driven path), then reconcile ``git worktree
     list`` against the DB to catch worktrees that have no row at all (the
     DB-recovery fallout). Both phases contribute to one ``ReapReport``.
+
+    After both reap passes, stray non-origin remotes (e.g. a ``fork`` remote
+    accidentally added by a prior agent) are removed from the main repo so they
+    can't be used in the new session.
     """
     orphans = await list_orphans(store, current_session_id=current_session_id)
     report = ReapReport()
@@ -188,6 +235,9 @@ async def sweep_session_start(
     # Second pass: catch on-disk worktrees with no DB row anywhere.
     git_orphans = await reap_git_orphans(store, main_repo=main_repo)
     report.git_orphans_removed = git_orphans
+    # Third pass: strip any non-origin remotes from the main repo so stray
+    # fork remotes introduced by prior agents don't persist into this session.
+    await strip_non_origin_remotes(main_repo)
     return report
 
 
@@ -457,5 +507,6 @@ __all__ = [
     "reap_for_closed_prs",
     "reap_for_disk_pressure",
     "reap_git_orphans",
+    "strip_non_origin_remotes",
     "sweep_session_start",
 ]

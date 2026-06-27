@@ -67,9 +67,8 @@ def test_list_agents_projects_canonical_shape(tmp_path: Path) -> None:
 
 
 def test_list_agents_drops_unsupported_agent_types(tmp_path: Path) -> None:
-    # A stale config may still carry a retired agent block (e.g. ``gemini``).
-    # list_agents reads raw YAML, so it must apply the same supported-type
-    # allow-list as configure_agent and never surface the ghost row.
+    # Retired agent block in stale config must be dropped by the same allow-list
+    # configure_agent uses — list_agents reads raw YAML and must not surface the ghost row.
     _write_config(
         tmp_path / "agentshore.yaml",
         {
@@ -284,11 +283,6 @@ def test_rpc_agents_configure_rejects_unknown_agent_type() -> None:
     assert "unknown agent type" in response["error"]["message"]
 
 
-# ---------------------------------------------------------------------------
-# Per-tier max
-# ---------------------------------------------------------------------------
-
-
 def test_tier_models_from_raw_reads_max(tmp_path: Path) -> None:
     """_tier_models_from_raw surfaces the per-tier max field."""
     _write_config(
@@ -352,11 +346,6 @@ def test_validate_tier_models_rejects_bool_max(tmp_path: Path) -> None:
             "codex",
             {"tier_models": {"medium": {"max": True}}},
         )
-
-
-# ---------------------------------------------------------------------------
-# agents.check_auth RPC (backend CLI-agent auth probe)
-# ---------------------------------------------------------------------------
 
 
 def _resolve(result: object) -> dict[str, object]:

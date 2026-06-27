@@ -40,21 +40,11 @@ def _graph_no_epics() -> ProjectGraph:
     return ProjectGraph()
 
 
-# ---------------------------------------------------------------------------
-# preconditions: graph is None
-# ---------------------------------------------------------------------------
-
-
 def test_preconditions_blocks_when_graph_is_none() -> None:
     play = CalibrateAlignmentPlay()
     result = play.preconditions(_state(graph=None))
     assert result != []
     assert any("beads not initialised" in r.text for r in result)
-
-
-# ---------------------------------------------------------------------------
-# preconditions: graph exists but has no epics
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_blocks_when_graph_has_no_epics() -> None:
@@ -64,20 +54,10 @@ def test_preconditions_blocks_when_graph_has_no_epics() -> None:
     assert any("no epics" in r.text for r in result)
 
 
-# ---------------------------------------------------------------------------
-# preconditions: graph has epics — should pass
-# ---------------------------------------------------------------------------
-
-
 def test_preconditions_passes_when_graph_has_epics() -> None:
     play = CalibrateAlignmentPlay()
     result = play.preconditions(_state(graph=_graph_with_epics()))
     assert result == []
-
-
-# ---------------------------------------------------------------------------
-# preconditions: blocked when already in flight
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_blocks_when_in_flight() -> None:
@@ -87,11 +67,6 @@ def test_preconditions_blocks_when_in_flight() -> None:
     )
     assert result != []
     assert any("in flight" in r.text or "calibrate_alignment" in r.text for r in result)
-
-
-# ---------------------------------------------------------------------------
-# play_type and skill_name identity
-# ---------------------------------------------------------------------------
 
 
 def test_play_type_is_calibrate_alignment() -> None:
@@ -104,11 +79,6 @@ def test_skill_name() -> None:
 
 def test_capability_is_can_implement() -> None:
     assert CalibrateAlignmentPlay().capability == "can_implement"
-
-
-# ---------------------------------------------------------------------------
-# estimated_cost is in the expected range
-# ---------------------------------------------------------------------------
 
 
 def test_estimated_cost_in_range() -> None:

@@ -169,7 +169,6 @@ async def test_phase_git_safety_sweep_restores_poisoned_head(
     event_names = [str(e.get("event", "")) for e in captured]
     assert "main_repo_branch_mutated" in event_names
     assert "main_repo_branch_restored" in event_names
-    # And HEAD restored back to main.
     assert current_head_ref(repo) == "refs/heads/main"
     # Default branch resolved into the orchestrator cache.
     assert orch._main_repo.default_branch == "main"

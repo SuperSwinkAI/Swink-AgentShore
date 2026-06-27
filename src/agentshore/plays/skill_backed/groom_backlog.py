@@ -73,30 +73,24 @@ class GroomBacklogPlay(SkillBackedPlay):
         if reasons:
             return reasons
 
-        # Capability is checked once and threaded through every path below.
+        # Checked once, threaded through every path below.
         cap_issues = self._capability_check(state)
 
-        # Evaluate bypass conditions BEFORE the capability gate so that urgent
-        # deadlock-recovery scenarios are not silently masked when the only idle
-        # agent happens to lack can_run_skill.
-        #
-        # Bypass 1: No open GH issues but ready beads tasks have no issue links —
-        #   without this bypass the session spins on selector_idle forever
-        #   (issue_pickup blocked, end_session masked by low closure ratio).
-        # Bypass 2: Open GH issues exist that have no corresponding beads task —
-        #   issues created outside AgentShore (by humans or QA skill) need to
-        #   be synced into the graph before issue_pickup can route them.
-        #
-        # If a bypass fires but no capable agent is available, we return a
-        # descriptive error rather than [] so the RL selector sees a clear
-        # reason in the log instead of silently blocking. A firing bypass also
-        # skips the first-run warmup floor (urgent recovery may run early).
+        # Evaluate bypasses BEFORE the capability gate so urgent deadlock-recovery
+        # isn't silently masked when the only idle agent lacks can_run_skill.
+        #   Bypass 1: no open GH issues but ready beads tasks lack issue links —
+        #     else the session spins on selector_idle forever (issue_pickup
+        #     blocked, end_session masked by low closure ratio).
+        #   Bypass 2: open GH issues with no beads task (created outside AgentShore)
+        #     must be synced into the graph before issue_pickup can route them.
+        # A firing bypass with no capable agent returns a descriptive mask (not [])
+        # so the selector logs a reason, and skips the first-run warmup floor.
         if _has_unlinked_ready_tasks(state) and not state.open_issues:
             return self._urgent_or_pass(cap_issues, "unlinked ready tasks, no open issues")
         if _has_untracked_gh_issues(state):
             return self._urgent_or_pass(cap_issues, "untracked GH issues")
 
-        # Normal path: capability check applies before the first-run floor.
+        # Normal path: capability before the first-run floor.
         if cap_issues:
             return cap_issues
         warmup = FirstRunWarmupGate(self.play_type, _GROOM_BACKLOG_MIN_PLAYS)(state)

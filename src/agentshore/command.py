@@ -31,15 +31,13 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-# Return code used for a tool that timed out, mirroring the historical
-# convention in ``sidecar/project.py`` (124 == coreutils ``timeout`` exit).
+# Tool timed out; 124 mirrors coreutils ``timeout`` exit (per sidecar/project.py).
 TIMEOUT_RETURN_CODE = 124
-# Return code used for a tool that could not be located on the box.
+# Tool not found on PATH (127, the shell convention).
 TOOL_NOT_FOUND_RETURN_CODE = 127
-# Return code used when the process could not be spawned at all (e.g. an invalid
-# ``cwd`` — on Windows a stale/deleted project dir raises NotADirectoryError
-# [WinError 267] from the spawn). 126 mirrors the shell "command found but not
-# executable" convention for an unrunnable command.
+# Process could not be spawned (e.g. invalid ``cwd``; on Windows a stale project
+# dir raises NotADirectoryError [WinError 267]). 126 mirrors the shell "command
+# found but not executable" convention.
 SPAWN_FAILED_RETURN_CODE = 126
 
 
@@ -186,11 +184,9 @@ def run_sync_command(
         raise FileNotFoundError(args[0])
 
     started = time.monotonic()
-    # A git/gh child must NEVER inherit the parent's stdin. In the desktop
-    # sidecar that stdin is the live Tauri JSON-RPC pipe (continuously read by
-    # the reader thread); git's MSYS2 runtime probes stdin on startup and wedges
-    # at 0 CPU forever on that contended pipe (reproduced deterministically).
-    # When we feed input_text, subprocess.run wires stdin itself via ``input=``.
+    # A git/gh child must NEVER inherit the parent's stdin: in the desktop sidecar
+    # that is the live Tauri JSON-RPC pipe, and git's MSYS2 runtime wedges at 0 CPU
+    # probing it. When feeding input_text, subprocess.run wires stdin via ``input=``.
     stdin = None if input_text is not None else subprocess.DEVNULL
     try:
         completed = subprocess.run(  # noqa: S603 — resolved exe, no shell

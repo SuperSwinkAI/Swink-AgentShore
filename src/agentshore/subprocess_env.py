@@ -324,15 +324,12 @@ def hardened_env(
         env["GCM_INTERACTIVE"] = "Never"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_OPTIONAL_LOCKS"] = "0"
-        # The git *editor* is a separate interactive surface from the
-        # credential prompt. Without these, a rebase-internal ``git commit -e``
-        # falls back to ``core.editor -> EDITOR -> vi`` (MSYS2 vim on Windows),
-        # which opens with no usable console on a detached subprocess and hangs
-        # at 0 CPU forever, pinning the worktree (#168). ``true`` is the no-op
-        # editor: git treats it as "succeed immediately without editing".
-        # ``GIT_EDITOR`` propagates from a parent ``git rebase`` into its
-        # internal ``git commit``. (Empty string is wrong here — git reads it
-        # as "fall back to the next editor".)
+        # The editor is a separate interactive surface from the credential
+        # prompt: without these a rebase-internal ``git commit -e`` falls back to
+        # vi and hangs at 0 CPU on a detached subprocess, pinning the worktree
+        # (#168). ``true`` = succeed-without-editing; empty string is wrong (git
+        # reads it as "fall back to the next editor"). GIT_EDITOR propagates from
+        # a parent ``git rebase`` into its internal ``git commit``.
         env[GIT_EDITOR_ENV] = "true"
         env[GIT_SEQUENCE_EDITOR_ENV] = "true"
     if for_gh:

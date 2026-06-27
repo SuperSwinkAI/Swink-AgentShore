@@ -53,10 +53,9 @@ if TYPE_CHECKING:
 
 
 _MAX_MASKED_OVERRIDE_REQUEUES = 3
-# Consecutive worktree-allocation failures against a single resource key before
-# it is parked for the session (Piece A, issue #60). Allows a couple of retries
-# for a transient blip (git timeout, momentary lock) while stopping a
-# structurally-unallocatable PR from being re-selected every tick.
+# Consecutive worktree-allocation failures on one resource key before it is
+# parked for the session (Piece A, #60). Allows retries for a transient blip
+# while stopping a structurally-unallocatable PR from re-selecting every tick.
 _WORKTREE_PARK_THRESHOLD = 3
 
 
@@ -70,7 +69,7 @@ def _is_git_work_tree(path: Path) -> bool:
     check without needing a ``git`` subprocess.
     """
     candidate = path
-    for _ in range(6):  # bounded walk; project paths nest at most a few deep
+    for _ in range(6):  # bounded walk; project paths nest only a few deep
         if (candidate / ".git").exists():
             return True
         if candidate.parent == candidate:
@@ -259,12 +258,11 @@ class Dispatcher:
             )
             entry = None if self._overrides.empty() else self._overrides.get_nowait()
 
-        # issue #569: targeted sequencing gate that survives bypass_preconditions.
-        # When wait_for_play_type is set, hold the entry until that play type has
-        # appeared in plays_since_last_play_type (i.e. completed at least once).
-        # The bootstrap medium INSTANTIATE_AGENT uses this so the cleanup /
-        # seed_project first-play finishes before a second agent comes online
-        # and PPO can dispatch it onto PR-scoped plays that race trunk.
+        # #569: sequencing gate that survives bypass_preconditions. Hold the
+        # entry until wait_for_play_type has completed at least once (appears in
+        # plays_since_last_play_type). The bootstrap medium INSTANTIATE_AGENT
+        # uses this so the trunk-touching first-play finishes before a second
+        # agent comes online and PPO races it onto PR-scoped plays.
         if entry is not None and entry.wait_for_play_type is not None:
             awaited = entry.wait_for_play_type
             if awaited not in state.plays_since_last_play_type:
@@ -295,9 +293,8 @@ class Dispatcher:
             and entry.play_type in V1_ACTION_ORDER
         ):
             # Single source of truth: route the override through the same
-            # EligibilityAuthority that masks PPO's action space. One live
-            # confirm; a not-valid verdict means a clean re-pick via the
-            # existing masked-override requeue taxonomy.
+            # EligibilityAuthority that masks PPO's action space. A not-valid
+            # verdict means a clean re-pick via the masked-override requeue path.
             authority = EligibilityAuthority(
                 state,
                 self._runtime.registry,
@@ -379,16 +376,15 @@ class Dispatcher:
 
     async def handle_masked_override(self, entry: OverrideEntry, reason: MaskReason) -> None:
         # 1. BOOTSTRAP entries never drop. They drive the fleet-sequencing
-        #    invariant (large agent → seed → medium of different type) and
-        #    must survive arbitrary cooldown / wait masks until the awaited
-        #    condition lifts.
+        #    invariant (large → seed → medium of a different type) and must
+        #    survive any cooldown/wait mask until the awaited condition lifts.
         if entry.kind == OverrideKind.BOOTSTRAP:
             self._overrides.put_nowait(dataclasses.replace(entry, kind=OverrideKind.MASK_REQUEUE))
             return
 
-        # 2. INDEFINITE_WAIT classifications (typed at the mask source or
-        #    declared at enqueue time) re-queue without bumping the retry
-        #    counter — the wait clears deterministically.
+        # 2. INDEFINITE_WAIT (typed at mask source or declared at enqueue) re-
+        #    queues without bumping the retry counter — the wait clears
+        #    deterministically.
         if (
             self.mask_reason_is_indefinite_wait(reason)
             or entry.enqueue_classification == MaskClassification.INDEFINITE_WAIT
@@ -409,8 +405,8 @@ class Dispatcher:
             )
             return
 
-        # 4. Everything else (HARD classifications, exhausted transient
-        #    budget) drops with a surfaced error.
+        # 4. Everything else (HARD, or exhausted transient budget) drops with a
+        #    surfaced error.
         await self.release_masked_override(entry, reason=reason)
 
     async def release_masked_override(self, entry: OverrideEntry, *, reason: MaskReason) -> None:
@@ -566,13 +562,11 @@ class Dispatcher:
         worktree allocation, active-play state, context creation, and task launch
         using the selector snapshot.
         """
-        # desktop-kqo5: hard pause when auto-restore failed. Refuse to spawn
-        # further work until the trunk is healed. END_AGENT is still allowed so a
-        # draining shutdown can complete cleanly. RECONCILE_STATE is ALSO allowed:
-        # it is the dirty-trunk healer, so blocking it under the pause created a
-        # catch-22 that wedged the loop. Letting it through lets the session
-        # self-heal a conflicted trunk; a successful reconcile clears the latch
-        # (see _check_main_repo_invariant).
+        # desktop-kqo5: hard pause when auto-restore failed — no new work until
+        # the trunk is healed. END_AGENT stays allowed so a drain can finish.
+        # RECONCILE_STATE is ALSO allowed: it heals the dirty trunk, so blocking
+        # it wedged the loop in a catch-22; a successful reconcile clears the
+        # latch (see _check_main_repo_invariant).
         if self._main_repo.dispatch_paused and play_type not in (
             PlayType.END_AGENT,
             PlayType.RECONCILE_STATE,
@@ -608,11 +602,10 @@ class Dispatcher:
                 event="dispatch_blocked_during_shutdown",
             )
             return False
-        # desktop-4ugk part 2: refuse to spawn any agent against a working
-        # directory whose path contains a literal backslash-space. The
-        # canonical leak comes from a quoting bug in a skill template; once
-        # the path is on disk the subprocess `cd` would fail or land in a
-        # leaked sibling. Reject before we wire up the dispatch context.
+        # desktop-4ugk part 2: refuse to spawn into a working dir whose path
+        # contains a literal backslash-space (a skill-template quoting leak);
+        # the subprocess `cd` would fail or land in a leaked sibling. Reject
+        # before wiring up the dispatch context.
         manager_working_dir = getattr(getattr(self, "_manager", None), "_working_dir", None)
         candidate_paths: list[str] = []
         if manager_working_dir is not None:
@@ -640,11 +633,10 @@ class Dispatcher:
                 )
                 return False
 
-        # AgentShore-managed worktree allocation (desktop-mr1i). Runs *before* the
-        # active_play snapshot so a failed allocation drops the play without
-        # ever entering the in-flight set. Trunk-scoped / internal plays get
-        # back a ``TrunkAllocation`` pointing at the main repo — no row is
-        # written and no on-disk worktree is created.
+        # Worktree allocation (desktop-mr1i) runs *before* the active_play
+        # snapshot so a failed allocation drops the play without entering the
+        # in-flight set. Trunk-scoped / internal plays get a ``TrunkAllocation``
+        # at the main repo — no row written, no on-disk worktree created.
         from agentshore.agents.worktree import (
             TrunkAllocation,
             WorktreeAllocation,
@@ -666,11 +658,10 @@ class Dispatcher:
                 event="dispatch_blocked_no_worktree_manager",
             )
             return False
-        # When the project path isn't a git work tree (test harnesses that pass
-        # a bare ``tmp_path``), short-circuit to a TrunkAllocation pointing at
-        # the main repo. Production paths are always git checkouts; this guard
-        # keeps the dispatcher honest without forcing every existing test that
-        # mocks ``_executor.execute`` to also stub the worktree manager.
+        # Non-git project path (test harnesses passing a bare ``tmp_path``):
+        # short-circuit to a TrunkAllocation at the main repo. Production paths
+        # are always git checkouts; this spares tests that mock
+        # ``_executor.execute`` from also stubbing the worktree manager.
         allocation: WorktreeAllocation | TrunkAllocation
         if not _is_git_work_tree(worktree_mgr.main_repo):
             allocation = TrunkAllocation(path=worktree_mgr.main_repo)
@@ -681,12 +672,10 @@ class Dispatcher:
                 path=str(worktree_mgr.main_repo),
             )
         else:
-            # Pre-dispatch disk guard (#180): don't allocate a new worktree
-            # into a nearly-full disk. Reap idle worktrees first (LRU, skipping
-            # in-flight ones); if still below the floor, skip this dispatch
-            # rather than risk an ENOSPC cascade mid-play (the spend-while-
-            # dropping failure mode). Build-agnostic — measures free bytes, not
-            # what produced them. ``min_free_disk_mb == 0`` disables the guard.
+            # Pre-dispatch disk guard (#180): reap idle worktrees (LRU, skipping
+            # in-flight) first; if still below the floor, skip this dispatch
+            # rather than risk an ENOSPC cascade mid-play (spend-while-dropping).
+            # ``min_free_disk_mb == 0`` disables the guard.
             floor_mb = self._runtime.cfg.worktrees.min_free_disk_mb
             if floor_mb > 0:
                 free_mb = worktree_mgr.free_disk_mb()
@@ -717,10 +706,10 @@ class Dispatcher:
                     play_type=play_type, params=params
                 )
             except (WorktreeAllocationFailed, WorktreeBranchGone, OSError) as exc:
-                # Disk-full allocation failure is an *environment* condition, not
-                # a structurally-stuck resource: parking the resource key would
-                # wrongly suppress it for the session. Reap idle worktrees and
-                # drop TRANSIENT so it retries once the host has room (#180).
+                # Disk-full is an *environment* condition, not a structurally-
+                # stuck resource: parking the key would wrongly suppress it for
+                # the session. Reap and drop TRANSIENT so it retries once the
+                # host has room (#180).
                 if is_disk_full(exc):
                     _logger.warning(
                         "worktree_allocate_disk_full",
@@ -743,7 +732,7 @@ class Dispatcher:
                     )
                     return False
                 if isinstance(exc, OSError):
-                    # A non-ENOSPC OSError isn't a recognized allocation failure;
+                    # Non-ENOSPC OSError isn't a recognized allocation failure;
                     # re-raise rather than swallow it as a worktree-create miss.
                     raise
                 alloc_reason = getattr(exc, "reason", None) or getattr(exc, "branch", None)
@@ -754,13 +743,10 @@ class Dispatcher:
                     error=str(exc),
                     reason=alloc_reason,
                 )
-                # Piece A: tally the failure per resource key and park keys that
-                # cross the retry threshold. A parked resource is structurally
-                # stuck (HARD) — the candidate analyzer will stop offering it, so
-                # the drop no longer hot-loops. Below threshold it's still
-                # retrying (TRANSIENT). Passing a typed MaskReason also replaces
-                # the old bare-string ``"worktree_create_failed"`` that logged an
-                # uninformative ``classification: "unknown"``.
+                # Piece A: tally per resource key and park keys past the retry
+                # threshold. A parked resource is structurally stuck (HARD) — the
+                # candidate analyzer stops offering it, so the drop no longer
+                # hot-loops; below threshold it's still retrying (TRANSIENT).
                 parked = self.register_worktree_allocation_failure(params)
                 drop_reason = MaskReason(
                     text=f"worktree allocation failed ({alloc_reason})"
@@ -779,21 +765,14 @@ class Dispatcher:
                 return False
 
         # Stamp allocator output:
-        #
-        # (a) The allocation dataclass itself goes on a private
-        #     ``_runtime_allocation`` field on PlayParams — runtime-only,
-        #     excluded from ``params_to_json_safe_dict``. Previously this was
-        #     stamped into ``params.extras["worktree_allocation"]``, but
-        #     extras crosses the JSON boundary (context.json + dispatch_replay
-        #     rows) and shipping live Python dataclass handles through that
-        #     surface produced a recurring JSON-serialize bug (issue #563
-        #     onion: TrunkAllocation → Path → PlayType enum). Issue #565
-        #     moves the handle off extras so the JSON path can't see it.
-        #
-        # (b) String-only views of the allocation stay in extras so skills
-        #     can keep reading them as documented (worktree_path,
-        #     worktree_scope). The existing backslash-space validator above
-        #     also matches against worktree_path coming out of the allocator.
+        # (a) The allocation dataclass goes on a private ``_runtime_allocation``
+        #     field — runtime-only, excluded from ``params_to_json_safe_dict``.
+        #     It was in ``extras["worktree_allocation"]``, but extras crosses the
+        #     JSON boundary (context.json + dispatch_replay) and live dataclass
+        #     handles there caused a recurring serialize bug (#563/#565).
+        # (b) String-only views (worktree_path, worktree_scope) stay in extras so
+        #     skills can keep reading them; the backslash-space validator above
+        #     also matches worktree_path from the allocator.
         params = dataclasses.replace(
             params,
             extras={
@@ -813,8 +792,8 @@ class Dispatcher:
                 path=str(allocation.path),
             )
         else:
-            # Mark the worktree in-flight BEFORE the play task is created, so a
-            # concurrent reap can never reclaim it mid-play. The manager owns the
+            # Mark the worktree in-flight BEFORE the task is created so a
+            # concurrent reap can't reclaim it mid-play. The manager owns the
             # protected set from here; finalize_after_dispatch releases it.
             if worktree_mgr is not None:
                 worktree_mgr.register_dispatch(allocation)
@@ -831,10 +810,9 @@ class Dispatcher:
 
         if play_type == PlayType.END_SESSION:
             self._runtime.end_session_dispatch_started = True
-        # OrchestratorState is intentionally non-frozen to allow in-loop state patching.
-        # Populate the typed ActivePlay snapshot so IPC consumers see what's
-        # running, who is running it, and when it started without waiting
-        # for the separate on_play_started event.
+        # OrchestratorState is intentionally non-frozen for in-loop patching.
+        # Populate the ActivePlay snapshot so IPC consumers see what's running,
+        # who, and when without waiting for the on_play_started event.
         state.active_play = ActivePlay(
             play_type=play_type,
             agent_id=params.agent_id,
@@ -859,10 +837,9 @@ class Dispatcher:
 
         dispatch_id = str(uuid.uuid4())
         # desktop-kqo5: snapshot the main-repo symbolic ref BEFORE the task
-        # fires. ``current_head_ref`` returns None for detached HEAD, which
-        # CompletionProcessor treats as a mutation of its own at completion.
-        # Run synchronously — the git read is small (~5ms) and pre-task
-        # ordering is load-bearing.
+        # fires (detached HEAD → None, which CompletionProcessor reads as a
+        # mutation at completion). Synchronous — pre-task ordering is load-
+        # bearing and the git read is ~5ms.
         try:
             pre_play_ref = current_head_ref(self._repo_root)
         except Exception as exc:
@@ -880,9 +857,9 @@ class Dispatcher:
         if isinstance(self._runtime.selector, _ppo_selector_cls()):
             pending = self._runtime.selector.consume_pending()
 
-        # Read-and-clear: the very next dispatch consumes whatever
-        # _consume_override left behind. Any subsequent dispatch (e.g. PPO-
-        # selected following an override miss) defaults to None.
+        # Read-and-clear: this dispatch consumes whatever _consume_override left
+        # behind; any subsequent dispatch (e.g. PPO after an override miss)
+        # defaults to None.
         override_kind = self._overrides.pending_override_kind
         self._overrides.pending_override_kind = None
 

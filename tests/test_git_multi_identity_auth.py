@@ -24,9 +24,6 @@ def _b64(token: str) -> str:
     return base64.b64encode(f"x-access-token:{token}".encode()).decode("ascii")
 
 
-# --- subprocess_env.git_auth_config_overlay ---------------------------------
-
-
 def test_overlay_injects_basic_auth_header_for_github() -> None:
     overlay = subprocess_env.git_auth_config_overlay("secret-token")
     count = int(overlay["GIT_CONFIG_COUNT"])
@@ -51,9 +48,6 @@ def test_overlay_never_places_token_in_a_key() -> None:
     # Call sites log env KEYS only — the token must live only in a VALUE field.
     overlay = subprocess_env.git_auth_config_overlay("supersecret")
     assert all("supersecret" not in key for key in overlay)
-
-
-# --- identity selection / resolution ----------------------------------------
 
 
 def _ident(
@@ -101,9 +95,6 @@ def test_resolve_identity_env_by_name_missing_is_empty_nonstrict() -> None:
     assert identity_mod.resolve_identity_env_by_name(RuntimeConfig(identities={}), "nope") == {}
 
 
-# --- manager fetch-overlay composition --------------------------------------
-
-
 def test_resolve_fetch_overlay_none_without_identities() -> None:
     assert mgr._resolve_fetch_overlay(RuntimeConfig(identities={})) is None
 
@@ -132,7 +123,7 @@ def test_resolve_fetch_overlay_none_when_identity_has_no_token(monkeypatch) -> N
     assert mgr._resolve_fetch_overlay(cfg) is None
 
 
-# --- branch_sync FF-fetch overlay (#178) ------------------------------------
+# branch_sync FF-fetch overlay (#178)
 
 
 def test_resolve_ff_fetch_overlay_none_without_identities() -> None:
@@ -186,7 +177,7 @@ async def test_fast_forward_threads_fetch_overlay_to_git(monkeypatch) -> None:
     assert captured["overlay"] == overlay
 
 
-# --- worktree allocator ls-remote / fetch overlay (#179 + #151 audit) -------
+# worktree allocator ls-remote / fetch overlay (#179 + #151 audit)
 
 
 @pytest.mark.asyncio

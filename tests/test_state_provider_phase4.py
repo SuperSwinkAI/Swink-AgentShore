@@ -154,9 +154,6 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
         async def load_latest_checkpoint(self, _session_id: str) -> None:
             return None
 
-        async def count_learnings(self, _session_id: str) -> int:
-            return 0
-
         async def count_human_feedback(self, _session_id: str) -> int:
             return 0
 

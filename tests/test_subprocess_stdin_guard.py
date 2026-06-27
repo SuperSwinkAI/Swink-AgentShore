@@ -31,15 +31,12 @@ import pytest
 # Repo layout: <root>/tests/<this file>, source under <root>/src/agentshore.
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "agentshore"
 
-# ``subprocess`` spawn primitives that inherit the parent's stdin unless told
-# otherwise. ``subprocess.run`` covers run()/call()/check_call()/check_output()
-# at runtime, but each may also be referenced directly, so guard them all.
+# subprocess spawn primitives that inherit the parent's stdin. Each may be
+# referenced directly (not just via run()), so guard them all.
 SPAWN_ATTRS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
-# Async spawn primitives (``asyncio.create_subprocess_exec`` / ``_shell``).
-# Their names are asyncio-specific and unambiguous, so we match on the attribute
-# name regardless of receiver (``asyncio.`` vs ``asyncio.subprocess.``). They
-# inherit stdin identically and accept the same ``stdin=`` keyword.
+# Async spawns: names are asyncio-specific, so match on the attribute name
+# regardless of receiver (``asyncio.`` vs ``asyncio.subprocess.``).
 ASYNC_SPAWN_ATTRS = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
 
 # Keywords that make a call safe: ``stdin=`` pins the child's stdin explicitly;

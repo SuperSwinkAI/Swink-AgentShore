@@ -36,11 +36,6 @@ class _FakePty:
         self._chunks = []
 
 
-# ---------------------------------------------------------------------------
-# should_use_conpty gating
-# ---------------------------------------------------------------------------
-
-
 def test_should_use_conpty_true_on_windows_with_winpty(monkeypatch) -> None:
     monkeypatch.setattr(conpty.sys, "platform", "win32")
     monkeypatch.setattr(conpty, "_HAS_WINPTY", True)
@@ -64,11 +59,6 @@ def test_should_use_conpty_false_and_warns_without_winpty(monkeypatch) -> None:
     monkeypatch.setattr(conpty.sys, "platform", "win32")
     monkeypatch.setattr(conpty, "_HAS_WINPTY", False)
     assert conpty.should_use_conpty(AgentType.ANTIGRAVITY) is False
-
-
-# ---------------------------------------------------------------------------
-# PtyProcess adapter: stream bridge + lifecycle
-# ---------------------------------------------------------------------------
 
 
 async def test_pty_adapter_bridges_stdout_and_returncode() -> None:

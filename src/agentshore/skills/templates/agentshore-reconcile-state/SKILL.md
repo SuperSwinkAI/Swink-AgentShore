@@ -70,6 +70,7 @@ Trunk-scoped local diagnosis from `$AGENTSHORE_PROJECT_PATH`. `$ARGUMENTS` is un
 - Never `git worktree add` — the skill never creates worktrees. `git worktree remove --force` + `git worktree prune` are permitted **only** for orphan-worktree remediation (a registered worktree with no active session row) and for the **stale** branch of a divergent registration, and only after the dirty-check above. `git worktree repair <dir>` is permitted **only** for the **in-flight** branch of a divergent worktree registration (re-pointing git at a moved working dir); never run `prune` against an in-flight divergent registration. Otherwise `git worktree list` is read-only.
 - Never `git reset --hard`, `git clean -f`, or `git checkout` with branch switching. Working-tree restore is `git checkout -- <path>` on **specific paths attributed to a killed prior play**, or on a tracked path whose diff carries the `AGENTSHORE_IMPLEMENTATION_PLAN` managed-artifact signature (see `misplaced_managed_plan_artifact` in Diagnose). A tracked path that is neither attributed nor signature-matched is never restored.
 - Never `kill -9` a process you cannot prove (via the log) is a defunct child of a timed-out dispatch.
+- Never `gh repo fork`, never `git remote add` a non-origin remote, and never open a cross-fork PR (a `gh pr create` whose `--head` points at a fork). This skill performs no push operations at all — the no-fork clause is listed here for completeness and to prevent any future workaround attempts.
 
 **Report — one fenced JSON block, nothing else:**
 

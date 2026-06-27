@@ -61,7 +61,6 @@ def write_config(project_path: Path, patch: dict[str, object]) -> None:
     merged = _deep_merge(existing, patch)
     text = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
 
-    # Atomic write: temp file in same directory → fsync → os.replace
     fd, tmp_path = tempfile.mkstemp(dir=project_path, prefix=".agentshore_", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

@@ -39,20 +39,13 @@ from agentshore.state import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# ---------------------------------------------------------------------------
-# Monotonic sequence counter — incremented once per outbound message
-# ---------------------------------------------------------------------------
-
+# Monotonic sequence counter, incremented once per outbound message.
 _seq: itertools.count[int] = itertools.count(1)
 
 
-# ---------------------------------------------------------------------------
-# Wire payload TypedDicts — the single source of truth for the per-message
-# field sets shared between the producers (``serializer`` / ``provider``) and
-# the consumer (``dashboard.bridge``). The dashboard TS mirrors live in
-# ``dashboard/src/types.ts`` (``PlayEventStarted`` / ``PlayEventCompleted`` /
-# ``ActivePlay``); keep all three in sync.
-# ---------------------------------------------------------------------------
+# Wire payload TypedDicts: single source of truth for per-message field sets.
+# Mirrored in dashboard/src/types.ts (PlayEventStarted/PlayEventCompleted/
+# ActivePlay) — keep all three in sync.
 
 
 class PlayStartedPayload(TypedDict):
@@ -106,9 +99,7 @@ class ActivePlayPayload(TypedDict):
     trigger_error_class: str | None
 
 
-# ---------------------------------------------------------------------------
 # Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _serialize_agent(agent: AgentSnapshot) -> dict[str, object]:
@@ -125,10 +116,8 @@ def _serialize_agent(agent: AgentSnapshot) -> dict[str, object]:
         "total_tokens": agent.total_tokens,
         "tasks_completed": agent.tasks_completed,
         "tasks_failed": agent.tasks_failed,
-        # desktop-31h2: per-agent dispatch count + share of the fleet-wide
-        # total. Dashboard surfaces this as a "Dispatch share" badge in the
-        # agent list so operators can spot agents idling while others
-        # absorb all the work.
+        # desktop-31h2: per-agent dispatch count + fleet share; dashboard
+        # surfaces a "Dispatch share" badge so operators can spot idling agents.
         "dispatch_count": agent.dispatch_count,
         "dispatch_share": agent.dispatch_share,
         "last_error_class": agent.last_error_class,
@@ -328,9 +317,7 @@ def _serialize_session_stats(stats: SessionStatsSnapshot) -> dict[str, object]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Public serialization functions
-# ---------------------------------------------------------------------------
 
 
 def serialize_state(state: OrchestratorState) -> dict[str, object]:

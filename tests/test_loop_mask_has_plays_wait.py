@@ -35,10 +35,8 @@ class _StateStub:
 def _orch(tmp_path: Path) -> Orchestrator:
     from tests.orchestrator_factory import make_test_orchestrator
 
-    # Default selector is a non-PPO MagicMock: the all-masked + no-work branch
-    # treats a scripted/mock selector's idle as terminal (break). Tests
-    # exercising the live-PPO keep-polling path swap this for a stub matched by
-    # a patched _ppo_selector_cls.
+    # Default selector is a non-PPO MagicMock: all-masked idle is terminal (break).
+    # Live-PPO keep-polling tests swap this via a patched _ppo_selector_cls.
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-562"
     return orch

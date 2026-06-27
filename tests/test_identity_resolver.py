@@ -356,9 +356,7 @@ def test_explicit_gh_config_dir_takes_precedence(tmp_path) -> None:
     assert env["GH_CONFIG_DIR"] == str(explicit)
 
 
-# ---------------------------------------------------------------------------
 # report_identities — diagnostic / startup banner
-# ---------------------------------------------------------------------------
 
 
 def _report(*, identities: dict[str, GitHubIdentity], agents: dict[str, AgentConfig]) -> list:
@@ -676,7 +674,9 @@ def test_verify_repo_access_uses_github_rest_api(
             return None
 
         def read(self) -> bytes:
-            return json.dumps({"full_name": "Owner/Repo"}).encode("utf-8")
+            return json.dumps({"full_name": "Owner/Repo", "permissions": {"push": True}}).encode(
+                "utf-8"
+            )
 
     def fake_urlopen(request: Any, **kwargs: Any) -> Response:
         calls["url"] = request.full_url
@@ -856,9 +856,7 @@ def test_report_gh_login_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     assert row.resolved_login == "example-user"
 
 
-# ---------------------------------------------------------------------------
 # require_two_distinct_gh_identities
-# ---------------------------------------------------------------------------
 
 
 def test_require_two_identities_passes_with_two_logins() -> None:
@@ -1054,8 +1052,84 @@ def test_require_two_identities_rejects_undefined_identity() -> None:
         },
         agents={
             "claude_code": AgentConfig(identity="alice"),
-            "codex": AgentConfig(identity="ghost"),  # not defined
+            "codex": AgentConfig(identity="ghost"),
         },
     )
     with pytest.raises(ConfigError, match=r"not defined"):
         require_two_distinct_gh_identities(fc)
+
+
+def test_verify_repo_access_requires_push_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 response with push=False must raise AgentAuthError."""
+
+    def fake_git_sync(*args: str, **_: Any) -> CommandResult:
+        assert args == ("config", "--get", "remote.origin.url")
+        return _cmd("https://github.com/Owner/Repo.git\n")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"full_name": "Owner/Repo", "permissions": {"push": False, "pull": True}}
+            ).encode("utf-8")
+
+    def fake_urlopen(_request: Any, **_: Any) -> Response:
+        return Response()
+
+    monkeypatch.setattr(identity_mod.command, "git_sync", fake_git_sync)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AgentAuthError) as exc_info:
+        identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    detail = str(exc_info.value)
+    assert "push" in detail or "write" in detail
+    assert "Owner/Repo" in detail
+    assert "token-secret" not in detail
+
+
+def test_verify_repo_access_requires_push_permission_missing_permissions_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 response with no permissions key must raise AgentAuthError."""
+
+    def fake_git_sync(*args: str, **_: Any) -> CommandResult:
+        assert args == ("config", "--get", "remote.origin.url")
+        return _cmd("https://github.com/Owner/Repo.git\n")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"full_name": "Owner/Repo"}).encode("utf-8")
+
+    def fake_urlopen(_request: Any, **_: Any) -> Response:
+        return Response()
+
+    monkeypatch.setattr(identity_mod.command, "git_sync", fake_git_sync)
+    monkeypatch.setattr(identity_mod.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AgentAuthError) as exc_info:
+        identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
+
+    detail = str(exc_info.value)
+    assert "push" in detail or "write" in detail
+    assert "Owner/Repo" in detail
+    assert "token-secret" not in detail

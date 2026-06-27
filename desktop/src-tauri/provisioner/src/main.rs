@@ -140,10 +140,9 @@ fn run_sidecar(args: Vec<OsString>) -> ProvisionResult<()> {
         )?;
 
         logger.line("==> Provisioning bd dependency");
-        // assume_yes=True: the installer is a consented (admin-wizard) context,
-        // so the headless-fail consent gate in downloader.provision_bd is
-        // satisfied and it downloads the pinned bd release into the managed bin
-        // dir. REQUIRED_BD_VERSION is single-sourced in agentshore.beads.setup.
+        // assume_yes=True: the installer is a consented (admin-wizard) context, so
+        // provision_bd's headless-fail consent gate is satisfied and it downloads
+        // the pinned bd release. REQUIRED_BD_VERSION is single-sourced in setup.
         let code = format!(
             "from pathlib import Path\nfrom agentshore.beads.setup import REQUIRED_BD_VERSION\nfrom agentshore.beads.downloader import provision_bd\npath = provision_bd(REQUIRED_BD_VERSION, assume_yes=True, dest_dir=Path({}))\nraise SystemExit(0 if path else 1)\n",
             python_string_literal(&bin)
@@ -175,9 +174,8 @@ fn run_cli(args: Vec<OsString>) -> ProvisionResult<()> {
 
     let logger = Logger::open("Installing-AgentShore-CLI")?;
     logger.line("==> Installing AgentShore CLI");
-    // Pass the plain wheel path directly — uv resolves local paths without a
-    // file:// URI, and plain paths handle spaces, #, %, and non-ASCII correctly
-    // (wheel_uri's %20-only encoding broke those cases).
+    // Plain wheel path, not a file:// URI — uv resolves local paths directly and
+    // handles spaces, #, %, and non-ASCII (wheel_uri's %20-only encoding didn't).
     run_required(
         "uv tool install",
         CLI_FAILURE,
@@ -230,10 +228,9 @@ fn run_timelapse(_args: Vec<OsString>) -> ProvisionResult<()> {
 }
 
 fn run_timelapse_update(_args: Vec<OsString>) -> ProvisionResult<()> {
-    // Runs on every install (the optional "timelapse" component is opt-in, so a
-    // previously-installed CLI would otherwise never be upgraded). It compares
-    // the installed version to the expected pin and upgrades in place when they
-    // differ; it is a no-op when timelapse-capture is not installed at all.
+    // Runs on every install so a previously-installed (opt-in) timelapse
+    // component gets upgraded when its version drifts from the pin; no-op when
+    // timelapse-capture isn't installed at all.
     let logger = Logger::open("Updating-Timelapse-Capture")?;
     logger.line("==> Updating Timelapse Capture (if installed)");
     let python = managed_venv_python_path();

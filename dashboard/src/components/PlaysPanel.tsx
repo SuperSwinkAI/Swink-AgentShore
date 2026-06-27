@@ -42,9 +42,8 @@ function reducer(panel: PanelState, action: PanelAction): PanelState {
     case "state_update":
       return { ...panel, latestState: action.state };
     case "budget_update":
-      // Budget-only heartbeat: patch just the budget so the remaining-time
-      // countdown advances without disturbing agents or any other panel data.
-      // Ignored until a full state has arrived (the bar needs the rest of it).
+      // Patch only budget so the countdown advances without touching other panel
+      // data; ignored until a full state has arrived (the bar needs the rest).
       if (!panel.latestState) return panel;
       return {
         ...panel,

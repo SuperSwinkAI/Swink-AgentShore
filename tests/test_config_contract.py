@@ -330,8 +330,7 @@ health:
 def test_default_config_mode_is_solo_runmode() -> None:
     config = load_config(None)
     assert config.mode is RunMode.SOLO
-    # StrEnum members compare equal to their plain string value, so existing
-    # ``cfg.mode == "solo"`` call sites remain correct.
+    # StrEnum compares equal to its string value, so ``cfg.mode == "solo"`` holds.
     assert config.mode == "solo"
 
 
@@ -369,7 +368,6 @@ def test_config_nested_containers_are_immutable() -> None:
         config.intake.seed_paths.append("docs/")  # type: ignore[attr-defined]
 
 
-# Drift guard: generated default file matches runtime defaults.
 def test_generated_default_file_matches_runtime_defaults(tmp_path: Path) -> None:
     """Drift guard for the single-sourced defaults (H3).
 

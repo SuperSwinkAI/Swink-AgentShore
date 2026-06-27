@@ -23,11 +23,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-#: Sibling of ``worktrees/`` under ``.agentshore/`` where a dirty orphan's
-#: working tree is moved before the orphan is removed, so uncommitted work is
-#: recoverable rather than destroyed (#164). Kept as a local literal to keep this
-#: module dependency-light; the canonical owner of the name is
-#: ``agentshore.core.trunk_artifacts.QUARANTINE_DIRNAME`` (same ``"reclaimed"``).
+#: Sibling of ``worktrees/`` where a dirty orphan's tree is moved before removal
+#: so uncommitted work is recoverable (#164). Local literal to keep this module
+#: dependency-light; canonical owner is ``trunk_artifacts.QUARANTINE_DIRNAME``.
 _RECLAIMED_DIRNAME = "reclaimed"
 
 
@@ -63,12 +61,9 @@ class AllocateResult:
     created: bool
     fetched: bool
     head_sha: str
-    # True when the worktree was checked out in detached-HEAD mode instead of on
-    # ``branch_name`` because that branch was already checked out in another
-    # worktree (e.g. a PR whose head branch is the repo default ``main``, which
-    # the primary working tree holds). Git refuses the same branch in two
-    # worktrees, so we detach at ``base_ref`` instead; the skill still pushes by
-    # explicit refspec (``git push origin HEAD:<branch>``). Issue #60 / Piece B.
+    # Detached-HEAD at ``base_ref`` instead of on ``branch_name`` because that
+    # branch is already checked out in another worktree (git forbids the same
+    # branch twice). Skill still pushes by explicit refspec. Issue #60 / Piece B.
     detached: bool = False
 
 
@@ -186,14 +181,13 @@ async def _add_worktree_with_collision_retry(
         and safe_to_force_remove(Path(collision.group(1)))
     )
     if not reclaimable or branch_name is None:
-        # Not a reclaimable collision (or detached-HEAD path) — bubble the
-        # original error via the standard reason classifier.
+        # Not a reclaimable collision (or detached path) — bubble the original error.
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
             reason=f"git_{args[0]}_failed",
         )
 
-    assert collision is not None  # guarded by `is_pickup` check above
+    assert collision is not None  # guarded by the `reclaimable` check above
     colliding_path = Path(collision.group(1))
     log.warning(
         "worktree_allocate_collision_detected",
@@ -210,9 +204,7 @@ async def _add_worktree_with_collision_retry(
             reason="pickup_collision_remove_failed",
         )
 
-    # Retry once. Any second failure bubbles via the normal path with the
-    # standard reason classifier so it surfaces in the orchestrator logs the
-    # way other allocation failures do.
+    # Retry once; a second failure bubbles via the normal failure path.
     rc2, _, stderr2 = await _run_git(*args, cwd=main_repo, check=False, timeout=180.0)
     if rc2 != 0:
         raise WorktreeAllocationFailed(

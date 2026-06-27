@@ -21,10 +21,6 @@ from agentshore.reports.collector import (
 )
 from agentshore.reports.generator import ReportGenerator
 
-# ---------------------------------------------------------------------------
-# Canned data fixtures
-# ---------------------------------------------------------------------------
-
 SID = "sess-gen-test-0001"
 SID2 = "sess-gen-test-0002"
 NOW = "2026-04-27T00:00:00+00:00"
@@ -419,11 +415,6 @@ def _comparison_data() -> ComparisonData:
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_generator(
     collector_mock: AsyncMock | None = None,
 ) -> ReportGenerator:
@@ -433,11 +424,6 @@ def _make_generator(
     if collector_mock is not None:
         gen._collector = collector_mock
     return gen
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestSessionSummary:

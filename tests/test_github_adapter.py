@@ -28,11 +28,6 @@ def _make_adapter(
     return adapter, mock_store
 
 
-# ---------------------------------------------------------------------------
-# probe
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_probe_sets_available_true_on_success(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
@@ -59,11 +54,6 @@ async def test_probe_sets_available_false_when_gh_missing(tmp_path: Path) -> Non
         run_gh.return_value = (127, "", "gh not found")
         await adapter.probe()
     assert adapter.available is False
-
-
-# ---------------------------------------------------------------------------
-# list_issues
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -270,11 +260,6 @@ async def test_list_issues_passes_since_in_query(tmp_path: Path) -> None:
     assert any(str(a) == "api" for a in argv)
 
 
-# ---------------------------------------------------------------------------
-# list_pull_requests
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_list_pull_requests_returns_metadata_records(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
@@ -316,11 +301,6 @@ async def test_list_pull_requests_returns_metadata_records(tmp_path: Path) -> No
     assert pr.github_author == "octocat"
 
 
-# ---------------------------------------------------------------------------
-# Mutations: dedup via idempotency key
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_mutation_dedup_on_existing_key(tmp_path: Path) -> None:
     from agentshore.data.store import ExternalMutationRecord
@@ -342,7 +322,7 @@ async def test_mutation_dedup_on_existing_key(tmp_path: Path) -> None:
         labels=[],
         idempotency_key="key1",
     )
-    # Should return None immediately without running gh
+    # dedup short-circuits before gh runs
     assert result is None
 
 
@@ -364,11 +344,6 @@ async def test_create_issue_records_mutation(tmp_path: Path) -> None:
     _, call_kwargs = mock_store.update_external_mutation_status.call_args
     args = mock_store.update_external_mutation_status.call_args.args
     assert args[2] == "ok"
-
-
-# ---------------------------------------------------------------------------
-# ensure_labels
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -26,14 +26,11 @@ export interface AgentStatsView {
 
 const EMPTY_VIEW: AgentStatsView = { total: 0, ok: 0, failed: 0, byType: [] };
 
-// React-port companion to dashboard/src/hud/agentPlayStats.ts. The two
-// stores are intentionally independent: the imperative module is still
-// driven by bootstrapDashboard.ts for the bridge SPA, while this React
-// store is driven by the Dashboard.tsx message router as it lands.
+// React-side store, intentionally independent from the imperative
+// dashboard/src/hud/agentPlayStats.ts (bridge SPA); this one is driven by Dashboard.tsx.
 const stats = new Map<string, AgentStats>();
 
-// Monotonically increasing revision so subscribers (the hook) can detect
-// that the underlying store changed without re-emitting per-agent diffs.
+// Monotonic revision so the hook detects store changes without per-agent diffs.
 let revision = 0;
 const listeners = new Set<(rev: number) => void>();
 

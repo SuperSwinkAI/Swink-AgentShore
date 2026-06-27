@@ -194,13 +194,13 @@ def _init_repo_with_dirty_state(tmp_path: Path) -> Path:
             "HOME": str(tmp_path),
         },
     )
-    # Configure committer locally so the seed commit succeeds without a global git config.
+    # Local committer so seed commit works without a global git config.
     for key, val in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")]:
         subprocess.run(["git", "config", "--local", key, val], cwd=str(tmp_path), check=True)
     (tmp_path / "src.py").write_text("a = 1\n")
     subprocess.run(["git", "add", "src.py"], cwd=str(tmp_path), check=True)
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=str(tmp_path), check=True)
-    # Modify a tracked file + sprinkle AgentShore-owned untracked sidecars.
+    # Tracked modification + AgentShore-owned untracked sidecars.
     (tmp_path / "src.py").write_text("a = 2\n")
     (tmp_path / ".agentshore").mkdir()
     (tmp_path / ".agentshore" / "context.json").write_text("{}")
@@ -212,9 +212,8 @@ def test_dirty_paths_excludes_agentshore_owned_sidecars(tmp_path: Path) -> None:
     repo = _init_repo_with_dirty_state(tmp_path)
     entries = collect_dirty_trunk_paths(repo)
     paths = {e.path for e in entries}
-    # The tracked-file modification stays.
-    assert "src.py" in paths
-    # The AgentShore-owned untracked sidecars are filtered out.
+    assert "src.py" in paths  # tracked modification stays
+    # AgentShore-owned untracked sidecars are filtered out.
     assert ".agentshore/" not in paths
     assert ".agentshore/context.json" not in paths
     assert "agentshore.yaml" not in paths

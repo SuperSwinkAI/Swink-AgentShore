@@ -43,22 +43,16 @@ _logger = structlog.get_logger(__name__)
 
 _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 
-# Per-play tier eligibility. Plays not listed here accept any tier.
-# Three bands:
-#   - Cheap mechanical work (small ∪ medium): browser checks, merging
-#     already-approved PRs, and trunk/branch housekeeping (cleanup, prune).
-#     Large is deliberately excluded — these are mechanical and large is
-#     overkill; the cold start spawns the full enabled fleet (no large-only
-#     bootstrap pin), so a small/medium agent is available even at the
-#     bootstrap cleanup first-play.
-#   - Coding & strategic work (medium ∪ large): anything that writes code,
-#     restructures local work, or interprets test failures. Small is too
-#     risky for downstream cost.
-#   - Heavyweight strategic / validation (large only): seed/design audits,
-#     final QA, code review, plan authoring, and global calibration where
-#     medium's judgement isn't trusted to set or certify the trajectory, and
-#     the agentic turn is long enough that fast/medium models overrun a harness's
-#     reliable turn-completion envelope (#254).
+# Per-play tier eligibility. Plays not listed here accept any tier. Three bands:
+#   - Cheap mechanical (small ∪ medium): browser checks, merging approved PRs,
+#     trunk/branch housekeeping. Large excluded as overkill; cold start spawns
+#     the full fleet so a small/medium agent is available at first-play.
+#   - Coding & strategic (medium ∪ large): code writes, local restructure, test
+#     interpretation. Small too risky for downstream cost.
+#   - Heavyweight strategic/validation (large only): seed/design audits, final QA,
+#     code review, plan authoring, calibration — medium's judgement isn't trusted
+#     to set/certify the trajectory, and the long agentic turn overruns fast/medium
+#     models' reliable turn-completion envelope (#254).
 # Medium is the universal fallback for the first two bands.
 _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
     PlayType.CLEANUP: frozenset({"small", "medium"}),
@@ -68,15 +62,12 @@ _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
     PlayType.ISSUE_PICKUP: frozenset({"medium", "large"}),
     PlayType.UNBLOCK_PR: frozenset({"large", "medium"}),
     PlayType.REFINE_TASK_BREAKDOWN: frozenset({"medium", "large"}),
-    # Large only — code_review is AgentShore's heaviest analytical play (full-diff
-    # intake → multi-axis correctness/safety/spec/security analysis → GH review
-    # submission → JSON envelope), on par with run_qa / write_implementation_plan
-    # which are already large-only. A fast/medium model overruns the harness's
-    # reliable turn-completion envelope on this play (#254: medium Gemini-Flash
-    # produced clean-exit empty no-ops — zero stdout, no first byte — exclusively
-    # on code_review while succeeding on every simpler play). This is a tier
-    # capability floor, NOT a per-harness rule: every provider's large tier
-    # qualifies and improves toward parity there.
+    # Large only — code_review is the heaviest analytical play (full-diff intake →
+    # multi-axis correctness/safety/spec/security → GH review → JSON envelope), on
+    # par with the other large-only plays. Fast/medium models overrun the harness's
+    # turn-completion envelope here (#254: medium Gemini-Flash clean-exit empty
+    # no-ops on code_review only, while passing simpler plays). Tier capability
+    # floor, NOT a per-harness rule: every provider's large tier qualifies.
     PlayType.CODE_REVIEW: frozenset({"large"}),
     PlayType.RUN_QA: frozenset({"large"}),
     PlayType.WRITE_IMPLEMENTATION_PLAN: frozenset({"large"}),
@@ -126,14 +117,12 @@ def select_agent_for(
         raise AntiConfirmationViolation("No IDLE agents available for selection")
 
     # -- Step 0·auth: drop session-auth-suppressed types ----------------------
-    # A backend-auth failure benches the whole agent type for the session (#277).
-    # The auth-failed handle returns to IDLE (the agent process is healthy — only
-    # its backend token/quota is dead), so unlike a rate_limit hold (which parks
-    # the handle in ERROR and is filtered out by the IDLE gate above) an
-    # auth-suppressed type must be excluded explicitly here. Without it a
-    # late-resolved play (issue_pickup / reconcile_state, whose runner *this*
-    # function picks, not the candidate layer) keeps re-dispatching the dead type
-    # every tick. Mirrors the ``compute_agent_eligibility_mask`` auth filter.
+    # A backend-auth failure benches the whole type for the session (#277). The
+    # auth-failed handle returns to IDLE (process healthy, only token/quota dead),
+    # so unlike a rate_limit ERROR hold (filtered by the IDLE gate above) it must
+    # be excluded explicitly — else a late-resolved play (issue_pickup /
+    # reconcile_state, runner picked here not at the candidate layer) re-dispatches
+    # the dead type every tick. Mirrors ``compute_agent_eligibility_mask``.
     if auth_suppressed_types:
         candidates = [h for h in candidates if h.agent_type.value not in auth_suppressed_types]
         if not candidates:

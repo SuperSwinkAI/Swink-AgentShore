@@ -14,10 +14,6 @@ from agentshore.agents.model_catalog import (
     models_for_agent,
 )
 
-# ---------------------------------------------------------------------------
-# models_for_agent - baseline
-# ---------------------------------------------------------------------------
-
 
 def test_known_models_returned_when_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -54,7 +50,7 @@ def test_claude_catalog_excludes_unavailable_fable() -> None:
 
 def test_known_models_first_in_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    live = ["claude-new-model-9000", "claude-haiku-4-5"]  # haiku already known
+    live = ["claude-new-model-9000", "claude-haiku-4-5"]
     with patch(
         "agentshore.agents.model_catalog._fetch_anthropic_models",
         new=AsyncMock(return_value=live),
@@ -64,7 +60,6 @@ def test_known_models_first_in_result(monkeypatch: pytest.MonkeyPatch) -> None:
     known = KNOWN_MODELS["claude_code"]
     assert result[: len(known)] == known
     assert "claude-new-model-9000" in result
-    # duplicate should not appear
     assert result.count("claude-haiku-4-5") == 1
 
 
@@ -109,7 +104,6 @@ def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     # models_for_agent for grok must never call a live xAI API.
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
     result = models_for_agent("grok")
-    # Only the hard-pinned entry; no live extras possible.
     assert result == ["grok-build"]
 
 
@@ -120,7 +114,6 @@ def test_antigravity_known_models_include_non_google_backends() -> None:
     assert "Claude Sonnet 4.6 (Thinking)" in antigravity
     assert "Claude Opus 4.6 (Thinking)" in antigravity
     assert "GPT-OSS 120B (Medium)" in antigravity
-    # Gemini options remain available too.
     assert "Gemini 3.1 Pro (High)" in antigravity
 
 
@@ -130,11 +123,6 @@ def test_antigravity_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     result = models_for_agent("antigravity")
     assert result == KNOWN_MODELS["antigravity"]
-
-
-# ---------------------------------------------------------------------------
-# _fetch_anthropic_models - failure modes
-# ---------------------------------------------------------------------------
 
 
 def test_fetch_anthropic_returns_empty_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,11 +163,6 @@ def test_fetch_anthropic_filters_non_claude_ids(monkeypatch: pytest.MonkeyPatch)
 
     assert result == ["claude-sonnet-4-5", "claude-opus-4-7"]
     assert "not-claude-model" not in result
-
-
-# ---------------------------------------------------------------------------
-# _fetch_openai_models - failure modes
-# ---------------------------------------------------------------------------
 
 
 def test_fetch_openai_returns_empty_without_key(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -249,11 +249,6 @@ async def test_add_pull_request_labels_preserves_existing_labels(tmp_path) -> No
         await store.close()
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 async def _setup_session(store: DataStore, tmp_path: object) -> None:
     await store.create_session(
         SessionRecord(
@@ -969,11 +964,6 @@ async def test_external_mutation_idempotency_key_is_unique(tmp_path) -> None:
         await store.close()
 
 
-# ---------------------------------------------------------------------------
-# get_agents
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_get_agents_empty_for_unknown_session(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
@@ -1027,11 +1017,6 @@ async def test_get_agents_isolates_sessions(tmp_path) -> None:
         assert len(await store.get_agents("s2")) == 1
     finally:
         await store.close()
-
-
-# ---------------------------------------------------------------------------
-# record_experience + iter_experience_for_replay
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1171,11 +1156,6 @@ async def test_iter_experience_empty_for_unknown_session(tmp_path) -> None:
         await store.close()
 
 
-# ---------------------------------------------------------------------------
-# NULL-field coverage
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_play_record_null_fields_round_trip(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
@@ -1246,11 +1226,6 @@ async def test_close_persists_a_self_consistent_db_file(tmp_path) -> None:
         assert history[0].play_type == "issue_pickup"
     finally:
         await fresh.close()
-
-
-# ---------------------------------------------------------------------------
-# mark_pr_merged — post-merge cache write-through
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1464,11 +1439,6 @@ async def test_pull_request_refresh_keeps_live_changes_requested(tmp_path) -> No
         assert pr_merge_ready(pr, target_branch="main") is False
     finally:
         await store.close()
-
-
-# ---------------------------------------------------------------------------
-# list_recently_closed_issues — Done column window
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

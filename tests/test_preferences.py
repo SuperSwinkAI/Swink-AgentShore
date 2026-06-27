@@ -32,11 +32,6 @@ def global_prefs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# Allowlist + validation
-# --------------------------------------------------------------------------- #
-
-
 def test_allowlist_excludes_delivery_and_selfheal_plays() -> None:
     allowed = set(gp.disableable_play_values())
     assert allowed == {"cleanup", "groom_backlog", "prune", "run_qa"}
@@ -69,11 +64,6 @@ def test_coerce_drops_unknown_and_critical_entries() -> None:
     assert gp._coerce_disabled_plays("not-a-list") == ()
 
 
-# --------------------------------------------------------------------------- #
-# File round-trip
-# --------------------------------------------------------------------------- #
-
-
 def test_save_load_round_trip(global_prefs: Path) -> None:
     gp.save_preferences_data({"disabled_plays": ("run_qa", "prune")})
     assert global_prefs.exists()
@@ -90,11 +80,6 @@ def test_load_malformed_file_returns_defaults(global_prefs: Path) -> None:
     assert gp.load_preferences_data() == {"disabled_plays": ()}
 
 
-# --------------------------------------------------------------------------- #
-# Config merge
-# --------------------------------------------------------------------------- #
-
-
 def test_load_config_folds_in_global_preferences(global_prefs: Path) -> None:
     gp.save_preferences_data({"disabled_plays": ("cleanup",)})
     cfg = load_config(None)
@@ -104,11 +89,6 @@ def test_load_config_folds_in_global_preferences(global_prefs: Path) -> None:
 def test_load_config_defaults_with_no_preferences_file(global_prefs: Path) -> None:
     cfg = load_config(None)
     assert cfg.preferences.disabled_plays == ()
-
-
-# --------------------------------------------------------------------------- #
-# Mask overlay
-# --------------------------------------------------------------------------- #
 
 
 def _cfg(disabled: tuple[str, ...]) -> RuntimeConfig:

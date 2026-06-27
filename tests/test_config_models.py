@@ -143,9 +143,7 @@ def test_agent_timeout_stays_at_default_when_only_play_timeouts_set(tmp_path: Pa
     assert cfg.effective_play_timeout("merge_pr") == 10800
 
 
-# ---------------------------------------------------------------------------
-# Per-tier spawn max (replaces the global agent_spawn.max_per_config)
-# ---------------------------------------------------------------------------
+# Per-tier spawn max (replaces global agent_spawn.max_per_config)
 
 
 def test_model_tier_config_default_max_is_1() -> None:
@@ -252,8 +250,7 @@ def test_timelapse_absent_block_uses_defaults(tmp_path: Path) -> None:
 
 
 def test_worktrees_disk_knobs_have_conservative_defaults() -> None:
-    # Disk-pressure governance ships on by default (#180): a fresh install is
-    # protected out of the box, with the floor/high-water/failure-cap active.
+    # Disk-pressure governance ships on by default (#180): fresh installs protected.
     cfg = RuntimeConfig()
     assert cfg.worktrees.min_free_disk_mb == 2048
     assert cfg.worktrees.disk_high_water_mb == 4096

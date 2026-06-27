@@ -263,7 +263,6 @@ function updateWalk(char: Character, dt: number): void {
   char.y += (dy / dist) * move;
   char.direction = directionFromDelta(dx, dy);
 
-  // walk animation
   char.animTimer += dt;
   if (char.animTimer >= WALK_FRAME_DURATION) {
     char.animTimer -= WALK_FRAME_DURATION;

@@ -338,15 +338,8 @@ export const KANBAN_WALL_PALETTES: Record<ResolvedTheme, KanbanWallPalette> = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Floor-pad accent palettes (per-zone, per-theme)
-//
-// The floor-rendering passes use a small repeating cycle of accent colors to
-// distinguish seat pads inside a zone. The original code hard-coded the
-// arrays inline at four call sites; here we keep a single source of truth so
-// theme/colour changes touch one place. Key: zone → theme → ordered list of
-// PadColor entries (the renderer indexes into this with `i % padColors.length`).
-// ---------------------------------------------------------------------------
+// Floor-pad accent palettes (zone → theme → ordered PadColors), single source of truth
+// for the four floor-render call sites; renderer indexes with `i % padColors.length`.
 
 export interface PadColor {
   fill: string;

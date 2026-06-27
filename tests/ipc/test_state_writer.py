@@ -217,5 +217,4 @@ async def test_null_writer_is_noop(tmp_path: Path) -> None:
     writer = NullStateWriter()
     await writer.write_state(_msg({"x": 1}))
     await writer.append_event(_msg({"x": 1}))
-    # nothing should be written into tmp_path
     assert list(tmp_path.iterdir()) == []

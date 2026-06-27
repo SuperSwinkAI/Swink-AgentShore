@@ -79,9 +79,6 @@ def _state(
     )
 
 
-# --- CapabilityGate ---------------------------------------------------------
-
-
 def test_capability_gate_passes_when_capable_idle_agent_present() -> None:
     # CLAUDE_CODE has can_run_skill=True per capabilities defaults.
     gate = CapabilityGate("can_run_skill")
@@ -143,9 +140,6 @@ def test_capability_gate_one_failure_not_circuit_broken() -> None:
     assert gate(_state(agents=[agent])) is None
 
 
-# --- InFlightGate -----------------------------------------------------------
-
-
 def test_in_flight_gate_passes_when_not_in_flight() -> None:
     gate = InFlightGate(PlayType.RECONCILE_STATE)
     assert gate(_state()) is None
@@ -163,9 +157,6 @@ def test_in_flight_gate_masks_when_in_flight() -> None:
 def test_in_flight_gate_ignores_other_play_types_in_flight() -> None:
     gate = InFlightGate(PlayType.RECONCILE_STATE)
     assert gate(_state(in_flight_plays=[PlayType.CLEANUP, PlayType.MERGE_PR])) is None
-
-
-# --- CooldownGate -----------------------------------------------------------
 
 
 def test_cooldown_gate_passes_when_never_run() -> None:
@@ -200,9 +191,6 @@ def test_cooldown_gate_in_flight_is_owned_by_inflight_gate_not_cooldown() -> Non
     upstream by _recent_play_completions."""
     gate = CooldownGate(PlayType.CLEANUP, plays=20)
     assert gate(_state(in_flight_plays=[PlayType.CLEANUP])) is None
-
-
-# --- ArmedByFailureGate (the new logic) -------------------------------------
 
 
 def test_armed_gate_closed_when_no_plays_run() -> None:
@@ -371,9 +359,6 @@ def test_armed_gate_still_arms_on_genuine_failure_amid_skips() -> None:
     assert gate(state) is None  # armed by the real merge_pr failure
 
 
-# --- WarmupGate -------------------------------------------------------------
-
-
 def test_warmup_gate_masks_below_threshold_no_prereq() -> None:
     gate = WarmupGate(threshold=20)
     reason = gate(_state(total_plays=5))
@@ -411,7 +396,7 @@ def test_warmup_gate_with_prereq_enforces_when_prereq_ran() -> None:
     assert "warmup floor" in reason.text
 
 
-# --- DependenciesResolvedGate (#96) -----------------------------------------
+# DependenciesResolvedGate (#96)
 
 
 def _issue(number: int = 1, state: str = "OPEN") -> IssueSnapshot:

@@ -15,12 +15,10 @@ if TYPE_CHECKING:
     from agentshore.github.adapter import GitHubAdapter
 
 
-# Substrings in an unblock_pr failure that mean the PR cannot be unblocked by an
-# agent — it needs a human maintainer or CI/infra change. Matching any marks the
-# PR manual-required on the FIRST such failure (#6), instead of waiting for the
-# attempt-count exhaustion threshold, so the orchestrator stops re-dispatching
-# expensive agents at a permanently-blocked PR. Transient blockers (CI pending,
-# resolvable merge conflicts) intentionally do NOT match and stay retryable.
+# Substrings in an unblock_pr failure meaning the PR needs a human/CI-infra fix,
+# not an agent. Matching any marks it manual-required on the FIRST failure (#6)
+# rather than at attempt-exhaustion, so we stop re-dispatching agents at a
+# permanently-blocked PR. Transient blockers (CI pending, conflicts) don't match.
 _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "forbidden by skill policy",
     "ci-change",
@@ -32,12 +30,10 @@ _UNBLOCK_MANUAL_REQUIRED_MARKERS: tuple[str, ...] = (
     "ci config or infrastructure",
 )
 
-# Markers in a failed write_implementation_plan outcome that mean the issue
-# cannot be turned into a plan by re-dispatching an agent — it needs a human to
-# split or clarify it. Matching any parks the issue with NEEDS_HUMAN_LABEL on the
-# FIRST such failure (#458) so the planner stops re-selecting it every tick
-# (comment spam + wasted budget). Transient/ambiguous failures do NOT match and
-# stay retryable.
+# Markers in a failed write_implementation_plan meaning the issue needs a human
+# to split/clarify, not another agent. Matching any parks it NEEDS_HUMAN on the
+# FIRST failure (#458) so the planner stops re-selecting it every tick (comment
+# spam + wasted budget). Transient/ambiguous failures don't match.
 _WRITE_PLAN_UNPLANNABLE_MARKERS: tuple[str, ...] = (
     "too ambiguous",
     "too large",

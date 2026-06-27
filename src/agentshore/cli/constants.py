@@ -5,17 +5,15 @@ from __future__ import annotations
 from agentshore.agents.registry import BINARY_TO_AGENT_KEY, SUPPORTED_CLI_AGENT_KEYS
 from agentshore.config.models import RunMode
 
-# Socket-wait constants used by ``_launch_dashboard_background``. We poll the
-# Unix-socket path that the orchestrator subprocess will create on startup.
-# Splitting the timeout from the poll interval keeps each independently
-# tunable and self-documenting.
+# Socket-wait constants for ``_launch_dashboard_background``: poll the socket
+# path the orchestrator creates on startup. Timeout/interval split so each is
+# independently tunable.
 _SOCKET_WAIT_TIMEOUT_S: float = 15.0
 _SOCKET_POLL_INTERVAL_S: float = 0.25
 _SOCKET_WAIT_RETRIES: int = int(_SOCKET_WAIT_TIMEOUT_S / _SOCKET_POLL_INTERVAL_S)
 
-# Poll interval for the graceful ``agentshore stop`` drain wait. The wait has no
-# deadline — it polls until the orchestrator exits or the user escalates with
-# Ctrl+C — so only the interval is configurable here.
+# Poll interval for the graceful ``agentshore stop`` drain wait — no deadline
+# (polls until exit or Ctrl+C), so only the interval is configurable.
 _DRAIN_WAIT_POLL_INTERVAL_S: float = 0.5
 
 _START_MODE_TUI = "tui"
@@ -28,8 +26,7 @@ _BYPASS_FLAGS: dict[str, tuple[str, ...]] = {
     "antigravity": ("--dangerously-skip-permissions",),
 }
 
-# Binary→agent-key map sourced from the canonical registry so there is one
-# source of truth for which binaries map to which agent config key.
+# Sourced from the canonical registry — one source of truth for binary→key.
 _AGENT_KEY_BY_BINARY: dict[str, str] = BINARY_TO_AGENT_KEY
 _SUPPORTED_CLI_AGENT_KEYS: frozenset[str] = SUPPORTED_CLI_AGENT_KEYS
 

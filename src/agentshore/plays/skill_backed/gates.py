@@ -56,9 +56,7 @@ class CapabilityGate:
             for a in state.agents
             if a.status == AgentStatus.IDLE
             and a.agent_type.value not in rate_limited
-            # Circuit breaker (#22): a known-dead agent (0 successes + a timeout
-            # or repeated failures) is masked from work selection until it
-            # succeeds, so plays aren't routed to it.
+            # Circuit breaker (#22): mask known-dead agents until they succeed.
             and not is_agent_circuit_broken(
                 tasks_completed=a.tasks_completed,
                 tasks_failed=a.tasks_failed,
@@ -154,10 +152,8 @@ class ArmedByFailureGate:
 
     def __call__(self, state: OrchestratorState) -> MaskReason | None:
         own_age = state.plays_since_last_play_type.get(self.play_type, float("inf"))
-        # Arm only on a GENUINE failure since this play last ran. A no-op
-        # ``skip:*`` outcome is recorded success=False but is not a wedge —
-        # arming on it lets a write_impl skip ↔ reconcile arm/run pair spin
-        # forever making zero progress (the no-op spin root).
+        # Arm only on a GENUINE failure, not a no-op ``skip:*`` (recorded
+        # success=False but not a wedge — arming on it spins forever, zero progress).
         armed = any(
             age < own_age
             and state.last_play_success_by_type.get(pt) is False
@@ -267,7 +263,6 @@ class DependenciesResolvedGate:
         if graph is None or not graph.has_epics:
             return None
 
-        # Build the set of issue numbers whose linked bead task has unresolved deps.
         blocked_issue_numbers: set[int] = {
             task.issue_number
             for task in graph.tasks
@@ -280,11 +275,10 @@ class DependenciesResolvedGate:
         if not open_numbers:
             return None  # no open issues → CapabilityGate / candidate validity handles this
 
-        # If there is at least one open issue NOT in the blocked set, the play can proceed.
+        # At least one open issue is not dep-blocked → play can proceed.
         if open_numbers - blocked_issue_numbers:
             return None
 
-        # Every open issue is dep-blocked.
         return MaskReason(
             text=(
                 f"all {len(open_numbers)} open issue(s) blocked by unresolved beads dependencies"

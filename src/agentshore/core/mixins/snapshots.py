@@ -44,10 +44,8 @@ if TYPE_CHECKING:
 MIN_COST_PER_PLAY = 0.05
 COLD_START_COST_ESTIMATE = 0.05
 
-# Non-work plays — bookkeeping that progresses the loop without representing
-# user-visible work. Empty after desktop-rni0 (idle waits and recovery are
-# loop-side, not plays). Retained for forward-compat: future bookkeeping plays
-# would be added here.
+# Non-work bookkeeping plays. Empty after desktop-rni0 (idle/recovery are
+# loop-side); retained as a seam for future bookkeeping plays.
 _NON_WORK_PLAY_VALUES: frozenset[str] = frozenset()
 
 
@@ -100,10 +98,8 @@ class SnapshotProjector:
                 plays_by_agent[agent_id] = (ok, fail + 1)
 
         handles = list(self._manager.handles.values())
-        # Cast through int() so tests that drop a MagicMock into
-        # ``handles`` (see tests/test_ipc.py::test_play_completion_emits_agent_idle)
-        # don't trip the ``> 0`` comparison below — MagicMock.__gt__ doesn't
-        # play nice with int.
+        # int() so a MagicMock handle (test_ipc.py) doesn't trip the ``> 0``
+        # comparison below — MagicMock.__gt__ misbehaves with int.
         dispatches_by_handle = {id(h): int(getattr(h, "dispatches", 0) or 0) for h in handles}
         total_dispatches = sum(dispatches_by_handle.values())
 
@@ -191,10 +187,9 @@ class SnapshotProjector:
                 mergeable=pr.mergeable,
             )
             if pr.branch is None and pr.state and pr.state.lower() != "merged":
-                # Safety net for issue #567: an active PR record without a branch
-                # will cause worktree_allocate_failed: missing_branch on the next
-                # code_review/merge_pr dispatch. Surface the leak with enough
-                # context to trace back to the construction site.
+                # #567: an active PR without a branch causes
+                # worktree_allocate_failed:missing_branch on the next
+                # code_review/merge_pr; log enough context to trace the leak.
                 _logger.warning(
                     "pr_snapshot_missing_branch",
                     pr_number=pr.pr_number,
@@ -318,9 +313,8 @@ class SnapshotProjector:
         consecutive_nonproductive_by_type: dict[PlayType, int] = {}
         _streak_broken: set[PlayType] = set()
         seed_freshness: int | None = None
-        # Non-work plays (``_NON_WORK_PLAY_VALUES``) are skipped so the
-        # cooldown offset reflects "real plays since last X". The set is
-        # empty after desktop-rni0 but the seam stays in place.
+        # Skip non-work plays so the offset reflects real plays since last X.
+        # ``_NON_WORK_PLAY_VALUES`` is empty after desktop-rni0; seam retained.
         real_offset = 0
         for p in reversed(play_history):
             if p.play_type in _NON_WORK_PLAY_VALUES:
@@ -340,13 +334,13 @@ class SnapshotProjector:
                 if pt not in last_play_success_by_type:
                     last_play_success_by_type[pt] = p.success
                 if pt not in last_play_skipped_by_type:
-                    # A ``skip:*`` outcome (recorded success=False) is a no-op,
-                    # not a wedge — track it so ArmedByFailureGate doesn't arm a
-                    # self-heal play off a skip (the write_impl↔reconcile spin).
+                    # A ``skip:*`` (recorded success=False) is a no-op, not a
+                    # wedge — track it so ArmedByFailureGate doesn't arm self-heal
+                    # off a skip (the write_impl↔reconcile spin).
                     last_play_skipped_by_type[pt] = (p.failure_category or "").startswith("skip:")
                 # Tail run of consecutive non-productive (fail OR skip) outcomes
-                # per type — keep counting newest→oldest until this type's first
-                # success terminates its streak (the 3-strikes breaker signal).
+                # per type, newest→oldest until this type's first success ends it
+                # (the 3-strikes breaker signal).
                 if pt not in _streak_broken:
                     if p.success:
                         _streak_broken.add(pt)
@@ -487,14 +481,10 @@ class SnapshotProjector:
     def compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
         """Aggregate dashboard play counters, excluding non-work play values."""
         work_plays = [p for p in play_history if p.play_type not in _NON_WORK_PLAY_VALUES]
-        # A play row is inserted with a ``success=False`` placeholder at dispatch
-        # time (``_prepare_execution_context``) and only updated to its real
-        # outcome once it finalizes — at which point ``ended_at`` is set
-        # (``update_play`` requires it). While a play is still in flight the
-        # placeholder must NOT be read as a failure: the agent is mid-work and
-        # the play simply hasn't finished. Count only finalized plays
-        # (``ended_at`` populated) in the user-facing ok/fail/total counters so
-        # running plays never show up as fails on the stats surface.
+        # Play rows start with a ``success=False`` placeholder at dispatch and
+        # only get their real outcome (and ``ended_at``) at finalization. Count
+        # only finalized plays (``ended_at`` set) so in-flight placeholders don't
+        # surface as fails in the user-facing ok/fail/total counters.
         finalized_plays = [p for p in work_plays if p.ended_at is not None]
         total_plays = len(finalized_plays)
         _gate_categories = ("gate_rejection", "skip:")
@@ -505,9 +495,8 @@ class SnapshotProjector:
             if not play.success and (play.failure_category or "").startswith(_gate_categories)
         )
         failed_plays = total_plays - successful_plays - gate_rejected_plays
-        # Cost and tokens still total over EVERY play including idle —
-        # idle ticks cost ~$0 anyway, and the budget meter should account
-        # for any incidental cost. Duration similarly tracks elapsed.
+        # Cost/tokens/duration total over EVERY play including idle — idle costs
+        # ~$0 but the budget meter should still account for incidental cost.
         total_cost = sum(play.dollar_cost for play in play_history)
         total_tokens = sum(play.token_cost for play in play_history)
         total_duration_seconds = sum((play.duration_ms or 0) / 1000 for play in play_history)

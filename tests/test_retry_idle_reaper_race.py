@@ -44,7 +44,6 @@ async def test_list_retrying_claim_group_ids_returns_only_retrying(tmp_path) -> 
         )
         assert retrying_group is not None
         assert running_group is not None
-        # Park the first group in retrying.
         await store.finish_work_claim_group("s1", retrying_group, status="retrying")
 
         ids = await store.list_retrying_claim_group_ids("s1")

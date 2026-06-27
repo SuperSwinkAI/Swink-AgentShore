@@ -60,10 +60,8 @@ if TYPE_CHECKING:
 
 _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 
-# Reverse failsafe: when normal policy gates paint AgentShore into an all-masked
-# corner even though open work and idle capacity exist, expose a broad fallback
-# menu. These actions stay hard-masked because they are not progress actions or
-# are reserved tensor slots.
+# Stay hard-masked even on the reverse-failsafe path: non-progress plays and
+# reserved tensor slots.
 _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
     frozenset(
         {
@@ -78,16 +76,13 @@ _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
 _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {PlayType.END_AGENT, PlayType.END_SESSION}
 )
-# 3-strikes circuit breaker: a work play that records this many consecutive
-# non-productive (fail OR skip) outcomes is masked until ``_CIRCUIT_BREAKER_
-# COOLDOWN_PLAYS`` have elapsed since its last attempt, then the policy may
-# retry it once (a fresh strike re-arms it). This benches a play that can only
-# skip — e.g. write_implementation_plan losing the resolve-time TOCTOU race —
-# instead of letting the policy re-select it every tick. This breaker cooldown
-# is intentionally separate from ``play_pacing.standard_cooldown_plays`` because
-# it is a retry bench for nonproductive outcomes, not a normal post-run play
-# cadence. Internal control plays and RECONCILE_STATE (self-heal must stay
-# available) are excluded.
+# 3-strikes circuit breaker: a work play with this many consecutive
+# non-productive (fail OR skip) outcomes is benched for _CIRCUIT_BREAKER_
+# COOLDOWN_PLAYS, then the policy may retry once (a fresh strike re-arms it) —
+# stops re-selecting a play that can only skip (e.g. a resolve-time TOCTOU race).
+# Separate from play_pacing.standard_cooldown_plays: a nonproductive-outcome
+# retry bench, not a normal post-run cadence. RECONCILE_STATE (self-heal) and
+# control plays are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
 _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {
@@ -96,21 +91,16 @@ _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED
     PlayType.CALIBRATE_ALIGNMENT,
 }
 
-# Lifecycle-churn breaker (#163): once a session can no longer dispatch
-# productive work (PR-candidate gates, anti-confirmation, blocked worktree
-# allocation), the PPO can still pick the lifecycle plays and oscillates
-# INSTANTIATE_AGENT <-> END_AGENT with zero dispatches, burning budget. When the
-# recent play tail is exclusively lifecycle AND idle capacity already exists AND
-# a work play has run before but is now stale, mask the lifecycle plays so the
-# engine goes quiescent (the selector idles safely on an all-masked tick) and
-# resumes when work unblocks. Pure option-removal, like the circuit breaker.
+# Lifecycle-churn breaker (#163): when work is undispatchable the PPO can
+# oscillate INSTANTIATE_AGENT <-> END_AGENT with zero dispatches, burning budget.
+# Masking lifecycle plays (when tail is all-lifecycle + idle capacity + a work
+# play has run but gone stale) lets the engine idle quiescent until work unblocks.
 _LIFECYCLE_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
     {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
 )
-# "Productive work" for staleness detection: dispatching work plays plus the
-# maintenance plays that make real progress. RECONCILE_STATE is excluded on
-# purpose — a repeatedly-failing self-heal must not reset the staleness guard —
-# as are the control/terminal/reserved plays.
+# "Productive work" for staleness detection. RECONCILE_STATE excluded so a
+# repeatedly-failing self-heal can't reset the staleness guard (as are
+# control/terminal/reserved plays).
 _WORK_PLAY_TYPES: Final[frozenset[PlayType]] = _CIRCUIT_BREAKER_ELIGIBLE_PLAYS | {
     PlayType.SEED_PROJECT,
     PlayType.CLEANUP,
@@ -347,23 +337,16 @@ def compute_reverse_failsafe_mask(
         if play_type in V1_ACTION_ORDER:
             lifted[V1_ACTION_ORDER.index(play_type)] = False
     # END_SESSION carries no terminal-readiness preconditions on the failsafe
-    # path (#240). The terminal-evidence guards (in-flight work, fresh audits,
-    # recent QA, ready-task count) exist for the *normal* path, where ending the
-    # session is a deliberate policy choice that should wait for clean evidence.
-    # The failsafe only fires once the session is demonstrably wedged — N idle
-    # ticks, every agent idle, every other action masked — at which point those
-    # guards keep END_SESSION masked precisely when a clean handoff is needed
-    # (ready tasks that are all un-dispatchable being the exact stuck state).
-    # So when control plays are allowed, END_SESSION stays lifted and the PPO
-    # decides whether to terminate.
+    # path (#240): the terminal-evidence guards are for the normal path. The
+    # failsafe only fires once the session is demonstrably wedged, where those
+    # guards would keep END_SESSION masked exactly when a clean handoff is needed.
+    # When control plays are allowed, END_SESSION stays lifted for the PPO to decide.
 
     if PlayType.INSTANTIATE_AGENT in V1_ACTION_ORDER:
         # Don't grow the fleet via the failsafe when idle capacity already exists
-        # (spawning more can't unblock work — the bottleneck is masked dispatch,
-        # not fleet size; #163) or when no config is spawnable at all (empty or
-        # saturated config_index; #159). The failsafe only ever runs with an idle
-        # agent present (reverse_failsafe_should_unmask), so genuine cold-start
-        # (zero agents) is unaffected — that first spawn comes from the base mask.
+        # (bottleneck is masked dispatch, not fleet size; #163) or no config is
+        # spawnable (empty/saturated config_index; #159). Failsafe only runs with
+        # an idle agent present, so genuine cold-start spawns from the base mask.
         idle_agent_exists = any(a.status == AgentStatus.IDLE for a in state.agents)
         no_spawnable_config = cfg is not None and (
             not config_index or not compute_config_mask(state, cfg, config_index).any()
@@ -376,16 +359,13 @@ def compute_reverse_failsafe_mask(
         if candidate_pt in V1_ACTION_ORDER and not candidate_plan.candidates_for(candidate_pt):
             lifted[V1_ACTION_ORDER.index(candidate_pt)] = False
 
-    # Overlay invariant: any action enabled by the base mask stays enabled.
-    # This is what makes the semantics structural rather than replacement —
-    # reverse failsafe can ADD opportunities, never REMOVE them.
+    # Overlay invariant: any base-mask-enabled action stays enabled — the
+    # failsafe can ADD opportunities, never REMOVE them.
     result = lifted | base_mask if base_mask is not None else lifted
 
-    # User-disabled plays are the one exception to the additive invariant: an
-    # explicit user choice must survive the failsafe (#240). The selector runs
-    # its own failsafe via this function and does NOT re-run the builder's
-    # _stage_user_disabled, so enforce it here at the source — both call sites
-    # (ActionMaskBuilder.build and PlaySelector.select) are then safe.
+    # The one exception to the additive invariant: a user-disabled play must
+    # survive the failsafe (#240). The selector calls this without re-running the
+    # builder's _stage_user_disabled, so enforce it here so both call sites are safe.
     for pt in _resolve_user_disabled_plays(cfg):
         result[V1_ACTION_ORDER.index(pt)] = False
     return result

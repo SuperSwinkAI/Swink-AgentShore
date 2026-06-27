@@ -84,14 +84,32 @@ _SKILL_ARGS: dict[str, list[str]] = {spec.name: spec.args for spec in _SKILL_SPE
 
 DEFAULT_CONTEXT_RELATIVE_PATH = ".agentshore/context.json"
 
+# Skills permitted to read the full ``.agentshore/learnings.json`` directly
+# (rather than only the compact ``learnings`` field of context.json). The groom
+# play front-loads a learnings re-distillation step that needs the whole store
+# as input — see ``agentshore-groom-backlog`` and the harvester's
+# ``learnings_compacted`` replace branch.
+_FULL_LEARNINGS_SKILLS: frozenset[str] = frozenset({PLAY_SKILL_MAP[PlayType.GROOM_BACKLOG]})
+
+# Default discipline: read only the compact context, never the full store.
+_LEARNINGS_DIRECTIVE_COMPACT = (
+    "Use its `learnings` field as the compact learning-history input. For this skill, do not\n"
+    "read `.agentshore/learnings.json`; if the compact context is missing, continue without\n"
+    "learning-history context."
+)
+# Carve-out for re-distillation skills: the full store is the compaction input.
+_LEARNINGS_DIRECTIVE_FULL = (
+    "Use its `learnings` field as the compact learning-history input. This skill MAY\n"
+    "additionally read the full `.agentshore/learnings.json` directly — its entire contents\n"
+    "are the input to the learnings re-distillation step described below."
+)
+
 _CONTEXT_DISCIPLINE_TEMPLATE = """## AgentShore Context Discipline
 {cwd_block}
 AgentShore writes `{context_path}` immediately before this play. Read that file first.
 The legacy `.agentshore/context.json` file is only a latest-context/debug copy and may
 belong to another concurrent play; use it only if `{context_path}` is missing.
-Use its `learnings` field as the compact learning-history input. For this skill, do not
-read `.agentshore/learnings.json`; if the compact context is missing, continue without
-learning-history context.
+{learnings_directive}
 
 For GitHub mutations, keep the injected `GH_TOKEN` and `GITHUB_TOKEN` environment
 variables intact. Do not unset them, do not fall back to GitHub connector paths for PR
@@ -196,14 +214,23 @@ async def render_skill_prompt(
             )
         _logger.info("skill_template_auto_reinstalled", skill=skill_name)
 
-    skill_content = _strip_full_learnings_reads(skill_content)
+    allow_full_learnings = skill_name in _FULL_LEARNINGS_SKILLS
+    if not allow_full_learnings:
+        skill_content = _strip_full_learnings_reads(skill_content)
     header = f"$ARGUMENTS: {arg_str}" if arg_str else "$ARGUMENTS: (none)"
     cwd_block = (
         _CWD_DISCIPLINE_TEMPLATE.format(dispatch_cwd=dispatch_cwd)
         if dispatch_cwd is not None
         else ""
     )
-    discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(context_path=context_path, cwd_block=cwd_block)
+    learnings_directive = (
+        _LEARNINGS_DIRECTIVE_FULL if allow_full_learnings else _LEARNINGS_DIRECTIVE_COMPACT
+    )
+    discipline = _CONTEXT_DISCIPLINE_TEMPLATE.format(
+        context_path=context_path,
+        cwd_block=cwd_block,
+        learnings_directive=learnings_directive,
+    )
     return f"{header}\n\n{discipline}\n\n{skill_content}\n\n{_COMPLETION_CONTRACT_TEMPLATE}"
 
 

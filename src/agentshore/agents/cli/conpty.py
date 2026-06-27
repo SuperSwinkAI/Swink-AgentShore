@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# How many chars to request per blocking PTY read in the reader thread.
+# Chars per blocking PTY read in the reader thread.
 _READ_CHUNK = 4096
 
 
@@ -140,9 +140,8 @@ class PtyProcess:
                 except OSError:
                     break
                 if not data:
-                    # No data but still running: yield and retry. (pywinpty's
-                    # read normally blocks until data or EOF, so this is belt-
-                    # and-suspenders for alternate backends.)
+                    # No data but alive: retry. (pywinpty.read normally blocks
+                    # until data/EOF; guard is for alternate backends.)
                     if not self._is_alive():
                         break
                     continue
@@ -210,10 +209,8 @@ async def spawn(
     except FileNotFoundError:
         raise
     except Exception as exc:
-        # pywinpty raises its own error type when the child cannot be launched;
-        # the dominant cause is a missing binary. Normalise so dispatch treats
-        # it as the recoverable executable-not-found case rather than an
-        # unexpected play error.
+        # Normalise pywinpty's launch errors (usually a missing binary) to the
+        # recoverable executable-not-found case, not an unexpected play error.
         raise FileNotFoundError(f"failed to spawn {argv[0]!r} under ConPTY: {exc}") from exc
     return PtyProcess(pty, loop=loop, limit=limit)
 
@@ -242,8 +239,7 @@ def run_sync(
     except FileNotFoundError as exc:
         raise OSError(f"agy binary not found: {exc}") from exc
     except Exception as exc:
-        # Normalise pywinpty's own launch errors so the (synchronous) auth probe
-        # caller, which guards on OSError, never crashes the preflight on them.
+        # Normalise to OSError: the synchronous auth-probe caller guards on it.
         raise OSError(f"failed to spawn {argv[0]!r} under ConPTY: {exc}") from exc
     chunks: list[str] = []
 

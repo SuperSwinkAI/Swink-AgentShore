@@ -46,7 +46,7 @@ def test_load_returns_empty_when_file_missing(tmp_path: Path) -> None:
     record = availability.load(tmp_path / "missing.yaml")
     assert record.agent_types == ()
     assert record.github_accounts == ()
-    assert record.last_refreshed  # populated with current time
+    assert record.last_refreshed
 
 
 def test_save_then_load_roundtrips(tmp_path: Path) -> None:

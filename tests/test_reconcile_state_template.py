@@ -121,12 +121,10 @@ def test_result_block_parses_with_agentshore_result_parser(template_text: str) -
     fences = re.findall(r"```json\n(.*?)\n```", template_text, flags=re.DOTALL)
     assert fences, "no fenced JSON block found in the skill template"
     payload = json.loads(fences[-1])
-    # Sanity: structure looks right.
     assert payload["success"] is True
     assert "remediation" in payload
     assert "verification_evidence" in payload
-    # Round-trip through the parser. parse_skill_result accepts the raw
-    # text and extracts the trailing block — feed it a minimal wrapper.
+    # Wrap in trailing-block form so the parser's tail extraction is exercised.
     wrapped = "diagnostic output …\n\n```json\n" + json.dumps(payload) + "\n```\n"
     result = parse_skill_result(wrapped)
     assert result is not None

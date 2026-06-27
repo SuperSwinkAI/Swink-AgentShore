@@ -22,14 +22,11 @@ _LOGIN_LINE = re.compile(
     r"Logged in to (?P<host>\S+) account (?P<login>[A-Za-z0-9_.\-]+)(?P<active>\s*\(active\))?"
 )
 
-# GitHub username rules: 1-39 chars, alphanumeric or single non-leading,
-# non-trailing, non-consecutive hyphens.
+# GitHub login: 1-39 chars, alphanumeric with non-leading/trailing/consecutive hyphens.
 _GH_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
 
-# GitHub Personal Access Token prefixes. Used to detect when a user pastes
-# a PAT into a slot that wants a label/name. Covers classic + fine-grained
-# + the various OAuth/server token shapes documented at
-# https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats.
+# GitHub PAT prefixes — detect a PAT pasted into a label/name slot.
+# Covers classic, fine-grained, and OAuth/server token shapes.
 _PAT_PREFIX_RE = re.compile(r"^(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)")
 
 
@@ -82,6 +79,5 @@ def detect_gh_accounts() -> list[GhAccount]:
     result = command.gh_sync("auth", "status", "-a", timeout_seconds=10.0)
     if result.tool_missing:
         return []
-    # `gh auth status` writes to stderr historically and stdout in newer
-    # versions; combine both to be safe.
+    # gh auth status writes to stderr (old) or stdout (new); combine both.
     return parse_gh_auth_status(result.stdout + "\n" + result.stderr)

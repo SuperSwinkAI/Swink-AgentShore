@@ -22,11 +22,6 @@ def _advance(clock: list[datetime], seconds: float) -> None:
     clock[0] = clock[0] + timedelta(seconds=seconds)
 
 
-# ---------------------------------------------------------------------------
-# Basic state transitions
-# ---------------------------------------------------------------------------
-
-
 def test_starts_closed() -> None:
     cb, _ = _cb()
     assert cb.state == CircuitState.CLOSED
@@ -64,11 +59,6 @@ def test_success_closes_open_breaker() -> None:
     assert cb.state == CircuitState.CLOSED
 
 
-# ---------------------------------------------------------------------------
-# OPEN → HALF_OPEN transition
-# ---------------------------------------------------------------------------
-
-
 def test_transitions_to_half_open_after_cooldown() -> None:
     cb, clock = _cb(failures=1, cooldown_seconds=60)
     cb.record_failure()
@@ -83,11 +73,6 @@ def test_stays_open_before_cooldown_expires() -> None:
     cb.record_failure()
     _advance(clock, 59)
     assert cb.state == CircuitState.OPEN
-
-
-# ---------------------------------------------------------------------------
-# HALF_OPEN → CLOSED / OPEN
-# ---------------------------------------------------------------------------
 
 
 def test_half_open_success_closes() -> None:
@@ -108,11 +93,6 @@ def test_half_open_failure_reopens() -> None:
     assert cb.state == CircuitState.OPEN
 
 
-# ---------------------------------------------------------------------------
-# Window-based failure pruning
-# ---------------------------------------------------------------------------
-
-
 def test_old_failures_fall_outside_window() -> None:
     cb, clock = _cb(failures=3, window_seconds=100)
     cb.record_failure()
@@ -122,20 +102,10 @@ def test_old_failures_fall_outside_window() -> None:
     assert cb.state == CircuitState.CLOSED
 
 
-# ---------------------------------------------------------------------------
-# Threshold = 1
-# ---------------------------------------------------------------------------
-
-
 def test_threshold_one_trips_immediately() -> None:
     cb, _ = _cb(failures=1)
     cb.record_failure()
     assert cb.state == CircuitState.OPEN
-
-
-# ---------------------------------------------------------------------------
-# Recovery tracking
-# ---------------------------------------------------------------------------
 
 
 def test_should_attempt_recovery_when_half_open() -> None:
@@ -167,8 +137,7 @@ def test_recovery_exponential_backoff() -> None:
     cb.record_recovery_attempt()
     # Now need 60 * 2^1 = 120s since last recovery attempt
     _advance(clock, 60)  # only 60s since recovery attempt
-    # Breaker transitions back to OPEN on a failure; but for this test
-    # we just stay in HALF_OPEN and check the backoff guard.
+    # Stay HALF_OPEN (no failure) and check the backoff guard alone.
     assert cb.should_attempt_recovery() is False
 
     _advance(clock, 61)  # total 121s since recovery attempt

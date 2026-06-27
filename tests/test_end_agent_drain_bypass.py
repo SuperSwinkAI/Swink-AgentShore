@@ -14,10 +14,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _snap(
     agent_id: str = "a1",
@@ -48,11 +44,6 @@ def _state(
         total_cost=0.2,
         agents=[_snap()] if agents is None else agents,
     )
-
-
-# ---------------------------------------------------------------------------
-# EndAgentPlay.preconditions — drain bypass
-# ---------------------------------------------------------------------------
 
 
 def test_end_agent_preconditions_in_drain_bypass_min_agents() -> None:
@@ -104,11 +95,6 @@ def test_end_agent_preconditions_normal_mode_two_agents_veteran() -> None:
         agents=[_snap("a1", tasks_completed=20), _snap("a2", tasks_completed=3)],
     )
     assert play.preconditions(state) == []
-
-
-# ---------------------------------------------------------------------------
-# ParameterResolver._resolve_end_agent — drain bypass
-# ---------------------------------------------------------------------------
 
 
 def _make_resolver() -> ParameterResolver:

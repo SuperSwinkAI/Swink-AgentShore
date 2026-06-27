@@ -240,9 +240,7 @@ async def test_e2e_tui_help_keybinding() -> None:
         assert any(isinstance(s, HelpOverlay) for s in app.screen_stack)
 
 
-# The 'p' (pause) keybinding was removed in commit c4f276b
-# (fix: TUI footer cleanup — remove Manual Revert, Quit, Pause, Learnings, Approvals);
-# the corresponding pause-resume E2E test has been removed with it.
+# 'p' pause keybinding removed in c4f276b (TUI footer cleanup); pause-resume E2E test removed too.
 
 
 # ===========================================================================

@@ -21,10 +21,6 @@ from agentshore.data.store import (
 from agentshore.reports.collector import ReportDataCollector
 from agentshore.session_path import session_dir
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 SID = "sess-report-test"
 NOW = "2026-04-27T00:00:00+00:00"
 
@@ -158,11 +154,6 @@ async def _seed_issues(store: DataStore, session_id: str = SID) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# 1. test_collect_session_summary_overview
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_overview(store):
     await _seed_session(store)
     await _seed_play(store, success=True, dollar_cost=1.0)
@@ -181,7 +172,6 @@ async def test_collect_session_summary_overview(store):
     # every report agrees on a single self-consistent definition (H4).
     assert ov["total_cost"] == pytest.approx(1.5)
     assert ov["final_alignment"] == pytest.approx(0.85)
-    # 1 hour = 3600 seconds
     assert ov["duration_seconds"] == pytest.approx(3600.0)
     assert ov["started_at"] == NOW
     assert ov["ended_at"] == "2026-04-27T01:00:00+00:00"
@@ -291,10 +281,9 @@ async def test_gated_skip_excluded_from_play_log(store):
     summary = await collector.collect_session_summary(SID)
 
     rows = {r["play_type"]: r for r in report["play_log_rows"]}
-    # The gated skip is not in the play log at all; the real play remains.
+    # Gated skip absent from the play log; the real play remains.
     assert "write_implementation_plan" not in rows
     assert rows["issue_pickup"]["status"] == "ok"
-    # No row carries the "agentshore" fallback actor or a skip status.
     assert all(r["agent_name"] != "agentshore" for r in report["play_log_rows"])
     assert all(r["status"] != "skip" for r in report["play_log_rows"])
 
@@ -304,8 +293,7 @@ async def test_gated_skip_excluded_from_play_log(store):
     assert ov["failed_plays"] == 0
     assert ov["successful_plays"] == 1
 
-    # Per-type stats: skip lands in the skipped bucket, not failed; and the
-    # gated skip is excluded from the failure analysis.
+    # Skip lands in the skipped bucket (not failed) and is excluded from failure analysis.
     stats = {s["play_type"]: s for s in report["play_stats"]}
     assert stats["write_implementation_plan"]["skipped"] == 1
     assert stats["write_implementation_plan"]["failed"] == 0
@@ -444,11 +432,6 @@ async def test_collect_end_session_report_without_fleet_concurrency_log_degrades
     assert report["overview"]["session_id"] == SID
 
 
-# ---------------------------------------------------------------------------
-# 2. test_collect_session_summary_empty_session
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_empty_session(store):
     await _seed_session(store, total_cost=0.0, final_alignment=None, ended_at=None)
 
@@ -470,11 +453,6 @@ async def test_collect_session_summary_empty_session(store):
     assert summary["loop_incidents"] == []
 
 
-# ---------------------------------------------------------------------------
-# 3. test_collect_session_summary_cost_breakdown
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_cost_breakdown(store):
     await _seed_session(store)
     await _seed_play(store, play_type="issue_pickup", agent_id="a1", dollar_cost=1.0)
@@ -491,14 +469,8 @@ async def test_collect_session_summary_cost_breakdown(store):
     assert cb["by_play_type"]["code_review"] == pytest.approx(0.5)
     assert cb["by_agent"]["a1"] == pytest.approx(3.0)
     assert cb["by_agent"]["a2"] == pytest.approx(0.5)
-    # Cumulative should have 3 entries with running total
     assert len(cb["cumulative"]) == 3
     assert cb["cumulative"][-1] == (2, pytest.approx(3.5))
-
-
-# ---------------------------------------------------------------------------
-# 4. test_collect_session_summary_agent_performance
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_session_summary_agent_performance(store):
@@ -563,11 +535,6 @@ async def test_collect_session_summary_agent_dispatch_share_empty_fleet(store):
     assert perf_by_id["a2"]["dispatch_share"] == 0.0
 
 
-# ---------------------------------------------------------------------------
-# 5. test_collect_session_summary_play_timeline
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_play_timeline(store):
     await _seed_session(store)
     await _seed_play(store, started_at="2026-04-27T00:10:00+00:00", play_type="issue_pickup")
@@ -579,17 +546,11 @@ async def test_collect_session_summary_play_timeline(store):
     timeline = summary["play_timeline"]
 
     assert len(timeline) == 3
-    # Plays are returned in play_id order (chronological insertion)
+    # Returned in play_id order (chronological insertion).
     assert timeline[0]["play_type"] == "issue_pickup"
     assert timeline[1]["play_type"] == "code_review"
     assert timeline[2]["play_type"] == "run_qa"
-    # Duration conversion from ms to seconds
     assert timeline[0]["duration_seconds"] == pytest.approx(10.0)
-
-
-# ---------------------------------------------------------------------------
-# 6. test_collect_session_summary_legacy_cluster_alignment
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_session_summary_cluster_alignment(store):
@@ -665,11 +626,6 @@ async def test_collect_session_summary_populates_epic_closure_from_beads_graph(s
     ]
 
 
-# ---------------------------------------------------------------------------
-# 7. test_collect_session_summary_epic_summaries_default
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_defaults_epic_summaries_when_no_beads_data(store):
     await _seed_session(store)
 
@@ -678,11 +634,6 @@ async def test_collect_session_summary_defaults_epic_summaries_when_no_beads_dat
 
     assert "epic_summaries" in summary
     assert summary["epic_summaries"] == []
-
-
-# ---------------------------------------------------------------------------
-# 8. test_collect_session_summary_failure_analysis
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_session_summary_failure_analysis(store):
@@ -716,11 +667,6 @@ async def test_collect_session_summary_failure_analysis(store):
     categories = {f["category"]: f["count"] for f in failures}
     assert categories["timeout"] == 2
     assert categories["parse_error"] == 1
-
-
-# ---------------------------------------------------------------------------
-# test_compute_loop_incidents_structured
-# ---------------------------------------------------------------------------
 
 
 async def test_compute_loop_incidents_structured(store):
@@ -796,14 +742,9 @@ async def test_compute_loop_incidents_structured(store):
     assert inc_c["resolution"] == "human_escalation"
 
 
-# ---------------------------------------------------------------------------
-# 9. test_collect_session_summary_recommendations
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_session_summary_recommendations(store):
     await _seed_session(store)
-    # Agent with > 30% failure rate: 2 completed, 5 failed => 71% fail rate
+    # 2 completed / 5 failed = 71% fail rate, over the 30% recommendation threshold.
     await _seed_agent(store, agent_id="bad-agent", tasks_completed=2, tasks_failed=5)
 
     collector = ReportDataCollector(store)
@@ -813,11 +754,6 @@ async def test_collect_session_summary_recommendations(store):
     assert len(recs) >= 1
     assert any("bad-agent" in r for r in recs)
     assert any("failure rate" in r for r in recs)
-
-
-# ---------------------------------------------------------------------------
-# 9. test_collect_progress_report
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_progress_report(store):
@@ -839,7 +775,6 @@ async def test_collect_progress_report(store):
     collector = ReportDataCollector(store)
     report = await collector.collect_progress_report(SID)
 
-    # All 5 keys present
     assert "overview" in report
     assert "cluster_alignment" in report
     assert "recent_plays" in report
@@ -851,14 +786,8 @@ async def test_collect_progress_report(store):
     assert report["active_agents"][0]["agent_id"] == "agent-1"
 
 
-# ---------------------------------------------------------------------------
-# 10. test_collect_progress_report_recent_plays
-# ---------------------------------------------------------------------------
-
-
 async def test_collect_progress_report_recent_plays(store):
     await _seed_session(store)
-    # Insert 15 plays
     for i in range(15):
         await _seed_play(
             store,
@@ -869,13 +798,8 @@ async def test_collect_progress_report_recent_plays(store):
     collector = ReportDataCollector(store)
     report = await collector.collect_progress_report(SID)
 
-    # Only the last 10 plays
+    # Capped at the last 10 plays.
     assert len(report["recent_plays"]) == 10
-
-
-# ---------------------------------------------------------------------------
-# 11. test_collect_comparison
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_comparison(store):
@@ -893,10 +817,8 @@ async def test_collect_comparison(store):
         final_alignment=0.9,
         total_plays=8,
     )
-    # Plays for s-a
     for _ in range(2):
         await _seed_play(store, session_id="s-a", dollar_cost=1.0)
-    # Plays for s-b
     for _ in range(4):
         await _seed_play(store, session_id="s-b", dollar_cost=0.5)
 
@@ -911,11 +833,6 @@ async def test_collect_comparison(store):
     assert comparison["alignment_diff"] == pytest.approx(0.2)
     # play_count_diff = 4 - 2 = 2 (actual plays in DB)
     assert comparison["play_count_diff"] == 2
-
-
-# ---------------------------------------------------------------------------
-# 12. test_collect_session_summary_issue_inflation
-# ---------------------------------------------------------------------------
 
 
 async def test_collect_session_summary_issue_inflation(store):
@@ -1115,11 +1032,7 @@ async def test_collect_session_summary_issue_inflation_warning_streak(store):
     assert inflation["warnings_triggered"] == 1
 
 
-# ---------------------------------------------------------------------------
-# 13. test_collect_session_summary_agent_specialization (Issue #333)
-# ---------------------------------------------------------------------------
-
-
+# Issue #333: per-(agent, play_type) specialization breakdown.
 async def test_collect_session_summary_agent_specialization(store):
     await _seed_session(store)
     await _seed_agent(store, agent_id="agent-a", tasks_completed=2, tasks_failed=2)

@@ -12,10 +12,6 @@ from agentshore.ipc.commands import (
     validate_command,
 )
 
-# ---------------------------------------------------------------------------
-# parse_command tests
-# ---------------------------------------------------------------------------
-
 
 def test_parse_valid_pause() -> None:
     result = parse_command('{"command": "pause"}')
@@ -38,11 +34,6 @@ def test_parse_extra_fields_preserved() -> None:
     assert result["command"] == "start"
     assert result["session_id"] == "abc123"
     assert result["dry_run"] is True
-
-
-# ---------------------------------------------------------------------------
-# validate_command tests
-# ---------------------------------------------------------------------------
 
 
 def test_validate_unknown_command() -> None:
@@ -82,11 +73,6 @@ def test_validate_pause_no_extras_needed() -> None:
     validate_command({"command": "pause"})
 
 
-# ---------------------------------------------------------------------------
-# Structural / invariant tests
-# ---------------------------------------------------------------------------
-
-
 def test_valid_commands_has_expected_entries() -> None:
     assert len(VALID_COMMANDS) == 16
 
@@ -108,11 +94,6 @@ def test_roundtrip_parse_and_validate() -> None:
     validate_command(cmd)  # must not raise
     assert cmd["action"] == "continue"
     assert cmd["params"] == {"note": "looks good"}
-
-
-# ---------------------------------------------------------------------------
-# add_budget validation tests
-# ---------------------------------------------------------------------------
 
 
 def test_add_budget_is_valid_command() -> None:
@@ -162,11 +143,6 @@ def test_add_budget_rejects_non_integer_minutes() -> None:
 
 def test_add_budget_accepts_integer_valued_float_minutes() -> None:
     validate_command({"command": "add_budget", "delta_minutes": 30.0})  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# reload_config tests
-# ---------------------------------------------------------------------------
 
 
 def test_reload_config_is_valid_command() -> None:

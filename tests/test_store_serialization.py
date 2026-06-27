@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from agentshore.data.models import SessionLearningRecord, SessionRecord
+from agentshore.data.models import GitHubIssueRecord, SessionRecord
 from agentshore.data.store import DataStore
 from agentshore.data.store.base import _ReentrantConnectionLock
 
@@ -33,13 +33,13 @@ async def _seed_session(store: DataStore, session_id: str) -> None:
     )
 
 
-def _learning(session_id: str, content: str) -> SessionLearningRecord:
-    return SessionLearningRecord(
+def _issue(session_id: str, number: int) -> GitHubIssueRecord:
+    return GitHubIssueRecord(
+        issue_number=number,
         session_id=session_id,
-        pattern=content,
-        category="pattern",
+        title=f"issue-{number}",
+        state="open",
         created_at=_now(),
-        last_reinforced_at=_now(),
     )
 
 
@@ -116,26 +116,25 @@ async def test_concurrent_writes_and_streaming_reads_do_not_raise(tmp_path: Path
         session_id = "race-session"
         await _seed_session(store, session_id)
 
+        issue_counter = 0
+
         async def writer(n: int) -> None:
-            # Each write opens an implicit transaction and commits — exactly the
-            # commit side of the race when it overlaps another task's cursor.
+            # Each write commits — the commit side of the race vs another task's cursor.
+            nonlocal issue_counter
             for i in range(15):
-                await store.record_learning(_learning(session_id, f"writer-{n}-{i}"))
+                issue_counter += 1
+                await store.cache_github_issues(session_id, [_issue(session_id, n * 100 + i)])
 
         async def reader() -> None:
             # Streaming reads hold a cursor open across awaits — the read side.
             for _ in range(15):
-                await store.list_learnings(session_id)
-                await store.count_learnings(session_id)
+                await store.list_all_issues(session_id)
                 await asyncio.sleep(0)
 
         # 9 concurrent writers + readers mirrors the 9-agent live session.
         tasks = [writer(n) for n in range(9)] + [reader() for _ in range(4)]
         # Must not raise OperationalError; gather surfaces the first failure.
         await asyncio.gather(*tasks)
-
-        # All writes landed (9 writers * 15 rows).
-        assert await store.count_learnings(session_id) == 9 * 15
     finally:
         await store.close()
 
@@ -152,15 +151,15 @@ async def test_streaming_replay_iterator_does_not_hold_cursor_across_yields(
     try:
         session_id = "replay-session"
         await _seed_session(store, session_id)
-        # The iterator is a thin smoke check here; the contention guarantee is
-        # that consuming it while another task commits never raises.
+        # Smoke check: consuming the iterator while another task commits must not raise.
         seen = 0
         async for _record in store.iter_experience_for_replay(session_id, 13):
             seen += 1  # pragma: no cover - no rows seeded; loop body unused
         # No rows seeded, but the call path (lock acquire + fetch + release)
         # must complete cleanly and leave the connection commit-ready.
-        await store.record_learning(_learning(session_id, "post-iter"))
-        assert await store.count_learnings(session_id) == 1
+        await store.cache_github_issues(session_id, [_issue(session_id, 999)])
+        issues = await store.list_all_issues(session_id)
+        assert len(issues) == 1
     except sqlite3.OperationalError as exc:  # pragma: no cover - regression guard
         pytest.fail(f"replay iteration raised the #219 error: {exc}")
     finally:

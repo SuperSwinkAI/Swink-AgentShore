@@ -14,9 +14,8 @@ from pathlib import Path
 import click
 import pytest
 
-# Import the CLI package first to establish the import order for the
-# pre-existing cli<->session.bootstrap cycle (start.py imports bootstrap;
-# bootstrap imports cli.helpers). Importing bootstrap first would deadlock.
+# Import cli first: the cli<->bootstrap cycle (start->bootstrap->cli.helpers)
+# deadlocks if bootstrap is imported first.
 import agentshore.cli  # noqa: F401
 from agentshore.cli_helpers import _DEFAULT_BUDGET, _DEFAULT_TIME_MINUTES
 from agentshore.config.models import PolicyMode
@@ -45,9 +44,7 @@ def _resolve(cfg_path: Path, **kwargs: object):
     return _load_config_with_overrides(cfg_path, **defaults)  # type: ignore[arg-type]
 
 
-# --------------------------------------------------------------------------- #
 # Budget
-# --------------------------------------------------------------------------- #
 
 
 def test_budget_omitted_respects_yaml(tmp_path: Path) -> None:
@@ -79,19 +76,15 @@ def test_unlimited_wins_over_budget_value(tmp_path: Path) -> None:
 
 
 def test_budget_omitted_explicit_disabled_config_respected(tmp_path: Path) -> None:
-    # An explicit, non-default disabled budget (total carried) is respected, not
-    # overwritten by the safety default.
+    # Explicit disabled budget (total carried) is respected, not safety-defaulted.
     cfg_path = _write_cfg(tmp_path, "budget:\n  enabled: false\n  total: 75.0\n")
     cfg, _ = _resolve(cfg_path)
     assert cfg.budget.enabled is False
     assert cfg.budget.total == 75.0
 
 
-# --------------------------------------------------------------------------- #
-# Dual-dimension resolution table (empty/fresh config). Mirrors the
-# user-specified precedence: naked start -> $200 + 24h; naming one dimension
-# suppresses the other's bare default; --unlimited disables both.
-# --------------------------------------------------------------------------- #
+# Dual-dimension precedence (empty/fresh config): naked start -> $200 + 24h;
+# naming one dimension suppresses the other's bare default; --unlimited disables both.
 
 _EMPTY = "project:\n  target_branch: main\n"
 
@@ -124,7 +117,7 @@ def test_unlimited_empty_config_disables_both(tmp_path: Path) -> None:
 
 
 def test_time_override_on_configured_yaml_keeps_dollar(tmp_path: Path) -> None:
-    # Configured dollar budget + a --time override -> dollar respected, time set.
+    # Configured dollar budget + --time override -> dollar respected, time set.
     cfg_path = _write_cfg(tmp_path, "budget:\n  enabled: true\n  total: 50.0\n")
     cfg, _ = _resolve(cfg_path, time_override=120)
     assert (cfg.budget.enabled, cfg.budget.total) == (True, 50.0)
@@ -132,16 +125,14 @@ def test_time_override_on_configured_yaml_keeps_dollar(tmp_path: Path) -> None:
 
 
 def test_naked_configured_dollar_yaml_no_time_default_injected(tmp_path: Path) -> None:
-    # A configured (non-empty) budget block is respected as-is: no 24h time
-    # default is injected, so existing dollar-only sessions are unchanged.
+    # Configured budget block respected as-is: no 24h time default injected,
+    # so existing dollar-only sessions are unchanged.
     cfg_path = _write_cfg(tmp_path, "budget:\n  enabled: true\n  total: 50.0\n")
     cfg, _ = _resolve(cfg_path)
     assert cfg.budget.time_enabled is False
 
 
-# --------------------------------------------------------------------------- #
 # Strict
-# --------------------------------------------------------------------------- #
 
 
 def test_strict_omitted_respects_yaml_true(tmp_path: Path) -> None:
@@ -168,9 +159,7 @@ def test_no_strict_flag_overrides_yaml(tmp_path: Path) -> None:
     assert cfg.scope.strict_mode is False
 
 
-# --------------------------------------------------------------------------- #
 # Policy mode (regression: was already correct, keep it that way)
-# --------------------------------------------------------------------------- #
 
 
 def test_policy_mode_omitted_respects_yaml(tmp_path: Path) -> None:
@@ -187,9 +176,7 @@ def test_policy_mode_override_wins(tmp_path: Path) -> None:
     assert effective == PolicyMode.LEARNING
 
 
-# --------------------------------------------------------------------------- #
 # Startup model-tier coverage
-# --------------------------------------------------------------------------- #
 
 
 def test_startup_tier_coverage_blocks_missing_large(
@@ -271,9 +258,7 @@ agents:
     assert "missing required model tier coverage: small, large" in err
 
 
-# --------------------------------------------------------------------------- #
 # validate_budget_flag
-# --------------------------------------------------------------------------- #
 
 
 def test_validate_budget_none_is_ok() -> None:

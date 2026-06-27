@@ -101,7 +101,7 @@ function startGameLoop(ctx: FrameContext, initialClock: number): () => void {
   let rafHandle: number | null = null;
   let prevMs = performance.now();
   let cancelled = false;
-  void initialClock; // reserved for the (future) clock-pinning seed.
+  void initialClock; // reserved for future clock-pinning seed
 
   const tick = () => {
     if (cancelled) return;
@@ -147,14 +147,10 @@ export function DashboardCanvas({
     const ctx2d = canvas.getContext("2d");
     if (!ctx2d) return;
 
-    // Match the canvas backing-store to the displayed size so pixel art
-    // stays crisp on HiDPI screens. Without this the canvas defaults to
-    // 300x150 and the office floor draws into a tiny corner.
-    //
-    // `dpr` is recomputed inside resize() rather than frozen at mount:
-    // devicePixelRatio changes when the window moves between monitors with
-    // different scale factors (external 1x -> Retina 2x), and a stale value
-    // leaves the backing store mis-sized so the compositor blurs the upscale.
+    // Size backing-store to displayed size for crisp pixel art on HiDPI (else
+    // canvas defaults to 300x150). dpr is re-read in resize() (not frozen at
+    // mount) since it changes on cross-monitor moves; a stale value mis-sizes
+    // the backing store and blurs the upscale.
     let dpr = window.devicePixelRatio || 1;
 
     const camera = new Camera();
@@ -179,18 +175,14 @@ export function DashboardCanvas({
       };
     }
 
-    // Resolve the initial theme from documentElement.dataset.theme if
-    // ThemeToggle has already painted by the time the canvas mounts —
-    // otherwise the canvas would render with the default `theme` prop
-    // (light) until something forced a re-theme. The MutationObserver
-    // below then keeps the canvas in sync as the user flips themes.
+    // Seed from documentElement.dataset.theme in case ThemeToggle painted
+    // before mount; else canvas sticks on the default `theme` prop until a
+    // re-theme. The observer below keeps it in sync on subsequent flips.
     const initialTheme = normalizeResolvedTheme(document.documentElement.dataset.theme, theme);
     renderer.setTheme(initialTheme);
 
-    // Theme changes happen through ThemeToggle setting data-theme on
-    // documentElement (used by CSS variables). The canvas doesn't get a
-    // theme prop update on flip; watch the attribute and re-call
-    // setTheme so the office palette tracks the chrome.
+    // ThemeToggle flips data-theme on documentElement but the canvas gets no
+    // prop update; watch the attribute and re-call setTheme to track it.
     const themeObserver = new MutationObserver(() => {
       renderer.setTheme(normalizeResolvedTheme(document.documentElement.dataset.theme, theme));
     });
@@ -204,11 +196,9 @@ export function DashboardCanvas({
     const DEFAULT_VIEW_PADDING = 14;
 
     const measureViewport = (): { top: number; left: number; right: number; bottom: number } => {
-      // Mirrors bootstrapDashboard's defaultCameraViewport: returns
-      // physical-pixel bounds inside which the office should fit, by
-      // measuring the surrounding HUD panels. Falls back to the full
-      // window if a given panel isn't mounted yet (e.g. on first paint
-      // before the HUD subtree settles).
+      // Physical-pixel bounds the office should fit within, measured from the
+      // surrounding HUD panels; falls back to full window for panels not yet
+      // mounted (e.g. first paint before the HUD subtree settles).
       const topBar = document.getElementById("top-bar");
       const bottomBar = document.getElementById("bottom-bar");
       const leftPanel = document.getElementById("left-panel");
@@ -251,13 +241,9 @@ export function DashboardCanvas({
     };
 
     const resize = () => {
-      // Match bootstrapDashboard: canvas backing-store is sized in
-      // PHYSICAL pixels and the renderer draws in those same physical
-      // coordinates. No setTransform — the camera math (and
-      // characterScreenBounds, fitToViewport, etc.) all operate in
-      // physical pixels. Scaling the context by DPR here would double
-      // every camera offset on HiDPI screens and paint the office
-      // off-center to the bottom-right.
+      // Backing-store and all camera math operate in PHYSICAL pixels; no
+      // setTransform. Scaling the context by DPR would double every camera
+      // offset on HiDPI and paint the office off-center bottom-right.
       dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.round(rect.width * dpr);
@@ -265,11 +251,9 @@ export function DashboardCanvas({
       fitToView();
     };
     resize();
-    // Defer a second fit until the next frame so HUD elements that
-    // mount alongside the canvas have a chance to land in the DOM
-    // before we measure them. Without this the very first resize sees
-    // missing #top-bar / #side-panel and falls back to full-window
-    // bounds, which renders too wide on the initial paint.
+    // Defer a second fit a frame so HUD panels mount before we measure them;
+    // else the first resize misses #top-bar/#side-panel, falls back to
+    // full-window bounds, and paints too wide on initial load.
     const initialFitRaf = requestAnimationFrame(fitToView);
 
     const ro = new ResizeObserver(resize);
@@ -277,11 +261,9 @@ export function DashboardCanvas({
     const onWindowResize = () => fitToView();
     window.addEventListener("resize", onWindowResize);
 
-    // Moving the window between monitors with different scale factors does
-    // not reliably fire a `resize` event, so watch devicePixelRatio directly.
-    // The media query targets the *current* dppx, so it must be rebuilt and
-    // re-armed after each change; resize() then re-reads dpr and re-sizes the
-    // backing store, keeping the office crisp after a cross-monitor move.
+    // Cross-monitor moves don't reliably fire `resize`, so watch dpr directly.
+    // The query targets the current dppx, so rebuild and re-arm it after each
+    // change; resize() then re-reads dpr and re-sizes the backing store.
     let dprQuery: MediaQueryList | null = null;
     const onDprChange = () => {
       resize();
@@ -294,9 +276,7 @@ export function DashboardCanvas({
     };
     armDprListener();
 
-    // Mouse drag / wheel zoom (DESIGN §3.2). Matches the imperative
-    // bootstrapDashboard.ts wiring so the React canvas behaves the same
-    // as the legacy bridge SPA.
+    // Mouse drag / wheel zoom (DESIGN §3.2).
     camera.attachInputHandlers(canvas);
 
     const characterAt = (screenX: number, screenY: number) => {
@@ -372,9 +352,8 @@ export function DashboardCanvas({
     setMounted(true);
     const stopLoop = startGameLoop({ canvas, camera, renderer, state }, initialClock);
 
-    // Wire the in-office mural to state_update payloads. notifyDashboard-
-    // CanvasStickies is module-level so Dashboard.tsx can call it from
-    // its message switch; we register the renderer-side push here.
+    // Wire the mural to state_update payloads; notifyDashboardCanvasStickies
+    // is module-level for Dashboard.tsx's switch, we register the push here.
     const onStickies = (stickies: WallSticky[]): void => {
       renderer.setWallStickies(stickies);
     };
@@ -411,9 +390,8 @@ export function DashboardCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // imageRendering: pixelated keeps the upscale nearest-neighbor (not blurred)
-  // during the brief window before resize() re-syncs the backing store after a
-  // DPR change — and is a no-op when the backing store already matches 1:1.
+  // imageRendering: pixelated keeps the upscale crisp in the brief window
+  // before resize() re-syncs the backing store after a DPR change; no-op at 1:1.
   return (
     <canvas
       ref={canvasRef}

@@ -19,10 +19,6 @@ from agentshore.state import (
     StateProvider,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _mock_writer() -> AsyncMock:
     """Return a mock StateWriter with async write_state + append_event."""
@@ -66,11 +62,6 @@ def _make_outcome(success: bool = True) -> PlayOutcome:
         alignment_delta=0.1,
         play_id=1,
     )
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_isinstance_state_provider() -> None:
@@ -266,11 +257,6 @@ async def test_on_session_paused_appends() -> None:
     assert msg["payload"]["reason"] == "user_requested"
 
 
-# ---------------------------------------------------------------------------
-# Session-id stamping (Tier 1 contract)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_events_carry_session_id_when_provider_has_one() -> None:
     """Every outbound event payload carries session_id so the bridge/browser
@@ -298,8 +284,7 @@ async def test_state_update_carries_session_id_when_provider_has_one() -> None:
     writer = _mock_writer()
     provider = IpcStateProvider(writer, session_id="sess-xyz")
 
-    # The provider's id wins even if it differs from the state snapshot's
-    # (in practice they match; this just asserts the stamp is applied).
+    # Provider id wins over the snapshot's (they match in practice).
     await provider.on_state_update(_make_state(session_id="test"))
     assert _last_state_msg(writer)["payload"]["session_id"] == "sess-xyz"
 

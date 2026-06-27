@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from agentshore.data.models import SessionLearningRecord
 from agentshore.data.store import (
     AgentRecord,
     DataStore,
@@ -15,10 +14,6 @@ from agentshore.data.store import (
 )
 from agentshore.reports.collector import ReportDataCollector
 from agentshore.reports.generator import ReportGenerator
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 NOW = "2026-04-27T00:00:00+00:00"
 END = "2026-04-27T01:00:00+00:00"
@@ -116,23 +111,6 @@ async def _add_issues(store: DataStore, sid: str, *, opened: int = 2, closed: in
     await store.cache_github_issues(sid, issues)
 
 
-async def _add_learning(store: DataStore, sid: str, pattern: str) -> None:
-    await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern=pattern,
-            category="general",
-            created_at=NOW,
-            last_reinforced_at=NOW,
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 async def test_comparison_new_fields_populated(store):
     await _make_session(store, "s-a", total_cost=3.0, final_alignment=0.7)
     await _make_session(store, "s-b", total_cost=5.0, final_alignment=0.9)
@@ -179,7 +157,6 @@ async def test_comparison_new_fields_populated(store):
     assert cmp["alignment_diff"] == pytest.approx(0.2)
     assert cmp["play_count_diff"] == 1  # 4 - 3
 
-    # cost_breakdown fields
     cb_a = cmp["cost_breakdown_a"]
     assert "issue_pickup" in cb_a["by_play_type"]
     assert cb_a["by_play_type"]["issue_pickup"] == pytest.approx(2.0)
@@ -189,7 +166,6 @@ async def test_comparison_new_fields_populated(store):
     cb_b = cmp["cost_breakdown_b"]
     assert "merge_pr" in cb_b["by_play_type"]
 
-    # play_distribution fields
     dist_a = cmp["play_distribution_a"]
     assert dist_a["issue_pickup"] == 2
     assert dist_a["code_review"] == 1
@@ -220,22 +196,15 @@ async def test_comparison_issue_throughput(store):
     assert tp_b["net_velocity"] == -4  # 1 - 5
 
 
-async def test_comparison_learnings_diff(store):
+async def test_comparison_learnings_diff_is_empty(store):
+    """learnings_diff is always empty (JSON store has no per-session history)."""
     await _make_session(store, "s-a")
     await _make_session(store, "s-b")
-
-    await _add_learning(store, "s-a", "always run tests before merging")
-    await _add_learning(store, "s-a", "prefer small commits")
-    await _add_learning(store, "s-b", "always run tests before merging")
-    await _add_learning(store, "s-b", "use conventional commits")
 
     collector = ReportDataCollector(store)
     cmp = await collector.collect_comparison("s-a", "s-b")
 
-    diff = cmp["learnings_diff"]
-    assert "use conventional commits" in diff["added"]
-    assert "prefer small commits" in diff["removed"]
-    assert "always run tests before merging" in diff["shared"]
+    assert cmp["learnings_diff"] == {"added": [], "removed": [], "shared": []}
 
 
 async def test_comparison_alignment_trajectory(store):
@@ -289,10 +258,6 @@ async def test_comparison_template_renders(store, tmp_path):
     await _add_issues(store, "s-a", opened=1, closed=2)
     await _add_issues(store, "s-b", opened=3, closed=1)
 
-    await _add_learning(store, "s-a", "write tests first")
-    await _add_learning(store, "s-b", "write tests first")
-    await _add_learning(store, "s-b", "keep PRs small")
-
     generator = ReportGenerator(store)
 
     output_dir = tmp_path / "reports"
@@ -304,8 +269,3 @@ async def test_comparison_template_renders(store, tmp_path):
     assert "Cost" in html
     assert "Play Distribution" in html
     assert "Alignment Trajectory" in html
-    assert "Learnings Diff" in html
-    assert "write tests first" in html
-    assert "keep PRs small" in html
-    assert "added" in html
-    assert "shared" in html

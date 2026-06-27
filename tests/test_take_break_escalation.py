@@ -160,7 +160,6 @@ def test_two_consecutive_break_failures_do_not_enqueue_end_agent_override() -> N
 
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
 
-    # No override of any kind is produced.
     assert h._overrides.empty()
 
 

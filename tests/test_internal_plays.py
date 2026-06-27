@@ -23,9 +23,7 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _snap(
@@ -72,9 +70,7 @@ def _ctx() -> MagicMock:
     return ctx
 
 
-# ---------------------------------------------------------------------------
 # Reserved action slots
-# ---------------------------------------------------------------------------
 
 
 def test_reserved_slots_are_unavailable() -> None:
@@ -100,9 +96,7 @@ async def test_reserved_slot_execute_mutates_nothing() -> None:
     ctx.manager.get_handle.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # EndAgentPlay (terminates agent)
-# ---------------------------------------------------------------------------
 
 
 def test_end_agent_precondition_requires_two_agents() -> None:
@@ -166,10 +160,8 @@ async def test_end_agent_returns_failure_on_exception() -> None:
     assert outcome.success is False
 
 
-# ---------------------------------------------------------------------------
 # Reserved future slots (4, 7, 8) — kept for policy shape compatibility.
 # Always fail preconditions; execute returns success=False.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -202,9 +194,7 @@ async def test_future_eight_is_reserved_no_op() -> None:
     assert outcome.success is False
 
 
-# ---------------------------------------------------------------------------
 # EndSessionPlay
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -236,9 +226,7 @@ async def test_end_session_is_idempotent() -> None:
     assert outcome.success is True
 
 
-# ---------------------------------------------------------------------------
 # EndAgentPlay edge cases
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

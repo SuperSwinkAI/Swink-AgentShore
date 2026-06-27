@@ -32,10 +32,6 @@ from agentshore.state import (
     SkillResult,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_ctx(*, project_path: Path | None = None) -> Any:
     ctx = MagicMock()
@@ -47,9 +43,8 @@ def _make_ctx(*, project_path: Path | None = None) -> Any:
     ctx.store.complete_reviews_for_pr = AsyncMock()
     ctx.store.update_issue_state = AsyncMock()
     ctx.cfg = MagicMock()
-    # Real empty identities so the post-merge ff-sync's fetch-overlay resolver
-    # (resolve_ff_fetch_overlay → select_default_git_identity) returns None
-    # cleanly instead of choking on a MagicMock's empty-iterable .items() (#178).
+    # Empty identities so the ff-sync fetch-overlay resolver returns None
+    # instead of choking on a MagicMock's .items() (#178).
     ctx.cfg.identities = {}
     ctx.manager = MagicMock()
     return ctx
@@ -103,8 +98,8 @@ def _make_state(
     state.open_issues = [_make_issue(n) for n in issue_numbers]
     state.agents = [_make_agent()]
     state.pull_requests = []
-    # Issue-author trust gating is off here (a truthy MagicMock default would
-    # otherwise spuriously exclude every author-less issue).
+    # Trust gating off — a truthy MagicMock default would spuriously exclude
+    # every author-less issue.
     state.restrict_issues_to_trusted_authors = False
     state.trusted_issue_authors = frozenset()
     return state
@@ -124,9 +119,7 @@ def _success_outcome(pr_number: int = 42) -> PlayOutcome:
     )
 
 
-# ---------------------------------------------------------------------------
 # C5 — _BD_LOCK serialises concurrent bd calls
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -139,16 +132,15 @@ async def test_bd_lock_serialises_concurrent_calls() -> None:
     timeline: list[str] = []
 
     async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
-        # This inner coroutine holds the lock while "running" — a second
-        # concurrent caller must wait.  We use a short sleep to create
-        # observable overlap if the lock were absent.
+        # Holds the lock while "running"; the sleep creates observable overlap
+        # if the lock were absent.
         timeline.append("start")
         await asyncio.sleep(0.02)
         timeline.append("end")
         return ""
 
-    # Patch the subprocess path inside bd() to our fake that captures ordering.
-    # resolve_bd_binary is pinned so the test does not depend on bd being installed.
+    # Pin resolve_bd_binary and mock the subprocess so the test exercises only
+    # _BD_LOCK ordering, with no real bd on PATH.
     with (
         patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
         patch("agentshore.beads.asyncio.create_subprocess_exec") as mock_exec,
@@ -167,21 +159,17 @@ async def test_bd_lock_serialises_concurrent_calls() -> None:
 
         from agentshore.beads import bd
 
-        # Fire two bd calls concurrently.
         await asyncio.gather(
             bd("query", "type=task", cwd=Path("/tmp")),
             bd("query", "type=task", cwd=Path("/tmp")),
         )
 
-    # If the lock is working, the sequence must be start→end→start→end (no interleaving).
     assert timeline == ["start", "end", "start", "end"], (
         f"Concurrent bd calls interleaved — lock not working: {timeline}"
     )
 
 
-# ---------------------------------------------------------------------------
-# C2 — merge_pr calls bd update --status closed for each beads task
-# ---------------------------------------------------------------------------
+# C2 — merge_pr closes beads tasks
 
 
 @pytest.mark.asyncio
@@ -205,7 +193,6 @@ async def test_merge_pr_closes_beads_tasks() -> None:
         play._last_skill_result = SkillResult(success=True, issues_closed=[17, 23])
         return _success_outcome()
 
-    # PR body confirms both issues.
     async def _fake_fetch_body(pr_number: int, project_path: object) -> str:
         return "Closes #17\nFixes #23"
 
@@ -217,11 +204,10 @@ async def test_merge_pr_closes_beads_tasks() -> None:
         outcome = await play.execute(state, PlayParams(agent_id="agent-1", pr_number=42), ctx=ctx)
 
     assert outcome.success
-    # Both beads tasks should have been closed.
     closed_bead_ids = {call[1] for call in bd_calls if "closed" in call}
     assert "bd-017" in closed_bead_ids, f"bd-017 not closed; bd_calls={bd_calls}"
     assert "bd-023" in closed_bead_ids, f"bd-023 not closed; bd_calls={bd_calls}"
-    # bd calls use --status closed (not bd set-state).
+    # Uses --status closed, not bd set-state.
     for call in bd_calls:
         assert call[0] == "update", f"expected 'update' subcommand, got: {call}"
         assert "--status" in call and "closed" in call
@@ -293,9 +279,7 @@ async def test_merge_pr_bead_close_failure_does_not_abort() -> None:
     assert outcome.success
 
 
-# ---------------------------------------------------------------------------
 # C3 — issue_pickup leaves beads status to the dispatched skill
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -334,9 +318,7 @@ async def test_issue_pickup_does_not_mark_bead_in_progress_before_dispatch() -> 
     assert outcome.success
 
 
-# ---------------------------------------------------------------------------
 # C3 — duplicate pickup excluded by candidate selection
-# ---------------------------------------------------------------------------
 
 
 def test_issue_pickup_excludes_duplicate_pickup_candidate() -> None:
@@ -410,20 +392,16 @@ async def test_issue_pickup_execute_no_longer_blocks_on_live_graph() -> None:
             ctx=ctx,
         )
 
-    # Execute is now a thin wrapper over super().execute — no live-graph
-    # check, no early-return, no action consumed inside the race window.
+    # Thin wrapper over super().execute — no live-graph check or early-return.
     assert outcome.success, "execute() should not short-circuit on its own"
     assert super_execute_called, "Agent dispatch must proceed; revalidation lives at param-resolve"
 
 
-# ---------------------------------------------------------------------------
 # H4 — _validated_issue_set rejects hallucinated issues
-# ---------------------------------------------------------------------------
 
 
 def test_validated_issue_set_rejects_hallucinated() -> None:
     """An issue in skill_issues but not in PR body is dropped with a warning."""
-    # Issue 99 is hallucinated — not in the PR body.
     result = _validated_issue_set(
         skill_issues=[17, 99],
         pr_body="Closes #17",
@@ -508,9 +486,7 @@ def test_validated_issue_set_comma_separated_missed_in_skill() -> None:
     assert 11 in result, "Missed issue 11 from comma-separated list must be added"
 
 
-# ---------------------------------------------------------------------------
 # M8 — precondition message clarity
-# ---------------------------------------------------------------------------
 
 
 def test_issue_pickup_groom_backlog_message_mentions_policy() -> None:
@@ -536,9 +512,7 @@ def test_issue_pickup_groom_backlog_message_mentions_policy() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Duplicate-bead routing — pick_bead_for_issue helper
-# ---------------------------------------------------------------------------
 
 
 def test_pick_bead_for_issue_single_open_bead() -> None:
@@ -559,7 +533,7 @@ def test_pick_bead_for_issue_prefers_open_over_closed_duplicate() -> None:
     # CLOSED-first ordering reproduces the gh-265 production bug; the helper
     # must still pick the OPEN bead.
     assert pick_bead_for_issue([closed, live], 265) is live
-    # And the reverse ordering still picks OPEN — stable result.
+    # Reverse ordering still picks OPEN — order-independent.
     assert pick_bead_for_issue([live, closed], 265) is live
 
 
@@ -585,9 +559,7 @@ def test_pick_bead_for_issue_falls_back_to_least_bad_status() -> None:
     assert pick_bead_for_issue([closed, blocked], 7) is blocked
 
 
-# ---------------------------------------------------------------------------
 # Duplicate-bead routing — issue_pickup.execute regression
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -605,7 +577,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
     ctx = _make_ctx()
     state = _make_state(graph=ProjectGraph(), issue_numbers=[265])
 
-    # Pretend the dispatch-mixin recorded two skips before this attempt.
+    # Simulate two prior dispatch-mixin skips.
     play._record_skip(265, total_plays=10)
     play._record_skip(265, total_plays=10)
     assert play._skip.streak(265) == 2
@@ -631,14 +603,11 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
         )
 
     assert outcome.success
-    # Streak must be cleared on a real dispatch so the cooldown counter
-    # doesn't carry stale skips across successful runs.
+    # Real dispatch clears the streak so stale skips don't outlive a success.
     assert play._skip.streak(265) == 0
 
 
-# ---------------------------------------------------------------------------
 # Duplicate-bead routing — _project_open_issues state hydration
-# ---------------------------------------------------------------------------
 
 
 def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
@@ -670,14 +639,12 @@ def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
 
     assert len(snapshots) == 1
     snap = snapshots[0]
-    # Open dup wins regardless of dict-insertion order in the input list.
+    # Open dup wins regardless of input ordering.
     assert snap.bead_id == "desktop-tfq.1.2"
     assert snap.bead_status == "open"
 
 
-# ---------------------------------------------------------------------------
-# add_blocking_dependency — mirror a body-declared dep into a beads blocks edge
-# ---------------------------------------------------------------------------
+# add_blocking_dependency — mirror a body-declared dep into a blocks edge
 
 
 @pytest.mark.asyncio

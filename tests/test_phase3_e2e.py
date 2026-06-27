@@ -81,11 +81,9 @@ def _mock_metrics(store: object, session_id: str) -> MagicMock:
 def _mock_registry() -> MagicMock:
     reg = MagicMock()
     reg.preconditions_met.return_value = True
-    # Eligibility refactor: the EligibilityAuthority reads validity via
-    # registry.get(pt).preconditions(state) and play.capability, not via
-    # preconditions_met. Return a play stub with no unmet preconditions (empty
-    # list) and capability=None (internal play → agent-eligibility gate
-    # bypassed) so every action stays selectable.
+    # EligibilityAuthority reads validity via registry.get(pt).preconditions(state) +
+    # play.capability. Stub: no unmet preconditions, capability=None (internal play,
+    # agent-eligibility bypassed) so every action stays selectable.
     play_stub = MagicMock()
     play_stub.preconditions.return_value = []
     play_stub.capability = None
@@ -232,7 +230,6 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
     ) -> PlayOutcome:
         nonlocal play_counter
         play_counter += 1
-        # Override to END_SESSION on the 10th call to guarantee termination
         actual_type = PlayType.END_SESSION if play_counter >= 10 else play_type
 
         play_id = await orch._store.record_play(

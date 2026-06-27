@@ -35,11 +35,10 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-#: Pinned because the driver depends on indefinite capture and
-#: ``status.outputPath`` JSON compatibility. Bump only after doctor/status
-#: verification. Split into name/version so the installer can both pin the
-#: ``npm install`` spec and *verify* the resulting binary is exactly the pin
-#: (see ``_verify_pinned_version``).
+#: Pinned: the driver depends on indefinite capture and status.outputPath JSON
+#: compatibility. Bump only after doctor/status verification. Split name/version
+#: so the installer can pin the npm spec and verify the binary (see
+#: ``_verify_pinned_version``).
 _CLI_NAME = "timelapse-capture"
 _CLI_VERSION = "0.5.0"
 _CLI_PACKAGE = f"{_CLI_NAME}@{_CLI_VERSION}"
@@ -52,10 +51,9 @@ _WINGET_NODE_ID = "OpenJS.NodeJS"
 _WINGET_FFMPEG_ID = "Gyan.FFmpeg"
 _HOMEBREW_URL = "https://brew.sh"
 
-# winget exits non-zero when the requested package is already present and no
-# newer version is available. That is not a failure for us — the caller
-# re-verifies the actual tool/version afterwards — so these exit codes and
-# output markers are treated as a no-op rather than a hard error.
+# winget exits non-zero when the package is already present at the latest
+# version. Not a failure — the caller re-verifies the tool afterwards — so
+# these exit codes/markers are treated as a no-op.
 #: 0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE, as both the unsigned
 #: DWORD and the signed-int form a subprocess return code may surface as.
 _WINGET_NOOP_EXIT_CODES = frozenset({2316632107, -1978335189})
@@ -117,10 +115,9 @@ def _prepend_path_entries(entries: Sequence[Path]) -> None:
             requested.append(text)
     if not requested:
         return
-    # Move requested dirs to the front even when they are already on PATH:
-    # winget appends a newly-installed Node to the *end* of PATH, so an older
-    # Program Files Node would otherwise keep shadowing it. Reordering (rather
-    # than skip-if-present) guarantees the preferred entries win.
+    # Move requested dirs to the front even when already on PATH: winget appends
+    # a new Node to the *end*, so an older Program Files Node would keep
+    # shadowing it. Reordering guarantees the preferred entries win.
     requested_set = set(requested)
     remaining = [
         p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p not in requested_set
@@ -185,9 +182,9 @@ def _clean_command_output(text: str) -> str:
 
 def _refresh_windows_tool_paths() -> None:
     candidates: list[Path] = []
-    # A winget-installed Node lives under WinGet\Packages (not normally ahead of
-    # Program Files on PATH) and must win over any older Program Files Node, so
-    # list the newest-qualifying winget Node dirs first.
+    # A winget Node lives under WinGet\Packages (not ahead of Program Files on
+    # PATH) and must win over an older Program Files Node, so list the
+    # newest-qualifying winget Node dirs first.
     candidates.extend(_winget_node_bin_dirs())
     if program_files := os.environ.get("PROGRAMFILES"):
         candidates.append(Path(program_files) / "nodejs")
@@ -230,10 +227,9 @@ async def _winget_install(package_id: str, *, cwd: Path, label: str) -> None:
             marker in lowered for marker in _WINGET_NOOP_OUTPUT_MARKERS
         )
         if benign:
-            # Package already present at the latest available version. Not a
-            # failure: the caller (_ensure_windows_node / _ensure_windows_ffmpeg)
-            # re-verifies the actual tool/version afterwards and surfaces a clean,
-            # actionable error if the requirement is still unmet.
+            # Already present at the latest version. Not a failure: the caller
+            # re-verifies the tool afterwards and surfaces a clean error if the
+            # requirement is still unmet.
             _logger.info(
                 "timelapse_winget_no_change",
                 package_id=package_id,
@@ -363,10 +359,9 @@ async def _verify_pinned_version(cwd: Path) -> None:
         )
 
 
-#: The daemon-spawn options block in the pinned CLI source. The package spawns
-#: its long-lived detached capture daemon with these exact options and *no*
-#: ``windowsHide`` — see ``_harden_windows_daemon_spawn``. Pinned text, so this
-#: literal is stable for the pinned version.
+#: The daemon-spawn options block in the pinned CLI source — these exact options
+#: and *no* ``windowsHide`` (see ``harden_installed_cli``). Pinned text, stable
+#: for the pinned version.
 _DAEMON_SPAWN_ANCHOR = '    stdio: "ignore",\n    env: process.env,\n'
 _DAEMON_SPAWN_PATCHED = _DAEMON_SPAWN_ANCHOR + "    windowsHide: true,\n"
 
@@ -464,12 +459,10 @@ async def installed_cli_version(cwd: Path) -> str | None:
 
 
 async def _install_timelapse_steps(work_dir: Path) -> None:
-    # Compare the installed CLI against the expected pin first. When it already
-    # matches, skip the heavy ffmpeg/node/npm provisioning and just re-assert
-    # the Windows hardening + toolchain health. When it is missing or stale, run
-    # the full install — ``npm install -g <pin>`` upgrades a stale global in
-    # place. This is what makes a re-run (e.g. the installer's update step) cheap
-    # when current and a real upgrade when the installed version has drifted.
+    # If the installed CLI already matches the pin, skip the heavy
+    # ffmpeg/node/npm provisioning and just re-assert Windows hardening +
+    # toolchain health. If missing/stale, run the full install — npm install -g
+    # <pin> upgrades a stale global in place. Keeps a re-run cheap when current.
     current = await installed_cli_version(work_dir)
     if current == _CLI_VERSION:
         _logger.info("timelapse_already_current", version=current)

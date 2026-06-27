@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "agentshore"
-version = "0.6.12"
+version = "0.6.15"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

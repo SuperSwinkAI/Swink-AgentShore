@@ -34,9 +34,7 @@ class MainDashboard(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = []
 
-    # Tracks agent_id → subprocess PID for all currently-running agent subprocesses.
-    # Populated by AgentSubprocessSpawned / cleared by AgentSubprocessExited.
-    # Issue #154's Kill-all control and crash-recovery screen will read this dict.
+    # agent_id → PID; read by issue #154 Kill-all / crash-recovery.
     _subprocess_pids: dict[str, int]
     _loop_alert_active: bool
 
@@ -72,10 +70,8 @@ class MainDashboard(Screen[None]):
         self.query_one("#work-queue", WorkQueueSummary).update_state(event.state)
         self.query_one("#rl-state", RLStateBar).update_state(event.state)
         alert = self.query_one("#alert-bar", AlertBar)
-        # state.loop_level is precomputed by StateBuilder via loop_level_for_streak.
-        # _loop_alert_active is kept as a transition guard so hide() only fires for
-        # an alert WE showed — the AlertBar is shared, so an unconditional hide()
-        # would clobber budget/feedback alerts on the same bar.
+        # _loop_alert_active guards hide() to our own alert; AlertBar is shared,
+        # so an unconditional hide() would clobber budget/feedback alerts.
         loop_level = event.state.loop_level
         if loop_level == 3 and event.state.last_play_type is not None:
             alert.show_loop(

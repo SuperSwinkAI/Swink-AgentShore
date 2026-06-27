@@ -57,8 +57,7 @@ def synced_repo(tmp_path: Path) -> Path:
     _git(["config", "user.email", "t@example.com"], repo)
     _git(["config", "user.name", "T"], repo)
     _git(["config", "commit.gpgsign", "false"], repo)
-    # Materialise a local integration branch tracking origin/integration, then
-    # park the checkout on main (the realistic primary-checkout state).
+    # Materialise local integration, then park on main (realistic primary-checkout state).
     _git(["checkout", "integration"], repo)
     _git(["checkout", "main"], repo)
     return repo
@@ -86,13 +85,13 @@ def _advance_remote_integration(tmp_path: Path) -> str:
 async def test_ff_synced_when_not_checked_out(synced_repo: Path, tmp_path: Path) -> None:
     """Local integration (not checked out) advances via update-ref to remote."""
     new_sha = _advance_remote_integration(tmp_path)
-    assert _sha(synced_repo, "integration") != new_sha  # behind before sync
+    assert _sha(synced_repo, "integration") != new_sha
 
     result = await fast_forward_local_branch(synced_repo, "integration")
 
     assert result.status is FFSyncStatus.SYNCED
-    assert _sha(synced_repo, "integration") == new_sha  # advanced
-    # The checkout stayed on main — we never switched branches.
+    assert _sha(synced_repo, "integration") == new_sha
+    # Checkout must stay on main — sync never switches branches.
     assert _git(["branch", "--show-current"], synced_repo).stdout.strip() == "main"
 
 
@@ -119,7 +118,7 @@ async def test_no_local_branch(synced_repo: Path, tmp_path: Path) -> None:
     (This is the path that matters in practice: target_branch resolves on the
     remote, but the primary checkout never materialised a local branch for it.)
     """
-    # Push a remote-only branch 'staging' that the primary clone never tracks.
+    # Remote-only branch 'staging' the primary clone never tracks.
     pusher = tmp_path / "pusher"
     upstream = tmp_path / "upstream.git"
     _git(["clone", str(upstream), str(pusher)], tmp_path)
@@ -138,20 +137,20 @@ async def test_no_local_branch(synced_repo: Path, tmp_path: Path) -> None:
 
 async def test_diverged_left_untouched(synced_repo: Path, tmp_path: Path) -> None:
     """Local integration with a commit not on the remote is never rewound."""
-    # Local diverges: add a local-only commit on integration.
+    # Local diverges: a local-only commit on integration.
     _git(["checkout", "integration"], synced_repo)
     (synced_repo / "local-only.txt").write_text("local\n")
     _git(["add", "local-only.txt"], synced_repo)
     _git(["commit", "-m", "local-only"], synced_repo)
     _git(["checkout", "main"], synced_repo)
     local_before = _sha(synced_repo, "integration")
-    # Remote also advances independently.
+    # Remote advances independently.
     _advance_remote_integration(tmp_path)
 
     result = await fast_forward_local_branch(synced_repo, "integration")
 
     assert result.status is FFSyncStatus.DIVERGED
-    assert _sha(synced_repo, "integration") == local_before  # untouched
+    assert _sha(synced_repo, "integration") == local_before
 
 
 async def test_fetch_failed_is_non_raising(synced_repo: Path) -> None:

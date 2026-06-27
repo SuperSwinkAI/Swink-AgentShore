@@ -73,15 +73,13 @@ class AgentRecord:
     total_cost: float = 0.0
     tasks_completed: int = 0
     tasks_failed: int = 0
-    # desktop-j8b: persisted at agent_instantiated so the ESR play log can
-    # render a human-readable agent name (model_tier + display_name) instead
-    # of the raw UUID. Nullable for back-compat with old DB rows.
+    # desktop-j8b: human-readable name (model_tier + display_name) for the ESR
+    # play log instead of the raw UUID. Nullable for back-compat with old rows.
     model_tier: str | None = None
     display_name: str | None = None
-    # desktop-31h2: cumulative count of plays dispatched to this agent in the
-    # current session, incremented at dispatch-claim time (regardless of
-    # success/failure/timeout). Surfaced as `dispatch_share` in agent
-    # performance rollups so fleet-utilisation imbalance is visible.
+    # desktop-31h2: plays dispatched to this agent this session, bumped at
+    # dispatch-claim time regardless of outcome. Surfaced as `dispatch_share`
+    # in performance rollups so fleet-utilisation imbalance is visible.
     dispatch_count: int = 0
 
 
@@ -117,18 +115,17 @@ class PullRequestRecord:
     status_check_summary: str | None = None
     is_draft: bool | None = None
     author_agent_id: str | None = None
-    # Agent backend that authored the PR ("claude_code", "codex", "api_*").
-    # Stored separately from author_agent_id so anti-confirmation in
-    # code_review can reject reviewers of the *same backend type* even when
-    # the original author has been terminated and replaced.
+    # Authoring backend, separate from author_agent_id so code_review
+    # anti-confirmation can reject same-backend reviewers even after the
+    # original author is terminated and replaced.
     author_agent_type: str | None = None
     merged_at: str | None = None
     head_sha: str | None = None
     mergeable: str | None = None
     base_ref: str | None = None
     last_reviewed_sha: str | None = None
-    # AgentShore's verdict at last_reviewed_sha: "PASS" | "BLOCK" | None.
-    # Lapses automatically when head_sha advances past last_reviewed_sha.
+    # Verdict at last_reviewed_sha ("PASS" | "BLOCK" | None); lapses when
+    # head_sha advances past last_reviewed_sha.
     last_review_status: str | None = None
 
     def __post_init__(self) -> None:
@@ -209,21 +206,6 @@ class HumanFeedbackRecord:
     created_at: str
     feedback_id: int | None = None
     feedback_text: str | None = None
-
-
-@dataclass(slots=True)
-class SessionLearningRecord:
-    """Row in the ``session_learnings`` table."""
-
-    session_id: str
-    pattern: str
-    category: str
-    created_at: str
-    last_reinforced_at: str
-    learning_id: int | None = None
-    source_play_id: int | None = None
-    confidence: float = 0.5
-    reinforcement_count: int = 1
 
 
 @dataclass(slots=True)

@@ -32,20 +32,16 @@ class VelocityTracker:
         self._velocity_events: collections.deque[tuple[int, str]] = collections.deque(
             maxlen=velocity_window_size
         )
-        # Watermark play_id marking the window start. Never reassigned in the
-        # current implementation (always None ⇒ watermark 1); retained so the
-        # velocity math is byte-for-byte the prior behaviour.
+        # Window-start watermark. Never reassigned (always None ⇒ watermark 1);
+        # retained so velocity math stays byte-for-byte the prior behaviour.
         self._velocity_window_start_play_id: int | None = None
         self._recent_agent_types: collections.deque[str] = collections.deque(
             maxlen=velocity_window_size
         )
-        # Rolling 50-cycle window of EligibilityAuthority confirm-repick
-        # occurrences. Each entry is True iff that selection cycle hit at least
-        # one confirm-repick (the authority's live ``confirm`` rejected a
-        # snapshot-eligible play → clean re-pick). Fed once per selection cycle
-        # by ``record_selection_repicks``. Exposed via
-        # ``MetricsEngine.executor_skip_rate_provider`` so PPO's observation
-        # vector carries the same rolling divergence signal (slot 177).
+        # Rolling 50-cycle window: each entry True iff that selection cycle hit a
+        # confirm-repick (live ``confirm`` rejected a snapshot-eligible play →
+        # clean re-pick). Fed by ``record_selection_repicks``; exposed via
+        # ``MetricsEngine.executor_skip_rate_provider`` as observation slot 177.
         self._executor_skip_window: collections.deque[bool] = collections.deque(maxlen=50)
         # True when the most recent play returned ``skipped_outcome("masked")``
         # from the executor's preconditions safety net. Surfaced via

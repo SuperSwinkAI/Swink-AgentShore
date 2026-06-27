@@ -276,9 +276,7 @@ async def test_merge_failure_does_not_record_closure_artifact() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # desktop-8otp: infer_pr_issue_links integration + issues_closed artifact key
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -451,9 +449,7 @@ async def test_merge_falls_back_to_body_when_links_fetch_fails() -> None:
     ctx.store.update_issues_state_batch.assert_awaited_once_with([17], "test-session", "closed")
 
 
-# ---------------------------------------------------------------------------
 # _fetch_pr_links unit tests (desktop-8otp: infer_pr_issue_links integration)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

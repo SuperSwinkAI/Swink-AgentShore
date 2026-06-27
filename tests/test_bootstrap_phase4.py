@@ -11,10 +11,6 @@ import pytest
 from agentshore.config import RuntimeConfig
 from agentshore.state import AgentStatus, NullStateProvider, OrchestratorState
 
-# ---------------------------------------------------------------------------
-# NullStateProvider
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_null_state_provider_accepts_all_hooks() -> None:
@@ -30,7 +26,6 @@ async def test_null_state_provider_accepts_all_hooks() -> None:
     from agentshore.plays.base import PlayParams
     from agentshore.state import PlayType
 
-    # None of these should raise
     await provider.on_state_update(state)
     await provider.on_play_started(PlayType.ISSUE_PICKUP, PlayParams())
     await provider.on_play_completed(MagicMock())
@@ -44,11 +39,6 @@ def test_null_state_provider_is_state_provider() -> None:
 
     provider = NullStateProvider()
     assert isinstance(provider, StateProvider)
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap: default state provider is NullStateProvider
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -75,11 +65,6 @@ async def test_bootstrap_default_state_provider_is_null(tmp_path: Path) -> None:
     from agentshore.state import NullStateProvider
 
     assert isinstance(orch._state_provider, NullStateProvider)
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap: setup_logging called first
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -110,11 +95,6 @@ async def test_bootstrap_calls_setup_logging(tmp_path: Path) -> None:
     assert len(log_calls) == 1
     assert log_calls[0]["level"] == cfg.logging.level
     assert log_calls[0]["session_id"] == "test-sid"
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap: each step logs with timing
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -157,9 +137,7 @@ async def test_bootstrap_logs_each_step_with_timing(
         assert step in all_output, f"Missing step: {step}"
 
 
-# ---------------------------------------------------------------------------
 # bootstrap_phase IPC events (desktop-zmw)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -242,13 +220,11 @@ async def test_bootstrap_forwards_phases_to_state_provider(tmp_path: Path) -> No
 
         await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, state_provider=provider)
 
-    # Some phases reliably fire under the patches above — assert their pairs.
     phases_started = [p for p, s, _ in phase_events if s == "started"]
     phases_completed = [p for p, s, _ in phase_events if s == "completed"]
     for required in ("init_datastore", "init_executor", "init_metrics"):
         assert required in phases_started, f"missing started for {required}"
         assert required in phases_completed, f"missing completed for {required}"
 
-    # The final synthetic "ready/completed" event is what dashboards use to
-    # dismiss the loading modal.
+    # Final synthetic "ready/completed" event dismisses the dashboard loading modal.
     assert ("ready", "completed", 0.0) in phase_events

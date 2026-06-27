@@ -35,15 +35,9 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Error markers
-# ---------------------------------------------------------------------------
-# ``_AUTH_ERROR_MARKERS`` (the narrow publish-failure-recovery auth view,
-# PUBLISH_AUTH_MARKERS) only scopes the publish-related gate below — a failure is
-# "publish related" if it mentions a publish verb OR a narrow auth marker. The
-# auth *classification* (mark_agent_error "auth") instead uses the broad canonical
-# AUTH_MARKERS (Phase 4), so a publish failure carrying a wider GitHub-auth
-# spelling ("repository not found", …) is still marked auth.
+# _AUTH_ERROR_MARKERS (narrow PUBLISH_AUTH_MARKERS) only scopes the publish-related
+# gate below. Auth *classification* uses the broad AUTH_MARKERS, so a publish failure
+# with a wider GitHub-auth spelling ("repository not found", …) is still marked auth.
 
 _PR_PUBLISH_ERROR_MARKERS = (
     "pull request",
@@ -54,10 +48,6 @@ _PR_PUBLISH_ERROR_MARKERS = (
     "remote branch",
     *_AUTH_ERROR_MARKERS,
 )
-
-# ---------------------------------------------------------------------------
-# Free helpers
-# ---------------------------------------------------------------------------
 
 
 def _branch_from_artifacts(artifacts: Sequence[object]) -> str | None:
@@ -130,11 +120,6 @@ def _with_branch_evidence(
     return dataclasses.replace(outcome, artifacts=[artifact, *outcome.artifacts])
 
 
-# ---------------------------------------------------------------------------
-# Reconciler
-# ---------------------------------------------------------------------------
-
-
 class IssuePickupPublishReconciler:
     """Recover ISSUE_PICKUP runs that passed tests but failed during PR publication.
 
@@ -179,13 +164,11 @@ class IssuePickupPublishReconciler:
         try:
             identity_env = self._identity_env_for_agent(params.agent_id)
         except PreconditionFailed:
-            # The assigned agent was torn down (e.g. end_agent during fleet
-            # wind-down) before this post-dispatch reconcile ran. There is no
-            # live handle to build an identity overlay from and none to flag —
-            # degrade to branch evidence; the next GitHub state refresh adopts
-            # the branch/PR. Without this, get_handle's PreconditionFailed
-            # escaped the play task and was logged as play_task_failed, losing
-            # the completion bookkeeping (#18).
+            # Assigned agent torn down (e.g. end_agent during wind-down) before this
+            # reconcile ran — no handle for an identity overlay. Degrade to branch
+            # evidence; next GitHub refresh adopts the branch/PR. Without this,
+            # get_handle's PreconditionFailed escaped as play_task_failed, losing
+            # completion bookkeeping (#18).
             _logger.info(
                 "issue_pickup_publish_reconcile_agent_gone",
                 issue_number=issue_number,
@@ -209,10 +192,8 @@ class IssuePickupPublishReconciler:
 
         if await self._remote_branch_exists(branch):
             issue_title = _issue_title(issue_number, state)
-            # Honor the configured target branch (agentshore.yaml →
-            # project.target_branch). Falls back to the repo's GitHub default
-            # branch when unset, preserving behaviour for projects that pre-date
-            # the field. See desktop-53m0.
+            # Honor configured project.target_branch; fall back to the repo's GitHub
+            # default when unset (preserves pre-field projects). See desktop-53m0.
             base = self._cfg.project.target_branch or await self._github.default_branch(
                 identity_env=identity_env
             )

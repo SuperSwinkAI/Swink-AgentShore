@@ -172,14 +172,11 @@ class StateBuilder:
         self._velocity = velocity
         self._recovery = recovery
         self._overrides = overrides
-        # Per-agent consecutive-idle-tick counter for stale claim release. Owned
-        # here (only read inside release_claims_for_prolonged_idle_agents).
+        # Per-agent idle-tick counter for stale claim release (owned here).
         self._idle_agent_claim_ticks: dict[str, int] = {}
-        # Last (total_plays, total_cost) seen by assemble_state, cached so the
-        # budget-countdown heartbeat (current_budget_snapshot) can recompute the
-        # remaining-time figure from a fresh monotonic clock without a DB read.
-        # None until the first full state assembly. GH: dashboard time-budget
-        # heartbeat.
+        # Cached (total_plays, total_cost) so the budget-countdown heartbeat can
+        # re-derive remaining time off a fresh clock without a DB read. None
+        # until the first full state assembly.
         self._last_budget_inputs: tuple[int, float] | None = None
 
     # ------------------------------------------------------------------
@@ -238,7 +235,7 @@ class StateBuilder:
             latest_checkpoint_task = tg.create_task(
                 self._store.load_latest_checkpoint(self._session_id)
             )
-            learnings_count_task = tg.create_task(self._store.count_learnings(self._session_id))
+            learnings_count_task = tg.create_task(self._count_learnings_from_json())
             human_feedback_count_task = tg.create_task(
                 self._store.count_human_feedback(self._session_id)
             )
@@ -254,28 +251,21 @@ class StateBuilder:
         learnings_count = learnings_count_task.result()
         human_feedback_count = human_feedback_count_task.result()
 
-        # Merge in-memory recent completions with the DB read. SQLite WAL flush
-        # is async, so freshly-recorded plays may not appear in get_play_history
-        # for tens to hundreds of ms — long enough for same-tick instantiate_agent
-        # pairs to slip past the cooldown mask (desktop-65bg). The deque is
-        # capped at 64 plays so the merge cost is bounded.
+        # WAL flush is async: freshly-recorded plays can lag get_play_history by
+        # tens-hundreds of ms, long enough for same-tick instantiate_agent pairs
+        # to slip past the cooldown mask (desktop-65bg). Deque capped at 64.
         play_history = _merge_recent_completions(
             play_history, self._runtime.recent_play_completions
         )
 
-        # Sibling shadow for per-issue applied labels (desktop-quv9). Without
-        # this, a successful systematic_debugging that adds ROOT_CAUSE_FOUND_LABEL
-        # to issue N can be re-selected on the very next tick — the gh CLI
-        # label-add + ``add_issue_labels`` write haven't propagated to a fast
-        # follow-up ``get_open_issues`` read. The merge augments the cached
-        # issue records with shadow labels so the candidate filter
-        # (``issue_available_for_debug``) excludes the freshly-labelled issue.
+        # Sibling shadow for per-issue applied labels (desktop-quv9): the gh CLI
+        # label-add + add_issue_labels write lag a fast follow-up get_open_issues
+        # read, so without overlaying the shadow a just-labelled issue would be
+        # re-selected next tick (issue_available_for_debug filter misses it).
         open_issues = _merge_recent_applied_labels(open_issues, self._runtime.recent_applied_labels)
 
-        # Closed issues from the last 24 hours feed the dashboard's Done
-        # column. The frontend routes anything with state="closed" to Done,
-        # so passing them through the same projection as open issues is
-        # sufficient — no schema or projection change needed.
+        # Recently-closed issues feed the dashboard Done column; frontend routes
+        # state="closed" there, so the same projection as open issues suffices.
         return _StateData(
             issue_records=open_issues + recently_closed_issues,
             pr_records=pr_records,
@@ -291,6 +281,26 @@ class StateBuilder:
             learnings_count=learnings_count,
             human_feedback_count=human_feedback_count,
         )
+
+    async def _count_learnings_from_json(self) -> int:
+        """Count learnings from the JSON store (non-zero when the file has entries).
+
+        Runs the blocking file read via ``asyncio.to_thread`` so it fits
+        naturally inside the ``TaskGroup`` that fans out the other DB reads.
+        Falls back to 0 on any I/O or parse error to preserve the same
+        best-effort semantics the old ``count_learnings`` DB call had.
+        """
+        import json as _json
+
+        from agentshore.learnings import load as _load_learnings
+
+        try:
+            cfg = self._runtime.cfg
+            path = self._repo_root / cfg.learnings.file
+            learnings = await asyncio.to_thread(_load_learnings, path)
+            return len(learnings)
+        except (OSError, _json.JSONDecodeError, KeyError, ValueError, TypeError):
+            return 0
 
     async def safe_get_latest_trajectory(self) -> TrajectorySnapshotRecord | None:
         """Best-effort trajectory fetch; logs and returns ``None`` on failure.
@@ -364,11 +374,9 @@ class StateBuilder:
 
         claims = await find_method(self._session_id, idle_ids)
         protected_claim_group_ids = self._in_flight_claim_group_ids()
-        # #205: a claim group parked in ``retrying`` has no live dispatch (the
-        # retry is queued in the override channel and re-runs start_work_claim_group
-        # on its next dispatch), so without this it would look idle-owned and get
-        # released out from under the pending retry — surfacing as "work claim
-        # inactive". Protect those groups too.
+        # #205: a claim group in ``retrying`` has no live dispatch (retry queued
+        # in the override channel), so without this it looks idle-owned and gets
+        # released out from under the pending retry. Protect those groups too.
         list_retrying = getattr(self._store, "list_retrying_claim_group_ids", None)
         if callable(list_retrying):
             retrying_group_ids = await list_retrying(self._session_id)
@@ -507,8 +515,8 @@ class StateBuilder:
             cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
         if newly_wedged:
             # Reason tag per type (#233): "launch_wedge" (Grok first-byte) vs
-            # "stream_hang_cluster" (agy zero-stdout cluster). Collapse to a single
-            # label when uniform, else "mixed". ``getattr`` tolerates a stub manager.
+            # "stream_hang_cluster" (agy zero-stdout). Collapse to one label when
+            # uniform, else "mixed".
             reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
             reasons = {reasons_map.get(t, "launch_wedge") for t in newly_wedged}
             reason = reasons.pop() if len(reasons) == 1 else "mixed"
@@ -521,8 +529,7 @@ class StateBuilder:
                 expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
             )
 
-        # Drop expired entries so the type becomes eligible again. An entry is
-        # active while the current tick has not yet reached its expiry tick.
+        # Drop expired entries (current tick reached expiry) so the type recovers.
         expired = [
             agent_type for agent_type, expiry in cooldown_until.items() if current_tick >= expiry
         ]
@@ -567,19 +574,46 @@ class StateBuilder:
             elapsed_minutes=elapsed_minutes,
         )
 
+    async def build_budget_only(self) -> BudgetSnapshot:
+        """Build only the budget snapshot via one cheap aggregate query.
+
+        Side-effect-free read path for the live ``session.get_budget`` prefill
+        (the desktop "Adjust Budget…" dialog, #281). Unlike :meth:`build_state`
+        it skips the ten-read fan-out + beads graph load and the two mutating
+        helpers (``abandon_work_for_missing_agents`` /
+        ``release_claims_for_prolonged_idle_agents``) — a prefill must never
+        abandon work or release claims. Reuses the single
+        ``COUNT(*)/SUM(dollar_cost)`` ``session_play_totals`` query and refreshes
+        the cached dollar inputs so the budget-countdown heartbeat keeps working.
+
+        ``session_play_totals`` counts every play row (internal types included),
+        whereas :meth:`assemble_state` excludes internal plays from ``total_plays``
+        — but that count only feeds the cosmetic ``estimated_cost_per_play`` field,
+        which the ``session.get_budget`` echo does not return, so the dollar/time
+        figures the dialog prefills are identical either way.
+        """
+        total_plays, total_cost = await self._store.session_play_totals(self._session_id)
+        self._last_budget_inputs = (total_plays, total_cost)
+        loop_started_at = self._runtime.loop_started_at
+        elapsed_minutes = (
+            (time.monotonic() - loop_started_at) / 60.0 if loop_started_at > 0 else 0.0
+        )
+        return self._snapshots.build_budget_snapshot(
+            total_plays,
+            total_cost,
+            budget_cfg=self._host.effective_budget_caps(),
+            elapsed_minutes=elapsed_minutes,
+        )
+
     def assemble_state(self, data: _StateData) -> OrchestratorState:
         """Pure transformation: ``_StateData`` + live handles -> ``OrchestratorState``.
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
-        # Drain any backend-auth failures the manager stamped since the last
-        # snapshot into the session suppression set. The manager owns no
-        # reference back to ``SessionRuntime``; this is the single point where
-        # both ``self._manager`` and ``self._runtime`` are in hand, so it's where
-        # the per-agent AUTH classification becomes a session-wide agent-type
-        # suppression that the candidate analyzer (via ``OrchestratorState``)
-        # then masks on (#zeke auth-hang). Pure set ops, no I/O. ``getattr`` so a
-        # stub/test-double manager without the attribute is tolerated.
+        # Drain manager-stamped backend-auth failures into the session
+        # suppression set. This is the one point with both manager + runtime in
+        # hand, so per-agent AUTH classification becomes session-wide agent-type
+        # suppression the candidate analyzer masks on (#zeke auth-hang).
         manager_auth_failed: set[str] = getattr(self._manager, "last_auth_failed_types", set())
         newly_auth_suppressed = manager_auth_failed - self._runtime.auth_suppressed_agent_types
         if newly_auth_suppressed:
@@ -595,13 +629,9 @@ class StateBuilder:
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
         pull_requests = self._snapshots.project_pull_requests(data.pr_records)
-        # Piece C: target-branch PR filter. When the project explicitly configures
-        # a ``target_branch``, drop open PRs whose base branch is known and differs
-        # from it — they are out of scope for this session and must not reach the
-        # dashboard, candidate pool, or backpressure (all of which source from
-        # ``state.pull_requests``). Conservative: a PR with an unknown base
-        # (``base_ref`` None/empty, e.g. legacy rows) is kept. Skipped entirely
-        # when ``target_branch`` is unset so the repo default isn't second-guessed.
+        # Piece C: when target_branch is set, drop open PRs whose known base
+        # differs — out of scope and must not reach dashboard/candidates/
+        # backpressure. PRs with unknown base are kept; skipped when unset.
         pull_requests, ignored_pr_count = self._filter_pull_requests_to_target(
             pull_requests, cfg.project.target_branch
         )
@@ -617,9 +647,8 @@ class StateBuilder:
             if r.queue_id is not None and r.pr_number in active_pr_numbers
         ]
 
-        # User-facing total_plays excludes non-work bookkeeping plays
-        # (currently none — desktop-rni0). Same filter as compute_session_stats
-        # so HUD counter matches ESR.
+        # total_plays excludes internal plays; same filter as compute_session_stats
+        # so the HUD counter matches ESR.
         internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
         total_plays = sum(1 for p in data.play_history if p.play_type not in internal_play_values)
         total_cost = sum(p.dollar_cost for p in data.play_history)
@@ -646,8 +675,8 @@ class StateBuilder:
             budget_cfg=self._host.effective_budget_caps(),
             elapsed_minutes=elapsed_minutes,
         )
-        # Cache the dollar inputs so the budget heartbeat can re-derive the
-        # remaining-time countdown from a fresh clock without re-reading the DB.
+        # Cache dollar inputs so the budget heartbeat re-derives the countdown
+        # off a fresh clock without a DB read.
         self._last_budget_inputs = (total_plays, total_cost)
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)
@@ -667,11 +696,10 @@ class StateBuilder:
             if dispatch_id in in_flight and not in_flight[dispatch_id].done()
         ]
 
-        # Snapshot orchestrator runtime latches so the mask can hide the
-        # corresponding plays from PPO. dispatch_play gates 1-2 keep the live
-        # recheck as a backstop because state can flip between selection and
-        # dispatch. end_session_in_flight mirrors dispatch_play gate 2's
-        # condition (started latch OR any in-flight END_SESSION dispatch).
+        # Snapshot runtime latches so the mask hides the matching plays from PPO;
+        # dispatch_play gates 1-2 still re-check live (state can flip between
+        # selection and dispatch). end_session_in_flight mirrors gate 2 (started
+        # latch OR any in-flight END_SESSION dispatch).
         main_repo_dispatch_paused = self._main_repo.dispatch_paused
         end_session_in_flight = self._runtime.end_session_dispatch_started or (
             PlayType.END_SESSION in in_flight_plays

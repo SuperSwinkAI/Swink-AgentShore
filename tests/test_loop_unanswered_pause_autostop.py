@@ -66,7 +66,7 @@ async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) ->
     # No actionable work → the guard does not defer; the pause auto-stops.
     orch._loop.actionable_work_remains = AsyncMock(return_value=(False, 0, 0))
     await orch.pause("loop_detected")
-    orch._pause_event.clear()  # simulate still-paused
+    orch._pause_event.clear()  # still paused
     await orch._loop.auto_stop_unanswered_pause()
     assert orch._draining is True
     assert orch._drain_reason == "loop_detection_prompt_timeout"

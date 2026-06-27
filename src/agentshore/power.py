@@ -41,19 +41,12 @@ from agentshore.logging import get_logger
 _logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Windows constants (kernel32.SetThreadExecutionState flags)
-# ---------------------------------------------------------------------------
+# Windows kernel32.SetThreadExecutionState flags.
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
 
-# ---------------------------------------------------------------------------
-# macOS constants
-# ---------------------------------------------------------------------------
-# kIOPMAssertionLevelOn / kIOPMAssertionLevelOff — IOKit IOPMLib.h
+# macOS IOKit IOPMLib.h constants (kIOPMAssertionLevelOn, kIOReturnSuccess).
 _KIOPM_ASSERT_LEVEL_ON = 255
-
-# kIOReturnSuccess
 _KIO_RETURN_SUCCESS = 0
 
 
@@ -97,8 +90,6 @@ class PowerAssertion:
 
     def __exit__(self, *exc: object) -> None:
         self.release()
-
-    # -- platform handlers ---------------------------------------------------
 
     def _acquire_macos(self) -> bool:
         """Take an IOPMAssertion. Returns True on success, False on failure."""
@@ -159,8 +150,7 @@ class PowerAssertion:
             name_cf,
             ctypes.byref(assertion_id),
         )
-        # CFStrings are retained by IOPMAssertionCreateWithName, safe to
-        # release ours.
+        # IOPMAssertionCreateWithName retains the CFStrings; release ours.
         cf.CFRelease(type_cf)
         cf.CFRelease(name_cf)
         if rc != _KIO_RETURN_SUCCESS:

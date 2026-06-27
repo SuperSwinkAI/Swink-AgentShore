@@ -16,23 +16,12 @@ from agentshore import __version__
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Bundled skill templates live inside the package at
-# src/agentshore/skills/templates/<skill-name>/SKILL.md.
-# They are installed into .agents/skills/ in the target project.
-
+# Bundled templates: src/agentshore/skills/templates/<skill-name>/SKILL.md →
+# installed into .agents/skills/ in the target project.
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _BUNDLED_TEMPLATES = _PACKAGE_DIR / "templates"
 
 _VERSION_RE = re.compile(r"^agentshore_version:\s*(.+)$", re.MULTILINE)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_agentshore_version(text: str) -> str | None:
@@ -96,7 +85,6 @@ def _stamp_version(text: str) -> str:
 
     # Has frontmatter delimiters?
     if text.startswith("---"):
-        # Insert after the first line.
         first_newline = text.index("\n")
         before = text[: first_newline + 1]
         after = text[first_newline + 1 :]
@@ -104,11 +92,6 @@ def _stamp_version(text: str) -> str:
 
     # No frontmatter at all -- prepend one.
     return f"---\nagentshore_version: {version}\n---\n{text}"
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def install_skills(

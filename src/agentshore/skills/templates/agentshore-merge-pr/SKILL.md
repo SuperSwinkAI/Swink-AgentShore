@@ -16,7 +16,7 @@ Merge PR #$ARGUMENTS from `$AGENTSHORE_PROJECT_PATH`.
 
 **Post-merge:** close any `Closes/Fixes/Resolves #N` issues GitHub didn't auto-close. After `git fetch origin`, if `git log origin/<target> --grep='Revert.*#$ARGUMENTS'` matches without a corresponding `Reapply.*#$ARGUMENTS` → don't close; create the label if missing (`gh label create agentshore/revert-reopened --color e4e669 --description 'Resolving PR was reverted' 2>/dev/null || true`), apply it, comment with the revert SHA, and add the issue to `reverted_issues`.
 
-**Forbidden:** `git stash` / `reset --hard` / `checkout -- <path>` against dirty trunk (skip with `error: "dirty_trunk"`); `git worktree add/remove/prune` — AgentShore owns worktree lifecycle; force-push; bypassing any stated project requirement.
+**Forbidden:** `git stash` / `reset --hard` / `checkout -- <path>` against dirty trunk (skip with `error: "dirty_trunk"`); `git worktree add/remove/prune` — AgentShore owns worktree lifecycle; force-push; bypassing any stated project requirement; `gh repo fork`, `git remote add` a non-origin remote, or opening a cross-fork PR (a `gh pr create` whose `--head` points at a fork) — if pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` rather than forking.
 
 **Report — one fenced JSON block, nothing else:**
 
@@ -29,8 +29,11 @@ Merge PR #$ARGUMENTS from `$AGENTSHORE_PROJECT_PATH`.
   "reverted_issues": [],
   "branch_deleted": "<head_ref>",
   "verification_evidence": [{"command": "...", "exit_code": 0, "summary": "..."}],
+  "learnings": [{"pattern": "this repo requires --merge (not --squash) because branch protection enforces signed merge commits", "confidence": 0.9, "category": "merge-policy"}],
   "error": null
 }
 ```
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (merge mode requirements, branch protection quirks, post-merge close conventions) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details.
 
 On block/skip: `success: false` + `error` + `blocked_by`. AgentShore masks on `dirty_trunk`, `merge_conflicts`, `wrong_base_branch`; anything else is generic. Validate before reporting — don't trust prior steps.

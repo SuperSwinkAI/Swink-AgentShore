@@ -9,9 +9,8 @@ from click.testing import CliRunner
 
 from agentshore.cli import main
 
-# Canonical wire encoding returned by the orchestrator's IPC reply.
-# Keys match ``DrainController._applied_from_state`` and ``_serialize_budget``
-# (both now use ``total`` for the dollar cap).
+# Wire encoding from the IPC reply; keys mirror DrainController._applied_from_state
+# and _serialize_budget (both use ``total`` for the dollar cap).
 _APPLIED: dict[str, object] = {
     "enabled": True,
     "total": 75.0,
@@ -168,10 +167,7 @@ def test_add_budget_command_name_is_hyphenated() -> None:
     assert "add-budget" in result.output
 
 
-# --------------------------------------------------------------------------- #
-# request_add_budget — IPC reply parsing
-# The new implementation reads an ``add_budget_ok`` reply directly; no polling.
-# --------------------------------------------------------------------------- #
+# request_add_budget — reads an ``add_budget_ok`` reply directly, no polling.
 
 
 def test_request_add_budget_returns_no_session_when_no_endpoint(

@@ -9,10 +9,6 @@ import pytest
 
 from agentshore.state import PlayOutcome, PlayType
 
-# ---------------------------------------------------------------------------
-# Existing fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture(autouse=True)
 def _prevent_browser_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,11 +26,6 @@ def mock_agent_path() -> Path:
     (PPO loop tests) via this fixture.
     """
     return Path(__file__).parent / "fixtures" / "mock_agent.py"
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

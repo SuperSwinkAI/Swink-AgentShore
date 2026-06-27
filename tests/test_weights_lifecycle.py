@@ -27,7 +27,6 @@ def test_prune_keeps_last_n(tmp_path: Path) -> None:
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    # Create 5 fake numbered checkpoints in sorted order.
     names = [
         "policy_000001.pt",
         "policy_000002.pt",
@@ -166,8 +165,7 @@ def test_archive_skips_already_legacy_named(tmp_path: Path) -> None:
 
     _archive_old_canonicals(weights_dir)
 
-    # File should still exist and not be double-archived.
-    assert legacy_existing.exists()
+    assert legacy_existing.exists()  # not double-archived
 
 
 def test_archive_skips_numbered_local_checkpoints(tmp_path: Path) -> None:
@@ -275,7 +273,6 @@ def test_delta_concurrent_sessions_both_preserved(tmp_path: Path) -> None:
     canonical = weights_dir / canonical_weights_filename()
     lock = weights_dir / canonical_lock_filename()
 
-    # Shared starting point.
     base_sd = {k: v.clone() for k, v in ActorCritic().state_dict().items()}
     _policy_with_sd(base_sd).save(canonical)
 

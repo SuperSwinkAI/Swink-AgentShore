@@ -27,10 +27,6 @@ from agentshore.state import (
     SessionStatsSnapshot,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _minimal_state(**overrides: object) -> OrchestratorState:
     """Build the smallest valid OrchestratorState for testing."""
@@ -80,11 +76,6 @@ def _minimal_agent(agent_id: str = "agent-1") -> AgentSnapshot:
         tasks_failed=0,
         display_name="Claude: Test Agent",
     )
-
-
-# ---------------------------------------------------------------------------
-# serialize_state tests
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_state_has_required_keys() -> None:
@@ -484,8 +475,7 @@ def test_serialize_state_time_budget_fields() -> None:
 
 
 def test_serialize_state_time_disabled_nulls_time_fields() -> None:
-    # time_remaining inf must serialize to None (browser-JSON-safe), and all
-    # time fields null out when the dimension is disabled even if values leak in.
+    # Disabled time dimension nulls all time fields, even an inf that leaks in.
     state = _minimal_state(
         budget=BudgetSnapshot(
             total_budget=200.0,
@@ -503,11 +493,6 @@ def test_serialize_state_time_disabled_nulls_time_fields() -> None:
     assert budget is not None
     assert budget["time_enabled"] is False  # type: ignore[index]
     assert budget["time_remaining_minutes"] is None  # type: ignore[index]
-
-
-# ---------------------------------------------------------------------------
-# serialize_play_event tests
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_play_event_started() -> None:
@@ -539,11 +524,6 @@ def test_serialize_play_event_has_play_type_string() -> None:
     assert result["play_type"] == "code_review"
 
 
-# ---------------------------------------------------------------------------
-# serialize_feedback_requested tests
-# ---------------------------------------------------------------------------
-
-
 def test_serialize_feedback_budget_exhaustion() -> None:
     result = serialize_feedback_requested("budget_exhausted")
     assert result["trigger"] == "budget_exhaustion"
@@ -553,11 +533,6 @@ def test_serialize_feedback_budget_exhaustion() -> None:
 def test_serialize_feedback_loop_escalation() -> None:
     result = serialize_feedback_requested("loop_detected")
     assert result["trigger"] == "loop_escalation"
-
-
-# ---------------------------------------------------------------------------
-# make_message tests
-# ---------------------------------------------------------------------------
 
 
 def test_make_message_has_type_field() -> None:
@@ -570,7 +545,6 @@ def test_make_message_has_id_field() -> None:
     msg = make_message("state_update", {"foo": 1})
     parsed = json.loads(msg)
     assert "id" in parsed
-    # Must be a valid UUID4 string
     import uuid
 
     uuid.UUID(parsed["id"], version=4)

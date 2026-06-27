@@ -82,14 +82,12 @@ async def _phase_init_datastore(repo_root: Path) -> DataStore:
         db_dir = project_dir(repo_root)
         db_dir.mkdir(exist_ok=True)
         db_path = project_db_path(repo_root)
-        # desktop-jc7p: before opening the live connection, check the main DB
-        # for corruption and swap in the most recent intact snapshot if needed.
-        # The corrupt file is preserved as agentshore.db.corrupt.<ts>. No-op when
-        # the DB is fine or when no usable snapshot exists.
+        # desktop-jc7p: swap in latest intact snapshot if main DB is corrupt
+        # (corrupt file kept as agentshore.db.corrupt.<ts>); no-op when DB is fine.
         from agentshore.data.integrity import restore_from_snapshot_ring
 
         restore_from_snapshot_ring(db_path, db_dir)
-        # Tests patch ``agentshore.core.phases.DataStore`` to intercept construction.
+        # Test seam: tests patch ``agentshore.core.phases.DataStore``.
         store: DataStore = DataStore(db_path)
         await store.initialize()
         return store
@@ -119,8 +117,7 @@ async def _phase_init_executor(
 
     Returns ``(manager, gh, executor, registry)``.
     """
-    # Tests patch these symbols on ``agentshore.core.phases`` (their binding
-    # home) to intercept construction.
+    # Test seam: these symbols are patched on ``agentshore.core.phases``.
     async with _step("init_manager"):
         manager = AgentManager(
             session_id=sid,
@@ -157,7 +154,7 @@ async def _phase_init_executor(
 
 
 async def _phase_init_metrics(
-    *, orch: Orchestrator, cfg: RuntimeConfig, store: DataStore, sid: str
+    *, orch: Orchestrator, cfg: RuntimeConfig, store: DataStore, sid: str, repo_root: Path
 ) -> None:
     """Wire the RL ``MetricsEngine`` and policy/config-version metadata."""
     async with _step("init_metrics"):
@@ -166,6 +163,8 @@ async def _phase_init_metrics(
         orch._metrics = MetricsEngine(
             store=store,
             session_id=sid,
+            repo_root=repo_root,
+            learnings_file=cfg.learnings.file,
             stagnation_warn_after=cfg.rl.stagnation.warn_after,
             velocity_provider=orch._velocity.compute_rolling_velocity,
             executor_skip_rate_provider=orch._velocity.executor_skip_rate_recent_50,
@@ -270,12 +269,9 @@ async def _phase_init_ppo_selector(
         config_index = build_config_index(cfg)
         pp = _resolve_policy_path(cfg, policy_path)
 
-        # #247: pre-warm the torch import OFF the event loop. _ppo_selector_cls()
-        # imports agentshore.rl.selector → agentshore.rl.policy → torch, a cold
-        # ~1-3s import that, run on the loop, freezes Textual's compositor so the
-        # startup checklist hangs on a partial frame. Priming the module cache in
-        # a thread first makes the subsequent _ppo_selector_cls() a cache hit, so
-        # the loop keeps repainting while torch loads.
+        # #247: pre-warm the cold ~1-3s torch import OFF the event loop. Run on
+        # the loop it freezes Textual's compositor; priming the module cache in a
+        # thread makes the subsequent _ppo_selector_cls() a cache hit.
         import importlib
 
         await asyncio.to_thread(importlib.import_module, "agentshore.rl.selector")
@@ -313,9 +309,8 @@ async def _phase_init_ppo_selector(
 
         orch._selector = ppo
 
-        # Wire the guarded RL experience recorder now that the PPO selector,
-        # metrics, and policy/config versions are all final. The completion
-        # path no-ops the RL tail when this stays None (non-PPO / headless).
+        # Wire the RL experience recorder now selector/metrics/versions are final.
+        # Completion no-ops the RL tail when this stays None (non-PPO / headless).
         from agentshore.core.concurrency_log import ConcurrencyLog
         from agentshore.core.experience_recorder import ExperienceRecorder
         from agentshore.session_path import session_dir
@@ -511,8 +506,8 @@ async def _phase_session_start_trunk_artifacts(
                 owner_windows.append(
                     PlayWindow(play_id=play_id, started_at=started, ended_at=_epoch(ended_at))
                 )
-            # No genuinely-active plays exist at bootstrap (dispatch is not open),
-            # so a prior killed play (ended_at NULL) is an owner, not active.
+            # No active plays exist at bootstrap (dispatch not open), so a prior
+            # killed play (ended_at NULL) is an owner, not active.
             attributed = attribute_orphan_artifacts(
                 repo_root, owner_windows=owner_windows, active_windows=[]
             )
@@ -577,9 +572,8 @@ async def _phase_git_safety_sweep(
     """
     async with _step("git_safety_sweep"):
         added = await asyncio.to_thread(ensure_gitignore_entries, repo_root)
-        # Adding a line to .gitignore is a no-op if the path was committed
-        # before the ignore existed — git keeps tracking it. Untrack any such
-        # already-committed entries so the ignore actually takes effect.
+        # A .gitignore line is a no-op for already-committed paths; untrack them
+        # so the ignore takes effect.
         untracked = await asyncio.to_thread(untrack_ignored_entries, repo_root)
         if added or untracked:
             _logger.info(
@@ -683,7 +677,7 @@ async def _phase_git_safety_sweep(
 
 def _phase_install_skills(repo_root: Path) -> None:
     """Install bundled skills into the project; non-fatal on failure."""
-    # _step is async; we use a synchronous timing log to keep this phase sync.
+    # _step is async; use a synchronous timing log to keep this phase sync.
     t0 = time.perf_counter()
     try:
         from agentshore.skills import install_skills
@@ -731,8 +725,7 @@ async def _clear_session_scoped_bead_progress(
 async def _phase_clear_beads_in_progress(*, repo_root: Path, sid: str) -> None:
     """Clear stale beads progress before the first session state snapshot."""
     async with _step("clear_beads_in_progress"):
-        # Tests patch ``agentshore.core.phases._clear_session_scoped_bead_progress``
-        # (this module's binding) to intercept the call.
+        # Test seam: ``_clear_session_scoped_bead_progress`` is patched here.
         await _clear_session_scoped_bead_progress(
             repo_root=repo_root,
             sid=sid,
@@ -783,20 +776,19 @@ async def _mirror_issues_to_beads(
     beads_dir = project_path / ".beads"
     if not beads_dir.exists():
         return
-    # No epics yet → seed_project owns first-time graph construction.
-    # Skip mirror to avoid orphan tasks with no parent epic/story link.
+    # No epics yet → seed_project owns first-time graph construction; mirroring
+    # now would create orphan tasks with no parent epic/story.
     if graph is None or not graph.has_epics:
         _logger.debug(
             "beads_mirror_skipped_no_epics",
             reason="seed_project will build the canonical graph",
         )
         return
-    # mirrors only issues passing adapter label filters — changing filters orphans existing tasks
     for issue in issues:
         if issue.state != "open":
             continue
         ext_ref = f"gh-{issue.issue_number}"
-        # Skip issues already tracked to avoid duplicates on re-run.
+        # Already tracked → skip (idempotent re-run).
         if any(t.external_ref == ext_ref for t in graph.tasks):
             continue
         line = json.dumps(
@@ -815,9 +807,8 @@ async def _mirror_issues_to_beads(
                 stdin_data=(line + "\n").encode(),
             )
         except _beads_mod.BdError as exc:
-            # Dolt reports "nothing to commit" (exit 1) when the import is
-            # already fully deduplicated — the graph is already converged, so
-            # this is a successful no-op, not a failure.
+            # Dolt's "nothing to commit" (exit 1) means the import fully
+            # deduplicated — a converged no-op, not a failure.
             if "nothing to commit" in str(exc):
                 _logger.debug(
                     "beads_mirror_issue_noop",
@@ -840,9 +831,8 @@ async def _phase_fetch_github(
         try:
             await gh.probe()
             if not gh.available:
-                # Bootstrap probe failed — open_issues will be empty for this
-                # session until the periodic refresh recovers. Log as ERROR so
-                # operators can distinguish "empty repo" from "gh unavailable".
+                # Probe failed — open_issues stays empty until refresh recovers.
+                # ERROR so operators distinguish "empty repo" from "gh unavailable".
                 _logger.error(
                     "github_unavailable",
                     expected_issues_known=False,
@@ -850,10 +840,8 @@ async def _phase_fetch_github(
                     session_id=sid,
                 )
             else:
-                # desktop-rla8: paginated full sweep at startup. No ``since``
-                # cursor exists yet, so we always do a complete fetch. After
-                # success, advance the cursor so subsequent refreshes can use
-                # the cheap incremental ``since=`` path.
+                # desktop-rla8: full sweep at startup (no ``since`` cursor yet),
+                # then advance the cursor so later refreshes use cheap ``since=``.
                 from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
                 syncer = GitHubSyncer(gh=gh, store=store, cfg=cfg, session_id=sid)
@@ -895,8 +883,8 @@ async def _phase_fetch_github(
                         project_path=repo_root, issues=issues, graph=_startup_graph
                     )
                 else:
-                    # Empty result is success — set cursor so we don't repeat
-                    # the full sweep on the next refresh.
+                    # Empty result is success — set cursor to skip the full
+                    # sweep next refresh.
                     await syncer.cache_issues([], cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_fetched_empty",
@@ -983,11 +971,11 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
             return
         try:
             from agentshore.learnings import Learning as _Learning
-            from agentshore.learnings import decay, load, prune, save_atomic
+            from agentshore.learnings import consolidate, decay, load, prune, save_atomic
 
             learnings_path = repo_root / cfg.learnings.file
             entries = await asyncio.to_thread(load, learnings_path)
-            # Age all entries by one session
+            # Age every entry by one session.
             entries = [
                 _Learning(
                     id=e.id,
@@ -1005,13 +993,18 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
                 prune(entries, min_confidence=cfg.learnings.min_confidence),
                 threshold_sessions=cfg.learnings.decay_after_sessions,
             )
+            # Compact near-duplicate prose so the max_entries trim doesn't drop
+            # distinct insights.
+            entries = consolidate(
+                entries, overlap_threshold=cfg.learnings.consolidate_overlap_threshold
+            )
             await asyncio.to_thread(save_atomic, learnings_path, entries)
-            # Merge global-scope learnings that aren't already present locally
+            # Merge in global-scope learnings not already present locally.
             global_learnings_path = _GLOBAL_CONFIG_DIR / "learnings.json"
             if global_learnings_path.exists():
                 try:
                     global_entries = await asyncio.to_thread(load, global_learnings_path)
-                    # Keep only global-scope entries; project entries win on id collision
+                    # Global-scope only; project entries win on id collision.
                     project_ids = {e.id for e in entries}
                     for ge in global_entries:
                         if getattr(ge, "scope", "project") == "global" and ge.id not in project_ids:
@@ -1105,10 +1098,9 @@ def _phase_queue_agent_instantiation(
 
     def _enqueue_groom(*, wait_for_play_type: PlayType | None = None) -> None:
         # GROOM_BACKLOG is user-disableable (preferences.yaml). The bootstrap
-        # override bypasses preconditions AND the action mask, so the mask-level
-        # USER_DISABLED suppression does not reach it — honor the preference here
-        # or a disabled groom would still be force-run at cold start. Applies to
-        # both recipes: a play the user turned off must never be bootstrap-queued.
+        # override bypasses the action mask, so the mask-level USER_DISABLED
+        # suppression can't reach it — honor the preference here or a disabled
+        # groom is force-run at cold start. Applies to both recipes.
         if PlayType.GROOM_BACKLOG.value in cfg.preferences.disabled_plays:
             _logger.info(
                 "bootstrap_groom_skipped",
@@ -1174,19 +1166,12 @@ def _phase_queue_agent_instantiation(
         return count
 
     if seed_path is None and graph_has_epics:
-        # Open-start "full open" (#11): spawn the FULL enabled fleet from cold.
-        # mask.py zeroes INSTANTIATE_AGENT in the "no agents + no remaining work
-        # + not terminal" state (see ``_stage_instantiate_config``), so against a
-        # quiet repo a zero-agent fleet yields an empty action set and a permanent
-        # idle deadlock. The forced bootstrap overrides (bypass_preconditions +
-        # OverrideKind.BOOTSTRAP) break that catch-22 — but instead of pinning the
-        # first agent to a single large-tier backstop, every enabled (agent_type,
-        # tier) is queued so cheaper tiers (which now own the mechanical plays
-        # cleanup/prune/merge_pr) are present immediately and the PPO owns all
-        # composition from there. No first-play in this recipe touches trunk (the
-        # only deterministic step is groom, a beads↔GitHub reconcile), so the #569
-        # trunk-exclusivity gating the seed recipe needs does not apply — the
-        # whole fleet comes up in parallel.
+        # Open-start "full open" (#11): mask.py zeroes INSTANTIATE_AGENT in the
+        # "no agents + no work + not terminal" state, so a quiet zero-agent repo
+        # idle-deadlocks. Forced bootstrap overrides break that catch-22, and we
+        # spawn the whole enabled fleet (not a single large backstop) so cheaper
+        # tiers are present immediately. No deterministic step here touches trunk
+        # (groom is a beads↔GitHub reconcile), so #569 gating doesn't apply.
         spawned = _enqueue_full_fleet()
         _logger.info(
             "bootstrap_open_start",
@@ -1195,21 +1180,16 @@ def _phase_queue_agent_instantiation(
             agents_spawned=spawned,
         )
         if spawned:
-            # Groom the backlog once the fleet is online so the beads↔GitHub
-            # graph is reconciled (untracked GH issues synced, resolved blocks
-            # cleared) before the PPO takes over. NO wait_for gate: as the first
-            # agent-consumer, groom must claim an agent by queue position
-            # (mirroring SEED_PROJECT in the seed recipe). A gate here yields a
-            # None override tick while agents are idle, letting PPO free-select
-            # onto one first and starving groom (staffing skip). The fleet's
-            # INSTANTIATE_AGENT overrides all drain ahead of groom, so PPO never
-            # gets a turn until groom has dequeued.
+            # Reconcile beads↔GitHub once the fleet is online, before PPO takes
+            # over. NO wait_for gate: as first agent-consumer, groom claims an
+            # agent by queue position — a gate yields a None tick that lets PPO
+            # free-select onto the idle agent first and starves groom.
             _enqueue_groom()
         return
 
     # Seed recipe: explicit seed input, or seedless because the graph has no
-    # epics yet (routing the no-epic open case here avoids the groom-against-
-    # empty-graph deadlock — SEED_PROJECT creates the epics groom needs).
+    # epics yet (routing the no-epic case here avoids the groom-against-empty-
+    # graph deadlock — SEED_PROJECT creates the epics groom needs).
     first_play_type = PlayType.SEED_PROJECT
     _logger.info(
         "bootstrap_first_play_decided",
@@ -1245,14 +1225,11 @@ def _phase_queue_agent_instantiation(
             else None
         )
         if medium_agent_type is not None:
-            # issue #569: gate the medium spawn behind the first-play (cleanup
-            # or seed_project) completing — both touch trunk and need exclusive
-            # access. bypass_preconditions still skips the instantiate cooldown.
+            # #569: gate the medium spawn behind the first-play completing — both
+            # touch trunk and need exclusive access.
             _enqueue_instantiate(medium_agent_type, "medium", wait_for_play_type=first_play_type)
-        # Groom the freshly-seeded graph once SEED_PROJECT completes — same
-        # trunk-exclusivity gate as the medium spawn (#569). Reconciles
-        # beads↔GitHub before the PPO drives. Requires an agent, so gate on the
-        # large agent having been queued.
+        # Groom the seeded graph once SEED_PROJECT completes — same trunk-
+        # exclusivity gate (#569). Needs an agent, so requires the large spawn.
         if large_agent_type is not None:
             _enqueue_groom(wait_for_play_type=first_play_type)
     finally:

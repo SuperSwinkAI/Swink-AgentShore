@@ -44,8 +44,8 @@ _logger = structlog.get_logger(__name__)
 _OPTIONAL_RATE_FIELDS = ("cost_per_1k_cached_input", "cost_per_1k_cache_write_input")
 _REQUIRED_RATE_FIELDS = ("cost_per_1k_input", "cost_per_1k_output")
 
-# Dedup set for fallback warnings; module-level so it survives config reloads
-# (we want one warning per distinct gap, not one per dispatch).
+# Fallback-warning dedup; module-level to survive config reloads — one warning
+# per distinct gap, not one per dispatch.
 _WARNED_FALLBACKS: set[tuple[str, str]] = set()
 
 
@@ -263,8 +263,8 @@ def _coerce_pricing(entry: object, *, ctx: str) -> AgentPricing:
         rates[field] = _coerce_rate(entry.get(field), ctx=f"{ctx}.{field}", required=True)
     for field in _OPTIONAL_RATE_FIELDS:
         rates[field] = _coerce_rate(entry.get(field), ctx=f"{ctx}.{field}", required=False)
-    # Sanity, not a hard error: output usually costs more than input. Warn so a
-    # transposed edit is noticed without rejecting a deliberately odd table.
+    # Output usually costs more than input; warn (not reject) so a transposed
+    # edit is noticed without blocking a deliberately odd table.
     if (rates["cost_per_1k_output"] or 0) < (rates["cost_per_1k_input"] or 0):
         _logger.warning(
             "pricing_output_cheaper_than_input",

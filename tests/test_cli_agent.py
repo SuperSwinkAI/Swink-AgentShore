@@ -282,9 +282,7 @@ def _grok_json_lines() -> list[bytes]:
     ]
 
 
-# ---------------------------------------------------------------------------
 # build_argv
-# ---------------------------------------------------------------------------
 
 
 def test_build_argv_claude_code_shape() -> None:
@@ -507,7 +505,7 @@ async def test_read_output_emits_cli_first_byte_once_with_elapsed() -> None:
     activity = _StdoutActivity(
         last_stdout_at=time.monotonic(), dispatch_start=time.monotonic() - 0.05
     )
-    proc = _FakeProcess(_codex_json_lines())  # multiple stdout lines
+    proc = _FakeProcess(_codex_json_lines())
     with structlog.testing.capture_logs() as logs:
         await _read_output(
             proc,  # type: ignore[arg-type]
@@ -755,9 +753,7 @@ def test_build_argv_codex_reasoning_effort() -> None:
     assert 'model_reasoning_effort="xhigh"' in argv
 
 
-# ---------------------------------------------------------------------------
-# build_resume_argv — the narrow JSON-retry re-entry shape, per agent (desktop-dy2j)
-# ---------------------------------------------------------------------------
+# build_resume_argv — narrow JSON-retry re-entry shape, per agent (desktop-dy2j)
 
 
 def test_build_resume_argv_claude_shape() -> None:
@@ -1124,9 +1120,7 @@ async def test_dispatch_cli_never_resumes(
         assert "resume" not in argv  # Codex codepath would emit `exec resume`
 
 
-# ---------------------------------------------------------------------------
 # #253 — SessionEnd-hook teardown failure must not discard completed work
-# ---------------------------------------------------------------------------
 
 _SESSION_END_HOOK_STDERR = (
     'SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" '
@@ -1204,9 +1198,7 @@ async def test_dispatch_cli_real_nonzero_exit_still_raises(
         await dispatch_cli(handle, "prompt", cfg=cfg)
 
 
-# ---------------------------------------------------------------------------
 # Happy path â€” plain output (Codex-style)
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_success_plain(mock_agent_path: Path) -> None:
@@ -1406,9 +1398,7 @@ async def test_dispatch_cli_codex_json_records_cumulative_and_per_turn_usage(
     assert result.max_turn_input_tokens == 500
 
 
-# ---------------------------------------------------------------------------
 # Happy path â€” stream-json output (Claude-style)
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_success_stream_json(
@@ -1463,9 +1453,7 @@ async def test_dispatch_cli_claude_json_accounts_for_cache_read_and_write_tokens
     assert result.dollar_cost == pytest.approx(expected)
 
 
-# ---------------------------------------------------------------------------
 # Failure result (agent exits 0, result block has success=false)
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_failure_result(
@@ -1481,9 +1469,7 @@ async def test_dispatch_cli_failure_result(
     assert sr.error is not None
 
 
-# ---------------------------------------------------------------------------
 # Non-zero exit â†’ AgentProcessError
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
@@ -1495,9 +1481,7 @@ async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
         await dispatch_cli(handle, "p", cfg=cfg, python_executable=sys.executable)
 
 
-# ---------------------------------------------------------------------------
 # Output overflow â†’ AgentOutputInvalid
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_output_overflow_raises(
@@ -1514,9 +1498,7 @@ async def test_dispatch_cli_output_overflow_raises(
         await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
 
 
-# ---------------------------------------------------------------------------
 # Per-line buffer cap (asyncio readline limit) â†’ AgentOutputInvalid
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_long_line_below_default_limit_succeeds(
@@ -1577,9 +1559,7 @@ async def test_dispatch_cli_warns_on_large_line(
     assert in_capsys or in_caplog
 
 
-# ---------------------------------------------------------------------------
 # Timeout â†’ PlayTimeoutError + SIGTERM/SIGKILL
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_timeout_raises(
@@ -1643,10 +1623,9 @@ async def test_dispatch_cli_wallclock_timeout_raises_while_stream_active(tmp_pat
 
 
 async def test_dispatch_cli_stream_activity_resets_idle_watchdog(tmp_path: Path) -> None:
-    # Inter-line sleep + stream_idle_timeout are intentionally well-separated
-    # (40 ms vs. 500 ms) so the watchdog has plenty of margin even when pytest
-    # workers contend for CPU under xdist. Tighter values produced spurious
-    # failures: passes solo, intermittently fails parallel.
+    # Inter-line sleep vs stream_idle_timeout kept well-separated (40 ms vs 500 ms)
+    # so the watchdog has margin under xdist CPU contention; tighter values flaked
+    # (passes solo, fails parallel).
     script = tmp_path / "active_then_complete.py"
     script.write_text(
         "import json, sys, time\n"
@@ -1740,9 +1719,7 @@ async def test_dispatch_cli_cleans_up_process_for_cancellation(
     assert handle.process is None
 
 
-# ---------------------------------------------------------------------------
 # _kill_process â€” Windows teardown path (no os.killpg / os.getpgid)
-# ---------------------------------------------------------------------------
 
 
 class _FakeKillProcess:
@@ -1916,9 +1893,7 @@ def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch
     assert ca._resolve_executable(["missing", "arg"]) == ["missing", "arg"]
 
 
-# ---------------------------------------------------------------------------
 # multi_block â€” parser uses last result block
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_multi_block_uses_last(
@@ -1934,9 +1909,7 @@ async def test_dispatch_cli_multi_block_uses_last(
     assert sr.artifacts[0]["number"] == 42  # type: ignore[index]
 
 
-# ---------------------------------------------------------------------------
 # Identity env injection
-# ---------------------------------------------------------------------------
 
 
 async def test_dispatch_cli_no_identity_env_inherits_parent(
@@ -1995,9 +1968,7 @@ async def test_dispatch_cli_identity_env_overlays_parent(
 
     env = captured["env"]
     assert env is not None
-    # Parent env preserved.
     assert env["PRE_EXISTING"] == "kept"
-    # Overlay applied.
     assert env["GIT_AUTHOR_NAME"] == "bot-user"
     assert env["GIT_AUTHOR_EMAIL"] == "bot@example.com"
     assert env["GH_TOKEN"] == "ghp_test"
@@ -2040,9 +2011,7 @@ async def test_dispatch_cli_emits_subprocess_callbacks(
     assert exited == [(4242, 0)]
 
 
-# ---------------------------------------------------------------------------
 # _classify_error
-# ---------------------------------------------------------------------------
 
 
 def test_classify_error_rate_limit() -> None:
@@ -2270,11 +2239,9 @@ def test_classify_error_empty_both() -> None:
     assert _classify_error(1, "", "") == "unknown"
 
 
-# ---------------------------------------------------------------------------
 # stderr auth-sniffer (#zeke auth-hang): a backend session-token expiry that
 # hangs the process on stdin must be killed as AUTH in well under the idle
 # timeout, not after the full stream_idle_timeout as TIMEOUT_STREAM_IDLE.
-# ---------------------------------------------------------------------------
 
 
 def test_stderr_sniffer_feed_flags_auth_tail() -> None:
@@ -2512,9 +2479,7 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
     assert _classify_error(-2, "", "") == "unknown"
 
 
-# ---------------------------------------------------------------------------
 # _is_terminal_event (#21 â€” response-complete fast-kill for all agent types)
-# ---------------------------------------------------------------------------
 
 
 def test_is_terminal_event_detects_each_agent_type() -> None:
@@ -2836,9 +2801,7 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     assert "agent-silent" in msg
 
 
-# ---------------------------------------------------------------------------
 # #176 — missing dispatch cwd (reclaimed worktree) maps to a recoverable error
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2886,9 +2849,7 @@ async def test_dispatch_cli_cwd_is_file_raises_recoverable(tmp_path: Path) -> No
         await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=not_a_dir)
 
 
-# ---------------------------------------------------------------------------
 # #177 — launch-to-first-byte watchdog + stream_idle clamp
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -3072,9 +3033,7 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
     assert armed == {"first_byte", "stream_idle"}
 
 
-# ---------------------------------------------------------------------------
 # _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
-# ---------------------------------------------------------------------------
 
 
 async def test_kill_process_does_not_hang_when_sigkill_never_reaps(

@@ -11,8 +11,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 DEFAULT_MODEL_TIER = "medium"
-# Spawn order for INSTANTIATE_AGENT round-robin: medium first (workhorse, runs
-# every play), then small (cheap-band coverage), then large (high-complexity).
+# Spawn order for INSTANTIATE_AGENT round-robin: medium (workhorse) first, then
+# small (cheap-band coverage), then large (high-complexity).
 MODEL_TIER_PRIORITY: tuple[str, ...] = ("medium", "small", "large")
 MODEL_TIER_ORDER: tuple[str, ...] = ("small", "medium", "large")
 REQUIRED_MODEL_TIERS: tuple[str, ...] = MODEL_TIER_ORDER
@@ -24,10 +24,9 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="opus", reasoning_effort="high"),
     },
     AgentType.CODEX: {
-        # gpt-5.x (non-``-codex``) ids are the ChatGPT-account-compatible line.
-        # The ``-codex`` suffixed ids are API-key only and
-        # return HTTP 400 "not supported when using Codex with a ChatGPT
-        # account", so they must not be defaults.
+        # gpt-5.x (non-``-codex``) ids are the ChatGPT-account-compatible line;
+        # ``-codex``-suffixed ids are API-key only (HTTP 400 with a ChatGPT
+        # account), so they must not be defaults.
         "small": ModelTierConfig(model="gpt-5.4-mini", reasoning_effort="low"),
         "medium": ModelTierConfig(model="gpt-5.4", reasoning_effort="medium"),
         "large": ModelTierConfig(model="gpt-5.5", reasoning_effort="high"),
@@ -38,9 +37,8 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="grok-build", reasoning_effort="high"),
     },
     AgentType.ANTIGRAVITY: {
-        # Reasoning effort is baked into the model display-name, so no
-        # reasoning_effort is set (mirrors gemini — REASONING_EFFORTS is empty).
-        # Small tier uses the open-weight GPT-OSS 120B backend agy exposes.
+        # Effort is baked into the display-name, so reasoning_effort is unset
+        # (REASONING_EFFORTS is empty). Small tier = open-weight GPT-OSS 120B.
         "small": ModelTierConfig(model="GPT-OSS 120B (Medium)"),
         "medium": ModelTierConfig(model="Gemini 3.5 Flash (High)"),
         "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),

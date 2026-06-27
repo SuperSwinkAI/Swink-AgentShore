@@ -32,11 +32,10 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Untracked paths that every AgentShore session leaves in the target project's
-# working tree. Filtered out of ``dirty_trunk_paths`` so reconcile_state doesn't
-# try to "restore" runtime state it has no business touching (#594). Derived
-# from the single canonical owned-paths tuple in ``git_safety`` so this and the
-# gitignore writer can never drift apart again.
+# AgentShore-owned untracked paths, filtered out of ``dirty_trunk_paths`` so
+# reconcile_state doesn't try to "restore" runtime state it shouldn't touch (#594).
+# Derived from the canonical owned-paths tuple in ``git_safety`` so this and the
+# gitignore writer can't drift apart.
 _AGENTSHORE_OWNED_UNTRACKED_PREFIXES: frozenset[str] = frozenset(AGENTSHORE_OWNED_ROOT_PATHS)
 
 
@@ -334,9 +333,8 @@ def build_recent_wedge_signals(
     )
     last_failed = recent_failed[0] if recent_failed else None
 
-    # Build the in-flight agent list for zombie cross-checking. Each entry
-    # carries enough information for the skill to match against a candidate
-    # PID's backing play_id.
+    # In-flight agents for zombie cross-checking: each entry lets the skill match a
+    # candidate PID against its backing play_id.
     active_agents_in_flight = [
         {
             "agent_id": a.agent_id,
@@ -366,13 +364,11 @@ def build_recent_wedge_signals(
     for entry in collect_dirty_trunk_paths(project_path):
         record = asdict(entry)
         owned = False
-        # A dirty path whose mtime is at/after a live trunk-scoped play's start is
-        # in-flight work of that play, not a wedge — reconcile_state must leave it
-        # alone (#162/#224). Untracked (``??``) entries are restricted to depth-1
-        # root scratch files (the only untracked debris a trunk play leaves);
-        # tracked modifications (``M/A/D/R``…) may be nested anywhere, so they are
-        # not path-restricted. Without this, tracked in-flight edits always read as
-        # unowned and reconcile_state mis-classifies them as an ambiguous wedge.
+        # A dirty path whose mtime is at/after a live trunk-scoped play's start is its
+        # in-flight work, not a wedge — leave it alone (#162/#224). Untracked (``??``)
+        # entries are restricted to depth-1 root scratch (the only untracked debris a
+        # trunk play leaves); tracked edits may be nested anywhere, so they aren't
+        # path-restricted — else tracked in-flight edits read as unowned and misclassify.
         is_root_untracked = entry.status == "??" and "/" not in entry.path
         is_tracked = entry.status != "??"
         if (is_tracked or is_root_untracked) and entry.mtime_utc:
@@ -391,8 +387,7 @@ def build_recent_wedge_signals(
         "orphan_worktree_paths": collect_orphan_worktree_paths(
             project_path, db_path=db_path, session_id=session_id
         ),
-        # Cross-check list for zombie classification: agents with active plays
-        # must never be classified as zombies or killed by reconcile_state.
+        # Zombie cross-check: agents with active plays must never be killed.
         "active_agents_in_flight": active_agents_in_flight,
     }
 
@@ -428,9 +423,8 @@ def write_session_start_dirty_baseline(
 
     entries = collect_dirty_trunk_paths(project_path)
 
-    # Enrich each entry with mtime + size. The skill needs both for cluster
-    # analysis; we capture once at session start so the skill doesn't race
-    # with subsequent in-session writes.
+    # Capture mtime + size once at session start (skill needs both for cluster
+    # analysis) so the skill doesn't race with subsequent in-session writes.
     enriched: list[dict[str, Any]] = []
     for entry in entries:
         abs_path = project_path / entry.path

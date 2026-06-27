@@ -29,11 +29,8 @@ if TYPE_CHECKING:
 from agentshore.command import CommandTimeoutError, run_command
 from agentshore.logging import get_logger
 
-# ---------------------------------------------------------------------------
-# Boundary types — shape of JSON emitted by ``bd list`` / ``bd query``.
-# These exist so helpers below narrow at the parse boundary instead of
-# letting ``Any`` propagate into typed AgentShore code downstream.
-# ---------------------------------------------------------------------------
+# Boundary types: narrow bd JSON at the parse boundary so ``Any`` doesn't leak
+# into typed downstream code.
 
 
 class RawDependency(TypedDict, total=False):

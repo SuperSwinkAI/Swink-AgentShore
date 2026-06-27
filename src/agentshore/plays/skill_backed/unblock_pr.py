@@ -63,18 +63,16 @@ class UnblockPrPlay(SkillBackedPlay):
     ) -> PlayOutcome:
         outcome = await super().execute(state, params, ctx=ctx)
 
-        # Reconcile any sibling PR the skill merged in place. This runs even on
-        # an overall failure: a stacked blocker can be merged while the target
-        # itself still carries an independent blocker (partial success), and the
-        # merged sibling must be propagated either way.
+        # Reconcile any sibling PR merged in place. Runs even on failure: a stacked
+        # blocker can merge while the target keeps an independent blocker, and the
+        # merged sibling must propagate either way.
         await self._reconcile_merged_blockers(outcome, ctx, state)
 
         if not outcome.success:
             return outcome
 
-        # Record an AgentShore review PASS for every PR this dispatch unblocked
-        # — the target plus any sibling whose branch we pushed commits to. A
-        # successful unblock counts as AgentShore's code review for that PR.
+        # Record a review PASS for every PR unblocked (target + siblings we pushed
+        # to): a successful unblock counts as AgentShore's code review.
         reviewed_pr_numbers: list[int] = []
         seen: set[int] = set()
         for artifact in outcome.artifacts:

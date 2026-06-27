@@ -212,8 +212,7 @@ def test_inspect_handles_non_git_path(tmp_path: Path) -> None:
 def test_run_git_times_out_instead_of_hanging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Resolve git to a fixed fake path so the probe is hermetic regardless of
-    # whether git is installed on the test box, then make the spawn time out.
+    # Fixed fake git path keeps the probe hermetic; then force the spawn to time out.
     monkeypatch.setattr(
         "agentshore.subprocess_env.resolve_tool",
         lambda name: "/usr/bin/git" if name == "git" else None,
@@ -319,8 +318,7 @@ def test_branches_passive_load_returns_null_ahead_behind(git_repo: Path) -> None
 
 
 def test_branches_refresh_reports_ahead_behind(git_repo: Path) -> None:
-    # Add an extra commit on main locally. Explicit refresh computes actual
-    # ahead/behind values (non-None) via rev-list.
+    # Extra local commit on main so an explicit refresh computes real ahead/behind via rev-list.
     (git_repo / "extra.txt").write_text("e\n")
     _git(["add", "extra.txt"], git_repo)
     _git(["commit", "-m", "extra"], git_repo)
@@ -1182,9 +1180,8 @@ def test_dispatch_set_budget_rejects_extra_fields_via_dispatcher(tmp_path: Path)
 
 
 def test_dispatch_project_notification_returns_none(tmp_path: Path) -> None:
-    # Matches the existing app.handshake convention: notifications are
-    # dropped without running side-effects. The desktop shell always sends
-    # ids for project.* calls because it needs the result.
+    # Notifications (no id) are dropped without side-effects, per app.handshake convention;
+    # the desktop always sends ids for project.* since it needs the result.
     response = handle_request(
         {"jsonrpc": "2.0", "method": "project.select", "params": {"path": str(tmp_path)}}
     )

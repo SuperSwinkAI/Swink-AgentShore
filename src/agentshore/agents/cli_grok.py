@@ -95,22 +95,17 @@ def build_argv(
     the prompt is passed directly via ``-p`` — never as an empty string.
     """
     resolved_binary = binary or default_binary()
-    # Model is always hard-pinned to grok-build; warn if the caller passed
-    # something else (cli_model handles the warning and collapse).
+    # Hard-pinned to grok-build; cli_model warns + collapses any other value.
     resolved_model = cli_model(model) if model else "grok-build"
     args = [
         resolved_binary,
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
-        # AgentShore dispatches are ephemeral and single-turn (a fresh worktree
-        # per task), so the Grok CLI's cross-session memory is meaningless and
-        # risks state bleed between unrelated dispatches; it also measurably
-        # raised time-to-first-byte (~50s with memory vs ~35s without). Plan
-        # mode likewise adds a planning round the orchestrator does not want —
-        # plays expect direct execution. Both are dropped to keep Grok's
-        # time-to-first-byte well inside the 600s first-byte budget (#213). Web
-        # search is left enabled.
+        # Dispatches are ephemeral/single-turn (fresh worktree per task): memory
+        # risks cross-dispatch state bleed and raised TTFB (~50s vs ~35s); plan
+        # mode adds an unwanted planning round. Both off to keep TTFB inside the
+        # 600s budget (#213). Web search stays enabled.
         "--no-memory",
         "--no-plan",
     ]
@@ -260,31 +255,26 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     terminal_text: str | None = None
 
     for event in _iter_json_events(raw):
-        # Session ID: pick up from any event that carries it.
         session_id = session_id or _grok_session_id(event)
 
         event_type = str(event.get("type") or "").lower()
 
         if event_type == "text":
-            # Primary streaming text delta.
             data = event.get("data")
             if isinstance(data, str):
                 text_chunks.append(data)
             continue
 
         if event_type == "end":
-            # Terminal event - extract usage and session ID (may be here).
-            # NOTE: grok 0.2.32 emits NO usage on ``end`` (verified); this stays
-            # for forward-compat / relay shapes that do.
+            # NOTE: grok 0.2.32 emits NO usage on ``end`` (verified); kept for
+            # forward-compat / relay shapes that do.
             usage_raw = _grok_usage_block(event)
             if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
-            # session_id was already updated above via _grok_session_id(event).
             continue
 
         if event_type == "result":
-            # Fallback terminal: some API-relay shapes emit ``type:"result"``
-            # instead of ``type:"end"``.  Extract the text content and usage.
+            # Fallback terminal: some API-relay shapes emit ``result`` not ``end``.
             result_field = event.get("result")
             message_field = event.get("message")
             if isinstance(result_field, dict):
@@ -302,8 +292,8 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             continue
 
-        # All other event types (session.started, assistant echoes, etc.) are
-        # skipped - their data is already captured through _grok_session_id.
+        # Other event types (session.started, assistant echoes) carry only the
+        # session id, already captured above.
 
     assembled = "".join(text_chunks)
     return (terminal_text or assembled or raw), usage_totals, session_id

@@ -26,29 +26,15 @@ SkipCategory = Literal[
     "invalid_config",
 ]
 
-# desktop-85ex: structured reason taxonomy for the ``play_skipped`` loop
-# event. Distinct from ``SkipCategory`` which classifies executor-time
-# skips on dispatched plays; ``PlaySkipReason`` classifies *why* the
-# selector tick did not produce a dispatch in the first place. Pinned to
-# this finite set so log post-processing (agentshore.log → metrics) can
-# diagnose fleet idle storms without grep-and-pray.
-#
-#   all_masked              — at least one play type was eligible but
-#                             every action_mask slot is False; payload
-#                             includes top mask_reasons.
-#   no_eligible_targets     — mask permits a play type, but no concrete
-#                             target (issue / PR / agent) resolves.
-#   cooldown_active         — masked specifically due to per-play
-#                             cooldown / recency caps.
-#   value_dominated_by_idle — DEPRECATED post-rni0 (idle was a play; now
-#                             it's a loop wait, never a selector pick).
-#                             Reserved so log consumers see a stable
-#                             enum surface during the rollout window.
-#   engine_paused           — session_state ∈ {paused, draining,
-#                             shutting_down}.
-#   selector_returned_none  — PPO ran but produced no pickable action;
-#                             the catch-all when no narrower reason
-#                             fits. This is the post-rni0 "wait" path.
+# desktop-85ex: why a selector tick produced no dispatch (distinct from
+# SkipCategory, which classifies executor-time skips on dispatched plays).
+# Pinned finite set so log→metrics can diagnose fleet idle storms.
+#   all_masked              — a play was eligible but every mask slot is False.
+#   no_eligible_targets     — mask permits a play but no concrete target resolves.
+#   cooldown_active         — masked by per-play cooldown / recency caps.
+#   value_dominated_by_idle — DEPRECATED post-rni0; reserved for a stable enum surface.
+#   engine_paused           — session_state ∈ {paused, draining, shutting_down}.
+#   selector_returned_none  — PPO ran but produced no pickable action (the wait path).
 PlaySkipReason = Literal[
     "all_masked",
     "no_eligible_targets",
@@ -57,10 +43,6 @@ PlaySkipReason = Literal[
     "engine_paused",
     "selector_returned_none",
 ]
-
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
 
 
 class PlayType(enum.Enum):
@@ -205,11 +187,6 @@ class SessionState(enum.Enum):
     SHUTTING_DOWN = "shutting_down"
 
 
-# ---------------------------------------------------------------------------
-# Core dataclasses
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class PlayOutcome:
     """Result of executing a single play."""
@@ -234,6 +211,13 @@ class PlayOutcome:
     # ``_infer_failure_category``); the substring inferer is the fallback when a
     # play leaves this None.
     failure_kind: FailureKind | None = None
+    learnings: list[JsonObject] = field(default_factory=list)
+    # Wholesale-replacement learning set emitted by the groom re-distillation
+    # step (top-level ``learnings_compacted``). Distinct from ``learnings``
+    # (incremental append/reinforce): when present and valid, the harvester
+    # replaces the on-disk store with this set, re-deriving numeric metadata
+    # from each entry's ``merged_from`` source ids.
+    learnings_compacted: list[JsonObject] = field(default_factory=list)
 
     @classmethod
     def failed(
@@ -333,6 +317,15 @@ class SkillResult:
     # a defect-specific nudge instead of the generic "emit the JSON block" prompt.
     # Only meaningful when ``success`` is False.
     missing_success_envelope: bool = False
+    # Learnings extracted from the top-level ``learnings`` array in the agent's
+    # result block. Each entry is a normalized dict with ``pattern``,
+    # ``confidence``, and ``category`` keys (validated by result_parser).
+    learnings: list[JsonObject] = field(default_factory=list)
+    # Wholesale-replacement learning set from the groom re-distillation step
+    # (top-level ``learnings_compacted``). Each entry is a normalized dict with
+    # ``pattern``, ``category`` and ``merged_from`` (source ids absorbed) keys;
+    # confidence is re-derived, not taken from the agent. See PlayOutcome.
+    learnings_compacted: list[JsonObject] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -834,11 +827,6 @@ class OrchestratorState:
             orphan_review_prs=orphan_review_prs,
             next_issue=next_issue,
         )
-
-
-# ---------------------------------------------------------------------------
-# StateProvider protocol
-# ---------------------------------------------------------------------------
 
 
 @runtime_checkable

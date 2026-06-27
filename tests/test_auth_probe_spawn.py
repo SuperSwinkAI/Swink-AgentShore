@@ -110,11 +110,9 @@ def test_probe_unprobeable_agent_type_never_spawns() -> None:
     assert result.ok
 
 
-# --- antigravity (agy) active probe ------------------------------------------
-#
-# agy has no status verb and, when logged out, HANGS in -p mode instead of
-# erroring — so it gets an active liveness probe where a *timeout* is EXPIRED
-# (launch-gating), unlike codex where a timeout is a non-blocking hiccup.
+# agy has no status verb and HANGS in -p mode when logged out instead of erroring,
+# so it gets an active liveness probe where a timeout is EXPIRED (launch-gating) —
+# unlike codex, where a timeout is a non-blocking hiccup.
 
 
 def _make_fake_agy(tmp_path: Path, *, body: str) -> str:

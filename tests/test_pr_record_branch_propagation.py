@@ -43,11 +43,6 @@ if TYPE_CHECKING:
 _BRANCH = "agentshore/567-known-branch"
 
 
-# ---------------------------------------------------------------------------
-# Path 1: gh pr list -> PullRequestRecord
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_github_adapter_list_pull_requests_propagates_branch() -> None:
     """``GitHubAdapter.list_pull_requests`` must copy ``headRefName`` to record.branch."""
@@ -116,11 +111,6 @@ async def test_github_adapter_list_pull_requests_branch_none_when_headref_missin
     records = await adapter.list_pull_requests()
     assert len(records) == 1
     assert records[0].branch is None  # fallback honoured
-
-
-# ---------------------------------------------------------------------------
-# Path 2: DB row -> PullRequestRecord (round trip)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -238,11 +228,6 @@ async def test_data_store_upsert_preserves_existing_branch_on_null_refresh(
         await store.close()
 
 
-# ---------------------------------------------------------------------------
-# Path 3: PullRequestRecord -> PullRequestSnapshot
-# ---------------------------------------------------------------------------
-
-
 def test_project_pull_requests_propagates_branch() -> None:
     """``_project_pull_requests`` must copy ``record.branch`` to ``snapshot.branch``."""
     records = [
@@ -286,8 +271,7 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
         snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch is None
-    # Walk every warning() call and confirm one matches our event name +
-    # carries the PR number for triage.
+    # Find the warning call matching our event name + PR number (for triage).
     warning_calls = mock_logger.warning.call_args_list
     matching = [
         call for call in warning_calls if call.args and call.args[0] == "pr_snapshot_missing_branch"

@@ -371,10 +371,8 @@ def test_identities_list_gh_login_does_not_resolve_token(
         encoding="utf-8",
     )
 
-    # list_identities lives in identity_config.py which has no subprocess/gh_sync
-    # import at all.  We verify by asserting no token resolution is attempted:
-    # the call simply succeeds on the YAML alone.
-
+    # identity_config.py has no subprocess/gh_sync import; the call must
+    # succeed on YAML alone with no token resolution attempted.
     rows = list_identities(tmp_path)
 
     assert rows == [

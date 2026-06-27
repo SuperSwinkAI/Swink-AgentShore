@@ -14,9 +14,7 @@ from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
 from agentshore.ipc.serializer import make_message, serialize_state
 from agentshore.state import IssueSnapshot, OrchestratorState, SessionState
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _minimal_state(**overrides: object) -> OrchestratorState:
@@ -74,9 +72,7 @@ def _sample_graph() -> ProjectGraph:
     )
 
 
-# ---------------------------------------------------------------------------
 # graph = None
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_state_graph_none_key_is_present() -> None:
@@ -95,9 +91,7 @@ def test_serialize_state_graph_none_is_json_null() -> None:
     assert parsed["payload"]["graph"] is None
 
 
-# ---------------------------------------------------------------------------
 # graph with epics
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_state_graph_top_level_keys() -> None:
@@ -215,9 +209,7 @@ def test_serialize_state_graph_task_timestamps() -> None:
     assert task["updated_at"] == "2026-05-15T10:05:00Z"
 
 
-# ---------------------------------------------------------------------------
 # JSON round-trip and shape
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_state_graph_json_round_trip() -> None:

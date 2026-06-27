@@ -22,10 +22,6 @@ from agentshore.plays.candidates import (
 )
 from agentshore.state import AgentType, PlayType
 
-# ---------------------------------------------------------------------------
-# Wedge detection (manager helper)
-# ---------------------------------------------------------------------------
-
 
 def _grok_handle() -> SimpleNamespace:
     return SimpleNamespace(
@@ -47,11 +43,6 @@ def test_non_grok_timeout_is_not_a_wedge() -> None:
     )
     exc = Exception("never produced first byte launch wedge")
     assert _is_grok_launch_wedge_timeout(handle, exc) is False
-
-
-# ---------------------------------------------------------------------------
-# Cooldown drain/decay (state builder)
-# ---------------------------------------------------------------------------
 
 
 def _fake_builder(manager: object, runtime: SessionRuntime) -> StateBuilder:
@@ -119,11 +110,6 @@ def test_drain_seeds_cooldown_for_agy_stream_hang_cluster() -> None:
     assert runtime.wedge_cooldown_until["antigravity"] == 5 + _GROK_WEDGE_COOLDOWN_TICKS
     # Decaying cooldown only — never the permanent auth-suppression set.
     assert runtime.auth_suppressed_agent_types == set()
-
-
-# ---------------------------------------------------------------------------
-# Candidate masking (decaying)
-# ---------------------------------------------------------------------------
 
 
 def _candidate(play_type: PlayType, params: PlayParams) -> PlayCandidate:

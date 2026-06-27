@@ -28,6 +28,7 @@ Trunk-scoped cleanup from `$AGENTSHORE_PROJECT_PATH`. You are on the target bran
 - Never call `git worktree add/remove/prune` — AgentShore owns lifecycle; cleanup runs on trunk deliberately.
 - Never `git stash`, `git add -A`, or `git push --force`.
 - Never set a bash timeout < 600000 ms on test/typecheck commands.
+- Never `gh repo fork`, never `git remote add` a non-origin remote, and never open a cross-fork PR (a `gh pr create` whose `--head` points at a fork). If pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` — do not work around it by forking.
 
 **Report — one fenced JSON block, nothing else:**
 
@@ -49,8 +50,11 @@ Trunk-scoped cleanup from `$AGENTSHORE_PROJECT_PATH`. You are on the target bran
   "beads_closed_stale": [],
   "open_work_after": {"issues": 0, "prs": 0},
   "branch": "main",
+  "learnings": [{"pattern": "mypy runs cleanly only with --ignore-missing-imports; the stub packages are not installed in the dev env", "confidence": 0.85, "category": "typecheck"}],
   "error": null
 }
 ```
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (toolchain quirks, fixer conventions, test-suite gotchas) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. NEVER record workarounds that violate the Forbidden-mutations rules (e.g. forking).
 
 `success: false` only for catastrophic failures (target branch unresolvable, push refused after retry, forbidden-mutation breach). Type-check / test failures keep `success: true` and populate `issues_created`. Always emit the block — skipping causes `no valid result block` and discards the work.

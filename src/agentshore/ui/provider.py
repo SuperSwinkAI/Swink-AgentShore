@@ -32,10 +32,8 @@ class TuiStateProvider:
         self._app.post_message(OrchestratorApp.StateUpdated(state))
 
     async def on_budget_update(self, budget: BudgetSnapshot) -> None:
-        # No-op: the budget-countdown heartbeat is a dashboard concern (it keeps
-        # the browser's remaining-time figure ticking between full snapshots).
-        # The Textual TUI re-renders its budget widget on every full state
-        # update, so it needs no extra heartbeat frame.
+        # No-op: TUI re-renders budget on every full state update; the
+        # countdown heartbeat is dashboard-only.
         return None
 
     async def on_play_started(self, play_type: PlayType, params: PlayParams) -> None:

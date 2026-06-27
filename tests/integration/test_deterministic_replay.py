@@ -144,5 +144,4 @@ async def test_fixed_plan_exhaustion_stops_loop(tmp_path: Path) -> None:
         async with orch:
             await orch.run_until_idle()
 
-    # Selector had one item; loop ran exactly once then stopped
     assert recorded == [PlayType.RUN_QA]

@@ -35,11 +35,6 @@ class _VersionRun:
         return self
 
 
-# ---------------------------------------------------------------------------
-# ProjectGraph dataclass
-# ---------------------------------------------------------------------------
-
-
 def test_project_graph_has_ready_tasks_true() -> None:
     g = ProjectGraph(tasks_ready=3)
     assert g.has_ready_tasks
@@ -68,11 +63,6 @@ def test_project_graph_global_closure_ratio() -> None:
     assert g.global_closure_ratio == pytest.approx(0.4)
 
 
-# ---------------------------------------------------------------------------
-# OrchestratorState.graph field
-# ---------------------------------------------------------------------------
-
-
 def _make_state(graph: ProjectGraph | None = None) -> OrchestratorState:
     return OrchestratorState(
         session_id="test",
@@ -95,11 +85,6 @@ def test_agentshore_state_graph_can_be_set() -> None:
     assert state.graph.tasks_ready == 5
 
 
-# ---------------------------------------------------------------------------
-# Bead / BeadType / BeadStatus
-# ---------------------------------------------------------------------------
-
-
 def test_bead_type_str_enum() -> None:
     assert BeadType.EPIC == "epic"
     assert BeadType.TASK == "task"
@@ -120,11 +105,6 @@ def test_bead_construction() -> None:
     )
     assert b.external_ref == "gh-42"
     assert b.bead_type == BeadType.TASK
-
-
-# ---------------------------------------------------------------------------
-# load_graph: absent .beads/ returns None
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -150,13 +130,11 @@ async def test_load_graph_raises_graph_read_error_when_bd_command_fails(
     p = Path(str(tmp_path))
     (p / ".beads").mkdir()
 
-    # All retry attempts fail — GraphReadError must be raised, not None returned.
     with (
         patch("agentshore.beads.bd", side_effect=BdError("bd failed")) as mock_bd,
         pytest.raises(GraphReadError),
     ):
         await load_graph(p)
-    # Transient BdError is retried the full _GRAPH_READ_RETRIES times.
     assert mock_bd.call_count == _GRAPH_READ_RETRIES
 
 
@@ -346,10 +324,8 @@ async def test_load_graph_treats_bd_blocks_edge_as_blocking(tmp_path: object) ->
 
     assert result is not None
     by_id = {t.bead_id: t for t in result.tasks}
-    # `blocks` edge -> blocked, not ready, blocker surfaced
     assert by_id["task-blocked"].ready is False
     assert "task-dep" in by_id["task-blocked"].blocked_by_ids
-    # `parent-child` containment -> still ready (non-blocking rollup)
     assert by_id["task-contained"].ready is True
     assert by_id["task-contained"].blocked_by_ids == frozenset()
 
@@ -418,11 +394,6 @@ async def test_load_graph_counts_closed_tasks_missing_from_epic_status(tmp_path:
     assert by_title["Test Suite & Local Preflight"].closure_ratio == pytest.approx(3 / 5)
 
 
-# ---------------------------------------------------------------------------
-# clear_in_progress_beads
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_clear_in_progress_beads_returns_zero_without_beads_dir(tmp_path: object) -> None:
     from pathlib import Path
@@ -468,11 +439,6 @@ async def test_clear_in_progress_beads_resets_in_progress_to_open(tmp_path: obje
     assert ("update", "task-1", "--status", "open", "--dolt-auto-commit=on") in calls
     assert ("update", "story-1", "--status", "open", "--dolt-auto-commit=on") in calls
     assert not any("task-open" in call for call in calls)
-
-
-# ---------------------------------------------------------------------------
-# resolve_bd_binary
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_bd_binary_returns_env_var_when_set(
@@ -565,16 +531,10 @@ def test_resolve_bd_binary_returns_none_when_nothing_resolves(
         assert resolve_bd_binary() is None
 
 
-# ---------------------------------------------------------------------------
-# ensure_bd_installed
-# ---------------------------------------------------------------------------
-
-
 def test_ensure_bd_installed_passes_when_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.beads.setup import ensure_bd_installed
 
-    # Presence-only assertion: disable the version pin (empty override) so the
-    # fake path doesn't need to be an executable that reports a version.
+    # Empty version pin → presence-only check (stub need not report a version).
     monkeypatch.setenv("AGENTSHORE_BD_VERSION", "")
     with patch("shutil.which", return_value="/usr/local/bin/bd"):
         ensure_bd_installed()  # must not raise

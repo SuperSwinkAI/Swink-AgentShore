@@ -32,9 +32,8 @@ def main() -> None:
     ensure_windows_event_loop_policy()
 
 
-# Subcommands attach their own sub-subcommands (e.g. ``archive create``,
-# ``trusted-ids add-gh``) via decorators at import time, so importing the
-# top-level group object is sufficient to register the full command tree.
+# Subcommands self-register sub-subcommands via import-time decorators, so
+# importing the group object registers the full command tree.
 main.add_command(start)
 main.add_command(init)
 main.add_command(identity)

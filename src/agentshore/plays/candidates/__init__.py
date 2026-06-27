@@ -31,8 +31,6 @@ from agentshore.play_rules import (
     needs_review,
 )
 from agentshore.plays.base import PlayParams
-
-# Sub-module imports — predicates and freshness are leaf modules
 from agentshore.plays.candidates.freshness import (
     design_audit_is_fresh,
     qa_ran_within_terminal_window,
@@ -75,14 +73,9 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Backpressure: once the open-PR queue reaches this many PRs, ``issue_pickup`` is
-# masked so the policy clears review/merge work before opening more PRs. Shared
-# single source of truth — ``issue_pickup`` imports it for the mask, and
-# ``build_candidate_plan`` derives ``pr_queue_human_blocked`` partly from
-# ``MAX_OPEN_PRS - 1`` so the END_SESSION escape hatch stays coupled to the cap
-# that creates the jam (a queue of human-blocked PRs at/near the cap cannot make
-# progress); it also fires below the cap when every open PR is manual-required
-# and no other actionable work remains.
+# Backpressure cap: at this many open PRs, issue_pickup is masked to clear
+# review/merge work first. Single source of truth — pr_queue_human_blocked
+# derives from MAX_OPEN_PRS - 1 so the END_SESSION hatch stays coupled to the cap.
 MAX_OPEN_PRS = 10
 
 
@@ -107,8 +100,8 @@ class WorkAvailability:
     blocked_issue_count: int
     disallowed_issue_count: int
     untrusted_issue_count: int
-    # Open PRs dropped this tick because their base branch != target_branch
-    # (Piece C). Surfaced so the dashboard can render an "(N hidden)" badge.
+    # Open PRs dropped this tick (base branch != target_branch); drives the
+    # dashboard "(N hidden)" badge.
     pull_requests_hidden_count: int
     covered_by_open_pr_count: int
     resolved_by_merged_pr_count: int
@@ -128,19 +121,15 @@ class WorkAvailability:
     mergeable_pr_count: int
     unblockable_pr_count: int
     actionable_pr_work_count: int
-    # Count of open PRs parked behind MANUAL_REQUIRED_LABEL (human intervention
-    # required). pr_queue_human_blocked flags the wedge so the END_SESSION gate
-    # can offer a terminal play. It is True when this reaches MAX_OPEN_PRS - 1
-    # (the open-PR backpressure cap is saturated with human-blocked PRs so no new
-    # issue work can produce a mergeable PR) OR when *every* open PR is
-    # manual-required and no other actionable work remains (the queue cannot drain
-    # without a human even below the cap).
+    # Open PRs parked behind MANUAL_REQUIRED_LABEL. pr_queue_human_blocked is True
+    # when this hits MAX_OPEN_PRS - 1 (cap saturated with human-blocked PRs) OR
+    # every open PR is manual-required with no other actionable work — either way
+    # the queue can't drain without a human, so END_SESSION becomes valid.
     manual_required_open_pr_count: int
     pr_queue_human_blocked: bool
-    # True when any dispatchable work exists (issue/PR/backlog-sync/groom). The
-    # lifecycle-churn breaker reads this to decide whether spawning a new agent
-    # could accomplish anything — distinct from terminal_no_work, which also
-    # requires fresh terminal audits and no in-flight plays.
+    # True when any dispatchable work exists (issue/PR/backlog-sync/groom). Read by
+    # the lifecycle-churn breaker; distinct from terminal_no_work, which also needs
+    # fresh terminal audits and no in-flight plays.
     has_actionable_work: bool
     terminal_no_work: bool
 
@@ -159,11 +148,6 @@ class PlayCandidatePlan:
 
     def candidates_for(self, play_type: PlayType) -> tuple[PlayCandidate, ...]:
         return self.candidates_by_play_type.get(play_type, ())
-
-
-# ---------------------------------------------------------------------------
-# PlayCandidateAnalyzer — state-scoped analysis that pre-computes shared sets
-# ---------------------------------------------------------------------------
 
 
 class PlayCandidateAnalyzer:
@@ -198,11 +182,9 @@ class PlayCandidateAnalyzer:
         self.disallowed_issue_numbers: set[int] = {
             i.issue_number for i in self.open_issues if DISALLOWED_LABEL in i.labels
         }
-        # Opt-in issue-author gating: when enabled, only issues authored by a
-        # trusted login (configured logins ∪ enabled agents' own identities) are
-        # workable. The toggle and the resolved trusted set are carried on the
-        # state (assembled once per tick from config), so this stays pure and
-        # state-only. Off by default → empty set, behavior unchanged.
+        # Opt-in issue-author gating: only issues from a trusted login are workable.
+        # Toggle + trusted set ride on state (resolved once per tick), keeping this
+        # state-only. Off by default → empty set.
         self.untrusted_issue_numbers: set[int] = set()
         if state.restrict_issues_to_trusted_authors:
             trusted = state.trusted_issue_authors
@@ -219,7 +201,6 @@ class PlayCandidateAnalyzer:
                         author=issue.github_author,
                     )
 
-        # Graph-derived state
         graph = state.graph
         self._graph_has_epics = bool(
             graph is not None and getattr(graph, "has_epics", False) is True
@@ -305,10 +286,9 @@ class PlayCandidateAnalyzer:
             issue.state.upper() == "OPEN"
             and self._base_issue_available(issue)
             and "agentshore/needs-refinement" in issue.labels
-            # An issue refine has already processed carries agentshore/refined.
-            # Without this, refine is re-selected on already-refined issues and
-            # an agent is dispatched only to no-op ("all issues already
-            # refined"). Re-armed by groom/design-audit removing the label.
+            # Skip already-refined issues (carry agentshore/refined); else refine is
+            # re-selected and dispatched only to no-op. Re-armed when groom/design-
+            # audit removes the label.
             and "agentshore/refined" not in issue.labels
         )
 
@@ -327,20 +307,16 @@ class PlayCandidateAnalyzer:
             issue.issue_number not in self.open_pr_issue_numbers
             and issue.issue_number not in self.merged_pr_issue_numbers
             and issue.issue_number not in self.in_flight_issue_numbers
-            # An issue whose beads task is already in_progress is owned by a
-            # live PR/agent. ``issue_available_for_pickup`` excludes it inline;
-            # plan/refine/debug route through here, so excluding it here keeps
-            # them in parity with pickup and with the dispatch-time live-beads
-            # gate. Without this, write_implementation_plan re-selects the same
-            # in_progress issue every tick (deterministic priority sort) and is
-            # bounced at dispatch, starving other workable issues.
+            # in_progress beads task → owned by a live PR/agent. Excluding here keeps
+            # plan/refine/debug in parity with pickup and the dispatch-time live-beads
+            # gate; else write_implementation_plan re-selects it every tick (priority
+            # sort) and is bounced at dispatch, starving other issues.
             and issue.issue_number not in self.bead_in_progress_issue_numbers
             and issue.issue_number not in self.untrusted_issue_numbers
             and "agentshore/blocked" not in labels
             and "blocked" not in labels
             and DISALLOWED_LABEL not in labels
-            # An issue the planner gave up on (un-plannable, #458) is parked for
-            # a human; exclude it from plan/pickup/refine/debug so it stops being
+            # Un-plannable issue parked for a human (#458): exclude so it stops being
             # re-selected every tick. Cleared when the label is removed.
             and NEEDS_HUMAN_LABEL not in labels
         )
@@ -388,14 +364,13 @@ class PlayCandidateAnalyzer:
         parked_keys = state.parked_resource_keys
         auth_suppressed = state.auth_suppressed_agent_types
         wedge_cooldown = state.wedge_cooldown_agent_types
-        # agent_id -> agent_type.value, so a candidate that names an existing
-        # agent (target_agent_id) can be checked against the suppression set.
+        # agent_id -> agent_type.value, so a target_agent_id candidate can be
+        # checked against the suppression set.
         agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
 
         def add(candidate: PlayCandidate) -> None:
-            # Piece A: a resource parked after repeated worktree-allocation
-            # failures is excluded from every play that touches it, so a
-            # structurally-unallocatable PR can't be re-selected each tick.
+            # Exclude resources parked after repeated worktree-allocation failures
+            # so a structurally-unallocatable PR can't be re-selected each tick.
             parked_hit = sorted(set(candidate.resource_keys) & parked_keys)
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
@@ -403,10 +378,9 @@ class PlayCandidateAnalyzer:
                 if msg not in reasons:
                     reasons.append(msg)
                 return
-            # #zeke auth-hang: one backend-auth failure suppresses ALL dispatch
-            # of that agent type for the session — including an instantiate_agent
-            # candidate that would spawn a fresh agent of the dead type. HARD
-            # mask (structurally unrecoverable without a new session/token).
+            # #zeke auth-hang: one backend-auth failure suppresses ALL dispatch of
+            # that agent type for the session (incl. instantiate_agent of the dead
+            # type). HARD mask — unrecoverable without a new session/token.
             suppressed_type = _candidate_auth_suppressed_type(
                 candidate, auth_suppressed, agent_id_to_type
             )
@@ -416,9 +390,8 @@ class PlayCandidateAnalyzer:
                 if msg not in reasons:
                     reasons.append(msg)
                 return
-            # #202: a transient launch wedge masks the type only for the duration
-            # of a DECAYING cooldown — distinct block reason, auto-unmasked once
-            # the cooldown expires (the set no longer contains the type).
+            # #202: a transient launch wedge masks the type only for a DECAYING
+            # cooldown — auto-unmasked once the set no longer contains the type.
             cooldown_type = _candidate_wedge_cooldown_type(
                 candidate, wedge_cooldown, agent_id_to_type
             )
@@ -464,10 +437,9 @@ class PlayCandidateAnalyzer:
         pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
 
         def _pr_manual_required(pr_number: int) -> bool:
-            # A manual-required PR is parked for human intervention — never an
-            # actionable review target (mirrors pr_reviewable). _labels(None)
-            # returns [] so a queue row without a PR record is treated as not
-            # manual-required.
+            # Manual-required PR is parked for a human — never a review target
+            # (mirrors pr_reviewable). _labels(None) → [], so a queue row with no
+            # PR record reads as not manual-required.
             return MANUAL_REQUIRED_LABEL in _labels(pr_by_number.get(pr_number))
 
         pending_pr_numbers = {
@@ -554,9 +526,9 @@ class PlayCandidateAnalyzer:
                 PlayCandidate(
                     play_type=PlayType.GROOM_BACKLOG,
                     params=PlayParams(),
-                    # groom_backlog only updates beads metadata — it must not
-                    # take the trunk writer lock (would starve merge_pr, #17).
-                    # Self-serialize on a session key so two grooms don't race.
+                    # groom_backlog only touches beads metadata — must not take the
+                    # trunk writer lock (would starve merge_pr, #17). Self-serialize
+                    # on a session key so two grooms don't race.
                     resource_keys=(f"session:{PlayType.GROOM_BACKLOG.value}",),
                     source="state",
                     sort_key=(0,),
@@ -620,18 +592,12 @@ class PlayCandidateAnalyzer:
             or self.backlog_sync_work_count > 0
             or groom_needed
         )
-        # The open-PR cap blocks new issue_pickup; when (cap - 1) of those PRs are
-        # parked for a human, the queue cannot drain into mergeable work and the
-        # session is wedged on human action — surface that so END_SESSION becomes
-        # a valid terminal choice even while nominal issue/task work still looks
-        # plannable (#166). Also fire when *every* open PR is manual-required AND
-        # there is no other actionable work: with no selectable PR work and the
-        # remaining graph "ready tasks" all covered by those parked PRs, the
-        # session is equally wedged on a human even below the cap. This is the
-        # end-session-wedge fix — 4-of-4 manual-required PRs with phantom ready
-        # tasks slipped under the cap-only threshold and stranded the loop with
-        # END_SESSION masked. The ``not has_actionable_work`` guard keeps the
-        # hatch closed while genuine issue/PR work still remains to do.
+        # Wedge detection for the END_SESSION hatch (#166): the open-PR cap blocks
+        # issue_pickup, so (cap - 1) human-parked PRs mean the queue can't drain —
+        # surface it even while issue work still looks plannable. Also fire when
+        # *every* open PR is manual-required AND no other actionable work exists
+        # (ready tasks all covered by parked PRs → wedged below the cap too). The
+        # not-has_actionable_work guard keeps the hatch closed while real work remains.
         open_pr_count = len(self.open_prs)
         all_open_prs_manual_required = (
             open_pr_count > 0 and manual_required_open_pr_count == open_pr_count

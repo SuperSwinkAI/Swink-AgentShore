@@ -13,9 +13,7 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_agent() -> AgentSnapshot:
@@ -54,9 +52,7 @@ def _make_state(*, graph: ProjectGraph | None = None) -> OrchestratorState:
     )
 
 
-# ---------------------------------------------------------------------------
 # Precondition: graph is None — beads not set up, must not block
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_no_graph_does_not_block_on_beads() -> None:
@@ -69,9 +65,7 @@ def test_preconditions_no_graph_does_not_block_on_beads() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Precondition: has_epics but no ready tasks → block
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_epics_no_ready_tasks_blocks() -> None:
@@ -94,9 +88,7 @@ def test_preconditions_epics_no_ready_tasks_blocks() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Precondition: has_epics AND has_ready_tasks → no beads block
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_epics_with_ready_tasks_does_not_block() -> None:
@@ -119,9 +111,7 @@ def test_preconditions_epics_with_ready_tasks_does_not_block() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Precondition: graph present but no epics → no beads block
-# ---------------------------------------------------------------------------
 
 
 def test_preconditions_no_epics_does_not_block() -> None:

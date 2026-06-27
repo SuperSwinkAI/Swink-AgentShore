@@ -51,7 +51,7 @@ class TestWriteContextFile:
         target = tmp_path / "context.json"
         payload = {"atomic": True}
 
-        # Patch os.replace to verify it gets called (the core of atomicity).
+        # os.replace is the atomic swap — confirm it fires.
         os_replace = __import__("os").replace
         with patch("agentshore.agents.context_writer.os.replace", wraps=os_replace) as mock_replace:
             write_context_file(target, payload)
@@ -67,7 +67,6 @@ class TestWriteContextFile:
         class BadValue:
             """Object that is not JSON serializable."""
 
-        # json.dump will fail on this payload.
         with patch(
             "agentshore.agents.context_writer.json.dump",
             side_effect=TypeError("not serializable"),
@@ -77,7 +76,6 @@ class TestWriteContextFile:
             with pytest.raises(TypeError, match="not serializable"):
                 write_context_file(target, {"bad": BadValue()})  # type: ignore[dict-item]
 
-        # No temp files left behind.
         assert not target.exists()
         temps = list(tmp_path.glob(".context_*.tmp"))
         assert len(temps) == 0

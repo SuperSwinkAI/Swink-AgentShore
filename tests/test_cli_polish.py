@@ -14,21 +14,12 @@ from agentshore.cli.helpers import _resolve_policy_mode_override
 from agentshore.cli.identity_helpers import _agent_keys_from_yaml
 from agentshore.config.models import AgentConfig, PolicyMode, RuntimeConfig
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_git_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with agentshore.yaml."""
     (tmp_path / ".git").mkdir()
     (tmp_path / "agentshore.yaml").write_text("budget:\n  enabled: true\n  total: 20.0\n")
     return tmp_path
-
-
-# ---------------------------------------------------------------------------
-# 0agentshore start --help lists all options
-# ---------------------------------------------------------------------------
 
 
 def test_start_help_lists_all_options() -> None:
@@ -72,11 +63,6 @@ def test_legacy_deterministic_conflicts_with_learning_policy_mode() -> None:
     assert "conflicts with --policy-mode learning" in result.output
 
 
-# ---------------------------------------------------------------------------
-# 0agentshore init --help mentions --force and --install-skills
-# ---------------------------------------------------------------------------
-
-
 def test_init_help_text() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--help"])
@@ -87,9 +73,7 @@ def test_init_help_text() -> None:
     assert "--target-branch" in result.output
 
 
-# ---------------------------------------------------------------------------
-# 2b. agentshore init --target-branch persists the value (desktop-3t62)
-# ---------------------------------------------------------------------------
+# init --target-branch persists the value (desktop-3t62)
 
 
 def test_init_target_branch_flag_writes_value_and_skips_prompt(tmp_path: Path) -> None:
@@ -165,13 +149,7 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
 
     assert result.exit_code == 0, result.output
     cfg = _yaml.safe_load((repo / "agentshore.yaml").read_text())
-    # project block exists, target_branch absent.
     assert "target_branch" not in (cfg.get("project") or {})
-
-
-# ---------------------------------------------------------------------------
-# Removed CLI commands (report, train, configure, archive) are not registered
-# ---------------------------------------------------------------------------
 
 
 def test_removed_commands_not_registered() -> None:
@@ -180,11 +158,6 @@ def test_removed_commands_not_registered() -> None:
         result = runner.invoke(main, [cmd, "--help"])
         assert result.exit_code != 0, f"removed command '{cmd}' still resolves"
         assert "No such command" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 0agentshore init --force overwrites existing config
-# ---------------------------------------------------------------------------
 
 
 def test_init_force_merges_config_preserving_user_keys(tmp_path: Path) -> None:
@@ -212,7 +185,6 @@ def test_init_force_merges_config_preserving_user_keys(tmp_path: Path) -> None:
     # User-edited budget total + comment must survive the merge.
     assert "# original config" in new_content
     assert "total: 1.0" in new_content
-    # The agents skeleton was re-rendered.
     assert "claude_code" in new_content
     assert "Merging fresh template" in result.output
 
@@ -420,12 +392,10 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
 
     out = capsys.readouterr().out
     assert "AgentShore — Agent Setup" in out
-    # Box frames + letter/number accelerators rendered.
     assert "┌" in out and "│" in out
     assert "[a]" in out  # first tier cell letter
     assert "[1]" in out  # first agent toggle number
     assert "toggle agent" in out and "confirm" in out
-    # All detected agents appear and round-trip into config with binaries.
     for label in ("claude", "codex"):
         assert label in out
     assert updated.agents["codex"].binary == "codex"
@@ -463,7 +433,6 @@ def test_agent_setup_wizard_edit_tier_cell_sets_max(
     small = updated.agents["claude_code"].model_tiers["small"]
     assert small.enabled is True
     assert small.max == 7
-    # Persisted to YAML too.
     saved = config_path.read_text(encoding="utf-8")
     assert "max: 7" in saved
 
@@ -531,11 +500,6 @@ def test_init_without_force_preserves_database(tmp_path: Path) -> None:
     assert "Reset AgentShore database" not in result.output
 
 
-# ---------------------------------------------------------------------------
-# 0agentshore init without --force warns
-# ---------------------------------------------------------------------------
-
-
 def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) -> None:
     """When agentshore.yaml exists and --force is absent, init re-runs the
     setup wizards without rewriting the file, and points the user at
@@ -553,7 +517,6 @@ def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) ->
 
     assert "agentshore init --force" in result.output
     install_skills.assert_not_called()
-    # Original file should be preserved
     assert (repo / "agentshore.yaml").read_text() == original
 
 
@@ -575,14 +538,9 @@ def test_init_force_does_not_install_skills(tmp_path: Path) -> None:
     install_skills.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 0agentshore init --install-skills skips config generation
-# ---------------------------------------------------------------------------
-
-
 def test_init_install_skills_only(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
-    # Remove agentshore.yaml to verify it's NOT created when --install-skills is used
+    # Removed to verify --install-skills does not (re)create the config.
     (repo / "agentshore.yaml").unlink()
 
     runner = CliRunner()
@@ -591,9 +549,7 @@ def test_init_install_skills_only(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "--install-skills is deprecated" in result.output
-    # Config should NOT have been created
     assert not (repo / "agentshore.yaml").exists()
-    # Skills should have been installed
     mock_install.assert_called_once_with(repo, force=False)
     assert "skill-a" in result.output
 
@@ -628,9 +584,7 @@ def test_init_install_skills_rejects_target_branch(tmp_path: Path) -> None:
     assert "--target-branch has no effect with --install-skills" in result.output
 
 
-# ---------------------------------------------------------------------------
-# 8.5. agentshore init manages .gitignore for .agentshore/ runtime artifacts
-# ---------------------------------------------------------------------------
+# init manages .gitignore for .agentshore/ runtime artifacts
 
 
 def test_init_creates_gitignore_when_missing(tmp_path: Path) -> None:
@@ -682,6 +636,7 @@ def test_init_idempotent_when_agentshore_already_ignored(tmp_path: Path) -> None
 
     repo = _make_git_repo(tmp_path)
     # Seed the full canonical owned-paths list so init is a true no-op.
+    # Seed the full canonical owned-paths list so init is a true no-op.
     seeded = "*.pyc\n" + "".join(f"{entry}\n" for entry in AGENTSHORE_OWNED_ROOT_PATHS)
     (repo / ".gitignore").write_text(seeded)
     original = (repo / ".gitignore").read_text()
@@ -716,7 +671,7 @@ def test_init_recognises_agentshore_without_trailing_slash(tmp_path: Path) -> No
     assert result.exit_code == 0
     contents = (repo / ".gitignore").read_text()
     lines = contents.splitlines()
-    # Should not duplicate - .agentshore and .agentshore/ are equivalent for git
+    # .agentshore and .agentshore/ are git-equivalent — must not duplicate.
     assert lines.count(".agentshore") == 1
     assert lines.count(".agents") == 1
     assert lines.count(".beads") == 1
@@ -744,7 +699,7 @@ def test_init_handles_gitignore_without_trailing_newline(tmp_path: Path) -> None
 
 
 def test_init_skips_gitignore_when_not_a_git_repo(tmp_path: Path) -> None:
-    # No .git directory created
+    # No .git directory: not a git repo.
     (tmp_path / "agentshore.yaml").write_text("budget:\n  enabled: true\n  total: 20.0\n")
 
     runner = CliRunner()
@@ -758,11 +713,6 @@ def test_init_skips_gitignore_when_not_a_git_repo(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert not (tmp_path / ".gitignore").exists()
-
-
-# ---------------------------------------------------------------------------
-# 9. No agents error message includes installation instructions
-# ---------------------------------------------------------------------------
 
 
 def test_no_agents_error_message(tmp_path: Path) -> None:
@@ -784,11 +734,6 @@ def test_no_agents_error_message(tmp_path: Path) -> None:
     assert "ANTHROPIC_API_KEY" in stderr
 
 
-# ---------------------------------------------------------------------------
-# 10. Invalid YAML error shows line number
-# ---------------------------------------------------------------------------
-
-
 def test_invalid_yaml_error_message(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     bad_yaml = "budget:\n  total: [invalid\n"
@@ -804,15 +749,9 @@ def test_invalid_yaml_error_message(tmp_path: Path) -> None:
     ):
         result = runner.invoke(main, ["start", "--project", str(repo)])
 
-    # The error should mention the YAML problem with a line reference
     stderr = result.stderr
     combined = result.output + stderr
     assert "Invalid YAML" in combined or "line" in combined.lower()
-
-
-# ---------------------------------------------------------------------------
-# 11. Error messages go to stderr
-# ---------------------------------------------------------------------------
 
 
 def test_errors_on_stderr(tmp_path: Path) -> None:
@@ -827,15 +766,8 @@ def test_errors_on_stderr(tmp_path: Path) -> None:
         result = runner.invoke(main, ["start", "--project", str(repo)])
 
     assert result.exit_code != 0
-    # Error text should be on stderr, not stdout
     assert "No coding agents found" in result.stderr
-    # stdout should NOT contain the error (it goes to stderr only)
     assert "No coding agents found" not in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# 0agentshore --help lists all subcommands
-# ---------------------------------------------------------------------------
 
 
 def test_all_subcommands_listed() -> None:

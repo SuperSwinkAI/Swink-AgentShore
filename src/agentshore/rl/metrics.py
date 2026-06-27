@@ -19,21 +19,21 @@ from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from agentshore.data.models import (
         GitHubIssueRecord,
         HandoffRecord,
         PullRequestRecord,
-        SessionLearningRecord,
     )
     from agentshore.data.store import DataStore, PlayRecord
+    from agentshore.learnings import Learning
     from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
 
-# _HIST_LEN is single-homed in ``observation`` (the RL obs vector is index-
-# sensitive; a one-sided edit would silently corrupt the encoding) and imported
-# above so metrics' rolling history length can never drift from it.
+# _HIST_LEN imported from ``observation`` (single source) — the obs vector is
+# index-sensitive, so a divergent copy here would silently corrupt the encoding.
 _ROLLING_WINDOW = 10  # plays to average over
 _AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset(
     {"agentshore/intake", "agentshore/qa", "agentshore/review"}
@@ -69,9 +69,8 @@ def compute_agent_specialization(
     for play in history:
         agent_id = play.agent_id
         play_type_raw = play.play_type
-        # Hard-fail-safe: reject anything that isn't a real (str, str). Tests
-        # often stub the play history with MagicMock — those objects make every
-        # attribute a Mock, which then breaks tuple sorting downstream.
+        # Reject non-(str, str): MagicMock-stubbed history (common in tests) makes
+        # every attribute a Mock, which breaks tuple sorting downstream.
         if not isinstance(agent_id, str) or not isinstance(play_type_raw, str):
             continue
         buckets.setdefault((agent_id, play_type_raw), []).append(bool(play.success))
@@ -113,7 +112,8 @@ class MetricsEngine:
 
     Usage::
 
-        engine = MetricsEngine(store=store, session_id=sid)
+        engine = MetricsEngine(store=store, session_id=sid, repo_root=repo_root,
+                               learnings_file=cfg.learnings.file)
         ctx = await engine.snapshot(state)
     """
 
@@ -122,12 +122,16 @@ class MetricsEngine:
         *,
         store: DataStore,
         session_id: str,
+        repo_root: Path | None = None,
+        learnings_file: str = ".agentshore/learnings.json",
         stagnation_warn_after: int = 5,
         velocity_provider: Callable[[int], float] | None = None,
         executor_skip_rate_provider: Callable[[], float] | None = None,
     ) -> None:
         self._store = store
         self._session_id = session_id
+        self._repo_root = repo_root
+        self._learnings_file = learnings_file
         self._stagnation_warn_after = stagnation_warn_after
         self._velocity_provider = velocity_provider
         # v0.15 Phase 5: orchestrator-owned rate over the last 50 executor outcomes.
@@ -171,7 +175,15 @@ class MetricsEngine:
             prs_approved = []
 
         try:
-            learnings = await self._store.list_learnings(self._session_id)
+            import asyncio as _asyncio
+
+            from agentshore.learnings import load as _load_learnings
+
+            if self._repo_root is not None:
+                _path = self._repo_root / self._learnings_file
+                learnings: list[Learning] = await _asyncio.to_thread(_load_learnings, _path)
+            else:
+                learnings = []
         except (OSError, ValueError, RuntimeError) as exc:
             _logger.warning(
                 "metrics_query_failed",
@@ -210,9 +222,8 @@ class MetricsEngine:
         )
         busy_count = sum(1 for a in state.agents if a.status == AgentStatus.BUSY)
 
-        # Emit epic-level metrics from beads graph (Track 5).
-        # These replace the old cluster_* metrics; keyed under epic_closure_ratio_mean,
-        # epics_total, and tasks_ready so dashboards and log queries can grep for them.
+        # Epic-level metrics from beads graph (Track 5). Keyed under
+        # epic_closure_ratio_mean / epics_total / tasks_ready for dashboard + log grep.
         if state.graph is not None:
             epic_ratios = [e.closure_ratio for e in state.graph.epics]
             epic_closure_ratio_mean = sum(epic_ratios) / len(epic_ratios) if epic_ratios else 0.0
@@ -254,7 +265,7 @@ def _build_context(
     history: list[PlayRecord],
     prs_open: Sequence[PullRequestRecord],
     prs_approved: Sequence[PullRequestRecord],
-    learnings: Sequence[SessionLearningRecord],
+    learnings: Sequence[Learning],
     handoffs: Sequence[HandoffRecord] = (),
     rolling_velocity: float = 0.0,
     busy_agent_count: int = 0,
@@ -440,8 +451,8 @@ class _IssueClosureEvidence:
     merge_pr_artifact_present: bool
 
 
-# Artifact ``type`` strings that carry issue-closure evidence. Kept as named
-# constants so the dispatch reads intent rather than scattering magic strings.
+# Artifact ``type`` strings carrying issue-closure evidence — named constants
+# so dispatch reads intent rather than scattering magic strings.
 _ARTIFACT_ISSUE_CLOSED = "issue_closed"
 _ARTIFACT_ISSUES_CLOSED = "issues_closed"
 _ARTIFACT_PR_MERGED_ISSUE_NUMBERS = "pr_merged_issue_numbers"

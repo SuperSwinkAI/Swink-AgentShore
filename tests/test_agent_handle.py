@@ -40,11 +40,6 @@ def test_is_noop_invocation_false_when_output_present_or_nonzero_exit() -> None:
     assert is_noop_invocation(_noop_probe("", 1)) is False
 
 
-# ---------------------------------------------------------------------------
-# AgentInvocationResult
-# ---------------------------------------------------------------------------
-
-
 def test_invocation_result_is_frozen() -> None:
     result = AgentInvocationResult(
         raw_output="hello",
@@ -65,20 +60,10 @@ def test_invocation_result_has_slots() -> None:
     assert not hasattr(result, "__dict__")
 
 
-# ---------------------------------------------------------------------------
-# TaskRecord
-# ---------------------------------------------------------------------------
-
-
 def test_task_record_is_frozen() -> None:
     record = TaskRecord(play_id="p1", play_type=PlayType.ISSUE_PICKUP, success=True, branch="main")
     with pytest.raises(FrozenInstanceError):
         record.success = False  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# AgentHandle status transitions
-# ---------------------------------------------------------------------------
 
 
 def _make_handle(status: AgentStatus = AgentStatus.IDLE) -> AgentHandle:
@@ -126,11 +111,6 @@ def test_handle_has_slots() -> None:
     assert not hasattr(handle, "__dict__")
 
 
-# ---------------------------------------------------------------------------
-# AgentHandle accumulate + task history
-# ---------------------------------------------------------------------------
-
-
 def test_accumulate_tokens_and_cost() -> None:
     handle = _make_handle()
     handle.accumulate(tokens_in=100, tokens_out=200, dollar_cost=0.05)
@@ -150,11 +130,6 @@ def test_add_task_appends_to_history() -> None:
     assert handle.task_history[1].success is False
 
 
-# ---------------------------------------------------------------------------
-# Error class aliases / hierarchy
-# ---------------------------------------------------------------------------
-
-
 def test_agent_process_error_is_alias() -> None:
     assert AgentProcessError is AgentProcessCrashed
 
@@ -166,11 +141,6 @@ def test_play_timeout_error_is_subclass_of_agent_timeout() -> None:
 def test_play_timeout_error_is_catchable_as_agent_timeout() -> None:
     with pytest.raises(AgentTimeout):
         raise PlayTimeoutError("play timed out after 30s")
-
-
-# ---------------------------------------------------------------------------
-# capabilities registry
-# ---------------------------------------------------------------------------
 
 
 def test_capabilities_has_all_agent_types() -> None:

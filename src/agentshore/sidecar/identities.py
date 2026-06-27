@@ -269,8 +269,7 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
     )
 
 
-# Per-source token resolver: dict[TokenSource, callable(raw) -> str | None].
-# Each callable receives the raw identity dict and returns the resolved token or None.
+# Per-source token resolver: callable receives the raw identity dict, returns token or None.
 _TOKEN_RESOLVERS: dict[TokenSource, object] = {
     TokenSource.LOGIN: _resolve_login_token,
     TokenSource.ENV: lambda raw: os.environ.get(str(raw["gh_token_env"])),

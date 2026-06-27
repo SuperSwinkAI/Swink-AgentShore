@@ -121,10 +121,8 @@ def test_first_byte_deadline_resolution() -> None:
 
     cfg = AgentConfig()
     # All streaming agents share one generous 600s first-byte deadline (#213):
-    # reasoning models legitimately go silent past the old tight bounds before
-    # their first token (Grok 30–70s+ with a tail; Grok exceeded
-    # their windows on heavy code_review prompts). The deadline only catches a
-    # broken child that emits nothing — the wall-clock backstops genuine hangs.
+    # reasoning models legitimately go silent before the first token, so the
+    # deadline only catches a child emitting nothing; wall-clock backstops hangs.
     assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
     assert (
         _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S

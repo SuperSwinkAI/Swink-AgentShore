@@ -135,11 +135,6 @@ def test_groom_backlog_estimated_cost_is_light() -> None:
     assert 0.03 <= cost <= 0.08
 
 
-# ---------------------------------------------------------------------------
-# Step 4a strict-link logic helpers (unit-testable without invoking bd/gh)
-# ---------------------------------------------------------------------------
-
-
 def _should_link(bead_title: str, search_results: list[dict[str, str]]) -> bool:
     """Replicate Step 4a linking decision: link only when exactly one result whose
     title matches the bead title exactly (case-insensitive, trimmed).
@@ -193,11 +188,7 @@ def test_step4a_skips_keyword_overlap_only() -> None:
     assert _should_link("Add login page", results) is False
 
 
-# ---------------------------------------------------------------------------
-# H2 fix: bypass conditions must be evaluated before the capability gate
-# ---------------------------------------------------------------------------
-
-
+# H2 fix: bypass conditions are evaluated before the capability gate.
 def test_bypass1_no_capable_agent_returns_descriptive_error() -> None:
     """Bypass 1 fires (unlinked ready tasks, no open issues) but no IDLE agent exists.
 
@@ -214,10 +205,8 @@ def test_bypass1_no_capable_agent_returns_descriptive_error() -> None:
 
     # Play must be masked — a BUSY-only fleet cannot execute groom_backlog.
     assert errors != []
-    # The message must contain the urgency context.
     assert any("urgent groom needed" in e.text for e in errors)
     assert any("unlinked ready tasks" in e.text for e in errors)
-    # And the capability gap must be visible in the same message.
     assert any("no IDLE agent" in e.text for e in errors)
 
 
@@ -228,7 +217,7 @@ def test_bypass2_untracked_gh_issues_with_capable_agent_allows_play() -> None:
     because the graph is out of sync with GitHub.
     """
     # Issue #99 exists in GitHub but has no corresponding task in the beads graph.
-    graph = _graph_with_epics(tasks=[])  # no tasks linked to issue 99
+    graph = _graph_with_epics(tasks=[])
     state = _state(
         graph=graph,
         agents=[_idle_agent()],

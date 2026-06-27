@@ -252,9 +252,7 @@ async def test_remove_worktree_force_when_directory_missing(
     assert ok is True
 
 
-# ---------------------------------------------------------------------------
-# pickup-* collision retry (Phase 3)
-# ---------------------------------------------------------------------------
+# --- pickup-* collision retry ---
 
 
 async def test_allocate_retries_on_pickup_branch_collision(

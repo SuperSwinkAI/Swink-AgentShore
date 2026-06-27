@@ -53,11 +53,6 @@ def _cfg_with_identity() -> RuntimeConfig:
     return RuntimeConfig(identities={"alice": ident})
 
 
-# ---------------------------------------------------------------------------
-# probe result classification
-# ---------------------------------------------------------------------------
-
-
 def test_failed_blocks_launch() -> None:
     r = _failed()
     assert r.blocks_launch is True
@@ -80,11 +75,6 @@ def test_unprobeable_is_ok_nonblocking() -> None:
     r = _unprobeable()
     assert r.blocks_launch is False
     assert r.ok is True
-
-
-# ---------------------------------------------------------------------------
-# probe_git_auth — git_sync result mapping
-# ---------------------------------------------------------------------------
 
 
 def _result(
@@ -192,11 +182,6 @@ def test_ssh_remote_does_not_inject_token_header() -> None:
     assert overlay["GIT_SSH_COMMAND"] == "ssh -i /key"
 
 
-# ---------------------------------------------------------------------------
-# probe_all_identities — multi-identity enumeration
-# ---------------------------------------------------------------------------
-
-
 def test_no_identities_returns_empty() -> None:
     assert probe_all_identities(RuntimeConfig(), project_path=Path(".")) == []
 
@@ -243,11 +228,6 @@ def test_identity_resolution_failure_is_nonblocking() -> None:
     assert results[0].blocks_launch is False
 
 
-# ---------------------------------------------------------------------------
-# preflight_git_auth — banner + exit behavior
-# ---------------------------------------------------------------------------
-
-
 def test_preflight_blocks_on_auth_failure() -> None:
     cfg = _cfg_with_identity()
     with (
@@ -287,11 +267,6 @@ def test_preflight_no_identities_is_noop() -> None:
         preflight_git_auth(RuntimeConfig(), Path("."))  # no identities → return cleanly
 
 
-# ---------------------------------------------------------------------------
-# start.py wiring — --skip-git-auth-preflight flag
-# ---------------------------------------------------------------------------
-
-
 def _invoke_start(args: list[str]):
     """Drive `agentshore start` up to (and including) the preflight block, then
     bail out via a sentinel raised from the dispatch import so no orchestrator
@@ -310,10 +285,8 @@ def _invoke_start(args: list[str]):
         patch.object(start_mod, "preflight_cli_agent_auth"),
         patch.object(start_mod, "preflight_git_auth") as mock_git_auth,
     ):
-        # The dispatch block right after the preflight calls dereferences
-        # `resolved.cfg_path`. Make THAT attribute raise so we stop immediately
-        # after the preflight block — `resolved.cfg`/`resolved.project_path`
-        # (consumed by the preflights) still read cleanly as MagicMock attrs.
+        # Raise on cfg_path (deref'd just after the preflight block) to stop
+        # there; cfg/project_path consumed by the preflights stay clean MagicMocks.
         type(mock_bootstrap.return_value).cfg_path = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("stop-after-preflight"))
         )

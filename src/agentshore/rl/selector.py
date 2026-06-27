@@ -22,9 +22,8 @@ from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, V1_ACTION_ORDER
 
-# Checkpoint lifecycle helpers live in checkpoint_store; re-exported here so the
-# existing ``agentshore.core.phases`` import sites keep resolving them through
-# the selector module.
+# Re-exported from checkpoint_store so agentshore.core.phases import sites keep
+# resolving them through the selector module.
 from agentshore.rl.checkpoint_store import (
     _archive_old_canonicals as _archive_old_canonicals,
 )
@@ -88,11 +87,9 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
     }
 )
 
-# Pure fleet-management plays. A mask whose only selectable entries are these
-# represents "no real work available" — the auto reverse-failsafe must keep
-# counting idle ticks instead of resetting, or lifecycle-only churn would pin
-# the counter below threshold and the END_SESSION escape hatch would never open
-# (#166).
+# Pure fleet-management plays. A mask leaving only these means "no real work" —
+# the auto reverse-failsafe must keep counting idle ticks, else lifecycle-only
+# churn pins the counter below threshold and END_SESSION never opens (#166).
 _LIFECYCLE_PLAY_TYPES = frozenset({PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT})
 
 
@@ -138,7 +135,7 @@ class _PendingStep:
     log_prob: float
     value: float
     mask: NDArray[np.bool_]
-    # Config-head state, only set when the selected play was INSTANTIATE_AGENT.
+    # Config-head state, set only when the play was INSTANTIATE_AGENT.
     config_action: int | None = None
     config_log_prob: float | None = None
     config_mask: NDArray[np.bool_] | None = None
@@ -181,22 +178,18 @@ class PPOSelector:
         self._config_index = config_index
         self._pending: _PendingStep | None = None
         self._no_available_play_ticks: int = 0
-        # Confirm-repick telemetry. Counts the confirm-rejection clean re-picks
-        # that occurred during the most recent ``select()`` call. The orchestrator
-        # drains this via ``consume_repick_count()`` once per selection cycle and
-        # folds it into the rolling divergence window that feeds observation slot
-        # ``executor_skip_rate_recent_50``. Reset at the top of every ``select()``.
+        # Confirm-rejection clean re-picks during the last select(); drained by
+        # consume_repick_count() into the executor_skip_rate_recent_50 window.
+        # Reset at the top of every select().
         self._last_select_repick_count: int = 0
-        # Snapshot of global weights at last reload — used to compute the
-        # gradient delta for concurrent-safe global canonical updates.
+        # Global-weights snapshot at last reload; the delta base for
+        # concurrent-safe canonical updates.
         self._reload_base: dict[str, torch.Tensor] | None = None
-        # True when the most recent reload attempt found a global canonical that
-        # this session is incompatible with (load failure or config-index
-        # mismatch). In that case ``save_checkpoint`` must NOT write back to the
-        # global canonical — we would be training on stale local weights while
-        # overwriting an incompatible checkpoint on disk. A missing canonical is
-        # NOT a rejection (it is the legitimate first-write / full-overwrite
-        # case); only an explicit incompatibility sets this.
+        # Set when the last reload found a canonical incompatible with this
+        # session (load failure or config-index mismatch). save_checkpoint must
+        # then NOT write back — we'd overwrite a good on-disk checkpoint with
+        # stale local weights. A missing canonical is NOT a rejection (it's the
+        # legitimate first-write / full-overwrite case).
         self._reload_rejected: bool = False
 
     def update_orchestrator_cfg(self, cfg: RuntimeConfig) -> None:
@@ -219,8 +212,7 @@ class PPOSelector:
     # ------------------------------------------------------------------
 
     async def select(self, state: OrchestratorState) -> tuple[PlayType, PlayParams] | None:
-        # Fresh confirm-repick tally for this selection cycle (drained by the
-        # orchestrator into the executor_skip_rate_recent_50 window).
+        # Fresh confirm-repick tally for this cycle.
         self._last_select_repick_count = 0
 
         ctx = await self._metrics.snapshot(state)
@@ -269,10 +261,9 @@ class PPOSelector:
             self._log_all_masked(state)
             return None
 
-        # Single source of truth for play validity. Built from the snapshot-only
-        # candidate plan we already computed above; confirm() does the one live
-        # read (a fresh beads-graph reload) against the *resolved* target after
-        # the resolver has picked and claimed it.
+        # Single source of truth for play validity, built from the snapshot
+        # candidate plan above. confirm() does the one live read (fresh beads
+        # reload) against the *resolved* target after the resolver claims it.
         live_loader = self._build_live_graph_loader()
         authority = EligibilityAuthority(
             state,
@@ -285,11 +276,9 @@ class PPOSelector:
 
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         remaining_mask = mask.copy()
-        # Every non-returning iteration masks its sampled action (resolve-None,
-        # confirm-reject, failsafe-retry all set remaining_mask[action]=False), so
-        # the loop is self-bounded by the number of valid actions. Cap at
-        # NUM_ACTIONS so a run of clean re-picks keeps trying the remaining valid
-        # plays instead of idling early — it can never livelock.
+        # Every non-returning iteration masks its sampled action, so the loop is
+        # self-bounded by the valid-action count. Cap at NUM_ACTIONS so a run of
+        # clean re-picks exhausts the valid plays without livelocking.
         max_attempts = NUM_ACTIONS
         attempted_plays: list[str] = []
         for attempt in range(max_attempts):

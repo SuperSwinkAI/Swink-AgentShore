@@ -38,7 +38,6 @@ def test_dispatch_resets_counter() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
     _dead_tick(monitor)  # baseline
     _dead_tick(monitor)  # 1
-    # A real agent dispatch resets the counter.
     assert (
         monitor.record_tick(dispatched_to_agent=True, any_agent_busy=False, fingerprint=_FP)
         is False

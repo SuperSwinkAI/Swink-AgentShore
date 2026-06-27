@@ -18,10 +18,6 @@ from agentshore.core.velocity_tracker import VelocityTracker
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
-# ---------------------------------------------------------------------------
-# mask_reason_summary
-# ---------------------------------------------------------------------------
-
 
 def test_mask_reason_summary_wellformed() -> None:
     state = types.SimpleNamespace(
@@ -49,11 +45,6 @@ def test_mask_reason_summary_malformed_degrades_to_none() -> None:
     assert ExperienceRecorder.mask_reason_summary(types.SimpleNamespace(mask_reasons=["x"])) is None
     bad = types.SimpleNamespace(mask_reasons={PlayType.MERGE_PR: "not-a-mask-reason"})
     assert ExperienceRecorder.mask_reason_summary(bad) is None
-
-
-# ---------------------------------------------------------------------------
-# record_and_update crash containment
-# ---------------------------------------------------------------------------
 
 
 def _make_recorder(monkeypatch, *, store=None, selector=None):

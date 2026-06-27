@@ -11,10 +11,6 @@ import yaml
 from agentshore.sidecar.config import read_config, write_config
 from agentshore.sidecar.server import INVALID_PARAMS, ServerState, handle_request
 
-# ---------------------------------------------------------------------------
-# read_config tests
-# ---------------------------------------------------------------------------
-
 
 def test_read_returns_raw_and_parsed(tmp_path: Path) -> None:
     content = "budget:\n  total: 20.0\n"
@@ -34,11 +30,6 @@ def test_read_empty_file_returns_empty_parsed(tmp_path: Path) -> None:
     result = read_config(tmp_path)
     assert result["raw"] == ""
     assert result["parsed"] == {}
-
-
-# ---------------------------------------------------------------------------
-# write_config tests
-# ---------------------------------------------------------------------------
 
 
 def test_write_creates_new_file(tmp_path: Path) -> None:
@@ -105,11 +96,6 @@ def test_write_invalid_patch_raises_type_error(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError):
         write_config(tmp_path, ["list", "is", "also", "bad"])  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# JSON-RPC dispatch tests
-# ---------------------------------------------------------------------------
 
 
 def test_rpc_config_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

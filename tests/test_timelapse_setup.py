@@ -27,10 +27,8 @@ def test_node_major(text: str, expected: int | None) -> None:
 async def test_install_cli_uses_pinned_npm_package(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
-    # The installer must pull a pinned npm-registry version, not the GitHub
-    # ``releases/latest`` tarball (which lagged at the broken 0.3.0 that
-    # erroneously required ``--duration``). 0.3.1+ restores indefinite mode;
-    # the pin tracks the deliberately-adopted CLI version (currently 0.5.0).
+    # Installer must pull a pinned npm-registry version (currently 0.5.0), not the
+    # GitHub releases/latest tarball (which lagged at the broken 0.3.0).
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(setup.shutil, "which", lambda _name: "/usr/bin/npm")
@@ -97,16 +95,14 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
 
     assert result.success is True
-    # The pin must be verified before the toolchain doctor runs, and the
-    # Windows daemon-spawn hardening must run against the just-installed pin.
+    # Pin verified before doctor; Windows hardening runs against the just-installed pin.
     assert calls == ["ffmpeg", "node", "cli", "verify_version", "harden", "doctor"]
 
 
 async def test_install_steps_skip_heavy_work_when_already_current(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # When the installed CLI already matches the pin, the install must skip the
-    # ffmpeg/node/npm provisioning and only re-assert hardening + health.
+    # Already at pin: skip ffmpeg/node/npm provisioning, only re-assert hardening + health.
     calls: list[str] = []
 
     async def current_version(cwd: object) -> str | None:
@@ -333,9 +329,8 @@ async def test_install_timelapse_reports_step_failure(
     assert "Homebrew" in result.message
 
 
-# A representative slice of winget's carriage-return progress stream: block
-# glyphs (U+2588/U+2592) updated in place, then the terminal "no upgrade"
-# message. This is the exact shape that crashed structlog on cp1252.
+# A slice of winget's CR progress stream (block glyphs U+2588/U+2592) — the exact
+# shape that crashed structlog on cp1252.
 _WINGET_NOOP_OUTPUT = (
     "-  \\  |  ███▒▒▒  50%  "
     "██████  100%\r"
@@ -349,8 +344,7 @@ def test_clean_command_output_strips_progress_glyphs() -> None:
     cleaned = setup._clean_command_output(_WINGET_NOOP_OUTPUT)
     assert "Found an existing package already installed" in cleaned
     assert "No newer package versions are available" in cleaned
-    # The block-drawing progress glyphs must be gone so the message is readable
-    # and safe to print on a legacy code page.
+    # Progress glyphs must be gone so the message is safe to print on a legacy code page.
     assert "█" not in cleaned
     assert "▒" not in cleaned
 
@@ -358,8 +352,7 @@ def test_clean_command_output_strips_progress_glyphs() -> None:
 async def test_winget_install_treats_no_upgrade_as_noop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # winget exits non-zero when the package is already at the latest version.
-    # That must not raise: the caller re-verifies the tool afterwards.
+    # winget exits non-zero when already latest; must not raise (caller re-verifies).
     monkeypatch.setattr(
         setup.shutil, "which", lambda name: "C:/tools/winget.exe" if name == "winget" else None
     )
@@ -455,8 +448,7 @@ def test_refresh_windows_tool_paths_prefers_winget_node_over_program_files(
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.setenv("PROGRAMFILES", str(program_files))
     monkeypatch.delenv("APPDATA", raising=False)
-    # Simulate winget having appended the new Node to the END of PATH, behind
-    # the older Program Files Node.
+    # winget appended the new Node to the END of PATH, behind the older Program Files Node.
     monkeypatch.setenv("PATH", os.pathsep.join([str(pf_node), str(node_dir)]))
 
     setup._refresh_windows_tool_paths()

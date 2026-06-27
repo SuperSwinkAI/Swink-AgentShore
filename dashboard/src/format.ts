@@ -84,7 +84,7 @@ function formatModelTier(modelTier: string | null | undefined): string {
 function formatAgentKind(agentType: string): string {
   const entry = (AGENT_REGISTRY as Record<string, { label: string } | undefined>)[agentType];
   if (entry) {
-    // Strip the " CLI" suffix for the short form used in e.g. "Medium Codex"
+    // Strip " CLI" suffix for short form (e.g. "Medium Codex")
     return entry.label.replace(/ CLI$/, "");
   }
   return titleCase(agentType.replace(/_/g, " "));

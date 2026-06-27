@@ -47,10 +47,8 @@ def test_evidence_corruption_event_id_is_fresh_uuid(tmp_path: Path) -> None:
     db = _make_db(tmp_path / "agentshore.db")
     out1 = capture_corruption_evidence(db)
     out2 = capture_corruption_evidence(db)
-    # Each call produces a fresh UUID.
     assert out1["corruption_event_id"] != out2["corruption_event_id"]
-    # Parses as a valid UUID.
-    uuid.UUID(out1["corruption_event_id"])
+    uuid.UUID(out1["corruption_event_id"])  # must parse
 
 
 def test_evidence_includes_db_file_stats(tmp_path: Path) -> None:
@@ -67,7 +65,6 @@ def test_evidence_handles_missing_wal_shm_siblings(tmp_path: Path) -> None:
     """No WAL / SHM sibling files → those entries are ``None``, not raises."""
     db = _make_db(tmp_path / "agentshore.db")
     out = capture_corruption_evidence(db)
-    # WAL/SHM files don't exist for a closed DB; capture should report None.
     assert out["db_files"][db.name + "-wal"] is None
     assert out["db_files"][db.name + "-shm"] is None
 
@@ -86,7 +83,6 @@ def test_evidence_returns_partial_dict_when_subprocess_missing(
     db = _make_db(tmp_path / "agentshore.db")
     with patch("shutil.which", return_value=None):
         out = capture_corruption_evidence(db)
-    # Top-level keys still present.
     assert "corruption_event_id" in out
     assert "power_state" in out
     # Sub-step errors are recorded inline.

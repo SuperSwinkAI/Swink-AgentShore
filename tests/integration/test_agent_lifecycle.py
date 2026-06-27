@@ -49,27 +49,23 @@ async def test_agent_lifecycle(tmp_path: Path) -> None:
             working_dir=tmp_path,
         )
 
-        # Instantiate
         handle = await manager.instantiate(AgentType.CLAUDE_CODE)
         agent_id = handle.agent_id
         assert isinstance(handle, AgentHandle)
         assert handle.status == AgentStatus.IDLE
         assert agent_id in manager.handles
 
-        # Verify DB registration
         agents = await store.get_agents("lifecycle-session")
         assert len(agents) == 1
         assert agents[0].agent_id == agent_id
         assert agents[0].agent_type == "claude_code"
 
-        # Simulate context accumulation
         handle.context_size = 100_000
 
-        # Clear terminates and removes the agent
+        # clear() terminates and removes the agent.
         await manager.clear(agent_id)
         assert agent_id not in manager.handles
 
-        # Verify DB records termination
         agents_after = await store.get_agents("lifecycle-session")
         assert len(agents_after) == 1
         assert agents_after[0].terminated_at is not None

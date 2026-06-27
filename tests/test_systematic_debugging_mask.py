@@ -58,9 +58,8 @@ def _state_from_records(records: list[GitHubIssueRecord]) -> OrchestratorState:
 
 
 def test_baseline_systematic_debugging_is_a_candidate() -> None:
-    # Sanity: with only the failure trigger label, the candidate set picks
-    # the issue for systematic_debugging. Without this, the second
-    # assertion below would pass trivially.
+    # Sanity guard: without this baseline, the exclusion assertion below
+    # would pass trivially.
     records = [_record([DEBUG_TRIGGER_LABEL])]
     state = _state_from_records(records)
     candidates = build_candidate_plan(state).candidates_for(PlayType.SYSTEMATIC_DEBUGGING)
@@ -68,11 +67,8 @@ def test_baseline_systematic_debugging_is_a_candidate() -> None:
 
 
 def test_shadow_label_excludes_issue_from_systematic_debugging_next_tick() -> None:
-    # Tick T: systematic_debugging succeeded on issue 272 and pushed
-    # (272, root_cause_found) onto the shadow. Tick T+1 fetches issue
-    # records from SQLite — refresh_issues hasn't run yet, so the label
-    # is not on the cached row. The shadow merge overlays it before
-    # candidate construction, and the issue drops out of the candidate set.
+    # refresh_issues hasn't run, so root_cause_found isn't on the cached SQLite
+    # row yet; the shadow merge overlays it so the issue drops from candidates.
     records = [_record([DEBUG_TRIGGER_LABEL])]
     shadow = collections.deque([(ISSUE_272, ROOT_CAUSE_FOUND_LABEL)])
     merged_records = _merge_recent_applied_labels(records, shadow)
@@ -106,10 +102,8 @@ def test_shadow_does_not_affect_unrelated_issue() -> None:
 
 
 def test_shadow_idempotent_after_refresh_lands() -> None:
-    # Once _refresh_issues catches up and writes the label to the cached
-    # row, the shadow still holds the entry until aged out of the deque.
-    # The merge must not duplicate labels or accidentally re-admit the
-    # issue (e.g. by violating the "label present" check).
+    # When the label is already on the cached row, the shadow still holds it;
+    # the merge must not duplicate it or re-admit the issue.
     records = [_record([DEBUG_TRIGGER_LABEL, ROOT_CAUSE_FOUND_LABEL])]
     shadow = collections.deque([(ISSUE_272, ROOT_CAUSE_FOUND_LABEL)])
     merged_records = _merge_recent_applied_labels(records, shadow)

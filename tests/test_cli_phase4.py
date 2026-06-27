@@ -26,11 +26,6 @@ def _make_git_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# --config flag
-# ---------------------------------------------------------------------------
-
-
 def test_start_config_flag_loads_specified_file(tmp_path: Path) -> None:
     """--config <path> should load that file instead of the default agentshore.yaml."""
     repo = _make_git_repo(tmp_path)
@@ -73,15 +68,12 @@ def test_start_config_flag_loads_specified_file(tmp_path: Path) -> None:
 
         runner.invoke(main, ["start", "--config", str(custom_cfg)])
 
-    # The custom path should appear in the load calls
     assert any(str(custom_cfg) in str(p) for p in loaded_paths), (
         f"Custom config not loaded. Loaded: {loaded_paths}"
     )
 
 
-# ---------------------------------------------------------------------------
 # Hard-fail: no agents AND no API keys
-# ---------------------------------------------------------------------------
 
 
 def test_start_hard_fail_no_agents_no_keys(tmp_path: Path) -> None:
@@ -129,7 +121,6 @@ def test_start_no_fail_when_api_key_present(tmp_path: Path) -> None:
 
         result = runner.invoke(main, ["start"])
 
-    # Should not see the hard-fail error.
     assert "No coding agents found" not in result.output
 
 
@@ -160,5 +151,4 @@ def test_start_no_fail_when_cli_agent_present(tmp_path: Path) -> None:
 
         result = runner.invoke(main, ["start"])
 
-    # Should not see the hard-fail message
     assert "No coding agents found" not in result.output

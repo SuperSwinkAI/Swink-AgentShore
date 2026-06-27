@@ -45,22 +45,13 @@ def _handles(*agents: AgentHandle) -> dict[str, AgentHandle]:
     return {h.agent_id: h for h in agents}
 
 
-# ---------------------------------------------------------------------------
-# No agents available
-# ---------------------------------------------------------------------------
-
-
 def test_no_idle_agents_raises() -> None:
     busy = _make_handle("a1", status=AgentStatus.BUSY)
     with pytest.raises(AntiConfirmationViolation, match="No IDLE agents"):
         select_agent_for(PlayType.ISSUE_PICKUP, _handles(busy))
 
 
-# ---------------------------------------------------------------------------
-# Circuit breaker (#22): deprioritize a known-dead agent
-# ---------------------------------------------------------------------------
-
-
+# Circuit breaker (#22): deprioritize a known-dead agent.
 def test_is_agent_circuit_broken_predicate() -> None:
     from agentshore.state import is_agent_circuit_broken
 
@@ -99,11 +90,7 @@ def test_circuit_broken_agent_still_selected_when_only_option() -> None:
     assert result.agent_id == "dead"
 
 
-# ---------------------------------------------------------------------------
-# Anti-confirmation: CodeReview ≠ PR author
-# ---------------------------------------------------------------------------
-
-
+# Anti-confirmation: CodeReview reviewer must differ from PR author.
 def test_code_review_excludes_pr_author_by_github_identity() -> None:
     # code_review is large-only (#254); these identity tests use large reviewers.
     author = _make_handle("author", model_tier="large", github_identity="alice")
@@ -132,7 +119,7 @@ def test_code_review_identity_filter_is_case_insensitive() -> None:
 def test_code_review_no_pr_github_author_does_not_filter() -> None:
     author = _make_handle("author", model_tier="large", github_identity="alice")
 
-    # Without pr_github_author, no anti-confirmation filter applies
+    # No pr_github_author → anti-confirmation filter doesn't apply.
     result = select_agent_for(
         PlayType.CODE_REVIEW,
         _handles(author),
@@ -154,7 +141,6 @@ def test_code_review_different_identity_not_blocked() -> None:
     author = _make_handle("author", model_tier="large", github_identity="alice")
     reviewer = _make_handle("reviewer", model_tier="large", github_identity="bob")
 
-    # pr_github_author matches alice; reviewer (bob) should survive
     result = select_agent_for(
         PlayType.CODE_REVIEW,
         _handles(author, reviewer),
@@ -164,7 +150,7 @@ def test_code_review_different_identity_not_blocked() -> None:
 
 
 def test_code_review_agent_without_github_identity_not_blocked() -> None:
-    # Agents with no github_identity resolved should not match any author
+    # An agent with no resolved github_identity matches no author.
     no_id = _make_handle("no-id", model_tier="large", github_identity=None)
     result = select_agent_for(
         PlayType.CODE_REVIEW,
@@ -174,11 +160,7 @@ def test_code_review_agent_without_github_identity_not_blocked() -> None:
     assert result.agent_id == "no-id"
 
 
-# ---------------------------------------------------------------------------
-# RUN_QA: no anti-confirmation — runs against the merged trunk
-# ---------------------------------------------------------------------------
-
-
+# RUN_QA: no anti-confirmation — runs against the merged trunk.
 def test_run_qa_picks_last_branch_implementer_when_offered() -> None:
     """QA has no anti-confirmation; the last implementer is just as eligible
     as anyone else (QA exercises the merged trunk, not a specific commit)."""
@@ -202,11 +184,6 @@ def test_run_qa_no_branch_does_not_filter() -> None:
         branch_exposure={"feature/x": "impl"},
     )
     assert result.agent_id == "impl"
-
-
-# ---------------------------------------------------------------------------
-# Exclude list (hard)
-# ---------------------------------------------------------------------------
 
 
 def test_exclude_list_removes_matching_agent_type() -> None:
@@ -245,13 +222,9 @@ def test_all_excluded_raises() -> None:
         select_agent_for(PlayType.ISSUE_PICKUP, _handles(codex), preferences=prefs)
 
 
-# ---------------------------------------------------------------------------
 # Auth-suppression (#277): a backend-auth-failed type is benched for the session.
 # Its handle returns to IDLE, so the selector must drop it explicitly or a
 # late-resolved play keeps re-dispatching the dead backend.
-# ---------------------------------------------------------------------------
-
-
 def test_auth_suppressed_type_excluded_from_selection() -> None:
     grok = _make_handle("grok-1", AgentType.GROK)
     claude = _make_handle("claude-1", AgentType.CLAUDE_CODE)
@@ -280,11 +253,6 @@ def test_auth_suppressed_empty_set_is_noop() -> None:
     assert result.agent_id == "grok-1"
 
 
-# ---------------------------------------------------------------------------
-# Soft ordering: type affinity
-# ---------------------------------------------------------------------------
-
-
 def test_type_affinity_promotes_preferred_type() -> None:
     grok = _make_handle("g1", AgentType.GROK, model_tier="large")
     claude = _make_handle("c1", AgentType.CLAUDE_CODE, model_tier="large")
@@ -296,11 +264,6 @@ def test_type_affinity_promotes_preferred_type() -> None:
         preferences=prefs,
     )
     assert result.agent_id == "g1"
-
-
-# ---------------------------------------------------------------------------
-# Soft ordering: branch exposure affinity
-# ---------------------------------------------------------------------------
 
 
 def test_cluster_affinity_promotes_branch_exposed_agent() -> None:
@@ -316,11 +279,6 @@ def test_cluster_affinity_promotes_branch_exposed_agent() -> None:
     assert result.agent_id == "exposed"
 
 
-# ---------------------------------------------------------------------------
-# Soft ordering: least busy
-# ---------------------------------------------------------------------------
-
-
 def test_least_busy_agent_preferred() -> None:
     busy = _make_handle("busy", tasks=5)
     idle = _make_handle("idle", tasks=0)
@@ -329,11 +287,7 @@ def test_least_busy_agent_preferred() -> None:
     assert result.agent_id == "idle"
 
 
-# ---------------------------------------------------------------------------
-# Rule ordering: anti-confirmation applied before soft preferences
-# ---------------------------------------------------------------------------
-
-
+# Rule ordering: anti-confirmation applies before soft preferences.
 def test_anti_confirmation_overrides_type_affinity() -> None:
     """Even if the author's type is preferred, they must still be excluded."""
     author = _make_handle(
@@ -349,11 +303,6 @@ def test_anti_confirmation_overrides_type_affinity() -> None:
         preferences=prefs,
     )
     assert result.agent_id == "fallback"
-
-
-# ---------------------------------------------------------------------------
-# Tier eligibility (hard filter)
-# ---------------------------------------------------------------------------
 
 
 def test_tier_filter_blocks_small_from_coding_play() -> None:
@@ -505,11 +454,6 @@ def test_tier_filter_requires_large_for_code_review() -> None:
     # With no large agent available, code_review has no eligible reviewer at all.
     with pytest.raises(AntiConfirmationViolation):
         select_agent_for(PlayType.CODE_REVIEW, _handles(medium))
-
-
-# ---------------------------------------------------------------------------
-# Per-rule elimination logging
-# ---------------------------------------------------------------------------
 
 
 def test_blocked_logs_per_rule(

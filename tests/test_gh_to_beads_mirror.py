@@ -12,10 +12,6 @@ from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
 from agentshore.core.phases import _mirror_issues_to_beads
 from agentshore.data.models import GitHubIssueRecord
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_issue(
     issue_number: int,
@@ -52,11 +48,6 @@ def _graph_with_epics(tasks: list[GraphTask] | None = None) -> ProjectGraph:
     )
 
 
-# ---------------------------------------------------------------------------
-# No-op when .beads/ does not exist
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_mirror_noop_when_no_beads_dir(tmp_path: Path) -> None:
     """_mirror_issues_to_beads is a no-op when .beads/ is absent."""
@@ -64,11 +55,6 @@ async def test_mirror_noop_when_no_beads_dir(tmp_path: Path) -> None:
     with patch("agentshore.beads.bd", new_callable=AsyncMock) as mock_bd:
         await _mirror_issues_to_beads(project_path=tmp_path, issues=issues)
     mock_bd.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# No-op when graph has no epics (C4 guard)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -96,7 +82,7 @@ async def test_mirror_noop_when_graph_has_no_epics(tmp_path: Path) -> None:
     beads_dir = tmp_path / ".beads"
     beads_dir.mkdir()
 
-    empty_graph = ProjectGraph()  # no epics
+    empty_graph = ProjectGraph()
     issues = [_make_issue(1, "Add authentication"), _make_issue(2, "Fix styling")]
 
     with patch("agentshore.beads.bd", new_callable=AsyncMock) as mock_bd:
@@ -117,11 +103,6 @@ async def test_mirror_noop_when_graph_omitted_defaults_to_no_epics(tmp_path: Pat
         await _mirror_issues_to_beads(project_path=tmp_path, issues=issues)
 
     mock_bd.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# bd import --dedup called for each open issue (when epics exist)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -151,15 +132,9 @@ async def test_mirror_calls_bd_import_for_open_issues(tmp_path: Path) -> None:
         assert kwargs["cwd"] == tmp_path
         assert "stdin_data" in kwargs
 
-    # Verify JSON payloads
     payloads = [json.loads(c.kwargs["stdin_data"].decode().strip()) for c in mock_bd.call_args_list]
     assert payloads[0] == {"title": "Add authentication", "type": "task", "external_ref": "gh-1"}
     assert payloads[1] == {"title": "Fix navbar styling", "type": "task", "external_ref": "gh-2"}
-
-
-# ---------------------------------------------------------------------------
-# Already-tracked issues are skipped (external_ref dedup pre-check)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -190,11 +165,6 @@ async def test_mirror_skips_already_tracked_issues(tmp_path: Path) -> None:
     assert payload["external_ref"] == "gh-2"
 
 
-# ---------------------------------------------------------------------------
-# Closed issues are skipped
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_mirror_skips_closed_issues(tmp_path: Path) -> None:
     """Closed issues (state != 'open') are not mirrored."""
@@ -215,11 +185,6 @@ async def test_mirror_skips_closed_issues(tmp_path: Path) -> None:
     assert mock_bd.call_count == 1
     payload = json.loads(mock_bd.call_args.kwargs["stdin_data"].decode().strip())
     assert payload["external_ref"] == "gh-1"
-
-
-# ---------------------------------------------------------------------------
-# BdError is swallowed (genuine failures)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -248,11 +213,6 @@ async def test_mirror_swallows_bd_error(tmp_path: Path) -> None:
 
     # Both were attempted despite the error on the first
     assert mock_bd.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# "nothing to commit" is treated as a no-op (issue #92)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -289,7 +249,6 @@ async def test_mirror_treats_nothing_to_commit_as_noop(tmp_path: Path) -> None:
             project_path=tmp_path, issues=issues, graph=_graph_with_epics()
         )
 
-    # beads_mirror_issue_failed must NOT have been emitted.
     assert "beads_mirror_issue_failed" not in warning_events, (
         f"Expected no beads_mirror_issue_failed for nothing-to-commit; got: {warning_events}"
     )

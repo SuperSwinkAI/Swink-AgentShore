@@ -36,14 +36,12 @@ def _make_orchestrator() -> Orchestrator:
     store.list_open_pull_requests = AsyncMock(return_value=[])
     store.get_open_issues = AsyncMock(return_value=[])
     store.update_issue_state = AsyncMock()
-    # desktop-rla8: incremental-sync cursor; None triggers a full sweep so
-    # existing tests exercise the same code path that ran pre-pagination.
+    # None cursor forces a full sweep (same path as pre-pagination).
     store.get_last_issue_sync_at = AsyncMock(return_value=None)
     store.set_last_issue_sync_at = AsyncMock()
 
     orch = make_test_orchestrator(Path("."), cfg, store=store)
-    # This file targets the real refresh_issues; rebuild _completion with
-    # session_id "s1" (assertions match on it) and the un-stubbed method.
+    # Rebuild _completion with session_id "s1" (assertions match on it).
     orch._session_id = "s1"
     orch._completion = CompletionProcessor(
         host=orch,
@@ -133,11 +131,10 @@ async def test_refresh_resyncs_pr_dropped_from_open_fetch() -> None:
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # cache_pull_requests was invoked with the re-fetched MERGED record.
     orch._store.cache_pull_requests.assert_awaited_once()
     cached_args = orch._store.cache_pull_requests.await_args
     assert cached_args is not None  # type-checker guard
-    # First positional arg is the session_id; second is the list of records.
+    # args[0]=session_id, args[1]=records.
     assert cached_args.args[0] == "s1"
     cached_prs = cached_args.args[1]
     assert len(cached_prs) == 1
@@ -249,11 +246,6 @@ async def test_refresh_does_not_evict_trust_filtered_live_pr() -> None:
     orch._store.mark_pull_request_absent.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Incremental sync (desktop-rla8)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_refresh_closes_externally_closed_issue_via_state_all() -> None:
     """The single ``state='all'`` fetch surfaces close transitions; the upsert
@@ -272,8 +264,7 @@ async def test_refresh_closes_externally_closed_issue_via_state_all() -> None:
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # Exactly one list_issues call with state="all"; cache_github_issues
-    # receives the closed record and the upsert handles state transition.
+    # One state="all" fetch; the upsert handles the open→closed transition.
     assert gh.list_issues.await_count == 1
     assert gh.list_issues.await_args.kwargs.get("state") == "all"
     orch._store.cache_github_issues.assert_awaited_once()
@@ -350,8 +341,7 @@ async def test_refresh_force_full_sync_overrides_cursor() -> None:
             force_full_sync=True,
         )
 
-    # Despite the cursor being set and the play being ISSUE_PICKUP (normally
-    # incremental), the force flag dropped since= to None for a full sweep.
+    # Force flag drops since= to None despite cursor + ISSUE_PICKUP.
     assert gh.list_issues.await_args.kwargs.get("since") is None
 
 
@@ -483,11 +473,6 @@ async def test_refresh_does_not_close_issue_when_live_bead_exists() -> None:
     gh.close_issue.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Reopen clears closed_at (M3) — store-level test via in-memory DB
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_cache_github_issues_reopen_clears_closed_at() -> None:
     """cache_github_issues must set closed_at=NULL when the incoming state is
@@ -531,7 +516,6 @@ async def test_cache_github_issues_reopen_clears_closed_at() -> None:
             """
         )
 
-        # Insert a closed issue with a closed_at value.
         closed_issue = GitHubIssueRecord(
             issue_number=5,
             session_id="s1",
@@ -553,7 +537,6 @@ async def test_cache_github_issues_reopen_clears_closed_at() -> None:
         )
         await store.cache_github_issues("s1", [reopened])
 
-        # Verify closed_at is now NULL.
         cursor = await conn.execute(
             "SELECT state, closed_at FROM github_issues WHERE issue_number=5 AND session_id='s1'"
         )

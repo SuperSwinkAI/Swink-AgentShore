@@ -83,28 +83,22 @@ class DashboardBridge:
         self._state_poll_interval = state_poll_interval
         self._events_poll_interval = events_poll_interval
 
-        # Session identity gate: a bridge serves exactly one session. The id is
-        # taken from the caller when known (sidecar threads it through before the
-        # orchestrator boots) or resolved from this session_dir's ``info.json``
-        # (the standalone ``agentshore dashboard`` attaches to a running session).
-        # When still unknown, it is adopted from the first observed snapshot.
-        # Any snapshot whose ``session_id`` differs is treated as a prior
-        # session's stale file and never adopted or replayed.
+        # One bridge serves one session. Id comes from caller (sidecar) or
+        # info.json (standalone attach), else adopted from first snapshot.
+        # Snapshots with a different session_id are stale, never adopted.
         self._current_session_id: str | None = session_id or read_session_id_by_dir(session_dir)
-        # True once we've seen an on-disk/live snapshot for the session we serve.
-        # Until then we replay nothing on connect — replaying a prior session's
-        # cached snapshot would poison the client's monotonic seq de-dup and
-        # suppress the new session's low-seq bootstrap frames.
+        # True once we've seen a snapshot for our session. Until then replay
+        # nothing: a prior session's snapshot poisons the client's seq de-dup
+        # and suppresses the new session's low-seq bootstrap frames.
         self._observed_current_state = False
 
         self._ws_clients: list[WebSocket] = []
         self._latest_state: str | None = None
         self._active_play: dict[str, object] | None = None
         self._event_history: list[dict[str, object]] = []
-        # Raw line of the most recent in-progress ``bootstrap_phase`` event so a
-        # browser that connects (or reloads) mid-bootstrap can render the loading
-        # modal immediately — these events are otherwise broadcast live-only, so a
-        # late/reconnecting tab would never see the modal (desktop-afp).
+        # Most recent in-progress bootstrap_phase line, so a tab connecting/
+        # reloading mid-bootstrap can render the loading modal — these are
+        # otherwise broadcast live-only (desktop-afp).
         self._bootstrap_phase_raw: str | None = None
 
         self._ipc_writer: asyncio.StreamWriter | None = None
@@ -140,8 +134,8 @@ class DashboardBridge:
 
         self._running = True
 
-        # Prime caches from any state already on disk so the first browser
-        # tab renders immediately even before the engine emits a new event.
+        # Prime caches from on-disk state so the first tab renders before the
+        # engine emits a new event.
         await self._prime_from_disk()
 
         async def ws_endpoint(websocket: WebSocket) -> None:
@@ -234,10 +228,8 @@ class DashboardBridge:
             await _logger.ainfo("dashboard.server_cancelled")
             raise
         except Exception as exc:
-            # desktop-6a7: the bridge has been observed to die silently after
-            # controller_promoted with no traceback. Anything uvicorn raises
-            # from .serve() is captured here so operators can see *why* the
-            # bridge exited rather than just seeing `lsof -i :9400` empty.
+            # desktop-6a7: bridge seen dying silently after controller_promoted.
+            # Capture whatever uvicorn raises so operators see *why* it exited.
             await _logger.aexception(
                 "dashboard.server_crashed",
                 error=f"{type(exc).__name__}: {exc}",
@@ -258,19 +250,13 @@ class DashboardBridge:
             self._ws_clients.clear()
             await self._disconnect_ipc()
 
-    # ------------------------------------------------------------------
-    # File tailing
-    # ------------------------------------------------------------------
-
     async def _prime_from_disk(self) -> None:
         """Best-effort load of existing state + tail of events on startup."""
         await self._poll_state_file()
-        # If the on-disk snapshot doesn't belong to the session we serve (or
-        # there's no snapshot yet), don't prime any event caches — they would be
-        # the prior session's bootstrap/play events. Still advance the events
-        # offset to the current end so the live tail starts after the stale
-        # backlog rather than replaying it (a truncating reset resets the offset
-        # back to 0 in _read_new_events_sync).
+        # If the snapshot isn't ours (or none yet), don't prime event caches —
+        # they'd be the prior session's events. Still advance the offset to EOF
+        # so the live tail starts after the stale backlog (a truncation resets
+        # it to 0 in _read_new_events_sync).
         if not self._observed_current_state:
             try:
                 self._events_offset = self._events_path.stat().st_size
@@ -283,8 +269,7 @@ class DashboardBridge:
             self._events_offset = 0
             return
 
-        # Read the last ~64KB so we can replay the most recent events on
-        # connect without scanning the whole file.
+        # Read the last ~64KB to replay recent events without scanning the file.
         tail_window = 64 * 1024
         start = max(0, size - tail_window)
         try:
@@ -336,18 +321,15 @@ class DashboardBridge:
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
-            # The state writer uses atomic tmp+rename; a malformed read is
-            # transient or stale. Keep the previous good snapshot and let the
-            # next poll read a whole file.
+            # Writer uses atomic tmp+rename; a malformed read is transient. Keep
+            # the last good snapshot and let the next poll read a whole file.
             return False
         payload = parsed.get("payload") if isinstance(parsed, dict) else None
         snapshot_sid = payload.get("session_id") if isinstance(payload, dict) else None
 
-        # Session-aware gate. When the snapshot names a session different from
-        # the one we serve, it's a prior session's stale file (e.g. one the
-        # engine failed to unlink on Windows) — drop it without adopting or
-        # caching. A snapshot with no session_id (older engines) can't be gated,
-        # so fall back to serving it.
+        # When the snapshot names a different session it's a stale file (e.g.
+        # not unlinked on Windows) — drop it. A snapshot with no session_id
+        # (older engines) can't be gated, so serve it.
         if isinstance(snapshot_sid, str):
             if self._current_session_id is None:
                 self._current_session_id = snapshot_sid
@@ -433,9 +415,9 @@ class DashboardBridge:
         payload = msg.get("payload")
         fields: dict[str, object] = payload if isinstance(payload, dict) else msg
 
-        # Tier 1 backstop: with session_id stamped on every event, reject any
-        # that names a session other than the one we serve. Events without an id
-        # (older engines) fall through to the Tier 0 prime/replay gating.
+        # Tier 1 backstop: reject any event naming a different session. Events
+        # without an id (older engines) fall through to Tier 0 prime/replay
+        # gating.
         event_sid = fields.get("session_id")
         if (
             isinstance(event_sid, str)
@@ -449,18 +431,17 @@ class DashboardBridge:
                 self._session_draining_raw = raw_line
             return
         if msg_type == "session_ended":
-            # Defence in depth alongside the StateWriter per-session reset:
-            # never let prime-from-disk replay a stale lifecycle marker
-            # into our live state — it would set should_exit on boot.
+            # Defence in depth vs the StateWriter per-session reset: never let
+            # prime-from-disk replay a stale marker — it would set should_exit
+            # on boot.
             if broadcast:
                 self._session_ended = True
                 self._session_ended_raw = raw_line
             return
         if msg_type == "bootstrap_phase":
-            # Cache the current bootstrap phase (set during prime-from-disk and
-            # live tail alike) so it can be replayed to a connecting/reloading
-            # client. Clear it once bootstrap finishes (``ready``/``completed``)
-            # so a post-bootstrap connect shows no stale modal.
+            # Cache the current bootstrap phase for replay to a connecting
+            # client; clear it once bootstrap finishes (ready/completed) so a
+            # later connect shows no stale modal.
             status = fields.get("status")
             phase = fields.get("phase")
             if phase == "ready" and status == "completed":
@@ -482,22 +463,17 @@ class DashboardBridge:
 
         status = fields.get("status")
         if status == "started":
-            # Derive the active_play field set via the single shared helper so
-            # the shape stays pinned to the serializer's ActivePlayPayload
-            # rather than being re-selected key-by-key here.
+            # Use the shared helper so active_play stays pinned to the
+            # serializer's ActivePlayPayload rather than re-selected here.
             self._active_play = dict(
                 active_play_from_started(fields, default_started_at=datetime.now(UTC).isoformat())
             )
         elif status in {"completed", "failed"}:
             self._active_play = None
 
-        # `broadcast` is informational — the caller is responsible for the
-        # actual fan-out so the prime-from-disk path can stay silent.
+        # `broadcast` is informational — the caller does the fan-out, so the
+        # prime-from-disk path stays silent.
         _ = broadcast
-
-    # ------------------------------------------------------------------
-    # WebSocket fan-out
-    # ------------------------------------------------------------------
 
     async def _broadcast(self, message: str) -> None:
         """Send *message* to every connected WebSocket; drop on failure."""
@@ -567,10 +543,6 @@ class DashboardBridge:
                 json.dumps({"type": "auth_token", "token": self._auth_token})
             )
         await _logger.ainfo("dashboard.controller_promoted")
-
-    # ------------------------------------------------------------------
-    # Inbound commands → IPC writer
-    # ------------------------------------------------------------------
 
     async def _handle_ws_command(self, raw: str, websocket: WebSocket) -> None:
         """Validate and forward a command from a WebSocket client to IPC."""

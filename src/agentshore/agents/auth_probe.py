@@ -79,14 +79,12 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.ANTIGRAVITY: "agy",
 }
 
-# agy has no non-mutating status verb, and — unlike the other CLIs — when its
-# Antigravity OAuth session is dead it does NOT error-and-exit in non-interactive
-# ``-p`` mode. It drops into an interactive re-login prompt and HANGS with zero
-# output until killed (observed: 24 min, the full first-byte watchdog). So for
-# agy a probe that reaches its timeout is the authoritative "logged out" signal,
-# not a transient hiccup. We actively probe with a trivial prompt the live
-# backend answers in ~3-10s; a healthy agy returns well under the ceiling, a
-# wedged one runs to it and is classified EXPIRED (launch-gating).
+# agy has no non-mutating status verb, and — unlike the other CLIs — a dead
+# Antigravity OAuth session in ``-p`` mode does NOT error-and-exit: it drops into
+# an interactive re-login prompt and HANGS at zero output until killed (observed
+# 24 min). So a probe that reaches its timeout is the authoritative "logged out"
+# signal. Probe actively with a trivial prompt (healthy ~3-10s); a wedged agy runs
+# to the ceiling and is classified EXPIRED (launch-gating).
 _ANTIGRAVITY_PROBE_PROMPT = "Reply with the single word OK and nothing else."
 
 # Generous so a cold agy (language-server + model spin-up) never false-trips:
@@ -94,12 +92,11 @@ _ANTIGRAVITY_PROBE_PROMPT = "Reply with the single word OK and nothing else."
 # genuinely wedged (logged-out) agy.
 ANTIGRAVITY_PROBE_TIMEOUT_S = 45.0
 
-# Output markers indicating the backend is NOT authenticated / the cached
-# session is dead (matched case-insensitively against stdout+stderr) live in the
-# single ``error_markers`` registry as ``PROBE_NOT_AUTHED_MARKERS``, imported
-# above. They include the Codex TTL-expiry signatures so the same vocabulary
-# that classifies a mid-run hang (ErrorClass.AUTH) also classifies this
-# pre-launch probe.
+# Not-authenticated / dead-session markers (matched case-insensitively against
+# stdout+stderr) live in the single ``error_markers`` registry as
+# ``PROBE_NOT_AUTHED_MARKERS`` (imported above). They include the Codex TTL-expiry
+# signatures so the same vocabulary classifying a mid-run hang (ErrorClass.AUTH)
+# also classifies this pre-launch probe.
 
 
 @dataclass(frozen=True)

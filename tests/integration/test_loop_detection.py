@@ -87,14 +87,11 @@ async def test_loop_detection_escalates_after_threshold(tmp_path: Path) -> None:
                     break
                 await asyncio.sleep(0.1)
 
-            # The loop should have paused due to loop detection escalation
             assert not orch._pause_event.is_set(), (
                 "Loop should pause after escalate_after consecutive failures"
             )
-            # Should have executed some plays before pausing
             assert call_count >= 1
 
-            # Clean shutdown
             orch._stop_requested = True
             orch._pause_event.set()
             await asyncio.wait_for(task, timeout=5.0)
@@ -159,7 +156,6 @@ async def test_loop_detection_does_not_trigger_on_mixed_types(tmp_path: Path) ->
         async with orch:
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
-    # All 5 plays should have run without a loop-detection pause
     assert call_count == 5
-    # Loop should NOT have been paused (pause_event still set from resume)
+    # pause_event still set (from resume) means the loop detector never fired.
     assert orch._pause_event.is_set()

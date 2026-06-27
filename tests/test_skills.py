@@ -44,7 +44,6 @@ class TestInstallSkills:
         second = install_skills(tmp_path)
         # Second call should return empty (already up-to-date, same version).
         assert isinstance(second, list)
-        # No error either way.
 
     def test_install_skills_returns_list_of_skill_names(self, tmp_path: Path) -> None:
         """Return value is a sorted list of skill name strings."""
@@ -52,7 +51,6 @@ class TestInstallSkills:
         assert isinstance(installed, list)
         for name in installed:
             assert isinstance(name, str)
-        # Sorted invariant.
         assert installed == sorted(installed)
 
     def test_uninstall_removes_installed_skills(self, tmp_path: Path) -> None:
@@ -133,8 +131,7 @@ class TestInstallSkillFolders:
 
         script = project / ".agents" / "skills" / "fake-skill" / "scripts" / "detect.sh"
         assert script.is_file()
-        # Windows has no POSIX exec bit (scripts run via bash regardless), so the
-        # exec-mode guarantee only applies off-Windows.
+        # Windows has no POSIX exec bit (scripts run via bash); guarantee is off-Windows only.
         if not sys.platform.startswith("win"):
             assert script.stat().st_mode & stat.S_IXUSR, "exec bit not preserved"
 
@@ -258,7 +255,6 @@ class TestVersionHelpers:
         stamped = _stamp_version(text)
         ver = _parse_agentshore_version(stamped)
         assert ver is not None
-        # Should now be the current package version.
         from agentshore import __version__
 
         assert ver == __version__
@@ -326,8 +322,7 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "bd create task" in text
     assert '"type": "design_audit"' in text
     assert "unresolved_gaps" in text
-    # Every counted gap must carry a tracker — the prompt must state the count
-    # invariant the validator enforces (no bare "found but unfiled" gaps).
+    # Every counted gap needs a tracker — no bare "found but unfiled" gaps.
     assert 'There is no "found but unfiled" state.' in text
     assert "gaps_found == len(gap_issue_numbers)" in text
 

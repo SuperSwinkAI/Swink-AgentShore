@@ -17,17 +17,15 @@ if TYPE_CHECKING:
 # Consecutive take_break failures after which END_AGENT is unmasked.
 BREAK_RECOVERY_FAILURE_LIMIT = 2
 
-# Single source of truth for loop-produced take_break recovery: which error
-# classes are recoverable, and the take_break OverrideKind each routes to. Crash,
-# auth, invalid-model, and timeout classes are intentionally absent (they fall to
-# the END_AGENT path, no take_break). The NO_OP class rides its own kind so the
-# take_break it triggers is distinctly labelled (agent_noop_break_enqueued) and
-# never confused with a real quota/rate-limit in telemetry (desktop no-op
-# resilience).
+# Single source of truth for loop-produced take_break recovery: recoverable
+# error class → take_break OverrideKind. Crash/auth/invalid-model/timeout are
+# intentionally absent (they fall to END_AGENT, no take_break). NO_OP rides its
+# own kind so its take_break is labelled distinctly (agent_noop_break_enqueued)
+# and not confused with a real quota/rate-limit in telemetry.
 #
-# This map's KEY SET is asserted equal to ``state.RECOVERABLE_ERROR_CLASSES`` in
-# tests/test_recovery_routing.py, so a class can never be recoverable-for-
-# eligibility but unroutable here (the CODEX_ROLLOUT drift this collapse fixes).
+# KEY SET is asserted equal to ``state.RECOVERABLE_ERROR_CLASSES`` in
+# tests/test_recovery_routing.py — a class can't be recoverable-for-eligibility
+# but unroutable here (fixes the CODEX_ROLLOUT drift).
 _RECOVERY_OVERRIDE_KIND: dict[ErrorClass, OverrideKind] = {
     ErrorClass.RATE_LIMIT: OverrideKind.RATE_LIMIT_RECOVERY,
     ErrorClass.UNKNOWN: OverrideKind.UNKNOWN_ERROR_RECOVERY,
@@ -36,7 +34,7 @@ _RECOVERY_OVERRIDE_KIND: dict[ErrorClass, OverrideKind] = {
     ErrorClass.NO_OP: OverrideKind.NOOP_RECOVERY,
 }
 
-# Per-kind structured log event emitted when a take_break override is enqueued.
+# Per-kind log event emitted when a take_break override is enqueued.
 _RECOVERY_EVENT: dict[OverrideKind, str] = {
     OverrideKind.RATE_LIMIT_RECOVERY: "rate_limit_recovery_enqueued",
     OverrideKind.UNKNOWN_ERROR_RECOVERY: "unknown_error_recovery_enqueued",
@@ -53,9 +51,7 @@ class RecoveryTracker:
         self._unknown_error_recovery_enqueued: set[str] = set()
         self._noop_recovery_enqueued: set[str] = set()
 
-    # ------------------------------------------------------------------
     # Rate-limit-recovery latch
-    # ------------------------------------------------------------------
 
     def is_rate_limit_enqueued(self, agent_id: str) -> bool:
         return agent_id in self._rate_limit_recovery_enqueued
@@ -66,9 +62,7 @@ class RecoveryTracker:
     def clear_rate_limit_enqueued(self, agent_id: str) -> None:
         self._rate_limit_recovery_enqueued.discard(agent_id)
 
-    # ------------------------------------------------------------------
     # Unknown-error-recovery latch (distinct path from rate-limit, #23/#24)
-    # ------------------------------------------------------------------
 
     def is_unknown_error_enqueued(self, agent_id: str) -> bool:
         return agent_id in self._unknown_error_recovery_enqueued
@@ -79,9 +73,7 @@ class RecoveryTracker:
     def clear_unknown_error_enqueued(self, agent_id: str) -> None:
         self._unknown_error_recovery_enqueued.discard(agent_id)
 
-    # ------------------------------------------------------------------
     # No-op-recovery latch (clean-exit empty no-op → standard take_break)
-    # ------------------------------------------------------------------
 
     def is_noop_enqueued(self, agent_id: str) -> bool:
         return agent_id in self._noop_recovery_enqueued
@@ -92,9 +84,7 @@ class RecoveryTracker:
     def clear_noop_enqueued(self, agent_id: str) -> None:
         self._noop_recovery_enqueued.discard(agent_id)
 
-    # ------------------------------------------------------------------
     # take_break consecutive-failure counter
-    # ------------------------------------------------------------------
 
     def clear_break_failures(self, agent_id: str) -> None:
         self._break_recovery_failures.pop(agent_id, None)
@@ -108,9 +98,7 @@ class RecoveryTracker:
     def break_failure_count(self, agent_id: str) -> int:
         return self._break_recovery_failures.get(agent_id, 0)
 
-    # ------------------------------------------------------------------
     # Error-recovery enqueueing (folded from completion.py)
-    # ------------------------------------------------------------------
 
     def maybe_enqueue_error_recovery(
         self,
@@ -138,9 +126,8 @@ class RecoveryTracker:
             return
         error_class = getattr(handle, "last_error_class", None)
 
-        # ``ec == error_class`` membership (not ``.get``) so a bare-string
-        # ``last_error_class`` resolves the same way the old frozenset ``in``
-        # checks did (ErrorClass is a StrEnum).
+        # ``ec == error_class`` (not ``.get``) so a bare-string last_error_class
+        # resolves like the old frozenset ``in`` checks (ErrorClass is a StrEnum).
         kind = next((k for ec, k in _RECOVERY_OVERRIDE_KIND.items() if ec == error_class), None)
         if kind is None:
             # Not a recovery-eligible class (auth, invalid_model, crash_*,
@@ -185,9 +172,7 @@ class RecoveryTracker:
             error_class=error_class,
         )
 
-    # ------------------------------------------------------------------
     # State / observation read
-    # ------------------------------------------------------------------
 
     def recovery_exhausted_agent_ids(self, agents: Iterable[AgentSnapshot]) -> frozenset[str]:
         """Agents whose take_break failures have reached the END_AGENT-unmask limit."""

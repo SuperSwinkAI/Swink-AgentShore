@@ -34,11 +34,6 @@ def _budget_snapshot(*, time_total: int = 60, elapsed: float = 15.0) -> Any:
     return _projector().build_budget_snapshot(3, 1.25, budget_cfg=cfg, elapsed_minutes=elapsed)
 
 
-# --------------------------------------------------------------------------- #
-# serializer
-# --------------------------------------------------------------------------- #
-
-
 def test_serialize_budget_update_wraps_budget_with_time_fields() -> None:
     snap = _budget_snapshot(time_total=60, elapsed=15.0)
     payload = serialize_budget_update(snap)
@@ -47,11 +42,6 @@ def test_serialize_budget_update_wraps_budget_with_time_fields() -> None:
     assert isinstance(budget, dict)
     assert budget["time_remaining_minutes"] == pytest.approx(45.0)
     assert budget["time_enabled"] is True
-
-
-# --------------------------------------------------------------------------- #
-# IpcStateProvider
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
@@ -69,8 +59,7 @@ async def test_provider_emits_budget_update_event_not_state() -> None:
     writer.write_state.assert_not_awaited()
     server.set_cached_state.assert_not_called()
     writer.append_event.assert_awaited_once()
-    # Wire envelope nests the payload under "payload"; the dashboard client
-    # (ws.ts) flattens it before the app sees it.
+    # Wire envelope nests under "payload"; the dashboard client (ws.ts) flattens it.
     msg = json.loads(writer.append_event.await_args.args[0])
     assert msg["type"] == "budget_update"
     assert msg["payload"]["session_id"] == "sess-7"
@@ -79,7 +68,7 @@ async def test_provider_emits_budget_update_event_not_state() -> None:
 
 @pytest.mark.asyncio
 async def test_null_provider_budget_update_is_noop() -> None:
-    await NullStateProvider().on_budget_update(_budget_snapshot())  # must not raise
+    await NullStateProvider().on_budget_update(_budget_snapshot())
 
 
 def test_make_message_budget_update_roundtrips() -> None:
@@ -89,9 +78,7 @@ def test_make_message_budget_update_roundtrips() -> None:
     assert "budget" in msg["payload"]
 
 
-# --------------------------------------------------------------------------- #
 # StateBuilder.current_budget_snapshot — recompute from cache + fresh clock
-# --------------------------------------------------------------------------- #
 
 
 def _state_builder_stub(
@@ -119,7 +106,7 @@ def test_current_budget_snapshot_none_without_time_cap() -> None:
 def test_current_budget_snapshot_recomputes_time_from_fresh_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # loop started at monotonic=100; "now" is 100 + 30min so 30 of 120 elapsed.
+    # Loop started at monotonic=100; "now" = 100 + 30min, so 30 of 120 elapsed.
     stub = _state_builder_stub(inputs=(5, 2.0), time_enabled=True, loop_started_at=100.0)
     monkeypatch.setattr("agentshore.core.mixins.state.time.monotonic", lambda: 100.0 + 30 * 60)
     snap = StateBuilder.current_budget_snapshot(stub)  # type: ignore[arg-type]

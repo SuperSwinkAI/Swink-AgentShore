@@ -15,7 +15,7 @@ import {
   type Phase,
 } from "../views/kanban/phase";
 
-// --- Constants (mirror render.ts) ---
+// Constants mirror render.ts.
 
 const EPIC_HUES: number[] = [
   232, 38, 286, 210, 195, 0, 100, 220, 142, 322, 30, 260,
@@ -29,7 +29,7 @@ const PHASE_BULLET_COLOR: Record<Phase, string> = {
   done: "var(--color-fm-ok)",
 };
 
-// --- Helpers (mirror render.ts/detailModal.ts) ---
+// Helpers mirror render.ts/detailModal.ts.
 
 function hueForEpic(
   epicId: string | null | undefined,
@@ -200,7 +200,7 @@ function copyText(value: string | number | null | undefined): void {
   void navigator.clipboard.writeText(String(value)).catch(() => undefined);
 }
 
-// --- Module-level listener registry (TopBarHud pattern) ---
+// Module-level listener registry (TopBarHud pattern).
 
 interface KanbanInsets {
   top: number;
@@ -261,8 +261,6 @@ function useKanbanInternalState(): KanbanInternalState {
   }, []);
   return state;
 }
-
-// --- Card key/data computation ---
 
 interface ResolvedCard {
   cardId: string;
@@ -338,8 +336,6 @@ function resolveCardsForPhase(
   });
 }
 
-// --- Detail modal state ---
-
 interface DetailModalState {
   card: KanbanCard;
   phase: Phase;
@@ -347,8 +343,6 @@ interface DetailModalState {
   tags: string;
   returnFocus: HTMLElement | null;
 }
-
-// --- Card subcomponent ---
 
 interface KanbanCardButtonProps {
   resolved: ResolvedCard;
@@ -444,8 +438,6 @@ function KanbanCardButton({
   );
 }
 
-// --- Detail modal subcomponent ---
-
 interface IssueDetailModalProps {
   detail: DetailModalState | null;
   onClose: () => void;
@@ -535,7 +527,7 @@ function IssueDetailModal({
   const closeBtnRef = React.useRef<HTMLButtonElement | null>(null);
   const visible = detail !== null;
 
-  // Focus the close button when the modal becomes visible and wire ESC handler.
+  // Focus close button on open; wire ESC-to-close.
   React.useEffect(() => {
     if (!visible) return;
     closeBtnRef.current?.focus();
@@ -869,8 +861,6 @@ function IssueDetailModalPortal({
   );
 }
 
-// --- Main component ---
-
 function buildColumns(
   state: StateUpdate | null,
 ): { columns: KanbanColumns; graph: ProjectGraph | null } {
@@ -896,9 +886,8 @@ export default function KanbanStage(): React.ReactElement | null {
   const { columns, graph } = buildColumns(internal.state);
   const epicIds = (graph?.epics ?? []).map((epic) => epic.bead_id);
 
-  // Piece C: open PRs hidden by the target-branch filter (base != target_branch).
-  // Surfaced as a small header badge so the filtered PRs are accounted for
-  // without cluttering the board with out-of-scope cards.
+  // Open PRs hidden by the target-branch filter (base != target_branch),
+  // surfaced as a header badge so they're accounted for without cluttering the board.
   const hiddenPrCount =
     internal.state?.work_availability?.pull_requests_hidden_count ?? 0;
 
@@ -943,9 +932,8 @@ export default function KanbanStage(): React.ReactElement | null {
     boardStyle.bottom = `${internal.insets.bottom}px`;
   }
 
-  // The imperative module renders the kanban inside an outer "stage" element
-  // whose `hidden` flag controls visibility. We reproduce that with a wrapping
-  // div + `hidden` attribute so the same CSS rules apply.
+  // Reproduce the imperative module's outer "stage" wrapper (div + `hidden`)
+  // so the same visibility CSS rules apply.
   return (
     <>
       <div hidden={!internal.visible}>

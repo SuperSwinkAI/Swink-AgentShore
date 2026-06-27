@@ -179,9 +179,8 @@ def test_idle_sidecar_rss_under_warning_band(capsys: pytest.CaptureFixture[str])
     child = _spawn_sidecar()
     try:
         _send_handshake(child)
-        # Give Python a moment to reach steady-state allocation after the
-        # handshake reply. Without this the RSS undercounts because some
-        # imports are still resolving.
+        # Let allocation reach steady-state; RSS undercounts while imports
+        # are still resolving.
         time.sleep(0.5)
         rss_kb = _read_rss_kb(child.pid)
     finally:
@@ -242,8 +241,7 @@ def test_active_sidecar_rss_under_warning_band(
     orchestrator integration lands and agents are spawned, this test
     will widen to include their RSS.
     """
-    # Project skeleton the session.start preparation will accept:
-    # agentshore.yaml present + .beads/ directory present.
+    # session.start accepts a skeleton with agentshore.yaml + .beads/ present.
     project_path = tmp_path / "nfr-project"
     project_path.mkdir()
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")

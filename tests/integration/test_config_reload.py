@@ -31,7 +31,6 @@ async def test_config_is_replaceable() -> None:
     assert new_cfg.budget.total == 20.0
     assert cfg.budget.total == 0.0  # original unchanged (frozen)
 
-    # Nested replacement also works
     new_cfg2 = dataclasses.replace(
         cfg,
         session=SessionConfig(max_plays=42),

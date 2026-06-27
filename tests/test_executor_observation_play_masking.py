@@ -44,9 +44,8 @@ def _make_play(play_type: PlayType, skill_name: str) -> MagicMock:
     play.preconditions = MagicMock(return_value=[])
     play.estimated_cost = MagicMock(return_value=0.05)
     play.execute = AsyncMock()
-    # Declarative behavior flags read off the Play by the executor; a bare
-    # MagicMock yields truthy mocks, so pin real bools (these plays are neither
-    # observation nor requeueable → selection rejection is a staffing skip).
+    # Bare MagicMock yields truthy flags; pin real bools so selection rejection
+    # is a staffing skip (these plays aren't observation/requeueable).
     play.authors_prs = False
     play.retarget_pr_base = False
     play.is_handoff = False

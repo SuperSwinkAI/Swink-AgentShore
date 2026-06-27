@@ -57,9 +57,7 @@ async def test_dispatch_unknown_command_ignored() -> None:
     await _dispatch_command({"command": "unknown_future_command"}, orch)
 
 
-# ---------------------------------------------------------------------------
 # Tests for previously-silent commands (issue #6)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()

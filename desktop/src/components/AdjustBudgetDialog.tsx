@@ -166,6 +166,16 @@ export function AdjustBudgetDialog({
           </p>
         )}
 
+        {selection === null && loadError === null && !locked && (
+          <p
+            className={styles.loading}
+            role="status"
+            data-testid="adjust-budget-loading"
+          >
+            Loading current budget…
+          </p>
+        )}
+
         {selection !== null && (
           <div className={styles.body}>
             <CapSliderPanel

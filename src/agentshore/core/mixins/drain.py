@@ -31,16 +31,15 @@ if TYPE_CHECKING:
     from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.state import (
+        BudgetSnapshot,
         OrchestratorState,
     )
 
 
 SHUTDOWN_GRACE_PERIOD_SECONDS = 5.0
 
-# How often the bounded graceful-drain watchdog (#180) re-checks the deadline.
-# Mirrors ``_LOOP_LIVENESS_CHECK_INTERVAL_SECONDS`` in loop.py: a coarse poll is
-# fine because the deadline is a coarse (minutes-scale) backstop, and a short
-# interval keeps the escalation prompt once the deadline passes.
+# Watchdog (#180) deadline re-check interval. Coarse poll suffices — the
+# deadline is a minutes-scale backstop.
 _GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS = 15.0
 
 
@@ -98,14 +97,11 @@ class DrainController:
         self._session_id = session_id
         self._repo_root = repo_root
         self._state_builder = state_builder
-        # One-shot guard for the drain-complete defensive-visibility warning
-        # (``_on_drain_complete``) so it can never double-emit within a session.
+        # One-shot guard so ``_on_drain_complete`` can never double-emit per session.
         self._drain_complete_warned = False
-        # Bounded graceful-drain watchdog task (#180). Launched once when the
-        # graceful drain begins; escalates to the bounded hard stop if the drain
-        # has not completed within ``feedback.graceful_drain_timeout_seconds``.
-        # Runs OFF the core loop (like the loop-liveness watchdog) so a drain
-        # whose single in-flight play never finishes still gets reaped.
+        # Bounded graceful-drain watchdog (#180): escalates to the hard stop if
+        # drain exceeds ``feedback.graceful_drain_timeout_seconds``. Runs OFF the
+        # core loop so a drain whose only in-flight play never finishes is reaped.
         self._graceful_drain_watchdog_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
@@ -203,10 +199,8 @@ class DrainController:
         )
         self._runtime.pause_event.set()
         _logger.info("session_draining", reason=reason, session_id=self._session_id)
-        # Arm the bounded graceful-drain deadline (#180): if the drain has not
-        # completed within the configured timeout the watchdog escalates to the
-        # bounded hard stop, so a stuck in-flight play can no longer hang
-        # ``agentshore stop`` for hours.
+        # Arm the bounded graceful-drain deadline (#180) so a stuck in-flight
+        # play can no longer hang ``agentshore stop`` for hours.
         self._start_graceful_drain_watchdog()
 
     def graceful_drain_timeout_seconds(self) -> float | None:
@@ -291,9 +285,8 @@ class DrainController:
                     "bounded hard stop (cancelling in-flight plays)"
                 ),
             )
-            # Drive the bounded teardown directly. ``stop`` is re-entrancy safe
-            # and shielded; it bounds the in-flight wait by the shutdown grace
-            # period, so this cannot itself hang.
+            # ``stop`` is re-entrancy safe and shielded, and bounds the in-flight
+            # wait by the shutdown grace period, so it cannot itself hang.
             await self._host._safe_call(self.stop(), "graceful_drain_deadline_stop")
             return
 
@@ -301,9 +294,7 @@ class DrainController:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
         await self.stop()
 
-    # ------------------------------------------------------------------
     # Live budget control (Feature B: #41 sidecar RPC, #42 CLI add-budget)
-    # ------------------------------------------------------------------
 
     async def set_budget(
         self,
@@ -397,12 +388,23 @@ class DrainController:
         return await self._apply_and_publish(resumed=resumed)
 
     async def current_budget(self) -> dict[str, object]:
-        """Return the live-effective caps + spend/remaining (prefill/echo)."""
-        state = await self._state_builder.build_state()
-        # A pure read never resumes/reverses anything.
-        return self._applied_from_state(state, resumed=False)
+        """Return the live-effective caps + spend/remaining (prefill/echo).
 
-    # --- live-budget helpers ----------------------------------------------
+        Genuinely side-effect-free: builds *only* the budget snapshot via the
+        cheap single-query aggregate (:meth:`StateBuilder.build_budget_only`)
+        rather than a full :meth:`build_state`. The old path rebuilt the entire
+        authoritative state — a ten-read DB fan-out plus a beads graph load — and
+        ran ``build_state``'s mutating helpers (``abandon_work_for_missing_agents``
+        / ``release_claims_for_prolonged_idle_agents``) on what is documented as a
+        pure read. Under a busy session that prefill stalled long enough for the
+        desktop "Adjust Budget…" dialog to look hung (#281); the lightweight read
+        never abandons work or releases claims.
+        """
+        budget = await self._state_builder.build_budget_only()
+        # A pure read never resumes/reverses anything.
+        return self._applied_from_budget(budget, resumed=False)
+
+    # live-budget helpers
 
     @staticmethod
     def _validate_dollar(enabled: bool, dollars: float | None) -> None:
@@ -457,7 +459,12 @@ class DrainController:
     def _applied_from_state(
         state: OrchestratorState, *, resumed: bool = False
     ) -> dict[str, object]:
-        b = state.budget
+        return DrainController._applied_from_budget(state.budget, resumed=resumed)
+
+    @staticmethod
+    def _applied_from_budget(
+        b: BudgetSnapshot | None, *, resumed: bool = False
+    ) -> dict[str, object]:
         if b is None:
             return {"resumed": resumed}
         remaining = (
@@ -563,7 +570,7 @@ class DrainController:
         self._runtime.pause_reason = None
         if not self._runtime.drain_initialized:
             self._runtime.stop_reason = "stop_requested"
-        self._runtime.pause_event.set()  # Wake loop if paused so it can check _stop_requested
+        self._runtime.pause_event.set()  # wake paused loop to recheck _stop_requested
         completion_idle = self._runtime.completion_processing_idle
         # Invariant: once ``stopped`` is committed above, ``do_stop`` MUST run — it
         # is the only path that cancels in-flight agents, checkpoints the WAL,
@@ -638,7 +645,6 @@ class DrainController:
             self._runtime.power_assertion.release()
         _logger.info("shutdown_step", step="power_assertion_release", elapsed_ms=_ms(t))
 
-        # Drain any in-flight plays
         t = time.perf_counter()
         n_pending_after = 0
         if self._runtime.in_flight:
@@ -711,7 +717,6 @@ class DrainController:
             count=reset_count,
         )
 
-        # Compute final alignment from beads graph global closure ratio
         t = time.perf_counter()
         final_alignment = 0.0
         try:
@@ -791,12 +796,10 @@ class DrainController:
         )
 
         if end_session_report_path is not None and self._runtime.end_session_report_open_browser:
-            # Embedded mode (issue #561): the desktop shell renders the ESR
-            # in-app at ``/session/esr``. Skip ``webbrowser.open`` — opening
-            # Safari/Chrome here yanks the user out of the app at the exact
-            # moment they're about to start the next session. Instead fire
-            # the registered esr_ready callback so the sidecar can emit a
-            # ``$/esr_ready`` JSON-RPC notification to the Tauri shell.
+            # Embedded mode (#561): desktop shell renders the ESR in-app at
+            # ``/session/esr``. Skip ``webbrowser.open`` (it yanks the user out
+            # of the app right before the next session); fire the esr_ready
+            # callback so the sidecar emits ``$/esr_ready`` to the Tauri shell.
             esr_callback = self._runtime.esr_ready_callback
             if self._runtime.embedded_mode:
                 if esr_callback is not None:

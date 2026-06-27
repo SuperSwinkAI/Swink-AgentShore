@@ -113,9 +113,7 @@ def test_existing_config_without_model_tiers_prompts_agent_selection() -> None:
     assert _needs_interactive_agent_selection(cfg, config_created=False)
 
 
-# ---------------------------------------------------------------------------
 # 1. Agent mode auto-selects a socket
-# ---------------------------------------------------------------------------
 
 
 def test_agent_mode_auto_selects_socket(
@@ -282,8 +280,7 @@ def test_start_rejects_existing_session_without_overwriting_pid(
     pid_path.parent.mkdir(parents=True)
     pid_path.write_text("12345", encoding="utf-8")
 
-    # Liveness goes through _process_alive (not a bare os.kill, which is
-    # CTRL_C_EVENT on Windows) — mock it so the recorded PID reads as alive.
+    # Liveness uses _process_alive, not bare os.kill (CTRL_C_EVENT on Windows).
     monkeypatch.setattr(sp, "_process_alive", lambda pid: pid == 12345)
 
     result = runner.invoke(main, ["start", "--project", str(repo), "--headless"])
@@ -323,9 +320,7 @@ def test_start_runtime_error_cleans_session_metadata(
     assert not sp.session_socket_path(repo).exists()
 
 
-# ---------------------------------------------------------------------------
 # 2. Agent mode creates IPC server (test _run_agent_mode directly)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
@@ -368,9 +363,7 @@ async def test_agent_mode_creates_server(tmp_path: Path) -> None:
     assert mock_boot.await_args.kwargs["session_id"] == "sess-cli"
 
 
-# ---------------------------------------------------------------------------
 # 3. TUI mode creates OrchestratorApp (via CLI dispatch)
-# ---------------------------------------------------------------------------
 
 
 def test_tui_mode_creates_app(runner: CliRunner, tmp_path: Path) -> None:
@@ -420,9 +413,7 @@ def test_tui_flag_conflicts_with_agent_mode(runner: CliRunner) -> None:
     assert "--tui cannot be combined with --mode agent" in result.output
 
 
-# ---------------------------------------------------------------------------
 # 4-6. Command dispatch tests via _dispatch_command
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
@@ -548,8 +539,8 @@ def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
     """No deadline: the wait polls across many ticks until the process exits."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        # Liveness is probed via _process_alive (never os.kill(pid, 0), which is
-        # CTRL_C_EVENT on Windows): alive for several polls, then it exits.
+        # Liveness via _process_alive (never os.kill(pid, 0) = CTRL_C_EVENT on
+        # Windows): alive for several polls, then it exits.
         patch(
             "agentshore.session_path._process_alive",
             side_effect=[True, True, True, False],
@@ -635,9 +626,7 @@ def test_stop_hard_skips_end_session_report(runner: CliRunner, tmp_path: Path) -
     assert "AgentShore session force-stopped." in result.output
 
 
-# ---------------------------------------------------------------------------
 # 7. Server stopped on exit (finally block)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
@@ -652,7 +641,6 @@ async def test_agent_mode_server_stopped_on_exit(tmp_path: Path) -> None:
     mock_orch = MagicMock()
     mock_orch.__aenter__ = AsyncMock(return_value=mock_orch)
     mock_orch.__aexit__ = AsyncMock(return_value=False)
-    # Simulate an error during run_until_idle
     mock_orch.run_until_idle = AsyncMock(side_effect=RuntimeError("boom"))
     mock_orch.stop = AsyncMock()
 
@@ -672,13 +660,11 @@ async def test_agent_mode_server_stopped_on_exit(tmp_path: Path) -> None:
                 policy_mode=PolicyMode.LEARNING,
             )
 
-    # Even though run_until_idle raised, server.stop must be called
+    # server.stop must run even though run_until_idle raised.
     mock_server.stop.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
 # 8. Phase 2 warning removed
-# ---------------------------------------------------------------------------
 
 
 def test_phase2_warning_removed(
@@ -732,9 +718,7 @@ def test_start_cleanup_stops_recorded_dashboard_process(
     stop_dash.assert_called_once_with(repo)
 
 
-# ---------------------------------------------------------------------------
 # 9. Auto-discovery for `agentshore dashboard` and `--socket` registration
-# ---------------------------------------------------------------------------
 
 
 def test_explicit_socket_override_writes_session_info_and_symlink(
@@ -842,7 +826,7 @@ def test_dashboard_auto_discovers_socket_for_project(
         sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
-    # Pretend a session is running by writing a live PID and the socket file.
+    # Fake a running session: live PID + socket file.
     monkeypatch.setattr(sp.os, "kill", lambda pid, sig: None)
     sp.write_pid(project)
     sock_path = sp.session_socket_path(project)
@@ -967,9 +951,7 @@ def test_dashboard_ipc_host_requires_ipc_port(runner: CliRunner, tmp_path: Path)
     assert "--ipc-host requires --ipc-port" in result.output
 
 
-# ---------------------------------------------------------------------------
 # New drain-audit tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()

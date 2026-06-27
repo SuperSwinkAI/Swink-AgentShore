@@ -98,7 +98,6 @@ def test_parse_reports_missing_success_envelope_distinctly() -> None:
     assert result.error is not None
     # Shared prefix preserved so the JSON-retry trigger still fires.
     assert "no valid result block" in result.error
-    # Distinct wording naming the actual defect.
     assert "no top-level boolean 'success' field" in result.error
 
 
@@ -130,8 +129,7 @@ def test_parse_reports_long_output_with_no_json() -> None:
     assert result.error is not None
     assert f"{len(output)} chars but no JSON result block" in result.error
     assert "tail:" in result.error
-    # Tail of the agent output should appear in the error so operators can
-    # diagnose the failure mode from the play_completed log line alone.
+    # Tail must surface in error so operators can diagnose from the log line alone.
     assert "Inspect the uv.lock diff first" in result.error
 
 
@@ -396,3 +394,183 @@ def test_parse_extracts_review_patterns() -> None:
         {"pattern": "missing regression test", "category": "testing", "frequency": 2},
         {"pattern": "tighten type annotations", "category": "typing"},
     ]
+
+
+# learnings extraction — Bug B
+
+
+def test_parse_extracts_learnings_list() -> None:
+    """Top-level ``learnings`` array is normalized onto SkillResult.learnings."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"pattern": "always run ruff before committing", "confidence": 0.8, "category": "workflow"},
+        {"pattern": "prefer asyncio.to_thread for blocking I/O", "confidence": 0.7, "category": "async"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 2
+    assert result.learnings[0] == {
+        "pattern": "always run ruff before committing",
+        "confidence": 0.8,
+        "category": "workflow",
+    }
+    assert result.learnings[1] == {
+        "pattern": "prefer asyncio.to_thread for blocking I/O",
+        "confidence": 0.7,
+        "category": "async",
+    }
+
+
+def test_parse_learnings_defaults_to_empty() -> None:
+    """A result block without a ``learnings`` key yields an empty list, not None."""
+    output = '{"success": true, "artifacts": []}'
+    result = parse_skill_result(output)
+    assert result.learnings == []
+
+
+def test_parse_learnings_drops_non_dict_entries() -> None:
+    """Non-dict items in ``learnings`` are silently dropped."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        "not a dict",
+        42,
+        {"pattern": "valid entry", "confidence": 0.6, "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["pattern"] == "valid entry"
+
+
+def test_parse_learnings_drops_entries_without_pattern() -> None:
+    """Dict entries missing a ``pattern`` key or with an empty pattern are dropped."""
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"confidence": 0.5, "category": "general"},
+        {"pattern": "", "confidence": 0.5, "category": "general"},
+        {"pattern": "keeper", "confidence": 0.5, "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["pattern"] == "keeper"
+
+
+def test_parse_learnings_defaults_confidence_on_bad_value() -> None:
+    """A non-numeric confidence falls back to DEFAULT_LEARNING_CONFIDENCE."""
+    from agentshore.core.learnings_harvester import DEFAULT_LEARNING_CONFIDENCE
+
+    output = """
+    {
+      "success": true,
+      "artifacts": [],
+      "learnings": [
+        {"pattern": "test pattern", "confidence": "high", "category": "general"}
+      ]
+    }
+    """
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 1
+    assert result.learnings[0]["confidence"] == DEFAULT_LEARNING_CONFIDENCE
+
+
+def test_parse_learnings_caps_at_ten() -> None:
+    """At most 10 learnings are extracted even if the agent emits more."""
+    import json as _json
+
+    learning_entries = [
+        {"pattern": f"pattern-{i}", "confidence": 0.5, "category": "general"} for i in range(15)
+    ]
+    output = _json.dumps({"success": True, "artifacts": [], "learnings": learning_entries})
+    result = parse_skill_result(output)
+    assert len(result.learnings) == 10
+
+
+def test_parse_learnings_non_list_treated_as_empty() -> None:
+    """A ``learnings`` value that is not a list is safely ignored."""
+    output = '{"success": true, "artifacts": [], "learnings": "not a list"}'
+    result = parse_skill_result(output)
+    assert result.learnings == []
+
+
+# learnings_compacted (groom re-distillation, wholesale replace)
+
+
+def test_parse_learnings_compacted_normalizes_entries() -> None:
+    """``learnings_compacted`` items normalize to {pattern, category, merged_from};
+    the agent's confidence is ignored, merged_from preserved."""
+    import json as _json
+
+    output = _json.dumps(
+        {
+            "success": True,
+            "artifacts": [],
+            "learnings_compacted": [
+                {
+                    "pattern": "merged insight",
+                    "category": "conventions",
+                    "confidence": 0.99,  # ignored
+                    "merged_from": ["id-a", "id-b"],
+                }
+            ],
+        }
+    )
+    result = parse_skill_result(output)
+    assert len(result.learnings_compacted) == 1
+    entry = result.learnings_compacted[0]
+    assert entry == {
+        "pattern": "merged insight",
+        "category": "conventions",
+        "merged_from": ["id-a", "id-b"],
+    }
+    assert "confidence" not in entry
+
+
+def test_parse_learnings_compacted_defaults_and_drops() -> None:
+    """Missing category defaults to 'general'; non-str merged_from ids and
+    pattern-less / non-dict entries are dropped; merged_from defaults to []."""
+    import json as _json
+
+    output = _json.dumps(
+        {
+            "success": True,
+            "artifacts": [],
+            "learnings_compacted": [
+                "not a dict",
+                {"category": "x"},  # no pattern
+                {"pattern": "", "merged_from": ["a"]},  # empty pattern
+                {"pattern": "keeper", "merged_from": ["ok", 7, None]},
+                {"pattern": "no-merge"},  # merged_from absent
+            ],
+        }
+    )
+    result = parse_skill_result(output)
+    assert len(result.learnings_compacted) == 2
+    assert result.learnings_compacted[0] == {
+        "pattern": "keeper",
+        "category": "general",
+        "merged_from": ["ok"],
+    }
+    assert result.learnings_compacted[1] == {
+        "pattern": "no-merge",
+        "category": "general",
+        "merged_from": [],
+    }
+
+
+def test_parse_learnings_compacted_defaults_to_empty() -> None:
+    """No ``learnings_compacted`` key yields an empty list, not None."""
+    result = parse_skill_result('{"success": true, "artifacts": []}')
+    assert result.learnings_compacted == []

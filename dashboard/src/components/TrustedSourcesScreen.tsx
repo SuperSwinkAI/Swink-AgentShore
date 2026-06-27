@@ -41,10 +41,7 @@ type ScreenAction =
 function initialState(seed: readonly string[] | undefined): ScreenState {
   const logins = seed && seed.length > 0 ? [...seed] : [];
   return {
-    // Pre-paint the hydrated seed (if any) so the rail shows the previous
-    // session's trusted sources immediately. ``loading`` stays true so the
-    // sidecar ``list()`` still runs and reconciles authoritatively — the
-    // seed is parity chrome, not a replacement for the self-load.
+    // Pre-paint seed to avoid blank flash; loading stays true so sidecar list() still reconciles authoritatively.
     logins,
     loading: true,
     error: null,

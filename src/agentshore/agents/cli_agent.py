@@ -210,11 +210,9 @@ def _build_dispatch_argv(
 
     prompt_bytes = len(prompt.encode("utf-8"))
 
-    # Clamp argv_preview to keep the log readable. The last argv element is the
-    # full skill prompt (~7 KB), and embedding it in every dispatch event bloats
-    # the orchestrator log by ~1 MB per session. The full prompt is
-    # reconstructible from the skill template plus the PlayParams that hit the
-    # dispatcher, so keep only the leading flags here.
+    # Clamp argv_preview: the last argv element is the full skill prompt (~7 KB);
+    # logging it every dispatch bloats the log ~1 MB/session. Reconstructible from
+    # skill template + PlayParams, so keep only the leading flags.
     argv_str = " ".join(argv[:10])
     if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
         truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
@@ -255,13 +253,11 @@ async def _read_output(
 
     try:
         async for line in proc.stdout:
-            # First stdout byte for this dispatch (#212). ``mark()`` runs on every
-            # line (short-circuit keeps it evaluated) but returns True only on the
-            # first; emitting here — at the transition, not at dispatch end — keeps
-            # the log event's position faithful to real first-byte time so live
-            # monitors can tell "slow to start" from "never started" and observe
-            # first-byte-deadline enforcement. ``dispatch_start`` is 0.0 only when no
-            # dispatch context was supplied (unit tests), so the guard suppresses a
+            # First stdout byte for this dispatch (#212). ``mark()`` returns True
+            # only on the first line; emitting here (at the transition, not dispatch
+            # end) keeps the event faithful to real first-byte time so monitors can
+            # tell "slow to start" from "never started". ``dispatch_start`` is 0.0
+            # only without a dispatch context (unit tests) — the guard suppresses a
             # garbage elapsed there.
             if (
                 stdout_activity is not None

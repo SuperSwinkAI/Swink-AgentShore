@@ -173,10 +173,8 @@ def list_agents(project_path: Path) -> list[AgentRow]:
     for type_raw, body_raw in sorted(agents_raw.items()):
         if not isinstance(body_raw, dict):
             continue
-        # Only surface supported agent types. A stale config may still carry a
-        # retired agent block (e.g. a legacy ``gemini:`` entry); the runtime
-        # config loader strips those on parse, but this RPC reads raw YAML, so
-        # it must apply the same allow-list as configure_agent below.
+        # Raw YAML may carry a retired agent block (e.g. legacy gemini:); the
+        # config loader strips those but this RPC reads raw, so re-apply the allow-list.
         if str(type_raw) not in _ALLOWED_AGENT_TYPES:
             continue
         enabled = body_raw.get("enabled")

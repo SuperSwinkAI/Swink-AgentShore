@@ -121,8 +121,7 @@ def test_canonical_paths_never_empty_string(tool: str, monkeypatch: pytest.Monke
         assert str(path) != "", (
             f"Empty path in _canonical_windows_paths({tool!r}) on POSIX: {candidates}"
         )
-        # Also assert no path is just a drive letter or backslash root without
-        # the expected AgentShore sub-directory (guards against partial-path bugs).
+        # Guard partial-path bugs: never a bare drive letter / root sans subdir.
         assert len(path.parts) >= 2, (
             f"Suspiciously short path in _canonical_windows_paths({tool!r}): {path}"
         )

@@ -16,11 +16,9 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
-// Shared install-layout constants (single source of truth for all path literals).
-// install_layout.rs lives in the app crate's src/ (the desktop app's sidecar code
-// also depends on it); the provisioner is a separate workspace crate, so it
-// textually includes the same file via #[path] rather than duplicating it. This
-// keeps one source of truth for every machine-path literal across both binaries.
+// Shared install-layout constants. The provisioner is a separate workspace
+// crate, so it textually includes the app crate's install_layout.rs via #[path]
+// rather than duplicating the machine-path literals.
 #[path = "../../src/install_layout.rs"]
 mod install_layout;
 
@@ -182,14 +180,10 @@ pub(crate) fn run_logged(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Force UTF-8 mode for any Python child (sidecar import, bd provisioning,
-    // timelapse). Without it the managed venv's stdout defaults to the legacy
-    // code page (cp1252 on most en-US installs), and structlog's print()
-    // crashes with UnicodeEncodeError the moment a log line carries a
-    // non-cp1252 character (e.g. winget progress glyphs folded into an error
-    // message). The desktop sidecar already sets this in sidecar_env.rs; the
-    // installer's provisioner must match so install-time logging is just as
-    // robust.
+    // Force UTF-8 for any Python child: without it the managed venv's stdout
+    // defaults to cp1252 and structlog's print() crashes with UnicodeEncodeError
+    // on the first non-cp1252 char (e.g. a winget progress glyph in an error).
+    // Mirrors sidecar_env.rs so install-time logging is just as robust.
     command.env("PYTHONUTF8", "1");
     apply_no_window_creation_flags(&mut command);
     let mut child = command.spawn().map_err(|err| {
@@ -415,13 +409,12 @@ fn is_managed_python(image_path: &[u16], len: usize) -> bool {
         .to_string_lossy()
         .to_lowercase();
 
-    // Must be named python.exe
     if !path_str.ends_with("\\python.exe") {
         return false;
     }
 
-    // Must be under the machine-wide ProgramData path or the per-user
-    // LOCALAPPDATA path that older installer revisions used.
+    // Accept the machine-wide ProgramData path or the per-user LOCALAPPDATA path
+    // that older installer revisions used.
     let programdata_prefix = std::env::var_os("ProgramData")
         .map(|v| {
             v.to_string_lossy()
@@ -461,14 +454,12 @@ fn is_managed_python(image_path: &[u16], len: usize) -> bool {
 /// `QueryFullProcessImageNameW` and does not require `SeDebugPrivilege`.
 #[cfg(windows)]
 fn terminate_pid(pid: u32) -> Result<bool, String> {
-    // Buffer sized per Windows docs: MAX_PATH is 260 but long-path names can
-    // reach 32767 UTF-16 code units. Allocate the full ceiling so we never
-    // truncate a valid path.
+    // Long-path names can reach 32767 UTF-16 code units; size to the ceiling
+    // so a valid path is never truncated.
     const MAX_IMAGE_PATH: usize = 32768;
 
     unsafe {
-        // Open with both TERMINATE and QUERY_LIMITED_INFORMATION so we can
-        // inspect the image before committing to a kill.
+        // TERMINATE + QUERY_LIMITED_INFORMATION: inspect the image before killing.
         let handle = OpenProcess(
             PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
             0,
@@ -479,9 +470,8 @@ fn terminate_pid(pid: u32) -> Result<bool, String> {
             return Ok(false);
         }
 
-        // Query the full image path. If this fails (process exited between
-        // OpenProcess and here, or any other error), do NOT kill — we can no
-        // longer verify the target.
+        // If the image path can't be queried (process exited, or any error), do
+        // NOT kill — the target can no longer be verified.
         let mut buf = [0u16; MAX_IMAGE_PATH];
         let mut buf_len = MAX_IMAGE_PATH as u32;
         // dwFlags = 0 means Win32 format (not native NT path).
@@ -631,13 +621,10 @@ pub(crate) fn runtime_dir() -> PathBuf {
     install_layout::runtime_dir()
 }
 
-// Non-Windows stubs. The provisioner is a Windows-only installer helper, but it
-// lives in the cross-platform desktop crate and so must still compile on
-// macOS/Linux. install_layout's machine paths are `#[cfg(target_os =
-// "windows")]`-only by design (ProgramData layout), so mirror that layout under
-// a temp root purely to satisfy the build — this path is never exercised on a
-// real macOS/Linux install, where the bundled .app/.deb does not run the
-// provisioner.
+// Non-Windows stubs: the provisioner is Windows-only but must compile in the
+// cross-platform desktop crate. install_layout's machine paths are Windows-cfg'd,
+// so mirror the layout under a temp root just to satisfy the build — never run on
+// a real macOS/Linux install.
 #[cfg(not(windows))]
 pub(crate) fn agentshore_programdata_root() -> PathBuf {
     std::env::temp_dir().join("agentshore")

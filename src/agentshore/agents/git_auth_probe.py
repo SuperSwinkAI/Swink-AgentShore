@@ -41,29 +41,24 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Shared status vocabulary, mirroring ``auth_probe.py``'s spirit. A status here
-# maps 1:1 to how the launch gate / banner classifies the identity.
+# Status vocabulary mirrors auth_probe.py; each maps 1:1 to launch-gate/banner class.
 GIT_AUTH_OK = "ok"
 GIT_AUTH_FAILED = "auth_failed"
 GIT_AUTH_TIMEOUT = "timeout"
 GIT_AUTH_ERROR = "error"
 GIT_AUTH_UNPROBEABLE = "unprobeable"
 
-# Only a definitive auth failure gates a launch. ``timeout``/``error`` (transient
-# probe hiccup, git missing) and ``unprobeable`` (no origin remote, no token to
-# probe with) are surfaced but NEVER blocking — a probe glitch must not strand
-# a launch, and the mid-run credential-prompt backstop catches a real failure
-# that slips through.
+# Only a definitive auth failure gates a launch; timeout/error/unprobeable are
+# surfaced but never block — a probe glitch must not strand a launch, and the
+# mid-run credential-prompt backstop catches a real failure that slips through.
 _BLOCKING_STATUSES = frozenset({GIT_AUTH_FAILED})
 
-# git ls-remote is a single read round-trip; 15s is ample and keeps the launch
-# gate responsive. A genuinely broken auth path 401-fails far faster than this
-# under the non-interactive env.
+# 15s: ls-remote is one read round-trip; broken auth 401-fails far faster under
+# the non-interactive env.
 DEFAULT_PROBE_TIMEOUT_S = 15.0
 
-# Output markers indicating the remote rejected our credentials (vs. a network
-# blip), matched case-insensitively against stdout+stderr, live in the single
-# ``error_markers`` registry as ``GIT_AUTH_FAILED_MARKERS``, imported above.
+# Auth-failure markers (vs. network blip) live in the error_markers registry as
+# GIT_AUTH_FAILED_MARKERS, imported above; matched case-insensitively.
 
 
 @dataclass(frozen=True)
@@ -150,15 +145,13 @@ def probe_git_auth(
 
     ssh_remote = _is_ssh_remote(remote)
     overlay: dict[str, str] = dict(identity_env)
-    # GIT_TERMINAL_PROMPT=0 is the belt-and-suspenders non-interactive guard on
-    # top of the hardened env's credential-prompt neutralisation, so a missing
-    # credential fails fast rather than blocking on a prompt that never arrives.
+    # GIT_TERMINAL_PROMPT=0: extra non-interactive guard so a missing credential
+    # fails fast rather than blocking on a prompt that never arrives.
     overlay["GIT_TERMINAL_PROMPT"] = "0"
 
     if not ssh_remote:
-        # HTTPS remote: inject the identity's token as a Basic-auth extraheader so
-        # `git` authenticates as THIS identity (multi-identity-safe). For an SSH
-        # remote we rely on GIT_SSH_COMMAND from the overlay instead.
+        # HTTPS: inject token as a Basic-auth extraheader so git auths as THIS
+        # identity (multi-identity-safe); SSH uses GIT_SSH_COMMAND from the overlay.
         token = identity_env.get("GH_TOKEN") or identity_env.get("GITHUB_TOKEN")
         if token:
             overlay.update(subprocess_env.git_auth_config_overlay(token))
@@ -206,8 +199,8 @@ def probe_git_auth(
             remote,
         )
 
-    # Non-zero exit with no auth marker: a transient/unexpected failure
-    # (network blip, unreachable host). Surface it but never block the launch.
+    # Non-zero exit, no auth marker: transient/unexpected failure (network blip,
+    # unreachable host). Surface but never block the launch.
     _logger.warning(
         "git_auth_probe_error",
         identity=identity_name,
@@ -244,8 +237,8 @@ def probe_all_identities(
 
     resolved_remote = remote if remote is not None else resolve_origin_remote(project_path)
     if not resolved_remote:
-        # No origin remote to probe against — non-blocking unprobeable for each
-        # configured identity so the banner still reports them.
+        # No origin remote — non-blocking unprobeable per identity so the banner
+        # still reports them.
         return [
             GitAuthProbeResult(name, GIT_AUTH_UNPROBEABLE, "no origin remote configured", "")
             for name in sorted(cfg.identities)
@@ -256,14 +249,13 @@ def probe_all_identities(
 
     results: list[GitAuthProbeResult] = []
     for name in sorted(cfg.identities):
-        # Bind a transient agent to this identity so the shared resolver produces
-        # the exact env overlay (token + GH_CONFIG_DIR + GIT_SSH_COMMAND) the
-        # Agent Manager would inject when dispatching under this identity.
+        # Bind a transient agent so the shared resolver yields the exact overlay
+        # (token + GH_CONFIG_DIR + GIT_SSH_COMMAND) the Manager would inject.
         try:
             identity_env = resolve_identity_env(cfg, AgentConfig(identity=name))
-        except Exception as exc:  # noqa: BLE001 — token-resolution failures are a
-            # GitHub-token concern surfaced by preflight_identities; never let one
-            # raise here. Treat as non-blocking unprobeable.
+        except Exception as exc:  # noqa: BLE001 — token-resolution is a gh-token
+            # concern preflight_identities owns; never raise here. Treat as
+            # non-blocking unprobeable.
             _logger.warning(
                 "git_auth_probe_identity_resolution_failed",
                 identity=name,

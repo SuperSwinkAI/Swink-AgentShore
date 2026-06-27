@@ -15,7 +15,6 @@ from agentshore.data.models import (
     PullRequestRecord,
     ReviewFeedbackPatternRecord,
     ScopeDriftRecord,
-    SessionLearningRecord,
     SessionRecord,
     TrajectorySnapshotRecord,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "PullRequestRecord",
     "ReviewFeedbackPatternRecord",
     "ScopeDriftRecord",
-    "SessionLearningRecord",
     "SessionRecord",
     "TrajectorySnapshotRecord",
 ]

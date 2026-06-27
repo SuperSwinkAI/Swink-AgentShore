@@ -16,11 +16,7 @@ from agentshore.config import RuntimeConfig
 from agentshore.data.store import ExternalMutationRecord
 from agentshore.github import GitHubAdapter
 
-# ---------------------------------------------------------------------------
-# Fixture helpers — duplicated from test_github_adapter.py rather than shared
-# via conftest because the two files own their own scenarios; keeping them
-# isolated avoids import-time coupling.
-# ---------------------------------------------------------------------------
+# Fixture helpers duplicated (not shared via conftest) to avoid import-time coupling.
 
 
 def _make_adapter(
@@ -38,11 +34,6 @@ def _make_adapter(
     return adapter, mock_store
 
 
-# ---------------------------------------------------------------------------
-# probe()
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_probe_handles_unexpected_exception(tmp_path: Path) -> None:
     """A non-FileNotFoundError OS-level error raised by the gh invocation must be
@@ -52,11 +43,6 @@ async def test_probe_handles_unexpected_exception(tmp_path: Path) -> None:
         run_gh.side_effect = OSError("permission denied")
         await adapter.probe()
     assert adapter.available is False
-
-
-# ---------------------------------------------------------------------------
-# create_issue
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -73,9 +59,7 @@ async def test_create_issue_runs_gh_with_title_body_labels(tmp_path: Path) -> No
         )
 
     assert result == {"number": 7}
-    # The first call to _run_gh is the actual mutation; verify that it carries
-    # title/body and one --label arg per label. The gh argv is the first
-    # positional arg (a list, without the leading "gh").
+    # gh argv is the first positional arg (a list, no leading "gh").
     rest = list(run_gh.call_args.args[0])
     assert rest[0:2] == ["issue", "create"]
     assert "--title" in rest and "My new issue" in rest
@@ -112,11 +96,6 @@ async def test_create_issue_returns_none_when_unavailable(tmp_path: Path) -> Non
     adapter._available = False
     result = await adapter.create_issue(title="x", body="", labels=[], idempotency_key="ci-na")
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# label_issue
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -189,11 +168,6 @@ async def test_label_issue_dedups_when_mutation_already_recorded(
     run_gh.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# comment_issue
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_comment_issue_runs_issue_comment(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
@@ -228,11 +202,6 @@ async def test_comment_issue_returns_false_when_unavailable(tmp_path: Path) -> N
     adapter._available = False
     ok = await adapter.comment_issue(issue_number=1, body="hi", idempotency_key="cm-na")
     assert ok is False
-
-
-# ---------------------------------------------------------------------------
-# close_issue
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -287,11 +256,6 @@ async def test_close_issue_dedups_when_already_recorded(tmp_path: Path) -> None:
 
     assert ok is True
     run_gh.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# create_pr
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -373,9 +337,7 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
     run_gh.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# retarget_pr_base()  (#8 — self-heal wrong-base PRs)
-# ---------------------------------------------------------------------------
+# retarget_pr_base — #8: self-heal wrong-base PRs
 
 
 @pytest.mark.asyncio

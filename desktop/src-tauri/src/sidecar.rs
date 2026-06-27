@@ -624,12 +624,9 @@ fn dispatch_line(
     if let Some(method) = value.get("method").and_then(Value::as_str) {
         let params = value.get("params").cloned().unwrap_or(Value::Null);
         handle_agent_subprocess_notification(method, &params, agent_pids);
-        // desktop-bzr2: release the NSProcessInfo activity assertion on
-        // natural session exit. session.start path took the assertion;
-        // session.stop releases it via jsonrpc_call's RPC-success hook.
-        // session.completed is the fallback for natural exits where
-        // session.stop never fires (drain_complete, max_plays, timeout,
-        // shutting_down).
+        // desktop-bzr2: release the activity assertion on natural session exit.
+        // session.completed is the fallback for exits where session.stop never
+        // fires (drain_complete, max_plays, timeout, shutting_down).
         if method == "session.completed" {
             let holder = app.state::<crate::activity::ActivityHolder>();
             holder.release();

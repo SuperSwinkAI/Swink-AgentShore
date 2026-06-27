@@ -29,7 +29,6 @@ from agentshore.reports.types import (
     FailurePlayEntry,
     IssueInflationData,
     IssueThroughputData,
-    LearningsDiffData,
     OverviewData,
     PlayLogColumnEntry,
     PlayLogRowEntry,
@@ -52,23 +51,15 @@ if TYPE_CHECKING:
         PlayRecord,
         ReviewFeedbackPatternRecord,
         ScopeDriftRecord,
-        SessionLearningRecord,
         SessionRecord,
         TrajectorySnapshotRecord,
     )
 
-# ---------------------------------------------------------------------------
-# Module-level constants and small helpers shared across aggregators
-# ---------------------------------------------------------------------------
-
 _INTERNAL_PLAY_VALUES = frozenset(pt.value for pt in INTERNAL_PLAY_TYPES)
 
-# Presentation metadata for the ESR play-log table — the ONLY hand-maintained
-# part. Each entry is ``PlayType -> (display label, lifecycle phase)`` in the
-# exact render order the play log uses (grouped by phase, not by action index).
-# The action index (``PLAY_TO_INDEX``), play set (``PlayType``), and future flag
-# (``RESERVED_PLAYS``) are all derived from ``rl/action_space`` below, so an
-# action-space rev no longer silently drifts this table.
+# ONLY hand-maintained part of the play-log table: PlayType -> (label, phase) in
+# render order (grouped by phase). Index/play-set/future flag are derived from
+# rl/action_space below, so an action-space rev can't silently drift this.
 _PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
     (PlayType.INSTANTIATE_AGENT, "INSTANTIATE_AGENT", 1),
     (PlayType.SEED_PROJECT, "SEED_PROJECT", 1),
@@ -94,9 +85,8 @@ _PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
     (PlayType.END_SESSION, "END_SESSION", 7),
 )
 
-# Loud guard: the presentation table must cover exactly the user-facing action
-# space. A future action-space rev that adds/removes/renames a play (without
-# updating this table) fails at import time rather than silently dropping a row.
+# Import-time guard: presentation table must cover exactly the user-facing action
+# space, so an action-space rev that drifts it fails loudly instead of dropping a row.
 _EXPECTED_PLAY_LOG_KEYS = set(PlayType) - INTERNAL_PLAY_TYPES
 if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
     msg = (
@@ -105,9 +95,8 @@ if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
     )
     raise ValueError(msg)
 
-# Derived play-log order: ``(play_type_str, label, action_index, phase, is_future)``.
-# Index from ``PLAY_TO_INDEX``, future flag from ``RESERVED_PLAYS`` — both single-
-# sourced from ``rl/action_space``. Consumers below read this exactly as before.
+# Derived: (play_type_str, label, action_index, phase, is_future); index and future
+# flag single-sourced from rl/action_space.
 _PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = tuple(
     (play_type.value, label, PLAY_TO_INDEX[play_type], phase, play_type in RESERVED_PLAYS)
     for play_type, label, phase in _PLAY_LOG_PRESENTATION
@@ -237,9 +226,7 @@ def compute_overview(session: SessionRecord, plays: list[PlayRecord]) -> Overvie
         successful_plays=successful,
         failed_plays=failed,
         skipped_plays=skipped,
-        # Single, self-consistent definition: sum the per-play costs (the
-        # same rows the play log renders) rather than session.total_cost, so
-        # every report (session summary, end-of-session, comparison) agrees.
+        # Sum per-play costs (not session.total_cost) so every report agrees.
         total_cost=sum(p.dollar_cost for p in plays),
         final_alignment=session.final_alignment,
         started_at=session.started_at,
@@ -285,8 +272,7 @@ def compute_play_stats(plays: list[PlayRecord]) -> list[PlayStatsEntry]:
 
     result: list[PlayStatsEntry] = []
     for play_type, acc in by_type.items():
-        # Skips are gated no-ops, not failures — report them in their own bucket
-        # and keep success_rate over real (dispatched) attempts only.
+        # Skips are gated no-ops: own bucket, success_rate over dispatched only.
         failed = acc.total - acc.successful - acc.skipped
         dispatched = acc.total - acc.skipped
         result.append(
@@ -372,11 +358,8 @@ def compute_play_log_rows(
     for play in plays:
         if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
-        # A gated/skipped play was PPO-selected then masked before dispatch —
-        # it never reached an agent (0ms, $0, agent_id=None). It is not an
-        # executed play, so it has no place in the play-log timeline. The
-        # per-play-type stats table still accounts for it via its ``skipped``
-        # bucket; here it is omitted entirely.
+        # Gated skips never reached an agent (0ms, $0); omit from the executed
+        # play-log timeline (stats table still counts them in its skipped bucket).
         if _is_skip(play):
             continue
         row_number += 1
@@ -469,7 +452,7 @@ def compute_cost_breakdown(
         running += p.dollar_cost
         cumulative.append((idx, running))
 
-    # Fill in agents that may not have plays
+    # Backfill agents with no plays.
     for a in agents:
         if a.agent_id not in by_agent:
             by_agent[a.agent_id] = a.total_cost
@@ -493,7 +476,6 @@ def compute_agent_performance(
     utilisation imbalance where some agents get 0 plays over long
     stretches while work is available.
     """
-    # Gather durations from plays per agent
     durations_by_agent: dict[str, list[float]] = {}
     for p in plays:
         if p.agent_id is not None:
@@ -696,19 +678,6 @@ def compute_play_distribution(plays: list[PlayRecord]) -> dict[str, int]:
     return dist
 
 
-def compute_learnings_diff(
-    learnings_a: Sequence[SessionLearningRecord],
-    learnings_b: Sequence[SessionLearningRecord],
-) -> LearningsDiffData:
-    patterns_a = {lr.pattern for lr in learnings_a}
-    patterns_b = {lr.pattern for lr in learnings_b}
-    return LearningsDiffData(
-        added=sorted(patterns_b - patterns_a),
-        removed=sorted(patterns_a - patterns_b),
-        shared=sorted(patterns_a & patterns_b),
-    )
-
-
 def compute_alignment_trajectory(plays: list[PlayRecord]) -> list[AlignmentTrajectoryEntry]:
     trajectory: list[AlignmentTrajectoryEntry] = []
     running = 0.0
@@ -803,7 +772,7 @@ def compute_trajectory_analysis(
     )
 
 
-def compute_knowledge(learnings: Sequence[SessionLearningRecord]) -> int:
+def compute_knowledge(learnings: Sequence[object]) -> int:
     """Count session learnings."""
     return len(learnings)
 
@@ -847,7 +816,7 @@ def compute_recommendations(
                     f"({a.tasks_failed}/{total}) — consider switching agent type"
                 )
 
-    # High revert ratio
+    # High cleanup ratio
     total_plays = len(plays)
     cleanups = sum(1 for p in plays if p.play_type == "cleanup")
     if total_plays > 0 and cleanups / total_plays > 0.15:
@@ -936,5 +905,5 @@ def compute_epic_closure_timeline(
     )
 
 
-# Re-export the ActiveAgentEntry TypedDict that collect_progress_report uses inline
+# Re-exported for collect_progress_report's inline use.
 __all__ = ["ActiveAgentEntry"]

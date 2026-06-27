@@ -116,10 +116,9 @@ async def _confirm_and_record_pr(
         enriched = None
     if enriched is None:
         return None
-    # GitHub is the source of truth for the PR object; stamp the session and
-    # carry the originating issue when GitHub's closing-refs didn't capture it,
-    # then overlay the authorship we resolved locally (used by code_review
-    # anti-confirmation before the next refresh fills github_author).
+    # GitHub is source of truth; stamp session, carry issue when closing-refs
+    # missed it, overlay locally-resolved authorship for code_review
+    # anti-confirmation until the next refresh fills github_author.
     enriched.session_id = session_id
     if enriched.issue_number is None:
         enriched.issue_number = issue_number
@@ -127,13 +126,10 @@ async def _confirm_and_record_pr(
     enriched.author_agent_type = author_agent_type
     if author_github_login is not None:
         enriched.github_author = author_github_login
-    # Deterministic base correction at creation: agents skip the skill's
-    # base step ~1-in-6 times, opening PRs against the wrong base (e.g.
-    # `main`). Retarget to the configured target_branch now, using the fresh
-    # enriched base_ref (not a stale snapshot — the gap in the pre-merge
-    # _maybe_retarget_pr_base path). Idempotent via the mutation ledger;
-    # pairs with the merge-side gate so a wrong-base PR never lands on the
-    # wrong trunk regardless of agent adherence.
+    # Base correction at creation: agents skip the skill's base step ~1-in-6
+    # times, opening against the wrong base. Retarget using the fresh enriched
+    # base_ref (not a stale snapshot — the gap in _maybe_retarget_pr_base).
+    # Idempotent; pairs with the merge-side gate so a wrong-base PR never lands.
     retargeted = await _retarget_pr_to_target(
         github,
         cfg,
@@ -177,11 +173,8 @@ async def _record_pr_artifact(
         return
 
     if not branch:
-        # Surface the leak loudly: a PR-authoring play returned a PR
-        # artifact without a branch, and the dispatch params had no
-        # fallback either. GitHub's headRefName is authoritative for the
-        # confirmed record, but the missing artifact branch is still a signal
-        # worth logging. See issue #567 follow-up.
+        # PR artifact lacked a branch and params had no fallback. GitHub's
+        # headRefName is authoritative, but the miss is worth logging (#567).
         _logger.warning(
             "pr_record_missing_branch",
             pr_number=pr_number,
@@ -205,10 +198,8 @@ async def _record_pr_artifact(
         author_github_login,
     )
     if confirmed is None:
-        # GitHub did not confirm the PR exists — record nothing, enqueue
-        # nothing, label nothing. The branch is still surfaced via the publish
-        # reconciler's branch evidence, and the next GitHub refresh adopts the
-        # PR if it actually lands later.
+        # Unconfirmed: record/enqueue/label nothing. Branch still surfaces via
+        # the publish reconciler; next refresh adopts the PR if it lands later.
         _logger.warning(
             "pr_publish_unconfirmed",
             pr_number=pr_number,
@@ -218,7 +209,6 @@ async def _record_pr_artifact(
             agent_id=outcome.agent_id,
         )
         return
-    # Enqueue PR for code review.
     await store.enqueue_review(
         ReviewQueueRecord(
             pr_number=pr_number,
@@ -227,7 +217,6 @@ async def _record_pr_artifact(
             enqueued_at=now,
         )
     )
-    # Apply author label to GitHub PR for visibility.
     if author_agent_type is not None and github is not None:
         label_name = f"{cfg.intake.label_prefix}author:{author_agent_type}"
         idem_key = f"author_label:pr{pr_number}:{author_agent_type}"

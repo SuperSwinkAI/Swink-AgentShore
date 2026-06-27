@@ -1,6 +1,6 @@
 """Tests for Phase-2 DataStore extensions.
 
-Covers: ScopeDriftRecord, SessionLearningRecord,
+Covers: ScopeDriftRecord,
 TrajectorySnapshotRecord, ReviewFeedbackPatternRecord, list_open_pull_requests,
 and the record_play -> play_id return value.
 """
@@ -20,13 +20,8 @@ from agentshore.data import (
 from agentshore.data.store import (
     HumanFeedbackRecord,
     ScopeDriftRecord,
-    SessionLearningRecord,
     TrajectorySnapshotRecord,
 )
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
@@ -54,11 +49,6 @@ async def _seed(store: DataStore) -> tuple[str, int]:
     return sid, play_id
 
 
-# ---------------------------------------------------------------------------
-# record_play now returns play_id
-# ---------------------------------------------------------------------------
-
-
 async def test_record_play_returns_auto_increment_play_id(store):
     sid = "sess-play-id"
     await store.create_session(
@@ -83,11 +73,6 @@ async def test_record_play_returns_auto_increment_play_id(store):
     assert isinstance(id1, int)
     assert isinstance(id2, int)
     assert id2 > id1
-
-
-# ---------------------------------------------------------------------------
-# scope_drift_log
-# ---------------------------------------------------------------------------
 
 
 async def test_log_scope_drift_persists_row(store):
@@ -123,11 +108,6 @@ async def test_log_scope_drift_fk_requires_existing_play(store):
 
     with pytest.raises(aiosqlite.IntegrityError):
         await store.log_scope_drift(rec)
-
-
-# ---------------------------------------------------------------------------
-# human_feedback
-# ---------------------------------------------------------------------------
 
 
 async def test_record_and_list_human_feedback_round_trip(store):
@@ -170,71 +150,6 @@ async def test_reset_session_scoped_tables_clears_human_feedback(store):
     assert await store.count_human_feedback(sid) == 0
 
 
-# ---------------------------------------------------------------------------
-# session_learnings
-# ---------------------------------------------------------------------------
-
-
-async def test_record_learning_returns_id_and_lists_with_confidence_filter(store):
-    sid, play_id = await _seed(store)
-    now = "2026-01-01T00:00:00"
-    lid = await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="Always add tests for edge cases",
-            category="testing",
-            source_play_id=play_id,
-            confidence=0.9,
-            created_at=now,
-            last_reinforced_at=now,
-        )
-    )
-    assert isinstance(lid, int)
-
-    # below threshold — not returned
-    await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="Low confidence pattern",
-            category="testing",
-            confidence=0.3,
-            created_at=now,
-            last_reinforced_at=now,
-        )
-    )
-
-    results = await store.list_learnings(sid, min_confidence=0.5)
-    assert len(results) == 1
-    assert results[0].learning_id == lid
-    assert results[0].pattern == "Always add tests for edge cases"
-
-
-async def test_reinforce_learning_increments_count_and_updates_timestamp(store):
-    sid, play_id = await _seed(store)
-    now = "2026-01-01T00:00:00"
-    lid = await store.record_learning(
-        SessionLearningRecord(
-            session_id=sid,
-            pattern="pattern A",
-            category="general",
-            created_at=now,
-            last_reinforced_at=now,
-            reinforcement_count=1,
-        )
-    )
-    await store.reinforce_learning(lid)
-
-    results = await store.list_learnings(sid)
-    assert len(results) == 1
-    assert results[0].reinforcement_count == 2
-    assert results[0].last_reinforced_at != now
-
-
-# ---------------------------------------------------------------------------
-# trajectory_snapshots
-# ---------------------------------------------------------------------------
-
-
 async def test_record_trajectory_snapshot_round_trip(store):
     sid, play_id = await _seed(store)
     rec = TrajectorySnapshotRecord(
@@ -260,11 +175,6 @@ async def test_get_latest_trajectory_returns_none_when_absent(store):
     )
     result = await store.get_latest_trajectory(sid)
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# list_open_pull_requests
-# ---------------------------------------------------------------------------
 
 
 async def test_list_open_pull_requests_returns_only_open(store):
@@ -327,11 +237,6 @@ async def test_pull_request_metadata_round_trips_for_environment_state(store):
     assert pr.status_check_summary == "failed"
     assert pr.is_draft is False
     assert pr.author_agent_id == "agent-a"
-
-
-# ---------------------------------------------------------------------------
-# update_play
-# ---------------------------------------------------------------------------
 
 
 async def test_update_play_sets_outcome_fields(store):

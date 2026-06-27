@@ -141,7 +141,6 @@ def _state(
 def _ctx() -> MagicMock:
     ctx = MagicMock()
     ctx.manager.dispatch = AsyncMock()
-    ctx.store.list_learnings = AsyncMock(return_value=[])
     ctx.store.list_pending_reviews = AsyncMock(return_value=[])
     ctx.store.complete_review = AsyncMock()
     ctx.session_id = "sess"
@@ -295,8 +294,7 @@ async def test_unblock_pr_reconciles_merged_blocker() -> None:
     assert outcome.success is True
     reconcile.assert_awaited_once()
     assert reconcile.await_args.args[0] == 99
-    # Only the target (pr_unblock_attempt) flows through the review loop; the
-    # merged blocker is handled by reconciliation, not review.
+    # Only the target flows through review; the merged blocker is reconciled.
     ctx.store.update_pr_last_reviewed_sha.assert_awaited_once_with(
         40, "sess", "tgt040", status="PASS"
     )
@@ -690,8 +688,7 @@ async def test_code_review_writes_last_reviewed_sha_on_success() -> None:
         outcome = await play.execute(_state(), PlayParams(pr_number=42), ctx=ctx)
 
     assert outcome.success is True
-    # status=None because the patched base.execute() doesn't populate
-    # _last_skill_result; this test isolates the SHA-persistence path.
+    # status=None: patched execute leaves _last_skill_result unset (SHA-path only).
     ctx.store.update_pr_last_reviewed_sha.assert_awaited_once_with(
         42, "sess", "abc123", status=None
     )
@@ -1495,9 +1492,8 @@ def test_merge_pr_blocked_when_no_mergeable_pr() -> None:
 
 
 def test_merge_pr_blocked_when_pr_mergeable_but_not_approved() -> None:
-    # Regression: precondition must require approval from at least one source
-    # (GitHub APPROVED OR AgentShore PASS@head); an unapproved+mergeable PR
-    # shouldn't satisfy.
+    # Regression: needs approval from one source (GH APPROVED or AgentShore
+    # PASS@head); unapproved+mergeable must not satisfy.
     prs = [_pr(state="open", mergeable="MERGEABLE")]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
     assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
@@ -1921,9 +1917,8 @@ async def test_merge_pr_execute_dispatches_when_no_pending(tmp_path: object) -> 
         )
 
     assert outcome.success is True
-    # Post-merge cache write-through: the just-merged PR's row is marked
-    # MERGED immediately so the resolver's next pick doesn't re-target it
-    # for unblock_pr.
+    # Post-merge write-through: mark MERGED now so the resolver doesn't
+    # re-target it for unblock_pr.
     ctx.store.mark_pr_merged.assert_awaited_once_with(1, "sess")
 
 

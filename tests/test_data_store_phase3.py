@@ -21,11 +21,6 @@ def _ts(offset_seconds: float = 0.0) -> str:
     return (datetime.now(UTC) + timedelta(seconds=offset_seconds)).isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest_asyncio.fixture
 async def store(tmp_path):
     db = DataStore(tmp_path / "test.db")
@@ -50,11 +45,6 @@ async def _seed(store: DataStore) -> tuple[str, int]:
         )
     )
     return sid, play_id
-
-
-# ---------------------------------------------------------------------------
-# record_experience
-# ---------------------------------------------------------------------------
 
 
 async def test_record_experience_returns_id_and_stores_blobs(store):
@@ -98,11 +88,6 @@ async def test_record_experience_null_optional_fields(store):
     )
     xp_id = await store.record_experience(rec)
     assert isinstance(xp_id, int)
-
-
-# ---------------------------------------------------------------------------
-# iter_experience_for_replay
-# ---------------------------------------------------------------------------
 
 
 async def test_iter_experience_yields_in_step_index_order(store):
@@ -237,11 +222,6 @@ async def test_iter_experience_config_hash_filter(store):
     assert len(rows_all) == 2
 
 
-# ---------------------------------------------------------------------------
-# save_checkpoint / load_latest_checkpoint
-# ---------------------------------------------------------------------------
-
-
 async def test_save_and_load_latest_checkpoint(store):
     sid = "sess-ckpt"
     await store.create_session(
@@ -311,14 +291,9 @@ async def test_load_latest_cross_session(store):
             )
         )
 
-    latest = await store.load_latest_checkpoint()  # no session_id
+    latest = await store.load_latest_checkpoint()
     assert latest is not None
     assert latest.play_count == 20
-
-
-# ---------------------------------------------------------------------------
-# update_play with reward + alignment fields
-# ---------------------------------------------------------------------------
 
 
 async def test_update_play_persists_reward_and_alignment_fields(store):

@@ -1,7 +1,7 @@
 """Session learnings: load, save, prune, decay, reinforce, top-k selection.
 
-The JSON file at ``cfg.learnings.file`` is the canonical store; the
-``session_learnings`` SQLite table is an audit trail only.
+The JSON file at ``cfg.learnings.file`` (default ``.agentshore/learnings.json``)
+is the single source of truth for learnings.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -128,12 +129,12 @@ def reinforce(
     source_play_id: int,
     bump: float = 0.1,
 ) -> list[Learning]:
-    """Bump confidence and reset sessions_since_use for entries whose pattern
-    is a substring of *pattern*.
+    """Bump confidence and reset sessions_since_use for the entry whose pattern
+    matches *pattern* exactly.
     """
     result: list[Learning] = []
     for e in entries:
-        if e.pattern in pattern:
+        if e.pattern == pattern:
             result.append(
                 replace(
                     e,
@@ -150,3 +151,101 @@ def reinforce(
 def top_k(entries: list[Learning], k: int = 10) -> list[Learning]:
     """Return the top *k* entries by confidence (descending)."""
     return sorted(entries, key=lambda e: e.confidence, reverse=True)[:k]
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _normalize_tokens(pattern: str) -> frozenset[str]:
+    """Lowercase and split *pattern* into alphanumeric tokens for comparison."""
+    return frozenset(_TOKEN_RE.findall(pattern.lower()))
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    """Jaccard overlap of two token sets; two empty sets are identical (1.0)."""
+    if not a and not b:
+        return 1.0
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
+def fold_learnings(
+    sources: list[Learning],
+    *,
+    pattern: str,
+    category: str,
+    id: str,
+    scope: str = "project",
+    source_play_id: int | None = None,
+) -> Learning:
+    """Merge *sources* into one ``Learning`` carrying the given identity fields.
+
+    Numeric/temporal metadata is folded deterministically: ``confidence = max``,
+    ``sessions_since_use = min``, ``last_reinforced_play_id`` = most recent
+    (largest play id, or ``None`` if no source was ever reinforced), and
+    ``created_at`` = earliest. Shared by :func:`consolidate` (token-overlap
+    Tier-1 merge) and the groom re-distillation replace path, which both need
+    identical bookkeeping while choosing the identity fields differently.
+    """
+    reinforced_ids = [
+        m.last_reinforced_play_id for m in sources if m.last_reinforced_play_id is not None
+    ]
+    return Learning(
+        id=id,
+        pattern=pattern,
+        confidence=max(m.confidence for m in sources),
+        sessions_since_use=min(m.sessions_since_use for m in sources),
+        source_play_id=source_play_id,
+        last_reinforced_play_id=max(reinforced_ids) if reinforced_ids else None,
+        created_at=min(m.created_at for m in sources),
+        scope=scope,
+        category=category,
+    )
+
+
+def consolidate(
+    entries: list[Learning],
+    overlap_threshold: float = 0.8,
+) -> list[Learning]:
+    """Merge near-duplicate learnings within the same category.
+
+    Two entries are near-duplicates when their normalized token sets have a
+    Jaccard overlap of at least *overlap_threshold*. Each group collapses to one
+    representative — the highest-confidence entry's ``id``/``pattern`` — with
+    metadata folded via :func:`fold_learnings`. Deterministic (stable order, no
+    randomness); singletons pass through untouched. A non-positive threshold
+    disables consolidation.
+    """
+    if overlap_threshold <= 0 or len(entries) < 2:
+        return entries
+
+    tokens = [_normalize_tokens(e.pattern) for e in entries]
+    consumed = [False] * len(entries)
+    result: list[Learning] = []
+
+    for i, base in enumerate(entries):
+        if consumed[i]:
+            continue
+        consumed[i] = True
+        group = [base]
+        for j in range(i + 1, len(entries)):
+            if consumed[j] or entries[j].category != base.category:
+                continue
+            if _jaccard(tokens[i], tokens[j]) >= overlap_threshold:
+                group.append(entries[j])
+                consumed[j] = True
+        if len(group) == 1:
+            result.append(base)
+            continue
+        rep = max(group, key=lambda e: e.confidence)
+        result.append(
+            fold_learnings(
+                group,
+                pattern=rep.pattern,
+                category=rep.category,
+                id=rep.id,
+                scope=rep.scope,
+                source_play_id=rep.source_play_id,
+            )
+        )
+    return result

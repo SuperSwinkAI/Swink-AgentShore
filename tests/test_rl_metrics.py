@@ -424,7 +424,6 @@ async def test_snapshot_does_not_store_last_context_reference():
     store.get_play_history = AsyncMock(return_value=[])
     store.list_open_pull_requests = AsyncMock(return_value=[])
     store.list_approved_pull_requests = AsyncMock(return_value=[])
-    store.list_learnings = AsyncMock(return_value=[])
     store.list_handoffs = AsyncMock(return_value=[])
     store.list_all_issues = AsyncMock(return_value=[])
     engine = MetricsEngine(store=store, session_id="s")
@@ -440,7 +439,6 @@ async def test_snapshot_uses_agentshore_created_issue_count_for_created_metric()
     store.get_play_history = AsyncMock(return_value=[])
     store.list_open_pull_requests = AsyncMock(return_value=[])
     store.list_approved_pull_requests = AsyncMock(return_value=[])
-    store.list_learnings = AsyncMock(return_value=[])
     store.list_handoffs = AsyncMock(return_value=[])
     store.list_all_issues = AsyncMock(
         return_value=[
@@ -539,7 +537,6 @@ def _store_with_one_failure(failing_method: str, exc: Exception) -> AsyncMock:
     store.get_play_history = AsyncMock(return_value=[])
     store.list_open_pull_requests = AsyncMock(return_value=[])
     store.list_approved_pull_requests = AsyncMock(return_value=[])
-    store.list_learnings = AsyncMock(return_value=[])
     store.list_handoffs = AsyncMock(return_value=[])
     store.list_all_issues = AsyncMock(return_value=[])
     getattr(store, failing_method).side_effect = exc
@@ -552,7 +549,6 @@ def _store_with_one_failure(failing_method: str, exc: Exception) -> AsyncMock:
         ("get_play_history", "play_history"),
         ("list_open_pull_requests", "open_pull_requests"),
         ("list_approved_pull_requests", "approved_pull_requests"),
-        ("list_learnings", "learnings"),
         ("list_handoffs", "handoffs"),
         ("list_all_issues", "all_issues"),
     ],
@@ -578,13 +574,10 @@ async def test_snapshot_degrades_gracefully_when_store_query_raises(
     # Snapshot returned successfully — the except branch was taken.
     assert ctx is not None
 
-    # Empty-result substitution for the failed query: when learnings raise we
-    # see learning_count==0; when the PR queries raise we see open_pr_count==0
-    # / prs_approved_unmerged==0. The history failure path produces an empty
-    # `last_play_types` tuple.
-    if failing_method == "list_learnings":
-        assert ctx.learning_count == 0
-    elif failing_method == "list_open_pull_requests":
+    # Empty-result substitution for the failed query: when the PR queries raise
+    # we see open_pr_count==0 / prs_approved_unmerged==0. The history failure
+    # path produces an empty `last_play_types` tuple.
+    if failing_method == "list_open_pull_requests":
         assert ctx.open_pr_count == 0
     elif failing_method == "list_approved_pull_requests":
         assert ctx.prs_approved_unmerged == 0
@@ -604,6 +597,95 @@ async def test_snapshot_degrades_gracefully_when_store_query_raises(
     # The specific query that failed must be tagged in the event so operators
     # can identify which DB call broke.
     assert query_label in haystack
+
+
+# ---------------------------------------------------------------------------
+# Learnings from JSON store
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_snapshot_learning_count_comes_from_json_store(tmp_path: Any) -> None:
+    """learning_count must reflect the JSON learnings file, not the DataStore."""
+    import json
+    from pathlib import Path
+
+    # Seed a learnings.json with 3 entries.
+    learnings_dir = tmp_path / ".agentshore"
+    learnings_dir.mkdir()
+    learnings_file = learnings_dir / "learnings.json"
+    learnings_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "1",
+                    "pattern": "always add tests",
+                    "confidence": 0.9,
+                    "sessions_since_use": 0,
+                    "source_play_id": None,
+                    "last_reinforced_play_id": None,
+                },
+                {
+                    "id": "2",
+                    "pattern": "keep PRs small",
+                    "confidence": 0.8,
+                    "sessions_since_use": 1,
+                    "source_play_id": None,
+                    "last_reinforced_play_id": None,
+                },
+                {
+                    "id": "3",
+                    "pattern": "review before merge",
+                    "confidence": 0.7,
+                    "sessions_since_use": 0,
+                    "source_play_id": None,
+                    "last_reinforced_play_id": None,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    store = AsyncMock()
+    store.get_play_history = AsyncMock(return_value=[])
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.list_handoffs = AsyncMock(return_value=[])
+    store.list_all_issues = AsyncMock(return_value=[])
+    engine = MetricsEngine(
+        store=store,
+        session_id="s",
+        repo_root=Path(tmp_path),
+        learnings_file=".agentshore/learnings.json",
+    )
+
+    ctx = await engine.snapshot(_state())
+
+    assert ctx.learning_count == 3
+    assert ctx.learning_avg_confidence == pytest.approx(0.8, abs=1e-5)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_learning_count_zero_when_file_absent(tmp_path: Any) -> None:
+    """No learnings file → learning_count == 0 (graceful fallback)."""
+    from pathlib import Path
+
+    store = AsyncMock()
+    store.get_play_history = AsyncMock(return_value=[])
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.list_handoffs = AsyncMock(return_value=[])
+    store.list_all_issues = AsyncMock(return_value=[])
+    engine = MetricsEngine(
+        store=store,
+        session_id="s",
+        repo_root=Path(tmp_path),
+        learnings_file=".agentshore/learnings.json",
+    )
+
+    ctx = await engine.snapshot(_state())
+
+    assert ctx.learning_count == 0
 
 
 # ---------------------------------------------------------------------------

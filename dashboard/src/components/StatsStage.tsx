@@ -17,17 +17,9 @@ import {
   shortAgentName,
 } from "../format";
 
-// React port of `dashboard/src/views/stats/index.ts`.
-//
-// The imperative module owns four things, mirrored here as module-level
-// notify* functions (same pattern as TopBarHud, EpicPanel, FeedbackModal):
-//   1. the latest StateUpdate snapshot       -> notifyStatsStageUpdate
-//   2. visible vs. hidden                     -> notifyStatsStageVisible
-//   3. CSS-variable inset overrides           -> notifyStatsStageInsets
-//
-// Rendering exactly reproduces the DOM the imperative module builds so the
-// `.stats-*` rules already living in `dashboard/src/dashboard.css` style the
-// React tree identically.
+// React port of `dashboard/src/views/stats/index.ts`; the notify* functions
+// mirror the imperative module's inputs. Rendering reproduces its DOM exactly
+// so the existing `.stats-*` rules in dashboard.css style this tree identically.
 
 export interface StatsStageInsets {
   top: number;

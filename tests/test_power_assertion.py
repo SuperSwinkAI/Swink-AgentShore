@@ -54,8 +54,7 @@ def _make_fake_macos_libs() -> tuple[MagicMock, MagicMock]:
     iokit = MagicMock()
     cf = MagicMock()
 
-    # CoreFoundation.CFStringCreateWithCString returns a non-null pointer
-    # (any truthy value works since we treat it as an opaque c_void_p).
+    # Non-null pointer; any truthy value works (treated as opaque c_void_p).
     cf.CFStringCreateWithCString.return_value = 0xDEADBEEF
 
     def _create_assertion(_type, _level, _name, id_ptr):  # noqa: ANN001

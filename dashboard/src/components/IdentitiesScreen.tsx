@@ -53,7 +53,7 @@ export interface IdentitiesSidecar {
   checkAgentAuth?(): Promise<AgentAuthRow[]>;
 }
 
-// ---- state machine --------------------------------------------------------
+// state machine
 
 interface ScreenState {
   rows: IdentityRow[];
@@ -286,7 +286,7 @@ function reducer(state: ScreenState, action: ScreenAction): ScreenState {
   }
 }
 
-// ---- badge helpers --------------------------------------------------------
+// badge helpers
 
 const TOKEN_STATUS_LABELS: Record<string, string> = {
   configured: "Token OK",
@@ -402,7 +402,7 @@ function RepoBadge({
   );
 }
 
-// ---- agent backend auth badges --------------------------------------------
+// agent backend auth badges
 
 const AGENT_AUTH_LABELS: Record<string, string> = {
   ok: "Backend auth OK",
@@ -436,7 +436,7 @@ function AgentAuthBadge({ status }: { status: string }): React.ReactElement {
   );
 }
 
-// ---- token source selector ------------------------------------------------
+// token source selector
 
 const TOKEN_SOURCE_OPTIONS = [
   { value: "gh_token_login", label: "gh auth login" },
@@ -469,7 +469,7 @@ function TokenSourceSelect({
   );
 }
 
-// ---- identity row ---------------------------------------------------------
+// identity row
 
 interface IdentityRowItemProps {
   row: IdentityRow;
@@ -572,7 +572,7 @@ function IdentityRowItem({
   );
 }
 
-// ---- main component -------------------------------------------------------
+// main component
 
 export interface IdentitiesScreenProps {
   sidecar: IdentitiesSidecar;

@@ -88,18 +88,14 @@ __all__ = [
 # Marker tables
 # ---------------------------------------------------------------------------
 #
-# The auth/rate-limit/timeout/etc. vocabularies now live in the single
-# ``error_markers`` registry (PLAN-error-cooldown-unification.md Phase 1) and
-# are imported above under the module-private names the CLI classifier and the
-# stderr watchdog reference, so those callers — and the ``cli_agent`` re-export
-# shim — keep resolving them unchanged. Each carries two views: the *stderr* set
-# is the full list (a CLI's own stderr is pure diagnostics, safe to match
-# broadly); the *stdout-safe* subset keeps only high-precision phrases that
-# never appear in legitimate agent work product (#19).
+# Error-class vocabularies live in the shared ``error_markers`` registry
+# (imported above). Each has two views: the *stderr* set matches broadly (a
+# CLI's stderr is pure diagnostics); the *stdout-safe* subset keeps only phrases
+# that never appear in legitimate agent work product (#19).
 #
-# These two remain CLI-transport local — they detect the shape of a Codex
-# cache-renewal EOF/stdin-hang blip, not an error *class*, so they have no place
-# in the shared error-class registry.
+# These two stay CLI-transport local — they detect a Codex cache-renewal
+# EOF/stdin-hang blip's *shape*, not an error class, so they don't belong in the
+# shared registry.
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 

@@ -10,9 +10,12 @@ if TYPE_CHECKING:
 
 from agentshore.state import JsonArtifact, JsonIssueRef, JsonObject, SkillResult
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# Upper bound on parsed ``learnings_compacted`` entries. Set well above the
+# default ``LearningsConfig.max_entries`` (200) so a legitimate full-store
+# re-distillation is never truncated at parse time — the harvester's
+# ``top_k(max_entries)`` is the real bound — while still capping a pathological
+# array. result_parser is config-agnostic, hence a constant rather than the cfg.
+_MAX_COMPACTED_ENTRIES = 500
 
 
 def _extract_json_object(text: str, start: int) -> str | None:
@@ -149,11 +152,6 @@ def _has_balanced_json_object(text: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def parse_skill_result(output: str) -> SkillResult:
     """Parse the JSON result block from *output* text.
 
@@ -213,7 +211,6 @@ def parse_skill_result(output: str) -> SkillResult:
             error=f"no valid result block found in agent output ({detail})",
         )
 
-    # Validate required fields.
     if "success" not in data:
         return SkillResult(
             success=False,
@@ -227,7 +224,6 @@ def parse_skill_result(output: str) -> SkillResult:
             error=f"result block field 'success' is not a boolean: {success!r}",
         )
 
-    # Extract optional fields with safe defaults.
     artifacts_raw = data.get("artifacts", [])
     if not isinstance(artifacts_raw, list):
         artifacts_raw = []
@@ -315,6 +311,59 @@ def parse_skill_result(output: str) -> SkillResult:
     verification_evidence = _json_object_list(data, "verification_evidence")
     review_patterns = _json_object_list(data, "review_patterns")
 
+    # Extract top-level ``learnings`` array emitted by agents. Each element must
+    # be a dict with a non-empty ``pattern`` string; malformed entries are dropped.
+    # Normalized to {"pattern": str, "confidence": float, "category": str} and
+    # capped at 10 entries.
+    from agentshore.core.learnings_harvester import (  # noqa: PLC0415
+        DEFAULT_LEARNING_CONFIDENCE,
+    )
+
+    learnings_raw = data.get("learnings", [])
+    learnings: list[JsonObject] = []
+    if isinstance(learnings_raw, list):
+        for raw_item in learnings_raw[:10]:
+            if not isinstance(raw_item, dict):
+                continue
+            pattern = raw_item.get("pattern", "")
+            if not isinstance(pattern, str) or not pattern:
+                continue
+            try:
+                confidence = float(raw_item.get("confidence", DEFAULT_LEARNING_CONFIDENCE))
+            except (TypeError, ValueError):
+                confidence = DEFAULT_LEARNING_CONFIDENCE
+            category = str(raw_item.get("category", "general"))
+            learnings.append({"pattern": pattern, "confidence": confidence, "category": category})
+
+    # Extract the top-level ``learnings_compacted`` array — the wholesale
+    # replacement store emitted by the groom re-distillation step. Unlike
+    # ``learnings`` (incremental), each entry carries ``merged_from`` (source
+    # learning ids absorbed) instead of a ``confidence``; confidence/recency are
+    # re-derived deterministically by the harvester. Normalized to
+    # {"pattern": str, "category": str, "merged_from": list[str]}. Capped well
+    # above max_entries (the harvester's top_k is the real bound) so a full-store
+    # compaction is never truncated here, while a pathological array still can't
+    # grow unbounded.
+    compacted_raw = data.get("learnings_compacted", [])
+    learnings_compacted: list[JsonObject] = []
+    if isinstance(compacted_raw, list):
+        for raw_item in compacted_raw[:_MAX_COMPACTED_ENTRIES]:
+            if not isinstance(raw_item, dict):
+                continue
+            pattern = raw_item.get("pattern", "")
+            if not isinstance(pattern, str) or not pattern:
+                continue
+            category = str(raw_item.get("category", "general"))
+            merged_raw = raw_item.get("merged_from", [])
+            merged_from = (
+                [str(m) for m in merged_raw if isinstance(m, str)]
+                if isinstance(merged_raw, list)
+                else []
+            )
+            learnings_compacted.append(
+                {"pattern": pattern, "category": category, "merged_from": merged_from}
+            )
+
     return SkillResult(
         success=success,
         artifacts=artifacts,
@@ -331,6 +380,8 @@ def parse_skill_result(output: str) -> SkillResult:
         tests_passed=tests_passed,
         verification_evidence=verification_evidence,
         review_patterns=review_patterns,
+        learnings=learnings,
+        learnings_compacted=learnings_compacted,
     )
 
 

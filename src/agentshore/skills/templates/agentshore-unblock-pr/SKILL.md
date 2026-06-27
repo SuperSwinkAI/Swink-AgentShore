@@ -52,7 +52,7 @@ If you merged B but the target still has an *independent* blocker (its own confl
   ```
   Add `{"type": "pr_merged", "pr": $PR, "head_sha": "<headRefOid>", "base_ref": "<target>", "reason": "target_merge_ready"}` to `artifacts` and emit `success: true`. If the merge command fails (lost a race, branch protection, transient), do **not** treat it as fatal: drop the `pr_merged` artifact, emit the `{"type": "stale_review_state", ...}`/unblock artifact instead, and let the PPO pick `merge_pr` next. Only merge here when fully ready — if any real blocker remains, resolve it (above) and leave merging to a later play.
 
-**Forbidden:** touching `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests that assert their existence — if CI changes are required, comment that CI config is owned by the human maintainer and exit `success: false`, `error: "ci-change requested but forbidden by skill policy"`. Never `git worktree add/remove/prune` (AgentShore owns lifecycle — you are already in the PR's worktree).
+**Forbidden:** touching `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests that assert their existence — if CI changes are required, comment that CI config is owned by the human maintainer and exit `success: false`, `error: "ci-change requested but forbidden by skill policy"`. Never `git worktree add/remove/prune` (AgentShore owns lifecycle — you are already in the PR's worktree). Never `gh repo fork`, never `git remote add` a non-origin remote, and never open a cross-fork PR (a `gh pr create` whose `--head` points at a fork). If pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` — do not work around it by forking.
 
 **Report — one fenced JSON block, nothing else:**
 
@@ -65,8 +65,11 @@ If you merged B but the target still has an *independent* blocker (its own confl
   "blocked_by": [],
   "addressed_items": ["rebased onto main (was CONFLICTING)", "reviewer requested null handling in src/widget.py"],
   "verification_evidence": [{"command": "pytest tests/test_widget.py -v", "exit_code": 0, "summary": "12 passed"}],
+  "learnings": [{"pattern": "rebase onto integration requires --rebase-merges when the branch has merge commits", "confidence": 0.8, "category": "git"}],
   "error": null
 }
 ```
+
+Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (build/test quirks, conventions, gotchas) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. NEVER record workarounds that violate the Forbidden-mutations rules (e.g. forking).
 
 On skip/block, `success: false` with populated `error` and `blocked_by` (e.g. `"merge_conflicts"`, `"stale_changes_requested_review"`, `"blocked_by_pr"` when the target is gated on an unmerged sibling PR). Never omit the result block.

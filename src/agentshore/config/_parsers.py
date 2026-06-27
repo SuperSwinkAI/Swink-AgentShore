@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast, overload
 
 if TYPE_CHECKING:
-    # Runtime imports stay function-local to avoid the config→state→config.models
-    # cycle; this is for annotations only (deferred by `from __future__`).
+    # Annotation-only (deferred by `from __future__`); runtime import stays
+    # function-local to break the config→state→config.models cycle.
     from agentshore.state import AgentType
 
 from agentshore.config.models import (
@@ -366,9 +366,8 @@ def _agent_default(name: str, key: str, fallback: float | int | None) -> float |
 
 def _parse_project(raw: _RawProject) -> ProjectConfig:
     target_branch = raw.get("target_branch")
-    # Normalise whitespace-only values to None so downstream callers can rely
-    # on ``cfg.project.target_branch or <fallback>`` without re-checking
-    # truthiness. An explicit empty string in YAML is treated as "unset".
+    # Whitespace-only → None so callers can rely on ``target_branch or <fallback>``;
+    # an explicit empty string in YAML means "unset".
     if isinstance(target_branch, str):
         target_branch = target_branch.strip() or None
     return ProjectConfig(
@@ -439,12 +438,10 @@ def _parse_agent(
     )
 
 
-# Characters disallowed in ``ssh_key_path``. The path is interpolated into a
-# ``GIT_SSH_COMMAND`` shell string at agent dispatch time
-# (``agentshore.agents.identity._build_overlay``); whitespace would split the
-# ``ssh -i`` argument and shell metacharacters would enable command injection
-# from a malicious ``agentshore.yaml``. Reject these at config parse time so the
-# ``GitHubIdentity`` dataclass is trustworthy by construction.
+# ssh_key_path is interpolated into a GIT_SSH_COMMAND shell string at dispatch
+# (agents.identity._build_overlay); whitespace splits the ``ssh -i`` arg and
+# shell metacharacters enable command injection from a malicious agentshore.yaml.
+# Rejected at parse time so GitHubIdentity is trustworthy by construction.
 _SSH_KEY_PATH_FORBIDDEN_CHARS = frozenset(
     " \t\n\r;&|$`\\\"'(){}<>*?!#",
 )
@@ -473,9 +470,8 @@ def _validate_ssh_key_path(name: str, value: str) -> str:
             f"{rendered}: {value!r}. Whitespace and shell metacharacters are "
             "rejected because the path is interpolated into GIT_SSH_COMMAND."
         )
-    # Confirm the string is a syntactically valid path. ``Path`` itself never
-    # raises for ordinary strings, but going through ``expanduser`` exercises
-    # the same normalization path the env overlay will use later.
+    # Exercise the same expanduser normalization the env overlay uses later,
+    # confirming the string is a syntactically valid path.
     Path(value).expanduser()
     return value
 
@@ -684,16 +680,14 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
     from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
 
     for agent_name, agent_cfg in agents.items():
-        # Unsupported agents are already stripped by _strip_unsupported_agents, so
-        # this resolves for every remaining entry; the guard is belt-and-suspenders.
+        # Unsupported agents already stripped upstream; this None guard is defensive.
         resolved = _resolve_agent_type(agent_cfg, agent_name)
         if resolved is None:
             continue
         if REASONING_EFFORTS.get(resolved):
-            # This agent type supports effort — nothing to reject.
             continue
 
-        # Agent type has an empty effort vocabulary (e.g. Antigravity).
+        # Empty effort vocabulary (e.g. Antigravity) → reject any effort field.
         if agent_cfg.reasoning_effort:
             raise ConfigError(
                 f"agents.{agent_name}.reasoning_effort is not supported for "

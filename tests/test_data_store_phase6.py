@@ -22,10 +22,6 @@ from agentshore.data import (
     TrajectorySnapshotRecord,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest_asyncio.fixture
 async def store(tmp_path):
@@ -56,11 +52,6 @@ async def _seed(store: DataStore) -> tuple[str, int]:
     return sid, play_id
 
 
-# ---------------------------------------------------------------------------
-# get_session
-# ---------------------------------------------------------------------------
-
-
 async def test_get_session_returns_record(store):
     sid = "sess-get"
     await store.create_session(
@@ -87,11 +78,6 @@ async def test_get_session_not_found(store):
     assert rec is None
 
 
-# ---------------------------------------------------------------------------
-# list_sessions
-# ---------------------------------------------------------------------------
-
-
 async def test_list_sessions_ordered(store):
     for sid, ts in [("s-old", "2026-04-26T00:00:00"), ("s-new", "2026-04-27T00:00:00")]:
         await store.create_session(
@@ -102,11 +88,6 @@ async def test_list_sessions_ordered(store):
     # Most recent first
     assert sessions[0].session_id == "s-new"
     assert sessions[1].session_id == "s-old"
-
-
-# ---------------------------------------------------------------------------
-# get_agents
-# ---------------------------------------------------------------------------
 
 
 async def test_get_agents_for_session(store):
@@ -129,11 +110,6 @@ async def test_get_agents_empty(store):
     )
     agents = await store.get_agents(sid)
     assert agents == []
-
-
-# ---------------------------------------------------------------------------
-# list_all_issues
-# ---------------------------------------------------------------------------
 
 
 async def test_list_all_issues(store):
@@ -195,11 +171,6 @@ async def test_get_open_issues_tolerates_malformed_labels(store):
     assert issues[0].labels == []
 
 
-# ---------------------------------------------------------------------------
-# list_scope_drift
-# ---------------------------------------------------------------------------
-
-
 async def test_list_scope_drift(store):
     sid, play_id = await _seed(store)
     for i, ts in enumerate(["2026-04-27T00:02:00", "2026-04-27T00:03:00"]):
@@ -217,11 +188,6 @@ async def test_list_scope_drift(store):
     # Ordered by logged_at ASC
     assert drifts[0].artifact == "file_0.py"
     assert drifts[1].artifact == "file_1.py"
-
-
-# ---------------------------------------------------------------------------
-# list_trajectory_snapshots
-# ---------------------------------------------------------------------------
 
 
 async def test_list_trajectory_snapshots(store):
@@ -250,11 +216,6 @@ async def test_list_trajectory_snapshots(store):
     # Ordered by play_id ASC
     assert snapshots[0].play_id == play_id
     assert snapshots[1].play_id == play_id2
-
-
-# ---------------------------------------------------------------------------
-# list_review_patterns
-# ---------------------------------------------------------------------------
 
 
 async def test_list_review_patterns(store):
@@ -384,11 +345,6 @@ async def test_record_review_pattern_different_categories_not_merged(store):
     assert len(patterns) == 2
     categories = {p.category for p in patterns}
     assert categories == {"correctness", "style"}
-
-
-# ---------------------------------------------------------------------------
-# create_archive / list_archives / get_archive
-# ---------------------------------------------------------------------------
 
 
 async def test_create_archive(store):
