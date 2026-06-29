@@ -31,10 +31,12 @@ function renderScreen(esr: EsrPayload | null, opts: RenderOpts = {}) {
         esr,
         lastProjectPath: opts.lastProjectPath ?? null,
         sessionStarting: false,
+        sessionReattaching: false,
         setDashboardUrl: () => undefined,
         setEsr: () => undefined,
         setLastProjectPath: () => undefined,
         setSessionStarting: () => undefined,
+        setSessionReattaching: () => undefined,
       }}
     >
       <MemoryRouter initialEntries={["/session/esr"]}>

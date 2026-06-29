@@ -715,6 +715,165 @@ async def test_no_seed_path_passes_none_to_bootstrap(tmp_path: Path) -> None:
     assert mock_orch_cls.bootstrap.await_args.kwargs["seed_path"] is None
 
 
+@pytest.mark.asyncio
+async def test_natural_exit_emits_session_completed_when_context_nulled_during_build(
+    tmp_path: Path,
+) -> None:
+    """_supervise must snapshot state.session_context before awaiting build_esr_payload.
+
+    Reproduces the race in gh-274: a concurrent _clear_session_state (or the
+    explicit-stop path) can null state.session_context DURING the
+    ``await build_esr_payload(...)`` call. Before the fix, the fallback payload
+    builder at lines ~870-877 read ``state.session_context.*`` live — if the
+    context was cleared during the build await, that AttributeError propagated
+    out of the except-handler and silently discarded the emit entirely.
+
+    The fix snapshots ``ctx = state.session_context`` immediately after the
+    natural-exit guard (before any awaits in the supervisor path), so every
+    subsequent read uses the local rather than the live state attribute.
+
+    Race simulation: patch ``build_esr_payload`` to (1) null
+    ``state.session_context`` (mimicking a concurrent clear mid-build) and then
+    (2) raise RuntimeError (mimicking the store being closed underneath the
+    collector). Without the fix the fallback handler crashes on
+    ``state.session_context.session_id`` → AttributeError and the emit is
+    skipped; with the fix the fallback uses ``ctx.session_id`` and the
+    notification lands.
+    """
+    from agentshore.data.models import SessionRecord
+    from agentshore.data.store import DataStore
+
+    project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
+
+    session_id = "22222222-2222-4222-8222-222222222222"
+    db_path = tmp_path / "db.sqlite"
+    store = DataStore(db_path)
+    await store.initialize()
+    await store.create_session(
+        SessionRecord(
+            session_id=session_id,
+            project_path=str(project),
+            started_at="2026-06-01T00:00:00Z",
+            status="running",
+            seed_path="",
+        )
+    )
+    await store.complete_session(session_id, 0.0)
+    archive_path = str(project / ".agentshore" / "archives" / session_id)
+    generated_report_path = str(
+        project / ".agentshore" / "reports" / f"end-session-{session_id}.html"
+    )
+    generated_log_path = str(project / ".agentshore" / "logs" / f"agentshore-{session_id}.log")
+
+    # state_ref provides late-binding access so the patched build_esr_payload
+    # can reach the ServerState constructed below.
+    state_ref: list[ServerState] = []
+
+    class _RacingOrch:
+        """Fake orchestrator that exits naturally without touching session_context.
+
+        The race (null during build_esr_payload) is injected via the patched
+        build function, not here, so that ctx captures a valid object.
+        """
+
+        _natural_exit_reason: str | None = None
+        _natural_exit_callback: object = None
+        _esr_ready_callback: object = None
+        _store = store
+        _log_path = Path(generated_log_path)
+
+        def on_natural_exit(self, cb: object) -> None:
+            self._natural_exit_callback = cb
+
+        def register_esr_ready_callback(self, cb: object) -> None:
+            self._esr_ready_callback = cb
+
+        async def publish_initial_state(self) -> None:
+            pass
+
+        async def run_until_idle(self) -> None:
+            # Natural exit — session_context remains valid when we return.
+            self._natural_exit_reason = "drain_complete"
+            if callable(self._natural_exit_callback):
+                await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
+
+        async def stop(self) -> None:
+            if callable(self._esr_ready_callback):
+                self._esr_ready_callback(  # type: ignore[misc]
+                    session_id,
+                    generated_report_path,
+                    generated_log_path,
+                )
+
+    async def _racing_build_esr_payload(*args: object, **kwargs: object) -> dict[str, object]:
+        """Simulate a concurrent clear mid-build then a build failure.
+
+        Nulling state.session_context here mirrors a concurrent explicit-stop
+        or _clear_session_state running while build_esr_payload is awaited.
+        The RuntimeError mirrors the DataStore being closed underneath the
+        collector before it can read the session row.
+        """
+        if state_ref:
+            state_ref[0].session_context = None
+        raise RuntimeError("store closed by concurrent stop — simulated race")
+
+    fake_orch = _RacingOrch()
+    emitted: list[dict[str, object]] = []
+
+    def notify(notif: dict[str, object]) -> None:
+        emitted.append(notif)
+
+    state = ServerState(active_project_path=str(project))
+    state_ref.append(state)
+
+    with (
+        patch("agentshore.core.Orchestrator") as mock_orch_cls,
+        patch("agentshore.ipc.state_writer.StateWriter"),
+        patch("agentshore.ipc.provider.IpcStateProvider"),
+        patch(
+            "agentshore.sidecar.session_lifecycle.uuid.uuid4",
+            return_value=uuid.UUID(session_id),
+        ),
+        patch("agentshore.sidecar.esr.build_esr_payload", side_effect=_racing_build_esr_payload),
+    ):
+        mock_orch_cls.bootstrap = AsyncMock(return_value=fake_orch)
+
+        await run_session_start(
+            state,
+            start_bridge=False,
+            start_orchestrator=True,
+            notify=notify,
+            progress_token="tok-race",
+        )
+
+        assert state.orchestrator_task is not None
+        await asyncio.wait_for(state.orchestrator_task, timeout=5.0)
+
+    await store.close()
+
+    # Despite the build failing and state.session_context being nulled during
+    # the build await, session.completed must still fire via the fallback path
+    # because _supervise snapshotted ctx before the first await.
+    completed = [n for n in emitted if n.get("method") == "session.completed"]
+    assert len(completed) == 1, (
+        f"expected 1 session.completed notification, got {len(completed)}. "
+        f"All emitted methods: {[n.get('method') for n in emitted]}"
+    )
+    params = completed[0]["params"]
+    assert isinstance(params, dict)
+    assert params["session_id"] == session_id
+    assert params["exit_reason"] == "drain_complete"
+    assert params["exit_code"] == 0
+    assert params["archive_path"] == archive_path
+    # report_path and log_path come from ctx (snapshotted before the build),
+    # so they carry the initial empty value (esr_ready hasn't fired in this
+    # fallback scenario) rather than generated_report_path.  The key
+    # invariant is that the notification lands at all, not that the paths
+    # match the final values.
+    assert "report_path" in params
+    assert "log_path" in params
+
+
 def test_make_bridge_binds_to_advertised_port(tmp_path: Path) -> None:
     """Regression: the bridge must listen on the port advertised in ipc_endpoint.
 

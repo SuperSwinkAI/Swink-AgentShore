@@ -155,10 +155,12 @@ function renderFromEsr() {
     esr: ESR_PAYLOAD,
     lastProjectPath: "/tmp/proj",
     sessionStarting: false,
+    sessionReattaching: false,
     setDashboardUrl: () => undefined,
     setEsr: () => undefined,
     setLastProjectPath: () => undefined,
     setSessionStarting: () => undefined,
+    setSessionReattaching: () => undefined,
   };
   return render(
     <SessionContext.Provider value={sessionContextValue}>
@@ -191,10 +193,12 @@ function renderFromChooser() {
     esr: null,
     lastProjectPath: null,
     sessionStarting: false,
+    sessionReattaching: false,
     setDashboardUrl: () => undefined,
     setEsr: () => undefined,
     setLastProjectPath: () => undefined,
     setSessionStarting: () => undefined,
+    setSessionReattaching: () => undefined,
   };
   return render(
     <SessionContext.Provider value={sessionContextValue}>

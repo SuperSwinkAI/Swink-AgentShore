@@ -120,10 +120,19 @@ export interface SessionContextValue {
    * instead of a blank-office "did anything happen?" window.
    */
   sessionStarting: boolean;
+  /**
+   * True from mount until ``current_session`` resolves (one way or
+   * another). While true the shell renders an immersive splash instead of
+   * ChooseProjectScreen so a live-session reattach never flashes the
+   * project picker. Set to ``true`` by ``SessionProvider`` and cleared by
+   * the App-level reattach effect in its ``.finally`` handler.
+   */
+  sessionReattaching: boolean;
   setDashboardUrl: (url: string | null) => void;
   setEsr: (payload: EsrPayload | null) => void;
   setLastProjectPath: (path: string | null) => void;
   setSessionStarting: (starting: boolean) => void;
+  setSessionReattaching: (reattaching: boolean) => void;
 }
 
 export const SessionContext = createContext<SessionContextValue>({
@@ -131,10 +140,12 @@ export const SessionContext = createContext<SessionContextValue>({
   esr: null,
   lastProjectPath: null,
   sessionStarting: false,
+  sessionReattaching: false,
   setDashboardUrl: () => undefined,
   setEsr: () => undefined,
   setLastProjectPath: () => undefined,
   setSessionStarting: () => undefined,
+  setSessionReattaching: () => undefined,
 });
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -142,6 +153,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [esr, setEsr] = useState<EsrPayload | null>(null);
   const [lastProjectPath, setLastProjectPath] = useState<string | null>(null);
   const [sessionStarting, setSessionStarting] = useState(false);
+  // Starts true so the shell shows a splash instead of the project picker
+  // until the reattach probe in App resolves. Cleared in .finally.
+  const [sessionReattaching, setSessionReattaching] = useState(true);
   return (
     <SessionContext.Provider
       value={{
@@ -149,10 +163,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         esr,
         lastProjectPath,
         sessionStarting,
+        sessionReattaching,
         setDashboardUrl,
         setEsr,
         setLastProjectPath,
         setSessionStarting,
+        setSessionReattaching,
       }}
     >
       {children}
