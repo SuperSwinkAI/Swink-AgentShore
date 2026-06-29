@@ -385,6 +385,33 @@ def test_select_reverse_failsafe_disabled_by_default_returns_none():
 
 
 def test_select_auto_reverse_failsafe_after_idle_all_masked_ticks():
+    """With reverse_failsafe_enabled=True the manual path fires on the first
+    all-masked tick (no 3-tick wait needed).  The 3-tick accumulation behaviour
+    is an internal property of _auto_reverse_failsafe_should_unmask, tested
+    separately by the direct-method tests."""
+    sel = _build_selector(
+        all_preconds=False,
+        resolver_params=PlayParams(issue_number=234),
+        reverse_failsafe_enabled=True,
+    )
+    sel._policy.act = MagicMock(  # type: ignore[method-assign]
+        return_value=(PLAY_TO_INDEX[PlayType.ISSUE_PICKUP], -0.1, 0.0)
+    )
+    state = _state(open_issues=[_issue()], agents=[_agent()])
+
+    with patch("agentshore.rl.selector._logger"):
+        result = asyncio.run(sel.select(state))
+
+    assert result is not None
+    play_type, params = result
+    assert play_type == PlayType.ISSUE_PICKUP
+    assert params.extras["reverse_failsafe"] is True
+    assert params.extras["reverse_failsafe_bypassed_preconditions"] is True
+
+
+def test_select_auto_reverse_failsafe_disabled_by_default():
+    """reverse_failsafe_enabled defaults to False — the auto path must not fire
+    even after the idle-tick threshold is exceeded (#296)."""
     sel = _build_selector(
         all_preconds=False,
         resolver_params=PlayParams(issue_number=234),
@@ -395,15 +422,10 @@ def test_select_auto_reverse_failsafe_after_idle_all_masked_ticks():
     state = _state(open_issues=[_issue()], agents=[_agent()])
 
     with patch("agentshore.rl.selector._logger"):
-        assert asyncio.run(sel.select(state)) is None
-        assert asyncio.run(sel.select(state)) is None
-        result = asyncio.run(sel.select(state))
-
-    assert result is not None
-    play_type, params = result
-    assert play_type == PlayType.ISSUE_PICKUP
-    assert params.extras["reverse_failsafe"] is True
-    assert params.extras["reverse_failsafe_bypassed_preconditions"] is True
+        assert asyncio.run(sel.select(state)) is None  # tick 1
+        assert asyncio.run(sel.select(state)) is None  # tick 2
+        assert asyncio.run(sel.select(state)) is None  # tick 3 — no fire when disabled
+        assert asyncio.run(sel.select(state)) is None  # tick 4 — still no fire
 
 
 def test_auto_reverse_failsafe_counts_lifecycle_only_mask_as_no_work():
@@ -441,6 +463,7 @@ def test_select_auto_reverse_failsafe_opens_dead_end_controls():
     sel = _build_selector(
         all_preconds=False,
         resolver_params=PlayParams(),
+        reverse_failsafe_enabled=True,
     )
     sel._resolver.resolve = AsyncMock(return_value=None)
     sel._policy.act = MagicMock(  # type: ignore[method-assign]
