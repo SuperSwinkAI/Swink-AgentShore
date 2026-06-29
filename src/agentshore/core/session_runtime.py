@@ -160,14 +160,9 @@ class SessionRuntime:
     )
     resource_failure_counts: dict[str, int] = field(default_factory=dict)
     parked_resource_keys: set[str] = field(default_factory=set)
-    # Agent types whose backend auth failed this session. One AUTH failure
-    # suppresses ALL dispatch of that type (blocks PPO re-selection + fresh
-    # spawns into a dead backend) since resource-key parking above is keyed on
-    # issues/branches, not agent types.
-    auth_suppressed_agent_types: set[str] = field(default_factory=set)
     # Agent types that hit a *transient* launch wedge (Grok first-byte timeout).
-    # DECAYING suppression (unlike auth_suppressed_agent_types): agent_type ->
-    # expiry tick. State-builder seeds (tick + _GROK_WEDGE_COOLDOWN_TICKS) and
+    # DECAYING suppression: agent_type -> expiry tick. State-builder seeds
+    # (tick + _GROK_WEDGE_COOLDOWN_TICKS) and
     # drops expired ones each snapshot, so a wedged type auto-recovers (#202).
     # last_play_id is the tick reference.
     wedge_cooldown_until: dict[str, int] = field(default_factory=dict)

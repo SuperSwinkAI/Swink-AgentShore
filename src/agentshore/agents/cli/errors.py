@@ -99,6 +99,13 @@ __all__ = [
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
+# Raw CLI prompt-wait artifacts an agent prints to stdout/stderr while stalled
+# (e.g. codex's "Reading additional input from stdin..."). These are not useful
+# failure feedback — they are the CLI's own input prompt — so they must not leak
+# verbatim into the play error / ESR / UI. ``_process_error_detail`` translates a
+# tail that is *only* such an artifact into a description of what happened.
+_STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
+
 # ---------------------------------------------------------------------------
 # Classification predicates
 # ---------------------------------------------------------------------------
@@ -125,6 +132,16 @@ def _is_cache_renewal_stdin_hang(lowered: str) -> bool:
     return _is_transient_cache_blip(lowered) and all(
         m in lowered for m in _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS
     )
+
+
+def _is_stdin_prompt_artifact(lowered: str) -> bool:
+    """True when the text is the CLI's own stdin prompt-wait line, not real output.
+
+    Surfaced so a bare prompt artifact (the codex "Reading additional input from
+    stdin..." line) is replaced with a useful description in the play error
+    rather than leaked verbatim into the ESR/UI.
+    """
+    return any(m in lowered for m in _STDIN_PROMPT_ARTIFACT_MARKERS)
 
 
 def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
@@ -231,6 +248,23 @@ def _process_error_detail(
             f"{agent_type.value}{model_text} is not available to the CLI/API "
             f"(invalid or unsupported model). "
             f"Check agents.{agent_type.value}.model_tiers in agentshore.yaml.{suffix}"
+        )
+
+    if error_class == ErrorClass.AUTH:
+        return (
+            f"{agent_type.value} backend authentication failed — credential "
+            f"expired, invalid, or rejected by the provider. The agent takes a "
+            f"break and retries; if it keeps failing, refresh this agent's token."
+        )
+
+    # A tail that is only the CLI's stdin prompt-wait artifact (e.g. codex's
+    # "Reading additional input from stdin...") is the CLI's input prompt, not
+    # failure feedback — describe what happened instead of leaking it.
+    if _is_stdin_prompt_artifact(f"{stderr}\n{stdout}".lower()):
+        return (
+            f"{agent_type.value} stalled waiting for input on stdin and produced "
+            f"no usable output (often a backend credential-renewal prompt or "
+            f"prompt-mode mismatch)"
         )
 
     cleaned = _clean_stderr(stderr)

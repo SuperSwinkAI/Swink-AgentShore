@@ -22,6 +22,7 @@ from agentshore.agents.cli_agent import (
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
     _is_terminal_event,
+    _process_error_detail,
     _read_output,
     _StderrSniffer,
     _watch_stderr_auth,
@@ -2072,6 +2073,46 @@ def test_classify_error_grok_spending_limit_is_rate_limit_not_auth() -> None:
 
 def test_classify_error_auth() -> None:
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
+
+
+def test_process_error_detail_auth_is_humanized() -> None:
+    # An AUTH failure produces an actionable message, not a raw stderr/stdout dump.
+    detail = _process_error_detail(
+        agent_type=AgentType.CODEX,
+        model="o3",
+        error_class=ErrorClass.AUTH,
+        stderr="HTTP 401 Unauthorized",
+        stdout="",
+    )
+    assert "authentication failed" in detail
+    assert "take" in detail and "break" in detail
+    assert "401" not in detail
+
+
+def test_process_error_detail_stdin_prompt_artifact_is_replaced() -> None:
+    # The raw "Reading additional input from stdin..." prompt must not leak as the
+    # failure reason — it is replaced with a description of what happened.
+    detail = _process_error_detail(
+        agent_type=AgentType.CODEX,
+        model="o3",
+        error_class=ErrorClass.UNKNOWN,
+        stderr="",
+        stdout="Reading additional input from stdin...",
+    )
+    assert "Reading additional input from stdin" not in detail
+    assert "stdin" in detail and "no usable output" in detail
+
+
+def test_process_error_detail_falls_back_to_stderr_for_plain_errors() -> None:
+    # A normal error still surfaces its (cleaned) stderr.
+    detail = _process_error_detail(
+        agent_type=AgentType.CODEX,
+        model="o3",
+        error_class=ErrorClass.UNKNOWN,
+        stderr="boom: something broke",
+        stdout="",
+    )
+    assert "boom: something broke" in detail
 
 
 def test_classify_error_github_repo_access_as_auth() -> None:

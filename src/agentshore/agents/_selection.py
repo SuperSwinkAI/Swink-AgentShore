@@ -98,7 +98,6 @@ def select_agent_for(
     branch: str | None = None,
     required_agent_type: str | None = None,
     required_agent_id: str | None = None,
-    auth_suppressed_types: frozenset[str] = frozenset(),
 ) -> AgentHandle:
     """Return the best available handle for *play_type* using the rule chain.
 
@@ -115,20 +114,6 @@ def select_agent_for(
 
     if not candidates:
         raise AntiConfirmationViolation("No IDLE agents available for selection")
-
-    # -- Step 0·auth: drop session-auth-suppressed types ----------------------
-    # A backend-auth failure benches the whole type for the session (#277). The
-    # auth-failed handle returns to IDLE (process healthy, only token/quota dead),
-    # so unlike a rate_limit ERROR hold (filtered by the IDLE gate above) it must
-    # be excluded explicitly — else a late-resolved play (issue_pickup /
-    # reconcile_state, runner picked here not at the candidate layer) re-dispatches
-    # the dead type every tick. Mirrors ``compute_agent_eligibility_mask``.
-    if auth_suppressed_types:
-        candidates = [h for h in candidates if h.agent_type.value not in auth_suppressed_types]
-        if not candidates:
-            raise AntiConfirmationViolation(
-                "All IDLE agents are of auth-suppressed types for the session"
-            )
 
     # -- Step 0a: required-id pin (resolver-chosen reviewer) -----------------
     # The resolver picks a specific agent for code_review based on GH identity.

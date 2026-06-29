@@ -42,7 +42,6 @@ from agentshore.plays.candidates.predicates import (
     _SIZE_RANK,
     _TRUNK_RESOURCE_KEY,
     _bool_or_none,
-    _candidate_auth_suppressed_type,
     _candidate_resolved_agent_type,
     _candidate_wedge_cooldown_type,
     _labels,
@@ -362,10 +361,9 @@ class PlayCandidateAnalyzer:
         blocked: dict[PlayType, list[str]] = {}
         active_keys = active_resource_keys(state)
         parked_keys = state.parked_resource_keys
-        auth_suppressed = state.auth_suppressed_agent_types
         wedge_cooldown = state.wedge_cooldown_agent_types
         # agent_id -> agent_type.value, so a target_agent_id candidate can be
-        # checked against the suppression set.
+        # checked against the launch-wedge cooldown set.
         agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
 
         def add(candidate: PlayCandidate) -> None:
@@ -375,18 +373,6 @@ class PlayCandidateAnalyzer:
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
                 msg = f"resource parked (worktree allocation failed): {', '.join(parked_hit)}"
-                if msg not in reasons:
-                    reasons.append(msg)
-                return
-            # #zeke auth-hang: one backend-auth failure suppresses ALL dispatch of
-            # that agent type for the session (incl. instantiate_agent of the dead
-            # type). HARD mask — unrecoverable without a new session/token.
-            suppressed_type = _candidate_auth_suppressed_type(
-                candidate, auth_suppressed, agent_id_to_type
-            )
-            if suppressed_type is not None:
-                reasons = blocked.setdefault(candidate.play_type, [])
-                msg = f"agent type auth-suppressed for session: {suppressed_type}"
                 if msg not in reasons:
                     reasons.append(msg)
                 return
@@ -1167,7 +1153,6 @@ __all__ = [
     "pr_unblockable",
     "_pr_blocked_reasons",
     "_candidate_resolved_agent_type",
-    "_candidate_auth_suppressed_type",
     "_candidate_wedge_cooldown_type",
     "_TRUNK_RESOURCE_KEY",
     "_SIZE_RANK",

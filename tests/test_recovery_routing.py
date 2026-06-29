@@ -25,6 +25,7 @@ def test_recoverable_set_is_exactly_the_expected_classes() -> None:
         frozenset(
             {
                 ErrorClass.RATE_LIMIT,
+                ErrorClass.AUTH,
                 ErrorClass.UNKNOWN,
                 ErrorClass.TRANSIENT_NETWORK,
                 ErrorClass.CODEX_ROLLOUT,
@@ -39,6 +40,8 @@ def test_routing_kinds_match_the_pre_collapse_frozensets() -> None:
     # Reproduces the three original frozensets' routing exactly (plus codex_rollout
     # now consistently recoverable).
     assert _RECOVERY_OVERRIDE_KIND[ErrorClass.RATE_LIMIT] is OverrideKind.RATE_LIMIT_RECOVERY
+    # AUTH reuses the quota recovery path — break, then back to work.
+    assert _RECOVERY_OVERRIDE_KIND[ErrorClass.AUTH] is OverrideKind.RATE_LIMIT_RECOVERY
     assert _RECOVERY_OVERRIDE_KIND[ErrorClass.NO_OP] is OverrideKind.NOOP_RECOVERY
     for ec in (ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK):
         assert _RECOVERY_OVERRIDE_KIND[ec] is OverrideKind.UNKNOWN_ERROR_RECOVERY
@@ -46,7 +49,6 @@ def test_routing_kinds_match_the_pre_collapse_frozensets() -> None:
 
 def test_non_recoverable_classes_are_unrouted() -> None:
     for ec in (
-        ErrorClass.AUTH,
         ErrorClass.INVALID_MODEL,
         ErrorClass.CRASH_OOM,
         ErrorClass.CRASH_ENOSPC,

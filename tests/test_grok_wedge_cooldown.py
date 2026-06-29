@@ -1,10 +1,8 @@
 """Tests for #202 bounded-backoff Grok launch-wedge suppression.
 
-A Grok first-byte launch wedge used to permanently disable the agent type for
-the session via the grow-only ``last_auth_failed_types`` set. These tests pin the
-new behavior: a wedge records a DECAYING cooldown that expires after
-``_GROK_WEDGE_COOLDOWN_TICKS`` ticks (type re-eligible), while a genuine
-``ErrorClass.AUTH`` failure stays permanent.
+A Grok first-byte launch wedge records a DECAYING cooldown that expires after
+``_GROK_WEDGE_COOLDOWN_TICKS`` ticks (type re-eligible). These tests pin that
+decay behavior.
 """
 
 from __future__ import annotations
@@ -84,8 +82,6 @@ def test_wedge_cooldown_is_not_permanent_auth_suppression() -> None:
     manager = SimpleNamespace(wedge_cooldown_types={"grok"})
     builder = _fake_builder(manager, runtime)
     builder._drain_wedge_cooldowns()
-    # Permanent set is untouched by the wedge path.
-    assert runtime.auth_suppressed_agent_types == set()
 
 
 def test_drain_tolerates_manager_without_attribute() -> None:
@@ -108,8 +104,6 @@ def test_drain_seeds_cooldown_for_agy_stream_hang_cluster() -> None:
     active = builder._drain_wedge_cooldowns()
     assert active == frozenset({"antigravity"})
     assert runtime.wedge_cooldown_until["antigravity"] == 5 + _GROK_WEDGE_COOLDOWN_TICKS
-    # Decaying cooldown only — never the permanent auth-suppression set.
-    assert runtime.auth_suppressed_agent_types == set()
 
 
 def _candidate(play_type: PlayType, params: PlayParams) -> PlayCandidate:
