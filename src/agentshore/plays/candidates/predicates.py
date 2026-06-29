@@ -184,20 +184,6 @@ def _candidate_resolved_agent_type(
     return None
 
 
-def _candidate_auth_suppressed_type(
-    candidate: PlayCandidate,
-    auth_suppressed: frozenset[str],
-    agent_id_to_type: dict[str, str],
-) -> str | None:
-    """Return the suppressed agent-type value if this candidate is masked, else None."""
-    if not auth_suppressed:
-        return None
-    resolved = _candidate_resolved_agent_type(candidate, agent_id_to_type)
-    if resolved is not None and resolved in auth_suppressed:
-        return resolved
-    return None
-
-
 def _candidate_wedge_cooldown_type(
     candidate: PlayCandidate,
     wedge_cooldown: frozenset[str],
@@ -205,10 +191,9 @@ def _candidate_wedge_cooldown_type(
 ) -> str | None:
     """Return the cooled-down agent-type value if this candidate is masked, else None.
 
-    Sibling of ``_candidate_auth_suppressed_type`` for the DECAYING launch-wedge
-    cooldown (#202): the cooldown set already contains only active (non-expired)
-    types, so auto-unmask happens for free once the state-builder drops the
-    expired entry.
+    For the DECAYING launch-wedge cooldown (#202): the cooldown set already
+    contains only active (non-expired) types, so auto-unmask happens for free
+    once the state-builder drops the expired entry.
     """
     if not wedge_cooldown:
         return None

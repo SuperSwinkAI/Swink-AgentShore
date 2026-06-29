@@ -117,15 +117,23 @@ class AgentStatus(enum.Enum):
 # Error classes (from ``cli_agent._classify_error``) that a TAKE_BREAK recovery
 # can plausibly clear, so an ERROR agent in one of these gets a recovery-first
 # path (TAKE_BREAK → recovery-exhausted → END_AGENT). An ERROR agent in ANY
-# other class (auth, invalid_model, crash_oom, crash_signal, timeout,
-# codex_rollout, or None) is terminal: no recovery path exists, so END_AGENT is
-# unmasked for it immediately rather than leaving it leaked until end_session
-# (#20). Kept here so the eligibility mask and the END_AGENT resolver agree.
-# "transient_network" (socket close / connection reset, #23) is recoverable —
-# it is a precise carve-out of the old "unknown" bucket, which was recoverable.
+# other class (invalid_model, crash_oom, crash_signal, timeout, or None) is
+# terminal: no recovery path exists, so END_AGENT is unmasked for it immediately
+# rather than leaving it leaked until end_session (#20). Kept here so the
+# eligibility mask and the END_AGENT resolver agree. "transient_network" (socket
+# close / connection reset, #23) is recoverable — it is a precise carve-out of
+# the old "unknown" bucket, which was recoverable.
 RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
     {
         ErrorClass.RATE_LIMIT,
+        # A backend-auth failure (expired/rotated token, 401/403) is recoverable
+        # exactly like a quota/rate-limit hold: the agent takes a break and
+        # retries; a transient shared-credential blip clears on its own, and a
+        # genuinely-dead token simply keeps failing the break until
+        # recovery-exhausted unmasks END_AGENT — the same bounded path every
+        # other recoverable class follows. (Previously auth permanently benched
+        # the whole agent type for the session with no way back.)
+        ErrorClass.AUTH,
         ErrorClass.UNKNOWN,
         ErrorClass.TRANSIENT_NETWORK,
         # codex_rollout (the Codex CLI losing its on-disk rollout thread id) is
@@ -689,14 +697,8 @@ class OrchestratorState:
     # re-selected every tick (the unblock_pr hot-loop, issue #60). Snapshotted
     # each tick from the orchestrator's in-memory park set; empty by default.
     parked_resource_keys: frozenset[str] = field(default_factory=frozenset)
-    # Agent-type values (e.g. ``"codex"``) whose backend auth failed this session.
-    # The candidate analyzer masks every play resolving to a suppressed type —
-    # including instantiate_agent for that type — so one Codex token-expiry can't
-    # have PPO keep re-selecting codex into a dead backend (#zeke auth-hang).
-    # Snapshotted each tick from the orchestrator's in-memory set; empty by default.
-    auth_suppressed_agent_types: frozenset[str] = field(default_factory=frozenset)
     # Agent-type values currently in a transient launch-wedge cooldown (Grok
-    # first-byte timeout). Unlike ``auth_suppressed_agent_types`` this is a
+    # first-byte timeout). This is a
     # DECAYING mask: the state-builder drops each entry once its cooldown expires,
     # so the type auto-recovers without a new session/token (#202). The candidate
     # analyzer masks plays resolving to a type in this set, with a distinct block

@@ -596,21 +596,8 @@ class EligibilityAuthority:
                 classification=MaskClassification.TRANSIENT,
                 source=MaskSource.ELIGIBILITY,
             )
-        # Auth-suppression filter — mirrors ``compute_agent_eligibility_mask`` so
-        # the reported cause matches why the mask fired. A backend-auth failure
-        # benches the type for the whole session (HARD: needs a new session/token
-        # to clear), unlike the transient rate_limit hold above (#277).
-        auth_ok = [
-            a for a in rate_ok if a.agent_type.value not in state.auth_suppressed_agent_types
-        ]
-        if not auth_ok:
-            return MaskReason(
-                text=f"No IDLE agent of a non-auth-suppressed type for {pt.value!r}",
-                classification=MaskClassification.HARD,
-                source=MaskSource.ELIGIBILITY,
-            )
         cap_ok = [
-            a for a in auth_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
+            a for a in rate_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
         ]
         if not cap_ok:
             return MaskReason(
@@ -908,15 +895,6 @@ def compute_agent_eligibility_mask(
         for a in state.agents
         if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
     }
-    # Agent types benched for the session by a backend-auth failure (#277). The
-    # auth-failed handle is back in IDLE (the agent is fine, its backend token is
-    # dead), so — unlike rate_limit, which the ERROR-status IDLE gate already
-    # excludes — an auth-suppressed type stays in the IDLE pool and must be
-    # filtered explicitly here, or a play whose only capable idle agent is the
-    # dead type stays selectable and fails at runner selection every tick. The
-    # runner selector (``select_agent_for``) mirrors this filter.
-    auth_suppressed_types: frozenset[str] = state.auth_suppressed_agent_types
-
     for i, pt in enumerate(V1_ACTION_ORDER):
         try:
             play = registry.get(pt)
@@ -938,7 +916,6 @@ def compute_agent_eligibility_mask(
             and (allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers)
             and a.agent_type.value not in excluded_types
             and a.agent_type.value not in rate_limited_types
-            and a.agent_type.value not in auth_suppressed_types
             and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
         ]
 

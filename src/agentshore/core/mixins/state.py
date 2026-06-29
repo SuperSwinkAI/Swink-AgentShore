@@ -610,20 +610,10 @@ class StateBuilder:
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
-        # Drain manager-stamped backend-auth failures into the session
-        # suppression set. This is the one point with both manager + runtime in
-        # hand, so per-agent AUTH classification becomes session-wide agent-type
-        # suppression the candidate analyzer masks on (#zeke auth-hang).
-        manager_auth_failed: set[str] = getattr(self._manager, "last_auth_failed_types", set())
-        newly_auth_suppressed = manager_auth_failed - self._runtime.auth_suppressed_agent_types
-        if newly_auth_suppressed:
-            self._runtime.auth_suppressed_agent_types |= newly_auth_suppressed
-            _logger.warning(
-                "agent_type_auth_suppressed",
-                session_id=self._session_id,
-                agent_types=sorted(newly_auth_suppressed),
-                reason="backend_auth_failed",
-            )
+        # Backend-auth failures are no longer benched session-wide: an AUTH-class
+        # ERROR handle is routed through the standard take_break recovery
+        # (recovery_tracker), exactly like a quota/rate-limit hold, so it recovers
+        # back to work rather than disabling the whole agent type for the session.
         wedge_cooldown_types = self._drain_wedge_cooldowns()
         cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
@@ -733,7 +723,6 @@ class StateBuilder:
                 else frozenset()
             ),
             parked_resource_keys=frozenset(self._runtime.parked_resource_keys),
-            auth_suppressed_agent_types=frozenset(self._runtime.auth_suppressed_agent_types),
             wedge_cooldown_agent_types=wedge_cooldown_types,
             plays_since_last_instantiate=plays_since_last_instantiate,
             plays_since_last_play_type=plays_since_last_play_type,

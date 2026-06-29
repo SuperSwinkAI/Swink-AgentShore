@@ -146,20 +146,8 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
-        # Agent-type values (e.g. "codex") whose backend should be suppressed for
-        # this session. Populated wherever an agent is stamped ``ErrorClass.AUTH``
-        # (instantiate preflight, dispatch AUTH timeout, mark_agent_error), plus
-        # Grok first-byte launch wedges where repeated dispatch burns the 600s
-        # first-byte deadline without making progress. The manager holds no
-        # reference to ``SessionRuntime``;
-        # the state-builder mixin drains this into
-        # ``_runtime.auth_suppressed_agent_types`` each snapshot so the candidate
-        # analyzer can mask the whole type. Grow-only for the session. #zeke
-        # auth-hang / #196.
-        self.last_auth_failed_types: set[str] = set()
         # Agent-type values whose backend hit a *transient* launch wedge (Grok
-        # first-byte timeout) this session. Distinct from the permanent
-        # ``last_auth_failed_types`` above: the state-builder mixin drains this
+        # first-byte timeout) this session. The state-builder mixin drains this
         # into a DECAYING per-tick cooldown so the type auto-recovers rather than
         # being disabled for the whole session (#202). Membership here only marks
         # "a wedge was recorded since the last snapshot" — the actual expiry is
@@ -296,7 +284,6 @@ class AgentManager:
                 )
             except (IdentityResolutionError, AgentAuthError) as exc:
                 handle.last_error_class = ErrorClass.AUTH
-                self.last_auth_failed_types.add(agent_type.value)
                 handle.transition_to(AgentStatus.ERROR)
                 _logger.warning(
                     "agent_repo_access_validation_failed",
@@ -459,14 +446,13 @@ class AgentManager:
                 handle.last_error_class = ErrorClass.coerce(raw_error_class)
                 # The stderr auth-sniffer surfaces a backend session-token expiry
                 # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
-                # lands here rather than in the generic-error branch below. Treat
-                # it as a session-wide agent-type auth failure so PPO can't keep
-                # re-selecting a dead backend. A Grok launch wedge is transient,
-                # so it records a bounded COOLDOWN instead of the permanent auth
-                # suppression (#202).
-                if handle.last_error_class == ErrorClass.AUTH:
-                    self.last_auth_failed_types.add(handle.agent_type.value)
-                elif _is_grok_launch_wedge_timeout(handle, exc):
+                # lands here rather than in the generic-error branch below. AUTH
+                # needs no special handling now: the ERROR-status handle carries
+                # ErrorClass.AUTH, and the completion path routes it through the
+                # standard take_break recovery (recovery_tracker), exactly like a
+                # quota/rate-limit hold. A Grok launch wedge is transient, so it
+                # records a bounded COOLDOWN (#202).
+                if _is_grok_launch_wedge_timeout(handle, exc):
                     self.wedge_cooldown_types.add(handle.agent_type.value)
                     self.wedge_cooldown_reasons[handle.agent_type.value] = "launch_wedge"
                 elif handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE:
@@ -485,7 +471,17 @@ class AgentManager:
                         self._type_stream_hang_streak[atype] = 0
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
-                handle.transition_to(AgentStatus.IDLE)
+                # A backend-auth failure surfaced by the stderr sniffer arrives as
+                # PlayTimeoutError(AUTH). Land it in ERROR (not IDLE) so the
+                # completion path routes it through the standard take_break
+                # recovery — break, then back to work — exactly like a non-zero-exit
+                # rate-limit/auth failure, instead of leaving it IDLE for immediate
+                # re-dispatch into the same dead/blipping backend. Genuine timeouts
+                # stay IDLE.
+                if handle.last_error_class == ErrorClass.AUTH:
+                    handle.transition_to(AgentStatus.ERROR)
+                else:
+                    handle.transition_to(AgentStatus.IDLE)
                 await self._store.increment_agent_tasks(agent_id, failed=1)
                 elapsed_seconds = round(time.perf_counter() - dispatch_started_at, 3)
                 _logger.warning(
@@ -513,10 +509,9 @@ class AgentManager:
             if isinstance(exc, AgentOutputInvalid):
                 handle.last_error_class = ErrorClass.OUTPUT_INVALID
             # A non-zero-exit AUTH (AgentProcessError) is classified inside
-            # cli_agent and stamped on the handle before re-raising here. Mirror
-            # it into the session suppression set, same as the timeout-AUTH path.
-            if handle.last_error_class == ErrorClass.AUTH:
-                self.last_auth_failed_types.add(handle.agent_type.value)
+            # cli_agent and stamped on the handle before re-raising here; the
+            # completion path then routes the ERROR handle through the standard
+            # take_break recovery, same as a quota/rate-limit hold.
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
@@ -719,8 +714,6 @@ class AgentManager:
         coerced = ErrorClass.coerce(error_class)
         error_class = coerced
         handle.last_error_class = coerced
-        if coerced == ErrorClass.AUTH:
-            self.last_auth_failed_types.add(handle.agent_type.value)
         handle.transition_to(AgentStatus.ERROR)
         if increment_failed:
             await self._store.increment_agent_tasks(agent_id, failed=1)

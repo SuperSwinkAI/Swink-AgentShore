@@ -18,16 +18,20 @@ if TYPE_CHECKING:
 BREAK_RECOVERY_FAILURE_LIMIT = 2
 
 # Single source of truth for loop-produced take_break recovery: recoverable
-# error class → take_break OverrideKind. Crash/auth/invalid-model/timeout are
+# error class → take_break OverrideKind. Crash/invalid-model/timeout are
 # intentionally absent (they fall to END_AGENT, no take_break). NO_OP rides its
 # own kind so its take_break is labelled distinctly (agent_noop_break_enqueued)
-# and not confused with a real quota/rate-limit in telemetry.
+# and not confused with a real quota/rate-limit in telemetry. AUTH reuses the
+# RATE_LIMIT_RECOVERY kind on purpose: a backend-auth failure is handled exactly
+# like a quota hold — take a break, then back to work — so it shares that path
+# rather than introducing a parallel kind.
 #
 # KEY SET is asserted equal to ``state.RECOVERABLE_ERROR_CLASSES`` in
 # tests/test_recovery_routing.py — a class can't be recoverable-for-eligibility
 # but unroutable here (fixes the CODEX_ROLLOUT drift).
 _RECOVERY_OVERRIDE_KIND: dict[ErrorClass, OverrideKind] = {
     ErrorClass.RATE_LIMIT: OverrideKind.RATE_LIMIT_RECOVERY,
+    ErrorClass.AUTH: OverrideKind.RATE_LIMIT_RECOVERY,
     ErrorClass.UNKNOWN: OverrideKind.UNKNOWN_ERROR_RECOVERY,
     ErrorClass.CODEX_ROLLOUT: OverrideKind.UNKNOWN_ERROR_RECOVERY,
     ErrorClass.TRANSIENT_NETWORK: OverrideKind.UNKNOWN_ERROR_RECOVERY,
