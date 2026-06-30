@@ -238,7 +238,10 @@ class PPOSelector:
         reverse_failsafe = False
         mask = base_mask
         manual_reverse_failsafe = bool(self._cfg.reverse_failsafe_enabled)
-        auto_reverse_failsafe = self._cfg.reverse_failsafe_enabled and self._auto_reverse_failsafe_should_unmask(state, mask)
+        auto_reverse_failsafe = (
+            self._cfg.reverse_failsafe_enabled
+            and self._auto_reverse_failsafe_should_unmask(state, mask)
+        )
         if (manual_reverse_failsafe or auto_reverse_failsafe) and reverse_failsafe_should_unmask(
             state
         ):
