@@ -97,6 +97,11 @@ __all__ = [
 # EOF/stdin-hang blip's *shape*, not an error class, so they don't belong in the
 # shared registry.
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+# Codex model-discovery subprocess can also hang (child never exits) rather than
+# returning bad JSON.  The resulting stderr shape is "failed to refresh available
+# models: timeout waiting for child process to exit" — same cache-renewal marker,
+# different suffix.  Treat it as transient alongside the EOF-parse variant.
+_CHILD_TIMEOUT_MARKERS = ("timeout waiting for child process",)
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
 # Raw CLI prompt-wait artifacts an agent prints to stdout/stderr while stalled
@@ -112,18 +117,22 @@ _STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
 
 
 def _is_transient_cache_blip(lowered: str) -> bool:
-    """#190: True iff the stderr tail is the transient cache-renewal EOF-parse blip.
+    """#190: True iff the stderr tail is the transient cache-renewal blip.
 
-    Suppresses an auth abort only for the cache-renewal-EOF shape (e.g.
-    ``failed to renew cache TTL: EOF while parsing a value at line 1 column 0``).
+    Suppresses an auth abort for two cache-renewal shapes:
+    - EOF-parse variant: "failed to renew cache TTL: EOF while parsing a value…"
+    - Child-timeout variant: "failed to refresh available models: timeout waiting
+      for child process to exit" — model-discovery subprocess hung rather than
+      returning bad JSON; equally transient.
+
     A real backend-auth rejection (401/403/unauthorized/invalid api key/etc.)
     is unaffected: those markers carry no cache-renewal marker, so this returns
-    False and the auth hit trips normally — even if a 401 happens to coexist
-    with a cache-renewal line, the presence of the genuine auth marker is what
-    keeps ``feed`` matching while this guard only inspects the renewal+EOF pair.
+    False and the auth hit trips normally.
     """
-    return any(m in lowered for m in _CACHE_RENEWAL_MARKERS) and any(
-        m in lowered for m in _PARSE_EOF_MARKERS
+    has_renewal = any(m in lowered for m in _CACHE_RENEWAL_MARKERS)
+    return has_renewal and (
+        any(m in lowered for m in _PARSE_EOF_MARKERS)
+        or any(m in lowered for m in _CHILD_TIMEOUT_MARKERS)
     )
 
 

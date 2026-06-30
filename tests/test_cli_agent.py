@@ -2344,6 +2344,23 @@ def test_stderr_sniffer_suppresses_transient_cache_renewal_eof() -> None:
     assert sniffer.auth_hit is False
 
 
+def test_stderr_sniffer_suppresses_transient_cache_renewal_child_timeout() -> None:
+    """Child-process-timeout variant of the cache-renewal blip must NOT trip auth.
+
+    When the codex model-discovery subprocess hangs instead of returning bad
+    JSON, the stderr shape is "failed to refresh available models: timeout
+    waiting for child process to exit" — same renewal marker, different suffix.
+    Observed benching a large codex/gpt-5.5 agent (session a1c7f1f7)."""
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR codex_models_manager::manager: "
+        "failed to refresh available models: "
+        "timeout waiting for child process to exit\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
 def test_stderr_sniffer_cache_renewal_eof_then_stdin_closed_trips_auth() -> None:
     """#231: cache-renewal EOF is transient only until Codex's stdin write fails."""
     sniffer = _StderrSniffer()
