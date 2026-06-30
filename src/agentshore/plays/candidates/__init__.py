@@ -440,6 +440,7 @@ class PlayCandidateAnalyzer:
             )
             is None
         }
+        queued_review_pr_numbers: set[int] = set()
         for index, row in enumerate(state.pending_review_queue):
             if row.pr_number in in_flight_review_prs or _pr_manual_required(row.pr_number):
                 continue
@@ -447,6 +448,7 @@ class PlayCandidateAnalyzer:
             resource_keys = (
                 pr_resource_keys_for_pr(pr) if pr is not None else pr_resource_keys(row.pr_number)
             )
+            queued_review_pr_numbers.add(row.pr_number)
             add(
                 PlayCandidate(
                     play_type=PlayType.CODE_REVIEW,
@@ -462,20 +464,28 @@ class PlayCandidateAnalyzer:
                     sort_key=(0, index, row.pr_number),
                 )
             )
-        if not state.pending_review_queue:
-            for candidate in _eligible_pr_candidates(
-                self.open_prs,
-                excluded=in_flight_review_prs,
-                predicate=pr_reviewable,
-                make_candidate=lambda index, pr, keys: PlayCandidate(
-                    play_type=PlayType.CODE_REVIEW,
-                    params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
-                    resource_keys=keys,
-                    source="state",
-                    sort_key=(1, 0 if pr.last_review_status else 1, index, pr.pr_number),
-                ),
-            ):
-                add(candidate)
+        # The review queue is a priority lane, not a gate. Always scan open PRs
+        # for reviewable work so a reviewable PR can't be starved by stale queue
+        # rows that yield no dispatchable candidate above — e.g. rows for
+        # manual-required PRs (skipped) or rows stuck ``claimed`` by a since-dead
+        # reviewer. Previously this fallback ran only when the queue was entirely
+        # empty, so a single undispatchable row shadowed every open reviewable PR
+        # and wedged code_review (→ actionable_pr_work=0 → MAX_OPEN_PRS cap on
+        # issue_pickup never drains). PRs already emitted from the queue path are
+        # excluded so they aren't double-added.
+        for candidate in _eligible_pr_candidates(
+            self.open_prs,
+            excluded=in_flight_review_prs | queued_review_pr_numbers,
+            predicate=pr_reviewable,
+            make_candidate=lambda index, pr, keys: PlayCandidate(
+                play_type=PlayType.CODE_REVIEW,
+                params=PlayParams(pr_number=pr.pr_number, branch=pr.branch),
+                resource_keys=keys,
+                source="state",
+                sort_key=(1, 0 if pr.last_review_status else 1, index, pr.pr_number),
+            ),
+        ):
+            add(candidate)
 
         for candidate in _eligible_pr_candidates(
             self.open_prs,
@@ -778,15 +788,11 @@ class PlayCandidateService:
                 )
             if candidates:
                 return candidates
-
-            queued_pr_numbers = {row.pr_number for row in pending}
-            excluded = queued_pr_numbers | in_flight_review_prs | _already_reviewed_prs(state)
-            return await self._github_code_review_candidates(
-                state,
-                idle_reviewers,
-                excluded=excluded,
-                source="github_pending_fallback",
-            )
+            # Pending rows yielded nothing dispatchable (all manual-required,
+            # in-flight, or absent). Don't stop at the queue — fall through to the
+            # open-PR scan below so a reviewable PR without a live queue row still
+            # gets picked up. Mirrors the build() fallback (the mask side); without
+            # this, an unmasked CODE_REVIEW action could find no resolver target.
 
         plan_candidates = build_candidate_plan(state).candidates_for(PlayType.CODE_REVIEW)
         for candidate in plan_candidates:

@@ -198,6 +198,9 @@ class IssueSyncer:
                         count=len(resync.absent),
                         pr_numbers=resync.absent,
                     )
+                # Review-queue reconciliation (reaper + sweep), against the
+                # freshly-cached store state so it sees the latest labels/SHAs.
+                await self._reconcile_review_queue()
                 # Mark worktree rows ``stale`` for PRs that went MERGED/CLOSED (from
                 # ``refetched``), then run the TTL reaper (``stale`` rows older than
                 # ``reap_ttl_seconds``).
@@ -209,6 +212,49 @@ class IssueSyncer:
         finally:
             self._runtime.last_refresh_time = time.monotonic()
             await self._ensure_ssh_key_fresh()
+
+    async def _reconcile_review_queue(self) -> None:
+        """Reaper + sweep for the review queue, run on each GitHub refresh.
+
+        Reaper: drain queue rows for PRs parked ``manual-required`` — a human
+        owns them, not an AgentShore reviewer, so they should not occupy the
+        queue. Sweep: enqueue every open, reviewable, trusted PR that lacks a
+        live queue row, so PRs from ANY source (cleanup, a prior session, an
+        external trusted identity) flow through code_review → merge — not only
+        PRs an AgentShore play authored via the artifact path. ``enqueue_review``
+        is INSERT OR IGNORE, so PRs already queued (pending or claimed) are
+        skipped; ``pr_reviewable`` already excludes drafts, manual-required, and
+        PRs already reviewed at the current head, so a reviewed PR is not
+        re-enqueued and the queue does not churn.
+        """
+        from agentshore.data.models import ReviewQueueRecord  # noqa: PLC0415
+        from agentshore.github.labels import MANUAL_REQUIRED_LABEL  # noqa: PLC0415
+        from agentshore.plays.candidates.predicates import pr_reviewable  # noqa: PLC0415
+        from agentshore.utils import now_iso  # noqa: PLC0415
+
+        open_prs = await self._store.list_open_pull_requests(self._session_id)
+        if not open_prs:
+            return
+        manual_required = [
+            pr.pr_number for pr in open_prs if MANUAL_REQUIRED_LABEL in (pr.labels or [])
+        ]
+        drained = await self._store.drain_review_queue_for_prs(self._session_id, manual_required)
+        enqueued = 0
+        for pr in open_prs:
+            if not pr_reviewable(pr):
+                continue
+            queue_id = await self._store.enqueue_review(
+                ReviewQueueRecord(
+                    pr_number=pr.pr_number,
+                    session_id=self._session_id,
+                    enqueued_at=now_iso(),
+                    author_label=pr.github_author or "external",
+                )
+            )
+            if queue_id:
+                enqueued += 1
+        if drained or enqueued:
+            _logger.info("review_queue_swept", drained=drained, enqueued=enqueued)
 
     async def _ensure_ssh_key_fresh(self) -> None:
         """Re-check the SSH signing key periodically so merge_pr doesn't fail."""
