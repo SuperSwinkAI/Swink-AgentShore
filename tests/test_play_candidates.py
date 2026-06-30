@@ -20,6 +20,7 @@ from agentshore.state import (
     AgentType,
     IssueSnapshot,
     OrchestratorState,
+    PendingReviewSnapshot,
     PlayType,
     PullRequestSnapshot,
     SessionState,
@@ -152,6 +153,58 @@ def test_unapproved_mergeable_pr_is_reviewable_not_mergeable() -> None:
     assert plan.candidates_for(PlayType.MERGE_PR) == ()
     assert plan.work_availability.reviewable_pr_count == 1
     assert plan.work_availability.mergeable_pr_count == 0
+
+
+def test_open_pr_review_fallback_not_shadowed_by_stale_queue_rows() -> None:
+    """Stale, undispatchable pending_review_queue rows must not suppress review of
+    reviewable open PRs.
+
+    Regression for the wedge: a manual-required PR's pending queue row (which
+    yields no dispatchable candidate) made ``pending_review_queue`` non-empty, so
+    the open-PR review fallback was skipped entirely and a perfectly reviewable
+    MERGEABLE PR never became a code_review candidate (actionable_pr_work=0 →
+    issue_pickup stayed capped at MAX_OPEN_PRS → session wedge).
+    """
+    parked = _pr(190, mergeable="CONFLICTING", labels=["agentshore/manual-required"])
+    reviewable = _pr(414, mergeable="MERGEABLE", review_decision=None)
+    plan = build_candidate_plan(
+        _state(
+            pull_requests=[parked, reviewable],
+            pending_review_queue=[
+                PendingReviewSnapshot(
+                    queue_id=1,
+                    pr_number=190,
+                    author_label="agent-x",
+                    enqueued_at="2026-06-30T00:00:00+00:00",
+                )
+            ],
+        )
+    )
+
+    review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
+    assert review_prs == [414]  # reviewable PR picked up; manual-required 190 stays parked
+
+
+def test_queued_reviewable_pr_not_double_added_by_fallback() -> None:
+    """A PR present in the queue must appear exactly once, not also via the
+    always-on open-PR fallback."""
+    pr = _pr(500, mergeable="MERGEABLE", review_decision=None)
+    plan = build_candidate_plan(
+        _state(
+            pull_requests=[pr],
+            pending_review_queue=[
+                PendingReviewSnapshot(
+                    queue_id=7,
+                    pr_number=500,
+                    author_label="agent-y",
+                    enqueued_at="2026-06-30T00:00:00+00:00",
+                )
+            ],
+        )
+    )
+
+    review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
+    assert review_prs == [500]  # exactly once, from the queue (priority) lane
     assert plan.has_remaining_work is True
 
 

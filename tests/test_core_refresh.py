@@ -34,6 +34,8 @@ def _make_orchestrator() -> Orchestrator:
     store.cache_github_issues = AsyncMock()
     store.cache_pull_requests = AsyncMock()
     store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.drain_review_queue_for_prs = AsyncMock(return_value=0)
+    store.enqueue_review = AsyncMock(return_value=0)
     store.get_open_issues = AsyncMock(return_value=[])
     store.update_issue_state = AsyncMock()
     # None cursor forces a full sweep (same path as pre-pagination).
@@ -212,6 +214,43 @@ async def test_refresh_evicts_pr_absent_from_github() -> None:
     orch._store.cache_pull_requests.assert_not_awaited()
     # ...but the phantom is evicted from the mirror.
     orch._store.mark_pull_request_absent.assert_awaited_once_with("s1", 99)
+
+
+@pytest.mark.asyncio
+async def test_refresh_sweeps_reviewable_prs_and_drains_manual_required() -> None:
+    """The refresh-time reconcile sweeps every open, reviewable, trusted PR into
+    the review queue — regardless of which play (or non-AgentShore process)
+    authored it — and drains queue rows for PRs parked manual-required so they
+    stop occupying the queue.
+    """
+    orch = _make_orchestrator()
+    reviewable = _pr_record(30)
+    manual = PullRequestRecord(
+        pr_number=31,
+        session_id="s1",
+        state="open",
+        created_at=_ts(),
+        head_sha="sha31",
+        github_author="trusted",
+        labels=["agentshore/manual-required"],
+    )
+    orch._store.list_open_pull_requests = AsyncMock(return_value=[reviewable, manual])
+
+    gh = MagicMock()
+    gh.probe = AsyncMock()
+    gh.available = True
+    gh.list_issues = AsyncMock(return_value=[])
+    gh.list_pull_requests = AsyncMock(return_value=[reviewable, manual])
+
+    with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
+        await orch._completion.refresh_issues()
+
+    # Reviewable PR 30 swept into the queue; manual-required 31 is NOT enqueued.
+    enqueued_prs = {call.args[0].pr_number for call in orch._store.enqueue_review.await_args_list}
+    assert 30 in enqueued_prs
+    assert 31 not in enqueued_prs
+    # Manual-required 31's queue rows are drained.
+    orch._store.drain_review_queue_for_prs.assert_awaited_once_with("s1", [31])
 
 
 @pytest.mark.asyncio
