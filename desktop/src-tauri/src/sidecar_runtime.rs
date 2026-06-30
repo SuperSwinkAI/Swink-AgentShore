@@ -148,8 +148,16 @@ mod tests {
         let path = install_layout::managed_venv_python_path();
         // The managed venv python must be under ProgramData\AgentShore\venv\Scripts.
         let s = path.to_string_lossy().to_lowercase();
-        assert!(s.contains("agentshore"), "path must contain AgentShore: {}", path.display());
-        assert!(s.contains("venv"), "path must contain venv: {}", path.display());
+        assert!(
+            s.contains("agentshore"),
+            "path must contain AgentShore: {}",
+            path.display()
+        );
+        assert!(
+            s.contains("venv"),
+            "path must contain venv: {}",
+            path.display()
+        );
         assert!(
             s.ends_with("python.exe"),
             "path must end with python.exe: {}",

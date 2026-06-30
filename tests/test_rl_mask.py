@@ -1045,10 +1045,10 @@ def _error_agent_snapshot(agent_id: str, error_class: ErrorClass | None):
 
 
 def test_end_agent_unmasked_for_terminal_error_agent():
-    """#20: a non-recoverable ERROR agent (auth) makes END_AGENT valid even when
-    its registry precondition would mask it — the PPO gets the retire option so
+    """#20: a non-recoverable ERROR agent (invalid_model) makes END_AGENT valid even
+    when its registry precondition would mask it — the PPO gets the retire option so
     the agent isn't leaked until end_session."""
-    state = _state(agents=[_error_agent_snapshot("broken", ErrorClass.AUTH)])
+    state = _state(agents=[_error_agent_snapshot("broken", ErrorClass.INVALID_MODEL)])
     mask = compute_action_mask(state, _registry_all_false())
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
 
@@ -2032,6 +2032,25 @@ def test_take_break_enabled_for_rate_limit_error():
     assert mask[PLAY_TO_INDEX[PlayType.TAKE_BREAK]]
 
 
+def test_take_break_enabled_for_auth_error():
+    """auth is handled like a quota hold — TAKE_BREAK, then back to work."""
+    from agentshore.state import AgentSnapshot, AgentStatus, AgentType
+
+    agent = AgentSnapshot(
+        agent_id="cx-1",
+        agent_type=AgentType.CODEX,
+        status=AgentStatus.ERROR,
+        last_error_class=ErrorClass.AUTH,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=1,
+    )
+    mask = compute_action_mask(_state(agents=[agent]), _registry_all_true())
+    assert mask[PLAY_TO_INDEX[PlayType.TAKE_BREAK]]
+
+
 def test_take_break_enabled_for_unknown_error():
     """unknown error is the secondary TAKE_BREAK trigger."""
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
@@ -2052,10 +2071,10 @@ def test_take_break_enabled_for_unknown_error():
 
 
 def test_take_break_masked_for_other_error_classes():
-    """auth/timeout errors do NOT trigger TAKE_BREAK."""
+    """timeout/invalid_model errors do NOT trigger TAKE_BREAK (auth now does)."""
     from agentshore.state import AgentSnapshot, AgentStatus, AgentType
 
-    for ec in (ErrorClass.AUTH, ErrorClass.TIMEOUT, ErrorClass.INVALID_MODEL):
+    for ec in (ErrorClass.TIMEOUT, ErrorClass.INVALID_MODEL):
         agent = AgentSnapshot(
             agent_id="cc-1",
             agent_type=AgentType.CLAUDE_CODE,

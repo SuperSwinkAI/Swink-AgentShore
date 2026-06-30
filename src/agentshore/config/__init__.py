@@ -230,7 +230,7 @@ task_validation:
 rl:
   policy_mode: learning
   policy_path: null
-  reverse_failsafe_enabled: false
+  reverse_failsafe_enabled: false  # debug-only: let the failsafe unmask plays when all are masked
   reverse_failsafe_after_idle_ticks: 3
   stale_idle_claim_release_ticks: 3
   learning_rate: 0.0003

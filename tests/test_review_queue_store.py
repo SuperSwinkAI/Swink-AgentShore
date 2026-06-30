@@ -178,6 +178,56 @@ async def test_complete_review_sets_done(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_drain_review_queue_for_prs_drains_pending_and_claimed(tmp_path) -> None:
+    store = await _make_store(tmp_path)
+    try:
+        # Two pending + one claimed across three PRs; drain two of them.
+        for pr in (10, 11):
+            await store.enqueue_review(
+                ReviewQueueRecord(
+                    pr_number=pr,
+                    session_id="s1",
+                    enqueued_at="2026-05-07T00:01:00+00:00",
+                )
+            )
+        qid_claimed = await store.enqueue_review(
+            ReviewQueueRecord(
+                pr_number=12,
+                session_id="s1",
+                enqueued_at="2026-05-07T00:01:00+00:00",
+            )
+        )
+        await store.claim_review(qid_claimed, "agent-x")
+
+        drained = await store.drain_review_queue_for_prs("s1", [10, 12])
+        assert drained == 2  # one pending (10) + one claimed (12)
+
+        # Only PR 11's row remains live; 10 and 12 are done.
+        pending = await store.list_pending_reviews("s1")
+        assert [row.pr_number for row in pending] == [11]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_drain_review_queue_for_prs_empty_is_noop(tmp_path) -> None:
+    store = await _make_store(tmp_path)
+    try:
+        await store.enqueue_review(
+            ReviewQueueRecord(
+                pr_number=10,
+                session_id="s1",
+                enqueued_at="2026-05-07T00:01:00+00:00",
+            )
+        )
+        assert await store.drain_review_queue_for_prs("s1", []) == 0
+        pending = await store.list_pending_reviews("s1")
+        assert len(pending) == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_list_pending_reviews_ordered(tmp_path) -> None:
     store = await _make_store(tmp_path)
     try:

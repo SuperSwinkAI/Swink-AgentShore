@@ -56,12 +56,70 @@ A single sidecar starts when Tauri launches and lives until Tauri quits;
 `project.select(path)` switches the active project context. Per-project respawn
 would add cold-start latency to every recents click for no gain.
 
-### 2.3 Crash recovery — surface, do not auto-restart
+### 2.3 Sidecar crash recovery — surface, do not auto-restart
 
-When the sidecar dies, the Rust supervisor emits a crash event and the WebView
-routes to a recovery screen (logs, open log file, restart sidecar, kill agent
-subprocesses, quit). Silent auto-restart masks crash loops; a loud failure mode
-forces real bugs to surface and preserves logs.
+When the **sidecar process** dies, the Rust supervisor emits a crash event and
+the WebView routes to a recovery screen (logs, open log file, restart sidecar,
+kill agent subprocesses, quit). Silent auto-restart masks crash loops; a loud
+failure mode forces real bugs to surface and preserves logs.
+
+This is distinct from a **renderer (WebView) crash** — where the WKWebView
+paint or compositor fails and the window turns white while the sidecar and
+engine continue running unaffected. See §2.4.
+
+### 2.4 Renderer crash recovery (#274)
+
+**Symptom.** The WKWebView renderer intermittently produces a white screen
+during long sessions. Session `3771f874` confirmed the engine was unaffected:
+the sidecar kept running, ESR HTML was generated (1.28 MB on disk),
+`$/esr_ready` fired, and the dashboard rendered in a browser at
+`http://localhost:9411` — while the Tauri window was white. JS continued
+running (`useEffect` fired). This is a renderer/compositor paint failure, not
+a backend failure.
+
+**Principle: rebuild the renderer, not the engine.** The sidecar is never
+killed by crash recovery. Window-close / ⌘Q still terminates the session
+(unchanged). In-place recovery only — detached sidecar (surviving full app
+quit) is explicitly deferred (§9).
+
+**Mechanism.**
+
+1. *Detection:* two complementary signals — `on_web_content_process_terminate`
+   (native WKWebView hook; fires when the renderer process dies) and an
+   rAF-gated JS heartbeat watchdog (covers the JS-alive paint wedge where the
+   content process is alive but `requestAnimationFrame` stalls). Either signal,
+   plus the manual "Reload UI" menu item (§5.1), calls `reload_ui()`.
+2. *Reload:* `WebviewWindow::reload()` remounts the React app with no sidecar
+   teardown. A reload never emits `session.stop` — `CloseRequested` /
+   `ExitRequested` / `Exit` are the only teardown triggers; `reload()` reaches
+   none of them. "Reload UI" is handled inline in Rust so it works while the
+   WebView is white.
+3. *Reattach:* on mount, `App.tsx` calls the `current_session()` Tauri command,
+   which returns `{ active: bool, dashboardUrl: string|null, sessionId:
+   string|null }` from `ActivityHolder::is_active()` + `SessionInfoHolder`.
+   When `active && dashboardUrl`, the router navigates directly to
+   `/session/dashboard` (bypassing the project picker), and the WebSocket
+   reconnects to the live bridge endpoint.
+4. *Bridge full-state replay:* `DashboardBridge._replay_to_ws()` sends a full
+   state snapshot to the fresh WebSocket client; the dashboard re-populates
+   without a new `session.start`.
+
+**Startup precedence:** fatal handshake error → sidecar-crash screen →
+session reattach → project picker. The reattach path activates when
+`current_session()` returns `active: true` at startup (§10), before
+`ChooseProjectScreen` renders — a no-flash splash gate prevents the picker
+from flickering while the reattach probe resolves.
+
+**Heartbeat caveat.** rAF gating means the beat stops during a compositor
+stall (the only JS-observable signal of the paint wedge), but if JS *and* rAF
+remain live the watchdog sees no missed beats and the terminate hook does not
+fire. The "Reload UI" menu item (`CmdOrCtrl+R`) is the guaranteed recovery
+floor. Both signals are needed for complete coverage.
+
+For non-obvious design decisions and rejected alternatives, see
+`docs/design/webview-crash-recovery.md`. See also: Dashboard DESIGN
+§Reconnection and §Session discovery (`docs/design/dashboard/DESIGN.md`);
+IPC DESIGN §Command-In Transport (`docs/design/ipc/DESIGN.md`).
 
 ---
 
@@ -148,7 +206,9 @@ enabled-state synced over IPC.
 
 - **File** — Adjust Budget…, Stop Session, Close Window.
 - **Edit / View / Window** — predefined items (undo/redo/clipboard; fullscreen;
-  minimize/maximize).
+  minimize/maximize). The **View** submenu adds one custom item: **Reload UI**
+  (`CmdOrCtrl+R`) — calls `reload_main_webview` inline in Rust so it works
+  while the WebView is white (§2.4).
 - **Help** — Documentation / Release Notes / Report an Issue (opened in the
   browser via the OS opener, inline in Rust), a Keyboard Shortcuts cheat-sheet,
   Open Log Folder (the `open_log_folder` command reveals
@@ -305,3 +365,9 @@ See `docs/release/signing.md` for the maintainer procedure.
   UI.
 - **Startup failure.** A failing startup step turns red inline, shows the error,
   and offers a contextual repair action.
+- **Session reattach.** When the app launches or the WebView reloads and
+  `current_session()` returns `active: true`, the shell navigates directly to
+  `/session/dashboard` — skipping the setup rail entirely. The bridge replays a
+  full state snapshot to the reconnecting WebSocket client; no new
+  `session.start` is issued. This is the startup path taken after a renderer
+  crash recovery (§2.4).

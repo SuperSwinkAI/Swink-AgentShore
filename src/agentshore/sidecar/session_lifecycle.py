@@ -836,6 +836,14 @@ async def _start_orchestrator(
         # session.stop callers own their own ESR build in the stop path.
         if orch._natural_exit_reason is None:
             return
+        # Snapshot both locals immediately — a concurrent _clear_session_state
+        # (or the explicit-stop path) can null state.session_context during the
+        # run_until_idle/teardown window. Reading state.session_context live
+        # across awaits is the race that silently skips the rich payload and
+        # leaves only a bare $/esr_ready on natural exit. Mirror the robust
+        # explicit-stop snapshot in rpc/handlers/session.py:117.
+        ctx = state.session_context
+        reason = orch._natural_exit_reason
         # Build the ESR payload BEFORE ``orch.stop()`` — ``stop()`` closes
         # the underlying DataStore as part of shutdown_step:store_close
         # (DESIGN §5.2), and ``ReportDataCollector.collect_end_session_report``
@@ -844,18 +852,18 @@ async def _start_orchestrator(
         # talking to a live store and only tears down after we have the
         # snapshot.
         payload: dict[str, object] | None = None
-        if emit_session_completed is not None and state.session_context is not None:
+        if emit_session_completed is not None and ctx is not None:
             try:
                 from agentshore.sidecar.esr import build_esr_payload
 
                 payload = dict(
                     await build_esr_payload(
-                        state.session_context.store,
-                        state.session_context.session_id,
-                        archive_path=state.session_context.archive_path,
-                        report_path=state.session_context.report_path,
-                        log_path=state.session_context.log_path,
-                        exit_reason=orch._natural_exit_reason,
+                        ctx.store,
+                        ctx.session_id,
+                        archive_path=ctx.archive_path,
+                        report_path=ctx.report_path,
+                        log_path=ctx.log_path,
+                        exit_reason=reason,
                         exit_code=0,
                     )
                 )
@@ -868,20 +876,20 @@ async def _start_orchestrator(
                 # still learns the session ended even when the collector
                 # could not produce a full summary.
                 payload = {
-                    "session_id": state.session_context.session_id,
-                    "exit_reason": orch._natural_exit_reason,
+                    "session_id": ctx.session_id,
+                    "exit_reason": reason,
                     "exit_code": 0,
-                    "archive_path": state.session_context.archive_path,
-                    "report_path": state.session_context.report_path,
-                    "log_path": state.session_context.log_path,
+                    "archive_path": ctx.archive_path,
+                    "report_path": ctx.report_path,
+                    "log_path": ctx.log_path,
                 }
         try:
             await stop_orchestrator_tracked(state, orch)
         except Exception:
             _logger.exception("sidecar_orchestrator_stop_failed", session_id=session_id)
-        if payload is not None and state.session_context is not None:
-            payload["report_path"] = state.session_context.report_path
-            payload["log_path"] = state.session_context.log_path
+        if payload is not None and ctx is not None:
+            payload["report_path"] = ctx.report_path
+            payload["log_path"] = ctx.log_path
         # Stop any timelapse capture (best-effort) and attach the MP4 path so
         # the desktop opens it when the naturally-ended session completes.
         if payload is not None:

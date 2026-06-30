@@ -20,6 +20,7 @@ from agentshore.state import (
     AgentType,
     IssueSnapshot,
     OrchestratorState,
+    PendingReviewSnapshot,
     PlayType,
     PullRequestSnapshot,
     SessionState,
@@ -152,6 +153,58 @@ def test_unapproved_mergeable_pr_is_reviewable_not_mergeable() -> None:
     assert plan.candidates_for(PlayType.MERGE_PR) == ()
     assert plan.work_availability.reviewable_pr_count == 1
     assert plan.work_availability.mergeable_pr_count == 0
+
+
+def test_open_pr_review_fallback_not_shadowed_by_stale_queue_rows() -> None:
+    """Stale, undispatchable pending_review_queue rows must not suppress review of
+    reviewable open PRs.
+
+    Regression for the wedge: a manual-required PR's pending queue row (which
+    yields no dispatchable candidate) made ``pending_review_queue`` non-empty, so
+    the open-PR review fallback was skipped entirely and a perfectly reviewable
+    MERGEABLE PR never became a code_review candidate (actionable_pr_work=0 →
+    issue_pickup stayed capped at MAX_OPEN_PRS → session wedge).
+    """
+    parked = _pr(190, mergeable="CONFLICTING", labels=["agentshore/manual-required"])
+    reviewable = _pr(414, mergeable="MERGEABLE", review_decision=None)
+    plan = build_candidate_plan(
+        _state(
+            pull_requests=[parked, reviewable],
+            pending_review_queue=[
+                PendingReviewSnapshot(
+                    queue_id=1,
+                    pr_number=190,
+                    author_label="agent-x",
+                    enqueued_at="2026-06-30T00:00:00+00:00",
+                )
+            ],
+        )
+    )
+
+    review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
+    assert review_prs == [414]  # reviewable PR picked up; manual-required 190 stays parked
+
+
+def test_queued_reviewable_pr_not_double_added_by_fallback() -> None:
+    """A PR present in the queue must appear exactly once, not also via the
+    always-on open-PR fallback."""
+    pr = _pr(500, mergeable="MERGEABLE", review_decision=None)
+    plan = build_candidate_plan(
+        _state(
+            pull_requests=[pr],
+            pending_review_queue=[
+                PendingReviewSnapshot(
+                    queue_id=7,
+                    pr_number=500,
+                    author_label="agent-y",
+                    enqueued_at="2026-06-30T00:00:00+00:00",
+                )
+            ],
+        )
+    )
+
+    review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
+    assert review_prs == [500]  # exactly once, from the queue (priority) lane
     assert plan.has_remaining_work is True
 
 
@@ -941,16 +994,12 @@ async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# #zeke auth-hang: session-level agent-type auth suppression masking.
-# A single backend-auth failure for an agent type suppresses ALL dispatch of
-# that type for the session — including an instantiate_agent that would spawn a
-# fresh agent of the dead type — while leaving other types selectable.
+# Candidate agent-type resolution (used by the launch-wedge cooldown mask).
 # ---------------------------------------------------------------------------
 
 from agentshore.plays.base import PlayParams  # noqa: E402
 from agentshore.plays.candidates import (  # noqa: E402
     PlayCandidate,
-    _candidate_auth_suppressed_type,
     _candidate_resolved_agent_type,
 )
 
@@ -980,50 +1029,6 @@ def test_candidate_resolved_agent_type_none_when_unresolvable() -> None:
     assert _candidate_resolved_agent_type(c, {}) is None
 
 
-def test_auth_suppressed_masks_codex_dispatch_and_instantiate_not_claude() -> None:
-    suppressed = frozenset({"codex"})
-    agent_id_to_type = {"codex-1": "codex", "claude-1": "claude"}
-
-    # A codex instantiate_agent candidate (would spawn a fresh dead-type agent).
-    codex_instantiate = _candidate(
-        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex")
-    )
-    assert (
-        _candidate_auth_suppressed_type(codex_instantiate, suppressed, agent_id_to_type) == "codex"
-    )
-
-    # A code_review candidate pinned to a concrete codex agent.
-    codex_review = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="codex-1"))
-    assert _candidate_auth_suppressed_type(codex_review, suppressed, agent_id_to_type) == "codex"
-
-    # A claude instantiate_agent is NOT suppressed (different, healthy type).
-    claude_instantiate = _candidate(
-        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="claude")
-    )
-    assert _candidate_auth_suppressed_type(claude_instantiate, suppressed, agent_id_to_type) is None
-
-    # A claude-pinned review is NOT suppressed.
-    claude_review = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="claude-1"))
-    assert _candidate_auth_suppressed_type(claude_review, suppressed, agent_id_to_type) is None
-
-
-def test_auth_suppressed_empty_set_masks_nothing() -> None:
-    codex_instantiate = _candidate(
-        PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex")
-    )
-    assert _candidate_auth_suppressed_type(codex_instantiate, frozenset(), {}) is None
-
-
-def test_build_does_not_mask_resource_only_candidates_under_suppression() -> None:
-    """Issue/PR candidates whose runner the resolver picks later carry no agent
-    type and must remain selectable even with a suppression set active — only
-    agent-typed candidates are masked."""
-    plan_unsuppressed = build_candidate_plan(_state(open_issues=[_issue(1)]))
-    plan_suppressed = build_candidate_plan(
-        _state(open_issues=[_issue(1)], auth_suppressed_agent_types=frozenset({"codex"}))
-    )
-    # The issue-pickup candidate for issue 1 survives suppression (no resolved type).
-    assert plan_suppressed.candidates_for(
-        PlayType.ISSUE_PICKUP
-    ) == plan_unsuppressed.candidates_for(PlayType.ISSUE_PICKUP)
-    assert plan_suppressed.candidates_for(PlayType.ISSUE_PICKUP)
+def test_candidate_resolved_agent_type_maps_concrete_agent_id() -> None:
+    c = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="codex-1"))
+    assert _candidate_resolved_agent_type(c, {"codex-1": "codex"}) == "codex"

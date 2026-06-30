@@ -9,6 +9,7 @@
  * imports continue to resolve.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { callJsonRpc } from "./jsonrpc";
 import type { AppliedBudget, LiveBudgetInput } from "./budget";
@@ -92,6 +93,28 @@ export async function startSession(
 export interface StopSessionParams {
   mode?: string;
   progressToken?: string | number;
+}
+
+// ---------------------------------------------------------------------------
+// Reattach — current session state
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape returned by the ``current_session`` Tauri command.
+ * Fields are camelCase to match the Rust serde rename_all = "camelCase".
+ */
+export interface CurrentSessionInfo {
+  active: boolean;
+  dashboardUrl: string | null;
+  sessionId: string | null;
+}
+
+/**
+ * Query the Tauri host for the running session state.
+ * Used on mount to reattach to a session that survived a WebView reload.
+ */
+export async function currentSession(): Promise<CurrentSessionInfo> {
+  return invoke<CurrentSessionInfo>("current_session");
 }
 
 export async function stopSession(params: StopSessionParams = {}): Promise<EsrPayload> {

@@ -1594,16 +1594,16 @@ async def test_resolve_end_agent_returns_none_when_no_idle_agents() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_end_agent_targets_terminal_error_agent() -> None:
-    """#20: a non-recoverable ERROR agent (e.g. auth) is the END_AGENT target,
-    bypassing the min-plays gate, even with zero plays — it has no recovery
-    path and would otherwise leak until end_session."""
+    """#20: a non-recoverable ERROR agent (e.g. invalid_model) is the END_AGENT
+    target, bypassing the min-plays gate, even with zero plays — it has no
+    recovery path and would otherwise leak until end_session."""
     resolver = _make_resolver()
     agents = [
         _make_snapshot("healthy", status=AgentStatus.IDLE, tasks_completed=1),
         _make_snapshot(
             "broken",
             status=AgentStatus.ERROR,
-            last_error_class=ErrorClass.AUTH,
+            last_error_class=ErrorClass.INVALID_MODEL,
             tasks_completed=0,
             tasks_failed=1,
         ),

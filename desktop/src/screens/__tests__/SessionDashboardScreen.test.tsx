@@ -98,10 +98,12 @@ describe("SessionDashboardScreen", () => {
           esr: null,
           lastProjectPath: "/tmp/proj",
           sessionStarting: false,
+          sessionReattaching: false,
           setDashboardUrl: () => undefined,
           setEsr,
           setLastProjectPath: () => undefined,
           setSessionStarting: () => undefined,
+          setSessionReattaching: () => undefined,
         }}
       >
         <MemoryRouter initialEntries={["/session/dashboard"]}>
@@ -146,10 +148,12 @@ describe("SessionDashboardScreen", () => {
           esr: null,
           lastProjectPath: "/tmp/proj",
           sessionStarting: false,
+          sessionReattaching: false,
           setDashboardUrl: () => undefined,
           setEsr: () => undefined,
           setLastProjectPath: () => undefined,
           setSessionStarting: () => undefined,
+          setSessionReattaching: () => undefined,
         }}
       >
         <MemoryRouter initialEntries={["/session/dashboard"]}>

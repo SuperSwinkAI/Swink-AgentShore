@@ -21,7 +21,7 @@ from agentshore.errors import (
     PreconditionFailed,
 )
 from agentshore.result_parser import parse_skill_result
-from agentshore.state import AgentStatus, AgentType, PlayType
+from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, AgentType, PlayType
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -142,32 +142,23 @@ async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(
     handle = await mgr.instantiate(AgentType.CODEX)
 
     assert handle.status == AgentStatus.ERROR
+    # A preflight AUTH leaves the handle in ERROR with the AUTH class, so the
+    # completion path routes it through the standard take_break recovery (like a
+    # quota hold) rather than permanently benching the agent type.
     assert handle.last_error_class == "auth"
-    # #zeke auth-hang: a preflight AUTH also records the agent TYPE for session
-    # suppression so the state-builder mixin can mask all codex dispatch.
-    assert mgr.last_auth_failed_types == {"codex"}
 
 
-async def test_mark_agent_error_auth_records_type_for_session_suppression(
+async def test_mark_agent_error_auth_lands_error_with_auth_class(
     store: DataStore, tmp_path: Path, mock_agent_path: Path
 ) -> None:
-    """An AUTH mark_agent_error records the agent type; a non-AUTH mark doesn't."""
+    """An AUTH mark_agent_error lands ERROR + AUTH class so take_break recovers it."""
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
 
     await mgr.mark_agent_error(handle.agent_id, ErrorClass.AUTH, reason="backend token expired")
+    assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == ErrorClass.AUTH
-    assert mgr.last_auth_failed_types == {"codex"}
-
-
-async def test_mark_agent_error_non_auth_does_not_suppress_type(
-    store: DataStore, tmp_path: Path, mock_agent_path: Path
-) -> None:
-    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
-    handle = await mgr.instantiate(AgentType.CODEX)
-
-    await mgr.mark_agent_error(handle.agent_id, ErrorClass.TIMEOUT, reason="slow")
-    assert mgr.last_auth_failed_types == set()
+    assert ErrorClass.AUTH in RECOVERABLE_ERROR_CLASSES
 
 
 async def test_dispatch_success_updates_handle_and_store(
@@ -515,10 +506,9 @@ async def test_grok_first_byte_launch_wedge_records_cooldown_not_permanent_suppr
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
     assert handle.timeout_count == 1
     assert handle.consecutive_timeouts == 1
-    # #202: a launch wedge records a DECAYING cooldown, NOT the permanent
-    # auth-suppression set — the type must auto-recover after the cooldown.
+    # #202: a launch wedge records a DECAYING cooldown — the type must
+    # auto-recover after the cooldown.
     assert mgr.wedge_cooldown_types == {"grok"}
-    assert mgr.last_auth_failed_types == set()
 
 
 async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_type(
@@ -546,7 +536,6 @@ async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_t
         await mgr.dispatch(handle.agent_id, "prompt")
 
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
-    assert mgr.last_auth_failed_types == set()
     # A plain stream-idle timeout (no launch-wedge markers) is not a wedge.
     assert mgr.wedge_cooldown_types == set()
     # #233: but it does start a per-type stream-hang streak (one is not a cluster).
@@ -597,8 +586,6 @@ async def test_antigravity_stream_hang_cluster_trips_decaying_cooldown(
         await mgr.dispatch(handle.agent_id, "prompt")
     assert mgr.wedge_cooldown_types == {atype}
     assert mgr.wedge_cooldown_reasons[atype] == "stream_hang_cluster"
-    # Decaying cooldown, NOT the permanent auth-suppression set.
-    assert mgr.last_auth_failed_types == set()
     # Streak resets after tripping so the cooldown re-arms cleanly on recurrence.
     assert mgr._type_stream_hang_streak[atype] == 0
 

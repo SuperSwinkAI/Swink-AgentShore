@@ -51,6 +51,7 @@ import {
   SessionContext,
 } from "./services/sessionContext";
 import { subscribeCompleted } from "./services/sessionClient";
+import { currentSession } from "./rpc/sessionClient";
 import {
   subscribeSidecarCrashed,
   subscribeSidecarNotification,
@@ -959,7 +960,18 @@ export function App() {
   const [onboardingSeen, setOnboardingSeen] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
-  const { setEsr, setLastProjectPath, setSessionStarting } = useContext(SessionContext);
+  const {
+    setEsr,
+    setLastProjectPath,
+    setSessionStarting,
+    setDashboardUrl,
+    sessionReattaching,
+    setSessionReattaching,
+  } = useContext(SessionContext);
+
+  // Declare these early so the reattach effect can gate on them.
+  const [crashPayload, setCrashPayload] = useState<SidecarCrashedPayload | null>(null);
+  const [fatalInfo, setFatalInfo] = useState<FatalShellInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -989,6 +1001,39 @@ export function App() {
       cancelled = true;
     };
   }, [navigate]);
+
+  // On mount, probe for a session that survived a WebView reload (#274).
+  // Precedence: fatal > sidecar-crash > reattach > picker.
+  // Fatal/crash effects also use replace:true, so the last one to resolve
+  // wins — but we skip the reattach navigation when those states are
+  // already set (they resolve from the same Rust state machine, usually
+  // faster than a live-session query).
+  useEffect(() => {
+    let cancelled = false;
+    currentSession()
+      .then((info) => {
+        if (cancelled) return;
+        // Respect precedence: skip navigation if a fatal or crash redirect
+        // has already been queued.
+        if (fatalInfo !== null || crashPayload !== null) return;
+        if (info.active && info.dashboardUrl) {
+          setDashboardUrl(info.dashboardUrl);
+          navigate("/session/dashboard", { replace: true });
+          setWelcomeOpen(false);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setSessionReattaching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  // fatalInfo and crashPayload are intentionally excluded: they're read
+  // as a one-shot precedence gate at the moment of resolution, not as
+  // reactive dependencies (the effect must run only on mount).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate, setDashboardUrl, setSessionReattaching, setWelcomeOpen]);
 
   // Replay: Help ▸ Welcome Tour re-opens the carousel without mutating the
   // persisted flag (only the carousel's own checkbox / reaching-the-end does).
@@ -1048,6 +1093,33 @@ export function App() {
     };
   }, [theme]);
 
+  // Phase 2 — heartbeat (#274). Fires invoke("ui_heartbeat") on mount and
+  // every ~2s to let the Rust watchdog detect a JS-alive paint wedge.
+  // Each beat is scheduled from within a requestAnimationFrame callback so
+  // the beat STOPS if rAF stalls (the only JS-observable signal of a paint
+  // wedge). A bare setInterval would keep firing even through a wedge.
+  useEffect(() => {
+    let mounted = true;
+    let rafId: ReturnType<typeof requestAnimationFrame> | undefined;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleBeat = () => {
+      rafId = requestAnimationFrame(() => {
+        if (!mounted) return;
+        void invoke("ui_heartbeat").catch(() => undefined);
+        timerId = setTimeout(scheduleBeat, 2000);
+      });
+    };
+
+    scheduleBeat();
+
+    return () => {
+      mounted = false;
+      if (rafId !== undefined) cancelAnimationFrame(rafId);
+      if (timerId !== undefined) clearTimeout(timerId);
+    };
+  }, []);
+
   useEffect(() => {
     const unsubscribe = subscribeCompleted((payload) => {
       setEsr(payload);
@@ -1085,7 +1157,6 @@ export function App() {
     };
   }, [navigate, setEsr]);
 
-  const [crashPayload, setCrashPayload] = useState<SidecarCrashedPayload | null>(null);
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -1116,7 +1187,14 @@ export function App() {
   //  2. `get_fatal_shell_state` Tauri command queried on mount. This is
   //     the primary path because the setup hook usually runs before the
   //     React app is ready to receive events.
-  const [fatalInfo, setFatalInfo] = useState<FatalShellInfo | null>(null);
+  // DESIGN §2.6 fatal-error surface. Two ways the shell finds out the
+  // supervisor failed:
+  //  1. Tauri event `app.fatal_error` (emitted from the setup hook the
+  //     instant the supervisor returns Err). Useful if the WebView is
+  //     already mounted when the failure happens — rare in practice.
+  //  2. `get_fatal_shell_state` Tauri command queried on mount. This is
+  //     the primary path because the setup hook usually runs before the
+  //     React app is ready to receive events.
   useEffect(() => {
     void invoke<FatalShellInfo | null>("get_fatal_shell_state")
       .then((info) => {
@@ -1249,9 +1327,11 @@ export function App() {
     "/recovery",
     "/fatal-error",
   ];
-  const chromeHidden = chromeHiddenRoutes.some((prefix) =>
-    location.pathname.startsWith(prefix),
-  );
+  // Also hide chrome while the reattach probe is pending: the immersive
+  // class makes the "/" route show a blank splash rather than the picker.
+  const chromeHidden =
+    sessionReattaching ||
+    chromeHiddenRoutes.some((prefix) => location.pathname.startsWith(prefix));
 
   // Match the bridge SPA's body chrome when the dashboard fills the
   // viewport: use dashboard.css's themed --color-fm-bg.
@@ -1322,20 +1402,25 @@ export function App() {
         <Route
           path="/"
           element={
-            <ChooseProjectScreen
-              onProjectSelected={onProjectSelected}
-              onQuickStartFailed={(path, err, failedStep) => {
-                // Surface the failure inside the regular Setup-rail
-                // flow so Quick Start is never a dead end (issue #565
-                // "edge cases" — missing identity, deleted target
-                // branch, drifted agentshore.yaml).
-                setQuickStartError({ message: err.message, step: failedStep });
-                navigate(`/setup/${failedStep}`);
-                // Keep onProjectSelected behavior in sync so the rail
-                // hydrates from agentshore.yaml even on the fallback path.
-                void onProjectSelected(path);
-              }}
-            />
+            // No-flash: while the reattach probe is pending, render null
+            // so the immersive splash (desktop-shell--immersive, driven by
+            // chromeHidden above) shows instead of the project picker.
+            sessionReattaching ? null : (
+              <ChooseProjectScreen
+                onProjectSelected={onProjectSelected}
+                onQuickStartFailed={(path, err, failedStep) => {
+                  // Surface the failure inside the regular Setup-rail
+                  // flow so Quick Start is never a dead end (issue #565
+                  // "edge cases" — missing identity, deleted target
+                  // branch, drifted agentshore.yaml).
+                  setQuickStartError({ message: err.message, step: failedStep });
+                  navigate(`/setup/${failedStep}`);
+                  // Keep onProjectSelected behavior in sync so the rail
+                  // hydrates from agentshore.yaml even on the fallback path.
+                  void onProjectSelected(path);
+                }}
+              />
+            )
           }
         />
         <Route

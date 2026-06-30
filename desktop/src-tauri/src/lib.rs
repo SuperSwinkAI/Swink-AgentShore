@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
@@ -84,6 +84,59 @@ impl QuitConfirmed {
 /// gate logic is unit-testable without a running Tauri app.
 fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> bool {
     session_active && !already_confirmed
+}
+
+/// Cached session info populated on a successful `session.start` RPC, cleared
+/// on `session.stop` and `session.completed`. Drives `current_session()` and
+/// the reattach path after a WebView reload.
+#[derive(Debug, Clone)]
+struct SessionInfo {
+    dashboard_url: String,
+    session_id: String,
+}
+
+#[derive(Default)]
+struct SessionInfoHolder(Mutex<Option<SessionInfo>>);
+
+/// Serialized response for the `current_session` Tauri command. camelCase
+/// mirrors the frontend's `CurrentSessionInfo` type in `rpc/sessionClient.ts`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentSessionInfo {
+    active: bool,
+    dashboard_url: Option<String>,
+    session_id: Option<String>,
+}
+
+/// Phase 2: rAF-gated heartbeat state. `enabled` is set true by the first
+/// `ui_heartbeat` call and cleared when the watchdog fires or the session ends.
+/// `last_beat_ms` is a UNIX-epoch millisecond timestamp stamped each beat.
+struct WebviewHeartbeat {
+    last_beat_ms: AtomicI64,
+    enabled: AtomicBool,
+}
+
+impl Default for WebviewHeartbeat {
+    fn default() -> Self {
+        Self {
+            last_beat_ms: AtomicI64::new(0),
+            enabled: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Re-entrancy guard: prevents the heartbeat watchdog and the
+/// content-process-terminate hook from surfacing the wedge dialog
+/// simultaneously.
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Default)]
+struct WedgeDialogActive(AtomicBool);
+
+/// Caller context for `declare_webview_wedged` — informs the log message.
+#[allow(dead_code)]
+enum WebviewWedgeMode {
+    Heartbeat,
+    ProcessTerminate,
 }
 
 struct SidecarHolder {
@@ -251,16 +304,45 @@ async fn jsonrpc_call(
     // alive so App Nap can't throttle the backgrounded UI. Acquire on
     // session.start, release on session.stop; natural exit (session.completed) is
     // released in sidecar's notification handler.
-    if result.is_ok() {
-        let holder = app.state::<activity::ActivityHolder>();
-        match method_for_hook.as_str() {
-            "session.start" => {
-                holder.acquire("AgentShore session active");
+    //
+    // Guard: RPC errors arrive wrapped in Ok(json!({"error":...})) — check for
+    // the absence of an embedded "error" key rather than result.is_ok(), which
+    // is always true at this point (transport errors propagated earlier via `??`).
+    if let Ok(ref rpc_value) = result {
+        if rpc_value.get("error").is_none() {
+            let holder = app.state::<activity::ActivityHolder>();
+            match method_for_hook.as_str() {
+                "session.start" => {
+                    holder.acquire("AgentShore session active");
+                    // Cache session info for current_session() + reattach (#274).
+                    // dashboardUrl shape: http://{host}:{port}/ (mirrors
+                    // StartingProgressRoute.tsx dashboardUrlFromEndpoint ~58-69).
+                    let dashboard_url = rpc_value.get("ipc_endpoint").and_then(|ep| {
+                        let host = ep.get("host").and_then(Value::as_str)?;
+                        let port = ep.get("port").and_then(Value::as_u64)?;
+                        Some(format!("http://{}:{}/", host, port))
+                    });
+                    let session_id = rpc_value
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let (Some(url), Some(id)) = (dashboard_url, session_id) {
+                        if let Ok(mut guard) = app.state::<SessionInfoHolder>().0.lock() {
+                            *guard = Some(SessionInfo {
+                                dashboard_url: url,
+                                session_id: id,
+                            });
+                        }
+                    }
+                }
+                "session.stop" => {
+                    holder.release();
+                    if let Ok(mut guard) = app.state::<SessionInfoHolder>().0.lock() {
+                        *guard = None;
+                    }
+                }
+                _ => {}
             }
-            "session.stop" => {
-                holder.release();
-            }
-            _ => {}
         }
     }
     result
@@ -356,6 +438,70 @@ fn restart_sidecar(app: AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+/// Reload the main WebView in-place without touching the session.
+///
+/// A WebView reload resets the React app to its root route. The `current_session`
+/// command lets the app reattach to the still-running engine on mount, so this is
+/// teardown-free. Called by the `reload_ui` command and the "Reload UI" menu item
+/// inline so it works even while the WebView shows a white screen.
+///
+/// Invariant: must never trigger `session.stop` or any teardown path (audited:
+/// teardown is only reachable via CloseRequested/ExitRequested/Exit).
+#[cfg_attr(test, allow(dead_code))]
+fn reload_main_webview(app: &AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "main webview window not found".to_string())?
+        .reload()
+        .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn reload_ui(app: AppHandle) -> Result<(), String> {
+    reload_main_webview(&app)
+}
+
+/// Returns current session state for the frontend reattach path (#274).
+/// `active` mirrors `ActivityHolder::is_active()`; `dashboardUrl`/`sessionId`
+/// come from `SessionInfoHolder` (populated on successful `session.start`).
+/// If a session is active but no info was cached yet, returns
+/// `{active:true, dashboardUrl:null, sessionId:null}`.
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn current_session(app: AppHandle) -> CurrentSessionInfo {
+    let active = app.state::<activity::ActivityHolder>().is_active();
+    let (dashboard_url, session_id) = match app.state::<SessionInfoHolder>().0.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(info) => (
+                Some(info.dashboard_url.clone()),
+                Some(info.session_id.clone()),
+            ),
+            None => (None, None),
+        },
+        Err(_) => (None, None),
+    };
+    CurrentSessionInfo {
+        active,
+        dashboard_url,
+        session_id,
+    }
+}
+
+/// Stamp the heartbeat timestamp and arm the watchdog (Phase 2). Called by the
+/// React app on mount and every 2s via a rAF-gated interval. A missed rAF beat
+/// (compositor stall / paint wedge) is what stops the call and arms the watchdog.
+#[cfg_attr(test, allow(dead_code))]
+#[tauri::command]
+fn ui_heartbeat(app: AppHandle) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let beat = app.state::<WebviewHeartbeat>();
+    beat.last_beat_ms.store(now_ms, Ordering::SeqCst);
+    beat.enabled.store(true, Ordering::SeqCst);
+}
+
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 fn quit_app(app: AppHandle) -> Result<(), String> {
@@ -423,6 +569,97 @@ fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, o
             "Cancel".to_string(),
         ))
         .show(on_choice);
+}
+
+/// Show the native "dashboard not responding" recovery dialog (Phase 2, #274).
+///
+/// Called when the heartbeat watchdog trips (JS-alive paint wedge) or the
+/// content-process-terminate hook fires. Re-entrant calls are suppressed by
+/// `WedgeDialogActive`. Three choices:
+///
+/// - "Reload UI"                → in-place reload; React reattaches via `current_session`.
+/// - "Open dashboard in browser"→ opens the dashboard URL in the default browser.
+/// - "Stop session"             → emits `menu:stop_session` for React to drain the session.
+///
+/// The heartbeat watchdog is disarmed on any outcome; it re-arms when the next
+/// `ui_heartbeat` call arrives (i.e. once JS is running again post-reload).
+#[cfg(not(test))]
+fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
+    let wedge_active = app.state::<WedgeDialogActive>();
+    if wedge_active.0.swap(true, Ordering::SeqCst) {
+        // Another dialog is already showing; drop this trip.
+        return;
+    }
+
+    // Snapshot the dashboard URL before handing off to the main thread.
+    let dashboard_url: Option<String> = app
+        .state::<SessionInfoHolder>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|info| info.dashboard_url.clone()));
+
+    let app_mt = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let app_action = app_mt.clone();
+        app_mt
+            .dialog()
+            .message(
+                "The AgentShore dashboard is not responding. \
+                 The session is still running in the background.",
+            )
+            .title("Dashboard not responding")
+            .buttons(MessageDialogButtons::YesNoCancelCustom(
+                "Reload UI".to_string(),
+                "Open dashboard in browser".to_string(),
+                "Stop session".to_string(),
+            ))
+            .show_with_result(move |result| {
+                use tauri_plugin_dialog::MessageDialogResult;
+                // Disarm the watchdog and the re-entrancy guard on any outcome;
+                // the watchdog re-arms when the next ui_heartbeat arrives.
+                app_action
+                    .state::<WebviewHeartbeat>()
+                    .enabled
+                    .store(false, Ordering::SeqCst);
+                app_action
+                    .state::<WedgeDialogActive>()
+                    .0
+                    .store(false, Ordering::SeqCst);
+
+                // Map positional Yes/No/Cancel AND Custom(label) for the
+                // YesNoCancelCustom variant (Linux rfd may return positional;
+                // macOS/Windows may return Custom).
+                let action = match &result {
+                    MessageDialogResult::Yes => "reload",
+                    MessageDialogResult::No => "browser",
+                    MessageDialogResult::Cancel => "stop",
+                    MessageDialogResult::Custom(label) => match label.as_str() {
+                        "Reload UI" => "reload",
+                        "Open dashboard in browser" => "browser",
+                        "Stop session" => "stop",
+                        _ => "",
+                    },
+                    _ => "",
+                };
+                match action {
+                    "reload" => {
+                        let _ = reload_main_webview(&app_action);
+                    }
+                    "browser" => {
+                        if let Some(ref url) = dashboard_url {
+                            let _ = spawn_open(url);
+                        }
+                    }
+                    "stop" => {
+                        let _ = app_action.emit("menu:stop_session", ());
+                    }
+                    _ => {}
+                }
+            });
+    });
 }
 
 /// Tear down agent subprocesses and the Python sidecar before the shell exits.
@@ -743,10 +980,19 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
     }
     let file = file_builder
         .separator()
-        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+        .item(&PredefinedMenuItem::close_window(
+            app,
+            Some("Close Window"),
+        )?)
         .build()?;
 
+    let reload_ui_item = MenuItemBuilder::with_id("reload_ui", "Reload UI")
+        .accelerator("CmdOrCtrl+R")
+        .build(app)?;
+
     let view = SubmenuBuilder::new(app, "View")
+        .item(&reload_ui_item)
+        .separator()
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
 
@@ -777,7 +1023,7 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::
 #[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // DESIGN §1.3 — single-instance enforcement. A second launch
         // attempt (e.g. user runs `open AgentShore.app` again) hits this
         // handler instead of spawning a parallel sidecar; we focus the
@@ -798,6 +1044,30 @@ pub fn run() {
         .manage(FatalShellState::default())
         .manage(activity::ActivityHolder::new())
         .manage(QuitConfirmed::default())
+        .manage(SessionInfoHolder::default())
+        .manage(WebviewHeartbeat::default())
+        .manage(WedgeDialogActive::default());
+
+    // macOS WKWebView renderer-death hook (#274, Phase 1+2). Registering a
+    // handler REPLACES wry's default auto-reload, so we must reload ourselves.
+    // The terminate hook fires for true renderer process death; the
+    // heartbeat watchdog (setup below) covers the JS-alive paint-wedge case.
+    // Broken out of the builder chain so the #[cfg] can be a statement attribute.
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        eprintln!(
+            "[agentshore-desktop] WKWebView content process terminated; reloading main webview"
+        );
+        let _ = webview.reload();
+        // Disarm heartbeat watchdog; it re-arms on the next ui_heartbeat call.
+        webview
+            .app_handle()
+            .state::<WebviewHeartbeat>()
+            .enabled
+            .store(false, Ordering::SeqCst);
+    });
+
+    builder
         .on_menu_event(|app, event| {
             // Custom items fan out to React via `menu:<id>` events (the
             // session-scoped ones are handled by SessionDashboardScreen, the
@@ -843,6 +1113,10 @@ pub fn run() {
                 }
                 "help_report_issue" => {
                     let _ = spawn_open(HELP_ISSUES_URL);
+                }
+                // Handled inline in Rust — must work while the WebView is white.
+                "reload_ui" => {
+                    let _ = reload_main_webview(app);
                 }
                 _ => {}
             }
@@ -896,6 +1170,48 @@ pub fn run() {
                     let _ = app_handle.emit("app:fatal_error", err);
                 }
             }
+
+            // Phase 2 — heartbeat watchdog (#274). A single long-lived thread
+            // checks for missed rAF beats. The watchdog only trips when ALL of:
+            // enabled (first beat arrived), a session is active, and now minus
+            // last_beat > WEDGE_THRESHOLD_MS. On trip it shows the native
+            // fallback dialog and disarms; the next ui_heartbeat re-arms it.
+            let watchdog_app = app_handle.clone();
+            std::thread::spawn(move || {
+                const WEDGE_THRESHOLD_MS: i64 = 10_000; // ~10s / 5 missed 2s beats
+                let mut wedge_declared = false;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1_000));
+                    let beat = watchdog_app.state::<WebviewHeartbeat>();
+                    if !beat.enabled.load(Ordering::SeqCst) {
+                        // Not armed or disarmed after a reload; reset wedge flag.
+                        wedge_declared = false;
+                        continue;
+                    }
+                    let active = watchdog_app.state::<activity::ActivityHolder>().is_active();
+                    if !active {
+                        // Session ended; disarm until the next session starts.
+                        beat.enabled.store(false, Ordering::SeqCst);
+                        wedge_declared = false;
+                        continue;
+                    }
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    let last = beat.last_beat_ms.load(Ordering::SeqCst);
+                    if last == 0 {
+                        // Enabled but no beat stamped yet — skip.
+                        continue;
+                    }
+                    let elapsed = now_ms.saturating_sub(last);
+                    if elapsed > WEDGE_THRESHOLD_MS && !wedge_declared {
+                        wedge_declared = true;
+                        declare_webview_wedged(&watchdog_app, WebviewWedgeMode::Heartbeat);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -908,6 +1224,9 @@ pub fn run() {
             open_path_in_default_app,
             open_log_folder,
             restart_sidecar,
+            reload_ui,
+            current_session,
+            ui_heartbeat,
             quit_app,
             tracked_agent_pids,
             kill_all_agents,
@@ -976,8 +1295,8 @@ pub fn run() {}
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_diagnostics, default_window_rect, read_text_file_impl, resolve_bundled_sidecar_path,
-        resolve_log_folder, UiState,
+        collect_diagnostics, default_window_rect, read_text_file_impl,
+        resolve_bundled_sidecar_path, resolve_log_folder, UiState,
     };
     use std::io::Write;
     use std::path::{Path, PathBuf};

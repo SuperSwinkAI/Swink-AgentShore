@@ -10,6 +10,8 @@ from agentshore.data.store.rows import _row_to_review_queue
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agentshore.data.models import ReviewQueueRecord
 
 
@@ -140,6 +142,30 @@ class _ReviewsMixin(_DataStoreBase):
             (now_iso(), queue_id),
         )
         await self._conn.commit()
+
+    @_serialized
+    async def drain_review_queue_for_prs(self, session_id: str, pr_numbers: Sequence[int]) -> int:
+        """Mark pending/claimed review rows ``done`` for the given PRs in one pass.
+
+        Used by the refresh-time reaper to drain rows for PRs that are no longer
+        an AgentShore reviewer's responsibility — primarily PRs parked
+        ``manual-required`` (handed to a human). Draining keeps ``review_queue``
+        reflecting actually-reviewable work so the resolver/mask don't iterate
+        dead rows each tick. Mirrors the queue drain in
+        :meth:`mark_pull_request_absent`. Returns the number of rows drained.
+        """
+        pr_list = list(dict.fromkeys(pr_numbers))
+        if not pr_list:
+            return 0
+        placeholders = ",".join("?" for _ in pr_list)
+        async with self._conn.execute(
+            f"UPDATE review_queue SET status = 'done', completed_at = ? "  # noqa: S608 (params bound)
+            f"WHERE session_id = ? AND status IN ('pending', 'claimed') "
+            f"AND pr_number IN ({placeholders})",
+            (now_iso(), session_id, *pr_list),
+        ) as cursor:
+            await self._conn.commit()
+            return cursor.rowcount or 0
 
     @_serialized
     async def complete_reviews_for_pr(self, session_id: str, pr_number: int) -> None:

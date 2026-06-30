@@ -630,6 +630,14 @@ fn dispatch_line(
         if method == "session.completed" {
             let holder = app.state::<crate::activity::ActivityHolder>();
             holder.release();
+            // Clear cached session info (#274 reattach) and disarm the heartbeat
+            // watchdog — the session is over so no more beats will arrive.
+            if let Ok(mut guard) = app.state::<crate::SessionInfoHolder>().0.lock() {
+                *guard = None;
+            }
+            app.state::<crate::WebviewHeartbeat>()
+                .enabled
+                .store(false, Ordering::Relaxed);
             let _ = app.emit(SESSION_COMPLETED_EVENT, params.clone());
         }
         let payload = SidecarNotificationPayload {
