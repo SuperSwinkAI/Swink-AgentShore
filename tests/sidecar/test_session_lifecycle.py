@@ -65,11 +65,17 @@ agents:
         enabled: true
       medium:
         enabled: true
+      large:
+        enabled: true
   codex:
     enabled: true
     binary: agentshore-missing-codex
     identity: beta
     model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
       large:
         enabled: true
 """

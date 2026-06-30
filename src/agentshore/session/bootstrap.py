@@ -419,6 +419,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
         # Still enforce the ≥2-identity precondition below for parity with the
         # original flow (which ran it unconditionally).
         _require_two_distinct_identities(cfg)
+        _require_per_identity_tier_coverage(cfg)
         return
 
     from agentshore.agents.identity import (
@@ -467,6 +468,7 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
         raise SystemExit(1)
 
     _require_two_distinct_identities(cfg)
+    _require_per_identity_tier_coverage(cfg)
 
 
 def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
@@ -580,6 +582,23 @@ def _require_two_distinct_identities(cfg: RuntimeConfig) -> None:
 
     try:
         require_two_distinct_gh_identities(cfg)
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+def _require_per_identity_tier_coverage(cfg: RuntimeConfig) -> None:
+    """Enforce that every GH identity covers all model tiers (small/medium/large).
+
+    code_review is large-tier-only and anti-confirmation forbids the PR author
+    from reviewing, so concentrating ``large`` on one identity deadlocks review.
+    Fail fast here rather than wedging the session on ``all_masked`` mid-run.
+    """
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+    from agentshore.errors import ConfigError
+
+    try:
+        require_per_identity_model_tier_coverage(cfg)
     except ConfigError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc

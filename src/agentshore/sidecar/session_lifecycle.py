@@ -283,7 +283,10 @@ def _check_agent_auth(cfg: RuntimeConfig) -> None:
 
     This mirrors the CLI start path's identity guard: enabled CLI agents must
     resolve to at least two distinct GitHub logins so review / merge can satisfy
-    anti-confirmation-bias constraints. After that, probe each configured CLI
+    anti-confirmation-bias constraints, and every identity must cover all model
+    tiers (small/medium/large) — code_review is large-tier-only, so concentrating
+    ``large`` on one identity deadlocks review (no distinct-identity reviewer).
+    After that, probe each configured CLI
     agent's backend auth. The backend probe is blocking in nature
     (``probe_configured_cli_auth`` shells out via ``subprocess.run``); call
     from the async runner through ``asyncio.to_thread``.
@@ -297,11 +300,15 @@ def _check_agent_auth(cfg: RuntimeConfig) -> None:
     otherwise-fine session.
     """
     from agentshore.agents.auth_probe import probe_configured_cli_auth
-    from agentshore.agents.identity import require_two_distinct_gh_identities
+    from agentshore.agents.identity import (
+        require_per_identity_model_tier_coverage,
+        require_two_distinct_gh_identities,
+    )
     from agentshore.errors import ConfigError
 
     try:
         require_two_distinct_gh_identities(cfg)
+        require_per_identity_model_tier_coverage(cfg)
     except ConfigError as exc:
         raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
 
