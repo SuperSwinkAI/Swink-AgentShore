@@ -21,6 +21,7 @@ from agentshore.cli_helpers import _DEFAULT_BUDGET, _DEFAULT_TIME_MINUTES
 from agentshore.config.models import PolicyMode
 from agentshore.session.bootstrap import (
     _load_config_with_overrides,
+    _require_per_identity_tier_coverage,
     require_startup_model_tier_coverage,
     validate_budget_flag,
 )
@@ -256,6 +257,101 @@ agents:
     assert excinfo.value.code == 1
     err = capsys.readouterr().err
     assert "missing required model tier coverage: small, large" in err
+
+
+# Per-identity model-tier coverage (CLI feedback)
+
+
+def test_per_identity_tier_coverage_cli_blocks_and_names_identity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI guard exits 1 and prints a clear, per-identity, multi-line error."""
+    cfg, _ = _resolve(
+        _write_cfg(
+            tmp_path,
+            """
+identities:
+  jwesleye:
+    git_user_name: jwesleye
+    git_user_email: j@example.com
+    gh_token_login: jwesleye
+  unseriousai:
+    git_user_name: unseriousAI
+    git_user_email: u@example.com
+    gh_token_login: unseriousai
+agents:
+  claude_code:
+    enabled: true
+    identity: jwesleye
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+  codex:
+    enabled: true
+    identity: unseriousai
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+      large:
+        enabled: true
+""",
+        )
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _require_per_identity_tier_coverage(cfg)
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "every model tier" in err
+    assert "'jwesleye' missing tier(s): large" in err
+    assert "agentshore identity --reconfigure" in err
+
+
+def test_per_identity_tier_coverage_cli_allows_full_coverage(tmp_path: Path) -> None:
+    cfg, _ = _resolve(
+        _write_cfg(
+            tmp_path,
+            """
+identities:
+  jwesleye:
+    git_user_name: jwesleye
+    git_user_email: j@example.com
+    gh_token_login: jwesleye
+  unseriousai:
+    git_user_name: unseriousAI
+    git_user_email: u@example.com
+    gh_token_login: unseriousai
+agents:
+  claude_code:
+    enabled: true
+    identity: jwesleye
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+      large:
+        enabled: true
+  codex:
+    enabled: true
+    identity: unseriousai
+    model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
+      large:
+        enabled: true
+""",
+        )
+    )
+
+    _require_per_identity_tier_coverage(cfg)  # no raise
 
 
 # validate_budget_flag

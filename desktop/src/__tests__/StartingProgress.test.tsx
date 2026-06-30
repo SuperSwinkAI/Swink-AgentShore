@@ -256,7 +256,7 @@ describe("buildInitialSteps", () => {
     const labels = steps.map((s) => s.label);
     expect(labels).toEqual([
       "Config merged",
-      "Agent auth checked",
+      "Agent auth & identities checked",
       "Skills installed",
       "Beads ready",
       "IPC endpoint bound",
