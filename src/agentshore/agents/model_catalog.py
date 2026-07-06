@@ -29,15 +29,15 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-opus-4-6",
         "claude-opus-4-7",
         "claude-opus-4-8",
-        # claude-fable-5 is access-gated (Project Glasswing); selectable here but
-        # yields INVALID_MODEL for users without access.
         "claude-fable-5",
     ],
     "codex": [
         # ChatGPT-account-compatible line (also works with API-key auth).
         # gpt-5.5 first: OpenAI's recommended default workhorse.
+        # gpt-5.5-pro is deliberately absent: it 400s under ChatGPT-account
+        # auth (verified codex-cli 0.141.0), which would permanently kill the
+        # agent via INVALID_MODEL; API-key users still get it from live fetch.
         "gpt-5.5",
-        "gpt-5.5-pro",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-nano",

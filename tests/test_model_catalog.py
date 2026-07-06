@@ -13,6 +13,7 @@ from agentshore.agents.model_catalog import (
     _fetch_openai_models,
     models_for_agent,
 )
+from agentshore.agents.pricing import bundled_pricebook
 
 
 def test_known_models_returned_when_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,8 +41,6 @@ def test_models_for_agent_in_running_loop_skips_live_fetch() -> None:
 
 
 def test_claude_catalog_includes_fable_and_current_sonnet() -> None:
-    # Fable 5 is access-gated (Project Glasswing) but selectable; users without
-    # access get INVALID_MODEL from the claude CLI itself.
     claude_models = KNOWN_MODELS["claude_code"]
 
     assert "claude-fable-5" in claude_models
@@ -94,8 +93,17 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     assert "o4-mini" not in KNOWN_MODELS["codex"]
     assert "gpt-5.2" not in KNOWN_MODELS["codex"]
     assert "gpt-5.3-codex" not in KNOWN_MODELS["codex"]
-    assert "gpt-5.4-nano" in KNOWN_MODELS["codex"]
-    assert "gpt-5.5-pro" in KNOWN_MODELS["codex"]
+    # gpt-5.5-pro 400s under ChatGPT-account auth (codex's default mode),
+    # which permanently kills the agent via INVALID_MODEL; API-key users
+    # still reach it through the live-fetch extras.
+    assert "gpt-5.5-pro" not in KNOWN_MODELS["codex"]
+
+
+def test_codex_catalog_includes_current_lineup() -> None:
+    codex_models = KNOWN_MODELS["codex"]
+
+    assert "gpt-5.5" in codex_models
+    assert "gpt-5.4-nano" in codex_models
 
 
 def test_grok_known_models_hard_pinned_to_build() -> None:
@@ -118,6 +126,20 @@ def test_antigravity_known_models_include_non_google_backends() -> None:
     assert "Claude Opus 4.6 (Thinking)" in antigravity
     assert "GPT-OSS 120B (Medium)" in antigravity
     assert "Gemini 3.1 Pro (High)" in antigravity
+
+
+def test_every_catalog_model_has_a_pricing_row() -> None:
+    # Catalog↔pricing invariant: a selectable model with no `models:` row in
+    # pricing.yaml bills at its agent_defaults rate — the wrong tier for
+    # anything not sonnet-priced (opus ~5x under-billed, haiku ~3x over).
+    book = bundled_pricebook()
+    missing = [
+        (agent_key, model)
+        for agent_key, models in KNOWN_MODELS.items()
+        for model in models
+        if model not in book.models
+    ]
+    assert missing == []
 
 
 def test_antigravity_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:

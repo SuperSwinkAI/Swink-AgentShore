@@ -1187,7 +1187,9 @@ def test_per_identity_tier_coverage_raises_when_one_identity_misses_large() -> N
             # jwesleye: small + medium only — missing large (review-eligible tier)
             "claude_code": AgentConfig(identity="jwesleye", model_tiers=_tiers("small", "medium")),
             # unseriousai: full coverage
-            "codex": AgentConfig(identity="unseriousai", model_tiers=_tiers("small", "medium", "large")),
+            "codex": AgentConfig(
+                identity="unseriousai", model_tiers=_tiers("small", "medium", "large")
+            ),
         },
     )
     with pytest.raises(ConfigError, match=r"every model tier"):
@@ -1259,9 +1261,7 @@ def test_per_identity_tier_coverage_skips_disabled_agents() -> None:
         agents={
             "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
             # the large coverage for alice is disabled → still missing large
-            "codex": AgentConfig(
-                identity="alice", model_tiers=_tiers("large"), enabled=False
-            ),
+            "codex": AgentConfig(identity="alice", model_tiers=_tiers("large"), enabled=False),
             "grok": AgentConfig(identity="bob", model_tiers=_tiers("small", "medium", "large")),
         },
     )

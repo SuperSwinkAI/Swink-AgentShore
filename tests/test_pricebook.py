@@ -68,8 +68,10 @@ def test_resolve_prefers_per_model_entry_for_gpt_5_5() -> None:
 
 def test_resolve_falls_back_to_agent_default_for_unlisted_model() -> None:
     pb = load_pricebook()
-    # A real Anthropic model id not enumerated in `models:` → agent default.
-    resolved = pb.resolve("claude_code", "claude-opus-4-8")
+    # An Anthropic-shaped model id not enumerated in `models:` → agent default.
+    # (Synthetic id: every real catalog entry is priced, per the invariant test
+    # in test_model_catalog.py.)
+    resolved = pb.resolve("claude_code", "claude-unpriced-model-x")
     assert resolved == pb.agent_defaults["claude_code"]
 
 

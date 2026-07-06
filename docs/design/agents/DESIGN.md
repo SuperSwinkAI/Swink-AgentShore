@@ -27,7 +27,7 @@ Capabilities are declared statically per type in `capabilities.py` (`can_impleme
 
 Each type exposes `small`, `medium`, and `large` tiers (`model_tiers.py`). `medium` is the default and the universal workhorse; `INSTANTIATE_AGENT` spawns in priority order medium -> small -> large. Explicit `model_tiers` config wins over the pinned defaults; legacy top-level `model`/`reasoning_effort` map onto the medium tier.
 
-The flat model catalog (`model_catalog.py`) can expose additional opt-in models without making them defaults. Current examples: `claude-sonnet-5` and `claude-fable-5` (access-gated behind Project Glasswing) for Claude, `gpt-5.4-nano` and `gpt-5.5-pro` for Codex, and explicit Gemini 3 model IDs for Antigravity. Grok is the exception: it is hard-pinned to `grok-build` (the only model the Grok CLI accepts for coding), so the catalog exposes no grok alternatives — grok tiers vary only by reasoning effort.
+The flat model catalog (`model_catalog.py`) can expose additional opt-in models without making them defaults. Current examples: `claude-sonnet-5` and `claude-fable-5` for Claude, and `gpt-5.4-nano` for Codex (`gpt-5.5-pro` is deliberately excluded from the curated list — it 400s under ChatGPT-account auth, codex's default mode, which would permanently kill the agent via `INVALID_MODEL`; API-key users still reach it through the live model fetch), and explicit Gemini 3 model IDs for Antigravity. Grok is the exception: it is hard-pinned to `grok-build` (the only model the Grok CLI accepts for coding), so the catalog exposes no grok alternatives — grok tiers vary only by reasoning effort.
 
 Per-play tier eligibility is a hard selection filter (`_selection.py`). Plays not listed accept any tier. Three design bands plus a universal exception:
 

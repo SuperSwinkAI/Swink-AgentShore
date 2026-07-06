@@ -48,6 +48,15 @@ async def test_install_timelapse_linux_returns_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "linux")
+
+    # No existing install: a real timelapse-capture at the 0.5.0 pin on the host
+    # would otherwise take the already-current fast path and never hit the
+    # platform gate.
+    async def no_existing_install(cwd: object) -> str | None:
+        return None
+
+    monkeypatch.setattr(setup, "installed_cli_version", no_existing_install)
+
     result = await setup.install_timelapse()
     assert result.success is False
     assert "macOS and Windows" in result.message
@@ -319,6 +328,13 @@ async def test_install_timelapse_reports_step_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "darwin")
+
+    # No existing install: a real timelapse-capture at the 0.5.0 pin on the host
+    # would otherwise take the already-current fast path and skip _ensure_ffmpeg.
+    async def no_existing_install(cwd: object) -> str | None:
+        return None
+
+    monkeypatch.setattr(setup, "installed_cli_version", no_existing_install)
 
     async def boom(cwd: object) -> None:
         raise setup.TimelapseError("ffmpeg/ffprobe are required but Homebrew was not found.")

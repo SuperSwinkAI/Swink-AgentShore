@@ -59,53 +59,47 @@ agent_defaults:
 # provider pricing pages as they diverge.
 models:
   # ── claude_code (Anthropic) ────────────────────────────────────────────────
-  opus:
+  opus: &claude_opus_rates
     max_context: 200000
     cost_per_1k_input: 0.015
     cost_per_1k_cached_input: 0.0015
     cost_per_1k_cache_write_input: 0.01875
     cost_per_1k_output: 0.075
-  sonnet:
+  sonnet: &claude_sonnet_rates
     max_context: 200000
     cost_per_1k_input: 0.003
     cost_per_1k_cached_input: 0.0003
     cost_per_1k_cache_write_input: 0.00375
     cost_per_1k_output: 0.015
-  haiku:
+  haiku: &claude_haiku_rates
     max_context: 200000
     cost_per_1k_input: 0.001
     cost_per_1k_cached_input: 0.0001
     cost_per_1k_cache_write_input: 0.00125
     cost_per_1k_output: 0.005
-  # Pinned IDs below mirror their alias tier's rate; confirm against
-  # provider pricing pages as they diverge.
-  claude-sonnet-5:
-    max_context: 200000
-    cost_per_1k_input: 0.003
-    cost_per_1k_cached_input: 0.0003
-    cost_per_1k_cache_write_input: 0.00375
-    cost_per_1k_output: 0.015
-  claude-opus-4-6:
-    max_context: 200000
-    cost_per_1k_input: 0.015
-    cost_per_1k_cached_input: 0.0015
-    cost_per_1k_cache_write_input: 0.01875
-    cost_per_1k_output: 0.075
-  # Access-gated (Project Glasswing); rate estimated at Opus-tier pending
-  # confirmation from Anthropic's pricing page.
-  claude-fable-5:
-    max_context: 200000
-    cost_per_1k_input: 0.015
-    cost_per_1k_cached_input: 0.0015
-    cost_per_1k_cache_write_input: 0.01875
-    cost_per_1k_output: 0.075
+  # Every pinned ID in the catalog mirrors its alias tier's rate via the
+  # anchors above; give an ID its own block when the provider prices it
+  # apart from the tier.
+  claude-haiku-4-5: *claude_haiku_rates
+  claude-sonnet-4-5: *claude_sonnet_rates
+  claude-sonnet-4-6: *claude_sonnet_rates
+  claude-sonnet-5: *claude_sonnet_rates
+  claude-opus-4-5: *claude_opus_rates
+  claude-opus-4-6: *claude_opus_rates
+  claude-opus-4-7: *claude_opus_rates
+  claude-opus-4-8: *claude_opus_rates
+  # Rate estimated at Opus-tier pending confirmation from Anthropic's
+  # pricing page.
+  claude-fable-5: *claude_opus_rates
   # ── codex (OpenAI) ─────────────────────────────────────────────────────────
   gpt-5.5:
     max_context: 400000
     cost_per_1k_input: 0.0035
     cost_per_1k_cached_input: 0.00035
     cost_per_1k_output: 0.028
-  # Estimate pending OpenAI pricing-page confirmation.
+  # Not in the curated catalog (400s under ChatGPT-account auth) but reachable
+  # via live fetch with API-key auth. Estimate pending OpenAI pricing-page
+  # confirmation.
   gpt-5.5-pro:
     max_context: 400000
     cost_per_1k_input: 0.007
@@ -121,6 +115,12 @@ models:
     cost_per_1k_input: 0.0006
     cost_per_1k_cached_input: 0.00006
     cost_per_1k_output: 0.0048
+  # Estimate pending OpenAI pricing-page confirmation.
+  gpt-5.4-nano:
+    max_context: 400000
+    cost_per_1k_input: 0.0002
+    cost_per_1k_cached_input: 0.00002
+    cost_per_1k_output: 0.0016
   # ── grok (xAI) ─────────────────────────────────────────────────────────────
   grok-build:
     max_context: 256000
@@ -129,37 +129,25 @@ models:
     cost_per_1k_output: 0.002
   # ── antigravity (Google, binary ``agy``) ───────────────────────────────────
   # Reasoning effort is baked into the model display-name; rates mirror gemini.
-  Gemini 3.5 Flash (Low):
+  Gemini 3.5 Flash (Low): &agy_gemini_rates
     max_context: 1000000
     cost_per_1k_input: 0.0005
     cost_per_1k_output: 0.003
-  Gemini 3.5 Flash (Medium):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
-  Gemini 3.5 Flash (High):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
-  Gemini 3.1 Pro (Low):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
-  Gemini 3.1 Pro (High):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
-  # Non-Google backends agy also exposes; agy reports no token usage so actual
-  # cost is $0, but rows are added to avoid a silent agent_defaults fallback.
+  Gemini 3.5 Flash (Medium): *agy_gemini_rates
+  Gemini 3.5 Flash (High): *agy_gemini_rates
+  Gemini 3.1 Pro (Low): *agy_gemini_rates
+  Gemini 3.1 Pro (High): *agy_gemini_rates
+  # Non-Google backends agy also exposes. agy reports no token usage today, so
+  # billed cost is $0 regardless; rows are listed so dispatches don't log the
+  # pricing_model_not_listed fallback warning. The Claude rows carry real
+  # Claude-tier rates and context so costing stays correct if agy starts
+  # emitting usage.
   Claude Sonnet 4.6 (Thinking):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
+    max_context: 200000
+    cost_per_1k_input: 0.003
+    cost_per_1k_output: 0.015
   Claude Opus 4.6 (Thinking):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
-  GPT-OSS 120B (Medium):
-    max_context: 1000000
-    cost_per_1k_input: 0.0005
-    cost_per_1k_output: 0.003
+    max_context: 200000
+    cost_per_1k_input: 0.015
+    cost_per_1k_output: 0.075
+  GPT-OSS 120B (Medium): *agy_gemini_rates
