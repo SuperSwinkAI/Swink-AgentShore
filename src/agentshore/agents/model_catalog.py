@@ -24,17 +24,20 @@ KNOWN_MODELS: dict[str, list[str]] = {
         "claude-haiku-4-5",
         "claude-sonnet-4-5",
         "claude-sonnet-4-6",
+        "claude-sonnet-5",
         "claude-opus-4-5",
+        "claude-opus-4-6",
         "claude-opus-4-7",
         "claude-opus-4-8",
-        # claude-fable-5 omitted: claude CLI reports it unavailable (gated behind
-        # fable-mythos-access) so offering it only yields INVALID_MODEL failures.
-        # Re-add when GA.
+        # claude-fable-5 is access-gated (Project Glasswing); selectable here but
+        # yields INVALID_MODEL for users without access.
+        "claude-fable-5",
     ],
     "codex": [
         # ChatGPT-account-compatible line (also works with API-key auth).
         # gpt-5.5 first: OpenAI's recommended default workhorse.
         "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-nano",
@@ -44,7 +47,7 @@ KNOWN_MODELS: dict[str, list[str]] = {
     ],
     "antigravity": [
         # agy exposes models by display name with reasoning effort baked in (no
-        # separate effort flag). Mirrors ``agy models`` (validated agy 1.0.10);
+        # separate effort flag). Mirrors ``agy models`` (validated agy 1.0.14);
         # no live-fetch branch — kept in sync by hand.
         "Gemini 3.5 Flash (Low)",
         "Gemini 3.5 Flash (Medium)",

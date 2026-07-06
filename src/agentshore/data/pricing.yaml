@@ -77,12 +77,40 @@ models:
     cost_per_1k_cached_input: 0.0001
     cost_per_1k_cache_write_input: 0.00125
     cost_per_1k_output: 0.005
+  # Pinned IDs below mirror their alias tier's rate; confirm against
+  # provider pricing pages as they diverge.
+  claude-sonnet-5:
+    max_context: 200000
+    cost_per_1k_input: 0.003
+    cost_per_1k_cached_input: 0.0003
+    cost_per_1k_cache_write_input: 0.00375
+    cost_per_1k_output: 0.015
+  claude-opus-4-6:
+    max_context: 200000
+    cost_per_1k_input: 0.015
+    cost_per_1k_cached_input: 0.0015
+    cost_per_1k_cache_write_input: 0.01875
+    cost_per_1k_output: 0.075
+  # Access-gated (Project Glasswing); rate estimated at Opus-tier pending
+  # confirmation from Anthropic's pricing page.
+  claude-fable-5:
+    max_context: 200000
+    cost_per_1k_input: 0.015
+    cost_per_1k_cached_input: 0.0015
+    cost_per_1k_cache_write_input: 0.01875
+    cost_per_1k_output: 0.075
   # ── codex (OpenAI) ─────────────────────────────────────────────────────────
   gpt-5.5:
     max_context: 400000
     cost_per_1k_input: 0.0035
     cost_per_1k_cached_input: 0.00035
     cost_per_1k_output: 0.028
+  # Estimate pending OpenAI pricing-page confirmation.
+  gpt-5.5-pro:
+    max_context: 400000
+    cost_per_1k_input: 0.007
+    cost_per_1k_cached_input: 0.0007
+    cost_per_1k_output: 0.056
   gpt-5.4:
     max_context: 400000
     cost_per_1k_input: 0.00175
@@ -118,6 +146,20 @@ models:
     cost_per_1k_input: 0.0005
     cost_per_1k_output: 0.003
   Gemini 3.1 Pro (High):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  # Non-Google backends agy also exposes; agy reports no token usage so actual
+  # cost is $0, but rows are added to avoid a silent agent_defaults fallback.
+  Claude Sonnet 4.6 (Thinking):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  Claude Opus 4.6 (Thinking):
+    max_context: 1000000
+    cost_per_1k_input: 0.0005
+    cost_per_1k_output: 0.003
+  GPT-OSS 120B (Medium):
     max_context: 1000000
     cost_per_1k_input: 0.0005
     cost_per_1k_output: 0.003

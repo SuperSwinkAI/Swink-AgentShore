@@ -39,12 +39,14 @@ def test_models_for_agent_in_running_loop_skips_live_fetch() -> None:
     async_models.assert_not_called()
 
 
-def test_claude_catalog_excludes_unavailable_fable() -> None:
-    # Fable 5 is gated behind fable-mythos-access and reported unavailable by
-    # the claude CLI; it must not be selectable until generally available.
+def test_claude_catalog_includes_fable_and_current_sonnet() -> None:
+    # Fable 5 is access-gated (Project Glasswing) but selectable; users without
+    # access get INVALID_MODEL from the claude CLI itself.
     claude_models = KNOWN_MODELS["claude_code"]
 
-    assert "claude-fable-5" not in claude_models
+    assert "claude-fable-5" in claude_models
+    assert "claude-sonnet-5" in claude_models
+    assert "claude-opus-4-6" in claude_models
     assert "claude-opus-4-8" in claude_models
 
 
@@ -93,6 +95,7 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     assert "gpt-5.2" not in KNOWN_MODELS["codex"]
     assert "gpt-5.3-codex" not in KNOWN_MODELS["codex"]
     assert "gpt-5.4-nano" in KNOWN_MODELS["codex"]
+    assert "gpt-5.5-pro" in KNOWN_MODELS["codex"]
 
 
 def test_grok_known_models_hard_pinned_to_build() -> None:
@@ -108,7 +111,7 @@ def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_antigravity_known_models_include_non_google_backends() -> None:
-    # agy (validated against `agy models`, agy 1.0.10) exposes non-Google
+    # agy (validated against `agy models`, agy 1.0.14) exposes non-Google
     # backends alongside Gemini; all three must be selectable.
     antigravity = KNOWN_MODELS["antigravity"]
     assert "Claude Sonnet 4.6 (Thinking)" in antigravity
