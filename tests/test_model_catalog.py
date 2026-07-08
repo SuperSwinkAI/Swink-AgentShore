@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
+from agentshore.agents import model_catalog as model_catalog_mod
 from agentshore.agents.model_catalog import (
     KNOWN_MODELS,
     _fetch_anthropic_models,
     _fetch_openai_models,
+    load_model_catalog,
     models_for_agent,
 )
 from agentshore.agents.pricing import bundled_pricebook
@@ -106,16 +110,16 @@ def test_codex_catalog_includes_current_lineup() -> None:
     assert "gpt-5.4-nano" in codex_models
 
 
-def test_grok_known_models_hard_pinned_to_build() -> None:
-    # grok is hard-pinned: exactly one entry, grok-build.
-    assert KNOWN_MODELS["grok"] == ["grok-build"]
+def test_grok_known_models_hard_pinned_to_current() -> None:
+    # grok is hard-pinned: exactly one entry, grok-4.5 (grok-build renamed).
+    assert KNOWN_MODELS["grok"] == ["grok-4.5"]
 
 
 def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     # models_for_agent for grok must never call a live xAI API.
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
     result = models_for_agent("grok")
-    assert result == ["grok-build"]
+    assert result == ["grok-4.5"]
 
 
 def test_antigravity_known_models_include_non_google_backends() -> None:
@@ -233,3 +237,88 @@ def test_fetch_openai_filters_to_relevant_prefixes(monkeypatch: pytest.MonkeyPat
     assert "o4-mini" not in result
     assert "whisper-1" not in result
     assert "dall-e-3" not in result
+
+
+def _point_global_models_at(monkeypatch: pytest.MonkeyPatch, path: Path, payload: object) -> None:
+    path.write_text(yaml.dump(payload), encoding="utf-8")
+    monkeypatch.setattr(model_catalog_mod, "GLOBAL_MODELS_PATH", path)
+
+
+def test_load_model_catalog_matches_known_models_without_override() -> None:
+    assert load_model_catalog() == KNOWN_MODELS
+
+
+def test_load_model_catalog_no_override_file_returns_bundled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(model_catalog_mod, "GLOBAL_MODELS_PATH", tmp_path / "does-not-exist.yaml")
+    assert load_model_catalog() == KNOWN_MODELS
+
+
+def test_global_override_replaces_one_agent_key_wholesale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _point_global_models_at(
+        monkeypatch,
+        tmp_path / "models.yaml",
+        {"models": {"grok": ["grok-4.5", "grok-experimental"]}},
+    )
+
+    catalog = load_model_catalog()
+
+    assert catalog["grok"] == ["grok-4.5", "grok-experimental"]
+    # Untouched agent keys keep the bundled default.
+    assert catalog["claude_code"] == KNOWN_MODELS["claude_code"]
+
+
+def test_global_override_accepts_flat_mapping_without_models_wrapper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _point_global_models_at(monkeypatch, tmp_path / "models.yaml", {"grok": ["grok-4.5"]})
+
+    assert load_model_catalog()["grok"] == ["grok-4.5"]
+
+
+def test_global_override_empty_file_returns_bundled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "models.yaml"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_catalog_mod, "GLOBAL_MODELS_PATH", path)
+
+    assert load_model_catalog() == KNOWN_MODELS
+
+
+def test_global_override_rejects_non_mapping_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agentshore.errors import ConfigError
+
+    path = tmp_path / "models.yaml"
+    path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+    monkeypatch.setattr(model_catalog_mod, "GLOBAL_MODELS_PATH", path)
+
+    with pytest.raises(ConfigError):
+        load_model_catalog()
+
+
+def test_global_override_rejects_non_list_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agentshore.errors import ConfigError
+
+    _point_global_models_at(monkeypatch, tmp_path / "models.yaml", {"grok": "grok-4.5"})
+
+    with pytest.raises(ConfigError):
+        load_model_catalog()
+
+
+def test_models_for_agent_respects_global_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _point_global_models_at(
+        monkeypatch, tmp_path / "models.yaml", {"models": {"claude_code": ["sonnet-override"]}}
+    )
+
+    assert models_for_agent("claude_code") == ["sonnet-override"]

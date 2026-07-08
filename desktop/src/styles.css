@@ -309,7 +309,7 @@ select:focus-visible {
   padding: 5px 30px 5px 10px;
 }
 
-/* Read-only model cell (grok is hard-pinned to grok-build — no picker). Keeps
+/* Read-only model cell (grok is hard-pinned to grok-4.5 — no picker). Keeps
    the field box so it lines up with the real selects, but reads as static. */
 .desktop-select--readonly {
   display: inline-flex;

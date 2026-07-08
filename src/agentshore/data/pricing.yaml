@@ -122,7 +122,8 @@ models:
     cost_per_1k_cached_input: 0.00002
     cost_per_1k_output: 0.0016
   # ── grok (xAI) ─────────────────────────────────────────────────────────────
-  grok-build:
+  # grok-4.5 replaced the prior grok-build model name.
+  grok-4.5:
     max_context: 256000
     cost_per_1k_input: 0.001
     cost_per_1k_cached_input: 0.0002

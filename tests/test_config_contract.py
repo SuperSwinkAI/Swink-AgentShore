@@ -54,11 +54,11 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert codex_price.cost_per_1k_input == 0.00175
     assert codex_price.cost_per_1k_output == 0.014
     assert codex_price.cost_per_1k_cached_input == 0.000175
-    assert config.agents["grok"].model_tiers["small"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["large"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
     assert config.agents["grok"].max_context == 256_000
     grok_price = config.pricebook.resolve("grok", None)
@@ -289,11 +289,11 @@ def test_default_config_has_agent_model_tiers() -> None:
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.4"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["small"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["grok"].model_tiers["medium"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["large"].model == "grok-build"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-4.5"
     assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
 
 

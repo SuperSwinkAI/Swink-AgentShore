@@ -32,9 +32,9 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="gpt-5.5", reasoning_effort="high"),
     },
     AgentType.GROK: {
-        "small": ModelTierConfig(model="grok-build", reasoning_effort="low"),
-        "medium": ModelTierConfig(model="grok-build", reasoning_effort="medium"),
-        "large": ModelTierConfig(model="grok-build", reasoning_effort="high"),
+        "small": ModelTierConfig(model="grok-4.5", reasoning_effort="low"),
+        "medium": ModelTierConfig(model="grok-4.5", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="grok-4.5", reasoning_effort="high"),
     },
     AgentType.ANTIGRAVITY: {
         # Effort is baked into the display-name, so reasoning_effort is unset

@@ -384,7 +384,7 @@ def test_build_argv_grok_shape() -> None:
         AgentType.GROK,
         "do the thing",
         binary="grok",
-        model="grok-build",
+        model="grok-4.5",
         reasoning_effort="medium",
         project_dir="/worktree",
     )
@@ -403,7 +403,7 @@ def test_build_argv_grok_shape() -> None:
         "--output-format",
         "streaming-json",
         "-m",
-        "grok-build",
+        "grok-4.5",
         "--effort",
         "medium",
         "--permission-mode",
@@ -623,6 +623,7 @@ def test_extract_output_antigravity_empty_output_normalised() -> None:
 @pytest.mark.parametrize(
     "alias",
     [
+        "grok-build",
         "grok-build-0.1",
         "grok-code-fast-1",
         "grok-code-fast",
@@ -632,7 +633,7 @@ def test_extract_output_antigravity_empty_output_normalised() -> None:
 def test_build_argv_grok_normalizes_cli_model_aliases(alias: str) -> None:
     argv = build_argv(AgentType.GROK, "do the thing", binary="grok", model=alias)
 
-    assert argv[argv.index("-m") + 1] == "grok-build"
+    assert argv[argv.index("-m") + 1] == "grok-4.5"
 
 
 def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -410,10 +410,10 @@ def _interactive_agent_select(
             )
             return
 
-        # model — grok is hard-pinned to grok-build, so skip the picker entirely.
+        # model — grok is hard-pinned to grok-4.5, so skip the picker entirely.
         if is_grok:
-            chosen = "grok-build"
-            click.echo("  model · grok-build (fixed)")
+            chosen = "grok-4.5"
+            click.echo("  model · grok-4.5 (fixed)")
         else:
             n += 1
             available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]

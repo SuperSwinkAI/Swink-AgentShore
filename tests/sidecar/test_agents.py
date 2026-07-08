@@ -188,17 +188,17 @@ def test_agents_catalog_includes_grok_defaults() -> None:
     defaults = catalog["defaults"]
     assert isinstance(models, dict)
     assert isinstance(defaults, dict)
-    assert "grok-build" in models["grok"]
+    assert "grok-4.5" in models["grok"]
     assert defaults["grok"]["small"] == {
-        "model": "grok-build",
+        "model": "grok-4.5",
         "reasoning_effort": "low",
     }
     assert defaults["grok"]["medium"] == {
-        "model": "grok-build",
+        "model": "grok-4.5",
         "reasoning_effort": "medium",
     }
     assert defaults["grok"]["large"] == {
-        "model": "grok-build",
+        "model": "grok-4.5",
         "reasoning_effort": "high",
     }
 

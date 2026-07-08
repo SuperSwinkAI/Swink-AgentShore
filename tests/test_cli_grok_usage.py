@@ -86,6 +86,7 @@ def test_usage_block_nesting_tolerance() -> None:
 @pytest.mark.parametrize(
     "model",
     [
+        "grok-build",
         "grok-code-fast",
         "grok-code-fast-1",
         "grok-code-fast-1-0825",
@@ -95,19 +96,20 @@ def test_usage_block_nesting_tolerance() -> None:
         "some-other-model",
     ],
 )
-def test_cli_model_any_non_build_warns_and_collapses(model: str) -> None:
-    """Any model that is not grok-build is collapsed to grok-build with a warning."""
+def test_cli_model_any_non_current_warns_and_collapses(model: str) -> None:
+    """Any model that is not grok-4.5 (including the retired grok-build name)
+    is collapsed to grok-4.5 with a warning."""
     with structlog.testing.capture_logs() as captured:
         result = cli_model(model)
-    assert result == "grok-build"
+    assert result == "grok-4.5"
     events = [e["event"] for e in captured]
     assert "grok_model_alias_override" in events
 
 
-def test_cli_model_grok_build_passthrough_no_warn() -> None:
-    """grok-build passes through unchanged with no warning."""
+def test_cli_model_grok_4_5_passthrough_no_warn() -> None:
+    """grok-4.5 passes through unchanged with no warning."""
     with structlog.testing.capture_logs() as captured:
-        assert cli_model("grok-build") == "grok-build"
+        assert cli_model("grok-4.5") == "grok-4.5"
     events = [e["event"] for e in captured]
     assert "grok_model_alias_override" not in events
 

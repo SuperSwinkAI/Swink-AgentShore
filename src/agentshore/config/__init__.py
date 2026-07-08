@@ -185,20 +185,20 @@ agents:
   grok:
     enabled: true
     binary: grok
-    model: grok-build
+    model: grok-4.5
     reasoning_effort: medium
     model_tiers:
       small:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: low
       medium:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: medium
       large:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: high
   fresh_start:
     max_plays_before_reset: 20

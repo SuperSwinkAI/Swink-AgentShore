@@ -415,14 +415,14 @@ function AgentConfigScreen() {
         string,
         { enabled: boolean; model: string; max: number; reasoning_effort?: string }
       > = {};
-      // Grok is hard-pinned to grok-build; never round-trip a stale model id.
+      // Grok is hard-pinned to grok-4.5; never round-trip a stale model id.
       const isGrok = agentType === "grok";
       // Only agents whose CLI exposes an effort flag may persist one — otherwise
       // the backend config validator rejects the whole config.
       const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
         const { model, enabled, max, reasoning_effort } = tierPlan[tier];
-        const persistedModel = isGrok ? "grok-build" : model;
+        const persistedModel = isGrok ? "grok-4.5" : model;
         // Persist the entry whenever the model is set, even when disabled —
         // that way a tier toggled off keeps its model selection for next
         // time the user re-enables it (matches the CLI wizard's behavior
@@ -535,7 +535,7 @@ function AgentConfigScreen() {
                         className="desktop-select desktop-select--readonly"
                         aria-label={`Model for ${tier} tier`}
                       >
-                        grok-build
+                        grok-4.5
                       </span>
                     ) : (
                       <select

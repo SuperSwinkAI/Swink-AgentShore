@@ -1,0 +1,67 @@
+# AgentShore model catalog — the curated baseline of known/selectable models
+# per agent harness. Top-level keys are agent_key strings matching AgentType
+# values used throughout the CLI wizard and desktop Setup screen (claude_code,
+# codex, grok, antigravity).
+#
+# HOW TO OVERRIDE (no code change, no rebuild):
+#   1. Create the global touchpoint that overrides the bundled copy:
+#        macOS:   ~/Library/Application Support/agentshore/models.yaml
+#        Linux:   ~/.config/agentshore/models.yaml
+#        Windows: %LOCALAPPDATA%\SuperSwinkAI\agentshore\models.yaml
+#      (the exact path is agentshore.paths.GLOBAL_MODELS_PATH)
+#   2. Each agent key's list is a WHOLESALE REPLACEMENT when present in the
+#      override — list every model you want that harness to offer, not just
+#      the ones you're adding. Keys omitted from the override keep the
+#      bundled default untouched.
+#   3. Every model listed here must have a matching entry under this
+#      project's pricing.yaml `models:` table, or it silently bills at the
+#      agent_defaults rate (see tests/test_model_catalog.py::
+#      test_every_catalog_model_has_a_pricing_row, which enforces this for
+#      the bundled catalog).
+
+models:
+  claude_code:
+    # CLI aliases (resolved by the claude binary itself)
+    - haiku
+    - sonnet
+    - opus
+    # Pinned model IDs
+    - claude-haiku-4-5
+    - claude-sonnet-4-5
+    - claude-sonnet-4-6
+    - claude-sonnet-5
+    - claude-opus-4-5
+    - claude-opus-4-6
+    - claude-opus-4-7
+    - claude-opus-4-8
+    - claude-fable-5
+
+  codex:
+    # ChatGPT-account-compatible line (also works with API-key auth).
+    # gpt-5.5 first: OpenAI's recommended default workhorse.
+    # gpt-5.5-pro is deliberately absent: it 400s under ChatGPT-account auth
+    # (verified codex-cli 0.141.0), which would permanently kill the agent via
+    # INVALID_MODEL; API-key users still get it from live fetch.
+    - gpt-5.5
+    - gpt-5.4
+    - gpt-5.4-mini
+    - gpt-5.4-nano
+
+  grok:
+    # Hard-pinned: exactly one entry (see issue #204). No live-fetch branch.
+    # grok-4.5 replaced the prior grok-build model name; cli_grok.cli_model()
+    # collapses grok-build (and any other input) to grok-4.5 with a warning.
+    - grok-4.5
+
+  antigravity:
+    # agy exposes models by display name with reasoning effort baked in (no
+    # separate effort flag). Mirrors `agy models` (validated agy 1.0.14); no
+    # live-fetch branch — kept in sync by hand.
+    - Gemini 3.5 Flash (Low)
+    - Gemini 3.5 Flash (Medium)
+    - Gemini 3.5 Flash (High)
+    - Gemini 3.1 Pro (Low)
+    - Gemini 3.1 Pro (High)
+    - Claude Sonnet 4.6 (Thinking)
+    - Claude Opus 4.6 (Thinking)
+    - GPT-OSS 120B (Medium)
