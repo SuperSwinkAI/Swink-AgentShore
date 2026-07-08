@@ -23,12 +23,17 @@ from agentshore.reports.types import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-_TIMELINE_WIDTH = 1000
 _TIMELINE_HEIGHT = 360
-_TIMELINE_LEFT = 72.0
-_TIMELINE_RIGHT = 940.0
+# A capacity bar occupies the left gutter (before the y-axis labels), sharing
+# the same y-scale/gridlines as the stacked timeline to its right.
+_CAPACITY_BAR_LEFT = 34.0
+_CAPACITY_BAR_RIGHT = 64.0
+_TIMELINE_LEFT = 168.0
+_TIMELINE_RIGHT = 1036.0
+_TIMELINE_WIDTH = 1096
 _TIMELINE_TOP = 52.0
 _TIMELINE_BOTTOM = 296.0
+_Y_AXIS_LABEL_X = _TIMELINE_LEFT - 34.0
 _MAX_TIMELINE_POINTS = 220
 _HARNESS_LABELS: dict[str, str] = {
     "antigravity": "Antigravity",
@@ -58,6 +63,7 @@ def collect_fleet_concurrency(
     session_id: str,
     *,
     tier_config_maxes: dict[str, int] | None = None,
+    harness_capacity_maxes: dict[str, int] | None = None,
 ) -> FleetConcurrencyData | None:
     """Compute ESR fleet-concurrency metrics from a raw NDJSON artifact.
 
@@ -108,7 +114,7 @@ def collect_fleet_concurrency(
             )
             for busy_level, samples in sorted(histogram_counts.items())
         ],
-        timeline=_build_timeline(records, peak_by_harness),
+        timeline=_build_timeline(records, peak_by_harness, harness_capacity_maxes or {}),
         rate_limit_samples=rate_limit_samples,
     )
 
@@ -216,17 +222,27 @@ def _tier_peaks_to_rows(
 def _build_timeline(
     records: list[dict[str, Any]],
     peak_by_harness: dict[str, int],
+    harness_capacity: dict[str, int],
 ) -> FleetConcurrencyTimelineData:
+    # Configured-but-idle harnesses (never actually busy this session) still
+    # count toward capacity and must appear in the shared ordering, at 0 peak.
+    ordering_source = dict(peak_by_harness)
+    for harness in harness_capacity:
+        ordering_source.setdefault(harness, 0)
+
     harnesses = [
         label
         for label, _peak in sorted(
-            peak_by_harness.items(),
+            ordering_source.items(),
             key=lambda item: (-item[1], _display_harness_label(item[0])),
         )
     ]
     samples = _downsample_timeline_records(records)
     peak_busy = max((record["busy_total"] for record in records), default=0)
-    y_max = max(1, ceil(peak_busy / 5) * 5)
+    capacity_total = sum(harness_capacity.get(harness, 0) for harness in harnesses)
+    # The shared y-axis always extends to the maximum possible (configured
+    # capacity), not just the historical peak, so the capacity bar never clips.
+    y_max = max(1, ceil(max(peak_busy, capacity_total) / 5) * 5)
 
     parsed_start = _parse_ts(records[0]["ts"])
     parsed_end = _parse_ts(records[-1]["ts"])
@@ -261,8 +277,13 @@ def _build_timeline(
         total_points.append((x, _timeline_y(record["busy_total"], y_max)))
 
     timeline_harnesses: list[FleetConcurrencyTimelineHarnessEntry] = []
+    capacity_cumulative = 0
     for index, harness in enumerate(harnesses):
         color, fill = _harness_color(harness, index)
+        capacity_max = harness_capacity.get(harness, 0)
+        bar_bottom_y = _timeline_y(capacity_cumulative, y_max)
+        capacity_cumulative += capacity_max
+        bar_top_y = _timeline_y(capacity_cumulative, y_max)
         timeline_harnesses.append(
             FleetConcurrencyTimelineHarnessEntry(
                 label=harness,
@@ -270,6 +291,9 @@ def _build_timeline(
                 color=color,
                 fill=fill,
                 area_points=_points_to_string(tops[harness] + list(reversed(bottoms[harness]))),
+                capacity_max=capacity_max,
+                capacity_bar_y=bar_top_y,
+                capacity_bar_height=max(0.0, bar_bottom_y - bar_top_y),
             )
         )
 
@@ -282,6 +306,9 @@ def _build_timeline(
         total_points=_points_to_string(total_points),
         duration_label=_duration_label(records, duration_seconds),
         note="Stacked by harness at completion samples; total busy is overlaid as a line.",
+        capacity_total=capacity_total,
+        capacity_bar_left=_CAPACITY_BAR_LEFT,
+        capacity_bar_right=_CAPACITY_BAR_RIGHT,
     )
 
 
@@ -329,7 +356,7 @@ def _y_axis_labels(y_max: int) -> list[FleetConcurrencyTimelineAxisLabel]:
     step = _nice_axis_step(y_max)
     return [
         FleetConcurrencyTimelineAxisLabel(
-            x=38.0,
+            x=_Y_AXIS_LABEL_X,
             y=_timeline_y(value, y_max) + 4.0,
             label=str(value),
         )

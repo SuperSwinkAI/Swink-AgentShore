@@ -296,6 +296,53 @@ def test_x_axis_labels_reflect_real_clock_not_ordinal(tmp_path: Path) -> None:
     assert labels[2]["label"] == expected_mid
 
 
+def test_capacity_bar_includes_idle_configured_harness_and_extends_axis(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "fleet_concurrency.ndjson"
+    _write_lines(path, [_record(1, 2, busy_by_type={"claude_code": 2})])
+
+    data = collect_fleet_concurrency(
+        path,
+        SID,
+        harness_capacity_maxes={"claude_code": 2, "grok": 10},
+    )
+
+    assert data is not None
+    timeline = data["timeline"]
+    harnesses_by_label = {row["label"]: row for row in timeline["harnesses"]}
+    # grok never ran (no busy samples) but is still configured capacity, so it
+    # must still appear in the shared ordering/color mapping at 0 actual peak.
+    assert harnesses_by_label["grok"]["capacity_max"] == 10
+    assert harnesses_by_label["claude_code"]["capacity_max"] == 2
+    assert timeline["capacity_total"] == 12
+    # Shared y-axis must extend to the configured max, not just the peak busy of 2.
+    max_axis_label = max(int(label["label"]) for label in timeline["y_axis_labels"])
+    assert max_axis_label >= 12
+
+
+def test_capacity_bar_stacks_cumulatively_in_harness_order(tmp_path: Path) -> None:
+    path = tmp_path / "fleet_concurrency.ndjson"
+    _write_lines(path, [_record(1, 3, busy_by_type={"claude_code": 2, "codex": 1})])
+
+    data = collect_fleet_concurrency(
+        path,
+        SID,
+        harness_capacity_maxes={"claude_code": 2, "codex": 1},
+    )
+
+    assert data is not None
+    harnesses = data["timeline"]["harnesses"]
+    # claude_code has the higher peak, so it sorts first and its capacity
+    # segment sits at the bottom of the stack.
+    assert [row["label"] for row in harnesses] == ["claude_code", "codex"]
+    claude, codex = harnesses
+    assert claude["capacity_bar_y"] > codex["capacity_bar_y"]
+    assert claude["capacity_bar_y"] + claude["capacity_bar_height"] == pytest.approx(
+        _TIMELINE_BOTTOM
+    )
+
+
 def test_absent_or_empty_file_returns_none(tmp_path: Path) -> None:
     assert collect_fleet_concurrency(tmp_path / "missing.ndjson", SID) is None
 

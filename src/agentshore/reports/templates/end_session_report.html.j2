@@ -233,7 +233,7 @@
         }
         .timeline-chart {
             display: block;
-            min-width: 920px;
+            min-width: 1016px;
             width: 100%;
             height: auto;
         }
@@ -749,7 +749,7 @@
                 <div class="timeline-head">
                     <div>
                         <div class="subsection-title">Stacked Busy Agents Over Session</div>
-                        <div class="timeline-caption">{{ data.fleet_concurrency.timeline.duration_label }}; peak busy {{ data.fleet_concurrency.peak_busy }}.</div>
+                        <div class="timeline-caption">{{ data.fleet_concurrency.timeline.duration_label }}; peak busy {{ data.fleet_concurrency.peak_busy }}; max capacity {{ data.fleet_concurrency.timeline.capacity_total }}.</div>
                     </div>
                     <div class="timeline-legend">
                         {% for harness in data.fleet_concurrency.timeline.harnesses %}
@@ -763,20 +763,24 @@
                     </div>
                 </div>
                 <div class="timeline-wrap">
-                    <svg class="timeline-chart" viewBox="0 0 {{ data.fleet_concurrency.timeline.width }} {{ data.fleet_concurrency.timeline.height }}" role="img" aria-label="Stacked busy-agent timeline by harness">
+                    <svg class="timeline-chart" viewBox="0 0 {{ data.fleet_concurrency.timeline.width }} {{ data.fleet_concurrency.timeline.height }}" role="img" aria-label="Configured capacity and stacked busy-agent timeline by harness">
                         {% for label in data.fleet_concurrency.timeline.y_axis_labels %}
-                        <line class="timeline-grid-line" x1="72" y1="{{ label.y - 4 }}" x2="940" y2="{{ label.y - 4 }}" />
+                        <line class="timeline-grid-line" x1="{{ data.fleet_concurrency.timeline.capacity_bar_left }}" y1="{{ label.y - 4 }}" x2="1036" y2="{{ label.y - 4 }}" />
                         <text class="timeline-label" x="{{ label.x }}" y="{{ label.y }}">{{ label.label }}</text>
                         {% endfor %}
-                        <line class="timeline-axis" x1="72" y1="296" x2="940" y2="296" />
-                        <line class="timeline-axis" x1="72" y1="52" x2="72" y2="296" />
+                        <line class="timeline-axis" x1="{{ data.fleet_concurrency.timeline.capacity_bar_left }}" y1="296" x2="1036" y2="296" />
+                        <line class="timeline-axis" x1="168" y1="52" x2="168" y2="296" />
                         {% for label in data.fleet_concurrency.timeline.x_axis_labels %}
                         <text class="timeline-label" x="{{ label.x }}" y="{{ label.y }}">{{ label.label }}</text>
+                        {% endfor %}
+                        {% for harness in data.fleet_concurrency.timeline.harnesses %}
+                        <rect class="timeline-area" x="{{ data.fleet_concurrency.timeline.capacity_bar_left }}" y="{{ harness.capacity_bar_y }}" width="{{ data.fleet_concurrency.timeline.capacity_bar_right - data.fleet_concurrency.timeline.capacity_bar_left }}" height="{{ harness.capacity_bar_height }}" style="fill: {{ harness.fill }}; stroke: {{ harness.color }};" />
                         {% endfor %}
                         {% for harness in data.fleet_concurrency.timeline.harnesses %}
                         <polygon class="timeline-area" points="{{ harness.area_points }}" style="fill: {{ harness.fill }}; stroke: {{ harness.color }};" />
                         {% endfor %}
                         <polyline class="timeline-line-total" points="{{ data.fleet_concurrency.timeline.total_points }}" />
+                        <text class="timeline-label" x="{{ data.fleet_concurrency.timeline.capacity_bar_left }}" y="312">MAX</text>
                     </svg>
                 </div>
                 <div class="timeline-note">{{ data.fleet_concurrency.timeline.note }}</div>

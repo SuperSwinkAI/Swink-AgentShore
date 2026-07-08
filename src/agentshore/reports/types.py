@@ -104,6 +104,11 @@ class FleetConcurrencyTimelineHarnessEntry(TypedDict):
     color: str
     fill: str
     area_points: str
+    # Configured spawn capacity (sum of enabled model-tier maxes) for the
+    # capacity bar rendered alongside the timeline; 0 when not configured.
+    capacity_max: int
+    capacity_bar_y: float
+    capacity_bar_height: float
 
 
 class FleetConcurrencyTimelineData(TypedDict):
@@ -115,6 +120,11 @@ class FleetConcurrencyTimelineData(TypedDict):
     total_points: str
     duration_label: str
     note: str
+    # Total configured fleet capacity (sum of all harnesses' capacity_max) and
+    # the pixel span of the capacity bar, shared with the harness entries above.
+    capacity_total: int
+    capacity_bar_left: float
+    capacity_bar_right: float
 
 
 class FleetConcurrencyData(TypedDict):
