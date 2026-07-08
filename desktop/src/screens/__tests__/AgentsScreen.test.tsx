@@ -16,12 +16,20 @@ function makeAdapter(
   listIdentities: ReturnType<typeof vi.fn>;
   detectAgents: ReturnType<typeof vi.fn>;
   configureAgent: ReturnType<typeof vi.fn>;
+  refreshModels: ReturnType<typeof vi.fn>;
 } {
   return {
     listAgents: vi.fn().mockResolvedValue(agents),
     listIdentities: vi.fn().mockResolvedValue(identities),
     detectAgents: vi.fn().mockResolvedValue(detected),
     configureAgent: vi.fn().mockResolvedValue(undefined),
+    refreshModels: vi.fn().mockResolvedValue({
+      harnesses: {},
+      unpriced_models: [],
+      total_cost_usd: 0,
+      dry_run: false,
+      any_changes: false,
+    }),
   };
 }
 
@@ -329,10 +337,87 @@ describe("AgentsScreen", () => {
       listIdentities: vi.fn().mockResolvedValue(IDENTITIES),
       detectAgents: vi.fn().mockResolvedValue([]),
       configureAgent: vi.fn(),
+      refreshModels: vi.fn(),
     };
     renderScreen(adapter);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("rpc down");
   });
 
+  it("refreshes the free harnesses on click with no confirmation", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    adapter.refreshModels.mockResolvedValue({
+      harnesses: {
+        codex: { status: "ok", models: ["gpt-5.5"], added: ["gpt-5.5"], removed: [], detail: "", cost_usd: 0 },
+      },
+      unpriced_models: [],
+      total_cost_usd: 0,
+      dry_run: false,
+      any_changes: true,
+    });
+    renderScreen(adapter);
+    await screen.findByTestId("agents-enabled-count");
+
+    await userEvent.click(await screen.findByTestId("refresh-models-button"));
+
+    await waitFor(() => expect(adapter.refreshModels).toHaveBeenCalledWith({}));
+    expect(await screen.findByTestId("refresh-result-codex")).toHaveTextContent("+gpt-5.5");
+  });
+
+  it("requires confirmation before refreshing Claude Code models", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    renderScreen(adapter);
+    await screen.findByTestId("agents-enabled-count");
+
+    await userEvent.click(await screen.findByTestId("refresh-claude-code-models-button"));
+
+    const confirm = await screen.findByTestId("refresh-claude-code-confirm");
+    expect(confirm).toHaveTextContent(/\$0\.30-0\.50/);
+    expect(adapter.refreshModels).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId("refresh-claude-code-confirm-cancel"));
+    expect(screen.queryByTestId("refresh-claude-code-confirm")).not.toBeInTheDocument();
+    expect(adapter.refreshModels).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the Claude Code refresh only after explicit confirmation", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    adapter.refreshModels.mockResolvedValue({
+      harnesses: {
+        claude_code: {
+          status: "ok",
+          models: ["sonnet"],
+          added: ["sonnet"],
+          removed: [],
+          detail: "",
+          cost_usd: 0.35,
+        },
+      },
+      unpriced_models: [],
+      total_cost_usd: 0.35,
+      dry_run: false,
+      any_changes: true,
+    });
+    renderScreen(adapter);
+    await screen.findByTestId("agents-enabled-count");
+
+    await userEvent.click(await screen.findByTestId("refresh-claude-code-models-button"));
+    await userEvent.click(await screen.findByTestId("refresh-claude-code-confirm-yes"));
+
+    await waitFor(() =>
+      expect(adapter.refreshModels).toHaveBeenCalledWith({ includeClaudeCode: true }),
+    );
+    expect(await screen.findByTestId("refresh-result-claude_code")).toHaveTextContent("sonnet");
+  });
+
+  it("surfaces an error when the model refresh call rejects", async () => {
+    const adapter = makeAdapter(AGENTS, IDENTITIES);
+    adapter.refreshModels.mockRejectedValue(new Error("refresh failed"));
+    renderScreen(adapter);
+    await screen.findByTestId("agents-enabled-count");
+
+    await userEvent.click(await screen.findByTestId("refresh-models-button"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("refresh failed");
+  });
 });

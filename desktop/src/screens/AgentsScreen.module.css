@@ -259,6 +259,67 @@
   margin-bottom: 16px;
 }
 
+.modelCatalogActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.claudeRefreshLink {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--warning, #b45309);
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.claudeRefreshLink:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.claudeConfirm {
+  border: 1px solid var(--warning-border, var(--fm-border, #d1d5db));
+  background: var(--warning-bg, rgba(245, 158, 11, 0.12));
+  border-radius: 6px;
+  padding: 12px;
+  max-width: 520px;
+}
+
+.claudeConfirm p {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: var(--fm-text-strong, #1f2940);
+}
+
+.claudeConfirmActions {
+  display: flex;
+  gap: 8px;
+}
+
+.claudeConfirmButton {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--warning, #b45309);
+  background: var(--warning, #b45309);
+  color: var(--color-fm-bg, #fff);
+}
+
+.modelRefreshResults {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #d1d5db);
+}
+
 .footer {
   display: flex;
   align-items: center;

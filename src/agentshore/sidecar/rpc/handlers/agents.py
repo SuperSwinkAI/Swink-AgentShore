@@ -60,6 +60,44 @@ def _dispatch_agents_rpc(
 
         return _run_check_auth()
 
+    if method == "agents.refresh_models":
+        # Run off the serve loop: the free-harness probes alone take up to a
+        # few seconds each, and the opt-in Claude Code path can take minutes
+        # (see model_discovery_llm.py) — must never block other RPCs.
+        obj_params = raw_params if isinstance(raw_params, dict) else {}
+        include_claude_code = bool(obj_params.get("include_claude_code", False))
+        tier = obj_params.get("tier")
+        max_budget_usd = obj_params.get("max_budget_usd")
+        dry_run = bool(obj_params.get("dry_run", False))
+        if tier is not None and not isinstance(tier, str):
+            return _error(req_id, INVALID_PARAMS, "agents.refresh_models: 'tier' must be a string")
+        if max_budget_usd is not None and not isinstance(max_budget_usd, (int, float)):
+            return _error(
+                req_id, INVALID_PARAMS, "agents.refresh_models: 'max_budget_usd' must be a number"
+            )
+
+        async def _run_refresh_models() -> JsonRpcResponse:
+            import asyncio
+
+            from agentshore.agents.model_discovery_llm import (
+                DEFAULT_MAX_BUDGET_USD,
+                DEFAULT_MODEL_TIER,
+            )
+            from agentshore.agents.model_refresh import refresh_model_catalog
+
+            summary = await asyncio.to_thread(
+                refresh_model_catalog,
+                include_claude_code=include_claude_code,
+                claude_code_tier=tier or DEFAULT_MODEL_TIER,
+                claude_code_max_budget_usd=(
+                    DEFAULT_MAX_BUDGET_USD if max_budget_usd is None else float(max_budget_usd)
+                ),
+                dry_run=dry_run,
+            )
+            return _result(req_id, summary.to_jsonable())
+
+        return _run_refresh_models()
+
     if method == "agents.configure":
         if not isinstance(raw_params, dict):
             return _error(req_id, INVALID_PARAMS, "agents.configure requires object params")

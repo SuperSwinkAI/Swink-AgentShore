@@ -472,3 +472,106 @@ def test_rpc_agents_check_auth_bad_config_returns_error_row(tmp_path: Path) -> N
     result = cast("dict[str, object]", response["result"])
     agents = cast("list[dict[str, object]]", result["agents"])
     assert agents[0]["status"] == "error"
+
+
+def test_rpc_agents_refresh_models_default_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No params: refreshes the free harnesses only, Claude Code excluded by default."""
+    from agentshore.agents.model_refresh import HarnessRefreshOutcome, ModelRefreshSummary
+
+    captured: dict[str, object] = {}
+    summary = ModelRefreshSummary(
+        harnesses={"codex": HarnessRefreshOutcome("codex", "ok", ("gpt-5.5",))}
+    )
+
+    def fake_refresh(**kwargs: object) -> ModelRefreshSummary:
+        captured.update(kwargs)
+        return summary
+
+    monkeypatch.setattr("agentshore.agents.model_refresh.refresh_model_catalog", fake_refresh)
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = _resolve(
+        handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.refresh_models"}, state=state)
+    )
+
+    assert "error" not in response
+    result = cast("dict[str, object]", response["result"])
+    assert result == summary.to_jsonable()
+    assert captured["include_claude_code"] is False
+    assert captured["dry_run"] is False
+
+
+def test_rpc_agents_refresh_models_passes_through_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.agents.model_refresh import ModelRefreshSummary
+
+    captured: dict[str, object] = {}
+
+    def fake_refresh(**kwargs: object) -> ModelRefreshSummary:
+        captured.update(kwargs)
+        return ModelRefreshSummary()
+
+    monkeypatch.setattr("agentshore.agents.model_refresh.refresh_model_catalog", fake_refresh)
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = _resolve(
+        handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "agents.refresh_models",
+                "params": {
+                    "include_claude_code": True,
+                    "tier": "sonnet",
+                    "max_budget_usd": 1.5,
+                    "dry_run": True,
+                },
+            },
+            state=state,
+        )
+    )
+
+    assert "error" not in response
+    assert captured["include_claude_code"] is True
+    assert captured["claude_code_tier"] == "sonnet"
+    assert captured["claude_code_max_budget_usd"] == 1.5
+    assert captured["dry_run"] is True
+
+
+def test_rpc_agents_refresh_models_rejects_non_string_tier(tmp_path: Path) -> None:
+    # Validated synchronously before the async dispatch, like agents.configure's
+    # param checks — no _resolve() needed.
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "agents.refresh_models",
+            "params": {"tier": 42},
+        },
+        state=state,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == INVALID_PARAMS
+
+
+def test_rpc_agents_refresh_models_rejects_non_numeric_budget(tmp_path: Path) -> None:
+    state = ServerState(active_project_path=str(tmp_path))
+
+    response = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "agents.refresh_models",
+            "params": {"max_budget_usd": "a lot"},
+        },
+        state=state,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == INVALID_PARAMS

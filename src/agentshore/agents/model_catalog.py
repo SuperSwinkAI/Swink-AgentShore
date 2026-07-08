@@ -87,6 +87,38 @@ def load_model_catalog() -> dict[str, list[str]]:
     return catalog
 
 
+def write_model_catalog_override(updates: Mapping[str, list[str]]) -> None:
+    """Merge *updates* into the global override file, replacing only the
+    given agent keys' lists wholesale.
+
+    Keys already present in the override but not in *updates* are preserved
+    untouched — a refresh that only succeeds for some harnesses this round
+    must not wipe out a previously-good override for the others. Used by the
+    ``agentshore models refresh`` CLI command and the ``agents.refresh_models``
+    RPC method; both write through this single function.
+    """
+    existing: dict[str, Any] = {}
+    if GLOBAL_MODELS_PATH.exists():
+        try:
+            text = GLOBAL_MODELS_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(f"could not read models file {GLOBAL_MODELS_PATH}: {exc}") from exc
+        try:
+            raw: Any = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"invalid YAML in {GLOBAL_MODELS_PATH}: {exc}") from exc
+        if isinstance(raw, dict):
+            existing = raw
+
+    models_block = dict(existing.get("models") or {})
+    for key, value in updates.items():
+        models_block[str(key)] = [str(model) for model in value]
+
+    out: dict[str, Any] = {"models": models_block}
+    GLOBAL_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GLOBAL_MODELS_PATH.write_text(yaml.safe_dump(out, sort_keys=False), encoding="utf-8")
+
+
 async def _fetch_live_models(
     url: str,
     *,

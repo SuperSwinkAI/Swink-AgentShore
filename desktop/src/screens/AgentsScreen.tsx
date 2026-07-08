@@ -6,8 +6,11 @@ import {
   configureAgent,
   detectAgents,
   listAgents,
+  refreshModels,
   type AgentConfigurePatch,
   type AgentRow,
+  type ModelRefreshSummary,
+  type RefreshModelsParams,
 } from "../rpc/agentsClient";
 import { listIdentities, type IdentityRow } from "../rpc/identitiesClient";
 
@@ -62,6 +65,7 @@ export interface AgentsAdapter {
   listIdentities: () => Promise<IdentityRow[]>;
   detectAgents: () => Promise<string[]>;
   configureAgent: (type: string, patch: AgentConfigurePatch) => Promise<void>;
+  refreshModels: (params: RefreshModelsParams) => Promise<ModelRefreshSummary>;
 }
 
 const defaultAdapter: AgentsAdapter = {
@@ -69,7 +73,35 @@ const defaultAdapter: AgentsAdapter = {
   listIdentities,
   detectAgents,
   configureAgent,
+  refreshModels,
 };
+
+// Measured during development against real Claude Code dispatches — see
+// docs/design/agents/DESIGN.md "Model Discovery". A successful run costs
+// roughly this much; the dispatch itself hard-caps well above it.
+const CLAUDE_CODE_REFRESH_COST_ESTIMATE = "roughly $0.30-0.50";
+
+function harnessSummaryLine(agentType: string, result: {
+  status: string;
+  added: string[];
+  removed: string[];
+  detail: string;
+}): string {
+  const label = agentLabel(agentType);
+  if (result.status === "ok") {
+    if (result.added.length === 0 && result.removed.length === 0) {
+      return `${label}: no change`;
+    }
+    const parts: string[] = [];
+    if (result.added.length > 0) parts.push(`+${result.added.join(", ")}`);
+    if (result.removed.length > 0) parts.push(`−${result.removed.join(", ")}`);
+    return `${label}: ${parts.join(" ")}`;
+  }
+  if (result.status === "skipped") return `${label}: not refreshed`;
+  if (result.status === "unavailable") return `${label}: CLI not found on PATH`;
+  if (result.status === "budget_exceeded") return `${label}: hit budget cap before finishing`;
+  return `${label}: ${result.status}${result.detail ? ` — ${result.detail}` : ""}`;
+}
 
 export interface AgentsScreenProps {
   adapter?: AgentsAdapter;
@@ -89,6 +121,36 @@ export function AgentsScreen({
   const [agentDetectionSucceeded, setAgentDetectionSucceeded] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  const [modelRefreshBusy, setModelRefreshBusy] = useState<"free" | "claude" | null>(null);
+  const [modelRefreshSummary, setModelRefreshSummary] = useState<ModelRefreshSummary | null>(null);
+  const [modelRefreshError, setModelRefreshError] = useState<string | null>(null);
+  const [showClaudeConfirm, setShowClaudeConfirm] = useState(false);
+
+  const onRefreshFreeModels = useCallback(async () => {
+    setModelRefreshBusy("free");
+    setModelRefreshError(null);
+    try {
+      setModelRefreshSummary(await adapter.refreshModels({}));
+    } catch (err) {
+      setModelRefreshError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModelRefreshBusy(null);
+    }
+  }, [adapter]);
+
+  const onConfirmClaudeRefresh = useCallback(async () => {
+    setShowClaudeConfirm(false);
+    setModelRefreshBusy("claude");
+    setModelRefreshError(null);
+    try {
+      setModelRefreshSummary(await adapter.refreshModels({ includeClaudeCode: true }));
+    } catch (err) {
+      setModelRefreshError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModelRefreshBusy(null);
+    }
+  }, [adapter]);
 
   const refresh = useCallback(async () => {
     try {
@@ -374,6 +436,97 @@ export function AgentsScreen({
                 </div>
               );
             })}
+          </div>
+        )}
+      </section>
+
+      <section className={styles.panel} data-testid="model-catalog-panel">
+        <div className={styles.panelHead}>
+          <h2>Model catalog</h2>
+          <span className={styles.small}>Codex, Grok, and Antigravity refresh for free</span>
+        </div>
+
+        {modelRefreshError !== null && (
+          <div role="alert" className={styles.error}>
+            {modelRefreshError}
+          </div>
+        )}
+
+        <div className={styles.modelCatalogActions}>
+          <button
+            type="button"
+            className={styles.scaffoldButton}
+            disabled={modelRefreshBusy !== null}
+            onClick={() => void onRefreshFreeModels()}
+            data-testid="refresh-models-button"
+          >
+            {modelRefreshBusy === "free" ? "Refreshing…" : "Refresh Models"}
+          </button>
+
+          {!showClaudeConfirm ? (
+            <button
+              type="button"
+              className={styles.claudeRefreshLink}
+              disabled={modelRefreshBusy !== null}
+              onClick={() => setShowClaudeConfirm(true)}
+              data-testid="refresh-claude-code-models-button"
+            >
+              Refresh Claude Code models (uses API tokens)
+            </button>
+          ) : (
+            <div className={styles.claudeConfirm} data-testid="refresh-claude-code-confirm">
+              <p>
+                This dispatches a live Claude Code agent (Haiku tier) that searches the web
+                for its current model list. Measured cost is{" "}
+                {CLAUDE_CODE_REFRESH_COST_ESTIMATE}, hard-capped well above that ceiling if
+                the search runs long.
+              </p>
+              <div className={styles.claudeConfirmActions}>
+                <button
+                  type="button"
+                  className={styles.claudeConfirmButton}
+                  onClick={() => void onConfirmClaudeRefresh()}
+                  data-testid="refresh-claude-code-confirm-yes"
+                >
+                  Continue (spend tokens)
+                </button>
+                <button
+                  type="button"
+                  className={styles.configureButton}
+                  onClick={() => setShowClaudeConfirm(false)}
+                  data-testid="refresh-claude-code-confirm-cancel"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {modelRefreshBusy === "claude" && (
+          <p className={styles.small} data-testid="refresh-claude-code-in-progress">
+            Dispatching Claude Code agent — this can take up to a couple of minutes…
+          </p>
+        )}
+
+        {modelRefreshSummary !== null && (
+          <div className={styles.modelRefreshResults} data-testid="model-refresh-results">
+            {Object.entries(modelRefreshSummary.harnesses).map(([agentType, result]) => (
+              <div key={agentType} className={styles.small} data-testid={`refresh-result-${agentType}`}>
+                {harnessSummaryLine(agentType, result)}
+              </div>
+            ))}
+            {modelRefreshSummary.unpriced_models.length > 0 && (
+              <p className={styles.small}>
+                New models without a pricing entry (billed at the default rate):{" "}
+                {modelRefreshSummary.unpriced_models.map(([, model]) => model).join(", ")}
+              </p>
+            )}
+            {modelRefreshSummary.total_cost_usd > 0 && (
+              <p className={styles.small}>
+                Spent this refresh: ${modelRefreshSummary.total_cost_usd.toFixed(4)}
+              </p>
+            )}
           </div>
         )}
       </section>
