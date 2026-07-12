@@ -625,3 +625,79 @@ def test_ensure_bd_installed_error_mentions_env_var(monkeypatch: pytest.MonkeyPa
         pytest.raises(RuntimeError, match="AGENTSHORE_BD_BIN"),
     ):
         ensure_bd_installed()
+
+
+@pytest.mark.asyncio
+async def test_bd_init_project_configures_dolt_auto_commit_after_fresh_init(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    from agentshore.beads.setup import bd_init_project
+
+    p = Path(str(tmp_path))
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object) -> str:
+        calls.append(args)
+        if args[0] == "init":
+            # Real `bd init` creates .beads/; the subsequent .gitignore write
+            # in bd_init_project depends on the directory existing.
+            (p / ".beads").mkdir()
+        return ""
+
+    with patch("agentshore.beads.setup.bd", new=_fake_bd):
+        await bd_init_project(p)
+
+    assert ("init",) in calls
+    assert ("config", "set", "dolt.auto-commit", "on") in calls
+    # The config step must run after `bd init`, not before.
+    assert calls.index(("init",)) < calls.index(("config", "set", "dolt.auto-commit", "on"))
+
+
+@pytest.mark.asyncio
+async def test_bd_init_project_configures_dolt_auto_commit_when_already_initialised(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    from agentshore.beads.setup import bd_init_project
+
+    p = Path(str(tmp_path))
+    (p / ".beads").mkdir()
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object) -> str:
+        calls.append(args)
+        return ""
+
+    with patch("agentshore.beads.setup.bd", new=_fake_bd):
+        await bd_init_project(p)
+
+    # `bd init` is skipped (already initialised) but the config step still runs,
+    # so pre-existing projects pick up the auto-commit fix too.
+    assert ("init",) not in calls
+    assert ("config", "set", "dolt.auto-commit", "on") in calls
+
+
+@pytest.mark.asyncio
+async def test_bd_init_project_dolt_auto_commit_failure_is_best_effort(
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import bd_init_project
+
+    p = Path(str(tmp_path))
+
+    async def _fake_bd(*args: str, cwd: object) -> str:
+        if args[0] == "init":
+            (p / ".beads").mkdir()
+            return ""
+        if args[:2] == ("config", "set"):
+            raise BdError("boom")
+        return ""
+
+    with patch("agentshore.beads.setup.bd", new=_fake_bd):
+        await bd_init_project(p)  # must not raise

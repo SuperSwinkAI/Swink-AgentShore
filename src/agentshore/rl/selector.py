@@ -467,7 +467,11 @@ class PPOSelector:
 
         async def _load() -> ProjectGraph | None:
             try:
-                return await load_graph(project_path)
+                # max_age_seconds=0.0: this is the drift check itself — it
+                # must observe the live graph, not a TTL-cached one, or it
+                # can't catch a sibling that flipped a bead in_progress since
+                # selection (see the docstring above ``confirm()``).
+                return await load_graph(project_path, max_age_seconds=0.0)
             except GraphReadError:
                 return None
 

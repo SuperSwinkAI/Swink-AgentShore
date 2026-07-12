@@ -722,9 +722,11 @@ class PlayExecutor:
         # Reload beads after the play and any reconciliation side effects have
         # run. Calibration and merge plays can close beads, so the persisted
         # play row must use the post-play graph rather than the dispatch
-        # snapshot.
+        # snapshot. max_age_seconds=0.0 forces a live read — the agent's
+        # mutations just happened, so a TTL-cached graph could still show the
+        # pre-play state.
         try:
-            post_graph = await load_graph(self._project_path)
+            post_graph = await load_graph(self._project_path, max_age_seconds=0.0)
         except Exception as exc:  # pragma: no cover - defensive logging path
             _logger.warning(
                 "post_play_graph_reload_failed",

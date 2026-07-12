@@ -36,7 +36,7 @@ _logger = structlog.get_logger(__name__)
 # binary means such a change can't slip in unannounced. Override with the
 # AGENTSHORE_BD_VERSION env var (set it empty to disable the check) only after
 # re-verifying the skill-template `bd` calls against the new release.
-REQUIRED_BD_VERSION = "1.0.4"
+REQUIRED_BD_VERSION = "1.1.0"
 
 
 def _check_bd_version(bd_binary: str) -> None:
@@ -119,16 +119,38 @@ def ensure_bd_installed() -> None:
     _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 
+async def _configure_dolt_auto_commit(project_path: Path) -> None:
+    """Set the ``dolt.auto-commit`` config key so every writer commits per write.
+
+    ``--dolt-auto-commit`` defaults to off on the bd CLI. AgentShore's own
+    mutations pass ``--dolt-auto-commit=on`` per call, but agent-driven writes
+    prescribed by skill templates do not, leaving uncommitted changes in the
+    Dolt working set — historically a source of blocked schema migrations.
+    Setting the config key once at init makes every writer (orchestrator and
+    agents alike) commit per write without a per-call flag. Idempotent and
+    best-effort: a failure here is logged and never blocks `agentshore init`,
+    matching the ``bd hooks install`` step below.
+    """
+    try:
+        await bd("config", "set", "dolt.auto-commit", "on", cwd=project_path)
+        _logger.info("bd_dolt_auto_commit_configured", project_path=str(project_path))
+    except BdError as exc:
+        _logger.warning("bd_dolt_auto_commit_config_failed", error=str(exc))
+
+
 async def bd_init_project(project_path: Path) -> None:
     """Run `bd init` in *project_path* if the beads store does not yet exist.
 
-    Idempotent — if ``.beads/`` already exists the call is a no-op.
+    Idempotent — if ``.beads/`` already exists, `bd init` itself is a no-op,
+    but the ``dolt.auto-commit`` config is still applied so existing projects
+    (created before this config step existed) pick it up too.
     Also writes ``.beads/.gitignore`` containing ``*`` so the local bead
     store is never committed to version control.
     """
     beads_dir = project_path / ".beads"
     if beads_dir.exists():
         _logger.info("bd_init_skipped", reason="already_initialised", path=str(beads_dir))
+        await _configure_dolt_auto_commit(project_path)
         return
 
     _logger.info("bd_init_running", project_path=str(project_path))
@@ -139,6 +161,8 @@ async def bd_init_project(project_path: Path) -> None:
     gitignore = beads_dir / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text("*\n", encoding="utf-8")
+
+    await _configure_dolt_auto_commit(project_path)
 
 
 async def bd_setup_for_agent_types(

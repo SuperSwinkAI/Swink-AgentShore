@@ -119,28 +119,23 @@ def _success_outcome(pr_number: int = 42) -> PlayOutcome:
     )
 
 
-# C5 — _BD_LOCK serialises concurrent bd calls
+# C5 / #5 — _BD_LOCK read/write semantics (_ReadersWriterLock)
+#
+# Reads (``query``/``list``/...) now run concurrently with each other —
+# verified empirically against a live bd 1.1.0 store (see bd110-findings.md
+# and the docstring on ``_ReadersWriterLock``); only a write is exclusive
+# against everything, matching the old single-lock guarantee for mutations.
 
 
-@pytest.mark.asyncio
-async def test_bd_lock_serialises_concurrent_calls() -> None:
-    """Two concurrent bd coroutines must not overlap — the lock ensures sequential execution.
+async def _bd_gather_with_slow_subprocess(*calls: object) -> list[str]:
+    """Run *calls* (each an ``args`` tuple for ``bd()``) concurrently against a
+    mocked, artificially slow subprocess, returning the start/end timeline.
 
-    Fully hermetic: both binary resolution and the subprocess spawn are mocked, so
-    the test exercises only ``_BD_LOCK`` ordering and needs no real bd on PATH.
+    Fully hermetic: both binary resolution and the subprocess spawn are
+    mocked, so this exercises only ``_BD_LOCK`` scheduling and needs no real
+    bd on PATH.
     """
     timeline: list[str] = []
-
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
-        # Holds the lock while "running"; the sleep creates observable overlap
-        # if the lock were absent.
-        timeline.append("start")
-        await asyncio.sleep(0.02)
-        timeline.append("end")
-        return ""
-
-    # Pin resolve_bd_binary and mock the subprocess so the test exercises only
-    # _BD_LOCK ordering, with no real bd on PATH.
     with (
         patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
         patch("agentshore.beads.asyncio.create_subprocess_exec") as mock_exec,
@@ -159,13 +154,31 @@ async def test_bd_lock_serialises_concurrent_calls() -> None:
 
         from agentshore.beads import bd
 
-        await asyncio.gather(
-            bd("query", "type=task", cwd=Path("/tmp")),
-            bd("query", "type=task", cwd=Path("/tmp")),
-        )
+        await asyncio.gather(*(bd(*call, cwd=Path("/tmp")) for call in calls))
+    return timeline
 
+
+@pytest.mark.asyncio
+async def test_bd_lock_runs_concurrent_reads_in_parallel() -> None:
+    """Two concurrent reads (``query``) must overlap — the reader side is shared."""
+    timeline = await _bd_gather_with_slow_subprocess(
+        ("query", "type=task"),
+        ("query", "type=task"),
+    )
+    assert timeline == ["start", "start", "end", "end"], (
+        f"Concurrent reads did not overlap — reader side not shared: {timeline}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bd_lock_serialises_concurrent_writes() -> None:
+    """Two concurrent writes (``update``) must not overlap — the writer side is exclusive."""
+    timeline = await _bd_gather_with_slow_subprocess(
+        ("update", "bd-1", "--status", "closed"),
+        ("update", "bd-2", "--status", "closed"),
+    )
     assert timeline == ["start", "end", "start", "end"], (
-        f"Concurrent bd calls interleaved — lock not working: {timeline}"
+        f"Concurrent writes interleaved — writer exclusivity not working: {timeline}"
     )
 
 
@@ -204,13 +217,15 @@ async def test_merge_pr_closes_beads_tasks() -> None:
         outcome = await play.execute(state, PlayParams(agent_id="agent-1", pr_number=42), ctx=ctx)
 
     assert outcome.success
-    closed_bead_ids = {call[1] for call in bd_calls if "closed" in call}
+    # _merge_reconcile.py closes linked beads via ``bd close --reason``, not
+    # ``bd update --status closed`` (already shipped separately from this
+    # change; see reconcile_merged_pr_bead_closed).
+    closed_bead_ids = {call[1] for call in bd_calls if call[0] == "close"}
     assert "bd-017" in closed_bead_ids, f"bd-017 not closed; bd_calls={bd_calls}"
     assert "bd-023" in closed_bead_ids, f"bd-023 not closed; bd_calls={bd_calls}"
-    # Uses --status closed, not bd set-state.
     for call in bd_calls:
-        assert call[0] == "update", f"expected 'update' subcommand, got: {call}"
-        assert "--status" in call and "closed" in call
+        assert call[0] == "close", f"expected 'close' subcommand, got: {call}"
+        assert "--reason" in call
 
 
 @pytest.mark.asyncio
@@ -708,12 +723,21 @@ async def test_add_blocking_dependency_rejects_equal_ids(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_add_blocking_dependency_swallows_bd_error(tmp_path: Path) -> None:
-    """A non-cycle bd failure returns UNAVAILABLE (caller falls back to a label)."""
+    """A non-cycle bd failure returns UNAVAILABLE (caller falls back to a label).
+
+    The non-cycle-substring path now also attempts the version-proof
+    reachability fallback (a forced-fresh ``load_graph`` reload), which
+    calls ``bd`` again with a ``timeout_seconds`` kwarg — the stub must
+    accept it. That reload fails the same way, so the fallback can't
+    confirm a cycle and the outcome still degrades to UNAVAILABLE.
+    """
     from agentshore.beads import BdError, BlockingDependencyOutcome, add_blocking_dependency
 
     (tmp_path / ".beads").mkdir()
 
-    async def _failing_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _failing_bd(
+        *args: str, cwd: object, stdin_data: object = None, timeout_seconds: float | None = None
+    ) -> str:
         raise BdError("link failed")
 
     with patch("agentshore.beads.bd", side_effect=_failing_bd):
