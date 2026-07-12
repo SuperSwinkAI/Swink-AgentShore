@@ -112,6 +112,28 @@ def build_esr_ready_notification(
     )
 
 
+def build_session_draining_notification(
+    *,
+    session_id: str,
+    reason: str,
+) -> JsonRpcNotification:
+    """Build the ``session.draining`` JSON-RPC notification.
+
+    Fires from ``begin_drain`` — the earliest point in graceful shutdown,
+    well before ESR HTML generation starts. Lets the Tauri shell's heartbeat
+    watchdog stand down as soon as drain begins rather than waiting for
+    ``$/esr_ready`` (which only arrives after the unbounded, O(plays/agents)
+    report-generation step completes).
+    """
+    return notification(
+        "session.draining",
+        {
+            "session_id": session_id,
+            "reason": reason,
+        },
+    )
+
+
 def build_sidecar_health_notification() -> JsonRpcNotification:
     return notification(
         "sidecar.health",

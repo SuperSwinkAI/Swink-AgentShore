@@ -120,6 +120,87 @@ unit-tested `should_declare_wedge()` — requires `!esr_ready` in addition to
 so a subsequent session is fully re-armed. No JS changes were needed; both
 notifications were already parsed by the frontend.
 
+### 4a-2. `session.draining` at drain-start, debounce, and an "Ignore" button (second hardening pass)
+
+The `$/esr_ready` fix in §4a closed the timelapse-finalization gap, but a second
+gap remained on the *front* end of shutdown: `$/esr_ready` is fired from
+`stop_inner`, only **after** `complete_session` and full ESR HTML generation —
+`compute_play_log_rows`/`compute_play_stats` (`collector.py:305-339`) walk the
+entire play/agent history for the session, an O(plays/agents) step with no time
+bound. A real user hit this: on an 854-play session, the "Dashboard not
+responding" dialog was still showing on top of an already-fully-rendered End
+Session Report. The watchdog had tripped on a stale heartbeat sample that
+landed *before* `$/esr_ready` ever arrived — plausible during the flurry of
+end-of-session UI churn a large fleet produces — and once tripped, nothing
+dismisses it: `declare_webview_wedged` opens a native, `NSAlert`-backed
+`tauri_plugin_dialog` message box that is not part of the React DOM and has no
+supported programmatic-dismiss API, so an already-open dialog cannot be
+auto-closed by a later `esr_ready` flip.
+
+**Fix — `session.draining` notification at `begin_drain`.** A new
+sidecar-transport notification, `session.draining` (dotted method string, not
+`$/`-prefixed since it's a state signal rather than a one-shot terminal
+event), fires from `core/mixins/drain.py`'s `begin_drain` — immediately after
+the existing `state_provider.on_session_draining(reason)` call, i.e. at the
+earliest possible point in the drain sequence, well before ESR generation
+starts. This closes the gap entirely: the desktop now knows shutdown is
+underway from the very start of drain, not just from its tail end.
+
+The pre-existing `session_draining` *domain event* (`ipc/provider.py`) could
+not be reused — it feeds only the dashboard-file/bridge transport and never
+reaches the desktop app's sidecar stdout JSON-RPC stream that `dispatch_line`
+(`sidecar.rs`) reads. The fix required a brand-new notification, wired
+end-to-end mirroring the existing `esr_ready` callback pattern:
+
+- `router_helpers.py:115` — `build_session_draining_notification(*, session_id, reason)`.
+- `notification_emitters.py` — `build_session_draining_emitter(notify)`.
+- `server.py:101-104,146-149` — re-exports.
+- `core/session_runtime.py:105` — `session_draining_callback` field.
+- `core/mixins/drain.py` — `register_session_draining_callback` setter
+  (~177-190) and the fire point inside `begin_drain` (~215-224), wrapped in
+  try/except (logs `session_draining_emit_failed`, never raises).
+- `core/orchestrator.py:356-360` — `register_session_draining_callback` delegate.
+- `core/base.py` — `_session_draining_callback` property, mirroring `_esr_ready_callback`.
+- `sidecar/session_lifecycle.py` (~784+) — wires the emitter and registers the
+  callback, same `if notify is not None:` guard as the existing `esr_ready`
+  wiring.
+
+On the Rust side, `sidecar.rs` (~634-644) adds a `dispatch_line` case matching
+`method == "session.draining"`, setting a new `draining: AtomicBool` field on
+`WebviewHeartbeat` (`lib.rs` ~142-157, alongside `last_beat_ms`/`enabled`/
+`esr_ready`). `should_declare_wedge`'s `esr_ready` parameter is renamed to
+`shutdown_in_progress` (`lib.rs` ~89-113; logic unchanged, only the name and
+doc comment — the suppression window now runs from drain-start onward, not
+just post-ESR); the watchdog computes `shutdown_in_progress =
+beat.esr_ready.load(...) || beat.draining.load(...)` at the call site. The
+`session.start` reset (`lib.rs` ~349) now clears both `esr_ready` and
+`draining` to false, so a subsequent session is fully re-armed.
+
+**Debounce hardening.** The watchdog poll loop (`lib.rs` ~1219-1272)
+previously tripped `declare_webview_wedged` on the first 1-second sample
+where `should_declare_wedge()` was true. It now requires the stale condition
+to hold for **3 consecutive polls** (`const WEDGE_CONFIRM_POLLS: u32 = 3`,
+checked by the new pure function `wedge_confirmed(consecutive_stale_polls,
+confirm_threshold)`) before trip. This is defense-in-depth against the
+residual timing race and any other transient stall (heavy re-render under a
+large fleet, a GC pause) that self-heals within a couple more seconds.
+Trade-off: a genuine wedge now takes ~13s to surface instead of ~10s — an
+acceptable cost given a false positive shows a misleading, unrecoverable
+modal over working UI.
+
+**"Ignore" replaces "Open dashboard in browser".** `declare_webview_wedged`
+(`lib.rs` ~610-700) changed its button set from "Reload UI" / "Open dashboard
+in browser" / "Stop session" to **"Reload UI" / "Ignore" / "Stop session"**.
+Native OS message dialogs (`tauri_plugin_dialog`'s
+`MessageDialogButtons::YesNoCancelCustom`) cap at 3 custom buttons, so a 4th
+"just dismiss" option wasn't available as an addition — "Ignore" replaced the
+least load-bearing of the three existing options, the browser fallback, and
+directly serves the reported scenario: dismissing a stale dialog without
+disturbing an already-fine in-app view. Clicking "Ignore" is a pure no-op;
+the unconditional disarm/re-entrancy-guard reset already runs above the
+button-action match regardless of which button is clicked. The now-unread
+`dashboard_url` snapshot was removed as dead code.
+
 ### 5. "Reload UI" menu item handled inline in Rust
 
 The menu item must work while the WebView is white — meaning the React app
@@ -191,12 +272,19 @@ considered and explicitly deferred. Concerns:
 
 | Layer | Key files |
 |-------|-----------|
-| Rust | `desktop/src-tauri/src/lib.rs` (`reload_ui`, `current_session`, `ui_heartbeat`, `SessionInfoHolder`, `WebviewHeartbeat` incl. `esr_ready`, `should_declare_wedge`, `on_web_content_process_terminate`, "Reload UI" menu item) |
-| Rust | `desktop/src-tauri/src/sidecar.rs` (`SessionInfoHolder` populate/clear + `WebviewHeartbeat.esr_ready` set in `dispatch_line` on `$/esr_ready` / `session.completed`) |
+| Rust | `desktop/src-tauri/src/lib.rs` (`reload_ui`, `current_session`, `ui_heartbeat`, `SessionInfoHolder`, `WebviewHeartbeat` incl. `esr_ready`/`draining`, `should_declare_wedge` (`shutdown_in_progress` param), `wedge_confirmed`, `declare_webview_wedged` (Reload UI / Ignore / Stop session), `on_web_content_process_terminate`, "Reload UI" menu item) |
+| Rust | `desktop/src-tauri/src/sidecar.rs` (`SessionInfoHolder` populate/clear + `WebviewHeartbeat.esr_ready`/`.draining` set in `dispatch_line` on `$/esr_ready` / `session.completed` / `session.draining`) |
 | Frontend | `desktop/src/rpc/sessionClient.ts` (`CurrentSessionInfo`, `currentSession()`) |
 | Frontend | `desktop/src/services/sessionContext.tsx` (`sessionReattaching` state) |
 | Frontend | `desktop/src/App.tsx` (reattach effect, no-flash gate, heartbeat effect) |
-| Python | `src/agentshore/sidecar/session_lifecycle.py` (ESR local-snapshot fix — fold-in from #274 scope) |
+| Python | `src/agentshore/sidecar/rpc/router_helpers.py:115` (`build_session_draining_notification`, mirrors `build_esr_ready_notification`) |
+| Python | `src/agentshore/sidecar/notification_emitters.py` (`build_session_draining_emitter`) |
+| Python | `src/agentshore/sidecar/server.py:101-104,146-149` (re-exports the new builder/emitter) |
+| Python | `src/agentshore/sidecar/session_lifecycle.py` (ESR local-snapshot fix — fold-in from #274 scope; also wires the `session.draining` emitter + registers the callback, ~line 784+) |
+| Python | `src/agentshore/core/session_runtime.py:105` (`session_draining_callback` field) |
+| Python | `src/agentshore/core/mixins/drain.py` (`register_session_draining_callback` setter; fires the callback inside `begin_drain`, immediately after `on_session_draining`) |
+| Python | `src/agentshore/core/orchestrator.py:356-360` (`register_session_draining_callback` delegate) |
+| Python | `src/agentshore/core/base.py` (`_session_draining_callback` property, mirrors `_esr_ready_callback`) |
 | Python | `src/agentshore/dashboard/bridge.py` (`_replay_to_ws`, ~line 537) |
 
 ## Related design records

@@ -174,6 +174,21 @@ class DrainController:
         """
         self._runtime.esr_ready_callback = callback
 
+    def register_session_draining_callback(
+        self, callback: Callable[[str, str], None] | None
+    ) -> None:
+        """Wire a callback fired the moment graceful drain begins.
+
+        Receives ``(session_id, reason)``. Set by the sidecar's
+        ``run_session_start`` so the desktop shell's heartbeat watchdog can
+        stand down as soon as shutdown begins, without waiting for
+        ``$/esr_ready`` (which only arrives after the unbounded ESR
+        HTML-generation step completes). The callback runs synchronously
+        inside ``begin_drain``; exceptions are caught and logged but never
+        raised.
+        """
+        self._runtime.session_draining_callback = callback
+
     async def begin_drain(self, reason: str) -> None:
         """Start graceful drain: PPO will only dispatch end_agent until all agents stop.
 
@@ -197,6 +212,17 @@ class DrainController:
         await self._host._safe_call(
             self._runtime.state_provider.on_session_draining(reason), "on_session_draining"
         )
+        draining_callback = self._runtime.session_draining_callback
+        if draining_callback is not None:
+            try:
+                draining_callback(self._session_id, reason)
+            except Exception as exc:
+                _logger.error(
+                    "session_draining_emit_failed",
+                    error=str(exc),
+                    session_id=self._session_id,
+                    exc_info=True,
+                )
         self._runtime.pause_event.set()
         _logger.info("session_draining", reason=reason, session_id=self._session_id)
         # Arm the bounded graceful-drain deadline (#180) so a stuck in-flight

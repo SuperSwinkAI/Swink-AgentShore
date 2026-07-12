@@ -100,6 +100,7 @@ from agentshore.sidecar.rpc.router_helpers import (
     SESSION_STOP_DRAIN_PHASES,  # noqa: F401 — re-exported public surface
     build_esr_ready_notification,  # noqa: F401 — re-exported public surface
     build_session_completed_notification,  # noqa: F401 — re-exported public surface
+    build_session_draining_notification,  # noqa: F401 — re-exported public surface
     build_sidecar_health_notification,
 )
 
@@ -145,6 +146,7 @@ __all__ = [
     "SESSION_STOP_DRAIN_PHASES",
     "build_esr_ready_notification",
     "build_session_completed_notification",
+    "build_session_draining_notification",
     "build_sidecar_health_notification",
     # Serve-loop (defined in this module)
     "DEFAULT_HEALTH_INTERVAL_SECONDS",

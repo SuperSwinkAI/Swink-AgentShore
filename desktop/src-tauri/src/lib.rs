@@ -89,24 +89,33 @@ fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> 
 /// Whether the heartbeat watchdog should declare a paint wedge right now. Pure
 /// so the trip logic is unit-testable without a running watchdog thread.
 ///
-/// `esr_ready` (set once `$/esr_ready` or `session.completed` has been
-/// observed) suppresses the trip even while `active` is still true — the gap
-/// between ESR-ready and `session.completed` can be tens of seconds of pure
-/// backend bookkeeping (e.g. timelapse render finalization) with no live
-/// dashboard left to protect.
+/// `shutdown_in_progress` (true once either `session.draining` or
+/// `$/esr_ready`/`session.completed` has been observed) suppresses the trip
+/// even while `active` is still true — the whole window from drain-start
+/// onward is backend bookkeeping (ESR HTML generation, timelapse render
+/// finalization, etc.) with no live dashboard left to protect, and a real,
+/// busy shutdown can legitimately pause the render loop for many seconds
+/// during it.
 fn should_declare_wedge(
     enabled: bool,
     active: bool,
-    esr_ready: bool,
+    shutdown_in_progress: bool,
     last_beat_ms: i64,
     now_ms: i64,
     threshold_ms: i64,
 ) -> bool {
     enabled
         && active
-        && !esr_ready
+        && !shutdown_in_progress
         && last_beat_ms != 0
         && now_ms.saturating_sub(last_beat_ms) > threshold_ms
+}
+
+/// Whether the debounced watchdog trip is confirmed: the stale condition has
+/// held for at least `confirm_threshold` consecutive polls. Pure so the
+/// debounce boundary is unit-testable without the watchdog thread.
+fn wedge_confirmed(consecutive_stale_polls: u32, confirm_threshold: u32) -> bool {
+    consecutive_stale_polls >= confirm_threshold
 }
 
 /// Cached session info populated on a successful `session.start` RPC, cleared
@@ -138,11 +147,15 @@ struct CurrentSessionInfo {
 /// `session.completed`) — from that point there is no more live-dashboard work
 /// for the watchdog to protect, even though `ActivityHolder` can stay active for
 /// up to another ~60s while backend bookkeeping (e.g. timelapse render
-/// finalization) finishes. Reset false on the next `session.start`.
+/// finalization) finishes. `draining` is set true once the engine emits
+/// `session.draining`, fired at drain start — well before `esr_ready`, which
+/// only arrives after (unbounded, O(plays)) ESR HTML generation completes.
+/// Both reset false on the next `session.start`.
 struct WebviewHeartbeat {
     last_beat_ms: AtomicI64,
     enabled: AtomicBool,
     esr_ready: AtomicBool,
+    draining: AtomicBool,
 }
 
 impl Default for WebviewHeartbeat {
@@ -151,6 +164,7 @@ impl Default for WebviewHeartbeat {
             last_beat_ms: AtomicI64::new(0),
             enabled: AtomicBool::new(false),
             esr_ready: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
         }
     }
 }
@@ -344,12 +358,12 @@ async fn jsonrpc_call(
             match method_for_hook.as_str() {
                 "session.start" => {
                     holder.acquire("AgentShore session active");
-                    // Re-arm the ESR-ready gate for the new session (heartbeat
-                    // watchdog, #274 follow-up) — a prior session's disarm must
-                    // not suppress wedge detection for this one.
-                    app.state::<WebviewHeartbeat>()
-                        .esr_ready
-                        .store(false, Ordering::SeqCst);
+                    // Re-arm the ESR-ready/draining gates for the new session
+                    // (heartbeat watchdog, #274 follow-up) — a prior session's
+                    // disarm must not suppress wedge detection for this one.
+                    let heartbeat = app.state::<WebviewHeartbeat>();
+                    heartbeat.esr_ready.store(false, Ordering::SeqCst);
+                    heartbeat.draining.store(false, Ordering::SeqCst);
                     // Cache session info for current_session() + reattach (#274).
                     // dashboardUrl shape: http://{host}:{port}/ (mirrors
                     // StartingProgressRoute.tsx dashboardUrlFromEndpoint ~58-69).
@@ -613,9 +627,10 @@ fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandle, o
 /// content-process-terminate hook fires. Re-entrant calls are suppressed by
 /// `WedgeDialogActive`. Three choices:
 ///
-/// - "Reload UI"                → in-place reload; React reattaches via `current_session`.
-/// - "Open dashboard in browser"→ opens the dashboard URL in the default browser.
-/// - "Stop session"             → emits `menu:stop_session` for React to drain the session.
+/// - "Reload UI" → in-place reload; React reattaches via `current_session`.
+/// - "Ignore" → dismiss; no action (the user-facing escape hatch for a
+///   false-positive trip over an already-fine screen).
+/// - "Stop session" → emits `menu:stop_session` for React to drain the session.
 ///
 /// The heartbeat watchdog is disarmed on any outcome; it re-arms when the next
 /// `ui_heartbeat` call arrives (i.e. once JS is running again post-reload).
@@ -629,14 +644,6 @@ fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
         return;
     }
 
-    // Snapshot the dashboard URL before handing off to the main thread.
-    let dashboard_url: Option<String> = app
-        .state::<SessionInfoHolder>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|info| info.dashboard_url.clone()));
-
     let app_mt = app.clone();
     let _ = app.run_on_main_thread(move || {
         let app_action = app_mt.clone();
@@ -649,7 +656,7 @@ fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
             .title("Dashboard not responding")
             .buttons(MessageDialogButtons::YesNoCancelCustom(
                 "Reload UI".to_string(),
-                "Open dashboard in browser".to_string(),
+                "Ignore".to_string(),
                 "Stop session".to_string(),
             ))
             .show_with_result(move |result| {
@@ -670,11 +677,11 @@ fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
                 // macOS/Windows may return Custom).
                 let action = match &result {
                     MessageDialogResult::Yes => "reload",
-                    MessageDialogResult::No => "browser",
+                    MessageDialogResult::No => "ignore",
                     MessageDialogResult::Cancel => "stop",
                     MessageDialogResult::Custom(label) => match label.as_str() {
                         "Reload UI" => "reload",
-                        "Open dashboard in browser" => "browser",
+                        "Ignore" => "ignore",
                         "Stop session" => "stop",
                         _ => "",
                     },
@@ -684,11 +691,7 @@ fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
                     "reload" => {
                         let _ = reload_main_webview(&app_action);
                     }
-                    "browser" => {
-                        if let Some(ref url) = dashboard_url {
-                            let _ = spawn_open(url);
-                        }
-                    }
+                    "ignore" => {}
                     "stop" => {
                         let _ = app_action.emit("menu:stop_session", ());
                     }
@@ -1215,13 +1218,22 @@ pub fn run() {
             let watchdog_app = app_handle.clone();
             std::thread::spawn(move || {
                 const WEDGE_THRESHOLD_MS: i64 = 10_000; // ~10s / 5 missed 2s beats
+
+                // Require the stale condition to hold for this many
+                // consecutive 1s polls before declaring a wedge — absorbs
+                // transient stalls (GC pause, heavy re-render under a large
+                // fleet) that self-heal within a couple more seconds, at the
+                // cost of ~3s slower detection of a genuine wedge.
+                const WEDGE_CONFIRM_POLLS: u32 = 3;
                 let mut wedge_declared = false;
+                let mut consecutive_stale_polls: u32 = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(1_000));
                     let beat = watchdog_app.state::<WebviewHeartbeat>();
                     if !beat.enabled.load(Ordering::SeqCst) {
                         // Not armed or disarmed after a reload; reset wedge flag.
                         wedge_declared = false;
+                        consecutive_stale_polls = 0;
                         continue;
                     }
                     let active = watchdog_app.state::<activity::ActivityHolder>().is_active();
@@ -1229,6 +1241,7 @@ pub fn run() {
                         // Session ended; disarm until the next session starts.
                         beat.enabled.store(false, Ordering::SeqCst);
                         wedge_declared = false;
+                        consecutive_stale_polls = 0;
                         continue;
                     }
                     let now_ms = std::time::SystemTime::now()
@@ -1236,18 +1249,24 @@ pub fn run() {
                         .unwrap_or_default()
                         .as_millis() as i64;
                     let last = beat.last_beat_ms.load(Ordering::SeqCst);
-                    let esr_ready = beat.esr_ready.load(Ordering::SeqCst);
-                    if should_declare_wedge(
+                    let shutdown_in_progress = beat.esr_ready.load(Ordering::SeqCst)
+                        || beat.draining.load(Ordering::SeqCst);
+                    let stale = should_declare_wedge(
                         true,
                         active,
-                        esr_ready,
+                        shutdown_in_progress,
                         last,
                         now_ms,
                         WEDGE_THRESHOLD_MS,
-                    ) && !wedge_declared
-                    {
-                        wedge_declared = true;
-                        declare_webview_wedged(&watchdog_app, WebviewWedgeMode::Heartbeat);
+                    );
+                    if stale && !wedge_declared {
+                        consecutive_stale_polls += 1;
+                        if wedge_confirmed(consecutive_stale_polls, WEDGE_CONFIRM_POLLS) {
+                            wedge_declared = true;
+                            declare_webview_wedged(&watchdog_app, WebviewWedgeMode::Heartbeat);
+                        }
+                    } else {
+                        consecutive_stale_polls = 0;
                     }
                 }
             });
@@ -1399,6 +1418,31 @@ mod tests {
         // this is the fix: the trailing session.completed gap (timelapse
         // finalization etc.) must not be mistaken for a paint wedge.
         assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_suppressed_when_draining() {
+        use super::should_declare_wedge;
+        // Same staleness as the esr_ready test, but the shutdown_in_progress
+        // param is driven by `draining` (session.draining, fired at drain
+        // start) rather than esr_ready — must suppress the trip identically,
+        // since this is the earlier of the two signals in the real call site.
+        assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn wedge_confirmed_false_below_threshold() {
+        use super::wedge_confirmed;
+        assert!(!wedge_confirmed(0, 3));
+        assert!(!wedge_confirmed(1, 3));
+        assert!(!wedge_confirmed(2, 3));
+    }
+
+    #[test]
+    fn wedge_confirmed_true_at_and_above_threshold() {
+        use super::wedge_confirmed;
+        assert!(wedge_confirmed(3, 3));
+        assert!(wedge_confirmed(4, 3));
     }
 
     #[test]

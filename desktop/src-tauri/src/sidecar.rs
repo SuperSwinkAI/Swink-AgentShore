@@ -636,6 +636,16 @@ fn dispatch_line(
                 .esr_ready
                 .store(true, Ordering::Relaxed);
         }
+        // session.draining fires at drain start, well before $/esr_ready (which
+        // only arrives once ESR HTML generation finishes — unbounded, O(plays)).
+        // This closes the silent gap where a real, busy shutdown can legitimately
+        // pause the React render loop for >10s before esr_ready would otherwise
+        // suppress the watchdog.
+        if method == "session.draining" {
+            app.state::<crate::WebviewHeartbeat>()
+                .draining
+                .store(true, Ordering::Relaxed);
+        }
         // desktop-bzr2: release the activity assertion on natural session exit.
         // session.completed is the fallback for exits where session.stop never
         // fires (drain_complete, max_plays, timeout, shutting_down).

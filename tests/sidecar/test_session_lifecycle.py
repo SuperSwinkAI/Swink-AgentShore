@@ -568,6 +568,7 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
         _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
+        _session_draining_callback: object = None
         _store = store
         _log_path = Path(generated_log_path)
 
@@ -580,11 +581,16 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
             # this fake passive while honoring the contract.
             self._esr_ready_callback = cb
 
+        def register_session_draining_callback(self, cb: object) -> None:
+            self._session_draining_callback = cb
+
         async def publish_initial_state(self) -> None:
             pass
 
         async def run_until_idle(self) -> None:
             self._natural_exit_reason = "max_plays"
+            if callable(self._session_draining_callback):
+                self._session_draining_callback(session_id, "max_plays")  # type: ignore[misc]
             if callable(self._natural_exit_callback):
                 await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
 
@@ -653,6 +659,16 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     assert ready_params["archive_path"] == str(project / ".agentshore" / "archives" / session_id)
     assert ready_params["report_path"] == generated_report_path
     assert ready_params["log_path"] == generated_log_path
+
+    draining = [n for n in emitted if n.get("method") == "session.draining"]
+    assert len(draining) == 1, f"expected 1 session.draining, got {emitted}"
+    draining_params = draining[0]["params"]
+    assert isinstance(draining_params, dict)
+    assert draining_params == {"session_id": session_id, "reason": "max_plays"}
+
+    # The whole point of the earlier signal: it must reach the shell before
+    # $/esr_ready, which only arrives after the unbounded ESR-generation step.
+    assert emitted.index(draining[0]) < emitted.index(ready[0])
 
 
 class _NoopOrch:
@@ -785,6 +801,7 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
         _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
+        _session_draining_callback: object = None
         _store = store
         _log_path = Path(generated_log_path)
 
@@ -793,6 +810,9 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
 
         def register_esr_ready_callback(self, cb: object) -> None:
             self._esr_ready_callback = cb
+
+        def register_session_draining_callback(self, cb: object) -> None:
+            self._session_draining_callback = cb
 
         async def publish_initial_state(self) -> None:
             pass

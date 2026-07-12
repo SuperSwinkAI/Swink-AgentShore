@@ -353,6 +353,12 @@ class Orchestrator(_OrchestratorBase):
         """Wire a callback fired when the in-shutdown ESR file becomes available."""
         self._drain.register_esr_ready_callback(callback)
 
+    def register_session_draining_callback(
+        self, callback: Callable[[str, str], None] | None
+    ) -> None:
+        """Wire a callback fired the moment graceful drain begins."""
+        self._drain.register_session_draining_callback(callback)
+
     async def begin_drain(self, reason: str) -> None:
         """Start graceful drain: only end_agent is dispatched until agents stop."""
         await self._drain.begin_drain(reason)

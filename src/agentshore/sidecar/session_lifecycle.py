@@ -79,6 +79,10 @@ if TYPE_CHECKING:
             self, callback: Callable[[str, str, str | None], None] | None
         ) -> None: ...
 
+        def register_session_draining_callback(
+            self, callback: Callable[[str, str], None] | None
+        ) -> None: ...
+
         def on_natural_exit(self, callback: Callable[[str], Awaitable[None]]) -> None: ...
 
         async def set_budget(
@@ -782,6 +786,16 @@ async def _start_orchestrator(
             emit_esr_ready(ready_session_id, archive_path, report_path, log_path)
 
         orch.register_esr_ready_callback(_record_and_emit_esr_ready)
+
+    # Wire the session.draining emitter so the Tauri shell's heartbeat
+    # watchdog can stand down the moment graceful shutdown begins, rather
+    # than waiting for $/esr_ready (which only arrives after the unbounded
+    # ESR HTML-generation step completes).
+    if notify is not None:
+        from agentshore.sidecar.notification_emitters import build_session_draining_emitter
+
+        emit_session_draining = build_session_draining_emitter(notify)
+        orch.register_session_draining_callback(emit_session_draining)
 
     # Wait for the first state snapshot to land in dashboard_state.json so
     # the bridge has something to fan out before the start-checklist's
