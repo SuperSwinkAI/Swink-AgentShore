@@ -100,9 +100,9 @@ async def test_instantiate_records_model_tier_metadata(
     handle = await mgr.instantiate(AgentType.CODEX, model_tier="small")
 
     assert handle.model_tier == "small"
-    assert handle.model == "gpt-5.4-mini"
+    assert handle.model == "gpt-5.6-luna"
     assert handle.reasoning_effort == "low"
-    assert handle.display_name.startswith("Codex/gpt-5.4-mini:")
+    assert handle.display_name.startswith("Codex/gpt-5.6-luna:")
 
 
 async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(

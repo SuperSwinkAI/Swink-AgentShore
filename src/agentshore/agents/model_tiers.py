@@ -24,12 +24,14 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="opus", reasoning_effort="high"),
     },
     AgentType.CODEX: {
-        # gpt-5.x (non-``-codex``) ids are the ChatGPT-account-compatible line;
-        # ``-codex``-suffixed ids are API-key only (HTTP 400 with a ChatGPT
-        # account), so they must not be defaults.
-        "small": ModelTierConfig(model="gpt-5.4-mini", reasoning_effort="low"),
-        "medium": ModelTierConfig(model="gpt-5.4", reasoning_effort="medium"),
-        "large": ModelTierConfig(model="gpt-5.5", reasoning_effort="high"),
+        # gpt-5.6-luna/terra/sol (released 2026-07-09) mirror OpenAI's own
+        # fast-affordable/balanced/flagship segmentation, so they map 1:1 onto
+        # AgentShore's small/medium/large tiers. ``-codex``-suffixed ids are
+        # API-key only (HTTP 400 with a ChatGPT account), so they must not be
+        # defaults.
+        "small": ModelTierConfig(model="gpt-5.6-luna", reasoning_effort="low"),
+        "medium": ModelTierConfig(model="gpt-5.6-terra", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="gpt-5.6-sol", reasoning_effort="high"),
     },
     AgentType.GROK: {
         "small": ModelTierConfig(model="grok-4.5", reasoning_effort="low"),

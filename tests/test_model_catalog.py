@@ -101,13 +101,22 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     # which permanently kills the agent via INVALID_MODEL; API-key users
     # still reach it through the live-fetch extras.
     assert "gpt-5.5-pro" not in KNOWN_MODELS["codex"]
+    # gpt-5.3-codex-spark is a Pro-tier-gated research preview
+    # ("supported_in_api": false, verified codex-cli 0.144.1) with the same
+    # non-eligible-account risk.
+    assert "gpt-5.3-codex-spark" not in KNOWN_MODELS["codex"]
+    # gpt-5.4-nano was retired by OpenAI (absent from codex-cli 0.144.1
+    # `debug models`), removed from the catalog 2026-07-11.
+    assert "gpt-5.4-nano" not in KNOWN_MODELS["codex"]
 
 
 def test_codex_catalog_includes_current_lineup() -> None:
     codex_models = KNOWN_MODELS["codex"]
 
+    assert "gpt-5.6-sol" in codex_models
+    assert "gpt-5.6-terra" in codex_models
+    assert "gpt-5.6-luna" in codex_models
     assert "gpt-5.5" in codex_models
-    assert "gpt-5.4-nano" in codex_models
 
 
 def test_grok_known_models_hard_pinned_to_current() -> None:
