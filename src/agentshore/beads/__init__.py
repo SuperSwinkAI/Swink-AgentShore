@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import shutil
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -344,6 +345,86 @@ def resolve_bd_binary() -> str | None:
             return str(env_path.resolve())
         _logger.warning("agentshore_bd_bin_invalid", env_path=env_value)
     return shutil.which("bd")
+
+
+def _bd_shim_dir() -> Path:
+    """Per-user cache dir for the agent-dispatch bd shim (see ``ensure_bd_on_agent_path``)."""
+    import platformdirs
+
+    return Path(platformdirs.user_cache_dir("agentshore", "agentshore")) / "bd-agent-shim"
+
+
+def _write_bd_shim(shim_path: Path, bd_binary: str) -> None:
+    """Create/refresh the shim at *shim_path* so bare ``bd`` resolves to *bd_binary*.
+
+    POSIX: a symlink (falls back to a copy if the filesystem rejects symlinks,
+    e.g. some network/FAT mounts). Windows: a batch wrapper, since ``bd``
+    resolution there goes through PATHEXT and symlinks need Developer Mode or
+    admin privileges that can't be assumed.
+    """
+    if sys.platform == "win32":
+        wrapper = f'@echo off\r\n"{bd_binary}" %*\r\n'
+        if shim_path.is_file() and shim_path.read_text(encoding="utf-8") == wrapper:
+            return
+        shim_path.write_text(wrapper, encoding="utf-8")
+        return
+
+    if shim_path.is_symlink() and os.readlink(shim_path) == bd_binary:
+        return
+    with contextlib.suppress(FileNotFoundError):
+        shim_path.unlink()
+    try:
+        os.symlink(bd_binary, shim_path)
+    except OSError:
+        shutil.copy2(bd_binary, shim_path)
+        shim_path.chmod(0o755)
+
+
+def ensure_bd_on_agent_path(env: dict[str, str]) -> dict[str, str]:
+    """Pin ``bd`` on *env*'s ``PATH`` to the same binary the orchestrator uses.
+
+    Agent-dispatched subprocesses (skill templates instruct Claude Code, Codex,
+    Grok, and Antigravity to run literal ``bd ...`` commands) resolve ``bd``
+    from their own inherited ``PATH`` — independently of
+    ``resolve_bd_binary()``, which every one of AgentShore's *own* writes goes
+    through. When the two disagree (e.g. the desktop app pins a bundled
+    sidecar bd via ``AGENTSHORE_BD_BIN`` while the user's ambient ``PATH``
+    resolves a different, older standalone install), an agent's literal ``bd``
+    calls silently run a version-skewed binary against the same embedded Dolt
+    store the orchestrator just wrote with a different version — schema
+    migrations between bd releases can then make agent-side writes fail (or
+    worse, corrupt the store).
+
+    If bare ``bd`` already resolves to the same file as ``resolve_bd_binary()``
+    under *env*'s ``PATH``, *env* is returned unchanged. Otherwise a small,
+    reusable shim directory containing a ``bd``/``bd.cmd`` pointing at the
+    resolved binary is created/refreshed and prepended to ``PATH`` so it wins
+    resolution ahead of any homebrew/user install. Best-effort: any failure to
+    create the shim leaves *env* unchanged rather than breaking dispatch.
+    """
+    bd_binary = resolve_bd_binary()
+    if bd_binary is None:
+        return env
+
+    path_value = env.get("PATH", "")
+    on_path = shutil.which("bd", path=path_value)
+    if on_path is not None:
+        with contextlib.suppress(OSError):
+            if os.path.samefile(on_path, bd_binary):
+                return env
+
+    try:
+        shim_dir = _bd_shim_dir()
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        shim_path = shim_dir / ("bd.cmd" if sys.platform == "win32" else "bd")
+        _write_bd_shim(shim_path, bd_binary)
+    except OSError:
+        _logger.warning("bd_shim_create_failed", bd_binary=bd_binary)
+        return env
+
+    new_env = dict(env)
+    new_env["PATH"] = str(shim_dir) + os.pathsep + path_value
+    return new_env
 
 
 async def bd(

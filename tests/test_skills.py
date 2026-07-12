@@ -321,7 +321,7 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "gh issue list --state closed" in text
     # Title must be positional and the type must be the --type flag: `bd create <type> "<title>"`
     # silently creates a task titled "<type>" and drops the real title (verified on bd 1.0.4/1.1.0).
-    assert '--type task' in text
+    assert "--type task" in text
     assert "bd create task" not in text
     assert '"type": "design_audit"' in text
     assert "unresolved_gaps" in text

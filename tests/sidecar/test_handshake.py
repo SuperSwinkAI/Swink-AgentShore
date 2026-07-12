@@ -519,6 +519,68 @@ def test_session_start_succeeds_when_bd_hooks_fail(tmp_path: object) -> None:
     mock_setup.assert_called_once()
 
 
+def test_session_start_warns_but_succeeds_on_bd_version_mismatch(tmp_path: object) -> None:
+    """A resolved bd that doesn't match AgentShore's pinned version logs a
+    session-start warning instead of only surfacing later as a mid-session
+    play failure (#315) — and, like bd-hooks, is best-effort and never
+    blocks session.start."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import structlog
+
+    project_path = Path(tmp_path) / "version-mismatch"  # type: ignore[arg-type]
+    project_path.mkdir()
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
+    (project_path / ".beads").mkdir()
+
+    with (
+        patch("agentshore.beads.resolve_bd_binary", return_value="/usr/local/bin/bd"),
+        patch(
+            "agentshore.beads.setup._check_bd_version",
+            side_effect=RuntimeError("bd version '1.0.4' does not match pinned '1.1.0'"),
+        ),
+        structlog.testing.capture_logs() as captured,
+    ):
+        from agentshore.sidecar.session_lifecycle import run_session_start
+
+        state = ServerState(active_project_path=str(project_path))
+        outcome = asyncio.run(run_session_start(state, start_bridge=False))
+        assert outcome.session_id
+
+    matching = [e for e in captured if e.get("event") == "bd_version_mismatch_at_session_start"]
+    assert len(matching) == 1, captured
+    assert "1.0.4" in matching[0]["error"]
+
+
+def test_session_start_skips_version_check_when_bd_unresolvable(tmp_path: object) -> None:
+    """No bd resolvable at all: the version check is skipped without error —
+    the pre-existing "bd binary not found" failure mode (surfaced elsewhere,
+    e.g. an actual bd() call) still applies; this check only guards a
+    resolved-but-wrong-version binary."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import structlog
+
+    project_path = Path(tmp_path) / "no-bd-resolvable"  # type: ignore[arg-type]
+    project_path.mkdir()
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
+    (project_path / ".beads").mkdir()
+
+    with (
+        patch("agentshore.beads.resolve_bd_binary", return_value=None),
+        structlog.testing.capture_logs() as captured,
+    ):
+        from agentshore.sidecar.session_lifecycle import run_session_start
+
+        state = ServerState(active_project_path=str(project_path))
+        outcome = asyncio.run(run_session_start(state, start_bridge=False))
+        assert outcome.session_id
+
+    assert [e for e in captured if e.get("event") == "bd_version_mismatch_at_session_start"] == []
+
+
 def test_session_stop_rejects_unknown_mode() -> None:
     """``session.stop`` returns ``INVALID_PARAMS`` for any mode other than
     "drain" or "hard" (DESIGN §5.1, desktop-pgs)."""

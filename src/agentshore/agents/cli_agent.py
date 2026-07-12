@@ -89,6 +89,7 @@ from agentshore.agents.cli.watchdogs import (
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.agents.pricing import PricingQuote, default_quote
+from agentshore.beads import ensure_bd_on_agent_path
 from agentshore.errors import (
     AgentOutputInvalid,
     AgentProcessCrashed,
@@ -873,6 +874,12 @@ async def dispatch_cli(
         for_grok=(handle.agent_type == AgentType.GROK),
         for_antigravity=(handle.agent_type == AgentType.ANTIGRAVITY),
     )
+    # Skills instruct agents to run literal ``bd ...`` commands, which resolve
+    # via this subprocess's own PATH — independent of resolve_bd_binary(),
+    # which every orchestrator-side bd call goes through. Pin the two together
+    # so an agent never writes with a different bd version than AgentShore
+    # itself uses against the same embedded Dolt store (#315).
+    env = ensure_bd_on_agent_path(env)
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.
