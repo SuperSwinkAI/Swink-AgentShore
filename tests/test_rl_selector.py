@@ -21,6 +21,7 @@ from agentshore.rl.policy import ActorCritic
 from agentshore.rl.selector import (
     PPOSelector,
     _is_capacity_wait,
+    _mask_reasons_by_play,
     _only_capacity_waiting,
     _PendingStep,
 )
@@ -222,6 +223,64 @@ def test_select_all_masked_logs_structured_diagnostics():
 
 def _mask_reason(text: str, source: MaskSource) -> MaskReason:
     return MaskReason(text=text, classification=MaskClassification.TRANSIENT, source=source)
+
+
+def test_mask_reasons_by_play_is_complete_and_sorted():
+    # The full per-play map keeps EVERY masked play (no most_common(5) truncation)
+    # and preserves the play->reason mapping the Counter(values) collapse discards,
+    # so a wedge's actual blockers (issue_pickup/code_review/merge_pr) stay visible.
+    reasons = {
+        PlayType.MERGE_PR: MaskReason(
+            text="dirty trunk", classification=MaskClassification.HARD, source=MaskSource.CANDIDATE
+        ),
+        PlayType.CODE_REVIEW: MaskReason(
+            text="no reviewable PR candidate",
+            classification=MaskClassification.HARD,
+            source=MaskSource.CANDIDATE,
+        ),
+        PlayType.ISSUE_PICKUP: MaskReason(
+            text="too many open PRs",
+            classification=MaskClassification.TRANSIENT,
+            source=MaskSource.CANDIDATE,
+        ),
+    }
+    mapping = _mask_reasons_by_play(reasons)
+    assert set(mapping) == {"merge_pr", "code_review", "issue_pickup"}
+    assert mapping["code_review"] == "no reviewable PR candidate [hard/candidate]"
+    assert mapping["issue_pickup"] == "too many open PRs [transient/candidate]"
+    # Deterministic, greppable ordering (sorted by play value).
+    assert list(mapping) == sorted(mapping)
+
+
+def test_masked_plays_log_field_dedups_identical_maps():
+    # A frozen all-masked wedge re-logs its diagnostic every selector tick; the
+    # verbose map must appear once, then collapse to an "unchanged" sentinel so
+    # the log isn't flooded with identical ~20-entry dumps.
+    sel = _build_selector()
+    reasons = {
+        PlayType.CODE_REVIEW: MaskReason(
+            text="x", classification=MaskClassification.HARD, source=MaskSource.CANDIDATE
+        ),
+    }
+    first = sel._masked_plays_log_field(reasons)
+    assert "masked_plays" in first
+    assert "masked_plays_unchanged" not in first
+
+    # Identical map on the next tick → compact sentinel, no re-dump.
+    second = sel._masked_plays_log_field(dict(reasons))
+    assert second == {"masked_plays_unchanged": True}
+
+    # A changed map re-emits the full field.
+    reasons[PlayType.MERGE_PR] = MaskReason(
+        text="y", classification=MaskClassification.HARD, source=MaskSource.CANDIDATE
+    )
+    third = sel._masked_plays_log_field(reasons)
+    assert "masked_plays" in third
+
+    # A dispatched play clears the digest so the next wedge re-emits fresh.
+    sel._last_masked_plays_digest = None
+    fourth = sel._masked_plays_log_field(reasons)
+    assert "masked_plays" in fourth
 
 
 def test_capacity_only_reasons_include_allowed_tier_waits():

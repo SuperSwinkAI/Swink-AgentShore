@@ -126,6 +126,32 @@ def _only_capacity_waiting(reason_counts: list[dict[str, object]]) -> bool:
     return saw_capacity
 
 
+def _mask_reasons_by_play(reasons: dict[PlayType, MaskReason]) -> dict[str, str]:
+    """Full, untruncated ``play -> reason`` map for the all-masked diagnostics.
+
+    ``top_mask_reasons`` runs ``Counter(reasons.values()).most_common(5)``, which
+    (a) collapses the ``play -> reason`` mapping into bare reason-string counts —
+    discarding *which* play each reason blocked — and (b) truncates to five, so
+    the reasons for lower-frequency but high-value work plays (``issue_pickup``,
+    ``code_review``, ``merge_pr``, ``end_session`` …) silently vanish whenever the
+    fleet is fully wedged (many distinct reasons, each count 1). That is exactly
+    what made a real fleet-idle stall (noodle ``edab7597``) undiagnosable from the
+    log alone. This map is keyed by play and bounded by ``NUM_ACTIONS`` (<= 22
+    entries), so it is emitted in full — no truncation — and sorted for stable,
+    greppable output.
+    """
+    return {
+        pt.value: (
+            f"{r.text} [{r.classification.value}/{r.source.value}]"
+            if isinstance(r, MaskReason)
+            # Defensive: this diagnostic runs in the select() hot path and must
+            # never raise on a malformed reason (e.g. a non-typed precondition).
+            else str(r)
+        )
+        for pt, r in sorted(reasons.items(), key=lambda kv: kv[0].value)
+    }
+
+
 @dataclass(slots=True)
 class _PendingStep:
     """State captured at select() time; consumed by on_play_completed()."""
@@ -178,6 +204,11 @@ class PPOSelector:
         self._config_index = config_index
         self._pending: _PendingStep | None = None
         self._no_available_play_ticks: int = 0
+        # Dedup key for the verbose per-play mask map (see _masked_plays_log_field).
+        # An all-masked wedge re-emits its diagnostic every selector tick with an
+        # identical mask map; we log the full map only when it changes so a frozen
+        # wedge doesn't flood the log with repeated ~20-entry dumps.
+        self._last_masked_plays_digest: str | None = None
         # Confirm-rejection clean re-picks during the last select(); drained by
         # consume_repick_count() into the executor_skip_rate_recent_50 window.
         # Reset at the top of every select().
@@ -441,6 +472,9 @@ class PPOSelector:
                 config_mask=cfg_mask_arr,
             )
             self._no_available_play_ticks = 0
+            # A play dispatched → the all-masked streak (if any) ended; clear the
+            # dedup digest so the next distinct wedge re-emits its full map.
+            self._last_masked_plays_digest = None
             return play_type, params
 
         self._log_resolver_exhausted(
@@ -599,6 +633,23 @@ class PPOSelector:
             )
         return None
 
+    def _masked_plays_log_field(self, reasons: dict[PlayType, MaskReason]) -> dict[str, object]:
+        """Return the per-play mask-map log field(s), deduped across ticks.
+
+        The full ``play -> reason`` map (``_mask_reasons_by_play``) is what makes a
+        wedge diagnosable, but the all-masked diagnostics re-fire every selector
+        tick and a frozen wedge would then dump an identical ~20-entry map on each
+        one. So the full map is emitted only on the first tick and whenever it
+        changes; byte-identical repeats collapse to ``{"masked_plays_unchanged":
+        True}``. Net: full detail on every transition, no flooding while stuck.
+        """
+        mapping = _mask_reasons_by_play(reasons)
+        digest = repr(list(mapping.items()))
+        if digest == self._last_masked_plays_digest:
+            return {"masked_plays_unchanged": True}
+        self._last_masked_plays_digest = digest
+        return {"masked_plays": mapping}
+
     def _log_all_masked(self, state: OrchestratorState) -> None:
         """Emit an actionable all-masked diagnostic with severity based on capacity."""
         idle_count = sum(1 for a in state.agents if a.status == AgentStatus.IDLE)
@@ -661,6 +712,7 @@ class PPOSelector:
             open_prs=len(state.pull_requests),
             spawnable_config_count=spawnable_config_count,
             top_mask_reasons=reason_counts,
+            **self._masked_plays_log_field(reasons),
         )
 
     def _log_terminal_no_work(
@@ -738,6 +790,7 @@ class PPOSelector:
             backlog_sync_work=work.backlog_sync_work_count,
             actionable_pr_work=work.actionable_pr_work_count,
             top_mask_reasons=reason_counts,
+            **self._masked_plays_log_field(reasons),
         )
 
     def _log_reverse_failsafe(
@@ -769,6 +822,7 @@ class PPOSelector:
             open_issues=len(state.open_issues),
             open_prs=len(state.pull_requests),
             top_mask_reasons=reason_counts,
+            **self._masked_plays_log_field(reasons),
             unmasked_plays=unmasked,
             auto_enabled=auto_enabled,
             no_available_play_ticks=self._no_available_play_ticks,
