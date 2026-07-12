@@ -1867,6 +1867,8 @@ async def _run_block_issue_on(state: OrchestratorState, github: AsyncMock) -> As
 @pytest.mark.asyncio
 async def test_block_issue_on_adds_beads_edge() -> None:
     """Both issues bead-mirrored → a real beads ``blocks`` edge, no label."""
+    from agentshore.beads import BlockingDependencyOutcome
+
     state = dataclasses.replace(_make_state(), graph=_dep_graph())
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
@@ -1874,7 +1876,7 @@ async def test_block_issue_on_adds_beads_edge() -> None:
 
     with patch(
         "agentshore.plays.executor.add_blocking_dependency",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(return_value=BlockingDependencyOutcome.LINKED),
     ) as mock_add:
         store = await _run_block_issue_on(state, github)
 
@@ -1892,6 +1894,8 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     """No beads graph → stamp ``agentshore/blocked`` AND post a blocked-by marker
     comment naming the blocker, so groom_backlog can later evidence-clear the
     otherwise-untraceable label (#241)."""
+    from agentshore.beads import BlockingDependencyOutcome
+
     state = _make_state()  # graph is None
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
@@ -1900,7 +1904,7 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
 
     with patch(
         "agentshore.plays.executor.add_blocking_dependency",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(return_value=BlockingDependencyOutcome.LINKED),
     ) as mock_add:
         store = await _run_block_issue_on(state, github)
 
@@ -1918,6 +1922,8 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
 @pytest.mark.asyncio
 async def test_block_issue_on_skips_when_edge_already_present() -> None:
     """An existing blocks edge is a no-op: no beads write, no label."""
+    from agentshore.beads import BlockingDependencyOutcome
+
     state = dataclasses.replace(_make_state(), graph=_dep_graph(blocked_blocked_by=("bead-12",)))
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
@@ -1925,7 +1931,7 @@ async def test_block_issue_on_skips_when_edge_already_present() -> None:
 
     with patch(
         "agentshore.plays.executor.add_blocking_dependency",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(return_value=BlockingDependencyOutcome.LINKED),
     ) as mock_add:
         store = await _run_block_issue_on(state, github)
 
@@ -1933,3 +1939,46 @@ async def test_block_issue_on_skips_when_edge_already_present() -> None:
     github.label_issue.assert_not_awaited()
     rec = store.record_external_mutation.await_args.args[0]
     assert rec.status == "already_linked"
+
+
+@pytest.mark.asyncio
+async def test_block_issue_on_escalates_to_needs_human_on_cycle_conflict() -> None:
+    """A bd cycle conflict escalates to needs-human, not the ordinary label fallback.
+
+    Regression for the theta_rl f0026bb2 session (2026-07-08): the reverse
+    ``blocks`` edge already existed in beads, so ``bd link`` rejected the
+    write every time it was retried. The old fallback path (plain
+    ``agentshore/blocked`` + marker comment) let ``groom_backlog`` clear the
+    label based on its own judgment and re-surface the issue for
+    ``issue_pickup``, which rediscovered the identical, permanently
+    unresolvable conflict — a 5-hour churn loop that only ended when the
+    fleet ran out of other work and the session auto-stopped on idle.
+    ``agentshore/needs-human`` is outside groom_backlog's auto-clear scope,
+    so this pins the issue for a human instead.
+    """
+    from agentshore.beads import BlockingDependencyOutcome
+
+    state = dataclasses.replace(_make_state(), graph=_dep_graph())
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.comment_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=BlockingDependencyOutcome.CYCLE_CONFLICT),
+    ) as mock_add:
+        store = await _run_block_issue_on(state, github)
+
+    mock_add.assert_awaited_once_with(Path("/tmp/project"), "bead-17", "bead-12")
+    github.label_issue.assert_awaited_once()
+    labels_applied = github.label_issue.await_args.args[0:2]
+    assert labels_applied[0] == 17
+    assert set(labels_applied[1]) == {"agentshore/blocked", "agentshore/needs-human"}
+    github.comment_issue.assert_awaited_once()
+    assert github.comment_issue.await_args.args[0] == 17
+    comment_body = github.comment_issue.await_args.args[1]
+    assert "<!-- agentshore:blocked-by #12 -->" in comment_body
+    assert "cycle" in comment_body
+    rec = store.record_external_mutation.await_args.args[0]
+    assert rec.status == "cycle_conflict"

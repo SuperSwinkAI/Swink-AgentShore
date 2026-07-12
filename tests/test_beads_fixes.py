@@ -654,7 +654,7 @@ async def test_add_blocking_dependency_runs_bd_link_blocks(tmp_path: Path) -> No
     ``bd link <id1> <id2>`` makes id2 block id1, so the blocked bead is the
     first arg and the blocker the second (matching the groom/seed skills).
     """
-    from agentshore.beads import add_blocking_dependency
+    from agentshore.beads import BlockingDependencyOutcome, add_blocking_dependency
 
     (tmp_path / ".beads").mkdir()
     captured: list[tuple[str, ...]] = []
@@ -664,9 +664,9 @@ async def test_add_blocking_dependency_runs_bd_link_blocks(tmp_path: Path) -> No
         return ""
 
     with patch("agentshore.beads.bd", side_effect=_fake_bd):
-        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+        outcome = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
 
-    assert ok is True
+    assert outcome is BlockingDependencyOutcome.LINKED
     assert captured == [
         ("link", "bead-blocked", "bead-blocker", "--type", "blocks", "--dolt-auto-commit=on")
     ]
@@ -674,7 +674,7 @@ async def test_add_blocking_dependency_runs_bd_link_blocks(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_add_blocking_dependency_noops_without_beads_dir(tmp_path: Path) -> None:
-    from agentshore.beads import add_blocking_dependency
+    from agentshore.beads import BlockingDependencyOutcome, add_blocking_dependency
 
     called = False
 
@@ -684,26 +684,32 @@ async def test_add_blocking_dependency_noops_without_beads_dir(tmp_path: Path) -
         return ""
 
     with patch("agentshore.beads.bd", side_effect=_fake_bd):
-        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+        outcome = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
 
-    assert ok is False
+    assert outcome is BlockingDependencyOutcome.UNAVAILABLE
     assert called is False
 
 
 @pytest.mark.asyncio
 async def test_add_blocking_dependency_rejects_equal_ids(tmp_path: Path) -> None:
-    from agentshore.beads import add_blocking_dependency
+    from agentshore.beads import BlockingDependencyOutcome, add_blocking_dependency
 
     (tmp_path / ".beads").mkdir()
     with patch("agentshore.beads.bd", side_effect=AssertionError("bd must not run")):
-        assert await add_blocking_dependency(tmp_path, "bead-x", "bead-x") is False
-        assert await add_blocking_dependency(tmp_path, "", "bead-y") is False
+        assert (
+            await add_blocking_dependency(tmp_path, "bead-x", "bead-x")
+            is BlockingDependencyOutcome.UNAVAILABLE
+        )
+        assert (
+            await add_blocking_dependency(tmp_path, "", "bead-y")
+            is BlockingDependencyOutcome.UNAVAILABLE
+        )
 
 
 @pytest.mark.asyncio
 async def test_add_blocking_dependency_swallows_bd_error(tmp_path: Path) -> None:
-    """A bd failure returns False (caller falls back to a label) rather than raising."""
-    from agentshore.beads import BdError, add_blocking_dependency
+    """A non-cycle bd failure returns UNAVAILABLE (caller falls back to a label)."""
+    from agentshore.beads import BdError, BlockingDependencyOutcome, add_blocking_dependency
 
     (tmp_path / ".beads").mkdir()
 
@@ -711,6 +717,32 @@ async def test_add_blocking_dependency_swallows_bd_error(tmp_path: Path) -> None
         raise BdError("link failed")
 
     with patch("agentshore.beads.bd", side_effect=_failing_bd):
-        ok = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+        outcome = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
 
-    assert ok is False
+    assert outcome is BlockingDependencyOutcome.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_dependency_detects_cycle_conflict(tmp_path: Path) -> None:
+    """A bd cycle-rejection error is classified distinctly from other bd errors.
+
+    Regression for the theta_rl f0026bb2 session (2026-07-08): the reverse
+    ``blocks`` edge already existed, so this write could never succeed no
+    matter how many times it was retried — it needs to be told apart from an
+    ordinary transient bd failure so the caller can escalate instead of
+    silently falling back to a label that later gets auto-cleared.
+    """
+    from agentshore.beads import BdError, BlockingDependencyOutcome, add_blocking_dependency
+
+    (tmp_path / ".beads").mkdir()
+
+    async def _cycle_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        raise BdError(
+            "bd link bead-blocked bead-blocker --type blocks --dolt-auto-commit=on "
+            "failed (rc=1): Error: adding dependency would create a cycle"
+        )
+
+    with patch("agentshore.beads.bd", side_effect=_cycle_bd):
+        outcome = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
+
+    assert outcome is BlockingDependencyOutcome.CYCLE_CONFLICT

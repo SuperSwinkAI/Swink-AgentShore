@@ -801,11 +801,25 @@ async def clear_in_progress_beads(project_path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+class BlockingDependencyOutcome(StrEnum):
+    """Result of :func:`add_blocking_dependency`."""
+
+    LINKED = "linked"
+    #: bd rejected the edge because the opposite edge already exists between
+    #: the same two beads. This is not retry-worthy: the edge can never land
+    #: without first removing the conflicting one, so the caller should
+    #: escalate to a human rather than fall back to an ordinary label gate.
+    CYCLE_CONFLICT = "cycle_conflict"
+    #: Beads not initialised, empty/equal ids, or a bd error unrelated to a
+    #: cycle. The caller falls back to a label gate.
+    UNAVAILABLE = "unavailable"
+
+
 async def add_blocking_dependency(
     project_path: Path,
     blocked_bead_id: str,
     blocker_bead_id: str,
-) -> bool:
+) -> BlockingDependencyOutcome:
     """Add a ``blocks`` edge so *blocked_bead_id* is blocked by *blocker_bead_id*.
 
     Mirrors a body-declared ``depends on #N`` dependency into the beads graph
@@ -815,15 +829,18 @@ async def add_blocking_dependency(
 
     Runs ``bd link <blocked> <blocker> --type blocks`` (id2 blocks id1, so the
     second arg is the blocker — matching the groom/seed skills and bd's own
-    ``bd link`` semantics). No-ops and returns ``False`` when beads is not
-    initialised, either id is empty, or the two ids are equal. Returns ``False``
-    on a bd error so the caller can fall back to a label gate; the call is
-    swallowed rather than raised so a beads hiccup never fails the play.
+    ``bd link`` semantics). Returns ``UNAVAILABLE`` when beads is not
+    initialised, either id is empty, or the two ids are equal. A bd error is
+    swallowed rather than raised so a beads hiccup never fails the play: it
+    comes back as ``CYCLE_CONFLICT`` when bd reports the edge would create a
+    cycle (the caller should escalate, not just fall back to a plain label —
+    see ``needs-human`` handling in ``_apply_block_issue_on``), or
+    ``UNAVAILABLE`` for any other bd error.
     """
     if not (project_path / ".beads").exists():
-        return False
+        return BlockingDependencyOutcome.UNAVAILABLE
     if not blocked_bead_id or not blocker_bead_id or blocked_bead_id == blocker_bead_id:
-        return False
+        return BlockingDependencyOutcome.UNAVAILABLE
     try:
         await bd(
             "link",
@@ -835,6 +852,15 @@ async def add_blocking_dependency(
             cwd=project_path,
         )
     except BdError as exc:
+        if "would create a cycle" in str(exc):
+            _logger.warning(
+                "beads_add_blocking_dependency_cycle_conflict",
+                project_path=str(project_path),
+                blocked=blocked_bead_id,
+                blocker=blocker_bead_id,
+                error=str(exc),
+            )
+            return BlockingDependencyOutcome.CYCLE_CONFLICT
         _logger.warning(
             "beads_add_blocking_dependency_failed",
             project_path=str(project_path),
@@ -842,8 +868,8 @@ async def add_blocking_dependency(
             blocker=blocker_bead_id,
             error=str(exc),
         )
-        return False
-    return True
+        return BlockingDependencyOutcome.UNAVAILABLE
+    return BlockingDependencyOutcome.LINKED
 
 
 # ---------------------------------------------------------------------------
