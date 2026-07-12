@@ -20,6 +20,15 @@ from agentshore.agents.model_catalog import (
 from agentshore.agents.pricing import bundled_pricebook
 
 
+@pytest.fixture(autouse=True)
+def _isolate_global_models_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point the global override at a nonexistent file so a developer machine's
+    live ~/.../agentshore/models.yaml (written by catalog refresh) can't leak
+    into assertions against the bundled KNOWN_MODELS baseline. Override tests
+    re-point it explicitly."""
+    monkeypatch.setattr(model_catalog_mod, "GLOBAL_MODELS_PATH", tmp_path / "no-override.yaml")
+
+
 def test_known_models_returned_when_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     result = models_for_agent("claude_code")
