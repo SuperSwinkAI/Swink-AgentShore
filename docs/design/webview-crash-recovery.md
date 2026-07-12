@@ -89,6 +89,37 @@ The "Reload UI" menu item (`CmdOrCtrl+R`, handled inline in Rust) is therefore
 the **guaranteed recovery floor** for all scenarios, including those neither
 detector catches. Phase 1 ships this floor; the watchdog is Phase 2 hardening.
 
+### 4a. Watchdog stands down at `$/esr_ready`, not `session.completed` (Phase 2 fix)
+
+The watchdog originally disarmed only on the `session.completed` notification.
+But `session.completed` is not the first "session is basically over" signal —
+tracing the actual shutdown sequence:
+
+1. `stop_inner` generates the ESR HTML and fires `$/esr_ready`
+   (`src/agentshore/core/mixins/drain.py`). The desktop already reacts to this
+   by navigating to `/session/esr` (`App.tsx`).
+2. Only *after* that does the natural-exit supervisor run
+   `stop_timelapse_capture` (`src/agentshore/sidecar/session_lifecycle.py`),
+   which polls `await_output` for up to `max_polls=60` at
+   `poll_interval_seconds=1.0` — **up to 60 s** waiting for timelapse MP4
+   render finalization (`src/agentshore/timelapse/__init__.py`).
+3. Only after *that* does `session.completed` fire, which is what previously
+   disarmed the watchdog.
+
+On any session with timelapse capture enabled where render finalization
+exceeds 10 s, this produced a false "Dashboard not responding" trip for a
+session that had already finished successfully — the ESR screen was showing
+and the window was fully responsive the entire time.
+
+**Fix:** `WebviewHeartbeat` gained an `esr_ready: AtomicBool`, set true when
+`dispatch_line` (`sidecar.rs`) observes `$/esr_ready` (and, defensively, also
+on `session.completed`, covering shutdown paths that skip the ESR-ready
+callback). The watchdog's trip predicate — extracted as the pure,
+unit-tested `should_declare_wedge()` — requires `!esr_ready` in addition to
+`enabled && active`. The flag resets to `false` on the next `session.start`
+so a subsequent session is fully re-armed. No JS changes were needed; both
+notifications were already parsed by the frontend.
+
 ### 5. "Reload UI" menu item handled inline in Rust
 
 The menu item must work while the WebView is white — meaning the React app
@@ -160,8 +191,8 @@ considered and explicitly deferred. Concerns:
 
 | Layer | Key files |
 |-------|-----------|
-| Rust | `desktop/src-tauri/src/lib.rs` (`reload_ui`, `current_session`, `ui_heartbeat`, `SessionInfoHolder`, `WebviewHeartbeat`, `on_web_content_process_terminate`, "Reload UI" menu item) |
-| Rust | `desktop/src-tauri/src/sidecar.rs` (`SessionInfoHolder` populate/clear in `dispatch_line`) |
+| Rust | `desktop/src-tauri/src/lib.rs` (`reload_ui`, `current_session`, `ui_heartbeat`, `SessionInfoHolder`, `WebviewHeartbeat` incl. `esr_ready`, `should_declare_wedge`, `on_web_content_process_terminate`, "Reload UI" menu item) |
+| Rust | `desktop/src-tauri/src/sidecar.rs` (`SessionInfoHolder` populate/clear + `WebviewHeartbeat.esr_ready` set in `dispatch_line` on `$/esr_ready` / `session.completed`) |
 | Frontend | `desktop/src/rpc/sessionClient.ts` (`CurrentSessionInfo`, `currentSession()`) |
 | Frontend | `desktop/src/services/sessionContext.tsx` (`sessionReattaching` state) |
 | Frontend | `desktop/src/App.tsx` (reattach effect, no-flash gate, heartbeat effect) |

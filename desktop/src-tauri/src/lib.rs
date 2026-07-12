@@ -86,6 +86,29 @@ fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> 
     session_active && !already_confirmed
 }
 
+/// Whether the heartbeat watchdog should declare a paint wedge right now. Pure
+/// so the trip logic is unit-testable without a running watchdog thread.
+///
+/// `esr_ready` (set once `$/esr_ready` or `session.completed` has been
+/// observed) suppresses the trip even while `active` is still true — the gap
+/// between ESR-ready and `session.completed` can be tens of seconds of pure
+/// backend bookkeeping (e.g. timelapse render finalization) with no live
+/// dashboard left to protect.
+fn should_declare_wedge(
+    enabled: bool,
+    active: bool,
+    esr_ready: bool,
+    last_beat_ms: i64,
+    now_ms: i64,
+    threshold_ms: i64,
+) -> bool {
+    enabled
+        && active
+        && !esr_ready
+        && last_beat_ms != 0
+        && now_ms.saturating_sub(last_beat_ms) > threshold_ms
+}
+
 /// Cached session info populated on a successful `session.start` RPC, cleared
 /// on `session.stop` and `session.completed`. Drives `current_session()` and
 /// the reattach path after a WebView reload.
@@ -111,9 +134,15 @@ struct CurrentSessionInfo {
 /// Phase 2: rAF-gated heartbeat state. `enabled` is set true by the first
 /// `ui_heartbeat` call and cleared when the watchdog fires or the session ends.
 /// `last_beat_ms` is a UNIX-epoch millisecond timestamp stamped each beat.
+/// `esr_ready` is set true once the engine emits `$/esr_ready` (or, defensively,
+/// `session.completed`) — from that point there is no more live-dashboard work
+/// for the watchdog to protect, even though `ActivityHolder` can stay active for
+/// up to another ~60s while backend bookkeeping (e.g. timelapse render
+/// finalization) finishes. Reset false on the next `session.start`.
 struct WebviewHeartbeat {
     last_beat_ms: AtomicI64,
     enabled: AtomicBool,
+    esr_ready: AtomicBool,
 }
 
 impl Default for WebviewHeartbeat {
@@ -121,6 +150,7 @@ impl Default for WebviewHeartbeat {
         Self {
             last_beat_ms: AtomicI64::new(0),
             enabled: AtomicBool::new(false),
+            esr_ready: AtomicBool::new(false),
         }
     }
 }
@@ -314,6 +344,12 @@ async fn jsonrpc_call(
             match method_for_hook.as_str() {
                 "session.start" => {
                     holder.acquire("AgentShore session active");
+                    // Re-arm the ESR-ready gate for the new session (heartbeat
+                    // watchdog, #274 follow-up) — a prior session's disarm must
+                    // not suppress wedge detection for this one.
+                    app.state::<WebviewHeartbeat>()
+                        .esr_ready
+                        .store(false, Ordering::SeqCst);
                     // Cache session info for current_session() + reattach (#274).
                     // dashboardUrl shape: http://{host}:{port}/ (mirrors
                     // StartingProgressRoute.tsx dashboardUrlFromEndpoint ~58-69).
@@ -1200,12 +1236,16 @@ pub fn run() {
                         .unwrap_or_default()
                         .as_millis() as i64;
                     let last = beat.last_beat_ms.load(Ordering::SeqCst);
-                    if last == 0 {
-                        // Enabled but no beat stamped yet — skip.
-                        continue;
-                    }
-                    let elapsed = now_ms.saturating_sub(last);
-                    if elapsed > WEDGE_THRESHOLD_MS && !wedge_declared {
+                    let esr_ready = beat.esr_ready.load(Ordering::SeqCst);
+                    if should_declare_wedge(
+                        true,
+                        active,
+                        esr_ready,
+                        last,
+                        now_ms,
+                        WEDGE_THRESHOLD_MS,
+                    ) && !wedge_declared
+                    {
                         wedge_declared = true;
                         declare_webview_wedged(&watchdog_app, WebviewWedgeMode::Heartbeat);
                     }
@@ -1342,6 +1382,52 @@ mod tests {
         // No session → never prompt, regardless of the latch.
         assert!(!quit_requires_confirmation(false, false));
         assert!(!quit_requires_confirmation(false, true));
+    }
+
+    #[test]
+    fn should_declare_wedge_trips_when_stale_and_not_esr_ready() {
+        use super::should_declare_wedge;
+        // enabled, active, not esr_ready, beat stamped at t=0, now=11s, 10s
+        // threshold → 11s elapsed > 10s → trip.
+        assert!(should_declare_wedge(true, true, false, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_suppressed_once_esr_ready() {
+        use super::should_declare_wedge;
+        // Same staleness as above, but esr_ready=true suppresses the trip —
+        // this is the fix: the trailing session.completed gap (timelapse
+        // finalization etc.) must not be mistaken for a paint wedge.
+        assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_false_when_disabled() {
+        use super::should_declare_wedge;
+        assert!(!should_declare_wedge(false, true, false, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_false_when_inactive() {
+        use super::should_declare_wedge;
+        assert!(!should_declare_wedge(true, false, false, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_false_when_no_beat_yet() {
+        use super::should_declare_wedge;
+        // last_beat_ms == 0 means "enabled but no beat stamped yet" — never trip.
+        assert!(!should_declare_wedge(true, true, false, 0, 11_000, 10_000));
+        assert!(!should_declare_wedge(true, true, false, 0, 0, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_false_within_threshold() {
+        use super::should_declare_wedge;
+        // 5s elapsed against a 10s threshold, beat stamped at t=5_000.
+        assert!(!should_declare_wedge(
+            true, true, false, 5_000, 10_000, 10_000
+        ));
     }
 
     #[test]

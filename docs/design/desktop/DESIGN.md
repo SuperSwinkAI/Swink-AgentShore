@@ -116,6 +116,13 @@ remain live the watchdog sees no missed beats and the terminate hook does not
 fire. The "Reload UI" menu item (`CmdOrCtrl+R`) is the guaranteed recovery
 floor. Both signals are needed for complete coverage.
 
+**Watchdog stands down at `$/esr_ready`.** The watchdog also disarms as soon
+as the engine emits `$/esr_ready` — not just at the later `session.completed`
+— because the gap between the two can be tens of seconds of pure backend
+bookkeeping (e.g. timelapse render finalization, up to 60s) with no live
+dashboard left to protect. Without this, a normal session end could trip a
+false "Dashboard not responding" dialog. See `webview-crash-recovery.md` §4a.
+
 For non-obvious design decisions and rejected alternatives, see
 `docs/design/webview-crash-recovery.md`. See also: Dashboard DESIGN
 §Reconnection and §Session discovery (`docs/design/dashboard/DESIGN.md`);

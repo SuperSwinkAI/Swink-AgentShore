@@ -624,6 +624,18 @@ fn dispatch_line(
     if let Some(method) = value.get("method").and_then(Value::as_str) {
         let params = value.get("params").cloned().unwrap_or(Value::Null);
         handle_agent_subprocess_notification(method, &params, agent_pids);
+        // $/esr_ready fires as soon as the ESR HTML is generated — well before
+        // session.completed, which can trail by up to ~60s of unrelated backend
+        // bookkeeping (e.g. timelapse render finalization). From esr_ready
+        // onward there is no more live-dashboard work for the heartbeat
+        // watchdog to protect, so stand it down here rather than waiting for
+        // session.completed (fixes false "Dashboard not responding" trips
+        // during that trailing window).
+        if method == "$/esr_ready" {
+            app.state::<crate::WebviewHeartbeat>()
+                .esr_ready
+                .store(true, Ordering::Relaxed);
+        }
         // desktop-bzr2: release the activity assertion on natural session exit.
         // session.completed is the fallback for exits where session.stop never
         // fires (drain_complete, max_plays, timeout, shutting_down).
@@ -635,9 +647,11 @@ fn dispatch_line(
             if let Ok(mut guard) = app.state::<crate::SessionInfoHolder>().0.lock() {
                 *guard = None;
             }
-            app.state::<crate::WebviewHeartbeat>()
-                .enabled
-                .store(false, Ordering::Relaxed);
+            let heartbeat = app.state::<crate::WebviewHeartbeat>();
+            heartbeat.enabled.store(false, Ordering::Relaxed);
+            // Defensive: covers any shutdown path that reaches session.completed
+            // without a preceding $/esr_ready (e.g. non-embedded mode).
+            heartbeat.esr_ready.store(true, Ordering::Relaxed);
             let _ = app.emit(SESSION_COMPLETED_EVENT, params.clone());
         }
         let payload = SidecarNotificationPayload {
