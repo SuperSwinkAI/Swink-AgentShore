@@ -89,26 +89,38 @@ fn quit_requires_confirmation(session_active: bool, already_confirmed: bool) -> 
 /// Whether the heartbeat watchdog should declare a paint wedge right now. Pure
 /// so the trip logic is unit-testable without a running watchdog thread.
 ///
-/// `shutdown_in_progress` (true once either `session.draining` or
-/// `$/esr_ready`/`session.completed` has been observed) suppresses the trip
-/// even while `active` is still true — the whole window from drain-start
-/// onward is backend bookkeeping (ESR HTML generation, timelapse render
-/// finalization, etc.) with no live dashboard left to protect, and a real,
-/// busy shutdown can legitimately pause the render loop for many seconds
-/// during it.
+/// `suppressed` covers every known reason a missed rAF beat does NOT mean a
+/// real paint wedge, combined by `watchdog_suppressed` below:
+///   - shutdown in progress (`session.draining` or `$/esr_ready`/
+///     `session.completed`) — the whole window from drain-start onward is
+///     backend bookkeeping (ESR HTML generation, timelapse render
+///     finalization, etc.) with no live dashboard left to protect, and a
+///     real, busy shutdown can legitimately pause the render loop for many
+///     seconds during it.
+///   - the window is minimized/unfocused (#314) — rAF is throttled by the
+///     OS/webview whenever the window isn't visible/key, which is the same
+///     JS-observable signal as a genuine paint wedge but has nothing to do
+///     with one.
 fn should_declare_wedge(
     enabled: bool,
     active: bool,
-    shutdown_in_progress: bool,
+    suppressed: bool,
     last_beat_ms: i64,
     now_ms: i64,
     threshold_ms: i64,
 ) -> bool {
     enabled
         && active
-        && !shutdown_in_progress
+        && !suppressed
         && last_beat_ms != 0
         && now_ms.saturating_sub(last_beat_ms) > threshold_ms
+}
+
+/// Combines every reason the watchdog should stand down regardless of
+/// staleness. Pure so the combination itself is unit-testable — see
+/// `should_declare_wedge` for what each reason means.
+fn watchdog_suppressed(esr_ready: bool, draining: bool, unfocused: bool) -> bool {
+    esr_ready || draining || unfocused
 }
 
 /// Whether the debounced watchdog trip is confirmed: the stale condition has
@@ -150,12 +162,19 @@ struct CurrentSessionInfo {
 /// finalization) finishes. `draining` is set true once the engine emits
 /// `session.draining`, fired at drain start — well before `esr_ready`, which
 /// only arrives after (unbounded, O(plays)) ESR HTML generation completes.
-/// Both reset false on the next `session.start`.
+/// `unfocused` is set true on `WindowEvent::Focused(false)` (window minimized
+/// or simply not the key window) and false on `Focused(true)` — the OS/webview
+/// throttles rAF whenever the window isn't visible/key, which stops the
+/// renderer's heartbeat exactly as a genuine paint wedge would, so a missed
+/// beat while unfocused must not be mistaken for one (#314). `esr_ready` and
+/// `draining` reset false on the next `session.start`; `unfocused` tracks live
+/// window state and is intentionally NOT reset there.
 struct WebviewHeartbeat {
     last_beat_ms: AtomicI64,
     enabled: AtomicBool,
     esr_ready: AtomicBool,
     draining: AtomicBool,
+    unfocused: AtomicBool,
 }
 
 impl Default for WebviewHeartbeat {
@@ -165,6 +184,7 @@ impl Default for WebviewHeartbeat {
             enabled: AtomicBool::new(false),
             esr_ready: AtomicBool::new(false),
             draining: AtomicBool::new(false),
+            unfocused: AtomicBool::new(false),
         }
     }
 }
@@ -766,6 +786,19 @@ fn attach_window_persistence(app: &AppHandle) {
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 update_window_state(&app_handle);
             }
+            // Minimizing (and simply switching to another app) fires
+            // Focused(false) — Tauri has no dedicated minimize event, and this
+            // is the same signal the OS/webview uses to throttle rAF, so it's
+            // the correct proxy (#314). Suspend the wedge watchdog's trip
+            // evaluation while unfocused; it re-arms on refocus, at which
+            // point a genuinely wedged session will trip promptly since a real
+            // hang means no heartbeat arrives once the user is looking again.
+            WindowEvent::Focused(is_focused) => {
+                app_handle
+                    .state::<WebviewHeartbeat>()
+                    .unfocused
+                    .store(!*is_focused, Ordering::SeqCst);
+            }
             // Red close button / ⌘W. Confirm before force-killing a live
             // session; ⌘Q and the app-menu Quit are handled by ExitRequested.
             WindowEvent::CloseRequested { api, .. } => {
@@ -1249,12 +1282,15 @@ pub fn run() {
                         .unwrap_or_default()
                         .as_millis() as i64;
                     let last = beat.last_beat_ms.load(Ordering::SeqCst);
-                    let shutdown_in_progress = beat.esr_ready.load(Ordering::SeqCst)
-                        || beat.draining.load(Ordering::SeqCst);
+                    let suppressed = watchdog_suppressed(
+                        beat.esr_ready.load(Ordering::SeqCst),
+                        beat.draining.load(Ordering::SeqCst),
+                        beat.unfocused.load(Ordering::SeqCst),
+                    );
                     let stale = should_declare_wedge(
                         true,
                         active,
-                        shutdown_in_progress,
+                        suppressed,
                         last,
                         now_ms,
                         WEDGE_THRESHOLD_MS,
@@ -1423,11 +1459,36 @@ mod tests {
     #[test]
     fn should_declare_wedge_suppressed_when_draining() {
         use super::should_declare_wedge;
-        // Same staleness as the esr_ready test, but the shutdown_in_progress
+        // Same staleness as the esr_ready test, but the suppressed
         // param is driven by `draining` (session.draining, fired at drain
         // start) rather than esr_ready — must suppress the trip identically,
         // since this is the earlier of the two signals in the real call site.
         assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn should_declare_wedge_suppressed_when_unfocused() {
+        use super::should_declare_wedge;
+        // Same staleness as the esr_ready/draining tests, but the suppressed
+        // param is driven by the window being unfocused/minimized (#314) —
+        // must suppress the trip identically, since a missed rAF beat while
+        // the OS/webview has throttled it is not a paint wedge.
+        assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
+    }
+
+    #[test]
+    fn watchdog_suppressed_true_when_any_reason_present() {
+        use super::watchdog_suppressed;
+        assert!(watchdog_suppressed(true, false, false)); // esr_ready
+        assert!(watchdog_suppressed(false, true, false)); // draining
+        assert!(watchdog_suppressed(false, false, true)); // unfocused (#314)
+        assert!(watchdog_suppressed(true, true, true)); // all three
+    }
+
+    #[test]
+    fn watchdog_suppressed_false_when_no_reason_present() {
+        use super::watchdog_suppressed;
+        assert!(!watchdog_suppressed(false, false, false));
     }
 
     #[test]
