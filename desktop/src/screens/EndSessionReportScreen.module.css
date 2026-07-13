@@ -45,17 +45,6 @@
   cursor: pointer;
 }
 
-.chromeButton[disabled] {
-  cursor: progress;
-  opacity: 0.6;
-}
-
-.chromeError {
-  font-size: 0.85rem;
-  color: var(--fm-text-danger, #b3261e);
-  margin-left: 0.5rem;
-}
-
 .fallback {
   display: flex;
   flex-direction: column;

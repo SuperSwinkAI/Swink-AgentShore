@@ -1,17 +1,24 @@
 /**
- * Integration coverage for issue #582: Repeat (#561) and Quick Start
- * (#565) both walk the user into ``/starting``. Before this fix the
- * shared helper ``startSessionFromPersistedSetup`` used to dispatch
- * ``session.start`` before handing control to ``StartingProgressRoute``,
- * which dispatched ``session.start`` a SECOND time, double-billing the
- * sidecar and risking duplicate orchestrator boots. The helper now
- * navigates into ``/starting`` and lets that route own the single start.
+ * Integration coverage for issue #582: Quick Start (#565) walks the
+ * user into ``/starting``. Before this fix the shared helper
+ * ``startSessionFromPersistedSetup`` used to dispatch ``session.start``
+ * before handing control to ``StartingProgressRoute``, which dispatched
+ * ``session.start`` a SECOND time, double-billing the sidecar and
+ * risking duplicate orchestrator boots. The helper now navigates into
+ * ``/starting`` and lets that route own the single start.
  *
- * These tests walk each entrypoint into a mocked ``/starting`` route
- * inside a ``MemoryRouter`` and assert that ``session.start`` is
- * invoked EXACTLY ONCE end-to-end. They specifically guard against the
- * regression class — the existing unit tests mock the helper at the
- * RPC seam and don't see the second dispatch from the route.
+ * (The ESR "Repeat with same settings" entrypoint that used to share
+ * this helper was removed in #309 — the ESR now only offers Back to
+ * Home / Start a new session, both of which route through the normal
+ * Choose-Project → Quick Start or manual-setup path already covered
+ * here and in ChooseProjectScreen's own tests.)
+ *
+ * This test walks the Quick Start entrypoint into a mocked
+ * ``/starting`` route inside a ``MemoryRouter`` and asserts that
+ * ``session.start`` is invoked EXACTLY ONCE end-to-end. It specifically
+ * guards against the regression class — the existing unit tests mock
+ * the helper at the RPC seam and don't see the second dispatch from
+ * the route.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -21,7 +28,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ProgressNotificationParams } from "../services/sidecarEvents";
 import type { ChooseProjectAdapter } from "../screens/ChooseProjectScreen";
 import type { RecentEntry } from "../rpc/recentsClient";
-import { SessionContext, type EsrPayload } from "../services/sessionContext";
+import { SessionContext } from "../services/sessionContext";
 
 type ProgressHandler = (params: ProgressNotificationParams) => void;
 
@@ -74,35 +81,8 @@ vi.mock("../rpc/recentsClient", () => ({
   removeRecent: removeRecentMock,
 }));
 
-import { EndSessionReportScreen } from "../screens/EndSessionReportScreen";
 import { ChooseProjectScreen } from "../screens/ChooseProjectScreen";
 import { StartingProgressRoute } from "../StartingProgressRoute";
-
-const ESR_PAYLOAD: EsrPayload = {
-  session_id: "session-1",
-  exit_reason: "human_stop",
-  exit_code: 0,
-  archive_path: "/tmp/proj/.agentshore/archives/session-1",
-  report_path: "/tmp/proj/.agentshore/reports/report.html",
-  log_path: "/tmp/proj/.agentshore/logs/agentshore-session-1.log",
-  esr_summary: {
-    overview: {
-      session_id: "session-1",
-      duration_seconds: 0,
-      total_plays: 0,
-      successful_plays: 0,
-      failed_plays: 0,
-      total_cost: 0,
-      final_alignment: null,
-      started_at: "2026-05-16T00:00:00Z",
-      ended_at: "2026-05-16T00:00:00Z",
-    },
-    repo_url: null,
-    play_stats: [],
-    closed_issues: [],
-    control_rejections: [],
-  },
-};
 
 const RECENT_ENTRY: RecentEntry = {
   path: "/tmp/proj",
@@ -149,35 +129,6 @@ function installInMemoryLocalStorage(): void {
   });
 }
 
-function renderFromEsr() {
-  const sessionContextValue = {
-    dashboardUrl: null,
-    esr: ESR_PAYLOAD,
-    lastProjectPath: "/tmp/proj",
-    sessionStarting: false,
-    sessionReattaching: false,
-    setDashboardUrl: () => undefined,
-    setEsr: () => undefined,
-    setLastProjectPath: () => undefined,
-    setSessionStarting: () => undefined,
-    setSessionReattaching: () => undefined,
-  };
-  return render(
-    <SessionContext.Provider value={sessionContextValue}>
-      <MemoryRouter initialEntries={["/session/esr"]}>
-        <Routes>
-          <Route path="/session/esr" element={<EndSessionReportScreen />} />
-          <Route path="/starting" element={<StartingProgressRoute />} />
-          <Route
-            path="/session/dashboard"
-            element={<div data-testid="session-dashboard">dashboard</div>}
-          />
-        </Routes>
-      </MemoryRouter>
-    </SessionContext.Provider>,
-  );
-}
-
 function renderFromChooser() {
   const adapter: ChooseProjectAdapter = {
     list: listRecentsMock as ChooseProjectAdapter["list"],
@@ -216,7 +167,7 @@ function renderFromChooser() {
   );
 }
 
-describe("issue #582: session.start fires exactly once through Repeat / Quick Start", () => {
+describe("issue #582: session.start fires exactly once through Quick Start", () => {
   beforeEach(() => {
     installInMemoryLocalStorage();
     selectProjectMock.mockResolvedValue({ path: "/tmp/proj" });
@@ -262,18 +213,6 @@ describe("issue #582: session.start fires exactly once through Repeat / Quick St
     removeRecentMock.mockReset();
     installInMemoryLocalStorage();
     cleanup();
-  });
-
-  it("Repeat path: EndSessionReportScreen → /starting dispatches session.start exactly ONCE", async () => {
-    renderFromEsr();
-    const user = userEvent.setup();
-
-    await user.click(
-      screen.getByRole("button", { name: /repeat with same settings/i }),
-    );
-
-    expect(await screen.findByTestId("session-dashboard")).toBeInTheDocument();
-    expect(startSessionMock).toHaveBeenCalledTimes(1);
   });
 
   it("Quick Start path: ChooseProjectScreen → /starting dispatches session.start exactly ONCE", async () => {

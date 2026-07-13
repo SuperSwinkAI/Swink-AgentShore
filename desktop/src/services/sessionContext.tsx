@@ -105,11 +105,9 @@ export interface SessionContextValue {
   esr: EsrPayload | null;
   /**
    * Absolute path to the project the most-recent session ran against.
-   * Set from ChooseProjectScreen's selection so the End-Session Report's
-   * "Repeat with same settings" chrome button (issue #561) can hand it
-   * to ``startSessionFromPersistedSetup`` without having to round-trip
-   * through ``project.inspect`` first. Survives across session boundaries
-   * so a finished-session ESR retains the project pointer.
+   * Set from ChooseProjectScreen's selection; consumed by the app menu's
+   * re-open-project affordance without having to round-trip through
+   * ``project.inspect`` first. Survives across session boundaries.
    */
   lastProjectPath: string | null;
   /**

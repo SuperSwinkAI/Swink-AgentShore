@@ -2,7 +2,6 @@ import { useContext, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { archiveClient, type ArchiveClient, type LogRange } from "../services/archiveClient";
 import { SessionContext } from "../services/sessionContext";
-import { startSessionFromPersistedSetup } from "../setup/startFromPersistedSetup";
 import styles from "./EndSessionReportScreen.module.css";
 
 type Tab = "report" | "logs";
@@ -12,24 +11,6 @@ interface ReportState {
   sections: { id: string; title: string }[];
 }
 
-/**
- * Best-effort fallback for the prior session's project root when the
- * SessionContext didn't get a chance to record it (e.g. the user landed
- * on this screen via a deep link, no Choose-Project click in this app
- * launch). The ESR's ``archive_path`` is ``<project>/.agentshore/archives/
- * <session-id>`` — strip the last three segments to recover the root.
- * Returns ``null`` when the path doesn't match the expected shape so the
- * Repeat button surfaces a clean "return home" message rather than
- * crashing midway through ``project.select``.
- */
-function inferProjectPath(esr: { archive_path: string } | null): string | null {
-  if (!esr?.archive_path) return null;
-  const trimmed = esr.archive_path.replace(/\/+$/u, "");
-  const idx = trimmed.lastIndexOf("/.agentshore/archives/");
-  if (idx <= 0) return null;
-  return trimmed.slice(0, idx);
-}
-
 interface LogsState {
   lines: string[];
   end: number;
@@ -37,13 +18,6 @@ interface LogsState {
 
 export interface EndSessionReportScreenProps {
   adapter?: Pick<ArchiveClient, "fetchReportByPath" | "fetchLogsByPath">;
-  /**
-   * Overridable seam so the test can verify the chrome bar's Repeat
-   * button wires through to the shared helper without spinning up the
-   * full sidecar / projectClient mocks. Production code uses
-   * ``startSessionFromPersistedSetup`` from setup/startFromPersistedSetup.
-   */
-  repeatImpl?: typeof startSessionFromPersistedSetup;
   /**
    * Overridable seam for opening the rendered timelapse MP4. Production uses
    * the Tauri ``open_path_in_default_app`` command (same as RecoveryScreen).
@@ -58,40 +32,11 @@ async function defaultOpenPath(path: string): Promise<void> {
 
 export function EndSessionReportScreen({
   adapter,
-  repeatImpl,
   openPathImpl = defaultOpenPath,
 }: EndSessionReportScreenProps = {}) {
-  const { esr, lastProjectPath } = useContext(SessionContext);
+  const { esr } = useContext(SessionContext);
   const navigate = useNavigate();
   const client = adapter ?? archiveClient;
-  const repeat = repeatImpl ?? startSessionFromPersistedSetup;
-
-  const [repeatBusy, setRepeatBusy] = useState(false);
-  const [repeatError, setRepeatError] = useState<string | null>(null);
-
-  const projectPath = lastProjectPath ?? inferProjectPath(esr);
-
-  const onRepeat = async () => {
-    if (repeatBusy) return;
-    if (projectPath === null) {
-      setRepeatError(
-        "No prior project path on record — return home and pick the project to retry.",
-      );
-      return;
-    }
-    setRepeatBusy(true);
-    setRepeatError(null);
-    try {
-      await repeat(projectPath, {
-        navigate,
-        onError: (_err, failedStep) => {
-          setRepeatError(`Couldn't ${failedStep} — try again from home.`);
-        },
-      });
-    } finally {
-      setRepeatBusy(false);
-    }
-  };
 
   const [activeTab, setActiveTab] = useState<Tab>("report");
   const [report, setReport] = useState<ReportState | null>(null);
@@ -200,11 +145,6 @@ export function EndSessionReportScreen({
         Start a new session
       </button>
       <div className={styles.chromeRight}>
-        {repeatError !== null && (
-          <span role="alert" className={styles.chromeError}>
-            {repeatError}
-          </span>
-        )}
         {timelapsePath !== null && (
           <button
             type="button"
@@ -218,17 +158,6 @@ export function EndSessionReportScreen({
             Open timelapse
           </button>
         )}
-        <button
-          type="button"
-          className={styles.chromeButton}
-          onClick={() => {
-            void onRepeat();
-          }}
-          disabled={repeatBusy}
-          aria-label="Repeat with same settings"
-        >
-          {repeatBusy ? "Starting…" : "Repeat with same settings"}
-        </button>
       </div>
     </div>
   );
