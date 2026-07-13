@@ -581,6 +581,96 @@ def test_session_start_skips_version_check_when_bd_unresolvable(tmp_path: object
     assert [e for e in captured if e.get("event") == "bd_version_mismatch_at_session_start"] == []
 
 
+def test_session_start_recovers_stale_remote_clone_via_bootstrap(tmp_path: object) -> None:
+    """A clone stuck behind a remote-backed store's schema (#316) is caught up
+    with `bd bootstrap` at session start, before anything else touches the
+    store — the resulting graph probe succeeds and session.start still
+    reports success (this is a session-start convenience, not a gate)."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import structlog
+
+    from agentshore.beads import BdError
+
+    project_path = Path(tmp_path) / "stale-remote-clone"  # type: ignore[arg-type]
+    project_path.mkdir()
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
+    (project_path / ".beads").mkdir()
+
+    stale_error = (
+        "bd list --all --json --limit 0 failed (rc=1): Warning: refusing to auto-apply 21 "
+        "pending schema migrations to a remote-backed database (v32 -> v53): migrating clones "
+        "independently forks the schema (#4259)\nError: search count issues: Error 1105: "
+        'column "depends_on_issue_id" could not be found in any table in scope'
+    )
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        if args and args[0] == "list":
+            calls.append(args)
+            if len(calls) == 1:
+                raise BdError(stale_error)
+            return "[]"
+        if args and args[0] == "bootstrap":
+            calls.append(args)
+            return ""
+        return ""  # benign no-op for unrelated init/hooks/config calls
+
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        structlog.testing.capture_logs() as captured,
+    ):
+        from agentshore.sidecar.session_lifecycle import run_session_start
+
+        state = ServerState(active_project_path=str(project_path))
+        outcome = asyncio.run(run_session_start(state, start_bridge=False))
+        assert outcome.session_id
+
+    events = [e.get("event") for e in captured]
+    assert "beads_stale_remote_clone_detected" in events
+    assert "beads_bootstrap_recovery_ran" in events
+    assert calls == [
+        ("list", "--all", "--json", "--limit", "0"),
+        ("bootstrap",),
+        ("list", "--all", "--json", "--limit", "0"),
+    ]
+
+
+def test_session_start_succeeds_when_stale_clone_recovery_raises(tmp_path: object) -> None:
+    """An unexpected error inside the stale-remote-clone recovery is logged and
+    swallowed — it is best-effort, matching bd-hooks and the version check,
+    and must never block session.start."""
+    from pathlib import Path
+    from unittest.mock import AsyncMock, patch
+
+    import structlog
+
+    project_path = Path(tmp_path) / "stale-clone-recovery-raises"  # type: ignore[arg-type]
+    project_path.mkdir()
+    (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
+    (project_path / ".beads").mkdir()
+
+    with (
+        patch(
+            "agentshore.beads.setup.reconcile_stale_remote_clone",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+        structlog.testing.capture_logs() as captured,
+    ):
+        from agentshore.sidecar.session_lifecycle import run_session_start
+
+        state = ServerState(active_project_path=str(project_path))
+        outcome = asyncio.run(run_session_start(state, start_bridge=False))
+        assert outcome.session_id
+
+    matching = [
+        e for e in captured if e.get("event") == "beads_stale_remote_clone_recovery_skipped"
+    ]
+    assert len(matching) == 1, captured
+    assert "boom" in matching[0]["error"]
+
+
 def test_session_stop_rejects_unknown_mode() -> None:
     """``session.stop`` returns ``INVALID_PARAMS`` for any mode other than
     "drain" or "hard" (DESIGN §5.1, desktop-pgs)."""

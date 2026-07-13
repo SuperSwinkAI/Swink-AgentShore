@@ -770,3 +770,121 @@ async def test_add_blocking_dependency_detects_cycle_conflict(tmp_path: Path) ->
         outcome = await add_blocking_dependency(tmp_path, "bead-blocked", "bead-blocker")
 
     assert outcome is BlockingDependencyOutcome.CYCLE_CONFLICT
+
+
+# ---------------------------------------------------------------------------
+# #316 — stale remote-backed Dolt clone recovery (reconcile_stale_remote_clone)
+# ---------------------------------------------------------------------------
+
+_STALE_REMOTE_CLONE_ERROR = (
+    "bd list --all --json --limit 0 failed (rc=1): Warning: refusing to auto-apply 21 pending "
+    "schema migrations to a remote-backed database (v32 -> v53): migrating clones independently "
+    "forks the schema (#4259)\n"
+    "  Read-only command: continuing on schema v32 without migrating.\n"
+    "  Writes are blocked until the schema is reconciled.\n"
+    'Error: search count issues: Error 1105: column "depends_on_issue_id" could not be found '
+    "in any table in scope"
+)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_remote_clone_noop_on_healthy_store(tmp_path: Path) -> None:
+    """A healthy store's probe read succeeds — bootstrap is never invoked."""
+    from agentshore.beads.setup import reconcile_stale_remote_clone
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        calls.append(args)
+        return "[]"
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_stale_remote_clone(tmp_path)
+
+    assert calls == [("list", "--all", "--json", "--limit", "0")]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_remote_clone_recovers_via_bootstrap(tmp_path: Path) -> None:
+    """The stale-remote-clone signature triggers bootstrap, then a successful re-probe."""
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import reconcile_stale_remote_clone
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        calls.append(args)
+        if args[0] == "list" and len(calls) == 1:
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        return "[]"
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_stale_remote_clone(tmp_path)
+
+    assert calls == [
+        ("list", "--all", "--json", "--limit", "0"),
+        ("bootstrap",),
+        ("list", "--all", "--json", "--limit", "0"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_remote_clone_bootstrap_unresolved(tmp_path: Path) -> None:
+    """Bootstrap runs but the signature persists — logged, never raised."""
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import reconcile_stale_remote_clone
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        calls.append(args)
+        if args[0] == "list":
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        return ""
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_stale_remote_clone(tmp_path)  # must not raise
+
+    assert calls == [
+        ("list", "--all", "--json", "--limit", "0"),
+        ("bootstrap",),
+        ("list", "--all", "--json", "--limit", "0"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_remote_clone_bootstrap_call_fails(tmp_path: Path) -> None:
+    """bd bootstrap itself erroring (e.g. remote unreachable) is swallowed, not raised."""
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import reconcile_stale_remote_clone
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        calls.append(args)
+        if args[0] == "list":
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        raise BdError("bd bootstrap failed (rc=1): could not reach remote")
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_stale_remote_clone(tmp_path)  # must not raise
+
+    assert calls == [("list", "--all", "--json", "--limit", "0"), ("bootstrap",)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_remote_clone_ignores_unrelated_bd_error(tmp_path: Path) -> None:
+    """A bd error that doesn't match the stale-remote-clone signature is left alone."""
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import reconcile_stale_remote_clone
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+        calls.append(args)
+        raise BdError("bd list --all --json --limit 0 failed (rc=1): connection refused")
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_stale_remote_clone(tmp_path)  # must not raise, must not bootstrap
+
+    assert calls == [("list", "--all", "--json", "--limit", "0")]

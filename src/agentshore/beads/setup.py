@@ -119,6 +119,91 @@ def ensure_bd_installed() -> None:
     _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 
+# Stable coordination-decision markers from bd's own "refusing to auto-apply
+# ... to a remote-backed database" guard (bd issue #4259). A clone stuck
+# behind its remote's schema surfaces this on every read/write until either
+# the designated migrator runs `bd migrate` and pushes, or a non-designated
+# clone runs `bd bootstrap` to catch up without forking the schema. Matched
+# against the stable coordination-decision text rather than the downstream
+# "column ... could not be found"-style error, which varies by command and
+# column and isn't guaranteed stable across bd releases.
+_STALE_REMOTE_CLONE_MARKERS = ("refusing to auto-apply", "remote-backed", "#4259")
+
+
+def _is_stale_remote_clone_error(error_text: str) -> bool:
+    return any(marker in error_text for marker in _STALE_REMOTE_CLONE_MARKERS)
+
+
+async def reconcile_stale_remote_clone(project_path: Path) -> None:
+    """Best-effort recovery for a Dolt clone stuck behind its remote's schema (#316).
+
+    A remote-backed beads store can end up with the local clone several
+    migrations behind the remote (e.g. another clone migrated and pushed).
+    bd refuses to auto-apply those migrations itself — doing so from a
+    non-designated clone would fork the shared schema (bd's own #4259 guard)
+    — so every read/write fails with a "refusing to auto-apply ... to a
+    remote-backed database" error until the clone is caught up.
+
+    bd's own error message names two recovery paths: the designated migrator
+    runs ``BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push`` (dangerous —
+    forks the schema if more than one clone does it, so this function never
+    runs it), or every other clone runs ``bd bootstrap`` to catch up safely.
+    This function detects the signature and runs only the safe path.
+
+    Probes with a cheap read (``bd list --all --json --limit 0``); a healthy
+    store no-ops. On the stale-remote-clone signature, runs ``bd bootstrap``
+    once and re-probes. Any other bd error, or the signature persisting after
+    bootstrap, is logged and left alone — this never blocks or raises, it is
+    a session-start convenience only. bd's designated-migrator path stays a
+    manual, deliberate action for a human to take on exactly one machine.
+    """
+    try:
+        await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+        return  # healthy store — nothing to reconcile
+    except BdError as exc:
+        probe_error = str(exc)
+
+    if not _is_stale_remote_clone_error(probe_error):
+        _logger.warning(
+            "beads_graph_probe_failed_at_session_start",
+            project_path=str(project_path),
+            error=probe_error,
+        )
+        return
+
+    _logger.warning(
+        "beads_stale_remote_clone_detected",
+        project_path=str(project_path),
+        error=probe_error,
+    )
+    try:
+        await bd("bootstrap", cwd=project_path)
+    except BdError as exc:
+        _logger.warning(
+            "beads_bootstrap_recovery_failed",
+            project_path=str(project_path),
+            error=str(exc),
+        )
+        return
+
+    try:
+        await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+    except BdError as exc:
+        _logger.warning(
+            "beads_stale_remote_clone_unresolved",
+            project_path=str(project_path),
+            error=str(exc),
+            remediation=(
+                "bd bootstrap did not resolve the schema skew. The remote itself may need "
+                "migrating: on exactly ONE clone, run "
+                "`BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push`."
+            ),
+        )
+        return
+
+    _logger.info("beads_bootstrap_recovery_ran", project_path=str(project_path))
+
+
 async def _configure_dolt_auto_commit(project_path: Path) -> None:
     """Set the ``dolt.auto-commit`` config key so every writer commits per write.
 
