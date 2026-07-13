@@ -377,12 +377,31 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
 
     Mirrors the CLI's ``run_beads_init`` sequence:
       1. ``bd_init_project`` — run ``bd init`` when ``.beads/`` is absent.
-      2. ``bd_setup_for_agent_types`` — run ``bd hooks install`` (best-effort).
+      2. ``reconcile_stale_remote_clone`` — best-effort recovery when this
+         clone is stuck behind a remote-backed store's schema (#316); runs
+         ``bd bootstrap`` to catch up safely before anything else reads or
+         writes the store.
+      3. ``bd_setup_for_agent_types`` — run ``bd hooks install`` (best-effort).
+      4. Version-consistency check (best-effort) — the CLI's ``agentshore
+         init`` runs ``ensure_bd_installed()`` (which calls
+         ``_check_bd_version``), but this live-session path historically
+         skipped it entirely, so a resolved bd that didn't match
+         AgentShore's pinned version was only ever discovered mid-session as
+         a play failure (schema defects from a version-skewed write; #315)
+         instead of a session-start warning.
 
-    Step 1 failure is fatal (blocks session.start).  Step 2 failure is
-    logged but not propagated — hooks can be installed later.
+    Step 1 failure is fatal (blocks session.start). Steps 2-4 are logged but
+    not propagated — stale-clone recovery, hooks, and the version check are
+    all best-effort conveniences that shouldn't block a session that may
+    still work without them.
     """
-    from agentshore.beads.setup import bd_init_project, bd_setup_for_agent_types
+    from agentshore.beads import resolve_bd_binary
+    from agentshore.beads.setup import (
+        _check_bd_version,
+        bd_init_project,
+        bd_setup_for_agent_types,
+        reconcile_stale_remote_clone,
+    )
 
     beads_dir = project_path / ".beads"
     try:
@@ -391,11 +410,23 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
         msg = f".beads/ directory not found at {beads_dir} and automatic init failed: {exc}"
         raise SessionStartError(STEP_INIT_BEADS, -32602, msg) from exc
 
+    try:
+        await reconcile_stale_remote_clone(project_path)
+    except Exception as exc:
+        _logger.warning("beads_stale_remote_clone_recovery_skipped", error=str(exc))
+
     enabled_types = _enabled_agent_types_from_config(cfg)
     try:
         await bd_setup_for_agent_types(project_path, enabled_types)
     except Exception as exc:
         _logger.warning("bd_hooks_install_skipped", error=str(exc))
+
+    bd_binary = resolve_bd_binary()
+    if bd_binary is not None:
+        try:
+            await asyncio.to_thread(_check_bd_version, bd_binary)
+        except RuntimeError as exc:
+            _logger.warning("bd_version_mismatch_at_session_start", error=str(exc))
 
 
 def _allocate_ipc_endpoint() -> dict[str, object]:

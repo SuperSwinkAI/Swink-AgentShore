@@ -1,9 +1,8 @@
 /**
  * Tests for the shared "start a session from the persisted setup" helper.
  *
- * Issue #561 (Repeat button on EndSessionReportScreen) and issue #565
- * (Quick Start tile on ChooseProjectScreen) both consume this helper, so
- * the test surface needs to pin the contract both endpoints rely on:
+ * Issue #565 (Quick Start tile on ChooseProjectScreen) consumes this
+ * helper, so the test surface needs to pin the contract it relies on:
  *
  * * project.select fires before project.inspect, with the supplied path.
  * * navigate() is called with /starting and the persisted seedInputPath
@@ -11,6 +10,9 @@
  * * On any step failure the helper short-circuits and calls onError with
  *   the matching ``failedStep`` label, then resolves cleanly so click
  *   handlers don't see an unhandled rejection.
+ *
+ * (This helper used to have a second caller — the ESR "Repeat with same
+ * settings" button, issue #561 — removed in #309.)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

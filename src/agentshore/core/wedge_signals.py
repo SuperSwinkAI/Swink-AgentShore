@@ -365,13 +365,15 @@ def build_recent_wedge_signals(
         record = asdict(entry)
         owned = False
         # A dirty path whose mtime is at/after a live trunk-scoped play's start is its
-        # in-flight work, not a wedge — leave it alone (#162/#224). Untracked (``??``)
-        # entries are restricted to depth-1 root scratch (the only untracked debris a
-        # trunk play leaves); tracked edits may be nested anywhere, so they aren't
-        # path-restricted — else tracked in-flight edits read as unowned and misclassify.
-        is_root_untracked = entry.status == "??" and "/" not in entry.path
-        is_tracked = entry.status != "??"
-        if (is_tracked or is_root_untracked) and entry.mtime_utc:
+        # in-flight work, not a wedge — leave it alone (#162/#224). This holds for BOTH
+        # tracked edits (nested anywhere) AND untracked (``??``) artifacts at any depth:
+        # a trunk-scoped play can leave untracked debris in a subdirectory (e.g. a build
+        # writing a resolved-dependency lockfile), not only depth-1 root scratch, so
+        # ownership must be computed for every entry with an mtime. Restricting the
+        # untracked case to the repo root left a subtree untracked file a running play
+        # was generating reading as unowned, which reconcile_state's untracked-debris
+        # remediation could then quarantine as orphaned — clobbering live work.
+        if entry.mtime_utc:
             mtime = _iso_to_epoch(entry.mtime_utc)
             owned = mtime is not None and any(start <= mtime for start in active_trunk_starts)
         record["owned_by_active_play"] = owned

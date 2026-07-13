@@ -84,7 +84,7 @@ def provision_bd(
     Parameters
     ----------
     required_version:
-        The pinned bd version string (e.g. ``"1.0.4"``). Used both to build the
+        The pinned bd version string (e.g. ``"1.1.0"``). Used both to build the
         release asset URL and in the error message so operators know which
         release to fetch. Honours the ``AGENTSHORE_BD_VERSION`` override.
     assume_yes:

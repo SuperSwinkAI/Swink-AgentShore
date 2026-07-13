@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO_ROOT / "packaging" / "desktop" / "build_bd_sidecar.py"
 
 # Arbitrary version for consent-gate tests; only echoed into instructions, never matched.
-_PINNED = "1.0.4"
+_PINNED = "1.1.0"
 
 
 def _load_build_module() -> ModuleType:
@@ -198,19 +198,19 @@ def test_pinned_checksums_reference_pinned_version() -> None:
 def test_release_asset_name_maps_host() -> None:
     build_bd_sidecar = _load_build_module()
     assert (
-        build_bd_sidecar._release_asset_name("1.0.4", "Darwin", "arm64")
-        == "beads_1.0.4_darwin_arm64.tar.gz"
+        build_bd_sidecar._release_asset_name("1.1.0", "Darwin", "arm64")
+        == "beads_1.1.0_darwin_arm64.tar.gz"
     )
     assert (
-        build_bd_sidecar._release_asset_name("1.0.4", "Linux", "x86_64")
-        == "beads_1.0.4_linux_amd64.tar.gz"
+        build_bd_sidecar._release_asset_name("1.1.0", "Linux", "x86_64")
+        == "beads_1.1.0_linux_amd64.tar.gz"
     )
     assert (
-        build_bd_sidecar._release_asset_name("1.0.4", "Windows", "amd64")
-        == "beads_1.0.4_windows_amd64.zip"
+        build_bd_sidecar._release_asset_name("1.1.0", "Windows", "amd64")
+        == "beads_1.1.0_windows_amd64.zip"
     )
     with pytest.raises(SystemExit):
-        build_bd_sidecar._release_asset_name("1.0.4", "Plan9", "sparc")
+        build_bd_sidecar._release_asset_name("1.1.0", "Plan9", "sparc")
 
 
 def _fake_bd_targz(payload: bytes) -> bytes:

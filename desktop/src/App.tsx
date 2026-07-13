@@ -1234,10 +1234,9 @@ export function App() {
 
   const onProjectSelected = async (_path: string) => {
     // Track the most-recent project path on the session context so the
-    // End-Session Report's "Repeat with same settings" chrome button
-    // (issue #561) can hand it to ``startSessionFromPersistedSetup``
-    // without re-querying project.inspect. Set unconditionally — even if
-    // the hydration step below fails, the path is still useful.
+    // app menu's re-open-project affordance has it without re-querying
+    // project.inspect. Set unconditionally — even if the hydration step
+    // below fails, the path is still useful.
     setLastProjectPath(_path);
     // DESIGN §10.1 re-entry policy: previous-session choices pre-populate
     // from agentshore.yaml. project.inspect returns typed parsed fields from

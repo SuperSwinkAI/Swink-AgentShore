@@ -719,6 +719,17 @@ async def _clear_session_scoped_bead_progress(
         project_path=str(repo_root),
         count=reset_count,
     )
+
+    if phase == "session_shutdown":
+        # Push the just-cleaned local beads store to its remote (if any) so
+        # session-end state survives a lost machine/disk. Single-writer by
+        # construction (session shutdown is the sole beads writer at this
+        # point), so upstream's concurrent-push corruption warning doesn't
+        # apply. Best-effort: never raises, never blocks shutdown.
+        from agentshore.beads.durability import push_beads_remote
+
+        await push_beads_remote(repo_root)
+
     return reset_count
 
 

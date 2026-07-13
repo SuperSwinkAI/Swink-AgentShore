@@ -57,29 +57,29 @@ DEFAULT_DIST = PACKAGING_DIR / "dist"
 # Pinned bd release the desktop bundle ships. Kept equal to the runtime pin in
 # agentshore.beads.setup.REQUIRED_BD_VERSION (enforced by a unit test). Bumping
 # this REQUIRES refreshing PINNED_CHECKSUMS from the new release's checksums.txt.
-PINNED_BD_VERSION = "1.0.4"
+PINNED_BD_VERSION = "1.1.0"
 
 # SHA-256 of each release archive, copied verbatim from the release's
 # checksums.txt. Keyed by asset filename. Only the desktop-relevant targets are
 # listed (darwin/linux/windows); add rows here if a new build host is needed.
 PINNED_CHECKSUMS: dict[str, str] = {
-    "beads_1.0.4_darwin_arm64.tar.gz": (
-        "0c53479fea070a1cabe8eb31e3824d74c5643b1deca71a5fe832ebd38e9ef877"
+    "beads_1.1.0_darwin_arm64.tar.gz": (
+        "c42e24d83b258f7ba9f52a6d2d5f6b055869dfe7807165055988b12e7ea8c564"
     ),
-    "beads_1.0.4_darwin_amd64.tar.gz": (
-        "8a52f7e54fe038d369cc9ea0e65f76853b75f5469c70c9c693d64671623c4ce9"
+    "beads_1.1.0_darwin_amd64.tar.gz": (
+        "5d7d30fdadcf012b7e0c1933a62cdfaef106e2561509b904e50a6733621cf8da"
     ),
-    "beads_1.0.4_linux_amd64.tar.gz": (
-        "643e602e27f666c8726abff0f22001e2b5883988fa960204bde20a3129d448a5"
+    "beads_1.1.0_linux_amd64.tar.gz": (
+        "b0f3dd607c3fb989ee08d0a6854fba80d0402971eb108f9af6170bc14d491a34"
     ),
-    "beads_1.0.4_linux_arm64.tar.gz": (
-        "48cdf571cd8b64bae81da829c1309e402bc12e6a4cc6b87606dfc9220b7ece60"
+    "beads_1.1.0_linux_arm64.tar.gz": (
+        "e64eb6f5f998c9eae3ef9ec786f5f1c907ab3ed04fe220ebf265ca9952e21b2f"
     ),
-    "beads_1.0.4_windows_amd64.zip": (
-        "7bf67e6dc965813278ee651dff3a75f410f02f5b669ac295bb9e08d7bc7b39a3"
+    "beads_1.1.0_windows_amd64.zip": (
+        "12b1d37344d3b1543301e21a2b9ed3ab6ae009f0418441f3de5f762b40769a6b"
     ),
-    "beads_1.0.4_windows_arm64.zip": (
-        "09aecc19407d4b7515ca31e0dab82b35576d9a3ec45f230261c662859ebd5b9c"
+    "beads_1.1.0_windows_arm64.zip": (
+        "c2f3fc50407896336bafaab74e955f632fdfb487579fd24e44d766ab05792f7f"
     ),
 }
 

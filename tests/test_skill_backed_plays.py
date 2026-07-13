@@ -411,6 +411,42 @@ async def test_reconcile_merged_pr_marks_completes_and_closes() -> None:
     assert result == [7]
 
 
+@pytest.mark.asyncio
+async def test_reconcile_merged_pr_closes_bead_with_reason() -> None:
+    """The bead for a closed issue is closed via ``bd close --reason``, not
+    ``bd update --status closed`` — ``bd close`` records why in beads history."""
+    from unittest.mock import patch
+
+    from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
+    from agentshore.plays.skill_backed import _merge_reconcile
+
+    ctx = _ctx()
+    ctx.store.mark_pr_merged = AsyncMock()
+    ctx.store.complete_reviews_for_pr = AsyncMock()
+    ctx.store.update_issues_state_batch = AsyncMock()
+    ctx.cfg.project.target_branch = None
+    bd_fn = AsyncMock(return_value="")
+    task = GraphTask(bead_id="bd-42", title="Task", status=BeadStatus.OPEN, issue_number=7)
+    state = _state()
+    state.graph = ProjectGraph(tasks=[task])
+
+    with patch(
+        "agentshore.plays.skill_backed._merge_reconcile._fetch_pr_links",
+        AsyncMock(return_value=(7,)),
+    ):
+        result = await _merge_reconcile.reconcile_merged_pr(99, ctx=ctx, state=state, bd_fn=bd_fn)
+
+    bd_fn.assert_awaited_once_with(
+        "close",
+        "bd-42",
+        "--reason",
+        "merged PR #99",
+        "--dolt-auto-commit=on",
+        cwd=ctx.project_path,
+    )
+    assert result == [7]
+
+
 def test_write_plan_precondition_requires_open_issue() -> None:
     assert WriteImplementationPlanPlay().preconditions(_state(issues=[])) != []
 
