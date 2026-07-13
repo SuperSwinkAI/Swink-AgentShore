@@ -14,6 +14,12 @@ branch-mutation guard:
   (``main_repo_auto_restore_failed``) and cleared only by a successful
   RECONCILE_STATE. While latched, ``_dispatch_play`` refuses everything but
   END_AGENT / RECONCILE_STATE, and the idle-with-work watchdog auto-stops.
+* the ``dirty_trunk`` wedge counter (#330) — consecutive ``merge_pr``
+  failures blocked by the same set of root-level untracked paths that a
+  deterministic reclaim sweep correctly leaves alone (e.g. real user WIP).
+  At/above threshold ``is_trunk_wedged()`` becomes True, which only ever
+  UNMASKS END_SESSION for the PPO's consideration (see
+  ``rl/eligibility.py``) — it never forces a session action.
 
 It is a thin collaborator (mirroring :class:`agentshore.core.github_syncer.GitHubSyncer`):
 constructed in ``_OrchestratorBase.__init__`` and held on the orchestrator as
@@ -23,6 +29,11 @@ double-pop paths.
 """
 
 from __future__ import annotations
+
+# Consecutive same-cause merge_pr dirty_trunk failures before the trunk is
+# considered wedged. A new cause (different blocking path(s)) resets the
+# streak to 1; a successful merge_pr clears it entirely.
+_DIRTY_TRUNK_WEDGE_THRESHOLD = 3
 
 
 class MainRepoGuard:
@@ -40,6 +51,12 @@ class MainRepoGuard:
         # Latched True on main_repo_auto_restore_failed; _dispatch_play consults
         # it before launching a task. Cleared by a successful RECONCILE_STATE.
         self.dispatch_paused = False
+        # dirty_trunk wedge counter (#330): keyed on the sorted, joined set of
+        # blocking root-level untracked paths from a live git-status read. A
+        # new key (different blocking file(s)) resets the count to 1; a
+        # successful merge_pr clears it entirely (see clear_dirty_trunk_failures).
+        self._dirty_trunk_failure_key: str | None = None
+        self._dirty_trunk_failure_count: int = 0
 
     # ------------------------------------------------------------------
     # Pre-play handshake
@@ -51,3 +68,23 @@ class MainRepoGuard:
     def pop_pre_play_branch(self, dispatch_id: str) -> str | None:
         """Pop the recorded pre-play ref (default ``None`` if never recorded)."""
         return self._pre_play_branches.pop(dispatch_id, None)
+
+    # ------------------------------------------------------------------
+    # dirty_trunk wedge counter (#330)
+    # ------------------------------------------------------------------
+
+    def record_dirty_trunk_failure(self, key: str) -> None:
+        """Record a merge_pr ``dirty_trunk`` failure blocked by root-untracked path(s) ``key``."""
+        if key != self._dirty_trunk_failure_key:
+            self._dirty_trunk_failure_key = key
+            self._dirty_trunk_failure_count = 0
+        self._dirty_trunk_failure_count += 1
+
+    def clear_dirty_trunk_failures(self) -> None:
+        """Clear the counter — called on any successful merge_pr."""
+        self._dirty_trunk_failure_key = None
+        self._dirty_trunk_failure_count = 0
+
+    def is_trunk_wedged(self) -> bool:
+        """True once the same-cause failure streak reaches the wedge threshold."""
+        return self._dirty_trunk_failure_count >= _DIRTY_TRUNK_WEDGE_THRESHOLD

@@ -291,6 +291,10 @@ AGENTSHORE_OWNED_ROOT_PATHS: tuple[str, ...] = (
     "timelapse-runs/",
     "closed_issue_refs.txt",
     "open_bead_refs.txt",
+    # Agent scratch/temp-file convention (#330): skills are instructed to
+    # write throwaway files here instead of loose at the repo root, so they
+    # never surface as an untracked dirty_trunk blocker in the first place.
+    "tmp/",
 )
 
 _REQUIRED_GITIGNORE_ENTRIES: tuple[str, ...] = AGENTSHORE_OWNED_ROOT_PATHS

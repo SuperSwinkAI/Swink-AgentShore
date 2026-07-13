@@ -691,6 +691,7 @@ class StateBuilder:
         # selection and dispatch). end_session_in_flight mirrors gate 2 (started
         # latch OR any in-flight END_SESSION dispatch).
         main_repo_dispatch_paused = self._main_repo.dispatch_paused
+        trunk_wedged = self._main_repo.is_trunk_wedged()
         end_session_in_flight = self._runtime.end_session_dispatch_started or (
             PlayType.END_SESSION in in_flight_plays
         )
@@ -731,6 +732,7 @@ class StateBuilder:
             consecutive_nonproductive_by_type=consecutive_nonproductive_by_type,
             loop_level=loop_level_for_streak(same_type_failure_streak),
             main_repo_dispatch_paused=main_repo_dispatch_paused,
+            trunk_wedged=trunk_wedged,
             end_session_in_flight=end_session_in_flight,
             recovery_exhausted_agent_ids=self._recovery.recovery_exhausted_agent_ids(agents),
             drain_reason=self._runtime.drain_reason if self._runtime.draining else None,

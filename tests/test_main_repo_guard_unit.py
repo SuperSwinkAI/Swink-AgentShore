@@ -46,3 +46,48 @@ def test_dispatch_pause_latch() -> None:
     assert guard.dispatch_paused is True
     guard.dispatch_paused = not True  # mirrors `= not restored` clear path
     assert guard.dispatch_paused is False
+
+
+# ---------------------------------------------------------------------------
+# dirty_trunk wedge counter (#330)
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_guard_is_never_trunk_wedged() -> None:
+    guard = MainRepoGuard()
+    assert guard.is_trunk_wedged() is False
+
+
+def test_three_same_key_dirty_trunk_failures_wedge_the_trunk() -> None:
+    guard = MainRepoGuard()
+    guard.record_dirty_trunk_failure("scratch.txt")
+    assert guard.is_trunk_wedged() is False
+    guard.record_dirty_trunk_failure("scratch.txt")
+    assert guard.is_trunk_wedged() is False
+    guard.record_dirty_trunk_failure("scratch.txt")
+    assert guard.is_trunk_wedged() is True
+
+
+def test_a_different_blocking_key_resets_the_streak() -> None:
+    guard = MainRepoGuard()
+    guard.record_dirty_trunk_failure("scratch.txt")
+    guard.record_dirty_trunk_failure("scratch.txt")
+    guard.record_dirty_trunk_failure("other.txt")
+    # Streak reset to 1 on the new key — not yet wedged.
+    assert guard.is_trunk_wedged() is False
+
+
+def test_clear_dirty_trunk_failures_resets_fully() -> None:
+    guard = MainRepoGuard()
+    guard.record_dirty_trunk_failure("scratch.txt")
+    guard.record_dirty_trunk_failure("scratch.txt")
+    guard.record_dirty_trunk_failure("scratch.txt")
+    assert guard.is_trunk_wedged() is True
+
+    guard.clear_dirty_trunk_failures()
+
+    assert guard.is_trunk_wedged() is False
+    # A fresh failure on the same key starts the streak over from 1.
+    guard.record_dirty_trunk_failure("scratch.txt")
+    guard.record_dirty_trunk_failure("scratch.txt")
+    assert guard.is_trunk_wedged() is False

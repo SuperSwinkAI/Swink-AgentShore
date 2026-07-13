@@ -25,6 +25,7 @@ from agentshore.core.terminal_park import (
     _WRITE_PLAN_UNPLANNABLE_MARKERS,
     TerminalParkPolicy,
 )
+from agentshore.core.wedge_signals import collect_dirty_trunk_paths
 from agentshore.data.store import PlayRecord
 from agentshore.github.labels import (
     NEEDS_HUMAN_LABEL,
@@ -943,6 +944,8 @@ class CompletionProcessor:
             await self._retire_or_recover_errored_agent(outcome.agent_id, final_status)
         if completed_play_type == PlayType.TAKE_BREAK:
             self._handle_take_break_outcome(outcome)
+        if completed_play_type == PlayType.MERGE_PR:
+            await self._handle_merge_pr_outcome(outcome)
         if (
             completed_play_type == PlayType.END_AGENT
             and outcome.success
@@ -1069,6 +1072,31 @@ class CompletionProcessor:
             consecutive_failures=failures,
             limit=BREAK_RECOVERY_FAILURE_LIMIT,
         )
+
+    async def _handle_merge_pr_outcome(self, outcome: PlayOutcome) -> None:
+        """Track consecutive same-cause merge_pr ``dirty_trunk`` failures (#330).
+
+        A successful merge_pr clears the counter. A ``dirty_trunk`` failure
+        blocked by root-level untracked path(s) a deterministic reclaim sweep
+        correctly leaves alone (real user WIP, or predates every known play
+        window) records those paths as the failure's cause; once the same
+        cause repeats past the guard's threshold, ``state.trunk_wedged``
+        unmasks END_SESSION for the PPO (see ``rl/eligibility.py``) — this
+        method never forces a session action, only feeds the counter.
+        """
+        if outcome.success:
+            self._main_repo.clear_dirty_trunk_failures()
+            return
+        error_text = (outcome.error or "").lower()
+        if "dirty_trunk" not in error_text:
+            return
+        entries = await asyncio.to_thread(collect_dirty_trunk_paths, self._repo_root)
+        root_untracked = sorted(e.path for e in entries if e.status == "??" and "/" not in e.path)
+        if not root_untracked:
+            # Not this pathology (tracked collision or subdirectory debris) —
+            # leave to other handling.
+            return
+        self._main_repo.record_dirty_trunk_failure("|".join(root_untracked))
 
     async def on_crash(self, agent_id: str, return_code: int) -> None:
         """Log crash; leave handle in ERROR state. No auto-recovery in Phase 2."""

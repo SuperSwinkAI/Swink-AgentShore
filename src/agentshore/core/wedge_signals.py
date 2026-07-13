@@ -23,6 +23,7 @@ import structlog
 from agentshore import command
 from agentshore.core.git_safety import AGENTSHORE_OWNED_ROOT_PATHS
 from agentshore.paths import project_db_path, project_dir
+from agentshore.utils import iso_to_epoch as _iso_to_epoch
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -63,16 +64,6 @@ class RecentFailedPlay:
     agent_id: str | None
     error_excerpt: str | None
     is_timeout: bool
-
-
-def _iso_to_epoch(ts: str | None) -> float | None:
-    """Parse an ISO-8601 (``Z`` or offset) timestamp to epoch seconds, or None."""
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
 
 
 def _path_is_agentshore_owned(path: str) -> bool:

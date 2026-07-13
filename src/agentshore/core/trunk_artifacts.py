@@ -40,11 +40,15 @@ import structlog
 
 from agentshore import command
 from agentshore.core.wedge_signals import _path_is_agentshore_owned, parse_porcelain_lines
+from agentshore.data.models import ExternalMutationRecord
 from agentshore.state import PlayType
+from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from pathlib import Path
+
+    from agentshore.data.store import DataStore
 
 _logger = structlog.get_logger(__name__)
 
@@ -195,6 +199,52 @@ def reclaim_artifacts(project_path: Path, paths: Iterable[str], *, play_id: int)
                 "trunk_artifact_reclaim_failed", path=rel, play_id=play_id, error=str(exc)
             )
     return moved
+
+
+async def sweep_and_reclaim_orphans(
+    project_path: Path,
+    *,
+    store: DataStore,
+    session_id: str,
+    owner_windows: Sequence[PlayWindow],
+    active_windows: Sequence[PlayWindow],
+    status: str,
+) -> int:
+    """Attribute, reclaim, and record orphaned untracked root artifacts.
+
+    Shared core used by both the session-start sweep (``active_windows=[]``,
+    since dispatch hasn't opened yet) and the mid-session ``reconcile_state``
+    sweep (``active_windows`` built from live in-flight trunk-scoped plays, so
+    their in-progress work is never clobbered). ``status`` distinguishes the
+    caller in the recorded ``ExternalMutationRecord`` rows (e.g.
+    ``"reclaimed_sweep"`` vs ``"reclaimed_reconcile"``).
+
+    Returns the number of files reclaimed. Best-effort like every other
+    function in this module — never raises.
+    """
+    attributed = attribute_orphan_artifacts(
+        project_path, owner_windows=owner_windows, active_windows=active_windows
+    )
+    by_owner: dict[int, list[str]] = {}
+    for rel, owner in attributed.items():
+        by_owner.setdefault(owner, []).append(rel)
+    reclaimed_total = 0
+    for owner, rels in by_owner.items():
+        moved = reclaim_artifacts(project_path, rels, play_id=owner)
+        reclaimed_total += len(moved)
+        for rel in moved:
+            await store.record_external_mutation(
+                ExternalMutationRecord(
+                    session_id=session_id,
+                    play_id=owner,
+                    idempotency_key=f"reclaim:{owner}:{rel}",
+                    mutation_type="trunk_artifact_reclaim",
+                    target=rel,
+                    status=status,
+                    created_at=now_iso(),
+                )
+            )
+    return reclaimed_total
 
 
 def reap_quarantine(project_path: Path, *, ttl_seconds: int) -> int:

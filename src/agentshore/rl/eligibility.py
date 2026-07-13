@@ -495,9 +495,21 @@ class EligibilityAuthority:
         #    nominal issue/task work still looks plannable. It is non-forcing —
         #    the PPO still weighs it against any genuinely-actionable PR play, and
         #    _stage_end_session_in_flight still prevents a double-fire.
+        #    Escape hatch (#330): when ``merge_pr`` has failed repeatedly with
+        #    the same ``dirty_trunk`` cause — a root-level untracked file a
+        #    deterministic reclaim sweep correctly leaves alone (e.g. it looks
+        #    like real user WIP) — the trunk is wedged and cannot drain via
+        #    merge_pr no matter how many times it's retried.
+        #    ``MainRepoGuard.is_trunk_wedged()`` (surfaced as
+        #    ``state.trunk_wedged``) fires after
+        #    ``_DIRTY_TRUNK_WEDGE_THRESHOLD`` consecutive same-cause failures.
+        #    Same non-forcing contract as the #166 hatch: this only unmasks
+        #    END_SESSION for the PPO to weigh against other actionable work, it
+        #    never stops the session itself.
         if (
             pt == PlayType.END_SESSION
             and not plan.work_availability.pr_queue_human_blocked
+            and not state.trunk_wedged
             and (
                 not plan.work_availability.terminal_no_work
                 or plan.work_availability.ready_task_count > 0

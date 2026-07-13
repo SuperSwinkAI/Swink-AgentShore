@@ -239,6 +239,43 @@ def test_end_session_unmasked_when_pr_queue_human_blocked_despite_ready_tasks():
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
+def test_end_session_unmasked_when_trunk_wedged_despite_ready_tasks():
+    """#330 escape hatch: repeated same-cause merge_pr dirty_trunk failures wedge
+    the trunk (``state.trunk_wedged``), so END_SESSION becomes valid even though
+    ready beads tasks would otherwise mask it via point 6 — mirrors the #166
+    pr_queue_human_blocked hatch."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=True),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_end_session_masked_with_ready_tasks_when_trunk_not_wedged():
+    """Baseline: with trunk_wedged False and outstanding ready tasks, END_SESSION
+    stays masked — the #330 hatch only opens once the trunk is actually wedged."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=False),
+        _registry_all_true(),
+    )
+
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_trunk_wedged_does_not_mask_other_plays():
+    """Non-forcing: trunk_wedged only unmasks END_SESSION, other plays remain
+    eligible for the PPO to keep choosing (no candidate-required play type is
+    touched by this state, so the audit plays stay unmasked)."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=True),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.CALIBRATE_ALIGNMENT]]
+    assert mask[PLAY_TO_INDEX[PlayType.DESIGN_AUDIT]]
+
+
 def test_end_session_requires_design_audit_after_successful_seed_audit():
     graph = MagicMock()
     graph.has_epics = True

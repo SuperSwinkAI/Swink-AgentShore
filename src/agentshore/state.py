@@ -663,6 +663,11 @@ class OrchestratorState:
     # keeps the live recheck as a backstop since state can flip between
     # selection and dispatch.
     main_repo_dispatch_paused: bool = False
+    # Snapshot of ``MainRepoGuard.is_trunk_wedged()`` (#330): True after repeated
+    # merge_pr ``dirty_trunk`` failures blocked by the same unattributable
+    # root-untracked path(s). Only ever unmasks END_SESSION for the PPO's
+    # consideration — never forces a session action.
+    trunk_wedged: bool = False
     # Snapshot of whether END_SESSION is already started or in-flight. When True
     # the mask hides END_SESSION from PPO; ``dispatch_play`` gate 2 keeps the
     # live recheck as a backstop.

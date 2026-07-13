@@ -473,25 +473,13 @@ async def _phase_session_start_trunk_artifacts(
     (e.g. pre-session user WIP) are left untouched. Also TTL-reaps the
     quarantine dir. Errors are logged and swallowed — never blocks session start.
     """
-    from datetime import datetime
-
     from agentshore.core.trunk_artifacts import (
         TRUNK_SCOPED_PLAY_TYPES,
         PlayWindow,
-        attribute_orphan_artifacts,
         reap_quarantine,
-        reclaim_artifacts,
+        sweep_and_reclaim_orphans,
     )
-    from agentshore.data.models import ExternalMutationRecord
-    from agentshore.utils import now_iso
-
-    def _epoch(ts: str | None) -> float | None:
-        if ts is None:
-            return None
-        try:
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-        except (ValueError, TypeError):
-            return None
+    from agentshore.utils import iso_to_epoch
 
     async with _step("session_start_trunk_artifacts"):
         try:
@@ -500,36 +488,22 @@ async def _phase_session_start_trunk_artifacts(
             )
             owner_windows: list[PlayWindow] = []
             for play_id, started_at, ended_at in rows:
-                started = _epoch(started_at)
+                started = iso_to_epoch(started_at)
                 if started is None:
                     continue
                 owner_windows.append(
-                    PlayWindow(play_id=play_id, started_at=started, ended_at=_epoch(ended_at))
+                    PlayWindow(play_id=play_id, started_at=started, ended_at=iso_to_epoch(ended_at))
                 )
             # No active plays exist at bootstrap (dispatch not open), so a prior
             # killed play (ended_at NULL) is an owner, not active.
-            attributed = attribute_orphan_artifacts(
-                repo_root, owner_windows=owner_windows, active_windows=[]
+            reclaimed_total = await sweep_and_reclaim_orphans(
+                repo_root,
+                store=store,
+                session_id=sid,
+                owner_windows=owner_windows,
+                active_windows=[],
+                status="reclaimed_sweep",
             )
-            by_owner: dict[int, list[str]] = {}
-            for rel, owner in attributed.items():
-                by_owner.setdefault(owner, []).append(rel)
-            reclaimed_total = 0
-            for owner, rels in by_owner.items():
-                moved = reclaim_artifacts(repo_root, rels, play_id=owner)
-                reclaimed_total += len(moved)
-                for rel in moved:
-                    await store.record_external_mutation(
-                        ExternalMutationRecord(
-                            session_id=sid,
-                            play_id=owner,
-                            idempotency_key=f"reclaim:{owner}:{rel}",
-                            mutation_type="trunk_artifact_reclaim",
-                            target=rel,
-                            status="reclaimed_sweep",
-                            created_at=now_iso(),
-                        )
-                    )
             reaped = reap_quarantine(repo_root, ttl_seconds=cfg.worktrees.reap_ttl_seconds)
             _logger.info(
                 "session_start_trunk_artifacts",

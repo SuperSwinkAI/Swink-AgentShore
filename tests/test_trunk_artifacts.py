@@ -30,6 +30,7 @@ from agentshore.core.trunk_artifacts import (
     reap_quarantine,
     reclaim_artifacts,
     snapshot_untracked_root_artifacts,
+    sweep_and_reclaim_orphans,
 )
 from agentshore.data.store import DataStore, PlayRecord, SessionRecord
 from agentshore.state import PlayType
@@ -313,6 +314,137 @@ async def test_per_play_hook_reclaims_solo_completion(tmp_path: Path) -> None:
         assert quarantined.exists()
         mutation = await store.get_external_mutation("s", f"reclaim:{play_id}:agent_left_this.json")
         assert mutation is not None
+    finally:
+        await store.close()
+
+
+# --- sweep_and_reclaim_orphans (#330 shared bootstrap/mid-session core) ------
+
+
+@pytest.mark.asyncio
+async def test_sweep_reclaims_file_from_closed_window_and_records_mutation(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path)
+    store = DataStore(repo / ".agentshore" / "agentshore.db")
+    (repo / ".agentshore").mkdir(exist_ok=True)
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="s", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
+            )
+        )
+        owner = await store.record_play(
+            PlayRecord(
+                session_id="s",
+                play_type=PlayType.CLEANUP.value,
+                started_at="2026-06-12T00:01:00+00:00",
+                ended_at="2026-06-12T00:01:20+00:00",
+                success=True,
+            )
+        )
+        f = repo / "orphan.json"
+        f.write_text("{}")
+        _set_mtime(f, 1000.0)
+        owner_windows = [PlayWindow(play_id=owner, started_at=990.0, ended_at=1010.0)]
+
+        reclaimed = await sweep_and_reclaim_orphans(
+            repo,
+            store=store,
+            session_id="s",
+            owner_windows=owner_windows,
+            active_windows=[],
+            status="reclaimed_reconcile",
+        )
+
+        assert reclaimed == 1
+        assert not f.exists()
+        quarantined = repo / ".agentshore" / "reclaimed" / str(owner) / "orphan.json"
+        assert quarantined.exists()
+        mutation = await store.get_external_mutation("s", f"reclaim:{owner}:orphan.json")
+        assert mutation is not None
+        assert mutation.status == "reclaimed_reconcile"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_file_bracketed_by_active_window_untouched(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    store = DataStore(repo / ".agentshore" / "agentshore.db")
+    (repo / ".agentshore").mkdir(exist_ok=True)
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="s", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
+            )
+        )
+        f = repo / "in_flight.json"
+        f.write_text("{}")
+        _set_mtime(f, 1000.0)
+        owner_windows = [PlayWindow(play_id=42, started_at=990.0, ended_at=1010.0)]
+        active_windows = [PlayWindow(play_id=99, started_at=995.0, ended_at=None)]
+
+        reclaimed = await sweep_and_reclaim_orphans(
+            repo,
+            store=store,
+            session_id="s",
+            owner_windows=owner_windows,
+            active_windows=active_windows,
+            status="reclaimed_reconcile",
+        )
+
+        assert reclaimed == 0
+        assert f.exists()
+        mutation = await store.get_external_mutation("s", "reclaim:42:in_flight.json")
+        assert mutation is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_reclaims_killed_play_open_ended_window(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    store = DataStore(repo / ".agentshore" / "agentshore.db")
+    (repo / ".agentshore").mkdir(exist_ok=True)
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="s", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
+            )
+        )
+        owner = await store.record_play(
+            PlayRecord(
+                session_id="s",
+                play_type=PlayType.CLEANUP.value,
+                started_at="2026-06-12T00:01:00+00:00",
+                success=False,  # killed mid-flight: never stamped ended_at
+            )
+        )
+        f = repo / "killed_debris.json"
+        f.write_text("{}")
+        _set_mtime(f, 2000.0)
+        # ended_at None == killed/never-completed; open-ended [started, +inf).
+        owner_windows = [PlayWindow(play_id=owner, started_at=1900.0, ended_at=None)]
+
+        reclaimed = await sweep_and_reclaim_orphans(
+            repo,
+            store=store,
+            session_id="s",
+            owner_windows=owner_windows,
+            active_windows=[],
+            status="reclaimed_sweep",
+        )
+
+        assert reclaimed == 1
+        quarantined = repo / ".agentshore" / "reclaimed" / str(owner) / "killed_debris.json"
+        assert quarantined.exists()
+        mutation = await store.get_external_mutation("s", f"reclaim:{owner}:killed_debris.json")
+        assert mutation is not None
+        assert mutation.status == "reclaimed_sweep"
     finally:
         await store.close()
 
