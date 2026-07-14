@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import structlog
+
 from agentshore.agents.manager import _GROK_WEDGE_COOLDOWN_TICKS, _is_grok_launch_wedge_timeout
 from agentshore.core.mixins.state import StateBuilder
 from agentshore.core.session_runtime import SessionRuntime
@@ -104,6 +106,111 @@ def test_drain_seeds_cooldown_for_agy_stream_hang_cluster() -> None:
     active = builder._drain_wedge_cooldowns()
     assert active == frozenset({"antigravity"})
     assert runtime.wedge_cooldown_until["antigravity"] == 5 + _GROK_WEDGE_COOLDOWN_TICKS
+
+
+def test_drain_consumes_the_manager_inbox() -> None:
+    """The manager's set is a one-shot signal the drain consumes, not durable state.
+
+    Leaving entries behind is what made the cooldown grow-only: the expired entry
+    was re-seeded on the very next drain.
+    """
+    runtime = SessionRuntime()
+    runtime.last_play_id = 5
+    manager = SimpleNamespace(
+        wedge_cooldown_types={"antigravity"},
+        wedge_cooldown_reasons={"antigravity": "stream_hang_cluster"},
+    )
+    builder = _fake_builder(manager, runtime)
+
+    builder._drain_wedge_cooldowns()
+
+    assert manager.wedge_cooldown_types == set()
+    assert manager.wedge_cooldown_reasons == {}
+
+
+def test_cooldown_is_not_reseeded_after_expiry() -> None:
+    """Regression (grow-only decay): draining PAST expiry must not re-bench the type.
+
+    The manager's set was only ever added to, so every drain after expiry saw the
+    type as "newly wedged" again and re-seeded a fresh window — the type was
+    eligible for ~1 tick in every N+1 (~5% duty cycle) instead of recovering.
+    """
+    runtime = SessionRuntime()
+    runtime.last_play_id = 100
+    manager = SimpleNamespace(
+        wedge_cooldown_types={"antigravity"},
+        wedge_cooldown_reasons={"antigravity": "stream_hang_cluster"},
+    )
+    builder = _fake_builder(manager, runtime)
+
+    assert builder._drain_wedge_cooldowns() == frozenset({"antigravity"})
+    expiry = 100 + _GROK_WEDGE_COOLDOWN_TICKS
+
+    # Expiry tick: the type recovers.
+    runtime.last_play_id = expiry
+    assert builder._drain_wedge_cooldowns() == frozenset()
+
+    # Every drain PAST expiry must leave it eligible — no silent re-seed, and no
+    # re-emitted cooldown warning.
+    for tick in (expiry + 1, expiry + 5, expiry + _GROK_WEDGE_COOLDOWN_TICKS + 1):
+        runtime.last_play_id = tick
+        with structlog.testing.capture_logs() as captured:
+            active = builder._drain_wedge_cooldowns()
+        assert active == frozenset(), f"re-seeded at tick {tick}"
+        assert "antigravity" not in runtime.wedge_cooldown_until
+        assert [e for e in captured if e["event"] == "agent_type_wedge_cooldown"] == []
+
+
+def test_retrip_during_cooldown_does_not_extend_the_window() -> None:
+    """A wedge recorded while the type is already cooling is ignored, not stacked.
+
+    The type isn't dispatched while benched, so a mid-cooldown trip is an echo of
+    the in-flight dispatch that caused the bench. Extending the window on echoes
+    would restore the indefinite benching #202 exists to prevent. The re-trip is
+    still consumed, so it cannot re-seed once the original expiry passes.
+    """
+    runtime = SessionRuntime()
+    runtime.last_play_id = 100
+    manager = SimpleNamespace(wedge_cooldown_types={"grok"}, wedge_cooldown_reasons={})
+    builder = _fake_builder(manager, runtime)
+
+    builder._drain_wedge_cooldowns()
+    expiry = 100 + _GROK_WEDGE_COOLDOWN_TICKS
+
+    # An in-flight dispatch times out mid-cooldown and re-trips the manager.
+    runtime.last_play_id = 105
+    manager.wedge_cooldown_types.add("grok")
+    manager.wedge_cooldown_reasons["grok"] = "launch_wedge"
+    with structlog.testing.capture_logs() as captured:
+        active = builder._drain_wedge_cooldowns()
+
+    assert active == frozenset({"grok"})
+    # Window unchanged (not slid to 105 + N), and no duplicate warning.
+    assert runtime.wedge_cooldown_until["grok"] == expiry
+    assert [e for e in captured if e["event"] == "agent_type_wedge_cooldown"] == []
+    assert manager.wedge_cooldown_types == set()
+
+    # The re-trip did not survive to re-seed: the type still recovers on schedule.
+    runtime.last_play_id = expiry
+    assert builder._drain_wedge_cooldowns() == frozenset()
+
+
+def test_fresh_wedge_after_recovery_seeds_a_new_window() -> None:
+    """Post-recovery evidence is genuinely new, so it re-benches for a full window."""
+    runtime = SessionRuntime()
+    runtime.last_play_id = 100
+    manager = SimpleNamespace(wedge_cooldown_types={"grok"}, wedge_cooldown_reasons={})
+    builder = _fake_builder(manager, runtime)
+
+    builder._drain_wedge_cooldowns()
+    runtime.last_play_id = 100 + _GROK_WEDGE_COOLDOWN_TICKS
+    assert builder._drain_wedge_cooldowns() == frozenset()
+
+    # The recovered type is dispatched again and wedges again.
+    runtime.last_play_id = 130
+    manager.wedge_cooldown_types.add("grok")
+    assert builder._drain_wedge_cooldowns() == frozenset({"grok"})
+    assert runtime.wedge_cooldown_until["grok"] == 130 + _GROK_WEDGE_COOLDOWN_TICKS
 
 
 def _candidate(play_type: PlayType, params: PlayParams) -> PlayCandidate:
