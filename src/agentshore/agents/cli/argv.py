@@ -266,7 +266,27 @@ def build_resume_argv(
             prompt_file=prompt_file,
         )
         # Splice "resume <id>" into base [binary, "exec", "--json", ...].
-        return [base[0], "exec", "resume", resume_session_id, *base[2:]]
+        # `codex exec resume` (unlike `codex exec`) does not accept the `-C
+        # <dir>` working-directory flag and exits 2 with "unexpected argument
+        # '-C' found" if it's present (issue #329). Strip that flag/value pair
+        # from the tail before splicing — the subprocess is already launched
+        # with cwd=effective_cwd (see cli_agent._build_dispatch_argv callers),
+        # so `-C` is redundant here, not merely unsupported. Only the exact
+        # standalone `-C` token is matched (case-sensitive), so the unrelated
+        # lowercase `-c model_reasoning_effort=...` / `-c
+        # shell_environment_policy...` config flags are left untouched.
+        tail = base[2:]
+        filtered_tail: list[str] = []
+        skip_next = False
+        for arg in tail:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "-C":
+                skip_next = True
+                continue
+            filtered_tail.append(arg)
+        return [base[0], "exec", "resume", resume_session_id, *filtered_tail]
 
     if agent_type == AgentType.GROK:
         return cli_grok.build_resume_argv(

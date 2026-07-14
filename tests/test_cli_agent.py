@@ -773,13 +773,21 @@ def test_build_resume_argv_claude_shape() -> None:
 
 
 def test_build_resume_argv_codex_shape() -> None:
-    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json + -C."""
+    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json.
+
+    Regression for #329: ``codex exec resume`` (unlike ``codex exec``) rejects
+    the ``-C <dir>`` working-directory flag and exits 2 with "unexpected
+    argument '-C' found" if it's present, so it must be stripped from the
+    resume argv. The subprocess still gets the right cwd via cwd_override at
+    spawn time (see cli_agent), so dropping ``-C`` here is not a behavior loss.
+    """
     argv = build_resume_argv(
         AgentType.CODEX, "emit the block", "thread_x", binary="codex", project_dir="/wt"
     )
     assert argv[:4] == ["codex", "exec", "resume", "thread_x"]
     assert "--json" in argv
-    assert "-C" in argv and argv[argv.index("-C") + 1] == "/wt"
+    assert "-C" not in argv
+    assert "/wt" not in argv
     assert argv[-1] == "emit the block"
 
 
