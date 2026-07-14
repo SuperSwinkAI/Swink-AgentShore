@@ -16,7 +16,7 @@ Merge PR #$ARGUMENTS from `$AGENTSHORE_PROJECT_PATH`.
 
 **Post-merge:** close any `Closes/Fixes/Resolves #N` issues GitHub didn't auto-close. After `git fetch origin`, if `git log origin/<target> --grep='Revert.*#$ARGUMENTS'` matches without a corresponding `Reapply.*#$ARGUMENTS` → don't close; create the label if missing (`gh label create agentshore/revert-reopened --color e4e669 --description 'Resolving PR was reverted' 2>/dev/null || true`), apply it, comment with the revert SHA, and add the issue to `reverted_issues`.
 
-**Forbidden:** `git stash` / `reset --hard` / `checkout -- <path>` against dirty trunk (skip with `error: "dirty_trunk"`); `git worktree add/remove/prune` — AgentShore owns worktree lifecycle; force-push; bypassing any stated project requirement; `gh repo fork`, `git remote add` a non-origin remote, or opening a cross-fork PR (a `gh pr create` whose `--head` points at a fork) — if pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` rather than forking.
+**Forbidden:** `git stash` / `reset --hard` / `checkout -- <path>` against dirty trunk (skip with `error: "dirty_trunk"`); `git worktree add/remove/prune` — AgentShore owns worktree lifecycle; force-push; bypassing any stated project requirement; `gh repo fork`, `git remote add` a non-origin remote, or opening a cross-fork PR (a `gh pr create` whose `--head` points at a fork) — if pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` rather than forking. If you need scratch/working notes, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

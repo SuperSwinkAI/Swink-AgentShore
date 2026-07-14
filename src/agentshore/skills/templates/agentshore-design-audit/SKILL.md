@@ -61,6 +61,7 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
 - Deleting beads nodes.
 - Creating duplicate issues for already-tracked open work.
 - `git worktree add/remove/prune` (AgentShore owns worktree lifecycle).
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Before reporting, self-check the counts.** Verify `gaps_found == len(gap_issue_numbers) == len(issues_created) + len(issues_linked)`, and `unresolved_gaps == 0` and `unknown_requirements == 0`. If any gap could not be filed, return `success: false` and name it in `error` — do not under-report `gaps_found` to make the numbers line up.
 

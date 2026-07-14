@@ -84,6 +84,7 @@ For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<
 - Never delete existing beads — only create or update.
 - Never call `git worktree add/remove/prune` — AgentShore owns lifecycle.
 - Never fan out per-bead `bd show` calls in place of the single `bd list` snapshot.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

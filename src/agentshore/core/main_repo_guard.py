@@ -19,7 +19,13 @@ branch-mutation guard:
   deterministic reclaim sweep correctly leaves alone (e.g. real user WIP).
   At/above threshold ``is_trunk_wedged()`` becomes True, which only ever
   UNMASKS END_SESSION for the PPO's consideration (see
-  ``rl/eligibility.py``) — it never forces a session action.
+  ``rl/eligibility.py``) — the guard itself never forces a session action.
+  ``CompletionProcessor._handle_merge_pr_outcome`` layers a separate,
+  deliberate escalation on top once wedged (``_escalate_trunk_wedge`` in
+  ``core/mixins/completion.py``): it force-quarantines the offending
+  path(s) via ``trunk_artifacts.force_quarantine_wedge_paths`` and emits a
+  ``trunk_wedge_needs_human`` signal, so a persistently-wedging file has a
+  resolution path beyond only the give-up-and-end-session option above.
 
 It is a thin collaborator (mirroring :class:`agentshore.core.github_syncer.GitHubSyncer`):
 constructed in ``_OrchestratorBase.__init__`` and held on the orchestrator as
