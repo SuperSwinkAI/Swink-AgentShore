@@ -114,6 +114,7 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 - Never touch `.github/workflows/**` or any CI config.
 - Never call `git worktree add/remove/prune` — AgentShore owns lifecycle.
 - Never edit product code, tests, or docs.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

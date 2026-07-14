@@ -25,8 +25,10 @@ import pytest
 
 from agentshore.core.trunk_artifacts import (
     TRUNK_SCOPED_PLAY_TYPES,
+    WEDGE_QUARANTINE_SUBDIR,
     PlayWindow,
     attribute_orphan_artifacts,
+    force_quarantine_wedge_paths,
     reap_quarantine,
     reclaim_artifacts,
     snapshot_untracked_root_artifacts,
@@ -178,6 +180,54 @@ def test_reap_quarantine_disabled_for_nonpositive_ttl(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     (repo / ".agentshore" / "reclaimed" / "x").mkdir(parents=True)
     assert reap_quarantine(repo, ttl_seconds=0) == 0
+
+
+# --- force_quarantine_wedge_paths (#330 dirty_trunk wedge escalation) --------
+
+
+def test_force_quarantine_moves_unattributable_file_and_cleans_trunk(tmp_path: Path) -> None:
+    """A file with no bracketing play window is still moved — the whole point
+    of force-quarantine is to bypass ``attribute_orphan_artifacts``'s
+    conservative mtime-window requirement once the trunk is provably wedged.
+    """
+    repo = _init_repo(tmp_path)
+    (repo / "scratch_plan.md").write_text("agent notes")
+
+    moved = force_quarantine_wedge_paths(repo, ["scratch_plan.md"])
+
+    assert moved == ["scratch_plan.md"]
+    quarantined = repo / ".agentshore" / "reclaimed" / WEDGE_QUARANTINE_SUBDIR / "scratch_plan.md"
+    assert quarantined.read_text() == "agent notes"
+    assert not (repo / "scratch_plan.md").exists()
+    # Trunk is clean again (quarantine lives under the owned .agentshore/ prefix).
+    assert snapshot_untracked_root_artifacts(repo) == set()
+
+
+def test_force_quarantine_distinct_from_play_id_reclaim_dir(tmp_path: Path) -> None:
+    """Force-quarantine uses a fixed ``wedge/`` bucket, never a play_id — these
+    paths have no owning play, that's the entire reason force-quarantine exists.
+    """
+    repo = _init_repo(tmp_path)
+    (repo / "orphan.md").write_text("x")
+
+    force_quarantine_wedge_paths(repo, ["orphan.md"])
+
+    assert (repo / ".agentshore" / "reclaimed" / "wedge" / "orphan.md").exists()
+    # No numeric play_id directory was created for this file.
+    reclaimed_root = repo / ".agentshore" / "reclaimed"
+    assert [p.name for p in reclaimed_root.iterdir()] == ["wedge"]
+
+
+def test_force_quarantine_skips_missing_and_directories(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / "adir").mkdir()
+    assert force_quarantine_wedge_paths(repo, ["gone.md", "adir"]) == []
+
+
+def test_force_quarantine_empty_paths_is_noop(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    assert force_quarantine_wedge_paths(repo, []) == []
+    assert not (repo / ".agentshore" / "reclaimed").exists()
 
 
 # --- store helpers -----------------------------------------------------------

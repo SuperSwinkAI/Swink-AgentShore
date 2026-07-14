@@ -50,6 +50,7 @@ File substantive issues by impact — dedup first (below) so one root cause is o
 - Creating, editing, restoring, or deleting `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. File issues for CI failures; never auto-fix CI configs.
 - `git worktree add/remove/prune` (AgentShore owns worktree lifecycle).
 - `git stash`, `git checkout` to switch branches, `git fetch`/`merge` to advance the branch under audit.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing after:**
 
