@@ -152,11 +152,19 @@ class AgentManager:
         # being disabled for the whole session (#202). Membership here only marks
         # "a wedge was recorded since the last snapshot" — the actual expiry is
         # tracked tick-relative in the runtime, not here.
+        #
+        # WRITE-ONLY INBOX: this is a one-shot signal, not durable state. The drain
+        # (core/mixins/state.py:_drain_wedge_cooldowns) CONSUMES every entry it
+        # observes, so it is normally empty; do not read it to ask "is this type
+        # benched?" (the answer lives in SessionState.wedge_cooldown_agent_types)
+        # and do not add a reader that expects entries to persist across a drain.
+        # Letting entries linger here re-seeds the cooldown forever and defeats the
+        # decay.
         self.wedge_cooldown_types: set[str] = set()
         # Reason tag per type currently in ``wedge_cooldown_types`` ("launch_wedge"
         # for a Grok first-byte wedge, "stream_hang_cluster" for an agy hang cluster,
         # #233). Read by the state-builder drain only to label the cooldown event;
-        # has no effect on the decay itself.
+        # has no effect on the decay itself. Consumed alongside the set above.
         self.wedge_cooldown_reasons: dict[str, str] = {}
         # Consecutive zero-stdout stream-idle timeouts per agent TYPE (reset on any
         # successful dispatch of that type). Trips ``wedge_cooldown_types`` at
