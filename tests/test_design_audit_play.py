@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agentshore.beads import EpicStatus, ProjectGraph
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.plays.skill_backed.design_audit import (
@@ -164,3 +166,55 @@ def test_validate_design_audit_artifact_rejects_gap_without_issue() -> None:
     error = _validate_design_audit_artifact(_audit_artifact(gap_issue_numbers=[101]))
     assert error is not None
     assert "did not create/link issues for all gaps" in error
+
+
+# --- artifact `type` spelling tolerance (#313) --------------------------------
+#
+# The live failure: a complete, well-formed audit payload emitted under
+# "design-audit-result" instead of "design_audit". The exact-string match threw the
+# whole thing away and design_audit failed 3x on work it had actually finished.
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "design-audit-result",  # the exact live #313 spelling
+        "design_audit_result",
+        "design-audit",
+        "Design_Audit",
+        "DESIGN-AUDIT-RESULT",
+        " design audit ",
+        "design_audit_results",
+    ],
+)
+def test_validate_design_audit_artifact_tolerates_type_spelling(spelling: str) -> None:
+    assert _validate_design_audit_artifact(_audit_artifact(type=spelling)) is None
+
+
+def test_validate_design_audit_artifact_still_rejects_missing_payload() -> None:
+    """Folding the `type` must not loosen the payload contract itself."""
+    # Right type, no required fields → still fails, and on the honest error.
+    error = _validate_design_audit_artifact([{"type": "design-audit-result"}])
+    assert error is not None
+    assert "invalid 'requirements_scanned'" in error
+
+    # An empty artifact list still reports the artifact as missing.
+    assert "missing required design_audit" in (_validate_design_audit_artifact([]) or "")
+
+    # A payload whose type folds to something else entirely is not a design_audit.
+    assert "missing required design_audit" in (
+        _validate_design_audit_artifact(_audit_artifact(type="seed-audit-result")) or ""
+    )
+
+    # Non-dict artifacts (parse_skill_result stringifies scalars) are ignored.
+    assert "missing required design_audit" in (
+        _validate_design_audit_artifact(["design_audit"]) or ""
+    )
+
+
+def test_validate_design_audit_artifact_prefers_exact_type_match() -> None:
+    """An exactly-spelled artifact wins over a near-miss, so folding can only add
+    a match, never redirect one."""
+    exact = _audit_artifact()[0]
+    near_miss = _audit_artifact(type="design-audit-result", unresolved_gaps=7)[0]
+    assert _validate_design_audit_artifact([near_miss, exact]) is None

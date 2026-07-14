@@ -13,6 +13,7 @@ from agentshore.plays.skill_backed.gates import (
     CooldownGate,
     InFlightGate,
 )
+from agentshore.result_parser import find_artifact
 from agentshore.state import PlayType
 
 if TYPE_CHECKING:
@@ -22,6 +23,10 @@ if TYPE_CHECKING:
 
 class DesignAuditPlay(SkillBackedPlay):
     """Create GitHub/beads work items for gaps found in specs and design docs."""
+
+    # Named in the missing-envelope retry nudge so a re-emission restates the exact
+    # ``type`` string this play validates against (#313).
+    required_artifact_types = ("design_audit",)
 
     def __init__(self, *, cooldown_plays: int = STANDARD_PLAY_COOLDOWN_PLAYS) -> None:
         self.gates = (
@@ -120,10 +125,10 @@ def _validate_design_audit_artifact(artifacts: list[JsonArtifact]) -> str | None
 
 
 def _find_design_audit_artifact(artifacts: list[JsonArtifact]) -> JsonObject | None:
-    for artifact in artifacts:
-        if isinstance(artifact, dict) and artifact.get("type") == "design_audit":
-            return artifact
-    return None
+    # #313: tolerate the agent's spelling of the ``type`` string (the live failure
+    # emitted a complete audit payload under "design-audit-result"). The required
+    # fields below are still validated in full — see ``find_artifact``.
+    return find_artifact(artifacts, "design_audit")
 
 
 def _coerce_nonnegative_int(value: object) -> int | None:

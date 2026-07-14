@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agentshore.result_parser import parse_skill_result
+import pytest
+
+from agentshore.result_parser import find_artifact, normalize_artifact_type, parse_skill_result
 
 
 def test_parse_pretty_printed_result_with_object_issue_refs() -> None:
@@ -574,3 +576,64 @@ def test_parse_learnings_compacted_defaults_to_empty() -> None:
     """No ``learnings_compacted`` key yields an empty list, not None."""
     result = parse_skill_result('{"success": true, "artifacts": []}')
     assert result.learnings_compacted == []
+
+
+# --- artifact `type` folding (#313) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("design_audit", "design_audit"),
+        ("design-audit-result", "design_audit"),
+        ("Design-Audit-Result", "design_audit"),
+        ("  design audit  ", "design_audit"),
+        ("design__audit", "design_audit"),
+        ("design_audit_results", "design_audit"),
+        ("seed-audit", "seed_audit"),
+        # Folding is narrow on purpose: only case, separators, and ONE trailing
+        # _result/_results. Nothing else is rewritten.
+        ("pull_request", "pull_request"),
+        ("design_audit_summary", "design_audit_summary"),
+        ("design_audit_result_result", "design_audit_result"),
+        # A bare "result"/"results" type folds to itself — stripping the suffix
+        # would leave an empty string, which is never a type.
+        ("result", "result"),
+        # Non-strings and empties have no canonical form.
+        ("", None),
+        ("   ", None),
+        ("---", None),
+        (None, None),
+        (42, None),
+        ({"type": "design_audit"}, None),
+    ],
+)
+def test_normalize_artifact_type(raw: object, expected: str | None) -> None:
+    assert normalize_artifact_type(raw) == expected
+
+
+def test_find_artifact_matches_exactly() -> None:
+    artifact = {"type": "design_audit", "gaps_found": 0}
+    assert find_artifact([artifact], "design_audit") is artifact
+
+
+def test_find_artifact_falls_back_to_folded_match() -> None:
+    """#313: a complete payload under a near-miss spelling is still found."""
+    artifact = {"type": "design-audit-result", "gaps_found": 3}
+    assert find_artifact([artifact], "design_audit") is artifact
+
+
+def test_find_artifact_prefers_exact_over_folded() -> None:
+    """Exact match wins, so folding can only add a match — never redirect one."""
+    exact = {"type": "design_audit", "which": "exact"}
+    folded = {"type": "design-audit-result", "which": "folded"}
+    assert find_artifact([folded, exact], "design_audit") is exact
+
+
+def test_find_artifact_returns_none_for_unrelated_types() -> None:
+    artifacts = [{"type": "seed_audit"}, {"type": "pull_request"}, "design_audit"]
+    assert find_artifact(artifacts, "design_audit") is None
+
+
+def test_find_artifact_ignores_artifacts_without_a_usable_type() -> None:
+    assert find_artifact([{"no_type": 1}, {"type": None}, {"type": ""}], "design_audit") is None

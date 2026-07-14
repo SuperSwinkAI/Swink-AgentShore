@@ -127,10 +127,36 @@ def test_is_async_handoff_false_for_completed_work() -> None:
         "Since it was automatically sent to the background by the system, I will stop "
         "calling tools and wait for the system to notify me when it finishes.",
         "I have started the tests in the background. I will wait for them to complete.",
+        # #313: the named-noun-phrase form — one word from "pause calling tools" yet
+        # undetected, so a 19-min issue_pickup that ended here was never classified.
+        "I will pause to wait for the git switch command to finish.",
+        # #313, session 16515f9b: the fresh agy issue_pickup tail (22KB of prose, no
+        # envelope). Regression guard — already matched via "in the background".
+        "I will run `cargo test` to execute the full test suite. I will check the status "
+        "of the test suite. I will wait for cargo test to finish in the background. The "
+        "system will notify me.",
+        "I am pausing to wait for the npm install command to complete.",
+        "I will wait for the cargo clippy run to finish before continuing.",
     ],
 )
 def test_is_async_handoff_detects_real_242_phrasings(tail: str) -> None:
     assert cli_antigravity.is_async_handoff(tail) is True
+
+
+# The detector only runs when no JSON block was produced, so it is deliberately
+# liberal — but it must not fire on prose describing work that actually completed.
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "I implemented the fix, ran the full test suite, and all 42 tests passed. "
+        "I committed the change and pushed the branch.",
+        "The command to finish the migration is documented in the README.",
+        "I reviewed the PR and left three comments. No blocking findings.",
+        "I ran cargo test in the foreground and it returned exit code 0.",
+    ],
+)
+def test_is_async_handoff_false_for_ordinary_prose(tail: str) -> None:
+    assert cli_antigravity.is_async_handoff(tail) is False
 
 
 # ensure_low_verbosity_setting
