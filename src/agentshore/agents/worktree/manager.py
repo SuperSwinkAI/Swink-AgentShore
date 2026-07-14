@@ -285,6 +285,39 @@ class WorktreeManager:
         rows = await list_active(self._store, session_id=self._session_id)
         return {_canon_path(r.worktree_path) for r in rows}
 
+    async def live_protected_rows(self) -> dict[int, str]:
+        """Map every currently-protected ``worktree_id`` to its canonical path.
+
+        Public counterpart to ``_protected_ids``/``_protected_paths``/
+        ``_live_alias_paths`` for callers OUTSIDE the manager that need the same
+        "is this worktree currently live" truth the reaper already trusts,
+        without reaching into private internals. Union of the in-memory
+        in-flight dispatch registry and every ``active``/``reaping`` DB row in
+        this session — the reaper regime's exact protection set (#311).
+
+        Used by the PRUNE/RECONCILE_STATE skill context injection (to widen the
+        advisory ``active_worktree_paths`` list beyond the narrower DB-only
+        ``collect_active_worktree_paths`` query, which misses ``reaping`` rows)
+        and by the post-hoc destructive-sweep guard in
+        ``plays/skill_backed/base.py`` (to detect a skill that removed a live
+        worktree despite the advisory list).
+        """
+        from agentshore.agents.worktree.registry import list_active  # noqa: PLC0415
+
+        protected: dict[int, str] = dict(self._inflight)
+        rows = await list_active(self._store, session_id=self._session_id)
+        for row in rows:
+            protected[row.worktree_id] = _canon_path(row.worktree_path)
+        return protected
+
+    async def live_protected_paths(self) -> set[str]:
+        """Canonical paths of every currently-protected worktree.
+
+        Convenience wrapper around :meth:`live_protected_rows` for callers that
+        only need the path set, not the id→path mapping.
+        """
+        return set((await self.live_protected_rows()).values())
+
     def _build_reclaimable_collision_predicate(
         self, live_alias_paths: set[str]
     ) -> Callable[[Path], bool]:

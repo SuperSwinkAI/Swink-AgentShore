@@ -474,6 +474,104 @@ async def test_prebranch_key_reuse_preserved(
     assert alloc1.path == alloc2.path  # type: ignore[union-attr]
 
 
+# --- live_protected_rows / live_protected_paths (#311) ----------------------
+
+
+async def test_live_protected_rows_unions_inflight_and_active_db_rows(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """Public accessor unions the in-memory registry with active/reaping DB rows.
+
+    ``live_protected_rows``/``live_protected_paths`` are the public counterparts
+    to the private ``_protected_paths``/``_live_alias_paths`` the reaper already
+    trusts (#189/#203/#243/#250) — added so callers OUTSIDE the manager (the
+    PRUNE/RECONCILE_STATE skill context injection and its post-hoc guard) can
+    get the same hardened truth without reaching into private internals (#311).
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.config import RuntimeConfig
+    from agentshore.state import PlayType
+
+    inflight_only = worktree_root / "pickup-inflight-only"
+    db_active_only = worktree_root / "pickup-db-active-only"
+    _git("worktree", "add", "-b", "inflight-only-wt", str(inflight_only), "HEAD", cwd=main_repo)
+    _git("worktree", "add", "-b", "db-active-only-wt", str(db_active_only), "HEAD", cwd=main_repo)
+
+    # A row backing the DB-active worktree, but never registered in the
+    # in-memory registry (the #243-style gap).
+    db_row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="db-active-only",
+        worktree_path=str(db_active_only),
+        status="active",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    # An in-flight dispatch with no DB row (or a DB row not yet reflecting it).
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=4242,
+            path=inflight_only,
+            branch_name=None,
+            pre_branch_key="pickup-inflight-only",
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        )
+    )
+
+    rows = await wm.live_protected_rows()
+    assert rows[4242] == _canon_path(inflight_only)
+    assert rows[db_row_id] == _canon_path(db_active_only)
+
+    paths = await wm.live_protected_paths()
+    assert paths == {_canon_path(inflight_only), _canon_path(db_active_only)}
+
+
+async def test_live_protected_rows_includes_reaping_status(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A ``status='reaping'`` row counts as live — the exact #311 gap.
+
+    ``collect_active_worktree_paths`` (the narrower helper that fed the
+    prune/reconcile skills' ``active_worktree_paths`` context before this fix)
+    only queries ``status = 'active'``, so a worktree mid-transition to
+    ``'reaping'`` was invisible to it even though the manager's own
+    ``list_active``-backed truth (and the reaper) treats ``'reaping'`` as live.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    reaping_target = worktree_root / "pickup-reaping"
+    _git("worktree", "add", "-b", "reaping-wt", str(reaping_target), "HEAD", cwd=main_repo)
+
+    await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-reaping",
+        worktree_path=str(reaping_target),
+        status="reaping",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+
+    paths = await wm.live_protected_paths()
+    assert _canon_path(reaping_target) in paths
+
+
 # --- _canon_path correctness -------------------------------------------------
 
 
