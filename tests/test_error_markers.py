@@ -13,6 +13,7 @@ import pytest
 from agentshore.error_markers import (
     AUTH_MARKERS,
     CACHE_RENEWAL_MARKERS,
+    ENOSPC_MARKERS,
     GIT_AUTH_FAILED_MARKERS,
     INVALID_MODEL_MARKERS,
     INVALID_MODEL_STDERR_PATTERNS,
@@ -127,6 +128,16 @@ def test_codex_usage_limit_markers_present_in_rate_limit_family() -> None:
     assert "usage limit" in RATE_LIMIT_STDERR_PATTERNS
     assert "try again at" in RATE_LIMIT_STDERR_PATTERNS
     assert "hit your usage limit" in RATE_LIMIT_STDOUT_MARKERS
+
+
+def test_enospc_markers_include_rust_os_error_spelling() -> None:
+    # #332: Codex is Rust and prints "os error 28", not "errno 28" — the two
+    # marker sets otherwise look identical but Codex's disk-full stderr ("No
+    # space left on device (os error 28)") only ever matches the "os error 28"
+    # spelling. Missing it let ENOSPC fall through to AUTH classification.
+    assert "os error 28" in ENOSPC_MARKERS
+    assert "errno 28" in ENOSPC_MARKERS
+    assert "no space left on device" in ENOSPC_MARKERS
 
 
 def test_consumers_read_the_registry_objects() -> None:

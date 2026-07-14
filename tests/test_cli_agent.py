@@ -2320,6 +2320,20 @@ def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
     assert "spending-limit" in sniffer.captured
 
 
+def test_stderr_sniffer_does_not_auth_abort_on_enospc() -> None:
+    # #332: Codex's disk-full stderr pairs "No space left on device (os error
+    # 28)" with "failed to renew cache TTL" (a cache-renewal AUTH marker). The
+    # sniffer must NOT fire a live auth abort here — a full disk is never fixed
+    # by the auth-abort/take_break recovery path. The dispatch should exit
+    # normally and let _classify_error bucket it as CRASH_ENOSPC.
+    sniffer = _StderrSniffer()
+    line = "ERROR failed to renew cache TTL: No space left on device (os error 28)\n"
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+    # The text is still captured so _finalize_nonzero_exit can classify it.
+    assert "os error 28" in sniffer.captured
+
+
 def test_stderr_sniffer_tail_is_bounded() -> None:
     # The tail never grows unbounded regardless of how much stderr is fed, and
     # a marker landing within the live window is still caught.
@@ -2513,6 +2527,34 @@ async def test_watch_stderr_auth_sleeps_on_clean_eof() -> None:
     assert "done" in sniffer.captured
 
 
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_does_not_abort_on_enospc() -> None:
+    """#332: a live disk-full stderr (paired with the cache-renewal TTL text)
+    must NOT raise PlayTimeoutError(AUTH) from the watchdog — it should drain
+    to EOF and yield (letting the process's natural exit be classified by
+    _classify_error as CRASH_ENOSPC instead)."""
+    proc = _FakeProc(
+        [
+            b"booting\n",
+            b"failed to renew cache TTL: No space left on device (os error 28)\n",
+            b"more\n",
+        ]
+    )
+    sniffer = _StderrSniffer()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=0.2,
+        )
+    assert sniffer.auth_hit is False
+    assert "os error 28" in sniffer.captured
+
+
 def test_classify_error_sigkill_is_crash_not_unknown() -> None:
     """SIGKILL (-9, e.g. OS OOM kill) must be a crash, not the rate-limit-eligible
     'unknown' bucket (#7 â€” the mass -9 burst was misclassified as rate_limit)."""
@@ -2530,6 +2572,24 @@ def test_classify_error_enospc_signature() -> None:
     assert _classify_error(1, "fatal: write error: No space left on device", "") == "crash_enospc"
     assert _classify_error(1, "", "error: ENOSPC: no space left") == "crash_enospc"
     assert _classify_error(1, "OSError: [Errno 28] No space left on device", "") == "crash_enospc"
+
+
+def test_classify_error_codex_os_error_28_is_enospc_not_auth() -> None:
+    """#332: Codex (Rust) spells ENOSPC "os error 28", not "errno 28", and its
+    disk-full stderr commonly pairs with "failed to renew cache TTL" — one of
+    the cache-renewal AUTH markers. ENOSPC must win: a full disk can never be
+    fixed by the auth-abort/take_break recovery path."""
+    stderr = (
+        "ERROR failed to renew cache TTL: No space left on device (os error 28)\n"
+        "ERROR write_stdin failed: No space left on device (os error 28)\n"
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.CRASH_ENOSPC
+    assert _classify_error(1, stderr, "") is not ErrorClass.AUTH
+    # Bare "No space left on device (os error 28)" alone (no cache-renewal text)
+    # must classify the same way.
+    assert (
+        _classify_error(1, "No space left on device (os error 28)", "") is ErrorClass.CRASH_ENOSPC
+    )
 
 
 def test_classify_error_graceful_signals_stay_unknown() -> None:

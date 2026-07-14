@@ -666,9 +666,20 @@ class AgentManager:
     async def attempt_recovery(self, agent_id: str) -> bool:
         """Try to transition an ERROR agent back to IDLE if the breaker allows it.
 
-        Returns True when the agent was recovered, False otherwise.
+        Returns True when the agent was recovered, False otherwise — including
+        when *agent_id* is no longer registered (e.g. cleared by a concurrent
+        ``end_agent``/reap while a caller such as ``TakeBreakPlay`` held a stale
+        reference across a long sleep, #332). Defense-in-depth: the primary
+        guard lives at the ``take_break.py`` call site, which checks the target
+        against current state before calling this at all; this fallback just
+        ensures an unknown id degrades to "not recovered" here too, rather than
+        propagating ``PreconditionFailed`` as an unhandled crash.
         """
-        handle = self._get_handle(agent_id)
+        try:
+            handle = self._get_handle(agent_id)
+        except PreconditionFailed:
+            _logger.debug("agent_recovery_skipped_unknown_agent", agent_id=agent_id)
+            return False
         cb = self._circuit_breakers[agent_id]
 
         if handle.status != AgentStatus.ERROR:

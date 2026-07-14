@@ -112,7 +112,22 @@ class TakeBreakPlay(InternalPlay):
         recovered: list[str] = []
         # Recover only the agent that triggered this cooldown. Other agents may
         # continue working or be handled by their own TAKE_BREAK play.
-        recovery_attempted = target_agent_id is not None
+        #
+        # The target may have been ``manager.clear()``-ed out of the registry —
+        # e.g. an idle-reap or a concurrent end_agent play retired it — either
+        # before this play was even dispatched (state.agents, captured at
+        # dispatch time, already misses it) or during the break sleep itself
+        # (up to 30 min by default; state.agents can't see that). Guard on
+        # ``state.agents`` here to skip the common case cheaply; ``attempt_recovery``
+        # itself no longer raises for an unknown id either (agents/manager.py),
+        # covering the mid-sleep-clear case as defense-in-depth (#332). Without
+        # either, ``attempt_recovery`` -> ``_get_handle`` raises
+        # ``PreconditionFailed`` for an unknown id, crashing the play instead of
+        # returning a clean outcome.
+        target_still_present = target_agent_id is not None and any(
+            a.agent_id == target_agent_id for a in state.agents
+        )
+        recovery_attempted = target_still_present
         recovery_succeeded = (
             recovery_attempted and await ctx.manager.attempt_recovery(target_agent_id)  # type: ignore[arg-type]
         )

@@ -15,6 +15,7 @@ from typing import Final, NoReturn
 from agentshore.agents.cli.errors import (
     _AUTH_PATTERNS,
     _CACHE_RENEWAL_MARKERS,
+    _ENOSPC_PATTERNS,
     _RATE_LIMIT_PATTERNS,
     _is_cache_renewal_stdin_hang,
     _is_transient_cache_blip,
@@ -135,7 +136,11 @@ class _StderrSniffer:
        session-token expiry (Codex prints "failed to renew cache ttl" then hangs
        on stdin, never exiting) is killed in well under a second and classified
        AUTH instead of waiting out the full ``stream_idle_timeout`` and being
-       mislabelled TIMEOUT_STREAM_IDLE.
+       mislabelled TIMEOUT_STREAM_IDLE. An ``_ENOSPC_PATTERNS`` match (host disk
+       exhaustion) is checked first and suppresses the auth abort even when a
+       cache-renewal marker coexists in the tail (#332) — a full disk is not an
+       auth failure and must fall through to natural exit, where
+       ``_classify_error`` correctly buckets it as ``CRASH_ENOSPC``.
     """
 
     # Bounded tail inspected for auth markers (case-insensitive). 8 KiB easily
@@ -154,6 +159,17 @@ class _StderrSniffer:
         self.tail = (self.tail + text)[-self.tail_window :]
         if not self.auth_hit:
             lowered = self.tail.lower()
+            # Host disk exhaustion (Codex "No space left on device (os error 28)")
+            # is a fatal-environment condition, never an auth death — even though
+            # it is commonly paired with "failed to renew cache TTL", which is
+            # also one of the cache-renewal auth markers below. Suppress the live
+            # auth abort here so the dispatch resolves normally and
+            # ``_classify_error`` (which now checks ENOSPC before auth) buckets it
+            # as ``CRASH_ENOSPC``, routing it out of take_break entirely instead of
+            # into the auth-abort recovery path that can never fix a full disk
+            # (#332). Mirrors the ENOSPC-before-auth ordering in ``_classify_error``.
+            if any(p in lowered for p in _ENOSPC_PATTERNS):
+                return False
             # A quota/billing exhaustion (Grok "spending-limit / out of credits",
             # Codex "usage limit") is a RECOVERABLE rate-limit, not an auth death —
             # even though Grok wraps it in a 403/Forbidden that matches the auth
