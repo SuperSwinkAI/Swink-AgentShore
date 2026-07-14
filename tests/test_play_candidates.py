@@ -939,6 +939,133 @@ def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
 
 
 # ---------------------------------------------------------------------------
+# #312 — fast per-PR repick cooldown excludes recently-failed PRs from both
+# resolver-time candidate builders, and lets them back in once the cooldown
+# window (PR_REPICK_COOLDOWN_SPEC.cooldown plays) elapses.
+# ---------------------------------------------------------------------------
+
+from agentshore.cooldown import Cooldown  # noqa: E402
+from agentshore.plays.candidates import PR_REPICK_COOLDOWN_SPEC  # noqa: E402
+
+
+def _repick_cooldown() -> Cooldown[int]:
+    return Cooldown(PR_REPICK_COOLDOWN_SPEC)
+
+
+@pytest.mark.asyncio
+async def test_unblock_pr_candidates_excludes_pr_on_repick_cooldown() -> None:
+    """A PR that just failed unblock_pr with merge_conflicts (cooldown armed
+    for its number) is excluded from _unblock_pr_candidates, even though it
+    is otherwise unblockable and far from the permanent exhaustion count."""
+    conflicting = _pr(489, mergeable="CONFLICTING", review_decision=None, blocked=True)
+    store = MagicMock()
+    store.list_open_pull_requests = AsyncMock(return_value=[conflicting])
+    cooldown = _repick_cooldown()
+    service = PlayCandidateService(
+        store=store, cfg=RuntimeConfig(), github=None, pr_repick_cooldown=cooldown
+    )
+    state = _state(pull_requests=[conflicting])
+
+    # Sanity: it's a candidate before any failure is recorded.
+    before = await service.candidates_for(PlayType.UNBLOCK_PR, state)
+    assert [c.params.pr_number for c in before] == [489]
+
+    cooldown.record_failure(489, now=state.total_plays)
+
+    after = await service.candidates_for(PlayType.UNBLOCK_PR, state)
+    assert after == []
+
+
+@pytest.mark.asyncio
+async def test_unblock_pr_candidates_reappear_after_cooldown_window() -> None:
+    conflicting = _pr(489, mergeable="CONFLICTING", review_decision=None, blocked=True)
+    store = MagicMock()
+    store.list_open_pull_requests = AsyncMock(return_value=[conflicting])
+    cooldown = _repick_cooldown()
+    cooldown.record_failure(489, now=0)
+    service = PlayCandidateService(
+        store=store, cfg=RuntimeConfig(), github=None, pr_repick_cooldown=cooldown
+    )
+
+    still_cooling = _state(
+        pull_requests=[conflicting], total_plays=PR_REPICK_COOLDOWN_SPEC.cooldown - 1
+    )
+    assert await service.candidates_for(PlayType.UNBLOCK_PR, still_cooling) == []
+
+    expired = _state(pull_requests=[conflicting], total_plays=PR_REPICK_COOLDOWN_SPEC.cooldown)
+    candidates = await service.candidates_for(PlayType.UNBLOCK_PR, expired)
+    assert [c.params.pr_number for c in candidates] == [489]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_candidates_excludes_pr_on_repick_cooldown() -> None:
+    """A PR that just failed merge_pr with dirty_trunk is excluded from
+    _merge_pr_candidates — there is no permanent counter for merge_pr at all
+    today, so this is the only memory layer for it."""
+    approved = _pr(51, mergeable="MERGEABLE", review_decision="APPROVED")
+    store = MagicMock()
+    store.list_approved_pull_requests = AsyncMock(return_value=[approved])
+    cooldown = _repick_cooldown()
+    service = PlayCandidateService(
+        store=store, cfg=RuntimeConfig(), github=None, pr_repick_cooldown=cooldown
+    )
+    state = _state(pull_requests=[approved])
+
+    before = await service.candidates_for(PlayType.MERGE_PR, state)
+    assert [c.params.pr_number for c in before] == [51]
+
+    cooldown.record_failure(51, now=state.total_plays)
+
+    after = await service.candidates_for(PlayType.MERGE_PR, state)
+    assert after == []
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_candidates_reappear_after_cooldown_window() -> None:
+    approved = _pr(51, mergeable="MERGEABLE", review_decision="APPROVED")
+    store = MagicMock()
+    store.list_approved_pull_requests = AsyncMock(return_value=[approved])
+    cooldown = _repick_cooldown()
+    cooldown.record_failure(51, now=0)
+    service = PlayCandidateService(
+        store=store, cfg=RuntimeConfig(), github=None, pr_repick_cooldown=cooldown
+    )
+
+    still_cooling = _state(
+        pull_requests=[approved], total_plays=PR_REPICK_COOLDOWN_SPEC.cooldown - 1
+    )
+    assert await service.candidates_for(PlayType.MERGE_PR, still_cooling) == []
+
+    expired = _state(pull_requests=[approved], total_plays=PR_REPICK_COOLDOWN_SPEC.cooldown)
+    candidates = await service.candidates_for(PlayType.MERGE_PR, expired)
+    assert [c.params.pr_number for c in candidates] == [51]
+
+
+@pytest.mark.asyncio
+async def test_unblock_pr_candidates_rearm_when_no_longer_conflicting() -> None:
+    """#312: a rearmable cooldown entry clears the instant the PR's live
+    ``mergeable`` field is no longer CONFLICTING — mirrors
+    issue_pickup._rearm_ready_issues, ahead of the fixed window."""
+    recovered = _pr(489, mergeable="MERGEABLE", review_decision="CHANGES_REQUESTED")
+    store = MagicMock()
+    store.list_open_pull_requests = AsyncMock(return_value=[recovered])
+    cooldown = _repick_cooldown()
+    cooldown.record_failure(489, now=0)
+    rearmable = {489: True}
+    service = PlayCandidateService(
+        store=store,
+        cfg=RuntimeConfig(),
+        github=None,
+        pr_repick_cooldown=cooldown,
+        pr_repick_cooldown_rearmable=rearmable,
+    )
+
+    state = _state(pull_requests=[recovered], total_plays=1)  # well inside the window
+    candidates = await service.candidates_for(PlayType.UNBLOCK_PR, state)
+    assert [c.params.pr_number for c in candidates] == [489]
+
+
+# ---------------------------------------------------------------------------
 # Parity: PlayCandidateService.candidates_for agrees with build_candidate_plan
 # wherever the service adds no store/GitHub-only candidates. Guards the unified
 # single source of candidate logic against future drift.

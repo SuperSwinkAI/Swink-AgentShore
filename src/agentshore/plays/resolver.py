@@ -13,9 +13,11 @@ from agentshore.agents.model_tiers import (
     enabled_model_tiers,
 )
 from agentshore.agents.worktree import TRUNK_MUTATING_PLAYS, TRUNK_SCOPED_PLAYS
+from agentshore.cooldown import Cooldown
 from agentshore.logging import get_logger
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import (
+    PR_REPICK_COOLDOWN_SPEC,
     PlayCandidate,
     PlayCandidateService,
     idle_can_review_agents,
@@ -149,6 +151,27 @@ class ParameterResolver:
         # PRs reaching _UNBLOCK_PR_EXHAUSTION_THRESHOLD are excluded from dispatch
         # so irresolvable-conflict PRs don't keep consuming agent time.
         self._unblock_pr_failures: dict[int, int] = {}
+        # Fast, short-window down-weight for a PR that just failed unblock_pr
+        # (merge_conflicts) or merge_pr (dirty_trunk) with a non-mechanical,
+        # provably-not-retryable-right-now reason (#312). Distinct from
+        # ``_unblock_pr_failures`` above: that is a permanent, clockless
+        # terminal backstop that only bites after
+        # ``_UNBLOCK_PR_EXHAUSTION_THRESHOLD`` attempts; this cooldown arms on
+        # the FIRST such failure (``PR_REPICK_COOLDOWN_SPEC.threshold == 1``)
+        # and expires after a short play window, so the PR stops being
+        # re-picked immediately without waiting for the exhaustion grind.
+        # Shared by both play types (keyed on pr_number only) since either
+        # failure means "don't touch this PR again for a bit."
+        self._pr_repick_cooldown: Cooldown[int] = Cooldown(PR_REPICK_COOLDOWN_SPEC)
+        # pr_number -> whether the cooldown re-arms early when its blocking
+        # condition clears (mirrors issue_pickup's ``_skip_rearmable``). True
+        # for merge_conflicts: the PR's live ``mergeable`` field is already in
+        # every state snapshot at zero extra cost, so
+        # ``PlayCandidateService`` can re-check it each resolve. False for
+        # dirty_trunk: there is no equivalently cheap live "trunk is clean
+        # now" signal at this layer, so it rides out the full window (mirrors
+        # issue_pickup's non-rearmable timeout/crash case, #222).
+        self._pr_repick_cooldown_rearmable: dict[int, bool] = {}
         self._candidate_service = PlayCandidateService(
             store=store,
             cfg=cfg,
@@ -156,6 +179,8 @@ class ParameterResolver:
             project_path=project_path,
             unblock_failures=self._unblock_pr_failures,
             unblock_exhaustion_threshold=_UNBLOCK_PR_EXHAUSTION_THRESHOLD,
+            pr_repick_cooldown=self._pr_repick_cooldown,
+            pr_repick_cooldown_rearmable=self._pr_repick_cooldown_rearmable,
         )
 
     @property
@@ -203,6 +228,33 @@ class ParameterResolver:
         accumulate toward the exhaustion park.
         """
         self._unblock_pr_failures.pop(pr_number, None)
+
+    def record_pr_repick_cooldown(
+        self, pr_number: int, total_plays: int, *, rearmable: bool
+    ) -> None:
+        """Arm the fast per-PR repick cooldown after a non-mechanical failure (#312).
+
+        Called by the completion pipeline for an unblock_pr failure whose
+        error names ``merge_conflicts`` (``rearmable=True``) or a merge_pr
+        failure whose error names ``dirty_trunk`` (``rearmable=False``) — both
+        are provably not worth re-attempting on the very next tick. Threshold
+        is 1 (see :data:`agentshore.plays.candidates.PR_REPICK_COOLDOWN_SPEC`),
+        so this arms immediately rather than accumulating a streak the way
+        ``record_unblock_pr_failure``'s exhaustion counter does.
+        """
+        if self._pr_repick_cooldown.record_failure(pr_number, now=total_plays) == 0:
+            self._pr_repick_cooldown_rearmable[pr_number] = rearmable
+
+    def clear_pr_repick_cooldown(self, pr_number: int) -> None:
+        """Clear the repick cooldown on a genuine resolution (#312).
+
+        Called when a dispatch proves the PR is fine again (merged, or the
+        sole blocker was a stale review) even though ``PlayCandidateService``
+        would otherwise only notice on its next live ``mergeable`` re-check
+        (or never, for the non-rearmable dirty_trunk case).
+        """
+        self._pr_repick_cooldown.clear(pr_number)
+        self._pr_repick_cooldown_rearmable.pop(pr_number, None)
 
     async def resolve(
         self,
