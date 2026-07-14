@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -25,7 +26,6 @@ from agentshore.state import AgentType, PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from agentshore.agents.handle import AgentInvocationResult
     from agentshore.plays.base import PlayExecutionContext, PlayParams
@@ -267,7 +267,7 @@ class SkillBackedPlay(Play, ABC):
         except OSError:
             return False
 
-    def _inject_worktree_guards(
+    async def _inject_worktree_guards(
         self, extra_context: dict[str, object], ctx: PlayExecutionContext
     ) -> None:
         """Inject the protected-worktree lists a destructive worktree sweep must honour.
@@ -278,6 +278,19 @@ class SkillBackedPlay(Play, ABC):
         (#189, #218) — a worktree created inside the min-age window is kept regardless
         of claim-query freshness. Best-effort: a missing list is the conservative
         outcome (skip nothing extra) and never blocks the dispatch.
+
+        ``active_worktree_paths`` starts from the narrow DB-only
+        ``collect_active_worktree_paths`` query (kept for back-compat / cheap
+        best-effort) and is WIDENED with ``ctx.manager.worktrees``' hardened
+        live-dispatch truth (in-flight registry + active/reaping DB rows) — the
+        same protection set the deterministic reaper (Regime 1) already trusts
+        via ``_protected_paths``/``_live_alias_paths``. The DB-only query alone
+        misses ``status='reaping'`` rows and in-flight dispatches whose
+        ``worktrees`` row write hasn't landed yet — the exact gap #311 exploited
+        to let the LLM-driven PRUNE/RECONCILE_STATE skill (Regime 2) delete a
+        worktree the reaper would have protected. This widening is still purely
+        advisory (the skill can ignore it); see ``execute()``'s post-hoc guard
+        for the hard backstop.
         """
         from agentshore.core.wedge_signals import (
             collect_active_worktree_paths,
@@ -285,10 +298,13 @@ class SkillBackedPlay(Play, ABC):
         )
 
         extra_context["worktree_min_age_hours"] = _WORKTREE_MIN_AGE_HOURS
+        active_paths: set[str] = set()
         try:
-            extra_context["active_worktree_paths"] = collect_active_worktree_paths(
-                ctx.project_path,
-                session_id=ctx.session_id,
+            active_paths.update(
+                collect_active_worktree_paths(
+                    ctx.project_path,
+                    session_id=ctx.session_id,
+                )
             )
         except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
             _logger.warning(
@@ -297,6 +313,19 @@ class SkillBackedPlay(Play, ABC):
                 play_id=ctx.play_id,
                 play_type=str(self.play_type),
             )
+        manager = getattr(ctx, "manager", None)
+        worktrees_manager = getattr(manager, "worktrees", None) if manager is not None else None
+        if worktrees_manager is not None:
+            try:
+                active_paths.update(await worktrees_manager.live_protected_paths())
+            except Exception as exc:  # noqa: BLE001 — widening is best-effort too
+                _logger.warning(
+                    "worktree_manager_protected_paths_inject_failed",
+                    error=str(exc),
+                    play_id=ctx.play_id,
+                    play_type=str(self.play_type),
+                )
+        extra_context["active_worktree_paths"] = sorted(active_paths)
         try:
             extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
                 ctx.project_path,
@@ -310,6 +339,69 @@ class SkillBackedPlay(Play, ABC):
                 play_id=ctx.play_id,
                 play_type=str(self.play_type),
             )
+
+    async def _guard_against_protected_worktree_removal(
+        self, ctx: PlayExecutionContext, skill_result: SkillResult
+    ) -> tuple[SkillResult, bool]:
+        """Hard, code-level backstop against a destructive sweep clobbering a live worktree.
+
+        ``_inject_worktree_guards`` only *advises* the LLM-driven PRUNE skill which
+        paths to keep — the skill can still misclassify a worktree and run
+        ``git worktree remove --force`` on it (#311). Because the skill is an
+        opaque CLI subprocess, we cannot intercept the removal mid-flight; the
+        realistic enforcement point is post-hoc detection: after the skill
+        returns, re-derive the manager's live-protected truth
+        (``WorktreeManager.live_protected_rows`` — the same in-flight-registry +
+        active/reaping-DB-row union the deterministic reaper already trusts) and
+        check whether any of those directories are now missing from disk.
+
+        A worktree the manager still considers ``active``/``reaping`` can only
+        legitimately lose its on-disk directory via the reaper (which itself
+        checks protection before removing — never touches a protected path) or
+        ``WorktreeManager.finalize_after_dispatch``'s branch-creating cleanup
+        (which calls ``release_dispatch`` and removes the directory before
+        marking the row ``stale`` — a narrow, single-await race window). Both are
+        vanishingly unlikely to coincide with this check, so a hit here is
+        treated as the destructive-sweep play having clobbered a live worktree:
+        ``skill_result.success`` is forced to ``False`` (even if the skill
+        self-reported success) so the incident surfaces instead of being
+        silently accepted, per #189/#195/#203/#238/#243/#250's precedent that a
+        worktree-clobber must never read as a clean success.
+
+        Returns the (possibly amended) ``SkillResult`` and whether a violation
+        was detected, so the caller can set an informative ``failure_kind``.
+        Best-effort: any error probing manager/disk state leaves the result
+        untouched — this is a safety net, not a new failure mode of its own.
+        """
+        worktrees_manager = getattr(ctx.manager, "worktrees", None)
+        if worktrees_manager is None:
+            return skill_result, False
+        try:
+            live_rows = await worktrees_manager.live_protected_rows()
+        except Exception as exc:  # noqa: BLE001 — safety net must never crash the play
+            _logger.warning(
+                "prune_protected_worktree_guard_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+            return skill_result, False
+        clobbered = sorted({path for path in live_rows.values() if not Path(path).exists()})
+        if not clobbered:
+            return skill_result, False
+        _logger.error(
+            "prune_removed_protected_worktree",
+            play_id=ctx.play_id,
+            play_type=self.play_type.value,
+            clobbered_paths=clobbered,
+        )
+        from dataclasses import replace  # noqa: PLC0415
+
+        message = "destructive worktree sweep removed a protected/in-flight worktree: " + ", ".join(
+            clobbered
+        )
+        combined_error = f"{skill_result.error}; {message}" if skill_result.error else message
+        return replace(skill_result, success=False, error=combined_error), True
 
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
@@ -399,13 +491,13 @@ class SkillBackedPlay(Play, ABC):
             # stale paths), so it needs the same active-claim + age guards prune
             # uses — without them its diagnose-then-remediate-later flow can delete
             # a worktree allocated mid-run to a freshly dispatched agent (#218).
-            self._inject_worktree_guards(extra_context, ctx)
+            await self._inject_worktree_guards(extra_context, ctx)
         elif self.play_type == PlayType.PRUNE:
             # Inject the set of currently-claimed / too-young worktrees so the
             # skill skips them, even when they have no pushed branch yet. Without
             # this, active pickup worktrees look like orphans (no open PR, no
             # commits beyond target) and get deleted mid-play.
-            self._inject_worktree_guards(extra_context, ctx)
+            await self._inject_worktree_guards(extra_context, ctx)
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(
@@ -718,6 +810,19 @@ class SkillBackedPlay(Play, ABC):
 
         self._last_skill_result = skill_result
 
+        # Hard backstop for the destructive-sweep skills (PRUNE): even though
+        # ``_inject_worktree_guards`` advised the skill which worktrees to keep,
+        # the LLM can still ignore it and remove one out from under a live
+        # dispatch (#311). Detect that post-hoc and refuse to let it read as a
+        # clean success.
+        worktree_guard_violated = False
+        if self.play_type == PlayType.PRUNE:
+            (
+                skill_result,
+                worktree_guard_violated,
+            ) = await self._guard_against_protected_worktree_removal(ctx, skill_result)
+            self._last_skill_result = skill_result
+
         # Reclaim untracked root files this trunk-scoped play introduced and left
         # behind, so they don't wedge merge_pr / reconcile_state (#162/#164).
         if trunk_artifact_pre is not None:
@@ -731,6 +836,8 @@ class SkillBackedPlay(Play, ABC):
                 "auth",
                 skill_result.error or "skill reported GitHub authentication failure",
             )
+        elif worktree_guard_violated:
+            failure_kind = FailureKind.AGENT_ERROR
 
         return PlayOutcome(
             play_type=self.play_type,

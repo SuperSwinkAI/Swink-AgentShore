@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.play_rules import needs_review
@@ -1412,7 +1416,8 @@ async def test_prune_injects_worktree_protection_context_payload() -> None:
     assert extra["worktree_min_age_hours"] == 3
 
 
-def test_reconcile_state_injects_worktree_guards_via_shared_helper() -> None:
+@pytest.mark.asyncio
+async def test_reconcile_state_injects_worktree_guards_via_shared_helper() -> None:
     """RECONCILE_STATE removes worktrees too, so it must inject the same guards (#218).
 
     Exercises the shared ``_inject_worktree_guards`` directly — both PRUNE and
@@ -1439,11 +1444,170 @@ def test_reconcile_state_injects_worktree_guards_via_shared_helper() -> None:
             return_value=["/tmp/young"],
         ),
     ):
-        ReconcileStatePlay()._inject_worktree_guards(extra, ctx)  # type: ignore[arg-type]
+        await ReconcileStatePlay()._inject_worktree_guards(extra, ctx)  # type: ignore[arg-type]
 
     assert extra["active_worktree_paths"] == ["/tmp/active"]
     assert extra["young_worktree_paths"] == ["/tmp/young"]
     assert extra["worktree_min_age_hours"] == 3
+
+
+@pytest.mark.asyncio
+async def test_inject_worktree_guards_widens_with_manager_live_truth() -> None:
+    """#311: the advisory list must be widened to the manager's hardened truth.
+
+    ``collect_active_worktree_paths`` only sees DB rows with ``status='active'``
+    — a worktree the manager still considers live via ``status='reaping'`` or a
+    dispatch registered in ``_inflight`` (but whose DB row hasn't landed yet) is
+    invisible to it. ``_inject_worktree_guards`` must union in
+    ``ctx.manager.worktrees.live_protected_paths()`` so the skill's
+    ``active_worktree_paths`` is at least as protective as the reaper regime.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    worktrees_manager = MagicMock()
+    worktrees_manager.live_protected_paths = AsyncMock(
+        return_value={"/tmp/manager-truth-reaping", "/tmp/active"}
+    )
+    ctx = SimpleNamespace(
+        project_path=Path("/tmp/proj"),
+        session_id="sess",
+        play_id=7,
+        manager=SimpleNamespace(worktrees=worktrees_manager),
+    )
+    extra: dict[str, object] = {}
+    with (
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=["/tmp/active"],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=[],
+        ),
+    ):
+        await PrunePlay()._inject_worktree_guards(extra, ctx)  # type: ignore[arg-type]
+
+    worktrees_manager.live_protected_paths.assert_awaited_once()
+    active_paths = extra["active_worktree_paths"]
+    assert isinstance(active_paths, list)
+    assert set(active_paths) == {
+        "/tmp/active",
+        "/tmp/manager-truth-reaping",
+    }
+
+
+@pytest.mark.asyncio
+async def test_prune_execute_flags_when_protected_worktree_was_removed(tmp_path: Path) -> None:
+    """#311 Layer 2: prune reporting ``success: true`` is overridden if it clobbered a live worktree.
+
+    Simulates the LLM-driven skill ignoring its advisory ``active_worktree_paths``
+    context and running ``git worktree remove --force`` on a worktree the
+    manager still considers live (in ``_inflight``/active/reaping) — the
+    directory is gone from disk by the time the post-hoc guard runs. The play
+    must not report success even though the skill's own JSON envelope said so.
+    """
+    from unittest.mock import patch
+
+    from agentshore.errors import FailureKind
+    from agentshore.state import SkillResult
+
+    clobbered_path = str(tmp_path) + "/pickup-42-clobbered"  # never created — simulates removal
+
+    worktrees_manager = MagicMock()
+    worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
+    worktrees_manager.live_protected_rows = AsyncMock(return_value={42: clobbered_path})
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+    ctx.manager.worktrees = worktrees_manager
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=[]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.serialize_state_for_skill",
+            return_value={},
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=[],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=[],
+        ),
+    ):
+        outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    worktrees_manager.live_protected_rows.assert_awaited()
+    assert outcome.success is False
+    assert outcome.error is not None
+    assert clobbered_path in outcome.error
+    assert outcome.failure_kind == FailureKind.AGENT_ERROR
+
+
+@pytest.mark.asyncio
+async def test_prune_execute_untouched_when_protected_worktree_still_present(
+    tmp_path: Path,
+) -> None:
+    """#311 Layer 2: the guard is a no-op when every protected worktree survives."""
+    from unittest.mock import patch
+
+    from agentshore.state import SkillResult
+
+    surviving_path = tmp_path  # a real directory that exists
+
+    worktrees_manager = MagicMock()
+    worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
+    worktrees_manager.live_protected_rows = AsyncMock(return_value={7: str(surviving_path)})
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+    ctx.manager.worktrees = worktrees_manager
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=[]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.serialize_state_for_skill",
+            return_value={},
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=[],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=[],
+        ),
+    ):
+        outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    worktrees_manager.live_protected_rows.assert_awaited()
+    assert outcome.success is True
+    assert outcome.failure_kind is None
 
 
 # ---------------------------------------------------------------------------
