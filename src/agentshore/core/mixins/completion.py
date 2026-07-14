@@ -87,6 +87,17 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
     }
 )
 
+# Substring in an unblock_pr failure's ``error`` text meaning the target has
+# irreconcilable merge conflicts (the skill emits
+# ``error: "Merge conflicts require manual resolution"`` alongside
+# ``blocked_by: "merge_conflicts"`` — the latter has no structured home on
+# ``PlayOutcome``, so the error text is the signal, same convention as
+# ``_UNBLOCK_MANUAL_REQUIRED_MARKERS``). Distinct from that list: a merge
+# conflict is often resolvable once the base branch moves (a later rebase
+# succeeds), so it only earns a short, clock-windowed repick cooldown (#312)
+# — never the PERMANENT manual-required park that list triggers.
+_UNBLOCK_PR_REPICK_COOLDOWN_MARKERS: tuple[str, ...] = ("merge conflict",)
+
 
 def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
     """Map an executor ``skip_category`` to the unified ``PlaySkipReason`` (TNQA 03 L1).
@@ -419,6 +430,7 @@ class CompletionProcessor:
                 pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
+        self._record_merge_pr_repick_cooldown_if_needed(ctx, outcome, completed_play_type)
         await self._park_unplannable_issue_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
         await self._record_completion_experience(
@@ -700,8 +712,13 @@ class CompletionProcessor:
             # A dispatch that merged the target or cleared its sole stale
             # CHANGES_REQUESTED review is a win — never count or park it. Reset
             # prior failures so a later genuine block counts fresh (blocky PR #517).
+            # Also clear the #312 repick cooldown: this dispatch just proved the
+            # PR fine again, which the cooldown's own lazy rearm check (a live
+            # ``mergeable`` re-check on the next resolve) would not necessarily
+            # catch — e.g. a stale-review resolution never touched ``mergeable``.
             if _outcome_resolved_target_pr(outcome, ctx.params.pr_number):
                 self._executor._resolver.reset_unblock_pr_failures(ctx.params.pr_number)
+                self._executor._resolver.clear_pr_repick_cooldown(ctx.params.pr_number)
                 _logger.info(
                     "unblock_pr_resolved_target",
                     session_id=self._session_id,
@@ -719,6 +736,62 @@ class CompletionProcessor:
                     self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
+            # #312: a merge-conflict failure is not permanently unfixable (the
+            # base branch may move and a later rebase succeed), but it is
+            # provably not worth re-attempting THIS tick — arm a short repick
+            # cooldown so the PPO doesn't immediately re-pick the same PR.
+            # threshold=1 in PR_REPICK_COOLDOWN_SPEC means this fires on the
+            # very first such failure, well before the 3-attempt exhaustion
+            # counter above would exclude it. rearmable=True: the PR's live
+            # ``mergeable`` field is free to re-check every resolve, so the
+            # cooldown clears the instant a rebase lands (see
+            # PlayCandidateService._rearm_pr_repick_cooldown).
+            elif any(m in error_text for m in _UNBLOCK_PR_REPICK_COOLDOWN_MARKERS):
+                self._executor._resolver.record_pr_repick_cooldown(
+                    ctx.params.pr_number,
+                    ctx.state_at_dispatch.total_plays,
+                    rearmable=True,
+                )
+
+    def _record_merge_pr_repick_cooldown_if_needed(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
+        """Arm the fast per-PR repick cooldown on a merge_pr ``dirty_trunk`` failure (#312).
+
+        Sibling to ``_record_unblock_attempt_if_needed``'s merge_conflicts
+        arm, and separate from ``_handle_merge_pr_outcome``'s SESSION-GLOBAL
+        same-cause wedge counter (#330, untouched here — that mechanism only
+        counts a specific root-untracked-path pathology toward unmasking
+        END_SESSION, it carries no per-PR memory at all). This is per-PR: a
+        ``dirty_trunk`` failure on PR #42 means re-picking #42 immediately is
+        wasted dispatch cost regardless of which untracked-path pathology
+        caused it, so this matches on the same ``"dirty_trunk"`` substring
+        ``_handle_merge_pr_outcome`` checks but does not require the
+        root-untracked refinement that guards the wedge counter's escalation.
+
+        rearmable=False: unlike unblock_pr's merge_conflicts (whose live
+        ``mergeable`` field is free to re-check every resolve), there is no
+        equivalently cheap live "trunk is clean now" signal available to
+        ``PlayCandidateService`` — it rides out the full cooldown window,
+        mirroring issue_pickup's non-rearmable timeout/crash case (#222).
+        """
+        if (
+            completed_play_type != PlayType.MERGE_PR
+            or outcome.success
+            or not isinstance(ctx.params.pr_number, int)
+        ):
+            return
+        error_text = (outcome.error or "").lower()
+        if "dirty_trunk" not in error_text:
+            return
+        self._executor._resolver.record_pr_repick_cooldown(
+            ctx.params.pr_number,
+            ctx.state_at_dispatch.total_plays,
+            rearmable=False,
+        )
 
     async def _park_unplannable_issue_if_needed(
         self,

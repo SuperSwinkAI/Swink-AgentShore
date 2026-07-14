@@ -12,6 +12,7 @@ from agentshore.agents._selection import allowed_tiers_for
 from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
 from agentshore.beads import BeadStatus, ready_tasks
+from agentshore.cooldown import Clock, Cooldown, CooldownSpec
 from agentshore.github.labels import (
     DEBUG_TRIGGER_LABELS,
     DISALLOWED_LABEL,
@@ -76,6 +77,19 @@ _logger = get_logger(__name__)
 # review/merge work first. Single source of truth — pr_queue_human_blocked
 # derives from MAX_OPEN_PRS - 1 so the END_SESSION hatch stays coupled to the cap.
 MAX_OPEN_PRS = 10
+
+# Fast, short-window down-weight applied per PR when unblock_pr fails with
+# ``merge_conflicts`` or merge_pr fails with ``dirty_trunk`` (#312) — a
+# non-mechanical, provably-not-retryable-right-now reason. threshold=1: a
+# single such failure is definitive, unlike issue_pickup's dep-block streak
+# (``_SKIP_CIRCUIT_THRESHOLD=3`` in issue_pickup.py) which needs repeats to
+# confirm a pattern. Distinct from — and additional to —
+# ``ParameterResolver``'s permanent ``_unblock_pr_failures`` exhaustion
+# counter, which is a clockless terminal backstop that only bites after 3
+# attempts. Single source of truth shared by ``ParameterResolver`` (which
+# owns the actual ``Cooldown[int]`` instance built from this spec) and any
+# standalone ``PlayCandidateService`` construction (tests).
+PR_REPICK_COOLDOWN_SPEC = CooldownSpec(threshold=1, cooldown=15, clock=Clock.PLAYS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +689,8 @@ class PlayCandidateService:
         project_path: Path | None = None,
         unblock_failures: dict[int, int] | None = None,
         unblock_exhaustion_threshold: int = 3,
+        pr_repick_cooldown: Cooldown[int] | None = None,
+        pr_repick_cooldown_rearmable: dict[int, bool] | None = None,
     ) -> None:
         self._store = store
         self._cfg = cfg
@@ -682,6 +698,18 @@ class PlayCandidateService:
         self._project_path = project_path
         self._unblock_failures = unblock_failures if unblock_failures is not None else {}
         self._unblock_exhaustion_threshold = unblock_exhaustion_threshold
+        # See PR_REPICK_COOLDOWN_SPEC. Production wiring passes the same
+        # Cooldown/rearmable-dict instance ParameterResolver owns (mirrors
+        # unblock_failures above); a standalone construction (tests) gets a
+        # private, empty Cooldown of its own.
+        self._pr_repick_cooldown: Cooldown[int] = (
+            pr_repick_cooldown
+            if pr_repick_cooldown is not None
+            else Cooldown(PR_REPICK_COOLDOWN_SPEC)
+        )
+        self._pr_repick_cooldown_rearmable: dict[int, bool] = (
+            pr_repick_cooldown_rearmable if pr_repick_cooldown_rearmable is not None else {}
+        )
 
     async def candidates_for(
         self,
@@ -820,8 +848,47 @@ class PlayCandidateService:
             source="github_fallback",
         )
 
+    def _rearm_pr_repick_cooldown(self, state: OrchestratorState) -> None:
+        """Clear the fast repick cooldown for PRs whose blocker has cleared (#312).
+
+        Mirrors ``issue_pickup._rearm_ready_issues``: the cooldown is a *cost*
+        breaker, not a correctness gate, so it must not hold a PR off dispatch
+        once the condition that armed it is no longer true. Two ways a key
+        leaves the cooldown early:
+
+        - The PR closed/merged since arming — the cooldown entry is moot
+          (mirrors ``issue_pickup._purge_closed_issues``).
+        - The PR was armed as rearmable (merge_conflicts) and its live
+          ``mergeable`` field is no longer ``CONFLICTING`` — the blocker that
+          triggered the cooldown has cleared. Non-rearmable entries
+          (dirty_trunk) are left untouched and ride out the full window: there
+          is no equivalently cheap live "trunk is clean now" signal at this
+          layer (#222's non-rearmable timeout/crash case is the precedent).
+        """
+        on_cooldown = self._pr_repick_cooldown.armed_keys(now=state.total_plays)
+        if not on_cooldown:
+            return
+        open_pr_numbers = {pr.pr_number for pr in state.pull_requests if pr.state.upper() == "OPEN"}
+        pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
+        for pr_number in on_cooldown:
+            if pr_number not in open_pr_numbers:
+                self._pr_repick_cooldown.clear(pr_number)
+                self._pr_repick_cooldown_rearmable.pop(pr_number, None)
+                continue
+            if not self._pr_repick_cooldown_rearmable.get(pr_number, False):
+                continue
+            pr = pr_by_number.get(pr_number)
+            if pr is not None and getattr(pr, "mergeable", None) != "CONFLICTING":
+                self._pr_repick_cooldown.clear(pr_number)
+                self._pr_repick_cooldown_rearmable.pop(pr_number, None)
+
     async def _merge_pr_candidates(self, state: OrchestratorState) -> list[PlayCandidate]:
         in_flight_merge_prs = _in_flight_prs(state, PlayType.MERGE_PR)
+        # #312: re-check before reading the cooldown set so a PR whose blocker
+        # cleared this same tick is selectable immediately.
+        self._rearm_pr_repick_cooldown(state)
+        on_cooldown = self._pr_repick_cooldown.armed_keys(now=state.total_plays)
+        excluded_merge = in_flight_merge_prs | on_cooldown
         target_branch = self._cfg.project.target_branch
 
         def is_mergeable(pr: object) -> bool:
@@ -831,7 +898,7 @@ class PlayCandidateService:
         # the PR source (approved PRs in the store) is resolver-specific.
         candidates = _pr_play_candidates(
             await self._store.list_approved_pull_requests(state.session_id),
-            excluded=in_flight_merge_prs,
+            excluded=excluded_merge,
             predicate=is_mergeable,
             make_candidate=lambda index, pr, keys: PlayCandidate(
                 play_type=PlayType.MERGE_PR,
@@ -849,7 +916,7 @@ class PlayCandidateService:
         return await self._github_pr_candidates(
             state,
             PlayType.MERGE_PR,
-            lambda pr: pr.pr_number not in in_flight_merge_prs and is_mergeable(pr),
+            lambda pr: pr.pr_number not in excluded_merge and is_mergeable(pr),
             limit=5,
             log_key="github_pr_resolve_failed",
         )
@@ -861,7 +928,11 @@ class PlayCandidateService:
             for pr_num, count in self._unblock_failures.items()
             if count >= self._unblock_exhaustion_threshold
         }
-        excluded = in_flight_unblock_prs | exhausted
+        # #312: fast cooldown layered on top of the permanent exhaustion
+        # counter above — both exclusions apply.
+        self._rearm_pr_repick_cooldown(state)
+        on_cooldown = self._pr_repick_cooldown.armed_keys(now=state.total_plays)
+        excluded = in_flight_unblock_prs | exhausted | on_cooldown
         prs = list(await self._store.list_open_pull_requests(state.session_id))
         random.shuffle(prs)
         # Store-backed pass: same eligibility/conflict pipeline as build(), only
@@ -1132,6 +1203,7 @@ __all__ = [
     "build_candidate_plan",
     # Module constants
     "MAX_OPEN_PRS",
+    "PR_REPICK_COOLDOWN_SPEC",
     # Reviewer/tail helpers
     "idle_can_review_agents",
     "pick_reviewer_for_pr",

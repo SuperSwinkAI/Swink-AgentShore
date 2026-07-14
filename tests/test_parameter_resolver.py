@@ -386,6 +386,141 @@ async def test_resolve_unblock_pr_skips_exhausted_pr() -> None:
 
 
 # ---------------------------------------------------------------------------
+# #312 — fast per-PR repick cooldown (merge_conflicts / dirty_trunk)
+# ---------------------------------------------------------------------------
+
+
+def _cooldown_pr(
+    num: int,
+    *,
+    mergeable: str = "CONFLICTING",
+    blocked: bool = False,
+    review_decision: str | None = None,
+) -> MagicMock:
+    pr = MagicMock()
+    pr.pr_number = num
+    pr.state = "open"
+    pr.labels = []
+    pr.review_decision = review_decision
+    pr.status_check_summary = None
+    pr.is_draft = False
+    pr.mergeable = mergeable
+    pr.blocked = blocked
+    pr.issue_number = None
+    pr.branch = f"feature/{num}"
+    return pr
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_skips_pr_on_repick_cooldown() -> None:
+    """#312: a PR just armed on the fast repick cooldown is excluded
+    immediately — well before the permanent exhaustion threshold (3) would
+    fire on its own."""
+    store = AsyncMock()
+    pr = _cooldown_pr(9)
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    state = _make_state(pull_requests=[pr])
+    # Sanity: the PR is a candidate before the cooldown is armed.
+    assert (await resolver.resolve(PlayType.UNBLOCK_PR, state)) is not None
+
+    resolver.record_pr_repick_cooldown(9, state.total_plays, rearmable=True)
+
+    assert await resolver.resolve(PlayType.UNBLOCK_PR, state) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_repick_cooldown_expires_after_window() -> None:
+    """The cooldown is a short, clock-windowed down-weight, not permanent —
+    once PR_REPICK_COOLDOWN_SPEC.cooldown plays elapse, the PR is pickable
+    again even though nothing about it changed."""
+    store = AsyncMock()
+    pr = _cooldown_pr(9, mergeable="CONFLICTING")
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    resolver.record_pr_repick_cooldown(9, 0, rearmable=False)
+
+    still_cooling = _make_state(pull_requests=[pr])
+    still_cooling.total_plays = 14
+    assert await resolver.resolve(PlayType.UNBLOCK_PR, still_cooling) is None
+
+    expired = _make_state(pull_requests=[pr])
+    expired.total_plays = 15
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, expired)
+    assert result is not None
+    assert result.pr_number == 9
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_repick_cooldown_rearms_when_no_longer_conflicting() -> None:
+    """#312: a rearmable cooldown clears early once the PR's live ``mergeable``
+    flips away from CONFLICTING — mirrors issue_pickup's bead-readiness rearm
+    (``_rearm_ready_issues``), well before the fixed window elapses."""
+    store = AsyncMock()
+    # mergeable has already recovered (e.g. a rebase landed), but the PR is
+    # still blocked for an unrelated reason so it stays a real candidate.
+    pr = _cooldown_pr(9, mergeable="MERGEABLE", review_decision="CHANGES_REQUESTED")
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    resolver.record_pr_repick_cooldown(9, 0, rearmable=True)
+
+    state = _make_state(pull_requests=[pr])
+    state.total_plays = 1  # well inside the 15-play window
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, state)
+    assert result is not None
+    assert result.pr_number == 9
+
+
+@pytest.mark.asyncio
+async def test_resolve_unblock_pr_repick_cooldown_non_rearmable_rides_out_window() -> None:
+    """A non-rearmable cooldown (dirty_trunk) ignores a cleared ``mergeable``
+    field and stays armed for the full window (#222 precedent)."""
+    store = AsyncMock()
+    pr = _cooldown_pr(9, mergeable="MERGEABLE", review_decision="CHANGES_REQUESTED")
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    resolver.record_pr_repick_cooldown(9, 0, rearmable=False)
+
+    state = _make_state(pull_requests=[pr])
+    state.total_plays = 1
+    assert await resolver.resolve(PlayType.UNBLOCK_PR, state) is None
+
+
+@pytest.mark.asyncio
+async def test_clear_pr_repick_cooldown_unparks_immediately() -> None:
+    """#312: a definitive resolution (e.g. a stale-review dismissal) clears
+    the cooldown outright, without waiting for either the window or a live
+    ``mergeable`` re-check."""
+    store = AsyncMock()
+    pr = _cooldown_pr(9, mergeable="CONFLICTING")
+    store.list_open_pull_requests = AsyncMock(return_value=[pr])
+    store.list_approved_pull_requests = AsyncMock(return_value=[])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    resolver.record_pr_repick_cooldown(9, 0, rearmable=False)
+    resolver.clear_pr_repick_cooldown(9)
+
+    state = _make_state(pull_requests=[pr])
+    state.total_plays = 1
+    result = await resolver.resolve(PlayType.UNBLOCK_PR, state)
+    assert result is not None
+    assert result.pr_number == 9
+
+
+# ---------------------------------------------------------------------------
 # WRITE_IMPLEMENTATION_PLAN
 # ---------------------------------------------------------------------------
 
@@ -1387,6 +1522,45 @@ async def test_resolve_merge_pr_returns_none_when_no_approved_prs() -> None:
     resolver = _make_resolver()
     result = await resolver.resolve(PlayType.MERGE_PR, _make_state())
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_merge_pr_skips_pr_on_repick_cooldown() -> None:
+    """#312: merge_pr and unblock_pr share the same per-PR repick cooldown —
+    a dirty_trunk failure on this PR excludes it from merge_pr candidates
+    too, not just unblock_pr's."""
+    store = AsyncMock()
+    pr = MagicMock()
+    pr.pr_number = 20
+    pr.state = "open"
+    pr.mergeable = "MERGEABLE"
+    pr.review_decision = "APPROVED"
+    pr.last_review_status = None
+    pr.last_reviewed_sha = None
+    pr.head_sha = None
+    pr.issue_number = None
+    store.list_open_pull_requests = AsyncMock(return_value=[])
+    store.list_approved_pull_requests = AsyncMock(return_value=[pr])
+    store.get_most_recent_branch = AsyncMock(return_value=None)
+    resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
+
+    state = _make_state(pull_requests=[pr])
+    assert (await resolver.resolve(PlayType.MERGE_PR, state)) is not None
+
+    # dirty_trunk arms non-rearmable: no cheap "trunk clean" signal here.
+    resolver.record_pr_repick_cooldown(20, state.total_plays, rearmable=False)
+    assert await resolver.resolve(PlayType.MERGE_PR, state) is None
+
+    # Rides out the full window regardless of the PR's own (fine) mergeable state.
+    still_cooling = _make_state(pull_requests=[pr])
+    still_cooling.total_plays = 14
+    assert await resolver.resolve(PlayType.MERGE_PR, still_cooling) is None
+
+    expired = _make_state(pull_requests=[pr])
+    expired.total_plays = 15
+    result = await resolver.resolve(PlayType.MERGE_PR, expired)
+    assert result is not None
+    assert result.pr_number == 20
 
 
 @pytest.mark.asyncio
