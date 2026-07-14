@@ -163,7 +163,6 @@ class GitHubIdentity:
 class AgentConfig:
     enabled: bool = True
     binary: str | None = None
-    api_base: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
     approved_models: tuple[str, ...] = ()
