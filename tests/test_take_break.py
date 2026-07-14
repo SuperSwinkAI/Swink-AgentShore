@@ -226,6 +226,47 @@ async def test_execute_recovers_only_target_error_agent():
 
 
 @pytest.mark.asyncio
+async def test_execute_target_agent_cleared_during_break_returns_clean_outcome():
+    """#332: if the target agent was cleared from the registry (e.g. by a
+    concurrent end_agent/reap) while this play slept, the target no longer
+    appears in ``state.agents``. Execute must NOT call attempt_recovery for a
+    stale id and must NOT raise/crash — it should return a clean, successful
+    outcome with no recovery attempted."""
+    play = TakeBreakPlay()
+
+    # "err1" is the trigger but is absent from state.agents (already cleared).
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_make_idle_agent()],
+    )
+
+    ctx = _make_ctx(break_duration_minutes=1)
+    ctx.manager.attempt_recovery = AsyncMock(return_value=True)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        outcome = await play.execute(
+            state,
+            PlayParams(
+                agent_id="err1",
+                extras={
+                    "trigger_agent_id": "err1",
+                    "trigger_error_class": "unknown",
+                },
+            ),
+            ctx=ctx,
+        )
+
+    ctx.manager.attempt_recovery.assert_not_awaited()
+    assert outcome.success is True
+    assert outcome.agent_id == "err1"
+    assert outcome.artifacts[0]["recovered_agents"] == []
+    assert outcome.artifacts[0]["event"] == "break_completed"
+
+
+@pytest.mark.asyncio
 async def test_execute_uses_configured_duration():
     play = TakeBreakPlay()
     state = _make_state()

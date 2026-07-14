@@ -896,6 +896,19 @@ async def test_attempt_recovery_fails_when_breaker_open(
     assert handle.status == AgentStatus.ERROR
 
 
+async def test_attempt_recovery_returns_false_for_unknown_agent_id(
+    store: DataStore, tmp_path: Path
+) -> None:
+    """#332: an id no longer in the registry (e.g. cleared by a concurrent
+    end_agent/reap while a caller like TakeBreakPlay held a stale reference
+    across a long sleep) must return False, not raise PreconditionFailed."""
+    mgr = _make_manager(store, tmp_path)
+
+    result = await mgr.attempt_recovery("agent-does-not-exist")
+
+    assert result is False
+
+
 async def test_attempt_recovery_does_not_clear_auth_quarantine(
     store: DataStore, tmp_path: Path, mock_agent_path: Path
 ) -> None:
